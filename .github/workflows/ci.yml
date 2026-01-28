@@ -46,21 +46,25 @@ jobs:
       - name: Claude Code Review
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          use_sticky_comment: true
-          claude_args: |
-            --model claude-opus-4-5-20251101
           prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
             Review this PR for:
             1. Code quality and adherence to the project's TypeScript strict mode requirements
             2. Compliance with the code style guidelines in CLAUDE.md (named exports, no any types, etc.)
-            3. Domain-driven design principles (use the ddd skill if needed)
+            3. Domain-driven design principles
             4. Test coverage (unit tests should live next to source files)
             5. Security vulnerabilities and best practices
             6. Any potential bugs or edge cases
 
-            Please provide constructive feedback and suggest improvements where needed.
+            After reviewing, post your feedback as a comment on the PR using:
+            gh pr comment ${{ github.event.pull_request.number }} --body "your review here"
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model claude-opus-4-5-20251101
+            --allowedTools Bash(gh pr comment:*),Bash(gh pr view:*)
 
   auto-merge:
     name: Auto-merge PR
