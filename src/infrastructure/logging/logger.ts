@@ -11,9 +11,15 @@ export interface LoggingOptions {
   debugLogs: boolean;
 }
 
+let isInitialized = false;
+
 export async function initializeLogging(
   options: LoggingOptions,
 ): Promise<void> {
+  // LogTape can only be configured once per process
+  if (isInitialized) {
+    return;
+  }
   const sinks: Record<string, ReturnType<typeof getConsoleSink>> = {
     console: getConsoleSink(),
   };
@@ -57,6 +63,8 @@ export async function initializeLogging(
       },
     ],
   });
+
+  isInitialized = true;
 }
 
 export function getSwampLogger(name: string) {

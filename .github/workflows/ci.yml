@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: write
+  id-token: write
+
+jobs:
+  test:
+    name: Lint, Test, and Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run deno lint
+        run: deno lint
+
+      - name: Run deno fmt --check
+        run: deno fmt --check
+
+      - name: Run deno test
+        run: deno test --allow-read --allow-write --allow-env --allow-run
+
+  claude-review:
+    name: Claude Code Review
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            Review this PR for:
+            1. Code quality and adherence to the project's TypeScript strict mode requirements
+            2. Compliance with the code style guidelines in CLAUDE.md (named exports, no any types, etc.)
+            3. Domain-driven design principles (use the ddd skill if needed)
+            4. Test coverage (unit tests should live next to source files)
+            5. Security vulnerabilities and best practices
+            6. Any potential bugs or edge cases
+
+            Please provide constructive feedback and suggest improvements where needed.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  auto-merge:
+    name: Auto-merge PR
+    needs: [test, claude-review]
+    runs-on: ubuntu-latest
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.actor == 'dependabot[bot]' || contains(github.event.pull_request.labels.*.name, 'automerge'))
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR_NUMBER"
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
