@@ -79,6 +79,16 @@ markdown.
 
 when specifying json, it should have the same content.
 
+### type search <string>
+
+When run interactively, it should show a text box that says "type to search",
+and then use the npm:fzf package to search the list of available types (by
+either normalized type or actual type name). Then the user can use the arrow
+keys to select the type they want, and the result will be the same as type
+describe.
+
+When run non-interactively, it should produce a json output that has the list.
+
 ### model create <type> <name>
 
 Creates a new instance of a type with the given unqiue name. Type should accept
