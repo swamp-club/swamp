@@ -17,6 +17,7 @@
     "zod": "npm:zod@4",
     "@cliffy/command": "jsr:@cliffy/command@1.0.0-rc.8",
     "@logtape/logtape": "jsr:@logtape/logtape@0.8",
+    "fzf": "npm:fzf@0.5.2",
     "ink": "npm:ink@5",
     "ink-testing-library": "npm:ink-testing-library@4",
     "react": "npm:react@18",
