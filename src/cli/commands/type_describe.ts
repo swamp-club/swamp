@@ -11,6 +11,7 @@ import {
   type MethodDefinition,
   modelRegistry,
 } from "../../domain/models/model.ts";
+import { typeSearchCommand } from "./type_search.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -95,4 +96,5 @@ export const typeCommand = new Command()
   .action(function () {
     this.showHelp();
   })
-  .command("describe", typeDescribeCommand);
+  .command("describe", typeDescribeCommand)
+  .command("search", typeSearchCommand);
