@@ -1,6 +1,7 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
-import { Box, render, Text } from "ink";
+import { Box, Text } from "ink";
+import { render } from "ink-testing-library";
 import type { OutputMode } from "./output.tsx";
 
 export interface ModelCreateData {
@@ -22,8 +23,8 @@ export function renderModelCreate(
 }
 
 function renderInteractiveModelCreate(data: ModelCreateData): void {
-  const { unmount } = render(<ModelCreateDisplay {...data} />);
-  unmount();
+  const { lastFrame } = render(<ModelCreateDisplay {...data} />);
+  console.log(lastFrame());
 }
 
 interface ModelCreateDisplayProps {
