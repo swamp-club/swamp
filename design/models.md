@@ -71,6 +71,13 @@ The valid shape of a resource is specified with a Zod 4 schema.
 
 ## CLI Commands
 
+### type describe <type>
+
+This command describes the model as a markdown document, will all of its details,
+using code blocks as neccessary. it should syntax highlight the markdown.
+
+when specifying json, it should have the same content.
+
 ### model create <type> <name>
 
 Creates a new instance of a type with the given unqiue name. Type should accept
