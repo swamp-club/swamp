@@ -1,5 +1,9 @@
 import { assertEquals } from "@std/assert";
-import { createContext, type GlobalOptions } from "./context.ts";
+import {
+  createContext,
+  getOutputModeFromArgs,
+  type GlobalOptions,
+} from "./context.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 // Initialize logging once before tests run
@@ -54,4 +58,15 @@ Deno.test("createContext uses custom logger name when provided", () => {
   // Logger is created - we can verify it exists and has expected methods
   assertEquals(typeof context.logger.debug, "function");
   assertEquals(typeof context.logger.error, "function");
+});
+
+Deno.test("getOutputModeFromArgs returns interactive by default", () => {
+  assertEquals(getOutputModeFromArgs([]), "interactive");
+  assertEquals(getOutputModeFromArgs(["model", "create"]), "interactive");
+});
+
+Deno.test("getOutputModeFromArgs returns json when --json is present", () => {
+  assertEquals(getOutputModeFromArgs(["--json"]), "json");
+  assertEquals(getOutputModeFromArgs(["model", "create", "--json"]), "json");
+  assertEquals(getOutputModeFromArgs(["--json", "model", "create"]), "json");
 });
