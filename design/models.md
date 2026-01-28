@@ -83,7 +83,8 @@ Shows the models input, schema, resource, methods, etc.
 
 ### model validate <model_id_or_name>
 
-Runs the models zod validations for the models inputs and resources. Run them in parallel and print the output as it comes.
+Runs the models zod validations for the models inputs and resources. Run them in
+parallel and print the output as it comes.
 
 ### model method run <model_id_or_name> <method_name>
 

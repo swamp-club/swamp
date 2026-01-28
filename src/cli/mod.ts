@@ -4,6 +4,9 @@ import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
 import type { GlobalOptions } from "./context.ts";
 
+// Initialize model registry at startup
+import "../domain/models/registry_init.ts";
+
 export async function runCli(args: string[]): Promise<void> {
   const cli = new Command()
     .name("swamp")
