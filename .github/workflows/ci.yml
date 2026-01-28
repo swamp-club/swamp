@@ -49,6 +49,8 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           use_sticky_comment: true
+          claude_args: |
+            --model claude-opus-4-5-20251101
           prompt: |
             Review this PR for:
             1. Code quality and adherence to the project's TypeScript strict mode requirements
