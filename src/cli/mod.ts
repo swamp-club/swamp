@@ -3,6 +3,7 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
 import { typeCommand } from "./commands/type_describe.ts";
+import { repoCommand } from "./commands/repo_init.ts";
 import type { GlobalOptions } from "./context.ts";
 
 // Initialize model registry at startup
@@ -27,7 +28,8 @@ export async function runCli(args: string[]): Promise<void> {
     })
     .command("version", versionCommand)
     .command("model", modelCommand)
-    .command("type", typeCommand);
+    .command("type", typeCommand)
+    .command("repo", repoCommand);
 
   await cli.parse(args);
 }
