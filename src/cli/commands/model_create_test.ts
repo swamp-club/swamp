@@ -18,3 +18,10 @@ Deno.test("modelCreateCommand is registered as subcommand", async () => {
   const createCmd = commands.find((c) => c.getName() === "create");
   assertEquals(createCmd !== undefined, true);
 });
+
+Deno.test("modelValidateCommand is registered as subcommand", async () => {
+  const { modelCommand } = await import("./model_create.ts");
+  const commands = modelCommand.getCommands();
+  const validateCmd = commands.find((c) => c.getName() === "validate");
+  assertEquals(validateCmd !== undefined, true);
+});
