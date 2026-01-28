@@ -2,6 +2,11 @@
 
 Deno based CLI for doing AI Native Automation.
 
+## Planning
+
+When planning new features, always use the `ddd` skill to inform the
+architecture.
+
 ## Code Style
 
 - TypeScript strict mode, no `any` types
