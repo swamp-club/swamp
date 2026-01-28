@@ -33,3 +33,11 @@ export function createContext(
     logger: getSwampLogger(loggerName),
   };
 }
+
+/**
+ * Determines the output mode from raw CLI arguments.
+ * Used for error handling before the CLI has fully parsed options.
+ */
+export function getOutputModeFromArgs(args: string[]): OutputMode {
+  return args.includes("--json") ? "json" : "interactive";
+}

@@ -34,12 +34,14 @@ Use `deno run` to get a complete list of custom tasks.
 - Uses LogTape for logging
 - Uses JSON for non-interactive output
 - Every command _must_ support both interactive and non-interactive output
+- You can read the files in `design/*.md` to understand elements of the design
 
 ## Testing
 
 - Unit tests live next to source files: `foo.ts` → `foo_test.ts`
 - Integration tests live in `integration/` directory (sibling to `src/`)
-- Use `@std/assert` for assertions (`assertEquals`, `assertStringIncludes`, etc.)
+- Use `@std/assert` for assertions (`assertEquals`, `assertStringIncludes`,
+  etc.)
 - Use `ink-testing-library` for testing Ink components
 - Test private functions indirectly through public APIs
 - Run tests with `deno task test`

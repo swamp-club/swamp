@@ -10,12 +10,15 @@
     "jsr:@std/fmt@~1.0.2": "1.0.8",
     "jsr:@std/fs@1": "1.0.22",
     "jsr:@std/internal@^1.0.12": "1.0.12",
+    "jsr:@std/path@1": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/text@~1.0.7": "1.0.16",
+    "jsr:@std/yaml@1": "1.0.10",
     "npm:@types/react@18": "18.3.27",
     "npm:ink-testing-library@4": "4.0.0_@types+react@18.3.27",
     "npm:ink@5": "5.2.1_@types+react@18.3.27_react@18.3.1",
-    "npm:react@18": "18.3.1"
+    "npm:react@18": "18.3.1",
+    "npm:zod@3": "3.25.76"
   },
   "jsr": {
     "@cliffy/command@1.0.0-rc.8": {
@@ -59,7 +62,7 @@
       "integrity": "de0f277a58a867147a8a01bc1b181d0dfa80bfddba8c9cf2bacd6747bcec9308",
       "dependencies": [
         "jsr:@std/internal",
-        "jsr:@std/path"
+        "jsr:@std/path@^1.1.4"
       ]
     },
     "@std/internal@1.0.12": {
@@ -73,6 +76,9 @@
     },
     "@std/text@1.0.16": {
       "integrity": "ddb9853b75119a2473857d691cf1ec02ad90793a2e8b4a4ac49d7354281a0cf8"
+    },
+    "@std/yaml@1.0.10": {
+      "integrity": "245706ea3511cc50c8c6d00339c23ea2ffa27bd2c7ea5445338f8feff31fa58e"
     }
   },
   "npm": {
@@ -321,6 +327,9 @@
     },
     "yoga-layout@3.2.1": {
       "integrity": "sha512-0LPOt3AxKqMdFBZA3HBAt/t/8vIKq7VaQYbuA8WxCgung+p9TVyKRYdpvCb80HcdTN2NkbIKbhNwKUfm3tQywQ=="
+    },
+    "zod@3.25.76": {
+      "integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="
     }
   },
   "workspace": {
@@ -330,10 +339,12 @@
       "jsr:@std/assert@1",
       "jsr:@std/fs@1",
       "jsr:@std/path@1",
+      "jsr:@std/yaml@1",
       "npm:@types/react@18",
       "npm:ink-testing-library@4",
       "npm:ink@5",
-      "npm:react@18"
+      "npm:react@18",
+      "npm:zod@3"
     ]
   }
 }

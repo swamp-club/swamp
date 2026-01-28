@@ -1,6 +1,7 @@
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
+import { modelCommand } from "./commands/model_create.ts";
 import type { GlobalOptions } from "./context.ts";
 
 export async function runCli(args: string[]): Promise<void> {
@@ -20,7 +21,8 @@ export async function runCli(args: string[]): Promise<void> {
     .action(function () {
       this.showHelp();
     })
-    .command("version", versionCommand);
+    .command("version", versionCommand)
+    .command("model", modelCommand);
 
   await cli.parse(args);
 }
