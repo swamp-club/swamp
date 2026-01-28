@@ -39,7 +39,8 @@ Use `deno run` to get a complete list of custom tasks.
 
 - Unit tests live next to source files: `foo.ts` → `foo_test.ts`
 - Integration tests live in `integration/` directory (sibling to `src/`)
-- Use `@std/assert` for assertions (`assertEquals`, `assertStringIncludes`, etc.)
+- Use `@std/assert` for assertions (`assertEquals`, `assertStringIncludes`,
+  etc.)
 - Use `ink-testing-library` for testing Ink components
 - Test private functions indirectly through public APIs
 - Run tests with `deno task test`
