@@ -81,7 +81,9 @@ export class YamlInputRepository implements InputRepository {
           const typeDir = join(vendorDir, typeEntry.name);
           // Read all inputs in this type directory
           for await (const fileEntry of Deno.readDir(typeDir)) {
-            if (!fileEntry.isFile || !fileEntry.name.endsWith(".yaml")) continue;
+            if (!fileEntry.isFile || !fileEntry.name.endsWith(".yaml")) {
+              continue;
+            }
 
             const path = join(typeDir, fileEntry.name);
             const content = await Deno.readTextFile(path);
