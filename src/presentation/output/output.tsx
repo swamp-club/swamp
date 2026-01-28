@@ -1,6 +1,6 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
-import { render } from "ink";
+import { render } from "ink-testing-library";
 import { VersionDisplay } from "./components/VersionDisplay.tsx";
 
 export type OutputMode = "interactive" | "json";
@@ -19,8 +19,8 @@ export function renderVersion(data: VersionData, mode: OutputMode): void {
 }
 
 function renderInteractiveVersion(data: VersionData): void {
-  const { unmount } = render(
+  const { lastFrame } = render(
     <VersionDisplay version={data.version} haiku={data.haiku} />,
   );
-  unmount();
+  console.log(lastFrame());
 }
