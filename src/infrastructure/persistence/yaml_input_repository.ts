@@ -108,6 +108,50 @@ export class YamlInputRepository implements InputRepository {
     return null;
   }
 
+  /**
+   * Finds all inputs across all model types in the repository.
+   */
+  async findAllGlobal(): Promise<{ input: ModelInput; type: ModelType }[]> {
+    const inputsDir = join(this.repoDir, "inputs");
+    const results: { input: ModelInput; type: ModelType }[] = [];
+
+    try {
+      // Iterate through all type directories
+      for await (const vendorEntry of Deno.readDir(inputsDir)) {
+        if (!vendorEntry.isDirectory) continue;
+
+        const vendorDir = join(inputsDir, vendorEntry.name);
+        for await (const typeEntry of Deno.readDir(vendorDir)) {
+          if (!typeEntry.isDirectory) continue;
+
+          const typeDir = join(vendorDir, typeEntry.name);
+          // Read all inputs in this type directory
+          for await (const fileEntry of Deno.readDir(typeDir)) {
+            if (!fileEntry.isFile || !fileEntry.name.endsWith(".yaml")) {
+              continue;
+            }
+
+            const path = join(typeDir, fileEntry.name);
+            const content = await Deno.readTextFile(path);
+            const data = parseYaml(content) as ModelInputData;
+            const input = ModelInput.fromData(data);
+
+            // Reconstruct the model type from the directory path
+            const typeStr = `${vendorEntry.name}/${typeEntry.name}`;
+            results.push({ input, type: ModelType.create(typeStr) });
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    return results;
+  }
+
   async save(type: ModelType, input: ModelInput): Promise<void> {
     const dir = this.getTypeDir(type);
     await ensureDir(dir);

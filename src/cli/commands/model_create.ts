@@ -8,10 +8,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { ModelInput } from "../../domain/models/model_input.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
-import { echoModel } from "../../domain/models/echo/echo_model.ts";
-
-// Register the echo model
-modelRegistry.register(echoModel);
+import { modelValidateCommand } from "./model_validate.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -74,4 +71,5 @@ export const modelCommand = new Command()
   .action(function () {
     this.showHelp();
   })
-  .command("create", modelCreateCommand);
+  .command("create", modelCreateCommand)
+  .command("validate", modelValidateCommand);
