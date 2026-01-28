@@ -1,6 +1,7 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
-import { Box, render, Text } from "ink";
+import { Box, Text } from "ink";
+import { render } from "ink-testing-library";
 import type { OutputMode } from "./output.tsx";
 
 export interface ErrorData {
@@ -42,8 +43,10 @@ export function renderError(error: unknown, mode: OutputMode): void {
 }
 
 function renderInteractiveError(message: string, stack?: string): void {
-  const { unmount } = render(<ErrorDisplay message={message} stack={stack} />);
-  unmount();
+  const { lastFrame } = render(
+    <ErrorDisplay message={message} stack={stack} />,
+  );
+  console.log(lastFrame());
 }
 
 interface ErrorDisplayProps {

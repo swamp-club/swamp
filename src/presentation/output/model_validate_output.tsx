@@ -1,6 +1,7 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
-import { Box, render, Text } from "ink";
+import { Box, Text } from "ink";
+import { render } from "ink-testing-library";
 import type { OutputMode } from "./output.tsx";
 
 export interface ValidationItemData {
@@ -36,8 +37,8 @@ export function renderModelValidate(
 }
 
 function renderInteractiveModelValidate(data: ModelValidateData): void {
-  const { unmount } = render(<ModelValidateDisplay {...data} />);
-  unmount();
+  const { lastFrame } = render(<ModelValidateDisplay {...data} />);
+  console.log(lastFrame());
 }
 
 interface ValidationItemDisplayProps {
@@ -144,8 +145,8 @@ export function renderModelValidateAll(
 }
 
 function renderInteractiveModelValidateAll(data: ModelValidateAllData): void {
-  const { unmount } = render(<ModelValidateAllDisplay {...data} />);
-  unmount();
+  const { lastFrame } = render(<ModelValidateAllDisplay {...data} />);
+  console.log(lastFrame());
 }
 
 interface ModelSummaryDisplayProps {
