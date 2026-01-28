@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize]
     branches: [main]
 
 permissions:
@@ -46,6 +47,8 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          use_sticky_comment: true
           prompt: |
             Review this PR for:
             1. Code quality and adherence to the project's TypeScript strict mode requirements
@@ -61,9 +64,8 @@ jobs:
     name: Auto-merge PR
     needs: [test, claude-review]
     runs-on: ubuntu-latest
-    if: |
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.actor == 'dependabot[bot]' || contains(github.event.pull_request.labels.*.name, 'automerge'))
+    # Only auto-merge PRs from the same repo (not forks) for security
+    if: github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       - name: Checkout code
