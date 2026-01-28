@@ -6,6 +6,7 @@
  */
 import { modelRegistry } from "./model.ts";
 import { echoModel } from "./echo/echo_model.ts";
+import { ec2InstanceModel } from "./aws/ec2/instance/ec2_instance_model.ts";
 
 /**
  * Registers all model definitions with the global registry.
@@ -14,6 +15,9 @@ import { echoModel } from "./echo/echo_model.ts";
 export function initializeModelRegistry(): void {
   if (!modelRegistry.has(echoModel.type)) {
     modelRegistry.register(echoModel);
+  }
+  if (!modelRegistry.has(ec2InstanceModel.type)) {
+    modelRegistry.register(ec2InstanceModel);
   }
 }
 

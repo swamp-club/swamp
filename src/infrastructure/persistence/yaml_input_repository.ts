@@ -68,33 +68,41 @@ export class YamlInputRepository implements InputRepository {
     name: string,
   ): Promise<{ input: ModelInput; type: ModelType } | null> {
     const inputsDir = join(this.repoDir, "inputs");
+    return await this.searchInputByName(inputsDir, [], name);
+  }
 
+  /**
+   * Recursively searches for an input file by name in nested directory structures.
+   */
+  private async searchInputByName(
+    currentDir: string,
+    pathSegments: string[],
+    name: string,
+  ): Promise<{ input: ModelInput; type: ModelType } | null> {
     try {
-      // Iterate through all type directories
-      for await (const vendorEntry of Deno.readDir(inputsDir)) {
-        if (!vendorEntry.isDirectory) continue;
+      for await (const entry of Deno.readDir(currentDir)) {
+        const fullPath = join(currentDir, entry.name);
 
-        const vendorDir = join(inputsDir, vendorEntry.name);
-        for await (const typeEntry of Deno.readDir(vendorDir)) {
-          if (!typeEntry.isDirectory) continue;
+        if (entry.isFile && entry.name.endsWith(".yaml")) {
+          // Found a YAML file, check if it matches the name
+          const content = await Deno.readTextFile(fullPath);
+          const data = parseYaml(content) as ModelInputData;
+          const input = ModelInput.fromData(data);
 
-          const typeDir = join(vendorDir, typeEntry.name);
-          // Read all inputs in this type directory
-          for await (const fileEntry of Deno.readDir(typeDir)) {
-            if (!fileEntry.isFile || !fileEntry.name.endsWith(".yaml")) {
-              continue;
-            }
-
-            const path = join(typeDir, fileEntry.name);
-            const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as ModelInputData;
-            const input = ModelInput.fromData(data);
-
-            if (input.name === name) {
-              // Reconstruct the model type from the directory path
-              const typeStr = `${vendorEntry.name}/${typeEntry.name}`;
-              return { input, type: ModelType.create(typeStr) };
-            }
+          if (input.name === name) {
+            // Reconstruct the model type from the path segments
+            const typeStr = pathSegments.join("/");
+            return { input, type: ModelType.create(typeStr) };
+          }
+        } else if (entry.isDirectory) {
+          // Recursively search subdirectories
+          const result = await this.searchInputByName(
+            fullPath,
+            [...pathSegments, entry.name],
+            name,
+          );
+          if (result) {
+            return result;
           }
         }
       }
@@ -114,42 +122,45 @@ export class YamlInputRepository implements InputRepository {
   async findAllGlobal(): Promise<{ input: ModelInput; type: ModelType }[]> {
     const inputsDir = join(this.repoDir, "inputs");
     const results: { input: ModelInput; type: ModelType }[] = [];
+    await this.collectAllInputs(inputsDir, [], results);
+    return results;
+  }
 
+  /**
+   * Recursively collects all input files from nested directory structures.
+   */
+  private async collectAllInputs(
+    currentDir: string,
+    pathSegments: string[],
+    results: { input: ModelInput; type: ModelType }[],
+  ): Promise<void> {
     try {
-      // Iterate through all type directories
-      for await (const vendorEntry of Deno.readDir(inputsDir)) {
-        if (!vendorEntry.isDirectory) continue;
+      for await (const entry of Deno.readDir(currentDir)) {
+        const fullPath = join(currentDir, entry.name);
 
-        const vendorDir = join(inputsDir, vendorEntry.name);
-        for await (const typeEntry of Deno.readDir(vendorDir)) {
-          if (!typeEntry.isDirectory) continue;
+        if (entry.isFile && entry.name.endsWith(".yaml")) {
+          // Found a YAML file, add it to results
+          const content = await Deno.readTextFile(fullPath);
+          const data = parseYaml(content) as ModelInputData;
+          const input = ModelInput.fromData(data);
 
-          const typeDir = join(vendorDir, typeEntry.name);
-          // Read all inputs in this type directory
-          for await (const fileEntry of Deno.readDir(typeDir)) {
-            if (!fileEntry.isFile || !fileEntry.name.endsWith(".yaml")) {
-              continue;
-            }
-
-            const path = join(typeDir, fileEntry.name);
-            const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as ModelInputData;
-            const input = ModelInput.fromData(data);
-
-            // Reconstruct the model type from the directory path
-            const typeStr = `${vendorEntry.name}/${typeEntry.name}`;
-            results.push({ input, type: ModelType.create(typeStr) });
-          }
+          // Reconstruct the model type from the path segments
+          const typeStr = pathSegments.join("/");
+          results.push({ input, type: ModelType.create(typeStr) });
+        } else if (entry.isDirectory) {
+          // Recursively search subdirectories
+          await this.collectAllInputs(
+            fullPath,
+            [...pathSegments, entry.name],
+            results,
+          );
         }
       }
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return [];
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
       }
-      throw error;
     }
-
-    return results;
   }
 
   async save(type: ModelType, input: ModelInput): Promise<void> {
