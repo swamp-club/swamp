@@ -1,6 +1,7 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
-import { Box, render, Text } from "ink";
+import { Box, Text } from "ink";
+import { render } from "ink-testing-library";
 import type { OutputMode } from "./output.tsx";
 
 export interface ModelMethodRunData {
@@ -25,8 +26,8 @@ export function renderModelMethodRun(
 }
 
 function renderInteractiveModelMethodRun(data: ModelMethodRunData): void {
-  const { unmount } = render(<ModelMethodRunDisplay {...data} />);
-  unmount();
+  const { lastFrame } = render(<ModelMethodRunDisplay {...data} />);
+  console.log(lastFrame());
 }
 
 interface AttributeItemProps {

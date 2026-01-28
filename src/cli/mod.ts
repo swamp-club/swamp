@@ -2,6 +2,7 @@ import { Command } from "@cliffy/command";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
+import { typeCommand } from "./commands/type_describe.ts";
 import type { GlobalOptions } from "./context.ts";
 
 // Initialize model registry at startup
@@ -25,7 +26,8 @@ export async function runCli(args: string[]): Promise<void> {
       this.showHelp();
     })
     .command("version", versionCommand)
-    .command("model", modelCommand);
+    .command("model", modelCommand)
+    .command("type", typeCommand);
 
   await cli.parse(args);
 }
