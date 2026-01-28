@@ -9,6 +9,7 @@ import { ModelInput } from "../../domain/models/model_input.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { modelValidateCommand } from "./model_validate.ts";
+import { modelMethodCommand } from "./model_method_run.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -72,4 +73,5 @@ export const modelCommand = new Command()
     this.showHelp();
   })
   .command("create", modelCreateCommand)
-  .command("validate", modelValidateCommand);
+  .command("validate", modelValidateCommand)
+  .command("method", modelMethodCommand);

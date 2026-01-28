@@ -17,6 +17,7 @@
     "npm:@aws-sdk/client-cloudcontrol@3": "3.978.0",
     "npm:@types/node@*": "24.2.0",
     "npm:@types/react@18": "18.3.27",
+    "npm:fzf@0.5.2": "0.5.2",
     "npm:ink-testing-library@4": "4.0.0_@types+react@18.3.27",
     "npm:ink@5": "5.2.1_@types+react@18.3.27_react@18.3.1",
     "npm:react@18": "18.3.1",
@@ -950,12 +951,17 @@
     "escape-string-regexp@2.0.0": {
       "integrity": "sha512-UpzcLCXolUWcNu5HtVMHYdXJjArjsF9C0aNnquZYY4uW/Vu0miy5YoWvbV345HauVvcAUnpRuhMMcqTcGOY2+w=="
     },
+<<<<<<< HEAD
     "fast-xml-parser@5.2.5": {
       "integrity": "sha512-pfX9uG9Ki0yekDHx2SiuRIyFdyAr1kMIMitPvb0YBo8SUfKvia7w7FIyd/l6av85pFYRhZscS75MwMnbvY+hcQ==",
       "dependencies": [
         "strnum"
       ],
       "bin": true
+=======
+    "fzf@0.5.2": {
+      "integrity": "sha512-Tt4kuxLXFKHy8KT40zwsUPUkg1CrsgY25FxA2U/j/0WgEDCk3ddc/zLTCCcbSHX9FcKtLuVaDGtGE/STWC+j3Q=="
+>>>>>>> origin/main
     },
     "get-east-asian-width@1.4.0": {
       "integrity": "sha512-QZjmEOC+IT1uk6Rx0sX22V6uHWVwbdbxf1faPqJ1QhLdGgsRGCZoyaQBm/piRdJy/D2um6hM1UP7ZEeQ4EkP+Q=="
@@ -1151,6 +1157,7 @@
       "jsr:@std/yaml@1",
       "npm:@aws-sdk/client-cloudcontrol@3",
       "npm:@types/react@18",
+      "npm:fzf@0.5.2",
       "npm:ink-testing-library@4",
       "npm:ink@5",
       "npm:react@18",

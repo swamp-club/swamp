@@ -282,3 +282,227 @@ Deno.test("CLI: model create command rejects unknown model type", async () => {
     assertStringIncludes(result.stderr, "Unknown model type");
   });
 });
+
+// model method run integration tests
+
+Deno.test("CLI: model method run creates resource", async () => {
+  await withTempDir(async (repoDir) => {
+    // First create a model
+    const createResult = await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "method-run-test",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(
+      createResult.code,
+      0,
+      `Create should succeed. stderr: ${createResult.stderr}`,
+    );
+    const createOutput = JSON.parse(createResult.stdout);
+
+    // Update input file to add message attribute
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = await inputRepo.findByName(
+      ECHO_MODEL_TYPE,
+      "method-run-test",
+    );
+    assertEquals(input !== null, true, "Input should exist");
+    input!.setAttribute("message", "Hello from CLI!");
+    await inputRepo.save(ECHO_MODEL_TYPE, input!);
+
+    // Run the method
+    const runResult = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "method-run-test",
+        "write",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(
+      runResult.code,
+      0,
+      `Method run should succeed. stderr: ${runResult.stderr}`,
+    );
+
+    // Verify JSON output
+    const runOutput = JSON.parse(runResult.stdout);
+    assertEquals(runOutput.modelId, createOutput.id);
+    assertEquals(runOutput.modelName, "method-run-test");
+    assertEquals(runOutput.type, "swamp/echo");
+    assertEquals(runOutput.methodName, "write");
+    assertEquals(typeof runOutput.resourceId, "string");
+    assertStringIncludes(runOutput.resourcePath, "resources/swamp/echo");
+    assertEquals(runOutput.resourceAttributes.message, "Hello from CLI!");
+    assertEquals(typeof runOutput.resourceAttributes.timestamp, "string");
+
+    // Verify resource file was created
+    assertEquals(
+      existsSync(runOutput.resourcePath),
+      true,
+      "Resource file should exist",
+    );
+
+    // Verify input was updated with resourceId
+    const updatedInput = await inputRepo.findByName(
+      ECHO_MODEL_TYPE,
+      "method-run-test",
+    );
+    assertEquals(updatedInput!.resourceId, runOutput.resourceId);
+  });
+});
+
+Deno.test("CLI: model method run by model ID", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model and set up its attributes
+    const createResult = await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "run-by-id-test",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(createResult.code, 0);
+    const createOutput = JSON.parse(createResult.stdout);
+
+    // Update input with message attribute
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = await inputRepo.findByName(ECHO_MODEL_TYPE, "run-by-id-test");
+    input!.setAttribute("message", "Using ID");
+    await inputRepo.save(ECHO_MODEL_TYPE, input!);
+
+    // Run method using model ID instead of name
+    const runResult = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        createOutput.id,
+        "write",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(runResult.code, 0, `stderr: ${runResult.stderr}`);
+
+    const runOutput = JSON.parse(runResult.stdout);
+    assertEquals(runOutput.modelId, createOutput.id);
+    assertEquals(runOutput.resourceAttributes.message, "Using ID");
+  });
+});
+
+Deno.test("CLI: model method run fails for unknown model", async () => {
+  await withTempDir(async (repoDir) => {
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "nonexistent-model",
+        "write",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(result.code !== 0, true, "Should fail for unknown model");
+    assertStringIncludes(result.stderr, "Model not found");
+  });
+});
+
+Deno.test("CLI: model method run fails for unknown method", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model
+    const createResult = await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "unknown-method-test",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(createResult.code, 0);
+
+    // Try to run a nonexistent method
+    const runResult = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "unknown-method-test",
+        "nonexistent",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(runResult.code !== 0, true, "Should fail for unknown method");
+    assertStringIncludes(runResult.stderr, "Unknown method 'nonexistent'");
+    assertStringIncludes(runResult.stderr, "Available methods: write");
+  });
+});
+
+Deno.test("CLI: model method run fails for missing required attributes", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model without setting the required 'message' attribute
+    const createResult = await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "missing-attrs-test",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(createResult.code, 0);
+
+    // Try to run the method (should fail validation)
+    const runResult = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "missing-attrs-test",
+        "write",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(
+      runResult.code !== 0,
+      true,
+      "Should fail for missing attributes",
+    );
+    assertStringIncludes(runResult.stderr, "Input validation failed");
+  });
+});
