@@ -4,7 +4,7 @@ The primary method for working with swamp is through an AI agent. Each
 repository will have skills dedicated to working with swamp, through the cli,
 writing files, etc.
 
-## Model Skill
+## swamp-model Skill
 
 This skill understands how to work with models. It will be able to:
 
@@ -27,4 +27,5 @@ neccessary.
 
 ### Run individual methods
 
-Use `swamp model method run`.
+Use `swamp model method run` to run methods, then look at the resulting resource
+and report on what happened.
