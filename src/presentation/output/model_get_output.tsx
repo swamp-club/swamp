@@ -1,7 +1,6 @@
 // deno-lint-ignore verbatim-module-syntax
 import React from "react";
-import { Box, Text } from "ink";
-import { render } from "ink-testing-library";
+import { Box, render, Text } from "ink";
 import type { OutputMode } from "./output.tsx";
 
 /**
@@ -38,8 +37,8 @@ export function renderModelGet(data: ModelGetData, mode: OutputMode): void {
 }
 
 function renderInteractiveModelGet(data: ModelGetData): void {
-  const { lastFrame } = render(<ModelGetDisplay data={data} />);
-  console.log(lastFrame());
+  const instance = render(<ModelGetDisplay data={data} />);
+  instance.unmount();
 }
 
 interface ModelGetDisplayProps {
@@ -87,7 +86,7 @@ function KeyValue({
 }): React.ReactElement {
   return (
     <Text>
-      <Text color="cyan">{label}:</Text>
+      <Text color="cyan">{`${label}: `}</Text>
       <Text>{value}</Text>
     </Text>
   );

@@ -1,5 +1,5 @@
 // deno-lint-ignore verbatim-module-syntax
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.tsx";
 import { Fzf, type FzfResultItem } from "fzf";
@@ -87,10 +87,14 @@ export function TypeSearchUI(
   const [query, setQuery] = useState(initialQuery);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // Create fzf instance for fuzzy searching
-  const fzf = new Fzf(types, {
-    selector: (item) => `${item.raw} ${item.normalized}`,
-  });
+  // Create fzf instance for fuzzy searching (memoized to avoid recreation on every render)
+  const fzf = useMemo(
+    () =>
+      new Fzf(types, {
+        selector: (item) => `${item.raw} ${item.normalized}`,
+      }),
+    [types],
+  );
 
   // Get filtered results
   const results: FzfResultItem<TypeSearchItem>[] = fzf.find(query);

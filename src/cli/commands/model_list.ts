@@ -35,7 +35,7 @@ function toModelListItems(
 /**
  * Filters models by a query string (case-insensitive match on name, type, or id).
  */
-function filterModels(
+export function filterModels(
   models: ModelListItem[],
   query: string,
 ): ModelListItem[] {

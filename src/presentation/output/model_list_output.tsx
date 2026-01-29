@@ -1,5 +1,5 @@
 // deno-lint-ignore verbatim-module-syntax
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.tsx";
 import { Fzf, type FzfResultItem } from "fzf";
@@ -89,10 +89,14 @@ export function ModelListUI(
   const [query, setQuery] = useState(initialQuery);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // Create fzf instance for fuzzy searching
-  const fzf = new Fzf(models, {
-    selector: (item) => `${item.name} ${item.type} ${item.id}`,
-  });
+  // Create fzf instance for fuzzy searching (memoized to avoid recreation on every render)
+  const fzf = useMemo(
+    () =>
+      new Fzf(models, {
+        selector: (item) => `${item.name} ${item.type} ${item.id}`,
+      }),
+    [models],
+  );
 
   // Get filtered results
   const results: FzfResultItem<ModelListItem>[] = fzf.find(query);

@@ -6,10 +6,7 @@ import {
   type ValidationItemData,
 } from "../../presentation/output/model_validate_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import {
-  createModelInputId,
-  type ModelInput,
-} from "../../domain/models/model_input.ts";
+import type { ModelInput } from "../../domain/models/model_input.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
@@ -18,38 +15,10 @@ import {
   DefaultModelValidationService,
   type ValidationResult,
 } from "../../domain/models/validation_service.ts";
-
-/**
- * UUID v4 regex pattern for detecting if an argument is a UUID.
- */
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-/**
- * Checks if a string looks like a UUID.
- */
-function isUuid(value: string): boolean {
-  return UUID_PATTERN.test(value);
-}
-
-/**
- * Finds an input by ID, searching across all registered model types.
- */
-async function findInputByIdGlobal(
-  inputRepo: YamlInputRepository,
-  id: string,
-): Promise<{ input: ModelInput; type: ModelType } | null> {
-  const inputId = createModelInputId(id);
-
-  for (const type of modelRegistry.types()) {
-    const input = await inputRepo.findById(type, inputId);
-    if (input) {
-      return { input, type };
-    }
-  }
-
-  return null;
-}
+import {
+  findInputByIdGlobal,
+  isUuid,
+} from "../../domain/models/model_lookup.ts";
 
 /**
  * Converts ValidationResult array to ValidationItemData array for presentation.
