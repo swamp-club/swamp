@@ -118,7 +118,7 @@ export const modelMethodRunCommand = new Command()
         input,
         definition,
         methodName,
-        { repoDir },
+        { repoDir, resourceRepository: resourceRepo },
       );
 
       ctx.logger

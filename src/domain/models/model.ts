@@ -1,7 +1,9 @@
 import type { z } from "zod";
+import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import { ModelType } from "./model_type.ts";
 import type { ModelInput } from "./model_input.ts";
 import type { ModelResource } from "./model_resource.ts";
+import type { ResourceRepository } from "./repositories.ts";
 
 /**
  * Context provided to method execution.
@@ -11,6 +13,16 @@ export interface MethodContext {
    * The base directory for the repository (where inputs/resources are stored).
    */
   repoDir: string;
+
+  /**
+   * Optional factory for CloudControl clients (for testing).
+   */
+  cloudControlClientFactory?: () => CloudControlClient;
+
+  /**
+   * Optional resource repository for accessing persisted resources.
+   */
+  resourceRepository?: ResourceRepository;
 }
 
 /**

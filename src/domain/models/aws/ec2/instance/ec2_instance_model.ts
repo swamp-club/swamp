@@ -226,10 +226,12 @@ export function createCloudControlClient(): CloudControlClient {
  */
 async function executeCreate(
   input: ModelInput,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   const attrs = EC2InstanceInputAttributesSchema.parse(input.attributes);
-  const client = createCloudControlClient();
+  const client = context.cloudControlClientFactory
+    ? context.cloudControlClientFactory()
+    : createCloudControlClient();
 
   const command = new CreateResourceCommand({
     TypeName: "AWS::EC2::Instance",
@@ -239,7 +241,7 @@ async function executeCreate(
   const response = await client.send(command);
 
   if (!response.ProgressEvent?.RequestToken) {
-    throw new Error("Failed to create EC2 instance: no request token returned");
+    throw new Error("EC2 instance creation failed: no request token returned");
   }
 
   // CloudControl API is asynchronous, so we get a RequestToken to track progress
@@ -285,11 +287,12 @@ async function executeDelete(
   }
 
   // Load existing resource to get the actual AWS instance ID
-  const { YamlResourceRepository } = await import(
-    "../../../../../infrastructure/persistence/yaml_resource_repository.ts"
-  );
-  const resourceRepo = new YamlResourceRepository(context.repoDir);
-  const existingResource = await resourceRepo.findById(
+  if (!context.resourceRepository) {
+    throw new Error(
+      "Cannot delete: resourceRepository not provided in context",
+    );
+  }
+  const existingResource = await context.resourceRepository.findById(
     EC2_INSTANCE_MODEL_TYPE,
     createModelResourceId(input.id),
   );
@@ -299,7 +302,9 @@ async function executeDelete(
     awsInstanceId = existingResource.attributes.InstanceId as string;
   }
 
-  const client = createCloudControlClient();
+  const client = context.cloudControlClientFactory
+    ? context.cloudControlClientFactory()
+    : createCloudControlClient();
 
   const command = new DeleteResourceCommand({
     TypeName: "AWS::EC2::Instance",
@@ -310,7 +315,7 @@ async function executeDelete(
 
   if (!response.ProgressEvent?.RequestToken) {
     throw new Error(
-      "Failed to initiate EC2 instance deletion: no request token returned",
+      "EC2 instance deletion failed: no request token returned",
     );
   }
 
@@ -359,11 +364,12 @@ async function executeSync(
 
   // If not found, load from the existing resource (for standalone sync calls)
   if (!requestToken || !resourceIdentifier) {
-    const { YamlResourceRepository } = await import(
-      "../../../../../infrastructure/persistence/yaml_resource_repository.ts"
-    );
-    const resourceRepo = new YamlResourceRepository(context.repoDir);
-    const existingResource = await resourceRepo.findById(
+    if (!context.resourceRepository) {
+      throw new Error(
+        "EC2 instance sync failed: resourceRepository not provided in context",
+      );
+    }
+    const existingResource = await context.resourceRepository.findById(
       EC2_INSTANCE_MODEL_TYPE,
       createModelResourceId(input.id),
     );
@@ -377,11 +383,13 @@ async function executeSync(
 
   if (!requestToken) {
     throw new Error(
-      "Cannot sync: no RequestToken found to check operation status",
+      "EC2 instance sync failed: no RequestToken found to check operation status",
     );
   }
 
-  const client = createCloudControlClient();
+  const client = context.cloudControlClientFactory
+    ? context.cloudControlClientFactory()
+    : createCloudControlClient();
 
   // Always check the CloudControl operation status first
   const statusCommand = new GetResourceRequestStatusCommand({

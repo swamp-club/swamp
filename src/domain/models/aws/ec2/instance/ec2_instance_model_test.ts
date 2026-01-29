@@ -1,4 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
+import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import {
   EC2_INSTANCE_MODEL_TYPE,
   EC2InstanceInputAttributesSchema,
@@ -6,7 +7,9 @@ import {
   EC2InstanceResourceAttributesSchema,
 } from "./ec2_instance_model.ts";
 import { ModelInput } from "../../../model_input.ts";
+import { createModelResourceId } from "../../../model_resource.ts";
 import type { MethodContext } from "../../../model.ts";
+import type { ResourceRepository } from "../../../repositories.ts";
 
 /*
 Example instance attributes
@@ -25,24 +28,6 @@ attributes:
     - Key: Environment
       Value: development
 */
-
-// Mock AWS SDK
-const mockCloudControlClient = {
-  send: () =>
-    Promise.resolve({
-      ProgressEvent: {
-        Identifier: "i-1234567890abcdef0",
-        RequestToken: "request-123",
-      },
-    }),
-};
-
-// Override the CloudControl client creation for testing
-const originalCreateClient =
-  (ec2InstanceModel as unknown as { createCloudControlClient: () => unknown })
-    .createCloudControlClient;
-(ec2InstanceModel as unknown as { createCloudControlClient: () => unknown })
-  .createCloudControlClient = () => mockCloudControlClient;
 
 Deno.test("EC2InstanceModel - model type", () => {
   assertEquals(ec2InstanceModel.type.raw, "AWS::EC2::Instance");
@@ -131,7 +116,7 @@ Deno.test("EC2InstanceModel - resource schema validation", () => {
   assertEquals(result.success, true);
 });
 
-Deno.test("EC2InstanceModel - sync method without resource ID fails", async () => {
+Deno.test("EC2InstanceModel - sync method without RequestToken fails", async () => {
   const input = ModelInput.create({
     name: "test-instance",
     attributes: {
@@ -140,14 +125,25 @@ Deno.test("EC2InstanceModel - sync method without resource ID fails", async () =
     },
   });
 
+  // Mock resource repository that returns null (no existing resource)
+  const mockResourceRepository: ResourceRepository = {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createModelResourceId("mock-id"),
+    getPath: () => "/mock/path",
+  };
+
   const context: MethodContext = {
     repoDir: "/tmp/test-repo",
+    resourceRepository: mockResourceRepository,
   };
 
   await assertRejects(
     () => ec2InstanceModel.methods.sync.execute(input, context),
     Error,
-    "Cannot sync: no RequestToken found to check operation status",
+    "EC2 instance sync failed: no RequestToken found to check operation status",
   );
 });
 
@@ -171,7 +167,7 @@ Deno.test("EC2InstanceModel - delete method without resource ID fails", async ()
   );
 });
 
-Deno.test("EC2InstanceModel - sync method without resource ID fails", async () => {
+Deno.test("EC2InstanceModel - create method uses injected CloudControl client", async () => {
   const input = ModelInput.create({
     name: "test-instance",
     attributes: {
@@ -180,17 +176,50 @@ Deno.test("EC2InstanceModel - sync method without resource ID fails", async () =
     },
   });
 
+  // Mock CloudControl client that returns success
+  const mockClient = {
+    send: () =>
+      Promise.resolve({
+        ProgressEvent: {
+          Identifier: "i-1234567890abcdef0",
+          RequestToken: "request-123",
+          OperationStatus: "IN_PROGRESS",
+        },
+      }),
+  };
+
+  const context: MethodContext = {
+    repoDir: "/tmp/test-repo",
+    cloudControlClientFactory: () =>
+      mockClient as unknown as CloudControlClient,
+  };
+
+  const result = await ec2InstanceModel.methods.create.execute(input, context);
+
+  assertEquals(result.resource.attributes.RequestToken, "request-123");
+  assertEquals(result.resource.attributes.OperationStatus, "IN_PROGRESS");
+  assertEquals(result.followUpActions?.length, 1);
+  assertEquals(result.followUpActions?.[0].methodName, "sync");
+});
+
+Deno.test("EC2InstanceModel - delete method requires resourceRepository", async () => {
+  const input = ModelInput.create({
+    name: "test-instance",
+    resourceId: "00000000-0000-4000-8000-000000000001", // Valid UUID
+    attributes: {
+      ImageId: "ami-12345678",
+      InstanceType: "t2.micro",
+    },
+  });
+
+  // Context without resourceRepository
   const context: MethodContext = {
     repoDir: "/tmp/test-repo",
   };
 
   await assertRejects(
-    () => ec2InstanceModel.methods.sync.execute(input, context),
+    () => ec2InstanceModel.methods.delete.execute(input, context),
     Error,
-    "Cannot sync: no RequestToken found to check operation status",
+    "Cannot delete: resourceRepository not provided in context",
   );
 });
-
-// Restore original client creation function
-(ec2InstanceModel as unknown as { createCloudControlClient: () => unknown })
-  .createCloudControlClient = originalCreateClient;

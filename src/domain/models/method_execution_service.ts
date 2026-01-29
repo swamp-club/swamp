@@ -10,6 +10,12 @@ import { ModelInput } from "./model_input.ts";
 import type { ModelResource } from "./model_resource.ts";
 
 /**
+ * Maximum depth for recursive follow-up action processing.
+ * Prevents infinite loops in misconfigured workflows.
+ */
+const DEFAULT_MAX_FOLLOW_UP_DEPTH = 100;
+
+/**
  * Formats a Zod error into a human-readable string.
  */
 function formatZodError(error: z.ZodError): string {
@@ -111,6 +117,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         context,
         result.followUpActions,
         currentResource,
+        0,
       );
       currentResource = finalResult.resource;
     }
@@ -124,7 +131,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     context: MethodContext,
     followUpActions: FollowUpAction[],
     currentResource: ModelResource,
+    depth: number = 0,
   ): Promise<{ resource: ModelResource }> {
+    if (depth >= DEFAULT_MAX_FOLLOW_UP_DEPTH) {
+      throw new Error(
+        `Maximum follow-up action depth (${DEFAULT_MAX_FOLLOW_UP_DEPTH}) exceeded. ` +
+          `This may indicate an infinite loop in the workflow.`,
+      );
+    }
+
     for (const action of followUpActions) {
       let retries = 0;
       const maxRetries = action.maxRetries ?? 0;
@@ -175,6 +190,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               context,
               result.followUpActions,
               currentResource,
+              depth + 1,
             );
             currentResource = recursiveResult.resource;
           }
