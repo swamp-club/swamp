@@ -3,16 +3,22 @@ import React from "react";
 import { Box, Text } from "ink";
 import { type RunStatus, StatusIcon } from "./StatusIcon.tsx";
 import type { JobRunData } from "../../workflow_run_output.tsx";
+import type { PendingDep } from "./WorkflowExecutionUI.tsx";
 
 /**
  * Formats pending dependencies for display.
+ * Implicit dependencies are prefixed with '*' to distinguish them.
  * Truncates with "..." if the combined length exceeds maxLength.
  */
-function formatDependencies(deps: string[], maxLength: number = 30): string {
+function formatDependencies(
+  deps: PendingDep[],
+  maxLength: number = 30,
+): string {
   if (deps.length === 0) return "";
 
   const prefix = "← ";
-  const joined = deps.join(", ");
+  const formattedDeps = deps.map((d) => d.isImplicit ? `*${d.name}` : d.name);
+  const joined = formattedDeps.join(", ");
 
   if (prefix.length + joined.length <= maxLength) {
     return prefix + joined;
@@ -20,9 +26,9 @@ function formatDependencies(deps: string[], maxLength: number = 30): string {
 
   // Truncate with ellipsis
   let result = "";
-  for (let i = 0; i < deps.length; i++) {
+  for (let i = 0; i < formattedDeps.length; i++) {
     const separator = i === 0 ? "" : ", ";
-    const candidate = result + separator + deps[i];
+    const candidate = result + separator + formattedDeps[i];
     if (prefix.length + candidate.length + 4 > maxLength) {
       return prefix + result + ", ...";
     }
@@ -34,7 +40,7 @@ function formatDependencies(deps: string[], maxLength: number = 30): string {
 interface JobItemProps {
   job: JobRunData;
   isSelected: boolean;
-  pendingDeps: string[];
+  pendingDeps: PendingDep[];
 }
 
 function JobItem(
@@ -71,7 +77,7 @@ interface JobsPanelProps {
   jobs: JobRunData[];
   selectedIndex: number;
   isFocused: boolean;
-  pendingDependencies: Map<string, string[]>;
+  pendingDependencies: Map<string, PendingDep[]>;
 }
 
 /**
