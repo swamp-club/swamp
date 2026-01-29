@@ -7,6 +7,12 @@ import { createContext, type GlobalOptions } from "../context.ts";
 
 export const VERSION = "0.1.0";
 
+// TEST: This violates CLAUDE.md - no any types allowed
+// deno-lint-ignore no-explicit-any
+export function processData(data: any): any {
+  return data;
+}
+
 export const FROG_HAIKU = `Old pond, still water—
 A frog leaps in with a splash,
 Silence returns slow.`;
