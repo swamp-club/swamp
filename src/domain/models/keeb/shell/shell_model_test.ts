@@ -187,7 +187,9 @@ Deno.test("shellModel.methods.execute respects workingDir", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.attributes.stdout, "/tmp\n");
+  // Use realPathSync to handle symlinks (e.g., /tmp -> /private/tmp on macOS)
+  const expectedPath = Deno.realPathSync("/tmp");
+  assertEquals(result.resource.attributes.stdout, `${expectedPath}\n`);
   assertEquals(result.resource.attributes.exitCode, 0);
 });
 
@@ -232,6 +234,7 @@ Deno.test("shellModel.methods.execute handles complex commands", async () => {
     repoDir: "/tmp",
   });
 
+  // cd /tmp && pwd outputs the logical path, not the physical path
   assertEquals(result.resource.attributes.stdout, "/tmp\n");
   assertEquals(result.resource.attributes.exitCode, 0);
 });

@@ -5,6 +5,7 @@ import { modelCommand } from "./commands/model_create.ts";
 import { typeCommand } from "./commands/type_describe.ts";
 import { repoCommand } from "./commands/repo_init.ts";
 import { workflowCommand } from "./commands/workflow.ts";
+import { completionCommand } from "./commands/completion.ts";
 import type { GlobalOptions } from "./context.ts";
 
 // Import models barrel to trigger self-registration
@@ -31,7 +32,8 @@ export async function runCli(args: string[]): Promise<void> {
     .command("model", modelCommand)
     .command("type", typeCommand)
     .command("repo", repoCommand)
-    .command("workflow", workflowCommand);
+    .command("workflow", workflowCommand)
+    .command("completion", completionCommand);
 
   await cli.parse(args);
 }
