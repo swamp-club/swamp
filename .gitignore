@@ -4,3 +4,5 @@ inputs/
 resources/
 inputs-evaluated/
 workflows-evaluated/
+webapp/node_modules/
+webapp/dist/
