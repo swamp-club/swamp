@@ -7,6 +7,11 @@ import type { WorkflowRunData } from "../../workflow_run_output.tsx";
 export type ActivePanel = "jobs" | "steps";
 
 /**
+ * Implicit dependency mapping: jobName -> stepName -> implicitDeps[]
+ */
+export type ImplicitDependencyMap = Map<string, Map<string, string[]>>;
+
+/**
  * View state for the workflow execution UI.
  */
 export interface WorkflowExecutionViewState {
@@ -18,6 +23,9 @@ export interface WorkflowExecutionViewState {
   // Execution status
   isRunning: boolean;
   isComplete: boolean;
+
+  // Implicit dependencies from expressions (jobName -> stepName -> deps[])
+  implicitDependencies: ImplicitDependencyMap;
 
   // UI-only state
   selectedJobIndex: number;
@@ -37,6 +45,7 @@ export type ExecutionAction =
   | { type: "WORKFLOW_START"; run: WorkflowRunData }
   | { type: "WORKFLOW_UPDATE"; run: WorkflowRunData }
   | { type: "WORKFLOW_COMPLETE"; run: WorkflowRunData }
+  | { type: "SET_IMPLICIT_DEPENDENCIES"; deps: ImplicitDependencyMap }
   | { type: "SELECT_JOB"; index: number }
   | { type: "SELECT_NEXT_JOB" }
   | { type: "SELECT_PREV_JOB" }
@@ -61,6 +70,7 @@ export function createInitialState(
     workflowYaml,
     isRunning: false,
     isComplete: false,
+    implicitDependencies: new Map(),
     selectedJobIndex: 0,
     showYamlOverlay: false,
     activePanel: "jobs",
@@ -98,6 +108,12 @@ export function executionReducer(
         workflowRun: action.run,
         isRunning: false,
         isComplete: true,
+      };
+
+    case "SET_IMPLICIT_DEPENDENCIES":
+      return {
+        ...state,
+        implicitDependencies: action.deps,
       };
 
     case "SELECT_JOB":

@@ -5,16 +5,22 @@ import { type RunStatus, StatusIcon } from "./StatusIcon.tsx";
 import type { StepRunData } from "../../workflow_run_output.tsx";
 import { calculateScrollWindow } from "../../hooks/mod.ts";
 import { formatDuration } from "../../utils/duration_formatter.ts";
+import type { PendingDep } from "./WorkflowExecutionUI.tsx";
 
 /**
  * Formats pending dependencies for display.
+ * Implicit dependencies are prefixed with '*' to distinguish them.
  * Truncates with "..." if the combined length exceeds maxLength.
  */
-function formatDependencies(deps: string[], maxLength: number = 30): string {
+function formatDependencies(
+  deps: PendingDep[],
+  maxLength: number = 30,
+): string {
   if (deps.length === 0) return "";
 
   const prefix = "← ";
-  const joined = deps.join(", ");
+  const formattedDeps = deps.map((d) => d.isImplicit ? `*${d.name}` : d.name);
+  const joined = formattedDeps.join(", ");
 
   if (prefix.length + joined.length <= maxLength) {
     return prefix + joined;
@@ -22,9 +28,9 @@ function formatDependencies(deps: string[], maxLength: number = 30): string {
 
   // Truncate with ellipsis
   let result = "";
-  for (let i = 0; i < deps.length; i++) {
+  for (let i = 0; i < formattedDeps.length; i++) {
     const separator = i === 0 ? "" : ", ";
-    const candidate = result + separator + deps[i];
+    const candidate = result + separator + formattedDeps[i];
     if (prefix.length + candidate.length + 4 > maxLength) {
       return prefix + result + ", ...";
     }
@@ -36,7 +42,7 @@ function formatDependencies(deps: string[], maxLength: number = 30): string {
 interface StepItemProps {
   step: StepRunData;
   isSelected: boolean;
-  pendingDeps: string[];
+  pendingDeps: PendingDep[];
 }
 
 function StepItem(
@@ -76,7 +82,7 @@ interface StepsPanelProps {
   steps: StepRunData[];
   isFocused: boolean;
   selectedIndex: number;
-  pendingDependencies: Map<string, string[]>;
+  pendingDependencies: Map<string, PendingDep[]>;
   availableHeight?: number;
 }
 
