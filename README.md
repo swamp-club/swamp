@@ -63,4 +63,6 @@ deno fmt
 
 ## License
 
-MIT
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE),
+[COPYRIGHT](COPYRIGHT), [CONTRIBUTORS.md](CONTRIBUTORS.md), and [NOTICE](NOTICE)
+for details.
