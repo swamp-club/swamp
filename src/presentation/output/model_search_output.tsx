@@ -5,60 +5,62 @@ import type { OutputMode } from "./output.tsx";
 import { Fzf, type FzfResultItem } from "fzf";
 
 /**
- * Represents a single type search result item.
+ * Represents a single model search item.
  */
-export interface TypeSearchItem {
-  raw: string;
-  normalized: string;
+export interface ModelSearchItem {
+  id: string;
+  name: string;
+  type: string;
+  resourceId?: string;
 }
 
 /**
- * Data structure for type search results.
+ * Data structure for model search results.
  */
-export interface TypeSearchData {
+export interface ModelSearchData {
   query: string;
-  results: TypeSearchItem[];
+  results: ModelSearchItem[];
 }
 
 /**
- * Renders type search results in either interactive or JSON mode.
+ * Renders model search in either interactive or JSON mode.
  *
  * @param data - The search data to render
  * @param mode - The output mode (interactive or json)
- * @returns A promise that resolves with the selected type in interactive mode, or undefined in JSON mode
+ * @returns A promise that resolves with the selected model in interactive mode, or undefined in JSON mode
  */
-export async function renderTypeSearch(
-  data: TypeSearchData,
+export async function renderModelSearch(
+  data: ModelSearchData,
   mode: OutputMode,
-): Promise<TypeSearchItem | undefined> {
+): Promise<ModelSearchItem | undefined> {
   if (mode === "json") {
-    renderJsonTypeSearch(data);
+    renderJsonModelSearch(data);
     return undefined;
   } else {
-    return await renderInteractiveTypeSearch(data);
+    return await renderInteractiveModelSearch(data);
   }
 }
 
 /**
- * Renders type search results as JSON.
+ * Renders model search as JSON.
  */
-function renderJsonTypeSearch(data: TypeSearchData): void {
+function renderJsonModelSearch(data: ModelSearchData): void {
   console.log(JSON.stringify(data, null, 2));
 }
 
 /**
- * Renders an interactive type search UI.
+ * Renders an interactive model search UI.
  *
- * @param data - The initial search data (types to search and optional initial query)
- * @returns A promise that resolves with the selected type, or undefined if cancelled
+ * @param data - The initial search data (models to search and optional initial query)
+ * @returns A promise that resolves with the selected model, or undefined if cancelled
  */
-export function renderInteractiveTypeSearch(
-  data: TypeSearchData,
-): Promise<TypeSearchItem | undefined> {
-  return new Promise<TypeSearchItem | undefined>((resolve) => {
+export function renderInteractiveModelSearch(
+  data: ModelSearchData,
+): Promise<ModelSearchItem | undefined> {
+  return new Promise<ModelSearchItem | undefined>((resolve) => {
     const { waitUntilExit } = render(
-      <TypeSearchUI
-        types={data.results}
+      <ModelSearchUI
+        models={data.results}
         initialQuery={data.query}
         onSelect={(item) => resolve(item)}
         onCancel={() => resolve(undefined)}
@@ -68,20 +70,20 @@ export function renderInteractiveTypeSearch(
   });
 }
 
-interface TypeSearchUIProps {
-  types: TypeSearchItem[];
+interface ModelSearchUIProps {
+  models: ModelSearchItem[];
   initialQuery: string;
-  onSelect: (item: TypeSearchItem) => void;
+  onSelect: (item: ModelSearchItem) => void;
   onCancel: () => void;
 }
 
 /**
- * Interactive type search component using fzf for fuzzy matching.
+ * Interactive model search component using fzf for fuzzy matching.
  */
-export function TypeSearchUI(
-  props: TypeSearchUIProps,
+export function ModelSearchUI(
+  props: ModelSearchUIProps,
 ): React.ReactElement {
-  const { types, initialQuery, onSelect, onCancel } = props;
+  const { models, initialQuery, onSelect, onCancel } = props;
   const { exit } = useApp();
 
   const [query, setQuery] = useState(initialQuery);
@@ -90,14 +92,14 @@ export function TypeSearchUI(
   // Create fzf instance for fuzzy searching (memoized to avoid recreation on every render)
   const fzf = useMemo(
     () =>
-      new Fzf(types, {
-        selector: (item) => `${item.raw} ${item.normalized}`,
+      new Fzf(models, {
+        selector: (item) => `${item.name} ${item.type} ${item.id}`,
       }),
-    [types],
+    [models],
   );
 
   // Get filtered results
-  const results: FzfResultItem<TypeSearchItem>[] = fzf.find(query);
+  const results: FzfResultItem<ModelSearchItem>[] = fzf.find(query);
   const maxVisible = 10;
   const visibleResults = results.slice(0, maxVisible);
 
@@ -159,21 +161,21 @@ export function TypeSearchUI(
           Search:{" "}
         </Text>
         <Text>{query}</Text>
-        <Text color="gray">▏</Text>
+        <Text color="gray">|</Text>
       </Box>
 
       {/* Results count */}
       <Box marginTop={1}>
         <Text dimColor>
-          {results.length} / {types.length} types
+          {results.length} / {models.length} models
         </Text>
       </Box>
 
       {/* Results list */}
       <Box flexDirection="column" marginTop={1}>
         {visibleResults.map((result, index) => (
-          <TypeSearchResultItem
-            key={result.item.normalized}
+          <ModelSearchResultItem
+            key={result.item.id}
             item={result.item}
             isSelected={index === selectedIndex}
           />
@@ -182,40 +184,40 @@ export function TypeSearchUI(
           <Text dimColor>... {results.length - maxVisible} more results</Text>
         )}
         {results.length === 0 && (
-          <Text color="yellow">No matching types found</Text>
+          <Text color="yellow">No matching models found</Text>
         )}
       </Box>
 
       {/* Help text */}
       <Box marginTop={1}>
         <Text dimColor>
-          ↑/↓: Navigate | Enter: Select | Esc: Cancel
+          Up/Down: Navigate | Enter: Select | Esc: Cancel
         </Text>
       </Box>
     </Box>
   );
 }
 
-interface TypeSearchResultItemProps {
-  item: TypeSearchItem;
+interface ModelSearchResultItemProps {
+  item: ModelSearchItem;
   isSelected: boolean;
 }
 
 /**
- * Component to display a single search result item.
+ * Component to display a single model search item.
  */
-function TypeSearchResultItem(
-  props: TypeSearchResultItemProps,
+function ModelSearchResultItem(
+  props: ModelSearchResultItemProps,
 ): React.ReactElement {
   const { item, isSelected } = props;
 
   return (
     <Box>
       <Text color={isSelected ? "green" : undefined} bold={isSelected}>
-        {isSelected ? "▶ " : "  "}
-        {item.normalized}
+        {isSelected ? "> " : "  "}
+        {item.name}
       </Text>
-      {item.raw !== item.normalized && <Text dimColor>({item.raw})</Text>}
+      <Text dimColor>({item.type})</Text>
     </Box>
   );
 }

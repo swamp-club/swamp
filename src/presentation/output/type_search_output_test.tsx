@@ -193,3 +193,169 @@ Deno.test("renderTypeSearch with json mode includes query", () => {
     console.log = originalLog;
   }
 });
+
+// Additional interaction tests
+// Note: ink-testing-library has limited support for keyboard events in Deno.
+// Special keys (arrows, Enter, Escape) don't trigger useInput callbacks reliably.
+// These tests verify the behavior that works reliably using initialQuery.
+
+Deno.test({
+  name: "TypeSearchUI first item is selected by default",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery=""
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    // First item should have the selection indicator
+    assertStringIncludes(output, "▶ swamp/echo");
+  },
+});
+
+Deno.test({
+  name: "TypeSearchUI initial query filters results",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery="ec2"
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    // Should show filtered count
+    assertStringIncludes(output, "1 / 3 types");
+  },
+});
+
+Deno.test({
+  name: "TypeSearchUI shows selection indicator on first matching item",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery="docker"
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    // docker/run should be selected (only match)
+    assertStringIncludes(output, "▶ docker/run");
+  },
+});
+
+Deno.test({
+  name: "TypeSearchUI fuzzy matches on normalized name",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery="vpc"
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    // Should match aws/ec2/vpc
+    assertStringIncludes(output, "1 / 3 types");
+    assertStringIncludes(output, "▶ aws/ec2/vpc");
+  },
+});
+
+Deno.test({
+  name: "TypeSearchUI fuzzy matches on raw name",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery="AWS"
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    // Should match AWS::EC2::VPC by raw name
+    assertStringIncludes(output, "1 / 3 types");
+  },
+});
+
+Deno.test({
+  name: "TypeSearchUI handles no matches",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery="nonexistent"
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    // No matches
+    assertStringIncludes(output, "0 / 3 types");
+    assertStringIncludes(output, "No matching types found");
+  },
+});
+
+Deno.test({
+  name: "TypeSearchUI limits visible results",
+  ...inkTestOptions,
+  fn: () => {
+    // Create more than 10 types to test the limit
+    const manyTypes: TypeSearchItem[] = Array.from({ length: 15 }, (_, i) => ({
+      raw: `type-${i}`,
+      normalized: `type-${i}`,
+    }));
+
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={manyTypes}
+        initialQuery=""
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    // Should show "more results" message
+    assertStringIncludes(output, "15 / 15 types");
+    assertStringIncludes(output, "more results");
+  },
+});
+
+Deno.test({
+  name: "TypeSearchUI partial matching",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery="swamp"
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    // Should match swamp/echo with partial query
+    assertStringIncludes(output, "1 / 3 types");
+  },
+});
