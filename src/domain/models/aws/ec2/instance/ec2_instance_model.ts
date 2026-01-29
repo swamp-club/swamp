@@ -390,15 +390,20 @@ async function executeSync(
   input: ModelInput,
   context: MethodContext,
 ): Promise<MethodResult> {
-  // Get RequestToken from input attributes to check status first
-  let requestToken = input.attributes.RequestToken as string;
-  let resourceIdentifier = input.attributes.ResourceIdentifier as string;
+  // Get RequestToken and ResourceIdentifier from input attributes
+  let requestToken = input.attributes.RequestToken as string | undefined;
+  let resourceIdentifier = input.attributes.ResourceIdentifier as
+    | string
+    | undefined;
 
-  // If not found, load from the existing resource (for standalone sync calls)
-  if (!requestToken || !resourceIdentifier) {
+  // If RequestToken not in input, try to load from existing resource (for standalone sync calls)
+  if (!requestToken) {
     if (!context.resourceRepository) {
+      const attrKeys = Object.keys(input.attributes);
       throw new Error(
-        "EC2 instance sync failed: resourceRepository not provided in context",
+        `EC2 instance sync failed: no RequestToken in input attributes (found: ${
+          attrKeys.join(", ") || "none"
+        }) and no resourceRepository provided`,
       );
     }
     const existingResource = await context.resourceRepository.findById(
@@ -407,15 +412,20 @@ async function executeSync(
     );
 
     if (existingResource) {
-      requestToken = existingResource.attributes.RequestToken as string;
-      resourceIdentifier = existingResource.attributes
-        .ResourceIdentifier as string;
+      requestToken = existingResource.attributes.RequestToken as
+        | string
+        | undefined;
+      resourceIdentifier = resourceIdentifier ||
+        (existingResource.attributes.ResourceIdentifier as string | undefined);
     }
   }
 
   if (!requestToken) {
+    const attrKeys = Object.keys(input.attributes);
+    const attrSample = JSON.stringify(input.attributes).slice(0, 200);
     throw new Error(
-      "EC2 instance sync failed: no RequestToken found to check operation status",
+      `EC2 instance sync failed: no RequestToken found for input '${input.name}' (id: ${input.id}). ` +
+        `Input attributes [${attrKeys.join(", ") || "none"}]: ${attrSample}`,
     );
   }
 

@@ -480,3 +480,86 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
     "Maximum follow-up action depth (100) exceeded",
   );
 });
+
+Deno.test("executeWorkflow - follow-up receives resource attributes from previous method", async () => {
+  const service = new DefaultMethodExecutionService();
+  let receivedAttributes: Record<string, unknown> = {};
+
+  // This test simulates the EC2 create -> sync flow:
+  // - "create" returns a resource with a RequestToken
+  // - "sync" should receive that RequestToken in its input attributes
+  const schema = z.object({
+    RequestToken: z.string().optional(),
+    OperationStatus: z.string().optional(),
+    OriginalValue: z.string().optional(),
+  });
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/token-passing"),
+    version: 1,
+    inputAttributesSchema: schema,
+    resourceAttributesSchema: schema,
+    methods: {
+      create: {
+        description: "Create method that returns RequestToken",
+        inputAttributesSchema: schema,
+        execute: (input) => {
+          return Promise.resolve({
+            resource: ModelResource.create({
+              id: input.id,
+              attributes: {
+                RequestToken: "test-request-token-123",
+                OperationStatus: "IN_PROGRESS",
+              },
+            }),
+            followUpActions: [{ methodName: "sync" }],
+          });
+        },
+      },
+      sync: {
+        description: "Sync method that needs RequestToken",
+        inputAttributesSchema: schema,
+        execute: (input) => {
+          // Capture what attributes were received
+          receivedAttributes = { ...input.attributes };
+
+          const requestToken = input.attributes.RequestToken as string;
+          if (!requestToken) {
+            return Promise.reject(
+              new Error("No RequestToken in input attributes"),
+            );
+          }
+
+          return Promise.resolve({
+            resource: ModelResource.create({
+              id: input.id,
+              attributes: {
+                RequestToken: requestToken,
+                OperationStatus: "SUCCESS",
+              },
+            }),
+          });
+        },
+      },
+    },
+  };
+
+  const input = ModelInput.create({
+    name: "test-input",
+    attributes: { OriginalValue: "from-yaml" },
+  });
+
+  const result = await service.executeWorkflow(
+    input,
+    model,
+    "create",
+    { repoDir: "." },
+  );
+
+  // Verify sync received the RequestToken from create's resource
+  assertEquals(receivedAttributes.RequestToken, "test-request-token-123");
+  assertEquals(receivedAttributes.OperationStatus, "IN_PROGRESS");
+
+  // Verify final result
+  assertEquals(result.resource.attributes.OperationStatus, "SUCCESS");
+});
