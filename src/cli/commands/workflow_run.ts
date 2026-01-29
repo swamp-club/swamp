@@ -1,10 +1,12 @@
 import { Command } from "@cliffy/command";
+import { stringify as stringifyYaml } from "@std/yaml";
 import {
   type JobRunData,
   renderWorkflowRun,
   type StepRunData,
   type WorkflowRunData,
 } from "../../presentation/output/workflow_run_output.tsx";
+import { renderWorkflowExecution } from "../../presentation/output/workflow_execution_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
@@ -74,34 +76,78 @@ export const workflowRunCommand = new Command()
       repoDir,
     );
 
-    // Set up progress callback for interactive mode
-    const progress: ExecutionProgressCallback = {
-      onJobStart: (_run, jobName) => {
-        ctx.logger.debug`Job started: ${jobName}`;
-      },
-      onStepStart: (_run, jobName, stepName) => {
-        ctx.logger.debug`Step started: ${jobName}/${stepName}`;
-      },
-      onStepFail: (_run, jobName, stepName, error) => {
-        ctx.logger.debug`Step failed: ${jobName}/${stepName}: ${error}`;
-      },
-    };
-
     try {
-      const run = await executionService.execute(workflowIdOrName, progress);
+      // Look up workflow first to get its data
+      const workflow = await workflowRepo.findByName(workflowIdOrName) ??
+        await workflowRepo.findById(
+          (await import("../../domain/workflows/workflow_id.ts"))
+            .createWorkflowId(workflowIdOrName),
+        );
 
-      // Get the path for the run
-      const workflow = await workflowRepo.findByName(run.workflowName);
-      const path = workflow ? runRepo.getPath(workflow.id, run.id) : undefined;
+      if (!workflow) {
+        throw new Error(`Workflow not found: ${workflowIdOrName}`);
+      }
 
-      const data = toRunData(run, path);
-      renderWorkflowRun(data, ctx.outputMode);
+      if (ctx.outputMode === "interactive") {
+        // Interactive mode: use the new live dashboard
+        const workflowData = workflow.toData();
+        const workflowYaml = stringifyYaml(
+          workflowData as Record<string, unknown>,
+        );
 
-      ctx.logger.debug`Workflow run completed: status=${run.status}`;
+        const executeWorkflow = async (
+          progress: ExecutionProgressCallback,
+        ): Promise<WorkflowRun> => {
+          return await executionService.execute(workflow.name, progress);
+        };
 
-      // Exit with code 1 if workflow failed
-      if (run.status === "failed") {
-        Deno.exit(1);
+        const data = await renderWorkflowExecution(
+          { workflow: workflowData, workflowYaml },
+          executeWorkflow,
+          ctx.outputMode,
+        );
+
+        // Get the path for the run
+        const { createWorkflowRunId } = await import(
+          "../../domain/workflows/workflow_id.ts"
+        );
+        const path = runRepo.getPath(workflow.id, createWorkflowRunId(data.id));
+        data.path = path;
+
+        ctx.logger.debug`Workflow run completed: status=${data.status}`;
+
+        // Exit with code 1 if workflow failed
+        if (data.status === "failed") {
+          Deno.exit(1);
+        }
+      } else {
+        // JSON mode: execute with debug logging, output final result
+        const progress: ExecutionProgressCallback = {
+          onJobStart: (_run, jobName) => {
+            ctx.logger.debug`Job started: ${jobName}`;
+          },
+          onStepStart: (_run, jobName, stepName) => {
+            ctx.logger.debug`Step started: ${jobName}/${stepName}`;
+          },
+          onStepFail: (_run, jobName, stepName, error) => {
+            ctx.logger.debug`Step failed: ${jobName}/${stepName}: ${error}`;
+          },
+        };
+
+        const run = await executionService.execute(workflow.name, progress);
+
+        // Get the path for the run
+        const path = runRepo.getPath(workflow.id, run.id);
+
+        const data = toRunData(run, path);
+        renderWorkflowRun(data, ctx.outputMode);
+
+        ctx.logger.debug`Workflow run completed: status=${run.status}`;
+
+        // Exit with code 1 if workflow failed
+        if (run.status === "failed") {
+          Deno.exit(1);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
