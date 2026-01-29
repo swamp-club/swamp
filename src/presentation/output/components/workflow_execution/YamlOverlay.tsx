@@ -1,11 +1,12 @@
 // deno-lint-ignore-file verbatim-module-syntax
 import React, { useState } from "react";
-import { Box, Text, useInput, useStdout } from "ink";
+import { Box, Text, useInput } from "ink";
 import {
   getTokenColor,
   type HighlightedLine,
   highlightYaml,
 } from "./yaml_highlighter.ts";
+import { useTerminalSize } from "../../hooks/mod.ts";
 
 interface YamlOverlayProps {
   yaml: string;
@@ -20,9 +21,7 @@ interface YamlOverlayProps {
 export function YamlOverlay(
   { yaml, workflowName, onClose, isActive = true }: YamlOverlayProps,
 ): React.ReactElement {
-  const { stdout } = useStdout();
-  const terminalHeight = stdout?.rows ?? 24;
-  const terminalWidth = stdout?.columns ?? 80;
+  const { width: terminalWidth, height: terminalHeight } = useTerminalSize();
 
   // Reserve space for header (3 lines) and footer (2 lines)
   const contentHeight = Math.max(terminalHeight - 5, 5);

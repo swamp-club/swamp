@@ -1,6 +1,6 @@
 // deno-lint-ignore-file verbatim-module-syntax
 import React, { useCallback, useEffect, useReducer } from "react";
-import { Box, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput } from "ink";
 import { WorkflowHeader } from "./WorkflowHeader.tsx";
 import { JobsPanel } from "./JobsPanel.tsx";
 import { StepsPanel } from "./StepsPanel.tsx";
@@ -13,6 +13,7 @@ import {
 } from "./execution_reducer.ts";
 import type { WorkflowData } from "../../../../domain/workflows/workflow.ts";
 import type { JobRunData } from "../../workflow_run_output.tsx";
+import { useTerminalSize } from "../../hooks/mod.ts";
 
 /**
  * Computes pending dependencies (ones that haven't succeeded yet).
@@ -42,9 +43,7 @@ export function WorkflowExecutionUI(
     WorkflowExecutionUIProps,
 ): React.ReactElement {
   const { exit } = useApp();
-  const { stdout } = useStdout();
-  const terminalHeight = stdout?.rows ?? 24;
-  const terminalWidth = stdout?.columns ?? 80;
+  const { width: terminalWidth, height: terminalHeight } = useTerminalSize();
 
   const [state, dispatch] = useReducer(
     executionReducer,
@@ -155,6 +154,36 @@ export function WorkflowExecutionUI(
     }
   }
 
+  // Calculate available height for panels
+  // Total height minus: outer border (2) + header (3) + hotkey bar (1)
+  const availableContentHeight = terminalHeight - 6;
+
+  // Split evenly between JobsPanel and StepsPanel
+  const panelHeight = Math.floor(availableContentHeight / 2);
+
+  // Show warning if terminal is too small
+  const minWidth = 60;
+  const minHeight = 15;
+  if (terminalWidth < minWidth || terminalHeight < minHeight) {
+    return (
+      <Box
+        flexDirection="column"
+        width={terminalWidth}
+        height={terminalHeight}
+        borderStyle="round"
+        borderColor="yellow"
+        alignItems="center"
+        justifyContent="center"
+      >
+        <Text color="yellow" bold>Terminal too small</Text>
+        <Text dimColor>
+          Minimum: {minWidth}x{minHeight}, Current: {terminalWidth}x
+          {terminalHeight}
+        </Text>
+      </Box>
+    );
+  }
+
   return (
     <Box
       flexDirection="column"
@@ -162,6 +191,7 @@ export function WorkflowExecutionUI(
       height={terminalHeight}
       borderStyle="round"
       borderColor="gray"
+      overflow="hidden"
     >
       {/* Header */}
       <WorkflowHeader
@@ -176,6 +206,7 @@ export function WorkflowExecutionUI(
         selectedIndex={state.selectedJobIndex}
         isFocused={state.activePanel === "jobs"}
         pendingDependencies={jobPendingDeps}
+        availableHeight={panelHeight}
       />
 
       {/* Steps Panel */}
@@ -186,6 +217,7 @@ export function WorkflowExecutionUI(
           isFocused={state.activePanel === "steps"}
           selectedIndex={state.selectedStepIndex}
           pendingDependencies={stepPendingDeps}
+          availableHeight={panelHeight}
         />
       )}
 

@@ -3,6 +3,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { type RunStatus, StatusIcon } from "./StatusIcon.tsx";
 import type { JobRunData } from "../../workflow_run_output.tsx";
+import { calculateScrollWindow } from "../../hooks/mod.ts";
 
 /**
  * Formats pending dependencies for display.
@@ -72,16 +73,31 @@ interface JobsPanelProps {
   selectedIndex: number;
   isFocused: boolean;
   pendingDependencies: Map<string, string[]>;
+  availableHeight?: number;
 }
 
 /**
  * Displays the list of jobs with selection indicator.
  */
 export function JobsPanel(
-  { jobs, selectedIndex, isFocused, pendingDependencies }: JobsPanelProps,
+  { jobs, selectedIndex, isFocused, pendingDependencies, availableHeight }:
+    JobsPanelProps,
 ): React.ReactElement {
   const borderColor = isFocused ? "cyan" : "gray";
   const titleColor = isFocused ? "cyan" : undefined;
+
+  // Reserve 3 lines for border (2) and header (1)
+  const contentHeight = availableHeight !== undefined
+    ? Math.max(1, availableHeight - 3)
+    : jobs.length;
+
+  const { start, end } = calculateScrollWindow(
+    jobs.length,
+    selectedIndex,
+    contentHeight,
+  );
+
+  const visibleJobs = jobs.slice(start, end);
 
   return (
     <Box
@@ -89,17 +105,19 @@ export function JobsPanel(
       borderStyle="single"
       borderColor={borderColor}
       paddingX={1}
+      flexGrow={1}
+      overflow="hidden"
     >
-      <Box>
+      <Box flexShrink={0}>
         <Text bold color={titleColor}>Jobs</Text>
         <Box flexGrow={1} />
         <Text dimColor>[{selectedIndex + 1}/{jobs.length}]</Text>
       </Box>
-      {jobs.map((job, i) => (
+      {visibleJobs.map((job, i) => (
         <JobItem
-          key={i}
+          key={start + i}
           job={job}
-          isSelected={i === selectedIndex}
+          isSelected={start + i === selectedIndex}
           pendingDeps={pendingDependencies.get(job.name) ?? []}
         />
       ))}

@@ -30,6 +30,16 @@ Use `deno run` to get a complete list of custom tasks.
 
 - Use the `github-pr` skill to create commit messages and pull requests.
 
+## Verification
+
+After completing work, run these checks:
+
+1. `deno check` - Type checking
+2. `deno lint` - Linting
+3. `deno fmt` - Formatting
+4. `deno run test` - Tests
+5. `deno run compile` - Recompile the binary
+
 ## Architecture
 
 - Follows domain driven design principles. Use the `ddd` skill when designing or

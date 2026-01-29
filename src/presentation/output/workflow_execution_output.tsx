@@ -1,4 +1,5 @@
 // deno-lint-ignore-file verbatim-module-syntax
+import process from "node:process";
 import React from "react";
 import { render } from "ink";
 import type { OutputMode } from "./output.tsx";
@@ -141,69 +142,76 @@ export async function renderWorkflowExecution(
   return await renderInteractiveExecution(input, executeWorkflow, path);
 }
 
+// ANSI escape sequences for alternate screen buffer (like vim/htop use)
+const ENTER_ALT_SCREEN = "\x1b[?1049h";
+const EXIT_ALT_SCREEN = "\x1b[?1049l";
+
 /**
  * Renders the interactive execution UI with live updates.
+ * Uses alternate screen buffer for clean fullscreen rendering.
  */
-function renderInteractiveExecution(
+async function renderInteractiveExecution(
   input: WorkflowExecutionInput,
   executeWorkflow: (
     progress: ExecutionProgressCallback,
   ) => Promise<WorkflowRun>,
   path?: string,
 ): Promise<WorkflowRunData> {
-  return new Promise<WorkflowRunData>((resolve) => {
-    let dispatchRef: React.Dispatch<ExecutionAction> | null = null;
-    let finalRunData: WorkflowRunData | null = null;
+  let dispatchRef: React.Dispatch<ExecutionAction> | null = null;
+  let finalRunData: WorkflowRunData | null = null;
 
-    const { waitUntilExit, unmount } = render(
-      <WorkflowExecutionUI
-        workflow={input.workflow}
-        workflowYaml={input.workflowYaml}
-        onExit={() => {
-          if (finalRunData) {
-            resolve(finalRunData);
-          }
-        }}
-        registerDispatch={(dispatch) => {
-          dispatchRef = dispatch;
-        }}
-      />,
-    );
+  // Enter alternate screen buffer for clean fullscreen rendering
+  process.stdout.write(ENTER_ALT_SCREEN);
 
-    // Start execution after component mounts and dispatch is registered
-    const startExecution = async () => {
-      // Wait a tick for dispatch to be registered
-      await new Promise((r) => setTimeout(r, 0));
+  const { waitUntilExit, unmount } = render(
+    <WorkflowExecutionUI
+      workflow={input.workflow}
+      workflowYaml={input.workflowYaml}
+      onExit={() => {
+        // Resolved when user presses 'q' - finalRunData will be set
+      }}
+      registerDispatch={(dispatch) => {
+        dispatchRef = dispatch;
+      }}
+    />,
+  );
 
-      if (!dispatchRef) {
-        throw new Error("Dispatch not registered");
-      }
+  // Helper to clean up and exit alternate screen
+  const cleanup = () => {
+    unmount();
+    process.stdout.write(EXIT_ALT_SCREEN);
+  };
 
-      const progress = createProgressAdapter(dispatchRef);
+  // Wait a tick for dispatch to be registered
+  await new Promise((r) => setTimeout(r, 0));
 
-      try {
-        const run = await executeWorkflow(progress);
-        finalRunData = toRunData(run);
-        if (path) {
-          finalRunData.path = path;
-        }
-      } catch (error) {
-        // Execution failed - unmount and rethrow
-        unmount();
-        throw error;
-      }
-    };
+  if (!dispatchRef) {
+    cleanup();
+    throw new Error("Dispatch not registered");
+  }
 
-    startExecution().then(() => {
-      // Wait for user to exit
-      waitUntilExit().then(() => {
-        if (finalRunData) {
-          resolve(finalRunData);
-        }
-      });
-    }).catch((error) => {
-      unmount();
-      throw error;
-    });
-  });
+  const progress = createProgressAdapter(dispatchRef);
+
+  try {
+    const run = await executeWorkflow(progress);
+    finalRunData = toRunData(run);
+    if (path) {
+      finalRunData.path = path;
+    }
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+
+  // Wait for user to exit (press 'q')
+  await waitUntilExit();
+
+  // Exit alternate screen buffer
+  process.stdout.write(EXIT_ALT_SCREEN);
+
+  if (!finalRunData) {
+    throw new Error("Workflow execution completed without run data");
+  }
+
+  return finalRunData;
 }

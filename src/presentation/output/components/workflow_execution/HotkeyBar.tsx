@@ -17,7 +17,7 @@ export function HotkeyBar(
 ): React.ReactElement {
   if (showYamlOverlay) {
     return (
-      <Box paddingX={1}>
+      <Box paddingX={1} flexShrink={0}>
         <Text dimColor>Esc: Close | ↑/↓: Scroll</Text>
       </Box>
     );
@@ -28,12 +28,18 @@ export function HotkeyBar(
     : "↑/↓: Select Step";
 
   const hints = ["Tab: Switch Panel", navHint, "l: View YAML"];
+
   if (isComplete) {
-    hints.push("q: Quit");
+    return (
+      <Box paddingX={1} flexShrink={0}>
+        <Text dimColor>{hints.join(" | ")} |</Text>
+        <Text color="green" bold>q: Quit</Text>
+      </Box>
+    );
   }
 
   return (
-    <Box paddingX={1}>
+    <Box paddingX={1} flexShrink={0}>
       <Text dimColor>{hints.join(" | ")}</Text>
     </Box>
   );
