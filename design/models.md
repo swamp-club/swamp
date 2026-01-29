@@ -95,9 +95,22 @@ Creates a new instance of a type with the given unqiue name. Type should accept
 either the domain specific type or the normalized type. It should return the id
 and path to the model that is created.
 
+### model list <string>
+
+When run interactively, it should show a text box that says "type to search",
+and then use the npm:fzf package to search the list of available models (by
+either normalized type or actual type name). Then the user can use the arrow
+keys to select the type they want, and the result will be the same as type
+describe.
+
+When run non-interactively, it should produce a json output that has the list.
+
 ### model get <model_id_or_name>
 
-Shows the models input, schema, resource, methods, etc.
+Shows the entire details of the model. It should not include the type schema or
+the methods.
+
+when specifying json, it should have the same content.
 
 ### model validate <model_id_or_name>
 
