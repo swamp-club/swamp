@@ -96,7 +96,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Enable auto-merge
-        run: gh pr merge --auto --squash "$PR_NUMBER"
+        run: gh pr merge --auto --squash --delete-branch "$PR_NUMBER"
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
