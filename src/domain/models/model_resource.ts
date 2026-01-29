@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ModelInputId } from "./model_input.ts";
 
 /**
  * Branded type for ModelResource IDs.
@@ -17,7 +18,7 @@ export function createModelResourceId(id: string): ModelResourceId {
  * Since we've unified the ID system, both types represent the same underlying UUID.
  */
 export function inputIdToResourceId(
-  inputId: import("./model_input.ts").ModelInputId,
+  inputId: ModelInputId,
 ): ModelResourceId {
   return inputId as unknown as ModelResourceId;
 }
