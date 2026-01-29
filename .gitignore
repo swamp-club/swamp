@@ -2,3 +2,5 @@ dev-logs/*
 swamp
 inputs/
 resources/
+workflows-evaluated
+inputs-evaluated

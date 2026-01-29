@@ -1,0 +1,26 @@
+id: b6d4ba9b-c58a-451d-af5c-3b3f608093b7
+name: step-deps
+jobs:
+  - name: build
+    steps:
+      - name: setup
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+      - name: compile
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn:
+          - step: setup
+            condition:
+              type: succeeded
+              ref: setup
+        weight: 0
+    dependsOn: []
+    weight: 0
+version: 1
