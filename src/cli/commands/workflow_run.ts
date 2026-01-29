@@ -1,0 +1,110 @@
+import { Command } from "@cliffy/command";
+import {
+  type JobRunData,
+  renderWorkflowRun,
+  type StepRunData,
+  type WorkflowRunData,
+} from "../../presentation/output/workflow_run_output.tsx";
+import { createContext, type GlobalOptions } from "../context.ts";
+import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import {
+  type ExecutionProgressCallback,
+  WorkflowExecutionService,
+} from "../../domain/workflows/execution_service.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+
+// deno-lint-ignore no-explicit-any
+type AnyOptions = any;
+
+/**
+ * Converts a WorkflowRun to WorkflowRunData for presentation.
+ */
+function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
+  const startTime = run.startedAt?.getTime();
+  const endTime = run.completedAt?.getTime();
+
+  return {
+    id: run.id,
+    workflowId: run.workflowId,
+    workflowName: run.workflowName,
+    status: run.status,
+    jobs: run.jobs.map((job): JobRunData => {
+      const jobStart = job.startedAt?.getTime();
+      const jobEnd = job.completedAt?.getTime();
+
+      return {
+        name: job.jobName,
+        status: job.status,
+        steps: job.steps.map((step): StepRunData => {
+          const stepStart = step.startedAt?.getTime();
+          const stepEnd = step.completedAt?.getTime();
+
+          return {
+            name: step.stepName,
+            status: step.status,
+            error: step.error,
+            duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
+          };
+        }),
+        duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,
+      };
+    }),
+    duration: startTime && endTime ? endTime - startTime : undefined,
+    path,
+  };
+}
+
+export const workflowRunCommand = new Command()
+  .name("run")
+  .description("Execute a workflow")
+  .arguments("<workflow_id_or_name:string>")
+  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .action(async function (options: AnyOptions, workflowIdOrName: string) {
+    const ctx = createContext(options as GlobalOptions, "workflow-run");
+    ctx.logger.debug`Running workflow: ${workflowIdOrName}`;
+
+    const repoDir = options.repoDir ?? ".";
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const runRepo = new YamlWorkflowRunRepository(repoDir);
+
+    const executionService = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      repoDir,
+    );
+
+    // Set up progress callback for interactive mode
+    const progress: ExecutionProgressCallback = {
+      onJobStart: (_run, jobName) => {
+        ctx.logger.debug`Job started: ${jobName}`;
+      },
+      onStepStart: (_run, jobName, stepName) => {
+        ctx.logger.debug`Step started: ${jobName}/${stepName}`;
+      },
+      onStepFail: (_run, jobName, stepName, error) => {
+        ctx.logger.debug`Step failed: ${jobName}/${stepName}: ${error}`;
+      },
+    };
+
+    try {
+      const run = await executionService.execute(workflowIdOrName, progress);
+
+      // Get the path for the run
+      const workflow = await workflowRepo.findByName(run.workflowName);
+      const path = workflow ? runRepo.getPath(workflow.id, run.id) : undefined;
+
+      const data = toRunData(run, path);
+      renderWorkflowRun(data, ctx.outputMode);
+
+      ctx.logger.debug`Workflow run completed: status=${run.status}`;
+
+      // Exit with code 1 if workflow failed
+      if (run.status === "failed") {
+        Deno.exit(1);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Workflow execution failed: ${message}`);
+    }
+  });
