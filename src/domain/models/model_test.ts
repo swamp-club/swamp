@@ -1,6 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
-import { type ModelDefinition, ModelRegistry } from "./model.ts";
+import { defineModel, type ModelDefinition, ModelRegistry } from "./model.ts";
 import { ModelType } from "./model_type.ts";
 import { ModelInput } from "./model_input.ts";
 import { ModelResource } from "./model_resource.ts";
@@ -139,4 +139,36 @@ Deno.test("ModelDefinition method can execute", async () => {
   const result = await model.methods.write.execute(input, { repoDir: "/tmp" });
   assertEquals(result.resource.attributes.message, "hello world");
   assertEquals(typeof result.resource.attributes.timestamp, "string");
+});
+
+// defineModel tests use unique type names to avoid conflicts with other tests
+// since they use the global registry
+
+Deno.test("defineModel registers model with global registry", async () => {
+  // Dynamic import to get a fresh reference to the global registry
+  const { modelRegistry } = await import("./model.ts");
+
+  const model = createTestModel("test/define-model-registers");
+  defineModel(model);
+
+  assertEquals(modelRegistry.has("test/define-model-registers"), true);
+});
+
+Deno.test("defineModel returns the same definition passed in", () => {
+  const model = createTestModel("test/define-model-returns");
+  const result = defineModel(model);
+
+  assertEquals(result, model);
+});
+
+Deno.test("defineModel is idempotent when called with same model", () => {
+  const model = createTestModel("test/define-model-idempotent");
+
+  // First call registers
+  const result1 = defineModel(model);
+  // Second call should not throw, just return the definition
+  const result2 = defineModel(model);
+
+  assertEquals(result1, model);
+  assertEquals(result2, model);
 });

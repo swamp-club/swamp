@@ -242,11 +242,13 @@ const ec2InstanceModelInstance = new EC2InstanceModel();
  * The EC2 Instance model definition.
  *
  * Provides CRUD operations for AWS EC2 instances using CloudControl API.
+ *
+ * Self-registers with the global model registry when this module is imported.
  */
 export const ec2InstanceModel: ModelDefinition<
   typeof EC2InstanceInputAttributesSchema,
   typeof EC2InstanceResourceAttributesSchema
-> = ec2InstanceModelInstance.createModelDefinition();
+> = ec2InstanceModelInstance.defineAndRegister();
 
 /**
  * Re-export createCloudControlClient for backward compatibility.

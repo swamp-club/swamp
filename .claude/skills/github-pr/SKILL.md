@@ -33,7 +33,6 @@ Run these checks before submitting any PR:
 ```bash
 deno fmt --check
 deno lint
-deno run check:models
 deno run test
 ```
 

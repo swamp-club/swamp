@@ -192,3 +192,24 @@ export class ModelRegistry {
  * Global model registry instance.
  */
 export const modelRegistry = new ModelRegistry();
+
+/**
+ * Defines and registers a model with the global registry.
+ *
+ * Use this function at module level to self-register models when the module is imported.
+ * The barrel file (models.ts) imports all model files, triggering registration.
+ *
+ * @param definition - The model definition to register
+ * @returns The same model definition (for re-export)
+ */
+export function defineModel<
+  TInputAttrs extends z.ZodTypeAny,
+  TResourceAttrs extends z.ZodTypeAny,
+>(
+  definition: ModelDefinition<TInputAttrs, TResourceAttrs>,
+): ModelDefinition<TInputAttrs, TResourceAttrs> {
+  if (!modelRegistry.has(definition.type)) {
+    modelRegistry.register(definition);
+  }
+  return definition;
+}
