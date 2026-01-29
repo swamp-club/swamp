@@ -118,6 +118,16 @@ when specifying json, it should have the same content.
 Runs the models zod validations for the models inputs and resources. Run them in
 parallel and print the output as it comes.
 
+### model edit [model_id_or_name]
+
+Opens the model input file in the user's preferred editor. Use `--resource` to
+edit the resource file instead.
+
+If no model is specified interactively, shows a search interface.
+
+Editor selection: Uses $EDITOR if set, otherwise falls back to: vscode, zed,
+nvim, vim, nano, emacs.
+
 ### model method run <model_id_or_name> <method_name>
 
 Runs a method for the given model.
