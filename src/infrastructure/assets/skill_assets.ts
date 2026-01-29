@@ -15,6 +15,7 @@ export interface SkillInfo {
  */
 const BUNDLED_SKILLS: SkillInfo[] = [
   { relativePath: "swamp-model/SKILL.md", name: "swamp-model" },
+  { relativePath: "swamp-workflow/SKILL.md", name: "swamp-workflow" },
 ];
 
 /**
