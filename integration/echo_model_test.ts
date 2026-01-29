@@ -510,3 +510,136 @@ Deno.test("CLI: model method run fails for missing required attributes", async (
     assertStringIncludes(runResult.stderr, "Input validation failed");
   });
 });
+
+// model search tests
+
+Deno.test("CLI: model search returns all models in JSON mode", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create two models
+    await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "search-model-1",
+        "--repo-dir",
+        repoDir,
+      ],
+      Deno.cwd(),
+    );
+    await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "search-model-2",
+        "--repo-dir",
+        repoDir,
+      ],
+      Deno.cwd(),
+    );
+
+    const result = await runCliCommand(
+      ["model", "search", "--repo-dir", repoDir, "--json"],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.results.length, 2);
+    const names = output.results.map((r: { name: string }) => r.name);
+    assertEquals(names.includes("search-model-1"), true);
+    assertEquals(names.includes("search-model-2"), true);
+  });
+});
+
+Deno.test("CLI: model search with multiple matches returns list in JSON mode", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create models with similar names
+    await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "deploy-staging",
+        "--repo-dir",
+        repoDir,
+      ],
+      Deno.cwd(),
+    );
+    await runCliCommand(
+      ["model", "create", "swamp/echo", "deploy-prod", "--repo-dir", repoDir],
+      Deno.cwd(),
+    );
+    await runCliCommand(
+      ["model", "create", "swamp/echo", "build-app", "--repo-dir", repoDir],
+      Deno.cwd(),
+    );
+
+    const result = await runCliCommand(
+      ["model", "search", "deploy", "--repo-dir", repoDir, "--json"],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.results.length, 2);
+    const names = output.results.map((r: { name: string }) => r.name);
+    assertEquals(names.includes("deploy-staging"), true);
+    assertEquals(names.includes("deploy-prod"), true);
+  });
+});
+
+Deno.test("CLI: model search with single match returns full details in JSON mode", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create two models with different names
+    const createResult = await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "alpha-model",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(createResult.code, 0);
+    const createOutput = JSON.parse(createResult.stdout);
+
+    await runCliCommand(
+      ["model", "create", "swamp/echo", "beta-model", "--repo-dir", repoDir],
+      Deno.cwd(),
+    );
+
+    const result = await runCliCommand(
+      ["model", "search", "alpha", "--repo-dir", repoDir, "--json"],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    // When single match, returns full model details (same as model get)
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.name, "alpha-model");
+    assertEquals(output.id, createOutput.id);
+    assertEquals(output.type, "swamp/echo");
+    assertEquals(typeof output.version, "number");
+    assertEquals(typeof output.attributes, "object");
+  });
+});

@@ -126,11 +126,17 @@ export const modelSearchCommand = new Command()
     if (ctx.outputMode === "json") {
       // Non-interactive: filter and output JSON
       const filteredModels = filterModels(allModels, query ?? "");
-      const data: ModelSearchData = {
-        query: query ?? "",
-        results: filteredModels,
-      };
-      await renderModelSearch(data, ctx.outputMode);
+
+      // If query matches exactly one model, show full details (same as interactive selection)
+      if (query && filteredModels.length === 1) {
+        await displayModelGet(filteredModels[0], repoDir, ctx.outputMode);
+      } else {
+        const data: ModelSearchData = {
+          query: query ?? "",
+          results: filteredModels,
+        };
+        await renderModelSearch(data, ctx.outputMode);
+      }
     } else {
       // Interactive: show fuzzy search UI
       const data: ModelSearchData = {

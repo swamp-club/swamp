@@ -99,11 +99,17 @@ export const workflowSearchCommand = new Command()
     if (ctx.outputMode === "json") {
       // Non-interactive: filter and output JSON
       const filteredWorkflows = filterWorkflows(searchItems, query ?? "");
-      const data: WorkflowSearchData = {
-        query: query ?? "",
-        results: filteredWorkflows,
-      };
-      await renderWorkflowSearch(data, ctx.outputMode);
+
+      // If query matches exactly one workflow, show full details (same as interactive selection)
+      if (query && filteredWorkflows.length === 1) {
+        await displayWorkflowGet(filteredWorkflows[0], repo, options);
+      } else {
+        const data: WorkflowSearchData = {
+          query: query ?? "",
+          results: filteredWorkflows,
+        };
+        await renderWorkflowSearch(data, ctx.outputMode);
+      }
     } else {
       // Interactive: show fuzzy search UI
       const data: WorkflowSearchData = {

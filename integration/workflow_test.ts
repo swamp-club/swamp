@@ -331,7 +331,43 @@ Deno.test("CLI: workflow search returns all workflows in JSON mode", async () =>
   });
 });
 
-Deno.test("CLI: workflow search filters by query in JSON mode", async () => {
+Deno.test("CLI: workflow search filters by query with multiple matches in JSON mode", async () => {
+  await withTempDir(async (repoDir) => {
+    const repo = new YamlWorkflowRepository(repoDir);
+    const workflow1 = createTestWorkflow("deploy-staging");
+    const workflow2 = createTestWorkflow("deploy-production");
+    const workflow3 = createTestWorkflow("build-app");
+    await repo.save(workflow1);
+    await repo.save(workflow2);
+    await repo.save(workflow3);
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "search",
+        "deploy",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.results.length, 2);
+    const names = output.results.map((r: { name: string }) => r.name);
+    assertEquals(names.includes("deploy-staging"), true);
+    assertEquals(names.includes("deploy-production"), true);
+  });
+});
+
+Deno.test("CLI: workflow search with single match returns full details in JSON mode", async () => {
   await withTempDir(async (repoDir) => {
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow1 = createTestWorkflow("alpha-workflow");
@@ -357,9 +393,13 @@ Deno.test("CLI: workflow search filters by query in JSON mode", async () => {
       `Command should succeed. stderr: ${result.stderr}`,
     );
 
+    // When single match, returns full workflow details (same as workflow get)
     const output = JSON.parse(result.stdout);
-    assertEquals(output.results.length, 1);
-    assertEquals(output.results[0].name, "alpha-workflow");
+    assertEquals(output.name, "alpha-workflow");
+    assertEquals(output.id, workflow1.id);
+    assertEquals(output.jobs.length, 2);
+    assertEquals(output.jobs[0].name, "build");
+    assertEquals(output.jobs[1].name, "test");
   });
 });
 
