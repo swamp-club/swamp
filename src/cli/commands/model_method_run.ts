@@ -151,7 +151,8 @@ export const modelMethodRunCommand = new Command()
         if (!input.resourceId) {
           input.setResourceId(result.resource.id);
           await inputRepo.save(modelType, input);
-          ctx.logger.debug`Input updated with resourceId: ${result.resource.id}`;
+          ctx.logger
+            .debug`Input updated with resourceId: ${result.resource.id}`;
         } else {
           ctx.logger.debug`Input already has resourceId: ${input.resourceId}`;
         }

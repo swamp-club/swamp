@@ -103,7 +103,6 @@ Deno.test("YamlResourceRepository.findAll returns empty array when no resources"
   });
 });
 
-
 Deno.test("YamlResourceRepository.delete removes resource file", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlResourceRepository(dir);

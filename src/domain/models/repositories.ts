@@ -95,7 +95,6 @@ export interface ResourceRepository {
    */
   findAll(type: ModelType): Promise<ModelResource[]>;
 
-
   /**
    * Saves a resource.
    *

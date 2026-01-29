@@ -27,7 +27,7 @@ Deno.test("ModelResource.create sets createdAt to now if not provided", () => {
   const before = new Date();
   const resource = ModelResource.create({});
   const after = new Date();
-  
+
   assertEquals(resource.createdAt >= before, true);
   assertEquals(resource.createdAt <= after, true);
 });
@@ -53,7 +53,7 @@ Deno.test("ModelResource.create throws on invalid version", () => {
   assertThrows(
     () => ModelResource.create({ version: 0 }),
     Error,
-    "Too small: expected number to be >0"
+    "Too small: expected number to be >0",
   );
 });
 
@@ -61,7 +61,7 @@ Deno.test("ModelResource toData/fromData roundtrip", () => {
   const resource = ModelResource.create({});
   const data = resource.toData();
   const restored = ModelResource.fromData(data);
-  
+
   assertEquals(restored.id, resource.id);
   assertEquals(restored.version, resource.version);
   assertEquals(restored.createdAt.getTime(), resource.createdAt.getTime());
@@ -72,14 +72,14 @@ Deno.test("ModelResource fromData with explicit data", () => {
   const id = "550e8400-e29b-41d4-a716-446655440000";
   const createdAt = "2023-01-01T00:00:00.000Z";
   const attributes = { key: "value" };
-  
+
   const data = {
     id,
     version: 2,
     createdAt,
     attributes,
   };
-  
+
   const resource = ModelResource.fromData(data);
   assertEquals(resource.id, id);
   assertEquals(resource.version, 2);

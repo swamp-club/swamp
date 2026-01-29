@@ -161,7 +161,10 @@ Deno.test("Echo model: multiple inputs and resources", async () => {
 
     // Verify each resource has correct message
     for (const input of inputs) {
-      const resource = await resourceRepo.findById(modelType, createModelResourceId(input.id));
+      const resource = await resourceRepo.findById(
+        modelType,
+        createModelResourceId(input.id),
+      );
       assertEquals(
         resource !== null,
         true,

@@ -59,7 +59,6 @@ export class YamlResourceRepository implements ResourceRepository {
     return resources;
   }
 
-
   async save(type: ModelType, resource: ModelResource): Promise<void> {
     const dir = this.getTypeDir(type);
     await ensureDir(dir);

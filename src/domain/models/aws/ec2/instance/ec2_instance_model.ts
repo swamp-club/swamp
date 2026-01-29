@@ -432,7 +432,7 @@ async function executeSync(
   // Operation is SUCCESS - check if this is a deletion operation first
   const isDeletionContext = input.attributes.DeletionInitiated ||
     (input.attributes.StatusMessage as string)?.includes("deletion");
-    
+
   if (isDeletionContext) {
     // For deletion operations, we should delete the resource file regardless of GetResource response
     const resource = ModelResource.create({
