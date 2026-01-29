@@ -9,6 +9,9 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
+import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
+import { ModelInput } from "../src/domain/models/model_input.ts";
+import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-workflow-" });
@@ -569,4 +572,247 @@ Deno.test("CLI: workflow shows help", async () => {
   assertStringIncludes(result.stdout, "validate");
   assertStringIncludes(result.stdout, "search");
   assertStringIncludes(result.stdout, "run");
+});
+
+// Model validation during workflow execution
+
+Deno.test("CLI: workflow run fails when model has invalid expression syntax", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model input with invalid expression (missing model. prefix)
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = ModelInput.create({
+      name: "invalid-expr-model",
+      attributes: {
+        // Invalid: should be ${{ model.some-vpc.resource.attributes.VpcId }}
+        message: "${{some-vpc.VpcId}}",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, input);
+
+    // Create a workflow that references this model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "validate-expr-workflow",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-echo",
+              task: StepTask.modelMethod("invalid-expr-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow - should fail validation
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "validate-expr-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    // Should fail due to validation error
+    assertEquals(result.code, 1, "Command should fail with exit code 1");
+
+    // Error message should mention expression validation
+    assertStringIncludes(
+      result.stderr + result.stdout,
+      "Expression paths",
+    );
+  });
+});
+
+Deno.test("CLI: workflow run fails when model has malformed expression", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model input with malformed expression (missing $ prefix)
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = ModelInput.create({
+      name: "malformed-expr-model",
+      attributes: {
+        // Malformed: missing $ prefix
+        message: "{{some-vpc.VpcId}}",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, input);
+
+    // Create a workflow that references this model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "malformed-expr-workflow",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-echo",
+              task: StepTask.modelMethod("malformed-expr-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow - should fail validation
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "malformed-expr-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    // Should fail due to malformed expression
+    assertEquals(result.code, 1, "Command should fail with exit code 1");
+
+    // Error message should mention the malformed expression
+    assertStringIncludes(
+      result.stderr + result.stdout,
+      "Expression paths",
+    );
+  });
+});
+
+Deno.test("CLI: workflow run succeeds with valid model expressions", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create two model inputs - one will reference the other
+    const inputRepo = new YamlInputRepository(repoDir);
+
+    const sourceModel = ModelInput.create({
+      name: "source-model",
+      attributes: {
+        message: "Hello from source",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, sourceModel);
+
+    const dependentModel = ModelInput.create({
+      name: "dependent-model",
+      attributes: {
+        // Valid expression referencing source-model's input attribute
+        message: "${{ model.source-model.input.attributes.message }}",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, dependentModel);
+
+    // Create a workflow that runs both models
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "valid-expr-workflow",
+      jobs: [
+        Job.create({
+          name: "run-models",
+          steps: [
+            Step.create({
+              name: "write-source",
+              task: StepTask.modelMethod("source-model", "write"),
+            }),
+            Step.create({
+              name: "write-dependent",
+              task: StepTask.modelMethod("dependent-model", "write"),
+              dependsOn: [
+                {
+                  step: "write-source",
+                  condition: TriggerCondition.succeeded("write-source"),
+                },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow - should succeed
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "valid-expr-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+    assertEquals(output.jobs[0].steps[0].status, "succeeded");
+    assertEquals(output.jobs[0].steps[1].status, "succeeded");
+  });
+});
+
+Deno.test("CLI: workflow run succeeds with self reference expressions", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model that references its own name
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = ModelInput.create({
+      name: "self-ref-model",
+      attributes: {
+        // Valid self reference
+        message: "${{ self.name }}",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, input);
+
+    // Create a workflow that runs the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "self-ref-workflow",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-echo",
+              task: StepTask.modelMethod("self-ref-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow - should succeed
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "self-ref-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+  });
 });

@@ -73,7 +73,7 @@ Deno.test("CLI: model validate passes for valid echo model input", async () => {
     assertEquals(output.modelName, "valid-echo-input");
     assertEquals(output.type, "swamp/echo");
     assertEquals(output.passed, true);
-    assertEquals(output.validations.length, 2); // Input schema + Input attributes
+    assertEquals(output.validations.length, 3); // Input schema + Input attributes + Expression paths
     assertEquals(
       output.validations.every((v: { passed: boolean }) => v.passed),
       true,
@@ -126,7 +126,7 @@ Deno.test("CLI: model validate passes for valid echo model with resource", async
     // Parse and verify JSON output
     const output = JSON.parse(result.stdout);
     assertEquals(output.passed, true);
-    assertEquals(output.validations.length, 4); // Input + Resource validations
+    assertEquals(output.validations.length, 5); // Input + Resource + Expression paths validations
   });
 });
 
