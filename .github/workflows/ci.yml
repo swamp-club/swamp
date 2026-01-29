@@ -41,6 +41,9 @@ jobs:
     name: Claude Code Review
     needs: test
     runs-on: ubuntu-latest
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout code
