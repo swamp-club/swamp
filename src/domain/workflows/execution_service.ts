@@ -7,7 +7,7 @@ import {
   type GraphNode,
   TopologicalSortService,
 } from "./topological_sort_service.ts";
-import type { WorkflowId } from "./workflow_id.ts";
+import { createWorkflowId, type WorkflowId } from "./workflow_id.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -447,7 +447,6 @@ export class WorkflowExecutionService {
     if (byName) return byName;
 
     // Try by ID
-    const { createWorkflowId } = await import("./workflow_id.ts");
     const id = createWorkflowId(idOrName);
     return await this.workflowRepo.findById(id);
   }

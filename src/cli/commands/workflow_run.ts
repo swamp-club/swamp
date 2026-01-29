@@ -15,6 +15,10 @@ import {
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -79,10 +83,7 @@ export const workflowRunCommand = new Command()
     try {
       // Look up workflow first to get its data
       const workflow = await workflowRepo.findByName(workflowIdOrName) ??
-        await workflowRepo.findById(
-          (await import("../../domain/workflows/workflow_id.ts"))
-            .createWorkflowId(workflowIdOrName),
-        );
+        await workflowRepo.findById(createWorkflowId(workflowIdOrName));
 
       if (!workflow) {
         throw new Error(`Workflow not found: ${workflowIdOrName}`);
@@ -108,9 +109,6 @@ export const workflowRunCommand = new Command()
         );
 
         // Get the path for the run
-        const { createWorkflowRunId } = await import(
-          "../../domain/workflows/workflow_id.ts"
-        );
         const path = runRepo.getPath(workflow.id, createWorkflowRunId(data.id));
         data.path = path;
 
