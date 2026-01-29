@@ -24,7 +24,8 @@
     "react": "npm:react@18",
     "react/jsx-runtime": "npm:react@18/jsx-runtime",
     "@types/react": "npm:@types/react@18",
-    "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@3"
+    "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@3",
+    "cel-js": "npm:cel-js@0.4"
   },
   "compilerOptions": {
     "jsx": "react",

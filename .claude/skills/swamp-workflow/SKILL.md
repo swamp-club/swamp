@@ -267,6 +267,47 @@ swamp workflow run my-workflow --json
 After running, summarize results to the user including which jobs/steps
 succeeded or failed and their durations.
 
+## Expressions in Workflows
+
+Model inputs can contain CEL expressions using the `${{ <expression> }}` syntax.
+When expressions reference `model.<name>.resource.attributes.*`, they create
+**implicit step dependencies**.
+
+### Automatic Dependency Resolution
+
+Workflow execution automatically:
+
+1. Detects resource dependencies in expressions
+2. Ensures dependent steps run after the step that creates the resource
+3. Evaluates expressions just-in-time before each step executes
+
+### Example with Implicit Dependencies
+
+```yaml
+# vpc-input has no expressions
+# subnet-input has: vpcId: ${{ model.vpc-input.resource.attributes.vpcId }}
+
+jobs:
+  - name: main
+    steps:
+      - name: create-subnet # Listed first but runs second!
+        task:
+          type: model_method
+          modelIdOrName: subnet-input
+          methodName: create
+      - name: create-vpc
+        task:
+          type: model_method
+          modelIdOrName: vpc-input
+          methodName: create
+# create-vpc runs first due to implicit dependency from expression
+```
+
+In this example, `subnet-input` references
+`vpc-input.resource.attributes.vpcId`. The workflow engine detects this and
+ensures `create-vpc` runs before `create-subnet`, regardless of their declared
+order.
+
 ## Workflow Example
 
 End-to-end workflow for creating and running a new workflow:
