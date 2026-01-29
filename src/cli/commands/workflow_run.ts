@@ -92,8 +92,10 @@ export const workflowRunCommand = new Command()
       if (ctx.outputMode === "interactive") {
         // Interactive mode: use the new live dashboard
         const workflowData = workflow.toData();
+        // Remove undefined values since YAML can't stringify them
+        const cleanData = JSON.parse(JSON.stringify(workflowData));
         const workflowYaml = stringifyYaml(
-          workflowData as Record<string, unknown>,
+          cleanData as Record<string, unknown>,
         );
 
         const executeWorkflow = async (
@@ -103,7 +105,7 @@ export const workflowRunCommand = new Command()
         };
 
         const data = await renderWorkflowExecution(
-          { workflow: workflowData, workflowYaml },
+          { workflow: cleanData, workflowYaml },
           executeWorkflow,
           ctx.outputMode,
         );
