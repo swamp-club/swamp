@@ -1,25 +1,19 @@
 /**
- * Initializes the model registry with all known model types.
+ * Model registry initialization.
  *
- * This module should be imported at application startup to ensure
- * all models are registered before any commands run.
+ * This module re-exports from the auto-generated registry file.
+ * The generated file is created by `deno task generate:models` which
+ * scans for *_model.ts files and creates static imports.
+ *
+ * To add a new model:
+ * 1. Create your model file (e.g., aws/s3/bucket/s3_bucket_model.ts)
+ * 2. Export a ModelDefinition named with pattern `xxxModel`
+ * 3. Run `deno task generate:models` (or `deno task compile` which runs it)
+ *
+ * That's it! The generator will find your model and add it to the registry.
  */
-import { modelRegistry } from "./model.ts";
-import { echoModel } from "./echo/echo_model.ts";
-import { ec2InstanceModel } from "./aws/ec2/instance/ec2_instance_model.ts";
-
-/**
- * Registers all model definitions with the global registry.
- * Safe to call multiple times - will not re-register existing models.
- */
-export function initializeModelRegistry(): void {
-  if (!modelRegistry.has(echoModel.type)) {
-    modelRegistry.register(echoModel);
-  }
-  if (!modelRegistry.has(ec2InstanceModel.type)) {
-    modelRegistry.register(ec2InstanceModel);
-  }
-}
-
-// Auto-register on import
-initializeModelRegistry();
+export {
+  ensureModelRegistryInitialized,
+  getRegisteredModelCount,
+  initializeModelRegistry,
+} from "./registry.generated.ts";

@@ -6,11 +6,11 @@ import { typeCommand } from "./commands/type_describe.ts";
 import { repoCommand } from "./commands/repo_init.ts";
 import { workflowCommand } from "./commands/workflow.ts";
 import type { GlobalOptions } from "./context.ts";
-
-// Initialize model registry at startup
-import "../domain/models/registry_init.ts";
+import { ensureModelRegistryInitialized } from "../domain/models/registry_init.ts";
 
 export async function runCli(args: string[]): Promise<void> {
+  // Initialize model registry with auto-discovery
+  await ensureModelRegistryInitialized();
   const cli = new Command()
     .name("swamp")
     .version(VERSION)
