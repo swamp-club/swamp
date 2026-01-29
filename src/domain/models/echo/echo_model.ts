@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import { ModelResource } from "../model_resource.ts";
-import type { MethodContext, MethodResult, ModelDefinition } from "../model.ts";
+import {
+  defineModel,
+  type MethodContext,
+  type MethodResult,
+  type ModelDefinition,
+} from "../model.ts";
 import type { ModelInput } from "../model_input.ts";
 
 /**
@@ -66,11 +71,13 @@ function executeWrite(
  *
  * A simple model that takes a string message input and writes it
  * to a resource with a timestamp.
+ *
+ * Self-registers with the global model registry when this module is imported.
  */
 export const echoModel: ModelDefinition<
   typeof EchoInputAttributesSchema,
   typeof EchoResourceAttributesSchema
-> = {
+> = defineModel({
   type: ECHO_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: EchoInputAttributesSchema,
@@ -82,4 +89,4 @@ export const echoModel: ModelDefinition<
       execute: executeWrite,
     },
   },
-};
+});

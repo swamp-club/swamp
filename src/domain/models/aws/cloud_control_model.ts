@@ -8,11 +8,12 @@ import {
 } from "@aws-sdk/client-cloudcontrol";
 import type { ModelType } from "../model_type.ts";
 import { createModelResourceId, ModelResource } from "../model_resource.ts";
-import type {
-  FollowUpAction,
-  MethodContext,
-  MethodResult,
-  ModelDefinition,
+import {
+  defineModel,
+  type FollowUpAction,
+  type MethodContext,
+  type MethodResult,
+  type ModelDefinition,
 } from "../model.ts";
 import type { ModelInput } from "../model_input.ts";
 
@@ -475,6 +476,16 @@ export abstract class AWSCloudControlModel<
       }
       throw error;
     }
+  }
+
+  /**
+   * Creates and registers a ModelDefinition for this CloudControl model.
+   * This provides the standard create, delete, and sync methods.
+   *
+   * Call this at module level to self-register the model when imported.
+   */
+  defineAndRegister(): ModelDefinition<TInputAttrs, TResourceAttrs> {
+    return defineModel(this.createModelDefinition());
   }
 
   /**
