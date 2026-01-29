@@ -7,6 +7,7 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import type { ModelInput } from "../../domain/models/model_input.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import {
@@ -55,7 +56,10 @@ export const modelGetCommand = new Command()
     ctx.logger.debug`Found model: id=${input.id}, type=${modelType.normalized}`;
 
     // Load the resource if it exists
-    const resource = await resourceRepo.findByInputId(modelType, input.id);
+    const resource = await resourceRepo.findById(
+      modelType,
+      inputIdToResourceId(input.id),
+    );
     ctx.logger.debug`Resource exists: ${resource !== null}`;
 
     // Build resource data

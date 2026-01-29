@@ -12,6 +12,7 @@ import { join } from "@std/path";
 import { existsSync } from "@std/fs";
 import { parse as parseYaml } from "@std/yaml";
 import { ModelInput } from "../src/domain/models/model_input.ts";
+import { inputIdToResourceId } from "../src/domain/models/model_resource.ts";
 import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../src/infrastructure/persistence/yaml_resource_repository.ts";
 import {
@@ -70,9 +71,9 @@ Deno.test("Echo model: full flow - create input, execute write, verify resource"
     const resourceContent = await Deno.readTextFile(resourcePath);
     const resourceData = parseYaml(resourceContent) as Record<string, unknown>;
     assertEquals(
-      resourceData.inputId,
-      input.id,
-      "Resource should reference the input",
+      resourceData.id,
+      result.resource.id,
+      "Resource should have the correct ID",
     );
 
     const resourceAttrs = resourceData.attributes as Record<string, unknown>;
@@ -160,7 +161,10 @@ Deno.test("Echo model: multiple inputs and resources", async () => {
 
     // Verify each resource has correct message
     for (const input of inputs) {
-      const resource = await resourceRepo.findByInputId(modelType, input.id);
+      const resource = await resourceRepo.findById(
+        modelType,
+        inputIdToResourceId(input.id),
+      );
       assertEquals(
         resource !== null,
         true,

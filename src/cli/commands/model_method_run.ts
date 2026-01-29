@@ -113,27 +113,50 @@ export const modelMethodRunCommand = new Command()
 
       ctx.logger.debug`Executing method '${methodName}'`;
 
-      // Execute the method
-      const result = await executionService.execute(
+      // Execute the method (use workflow execution to handle follow-up actions)
+      const result = await executionService.executeWorkflow(
         input,
-        method,
+        definition,
+        methodName,
         { repoDir },
       );
 
       ctx.logger
         .debug`Method executed, resource created: ${result.resource.id}`;
 
-      // Save the resource
-      await resourceRepo.save(modelType, result.resource);
-      const resourcePath = resourceRepo.getPath(modelType, result.resource.id);
+      // Handle resource persistence based on operation type
+      let resourcePath: string;
+      if (result.deleteResource) {
+        // Delete the resource file
+        await resourceRepo.delete(modelType, result.resource.id);
+        resourcePath = ""; // No path since resource was deleted
+        ctx.logger.debug`Resource deleted: ${result.resource.id}`;
+      } else {
+        // Save the resource
+        await resourceRepo.save(modelType, result.resource);
+        resourcePath = resourceRepo.getPath(modelType, result.resource.id);
+        ctx.logger.debug`Resource saved to: ${resourcePath}`;
+      }
 
-      ctx.logger.debug`Resource saved to: ${resourcePath}`;
-
-      // Update input's resourceId and save
-      input.setResourceId(result.resource.id);
-      await inputRepo.save(modelType, input);
-
-      ctx.logger.debug`Input updated with resourceId: ${result.resource.id}`;
+      // Update input's resourceId based on operation type
+      if (result.deleteResource) {
+        // For delete operations, clear the resourceId since the resource no longer exists
+        if (input.resourceId) {
+          input.setResourceId(undefined);
+          await inputRepo.save(modelType, input);
+          ctx.logger.debug`Input resourceId cleared after deletion`;
+        }
+      } else {
+        // For create/update operations, set the resourceId if not already set
+        if (!input.resourceId) {
+          input.setResourceId(result.resource.id);
+          await inputRepo.save(modelType, input);
+          ctx.logger
+            .debug`Input updated with resourceId: ${result.resource.id}`;
+        } else {
+          ctx.logger.debug`Input already has resourceId: ${input.resourceId}`;
+        }
+      }
 
       // Render output
       const data: ModelMethodRunData = {

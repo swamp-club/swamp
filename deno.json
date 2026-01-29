@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "exports": "./main.ts",
   "tasks": {
-    "dev": "deno run --allow-read --allow-write --allow-env main.ts",
+    "dev": "deno run --allow-read --allow-write --allow-env --allow-sys --allow-net main.ts",
     "test": "deno test --allow-read --allow-write --allow-env --allow-run",
     "check": "deno check main.ts",
     "lint": "deno lint",
@@ -23,7 +23,8 @@
     "ink-testing-library": "npm:ink-testing-library@4",
     "react": "npm:react@18",
     "react/jsx-runtime": "npm:react@18/jsx-runtime",
-    "@types/react": "npm:@types/react@18"
+    "@types/react": "npm:@types/react@18",
+    "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@3"
   },
   "compilerOptions": {
     "jsx": "react",

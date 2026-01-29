@@ -3,7 +3,6 @@ import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { ResourceRepository } from "../../domain/models/repositories.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import type { ModelInputId } from "../../domain/models/model_input.ts";
 import {
   createModelResourceId,
   ModelResource,
@@ -58,14 +57,6 @@ export class YamlResourceRepository implements ResourceRepository {
     }
 
     return resources;
-  }
-
-  async findByInputId(
-    type: ModelType,
-    inputId: ModelInputId,
-  ): Promise<ModelResource | null> {
-    const resources = await this.findAll(type);
-    return resources.find((resource) => resource.inputId === inputId) ?? null;
   }
 
   async save(type: ModelType, resource: ModelResource): Promise<void> {

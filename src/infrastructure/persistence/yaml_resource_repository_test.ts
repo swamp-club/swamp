@@ -1,14 +1,11 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { createModelInputId } from "../../domain/models/model_input.ts";
 import {
   createModelResourceId,
   ModelResource,
 } from "../../domain/models/model_resource.ts";
 import { YamlResourceRepository } from "./yaml_resource_repository.ts";
-
-const TEST_INPUT_ID = "550e8400-e29b-41d4-a716-446655440000";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -23,7 +20,7 @@ Deno.test("YamlResourceRepository.save creates directory structure", async () =>
   await withTempDir(async (dir) => {
     const repo = new YamlResourceRepository(dir);
     const type = ModelType.create("swamp/echo");
-    const resource = ModelResource.create({ inputId: TEST_INPUT_ID });
+    const resource = ModelResource.create({});
 
     await repo.save(type, resource);
 
@@ -38,7 +35,6 @@ Deno.test("YamlResourceRepository.save creates yaml file", async () => {
     const repo = new YamlResourceRepository(dir);
     const type = ModelType.create("swamp/echo");
     const resource = ModelResource.create({
-      inputId: TEST_INPUT_ID,
       attributes: { message: "hello", timestamp: "2024-01-15" },
     });
 
@@ -56,7 +52,6 @@ Deno.test("YamlResourceRepository.findById returns saved resource", async () => 
     const repo = new YamlResourceRepository(dir);
     const type = ModelType.create("swamp/echo");
     const resource = ModelResource.create({
-      inputId: TEST_INPUT_ID,
       attributes: { message: "hello" },
     });
 
@@ -64,7 +59,6 @@ Deno.test("YamlResourceRepository.findById returns saved resource", async () => 
     const found = await repo.findById(type, resource.id);
 
     assertEquals(found?.id, resource.id);
-    assertEquals(found?.inputId, TEST_INPUT_ID);
     assertEquals(found?.attributes, { message: "hello" });
   });
 });
@@ -86,11 +80,9 @@ Deno.test("YamlResourceRepository.findAll returns all resources of type", async 
     const type = ModelType.create("swamp/echo");
 
     const resource1 = ModelResource.create({
-      inputId: TEST_INPUT_ID,
       attributes: { n: 1 },
     });
     const resource2 = ModelResource.create({
-      inputId: TEST_INPUT_ID,
       attributes: { n: 2 },
     });
     await repo.save(type, resource1);
@@ -111,37 +103,11 @@ Deno.test("YamlResourceRepository.findAll returns empty array when no resources"
   });
 });
 
-Deno.test("YamlResourceRepository.findByInputId finds resource by input ID", async () => {
-  await withTempDir(async (dir) => {
-    const repo = new YamlResourceRepository(dir);
-    const type = ModelType.create("swamp/echo");
-
-    const resource = ModelResource.create({ inputId: TEST_INPUT_ID });
-    await repo.save(type, resource);
-
-    const inputId = createModelInputId(TEST_INPUT_ID);
-    const found = await repo.findByInputId(type, inputId);
-    assertEquals(found?.id, resource.id);
-    assertEquals(found?.inputId, TEST_INPUT_ID);
-  });
-});
-
-Deno.test("YamlResourceRepository.findByInputId returns null when not found", async () => {
-  await withTempDir(async (dir) => {
-    const repo = new YamlResourceRepository(dir);
-    const type = ModelType.create("swamp/echo");
-
-    const inputId = createModelInputId("550e8400-e29b-41d4-a716-446655440099");
-    const found = await repo.findByInputId(type, inputId);
-    assertEquals(found, null);
-  });
-});
-
 Deno.test("YamlResourceRepository.delete removes resource file", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlResourceRepository(dir);
     const type = ModelType.create("swamp/echo");
-    const resource = ModelResource.create({ inputId: TEST_INPUT_ID });
+    const resource = ModelResource.create({});
 
     await repo.save(type, resource);
     assertEquals(await repo.findById(type, resource.id) !== null, true);

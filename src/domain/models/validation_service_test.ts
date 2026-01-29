@@ -81,7 +81,7 @@ Deno.test("validateModel with valid input and valid resource returns 4 passing r
     attributes: { message: "hello" },
   });
   const resource = ModelResource.create({
-    inputId: input.id,
+    id: input.id,
     attributes: {
       message: "hello",
       timestamp: new Date().toISOString(),
@@ -140,7 +140,7 @@ Deno.test("validateModel with invalid resource attributes returns failing result
     attributes: { message: "hello" },
   });
   const resource = ModelResource.create({
-    inputId: input.id,
+    id: input.id,
     attributes: {
       message: 123, // Should be string
       timestamp: new Date().toISOString(),
@@ -165,7 +165,7 @@ Deno.test("validateModel with missing resource timestamp returns failing result"
     attributes: { message: "hello" },
   });
   const resource = ModelResource.create({
-    inputId: input.id,
+    id: input.id,
     attributes: {
       message: "hello",
       // Missing timestamp
@@ -186,7 +186,7 @@ Deno.test("validateModel runs validations in parallel", async () => {
     attributes: { message: "hello" },
   });
   const resource = ModelResource.create({
-    inputId: input.id,
+    id: input.id,
     attributes: {
       message: "hello",
       timestamp: new Date().toISOString(),

@@ -14,6 +14,32 @@ export interface MethodContext {
 }
 
 /**
+ * Follow-up action to be executed after a method completes.
+ */
+export interface FollowUpAction {
+  /**
+   * Name of the method to call next.
+   */
+  methodName: string;
+
+  /**
+   * Delay before executing the follow-up action (in milliseconds).
+   */
+  delayMs?: number;
+
+  /**
+   * Maximum number of retries for this action.
+   */
+  maxRetries?: number;
+
+  /**
+   * Condition that must be met to continue with follow-up actions.
+   * If this returns false, the workflow stops.
+   */
+  continueCondition?: (resource: ModelResource) => boolean;
+}
+
+/**
  * Result of a method execution.
  */
 export interface MethodResult {
@@ -21,6 +47,17 @@ export interface MethodResult {
    * The resource created by the method.
    */
   resource: ModelResource;
+
+  /**
+   * Optional follow-up actions to execute.
+   */
+  followUpActions?: FollowUpAction[];
+
+  /**
+   * If true, the resource should be deleted instead of saved.
+   * Used for operations like delete that complete by removing the resource.
+   */
+  deleteResource?: boolean;
 }
 
 /**
