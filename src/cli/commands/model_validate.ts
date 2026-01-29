@@ -74,6 +74,7 @@ export const modelValidateCommand = new Command()
             input,
             definition,
             resource,
+            inputRepo,
           );
 
           const validations = toValidationItemData(validationResults);
@@ -145,6 +146,7 @@ export const modelValidateCommand = new Command()
         input,
         definition,
         resource,
+        inputRepo,
       );
 
       const validations = toValidationItemData(results);

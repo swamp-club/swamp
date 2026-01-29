@@ -18,6 +18,7 @@ import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_re
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { modelRegistry } from "../models/model.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
+import { DefaultModelValidationService } from "../models/validation_service.ts";
 import { createModelInputId, ModelInput } from "../models/model_input.ts";
 import type { ModelType } from "../models/model_type.ts";
 import {
@@ -124,21 +125,49 @@ export class DefaultStepExecutor implements StepExecutor {
     // Keep original input (with expressions) for saving
     const { input: originalInput, modelType } = lookupResult;
 
-    // Evaluate expressions for execution
+    // Get the model definition
+    const definition = modelRegistry.get(modelType);
+    if (!definition) {
+      throw new Error(`Unknown model type: ${modelType.normalized}`);
+    }
+
+    // Validate the model input (including expression paths) BEFORE evaluation
+    // This catches malformed expressions and invalid paths early
+    const validationService = new DefaultModelValidationService();
+    const validationResults = await validationService.validateModel(
+      originalInput,
+      definition,
+      null, // resource doesn't exist yet
+      inputRepo,
+    );
+
+    // Fail fast if validation fails
+    const failures = validationResults.filter((r) => !r.passed);
+    if (failures.length > 0) {
+      const errors = failures.map((f) => `  ${f.name}: ${f.error}`).join("\n");
+      throw new Error(
+        `Model validation failed for "${originalInput.name}":\n${errors}`,
+      );
+    }
+
+    // Evaluate expressions for execution (after validation passes)
     let evaluatedInput = originalInput;
     if (ctx.expressionContext) {
+      // Set self context for this specific model before evaluating
+      ctx.expressionContext.self = {
+        id: originalInput.id,
+        name: originalInput.name,
+        version: originalInput.version,
+        tags: originalInput.tags,
+        attributes: originalInput.attributes,
+      };
+
       evaluatedInput = this.evaluateInputExpressions(
         originalInput,
         ctx.expressionContext,
       );
       // Save evaluated input to inputs-evaluated/
       await evaluatedInputRepo.save(modelType, evaluatedInput);
-    }
-
-    // Get the model definition
-    const definition = modelRegistry.get(modelType);
-    if (!definition) {
-      throw new Error(`Unknown model type: ${modelType.normalized}`);
     }
 
     // Validate method exists on the model
