@@ -4,6 +4,7 @@ import { Box, Text } from "ink";
 import { type RunStatus, StatusIcon } from "./StatusIcon.tsx";
 import type { StepRunData } from "../../workflow_run_output.tsx";
 import { calculateScrollWindow } from "../../hooks/mod.ts";
+import { formatDuration } from "../../utils/duration_formatter.ts";
 
 /**
  * Formats pending dependencies for display.
@@ -56,7 +57,7 @@ function StepItem(
         <Text bold={isSelected}>{step.name}</Text>
         {depsDisplay && <Text dimColor>{` ${depsDisplay}`}</Text>}
         {showDuration && step.duration !== undefined && (
-          <Text dimColor>{` (${step.duration}ms)`}</Text>
+          <Text dimColor>{` (${formatDuration(step.duration)})`}</Text>
         )}
         {/* deno-fmt-ignore */}
         {step.status === "running" && <Text color="yellow">  running...</Text>}
