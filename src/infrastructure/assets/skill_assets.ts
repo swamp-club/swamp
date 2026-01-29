@@ -85,9 +85,17 @@ export class SkillAssets {
    * Copies all bundled skills to a target directory.
    *
    * @param targetDir - The target .claude/skills directory
+   * @throws Error if a skill's relativePath attempts path traversal
    */
   async copySkillsTo(targetDir: string): Promise<void> {
     for (const skill of BUNDLED_SKILLS) {
+      // Validate that relativePath doesn't contain path traversal
+      if (skill.relativePath.includes("..")) {
+        throw new Error(
+          `Invalid skill path: ${skill.relativePath} contains path traversal`,
+        );
+      }
+
       const sourcePath = join(this.skillsDir, skill.relativePath);
       const targetPath = join(targetDir, skill.relativePath);
 

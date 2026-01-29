@@ -5,9 +5,9 @@ import type { OutputMode } from "./output.tsx";
 import { Fzf, type FzfResultItem } from "fzf";
 
 /**
- * Represents a single model list item.
+ * Represents a single model search item.
  */
-export interface ModelListItem {
+export interface ModelSearchItem {
   id: string;
   name: string;
   type: string;
@@ -15,51 +15,51 @@ export interface ModelListItem {
 }
 
 /**
- * Data structure for model list results.
+ * Data structure for model search results.
  */
-export interface ModelListData {
+export interface ModelSearchData {
   query: string;
-  results: ModelListItem[];
+  results: ModelSearchItem[];
 }
 
 /**
- * Renders model list in either interactive or JSON mode.
+ * Renders model search in either interactive or JSON mode.
  *
- * @param data - The list data to render
+ * @param data - The search data to render
  * @param mode - The output mode (interactive or json)
  * @returns A promise that resolves with the selected model in interactive mode, or undefined in JSON mode
  */
-export async function renderModelList(
-  data: ModelListData,
+export async function renderModelSearch(
+  data: ModelSearchData,
   mode: OutputMode,
-): Promise<ModelListItem | undefined> {
+): Promise<ModelSearchItem | undefined> {
   if (mode === "json") {
-    renderJsonModelList(data);
+    renderJsonModelSearch(data);
     return undefined;
   } else {
-    return await renderInteractiveModelList(data);
+    return await renderInteractiveModelSearch(data);
   }
 }
 
 /**
- * Renders model list as JSON.
+ * Renders model search as JSON.
  */
-function renderJsonModelList(data: ModelListData): void {
+function renderJsonModelSearch(data: ModelSearchData): void {
   console.log(JSON.stringify(data, null, 2));
 }
 
 /**
- * Renders an interactive model list UI.
+ * Renders an interactive model search UI.
  *
- * @param data - The initial list data (models to search and optional initial query)
+ * @param data - The initial search data (models to search and optional initial query)
  * @returns A promise that resolves with the selected model, or undefined if cancelled
  */
-export function renderInteractiveModelList(
-  data: ModelListData,
-): Promise<ModelListItem | undefined> {
-  return new Promise<ModelListItem | undefined>((resolve) => {
+export function renderInteractiveModelSearch(
+  data: ModelSearchData,
+): Promise<ModelSearchItem | undefined> {
+  return new Promise<ModelSearchItem | undefined>((resolve) => {
     const { waitUntilExit } = render(
-      <ModelListUI
+      <ModelSearchUI
         models={data.results}
         initialQuery={data.query}
         onSelect={(item) => resolve(item)}
@@ -70,18 +70,18 @@ export function renderInteractiveModelList(
   });
 }
 
-interface ModelListUIProps {
-  models: ModelListItem[];
+interface ModelSearchUIProps {
+  models: ModelSearchItem[];
   initialQuery: string;
-  onSelect: (item: ModelListItem) => void;
+  onSelect: (item: ModelSearchItem) => void;
   onCancel: () => void;
 }
 
 /**
- * Interactive model list component using fzf for fuzzy matching.
+ * Interactive model search component using fzf for fuzzy matching.
  */
-export function ModelListUI(
-  props: ModelListUIProps,
+export function ModelSearchUI(
+  props: ModelSearchUIProps,
 ): React.ReactElement {
   const { models, initialQuery, onSelect, onCancel } = props;
   const { exit } = useApp();
@@ -99,7 +99,7 @@ export function ModelListUI(
   );
 
   // Get filtered results
-  const results: FzfResultItem<ModelListItem>[] = fzf.find(query);
+  const results: FzfResultItem<ModelSearchItem>[] = fzf.find(query);
   const maxVisible = 10;
   const visibleResults = results.slice(0, maxVisible);
 
@@ -174,7 +174,7 @@ export function ModelListUI(
       {/* Results list */}
       <Box flexDirection="column" marginTop={1}>
         {visibleResults.map((result, index) => (
-          <ModelListResultItem
+          <ModelSearchResultItem
             key={result.item.id}
             item={result.item}
             isSelected={index === selectedIndex}
@@ -198,16 +198,16 @@ export function ModelListUI(
   );
 }
 
-interface ModelListResultItemProps {
-  item: ModelListItem;
+interface ModelSearchResultItemProps {
+  item: ModelSearchItem;
   isSelected: boolean;
 }
 
 /**
- * Component to display a single model list item.
+ * Component to display a single model search item.
  */
-function ModelListResultItem(
-  props: ModelListResultItemProps,
+function ModelSearchResultItem(
+  props: ModelSearchResultItemProps,
 ): React.ReactElement {
   const { item, isSelected } = props;
 

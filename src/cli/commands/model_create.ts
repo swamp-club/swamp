@@ -10,7 +10,7 @@ import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input
 import { modelRegistry } from "../../domain/models/model.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
-import { modelListCommand } from "./model_list.ts";
+import { modelSearchCommand } from "./model_search.ts";
 import { modelGetCommand } from "./model_get.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -76,6 +76,6 @@ export const modelCommand = new Command()
   })
   .command("create", modelCreateCommand)
   .command("get", modelGetCommand)
-  .command("list", modelListCommand)
+  .command("search", modelSearchCommand)
   .command("validate", modelValidateCommand)
   .command("method", modelMethodCommand);

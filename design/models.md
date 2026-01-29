@@ -95,7 +95,7 @@ Creates a new instance of a type with the given unqiue name. Type should accept
 either the domain specific type or the normalized type. It should return the id
 and path to the model that is created.
 
-### model list <string>
+### model search <string>
 
 When run interactively, it should show a text box that says "type to search",
 and then use the npm:fzf package to search the list of available models (by
