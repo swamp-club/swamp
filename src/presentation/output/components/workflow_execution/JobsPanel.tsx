@@ -34,13 +34,13 @@ function formatDependencies(deps: string[], maxLength: number = 30): string {
 interface JobItemProps {
   job: JobRunData;
   isSelected: boolean;
-  pendingDeps: string[];
+  allDeps: string[];
 }
 
 function JobItem(
-  { job, isSelected, pendingDeps }: JobItemProps,
+  { job, isSelected, allDeps }: JobItemProps,
 ): React.ReactElement {
-  const depsDisplay = formatDependencies(pendingDeps);
+  const depsDisplay = formatDependencies(allDeps);
 
   return (
     <Box>
@@ -71,14 +71,14 @@ interface JobsPanelProps {
   jobs: JobRunData[];
   selectedIndex: number;
   isFocused: boolean;
-  pendingDependencies: Map<string, string[]>;
+  allDependencies: Map<string, string[]>;
 }
 
 /**
  * Displays the list of jobs with selection indicator.
  */
 export function JobsPanel(
-  { jobs, selectedIndex, isFocused, pendingDependencies }: JobsPanelProps,
+  { jobs, selectedIndex, isFocused, allDependencies }: JobsPanelProps,
 ): React.ReactElement {
   const borderColor = isFocused ? "cyan" : "gray";
   const titleColor = isFocused ? "cyan" : undefined;
@@ -100,7 +100,7 @@ export function JobsPanel(
           key={i}
           job={job}
           isSelected={i === selectedIndex}
-          pendingDeps={pendingDependencies.get(job.name) ?? []}
+          allDeps={allDependencies.get(job.name) ?? []}
         />
       ))}
       {jobs.length === 0 && <Text dimColor>No jobs</Text>}

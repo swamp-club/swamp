@@ -130,13 +130,12 @@ export function WorkflowExecutionUI(
   const selectedJob = jobs[state.selectedJobIndex];
   const workflowStatus = state.workflowRun?.status ?? "pending";
 
-  // Compute pending dependencies for jobs
+  // Compute all dependencies for jobs (not just pending ones)
   const jobStatuses = new Map(jobs.map((j) => [j.name, j.status]));
-  const jobPendingDeps = new Map<string, string[]>();
+  const jobAllDeps = new Map<string, string[]>();
   for (const job of workflow.jobs) {
     const allDeps = job.dependsOn.map((d) => d.job);
-    const pendingDeps = getPendingDependencies(allDeps, jobStatuses);
-    jobPendingDeps.set(job.name, pendingDeps);
+    jobAllDeps.set(job.name, allDeps);
   }
 
   // Compute pending dependencies for steps of selected job
@@ -175,7 +174,7 @@ export function WorkflowExecutionUI(
         jobs={jobs}
         selectedIndex={state.selectedJobIndex}
         isFocused={state.activePanel === "jobs"}
-        pendingDependencies={jobPendingDeps}
+        allDependencies={jobAllDeps}
       />
 
       {/* Steps Panel */}
