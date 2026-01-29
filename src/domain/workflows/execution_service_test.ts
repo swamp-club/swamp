@@ -622,6 +622,30 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
   assertEquals(dStartIdx > bCompleteIdx, true);
 });
 
+Deno.test("DefaultStepExecutor passes env to shell commands", async () => {
+  const { DefaultStepExecutor } = await import("./execution_service.ts");
+  const executor = new DefaultStepExecutor();
+
+  const step = Step.create({
+    name: "env-test",
+    task: StepTask.shell("printenv", {
+      args: ["TEST_VAR"],
+      env: { TEST_VAR: "hello_from_env" },
+    }),
+  });
+
+  const ctx: StepExecutionContext = {
+    workflowId: createWorkflowId("test-workflow-id"),
+    workflowName: "test-workflow",
+    repoDir: ".",
+    jobName: "test-job",
+    stepName: "env-test",
+  };
+
+  const result = await executor.execute(step, ctx) as { stdout: string };
+  assertEquals(result.stdout, "hello_from_env");
+});
+
 Deno.test("executes independent steps within a job in parallel", async () => {
   const workflowRepo = new InMemoryWorkflowRepository();
   const runRepo = new InMemoryWorkflowRunRepository();

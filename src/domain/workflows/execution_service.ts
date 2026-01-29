@@ -83,17 +83,24 @@ export class DefaultStepExecutor implements StepExecutor {
       args: string[];
       workingDir?: string;
       timeout?: number;
+      env?: Record<string, string>;
     },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
     const cwd = task.workingDir ?? ctx.repoDir;
 
-    const command = new Deno.Command(task.command, {
+    const commandOptions: Deno.CommandOptions = {
       args: task.args,
       cwd,
       stdout: "piped",
       stderr: "piped",
-    });
+    };
+
+    if (task.env) {
+      commandOptions.env = task.env;
+    }
+
+    const command = new Deno.Command(task.command, commandOptions);
 
     const result = await command.output();
 

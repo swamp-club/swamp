@@ -20,6 +20,7 @@ Deno.test("StepTask.shell creates shell task with defaults", () => {
     args: [],
     workingDir: undefined,
     timeout: undefined,
+    env: undefined,
   });
   assertEquals(task.isModelMethod(), false);
   assertEquals(task.isShell(), true);
@@ -30,6 +31,7 @@ Deno.test("StepTask.shell creates shell task with options", () => {
     args: ["install", "--production"],
     workingDir: "/app",
     timeout: 60000,
+    env: { NODE_ENV: "production" },
   });
   assertEquals(task.data, {
     type: "shell",
@@ -37,6 +39,7 @@ Deno.test("StepTask.shell creates shell task with options", () => {
     args: ["install", "--production"],
     workingDir: "/app",
     timeout: 60000,
+    env: { NODE_ENV: "production" },
   });
 });
 
@@ -69,6 +72,7 @@ Deno.test("StepTask.toData returns correct structure", () => {
     args: ["hello"],
     workingDir: undefined,
     timeout: undefined,
+    env: undefined,
   });
 });
 
@@ -133,5 +137,18 @@ Deno.test("StepTaskSchema sets default args for shell task", () => {
   assertEquals(result.type, "shell");
   if (result.type === "shell") {
     assertEquals(result.args, []);
+  }
+});
+
+Deno.test("StepTask.fromData creates shell task with env", () => {
+  const task = StepTask.fromData({
+    type: "shell",
+    command: "npm",
+    args: ["install"],
+    env: { NODE_ENV: "production", CI: "true" },
+  });
+  assertEquals(task.isShell(), true);
+  if (task.data.type === "shell") {
+    assertEquals(task.data.env, { NODE_ENV: "production", CI: "true" });
   }
 });

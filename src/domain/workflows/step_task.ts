@@ -19,6 +19,7 @@ export const StepTaskSchema = z.discriminatedUnion("type", [
     args: z.array(z.string()).default([]),
     workingDir: z.string().optional(),
     timeout: z.number().positive().optional(),
+    env: z.record(z.string(), z.string()).optional(),
   }),
 ]);
 
@@ -63,6 +64,7 @@ export class StepTask {
       args?: string[];
       workingDir?: string;
       timeout?: number;
+      env?: Record<string, string>;
     },
   ): StepTask {
     return new StepTask({
@@ -71,6 +73,7 @@ export class StepTask {
       args: options?.args ?? [],
       workingDir: options?.workingDir,
       timeout: options?.timeout,
+      env: options?.env,
     });
   }
 
