@@ -26,9 +26,9 @@ Use `deno run` to get a complete list of custom tasks.
 - `deno lint`: Run lints.
 - `deno fmt`: Format the code.
 
-## Source Control
+## Source Control & Pull Requests
 
-- Uses jujutsu (jj) for source control. Use the `jututsu` skill.
+- Use the `github-pr` skill to create commit messages and pull requests.
 
 ## Architecture
 
