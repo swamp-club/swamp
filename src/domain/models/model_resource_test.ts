@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { createModelResourceId, ModelResource } from "./model_resource.ts";
+import { ModelResource } from "./model_resource.ts";
 
 Deno.test("ModelResource.create generates UUID if not provided", () => {
   const resource = ModelResource.create({});

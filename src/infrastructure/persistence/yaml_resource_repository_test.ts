@@ -1,14 +1,11 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { createModelInputId } from "../../domain/models/model_input.ts";
 import {
   createModelResourceId,
   ModelResource,
 } from "../../domain/models/model_resource.ts";
 import { YamlResourceRepository } from "./yaml_resource_repository.ts";
-
-const TEST_INPUT_ID = "550e8400-e29b-41d4-a716-446655440000";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });

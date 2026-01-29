@@ -3,7 +3,6 @@ import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { ResourceRepository } from "../../domain/models/repositories.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import type { ModelInputId } from "../../domain/models/model_input.ts";
 import {
   createModelResourceId,
   ModelResource,
