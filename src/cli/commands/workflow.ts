@@ -4,6 +4,7 @@ import { workflowGetCommand } from "./workflow_get.ts";
 import { workflowValidateCommand } from "./workflow_validate.ts";
 import { workflowSearchCommand } from "./workflow_search.ts";
 import { workflowRunCommand } from "./workflow_run.ts";
+import { workflowSchemaCommand } from "./workflow_schema.ts";
 
 export const workflowCommand = new Command()
   .name("workflow")
@@ -15,4 +16,5 @@ export const workflowCommand = new Command()
   .command("get", workflowGetCommand)
   .command("validate", workflowValidateCommand)
   .command("search", workflowSearchCommand)
-  .command("run", workflowRunCommand);
+  .command("run", workflowRunCommand)
+  .command("schema", workflowSchemaCommand);
