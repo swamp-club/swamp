@@ -56,7 +56,10 @@ export const modelGetCommand = new Command()
     ctx.logger.debug`Found model: id=${input.id}, type=${modelType.normalized}`;
 
     // Load the resource if it exists
-    const resource = await resourceRepo.findById(modelType, inputIdToResourceId(input.id));
+    const resource = await resourceRepo.findById(
+      modelType,
+      inputIdToResourceId(input.id),
+    );
     ctx.logger.debug`Resource exists: ${resource !== null}`;
 
     // Build resource data

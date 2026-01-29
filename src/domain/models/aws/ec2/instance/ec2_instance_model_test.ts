@@ -131,8 +131,6 @@ Deno.test("EC2InstanceModel - resource schema validation", () => {
   assertEquals(result.success, true);
 });
 
-
-
 Deno.test("EC2InstanceModel - sync method without resource ID fails", async () => {
   const input = ModelInput.create({
     name: "test-instance",
@@ -153,7 +151,6 @@ Deno.test("EC2InstanceModel - sync method without resource ID fails", async () =
   );
 });
 
-
 Deno.test("EC2InstanceModel - delete method without resource ID fails", async () => {
   const input = ModelInput.create({
     name: "test-instance",
@@ -173,8 +170,6 @@ Deno.test("EC2InstanceModel - delete method without resource ID fails", async ()
     "Cannot delete: no resource ID found in input",
   );
 });
-
-
 
 Deno.test("EC2InstanceModel - sync method without resource ID fails", async () => {
   const input = ModelInput.create({

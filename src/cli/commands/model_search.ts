@@ -79,7 +79,10 @@ async function displayModelGet(
   }
 
   // Load the resource if it exists
-  const resource = await resourceRepo.findById(modelType, inputIdToResourceId(input.id));
+  const resource = await resourceRepo.findById(
+    modelType,
+    inputIdToResourceId(input.id),
+  );
 
   // Build resource data
   let resourceData: ResourceData | undefined;

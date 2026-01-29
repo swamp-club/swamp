@@ -16,7 +16,9 @@ export function createModelResourceId(id: string): ModelResourceId {
  * Converts a ModelInputId to a ModelResourceId.
  * Since we've unified the ID system, both types represent the same underlying UUID.
  */
-export function inputIdToResourceId(inputId: import("./model_input.ts").ModelInputId): ModelResourceId {
+export function inputIdToResourceId(
+  inputId: import("./model_input.ts").ModelInputId,
+): ModelResourceId {
   return inputId as unknown as ModelResourceId;
 }
 

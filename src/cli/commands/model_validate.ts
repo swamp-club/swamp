@@ -66,7 +66,10 @@ export const modelValidateCommand = new Command()
             continue;
           }
 
-          const resource = await resourceRepo.findById(type, inputIdToResourceId(input.id));
+          const resource = await resourceRepo.findById(
+            type,
+            inputIdToResourceId(input.id),
+          );
           const validationResults = await validationService.validateModel(
             input,
             definition,
@@ -131,7 +134,10 @@ export const modelValidateCommand = new Command()
       }
 
       // Load the resource if it exists
-      const resource = await resourceRepo.findById(modelType, inputIdToResourceId(input.id));
+      const resource = await resourceRepo.findById(
+        modelType,
+        inputIdToResourceId(input.id),
+      );
       ctx.logger.debug`Resource exists: ${resource !== null}`;
 
       // Run validations
