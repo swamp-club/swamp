@@ -76,3 +76,8 @@ Should show the workflow yaml with syntax highlighting, and the path, similar to
 ### workflow run <id or name>
 
 Executes a workflow run.
+
+### workflow schema get
+
+Gets the schema for workflow files. Model it after `type describe` - used by the
+agent to understand how to write valid workflow files
