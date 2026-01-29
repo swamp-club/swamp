@@ -39,6 +39,9 @@ deno run test
 
 Fix any issues before proceeding. All checks must pass.
 
+If `deno fmt --check` fails, run `deno fmt` to auto-fix formatting, then re-run
+the checks.
+
 ## Create PR
 
 After pushing changes (see VCS reference), create the PR:

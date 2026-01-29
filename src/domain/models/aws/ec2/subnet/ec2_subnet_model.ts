@@ -274,8 +274,10 @@ const ec2SubnetModelInstance = new EC2SubnetModel();
  * The EC2 Subnet model definition.
  *
  * Provides CRUD operations for AWS EC2 Subnets using CloudControl API.
+ *
+ * Self-registers with the global model registry when this module is imported.
  */
 export const ec2SubnetModel: ModelDefinition<
   typeof EC2SubnetInputAttributesSchema,
   typeof EC2SubnetResourceAttributesSchema
-> = ec2SubnetModelInstance.createModelDefinition();
+> = ec2SubnetModelInstance.defineAndRegister();
