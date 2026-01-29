@@ -77,6 +77,15 @@ Should show the workflow yaml with syntax highlighting, and the path, similar to
 
 Executes a workflow run.
 
+### workflow edit [id or name]
+
+Opens the workflow file in the user's preferred editor.
+
+If no workflow is specified interactively, shows a search interface.
+
+Editor selection: Uses $EDITOR if set, otherwise falls back to: vscode, zed,
+nvim, vim, nano, emacs.
+
 ### workflow history get <id or name>
 
 Displays the run data (status, timing, step outputs/errors) for the latest

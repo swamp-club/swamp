@@ -1,5 +1,6 @@
 import { Command } from "@cliffy/command";
 import { workflowCreateCommand } from "./workflow_create.ts";
+import { workflowEditCommand } from "./workflow_edit.ts";
 import { workflowGetCommand } from "./workflow_get.ts";
 import { workflowHistoryCommand } from "./workflow_history.ts";
 import { workflowValidateCommand } from "./workflow_validate.ts";
@@ -14,6 +15,7 @@ export const workflowCommand = new Command()
     this.showHelp();
   })
   .command("create", workflowCreateCommand)
+  .command("edit", workflowEditCommand)
   .command("get", workflowGetCommand)
   .command("history", workflowHistoryCommand)
   .command("validate", workflowValidateCommand)
