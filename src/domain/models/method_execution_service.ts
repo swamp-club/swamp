@@ -1,5 +1,11 @@
 import type { z } from "zod";
-import type { MethodContext, MethodDefinition, MethodResult, FollowUpAction, ModelDefinition } from "./model.ts";
+import type {
+  FollowUpAction,
+  MethodContext,
+  MethodDefinition,
+  MethodResult,
+  ModelDefinition,
+} from "./model.ts";
 import { ModelInput } from "./model_input.ts";
 import type { ModelResource } from "./model_resource.ts";
 
@@ -13,7 +19,7 @@ function formatZodError(error: z.ZodError): string {
     return `${issue.message}${path}`;
   }
   return error.issues
-    .map((issue) => {
+    .map((issue: z.ZodIssue) => {
       const path = issue.path.length > 0 ? ` at "${issue.path.join(".")}"` : "";
       return `${issue.message}${path}`;
     })
@@ -94,7 +100,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }
 
     // Execute the initial method
-    let result = await this.execute(input, method, context);
+    const result = await this.execute(input, method, context);
     let currentResource = result.resource;
 
     // Process follow-up actions
@@ -104,7 +110,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         modelDef,
         context,
         result.followUpActions,
-        currentResource
+        currentResource,
       );
       currentResource = finalResult.resource;
     }
@@ -130,7 +136,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
 
         // Check continue condition
-        if (action.continueCondition && !action.continueCondition(currentResource)) {
+        if (
+          action.continueCondition && !action.continueCondition(currentResource)
+        ) {
           break;
         }
 
@@ -147,12 +155,18 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         try {
           const followUpMethod = modelDef.methods[action.methodName];
           if (!followUpMethod) {
-            throw new Error(`Follow-up method '${action.methodName}' not found`);
+            throw new Error(
+              `Follow-up method '${action.methodName}' not found`,
+            );
           }
 
-          const result = await this.execute(followUpInput, followUpMethod, context);
+          const result = await this.execute(
+            followUpInput,
+            followUpMethod,
+            context,
+          );
           currentResource = result.resource;
-          
+
           // If this follow-up method has its own follow-up actions, process them recursively
           if (result.followUpActions && result.followUpActions.length > 0) {
             const recursiveResult = await this.processFollowUpActions(
@@ -160,16 +174,18 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               modelDef,
               context,
               result.followUpActions,
-              currentResource
+              currentResource,
             );
             currentResource = recursiveResult.resource;
           }
-          
+
           break; // Success, exit retry loop
         } catch (error) {
           retries++;
           if (retries > maxRetries) {
-            throw new Error(`Follow-up action '${action.methodName}' failed after ${maxRetries} retries: ${error}`);
+            throw new Error(
+              `Follow-up action '${action.methodName}' failed after ${maxRetries} retries: ${error}`,
+            );
           }
         }
       }
@@ -179,6 +195,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

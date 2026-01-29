@@ -21,17 +21,17 @@ export interface FollowUpAction {
    * Name of the method to call next.
    */
   methodName: string;
-  
+
   /**
    * Delay before executing the follow-up action (in milliseconds).
    */
   delayMs?: number;
-  
+
   /**
    * Maximum number of retries for this action.
    */
   maxRetries?: number;
-  
+
   /**
    * Condition that must be met to continue with follow-up actions.
    * If this returns false, the workflow stops.
@@ -47,7 +47,7 @@ export interface MethodResult {
    * The resource created by the method.
    */
   resource: ModelResource;
-  
+
   /**
    * Optional follow-up actions to execute.
    */

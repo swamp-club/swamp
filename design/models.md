@@ -21,7 +21,8 @@ mapped into directory structures like 'aws/ec2/vpc' or 'docker/run' or
 
 ## ID
 
-Each instance of a model has a unique ID that is a uuidv4. That id is used for each instance input and resource.
+Each instance of a model has a unique ID that is a uuidv4. That id is used for
+each instance input and resource.
 
 ## Version
 

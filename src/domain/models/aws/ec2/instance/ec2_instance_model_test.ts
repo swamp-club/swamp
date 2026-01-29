@@ -1,6 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
-  createCloudControlClient,
   EC2_INSTANCE_MODEL_TYPE,
   EC2InstanceInputAttributesSchema,
   ec2InstanceModel,
@@ -152,6 +151,7 @@ Deno.test("EC2InstanceModel - create method success", async () => {
     Promise.resolve({
       ProgressEvent: {
         Identifier: "i-1234567890abcdef0",
+        RequestToken: "request-123",
       },
       ResourceDescription: {
         Properties: JSON.stringify({
@@ -188,6 +188,7 @@ Deno.test("EC2InstanceModel - update method with resource ID", async () => {
     Promise.resolve({
       ProgressEvent: {
         Identifier: "i-1234567890abcdef0",
+        RequestToken: "request-123",
       },
       ResourceDescription: {
         Properties: JSON.stringify({
@@ -242,6 +243,7 @@ Deno.test("EC2InstanceModel - delete method success", async () => {
   mockCloudControlClient.send = () =>
     Promise.resolve({
       ProgressEvent: {
+        Identifier: "i-1234567890abcdef0",
         RequestToken: "request-123",
       },
     });
@@ -250,7 +252,10 @@ Deno.test("EC2InstanceModel - delete method success", async () => {
 
   assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
-  assertEquals((result.resource.attributes.State as { Name: string }).Name, "shutting-down");
+  assertEquals(
+    (result.resource.attributes.State as { Name: string }).Name,
+    "shutting-down",
+  );
   assertEquals(result.resource.attributes.DeletionInitiated, true);
 });
 
@@ -296,6 +301,10 @@ Deno.test("EC2InstanceModel - reconcile method with drift", async () => {
     if (callCount === 1) {
       // GetResource call - return current state with drift
       return Promise.resolve({
+        ProgressEvent: {
+          Identifier: "i-1234567890abcdef0",
+          RequestToken: "request-123",
+        },
         ResourceDescription: {
           Properties: JSON.stringify({
             InstanceId: "i-1234567890abcdef0",
@@ -309,6 +318,7 @@ Deno.test("EC2InstanceModel - reconcile method with drift", async () => {
       return Promise.resolve({
         ProgressEvent: {
           Identifier: "i-1234567890abcdef0",
+          RequestToken: "request-123",
         },
         ResourceDescription: {
           Properties: JSON.stringify({
@@ -347,6 +357,10 @@ Deno.test("EC2InstanceModel - reconcile method without drift", async () => {
   // Mock GetResource returning state that matches desired state
   mockCloudControlClient.send = () =>
     Promise.resolve({
+      ProgressEvent: {
+        Identifier: "i-1234567890abcdef0",
+        RequestToken: "request-123",
+      },
       ResourceDescription: {
         Properties: JSON.stringify({
           InstanceId: "i-1234567890abcdef0",
