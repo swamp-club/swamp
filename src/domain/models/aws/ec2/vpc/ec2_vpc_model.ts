@@ -185,8 +185,10 @@ const ec2VpcModelInstance = new EC2VpcModel();
  * The EC2 VPC model definition.
  *
  * Provides CRUD operations for AWS EC2 VPCs using CloudControl API.
+ *
+ * Self-registers with the global model registry when this module is imported.
  */
 export const ec2VpcModel: ModelDefinition<
   typeof EC2VpcInputAttributesSchema,
   typeof EC2VpcResourceAttributesSchema
-> = ec2VpcModelInstance.createModelDefinition();
+> = ec2VpcModelInstance.defineAndRegister();

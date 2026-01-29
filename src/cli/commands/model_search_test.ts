@@ -1,11 +1,12 @@
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { ensureModelRegistryInitialized } from "../../domain/models/registry_init.ts";
 import type { ModelSearchItem } from "../../presentation/output/model_search_output.tsx";
 
-// Initialize logging and model registry for tests
+// Import models barrel to trigger self-registration
+import "../../domain/models/models.ts";
+
+// Initialize logging for tests
 await initializeLogging({ debugLogs: false });
-await ensureModelRegistryInitialized();
 
 Deno.test("modelSearchCommand module loads", async () => {
   const { modelSearchCommand } = await import("./model_search.ts");
