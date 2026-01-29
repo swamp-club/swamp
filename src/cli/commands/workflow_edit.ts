@@ -16,6 +16,7 @@ import {
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
+import { UserError } from "../../domain/errors.ts";
 
 /**
  * UUID v4 regex pattern for detecting if an argument is a UUID.
@@ -64,7 +65,7 @@ export const workflowEditCommand = new Command()
     if (!workflowIdOrName) {
       // No argument provided - check if interactive mode
       if (ctx.outputMode === "json") {
-        throw new Error(
+        throw new UserError(
           "Workflow ID or name is required in non-interactive mode",
         );
       }
@@ -73,7 +74,7 @@ export const workflowEditCommand = new Command()
       const allWorkflows = await repo.findAll();
 
       if (allWorkflows.length === 0) {
-        throw new Error("No workflows found in repository");
+        throw new UserError("No workflows found in repository");
       }
 
       const searchItems = allWorkflows.map(toSearchItem);
@@ -95,20 +96,20 @@ export const workflowEditCommand = new Command()
       const id: WorkflowId = createWorkflowId(selected.id);
       workflow = await repo.findById(id);
       if (!workflow) {
-        throw new Error(`Workflow not found: ${selected.id}`);
+        throw new UserError(`Workflow not found: ${selected.id}`);
       }
     } else if (isUuid(workflowIdOrName)) {
       ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
       const id: WorkflowId = createWorkflowId(workflowIdOrName);
       workflow = await repo.findById(id);
       if (!workflow) {
-        throw new Error(`Workflow not found: ${workflowIdOrName}`);
+        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
     } else {
       ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
       workflow = await repo.findByName(workflowIdOrName);
       if (!workflow) {
-        throw new Error(`Workflow not found: ${workflowIdOrName}`);
+        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
     }
 

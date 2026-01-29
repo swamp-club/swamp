@@ -14,6 +14,7 @@ import {
   findInputByIdGlobal,
   isUuid,
 } from "../../domain/models/model_lookup.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -39,7 +40,7 @@ export const modelGetCommand = new Command()
       ctx.logger.debug`Looking up by ID: ${modelIdOrName}`;
       const result = await findInputByIdGlobal(inputRepo, modelIdOrName);
       if (!result) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       input = result.input;
       modelType = result.type;
@@ -47,7 +48,7 @@ export const modelGetCommand = new Command()
       ctx.logger.debug`Looking up by name: ${modelIdOrName}`;
       const result = await inputRepo.findByNameGlobal(modelIdOrName);
       if (!result) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       input = result.input;
       modelType = result.type;

@@ -10,6 +10,7 @@ import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_wo
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -70,7 +71,7 @@ export const workflowHistoryGetCommand = new Command()
       await workflowRepo.findById(createWorkflowId(workflowIdOrName));
 
     if (!workflow) {
-      throw new Error(`Workflow not found: ${workflowIdOrName}`);
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
     }
 
     ctx.logger.debug`Found workflow: id=${workflow.id}, name=${workflow.name}`;
@@ -79,7 +80,7 @@ export const workflowHistoryGetCommand = new Command()
     const latestRun = await runRepo.findLatestByWorkflowId(workflow.id);
 
     if (!latestRun) {
-      throw new Error(`No runs found for workflow: ${workflow.name}`);
+      throw new UserError(`No runs found for workflow: ${workflow.name}`);
     }
 
     ctx.logger

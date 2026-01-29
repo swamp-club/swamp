@@ -14,6 +14,7 @@ import {
   findInputByIdGlobal,
   isUuid,
 } from "../../domain/models/model_lookup.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -63,7 +64,7 @@ export const modelDeleteCommand = new Command()
       ctx.logger.debug`Looking up by ID: ${modelIdOrName}`;
       const result = await findInputByIdGlobal(inputRepo, modelIdOrName);
       if (!result) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       input = result.input;
       modelType = result.type;
@@ -71,7 +72,7 @@ export const modelDeleteCommand = new Command()
       ctx.logger.debug`Looking up by name: ${modelIdOrName}`;
       const result = await inputRepo.findByNameGlobal(modelIdOrName);
       if (!result) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       input = result.input;
       modelType = result.type;
@@ -88,7 +89,7 @@ export const modelDeleteCommand = new Command()
 
     // If resource exists and no --force flag, block deletion
     if (resource && !options.force) {
-      throw new Error(
+      throw new UserError(
         `Model '${input.name}' has an associated resource. Use --force to delete both.`,
       );
     }

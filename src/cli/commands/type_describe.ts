@@ -12,6 +12,7 @@ import {
   modelRegistry,
 } from "../../domain/models/model.ts";
 import { typeSearchCommand } from "./type_search.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -53,7 +54,7 @@ export const typeDescribeCommand = new Command()
     if (!definition) {
       const availableTypes = modelRegistry.types().map((t) => t.normalized)
         .join(", ");
-      throw new Error(
+      throw new UserError(
         `Unknown model type: ${typeArg}. Available types: ${
           availableTypes || "none"
         }`,

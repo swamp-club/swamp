@@ -3,6 +3,7 @@ import React from "react";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { render } from "ink-testing-library";
 import { ErrorDisplay, renderError } from "./error_output.tsx";
+import { UserError } from "../../domain/errors.ts";
 
 const inkTestOptions = { sanitizeOps: false, sanitizeResources: false };
 
@@ -102,4 +103,44 @@ Deno.test("renderError handles non-Error objects", () => {
   } finally {
     console.error = originalError;
   }
+});
+
+Deno.test("renderError omits stack for UserError in json mode", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (msg: string) => logs.push(msg);
+
+  try {
+    const error = new UserError("Model has an associated resource");
+    renderError(error, "json");
+
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.error, "Model has an associated resource");
+    assertEquals(parsed.stack, undefined);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test({
+  name: "renderError omits stack for UserError in interactive mode",
+  ...inkTestOptions,
+  fn: () => {
+    const logs: string[] = [];
+    const originalError = console.error;
+    console.error = (msg: string) => logs.push(msg);
+
+    try {
+      const error = new UserError("Use --force to delete");
+      renderError(error, "interactive");
+
+      assertEquals(logs.length, 1);
+      assertStringIncludes(logs[0], "Error: Use --force to delete");
+      // Should not contain any "at " stack lines
+      assertEquals(logs[0].includes("at "), false);
+    } finally {
+      console.error = originalError;
+    }
+  },
 });

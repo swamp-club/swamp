@@ -19,6 +19,7 @@ import {
   findInputByIdGlobal,
   isUuid,
 } from "../../domain/models/model_lookup.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -60,7 +61,7 @@ export const modelEditCommand = new Command()
     if (!modelIdOrName) {
       // No argument provided - check if interactive mode
       if (ctx.outputMode === "json") {
-        throw new Error(
+        throw new UserError(
           "Model ID or name is required in non-interactive mode",
         );
       }
@@ -70,7 +71,7 @@ export const modelEditCommand = new Command()
       const allModels = toModelSearchItems(allResults);
 
       if (allModels.length === 0) {
-        throw new Error("No models found in repository");
+        throw new UserError("No models found in repository");
       }
 
       const searchData: ModelSearchData = {
@@ -90,7 +91,7 @@ export const modelEditCommand = new Command()
       // Find the full input data
       const result = await findInputByIdGlobal(inputRepo, selected.id);
       if (!result) {
-        throw new Error(`Model not found: ${selected.id}`);
+        throw new UserError(`Model not found: ${selected.id}`);
       }
       input = result.input;
       modelType = result.type;
@@ -98,7 +99,7 @@ export const modelEditCommand = new Command()
       ctx.logger.debug`Looking up by ID: ${modelIdOrName}`;
       const result = await findInputByIdGlobal(inputRepo, modelIdOrName);
       if (!result) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       input = result.input;
       modelType = result.type;
@@ -106,7 +107,7 @@ export const modelEditCommand = new Command()
       ctx.logger.debug`Looking up by name: ${modelIdOrName}`;
       const result = await inputRepo.findByNameGlobal(modelIdOrName);
       if (!result) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       input = result.input;
       modelType = result.type;
@@ -125,7 +126,7 @@ export const modelEditCommand = new Command()
         await Deno.stat(filePath);
       } catch (error) {
         if (error instanceof Deno.errors.NotFound) {
-          throw new Error(
+          throw new UserError(
             `Resource file not found for model '${input.name}'. ` +
               `Run a method to create the resource first.`,
           );

@@ -3,6 +3,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { render } from "ink-testing-library";
 import type { OutputMode } from "./output.tsx";
+import { UserError } from "../../domain/errors.ts";
 
 export interface ErrorData {
   error: string;
@@ -24,10 +25,12 @@ function extractStackLines(stack: string | undefined): string | undefined {
 
 /**
  * Renders an error to the console based on output mode.
+ * UserError instances do not show stack traces as they are expected user-facing errors.
  */
 export function renderError(error: unknown, mode: OutputMode): void {
   const err = error instanceof Error ? error : new Error(String(error));
-  const stackLines = extractStackLines(err.stack);
+  const isUserError = err instanceof UserError;
+  const stackLines = isUserError ? undefined : extractStackLines(err.stack);
 
   if (mode === "json") {
     const data: ErrorData = {

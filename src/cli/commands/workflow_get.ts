@@ -10,6 +10,7 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { UserError } from "../../domain/errors.ts";
 
 /**
  * UUID v4 regex pattern for detecting if an argument is a UUID.
@@ -52,7 +53,7 @@ export const workflowGetCommand = new Command()
     }
 
     if (!workflow) {
-      throw new Error(`Workflow not found: ${workflowIdOrName}`);
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
     }
 
     ctx.logger.debug`Found workflow: id=${workflow.id}, name=${workflow.name}`;
