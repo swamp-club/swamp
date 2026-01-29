@@ -95,17 +95,6 @@ export interface ResourceRepository {
    */
   findAll(type: ModelType): Promise<ModelResource[]>;
 
-  /**
-   * Finds a resource by its input ID.
-   *
-   * @param type - The model type
-   * @param inputId - The input ID
-   * @returns The resource if found, or null
-   */
-  findByInputId(
-    type: ModelType,
-    inputId: ModelInputId,
-  ): Promise<ModelResource | null>;
 
   /**
    * Saves a resource.

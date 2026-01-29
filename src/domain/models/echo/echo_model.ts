@@ -51,7 +51,7 @@ function executeWrite(
 
   // Create the resource with message and timestamp
   const resource = ModelResource.create({
-    inputId: input.id,
+    id: input.id, // Use same ID as input for consistency
     attributes: {
       message: attrs.message,
       timestamp: new Date().toISOString(),

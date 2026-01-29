@@ -16,7 +16,6 @@ Deno.test("execute with valid input returns method result", async () => {
     { repoDir: "." },
   );
 
-  assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.message, "Hello, world!");
   assertEquals(typeof result.resource.attributes.timestamp, "string");
 });

@@ -20,7 +20,7 @@ function createTestModel(typeString: string): ModelDefinition {
         inputAttributesSchema: z.object({ message: z.string() }),
         execute: (input: ModelInput) => {
           const resource = ModelResource.create({
-            inputId: input.id,
+            id: input.id,
             attributes: {
               message: input.attributes.message,
               timestamp: new Date().toISOString(),
@@ -137,7 +137,6 @@ Deno.test("ModelDefinition method can execute", async () => {
   });
 
   const result = await model.methods.write.execute(input, { repoDir: "/tmp" });
-  assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.message, "hello world");
   assertEquals(typeof result.resource.attributes.timestamp, "string");
 });

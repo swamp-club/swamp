@@ -128,7 +128,7 @@ export class ModelInput {
   /**
    * Sets the resource ID for this input.
    */
-  setResourceId(resourceId: string): void {
+  setResourceId(resourceId: string | undefined): void {
     this._resourceId = resourceId;
   }
 

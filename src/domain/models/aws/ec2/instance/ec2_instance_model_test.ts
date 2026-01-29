@@ -165,7 +165,6 @@ Deno.test("EC2InstanceModel - create method success", async () => {
 
   const result = await ec2InstanceModel.methods.create.execute(input, context);
 
-  assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
 });
 
@@ -201,7 +200,6 @@ Deno.test("EC2InstanceModel - update method with resource ID", async () => {
 
   const result = await ec2InstanceModel.methods.update.execute(input, context);
 
-  assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
 });
 
@@ -250,7 +248,6 @@ Deno.test("EC2InstanceModel - delete method success", async () => {
 
   const result = await ec2InstanceModel.methods.delete.execute(input, context);
 
-  assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
   assertEquals(
     (result.resource.attributes.State as { Name: string }).Name,
@@ -336,7 +333,6 @@ Deno.test("EC2InstanceModel - reconcile method with drift", async () => {
     context,
   );
 
-  assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
 });
 
@@ -376,7 +372,6 @@ Deno.test("EC2InstanceModel - reconcile method without drift", async () => {
     context,
   );
 
-  assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
   assertEquals(result.resource.attributes.ReconciliationStatus, "in-sync");
 });

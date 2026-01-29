@@ -60,13 +60,6 @@ export class YamlResourceRepository implements ResourceRepository {
     return resources;
   }
 
-  async findByInputId(
-    type: ModelType,
-    inputId: ModelInputId,
-  ): Promise<ModelResource | null> {
-    const resources = await this.findAll(type);
-    return resources.find((resource) => resource.inputId === inputId) ?? null;
-  }
 
   async save(type: ModelType, resource: ModelResource): Promise<void> {
     const dir = this.getTypeDir(type);

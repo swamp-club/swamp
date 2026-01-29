@@ -96,7 +96,7 @@ Deno.test("CLI: model validate passes for valid echo model with resource", async
 
     // Create a valid resource
     const resource = ModelResource.create({
-      inputId: input.id,
+      id: input.id,
       attributes: {
         message: "Hello, world!",
         timestamp: new Date().toISOString(),
@@ -189,7 +189,7 @@ Deno.test("CLI: model validate fails for invalid resource attributes", async () 
 
     // Create an invalid resource (missing timestamp)
     const resource = ModelResource.create({
-      inputId: input.id,
+      id: input.id,
       attributes: {
         message: "Hello",
         // Missing required timestamp

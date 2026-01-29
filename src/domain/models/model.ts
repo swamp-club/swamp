@@ -52,6 +52,12 @@ export interface MethodResult {
    * Optional follow-up actions to execute.
    */
   followUpActions?: FollowUpAction[];
+
+  /**
+   * If true, the resource should be deleted instead of saved.
+   * Used for operations like delete that complete by removing the resource.
+   */
+  deleteResource?: boolean;
 }
 
 /**

@@ -17,7 +17,6 @@ export function createModelResourceId(id: string): ModelResourceId {
  */
 export const ModelResourceSchema = z.object({
   id: z.string().uuid(),
-  inputId: z.string().uuid(),
   version: z.number().int().positive(),
   createdAt: z.string().datetime(),
   attributes: z.record(z.string(), z.unknown()).default({}),
@@ -33,7 +32,6 @@ export type ModelResourceData = z.infer<typeof ModelResourceSchema>;
  */
 export interface CreateModelResourceProps {
   id?: string;
-  inputId: string;
   version?: number;
   createdAt?: Date;
   attributes?: Record<string, unknown>;
@@ -48,7 +46,6 @@ export interface CreateModelResourceProps {
 export class ModelResource {
   private constructor(
     readonly id: ModelResourceId,
-    readonly inputId: string,
     readonly version: number,
     readonly createdAt: Date,
     private _attributes: Record<string, unknown>,
@@ -67,7 +64,6 @@ export class ModelResource {
 
     const validated = ModelResourceSchema.parse({
       id,
-      inputId: props.inputId,
       version,
       createdAt: createdAt.toISOString(),
       attributes: props.attributes ?? {},
@@ -75,7 +71,6 @@ export class ModelResource {
 
     return new ModelResource(
       createModelResourceId(validated.id),
-      validated.inputId,
       validated.version,
       new Date(validated.createdAt),
       validated.attributes,
@@ -92,7 +87,6 @@ export class ModelResource {
     const validated = ModelResourceSchema.parse(data);
     return new ModelResource(
       createModelResourceId(validated.id),
-      validated.inputId,
       validated.version,
       new Date(validated.createdAt),
       validated.attributes,
@@ -119,7 +113,6 @@ export class ModelResource {
   toData(): ModelResourceData {
     return {
       id: this.id,
-      inputId: this.inputId,
       version: this.version,
       createdAt: this.createdAt.toISOString(),
       attributes: { ...this._attributes },

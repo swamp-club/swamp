@@ -71,7 +71,6 @@ Deno.test("echoModel.methods.write executes correctly", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.inputId, input.id);
   assertEquals(result.resource.attributes.message, "hello world");
   assertEquals(typeof result.resource.attributes.timestamp, "string");
 

@@ -248,7 +248,6 @@ async function executeCreate(
   // Create initial resource with request token
   const resource = ModelResource.create({
     id: input.id,
-    inputId: input.id,
     attributes: {
       RequestToken: requestToken,
       OperationStatus: response.ProgressEvent.OperationStatus || "IN_PROGRESS",
@@ -321,7 +320,6 @@ async function executeDelete(
   // Create initial resource with request token
   const resource = ModelResource.create({
     id: input.id,
-    inputId: input.id,
     attributes: {
       RequestToken: requestToken,
       OperationStatus: response.ProgressEvent.OperationStatus || "IN_PROGRESS",
@@ -397,7 +395,6 @@ async function executeSync(
   if (currentStatus === "IN_PROGRESS") {
     const resource = ModelResource.create({
       id: input.id,
-      inputId: input.id,
       attributes: {
         RequestToken: requestToken,
         OperationStatus: currentStatus,
@@ -432,7 +429,24 @@ async function executeSync(
     );
   }
 
-  // Operation is SUCCESS - now get the full resource details
+  // Operation is SUCCESS - check if this is a deletion operation first
+  const isDeletionContext = input.attributes.DeletionInitiated ||
+    (input.attributes.StatusMessage as string)?.includes("deletion");
+    
+  if (isDeletionContext) {
+    // For deletion operations, we should delete the resource file regardless of GetResource response
+    const resource = ModelResource.create({
+      id: input.id,
+      attributes: {
+        OperationStatus: "SUCCESS",
+        StatusMessage: "EC2 instance successfully deleted",
+        DeletionCompleted: true,
+      },
+    });
+    return { resource, deleteResource: true };
+  }
+
+  // For non-deletion operations, get the full resource details
   if (!resourceIdentifier) {
     resourceIdentifier = statusResponse.ProgressEvent?.Identifier || "";
   }
@@ -461,7 +475,6 @@ async function executeSync(
 
     const resource = ModelResource.create({
       id: input.id,
-      inputId: input.id,
       attributes: {
         // Keep the original tracking info
         RequestToken: requestToken,
@@ -504,20 +517,18 @@ async function executeSync(
         (input.attributes.StatusMessage as string)?.includes("deletion");
 
       if (isDeletionContext) {
-        // This is actually success for a delete operation - workflow should terminate here
+        // This is actually success for a delete operation - signal to delete the resource file
         const resource = ModelResource.create({
           id: input.id,
-          inputId: input.id,
           attributes: {
-            RequestToken: requestToken,
             OperationStatus: "SUCCESS",
             StatusMessage: "EC2 instance successfully deleted",
-            ResourceIdentifier: resourceIdentifier,
             DeletionCompleted: true,
           },
         });
         // NOTE: No follow-up actions - this terminates the workflow
-        return { resource };
+        // deleteResource flag signals that the resource file should be deleted
+        return { resource, deleteResource: true };
       }
     }
     // Re-throw other errors (including "not found" in non-deletion context)
