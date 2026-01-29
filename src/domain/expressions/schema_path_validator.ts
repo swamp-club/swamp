@@ -16,6 +16,11 @@ export interface PathValidationResult {
 
 /**
  * Internal type for Zod v4 schema definition.
+ *
+ * Note: This relies on Zod's internal `_def` structure which is not part of
+ * the public API. If Zod changes its internal structure in future versions,
+ * this interface and the functions that use it may need to be updated.
+ * See: https://github.com/colinhacks/zod
  */
 interface ZodDef {
   type: string;

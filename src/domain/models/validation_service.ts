@@ -455,10 +455,10 @@ export class DefaultModelValidationService implements ModelValidationService {
 
     // Validate the path against the schema
     const validationResult = validateSchemaPath(schema, pathToValidate);
-    if (!validationResult.valid) {
+    if (!validationResult.valid && validationResult.error) {
       return {
         expression: ref.rawExpression,
-        error: validationResult.error!,
+        error: validationResult.error,
         suggestion: validationResult.suggestion,
         availableKeys: validationResult.availableKeys,
       };
@@ -501,10 +501,10 @@ export class DefaultModelValidationService implements ModelValidationService {
       definition.inputAttributesSchema,
       remainingPath,
     );
-    if (!validationResult.valid) {
+    if (!validationResult.valid && validationResult.error) {
       return {
         expression: ref.rawExpression,
-        error: validationResult.error!,
+        error: validationResult.error,
         suggestion: validationResult.suggestion,
         availableKeys: validationResult.availableKeys,
       };

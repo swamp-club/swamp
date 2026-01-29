@@ -63,6 +63,8 @@ export interface StepExecutor {
  * Default step executor that handles model methods and shell commands.
  */
 export class DefaultStepExecutor implements StepExecutor {
+  private readonly validationService = new DefaultModelValidationService();
+
   async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     const task = step.task.data;
 
@@ -133,8 +135,7 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Validate the model input (including expression paths) BEFORE evaluation
     // This catches malformed expressions and invalid paths early
-    const validationService = new DefaultModelValidationService();
-    const validationResults = await validationService.validateModel(
+    const validationResults = await this.validationService.validateModel(
       originalInput,
       definition,
       null, // resource doesn't exist yet
