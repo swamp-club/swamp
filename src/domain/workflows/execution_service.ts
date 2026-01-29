@@ -12,6 +12,12 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
+import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
+import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import { modelRegistry } from "../models/model.ts";
+import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
+import { createModelInputId, type ModelInput } from "../models/model_input.ts";
+import type { ModelType } from "../models/model_type.ts";
 
 /**
  * Context for step execution.
@@ -83,18 +89,116 @@ export class DefaultStepExecutor implements StepExecutor {
     return { stdout: stdout.trim(), exitCode: result.code };
   }
 
-  private executeModelMethod(
+  private async executeModelMethod(
     task: { modelIdOrName: string; methodName: string },
-    _ctx: StepExecutionContext,
+    ctx: StepExecutionContext,
   ): Promise<unknown> {
-    // This would integrate with the model execution service
-    // For now, return a placeholder that indicates what would be executed
-    return Promise.resolve({
+    const inputRepo = new YamlInputRepository(ctx.repoDir);
+    const resourceRepo = new YamlResourceRepository(ctx.repoDir);
+    const executionService = new DefaultMethodExecutionService();
+
+    // Look up the model input by ID or name
+    const lookupResult = await this.lookupModelInput(
+      inputRepo,
+      task.modelIdOrName,
+    );
+    if (!lookupResult) {
+      throw new Error(`Model not found: ${task.modelIdOrName}`);
+    }
+
+    const { input, modelType } = lookupResult;
+
+    // Get the model definition
+    const definition = modelRegistry.get(modelType);
+    if (!definition) {
+      throw new Error(`Unknown model type: ${modelType.normalized}`);
+    }
+
+    // Validate method exists on the model
+    const method = definition.methods[task.methodName];
+    if (!method) {
+      const availableMethods = Object.keys(definition.methods).join(", ");
+      throw new Error(
+        `Unknown method '${task.methodName}' for type '${modelType.normalized}'. Available methods: ${
+          availableMethods || "none"
+        }`,
+      );
+    }
+
+    // Execute the method
+    const result = await executionService.executeWorkflow(
+      input,
+      definition,
+      task.methodName,
+      { repoDir: ctx.repoDir, resourceRepository: resourceRepo },
+    );
+
+    // Handle resource persistence based on operation type
+    let resourcePath: string;
+    if (result.deleteResource) {
+      // Delete the resource file
+      await resourceRepo.delete(modelType, result.resource.id);
+      resourcePath = "";
+    } else {
+      // Save the resource
+      await resourceRepo.save(modelType, result.resource);
+      resourcePath = resourceRepo.getPath(modelType, result.resource.id);
+    }
+
+    // Update input's resourceId based on operation type
+    if (result.deleteResource) {
+      if (input.resourceId) {
+        input.setResourceId(undefined);
+        await inputRepo.save(modelType, input);
+      }
+    } else {
+      if (!input.resourceId) {
+        input.setResourceId(result.resource.id);
+        await inputRepo.save(modelType, input);
+      }
+    }
+
+    return {
       type: "model_method",
       model: task.modelIdOrName,
       method: task.methodName,
-      status: "executed",
-    });
+      resourceId: result.resource.id,
+      resourcePath,
+      resourceAttributes: result.resource.attributes,
+    };
+  }
+
+  /**
+   * UUID v4 regex pattern for detecting if an argument is a UUID.
+   */
+  private static readonly UUID_PATTERN =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  /**
+   * Looks up a model input by ID or name.
+   */
+  private async lookupModelInput(
+    inputRepo: YamlInputRepository,
+    idOrName: string,
+  ): Promise<{ input: ModelInput; modelType: ModelType } | null> {
+    if (DefaultStepExecutor.UUID_PATTERN.test(idOrName)) {
+      // Look up by ID across all model types
+      const inputId = createModelInputId(idOrName);
+      for (const type of modelRegistry.types()) {
+        const input = await inputRepo.findById(type, inputId);
+        if (input) {
+          return { input, modelType: type };
+        }
+      }
+      return null;
+    } else {
+      // Look up by name
+      const result = await inputRepo.findByNameGlobal(idOrName);
+      if (result) {
+        return { input: result.input, modelType: result.type };
+      }
+      return null;
+    }
   }
 }
 

@@ -106,10 +106,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   getPath(workflowId: WorkflowId, runId: WorkflowRunId): string {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     return join(
       this.getRunsDir(workflowId),
-      `workflow-run-${runId}-${timestamp}.yaml`,
+      `workflow-run-${runId}.yaml`,
     );
   }
 

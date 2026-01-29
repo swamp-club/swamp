@@ -274,6 +274,20 @@ async function executeCreate(
 }
 
 /**
+ * Checks if an error indicates the resource was not found.
+ */
+function isResourceNotFoundError(error: unknown): boolean {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const errorName = error instanceof Error ? error.name : "";
+
+  return (
+    errorMessage.includes("was not found") ||
+    errorMessage.includes("does not exist") ||
+    errorName === "ResourceNotFoundException"
+  );
+}
+
+/**
  * Executes the "delete" method for the EC2 Instance model.
  *
  * Terminates an EC2 instance using AWS CloudControl API.
@@ -311,42 +325,60 @@ async function executeDelete(
     Identifier: awsInstanceId,
   });
 
-  const response = await client.send(command);
+  try {
+    const response = await client.send(command);
 
-  if (!response.ProgressEvent?.RequestToken) {
-    throw new Error(
-      "EC2 instance deletion failed: no request token returned",
-    );
+    if (!response.ProgressEvent?.RequestToken) {
+      throw new Error(
+        "EC2 instance deletion failed: no request token returned",
+      );
+    }
+
+    // CloudControl API is asynchronous, so we get a RequestToken to track progress
+    const requestToken = response.ProgressEvent.RequestToken;
+
+    // Create initial resource with request token
+    const resource = ModelResource.create({
+      id: input.id,
+      attributes: {
+        RequestToken: requestToken,
+        OperationStatus: response.ProgressEvent.OperationStatus ||
+          "IN_PROGRESS",
+        StatusMessage: "EC2 instance deletion initiated via CloudControl API",
+        TypeName: "AWS::EC2::Instance",
+        ResourceIdentifier: awsInstanceId, // The AWS instance being deleted
+        EventTime: response.ProgressEvent.EventTime?.toISOString(),
+        DeletionInitiated: true,
+      },
+    });
+
+    // Set up follow-up actions to poll deletion status until complete
+    const followUpActions: FollowUpAction[] = [
+      {
+        methodName: "sync",
+        delayMs: 5000, // Wait 5 seconds before first sync call
+        maxRetries: 3, // Allow a few retries for the initial sync call
+        // Always call sync after delete - sync will handle checking status and polling
+      },
+    ];
+
+    return { resource, followUpActions };
+  } catch (error: unknown) {
+    // If the resource is already gone, treat as successful deletion
+    if (isResourceNotFoundError(error)) {
+      const resource = ModelResource.create({
+        id: input.id,
+        attributes: {
+          OperationStatus: "SUCCESS",
+          StatusMessage:
+            "EC2 instance already deleted or does not exist in AWS",
+          DeletionCompleted: true,
+        },
+      });
+      return { resource, deleteResource: true };
+    }
+    throw error;
   }
-
-  // CloudControl API is asynchronous, so we get a RequestToken to track progress
-  const requestToken = response.ProgressEvent.RequestToken;
-
-  // Create initial resource with request token
-  const resource = ModelResource.create({
-    id: input.id,
-    attributes: {
-      RequestToken: requestToken,
-      OperationStatus: response.ProgressEvent.OperationStatus || "IN_PROGRESS",
-      StatusMessage: "EC2 instance deletion initiated via CloudControl API",
-      TypeName: "AWS::EC2::Instance",
-      ResourceIdentifier: awsInstanceId, // The AWS instance being deleted
-      EventTime: response.ProgressEvent.EventTime?.toISOString(),
-      DeletionInitiated: true,
-    },
-  });
-
-  // Set up follow-up actions to poll deletion status until complete
-  const followUpActions: FollowUpAction[] = [
-    {
-      methodName: "sync",
-      delayMs: 5000, // Wait 5 seconds before first sync call
-      maxRetries: 3, // Allow a few retries for the initial sync call
-      // Always call sync after delete - sync will handle checking status and polling
-    },
-  ];
-
-  return { resource, followUpActions };
 }
 
 /**
@@ -391,13 +423,37 @@ async function executeSync(
     ? context.cloudControlClientFactory()
     : createCloudControlClient();
 
+  // Helper to create a "resource deleted" result
+  const createDeletedResult = (): MethodResult => {
+    const resource = ModelResource.create({
+      id: input.id,
+      attributes: {
+        OperationStatus: "SUCCESS",
+        StatusMessage: "EC2 instance has been deleted or does not exist in AWS",
+        DeletionCompleted: true,
+      },
+    });
+    return { resource, deleteResource: true };
+  };
+
   // Always check the CloudControl operation status first
   const statusCommand = new GetResourceRequestStatusCommand({
     RequestToken: requestToken,
   });
 
-  const statusResponse = await client.send(statusCommand);
+  let statusResponse;
+  try {
+    statusResponse = await client.send(statusCommand);
+  } catch (error: unknown) {
+    // If status check fails with "not found", the resource is deleted
+    if (isResourceNotFoundError(error)) {
+      return createDeletedResult();
+    }
+    throw error;
+  }
+
   const currentStatus = statusResponse.ProgressEvent?.OperationStatus;
+  const statusMessage = statusResponse.ProgressEvent?.StatusMessage || "";
 
   // If still in progress, return current state with follow-up action to retry sync
   if (currentStatus === "IN_PROGRESS") {
@@ -406,7 +462,7 @@ async function executeSync(
       attributes: {
         RequestToken: requestToken,
         OperationStatus: currentStatus,
-        StatusMessage: statusResponse.ProgressEvent?.StatusMessage,
+        StatusMessage: statusMessage,
         TypeName: "AWS::EC2::Instance",
         ResourceIdentifier: statusResponse.ProgressEvent?.Identifier ||
           resourceIdentifier,
@@ -428,12 +484,16 @@ async function executeSync(
     return { resource, followUpActions };
   }
 
-  // If operation failed, throw error
+  // If operation failed, check if it's a "not found" error (resource deleted)
   if (currentStatus === "FAILED") {
+    if (
+      statusMessage.includes("was not found") ||
+      statusMessage.includes("does not exist")
+    ) {
+      return createDeletedResult();
+    }
     throw new Error(
-      `CloudControl operation failed: ${
-        statusResponse.ProgressEvent?.StatusMessage || "Unknown error"
-      }`,
+      `CloudControl operation failed: ${statusMessage || "Unknown error"}`,
     );
   }
 
@@ -512,34 +572,10 @@ async function executeSync(
 
     return { resource };
   } catch (error: unknown) {
-    // Handle the case where the resource was successfully deleted (not found)
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorName = error instanceof Error ? error.name : "";
-
-    if (
-      errorMessage.includes("was not found") ||
-      errorName === "ResourceNotFoundException"
-    ) {
-      // Check if this is in a deletion context by looking for DeletionInitiated flag
-      const isDeletionContext = input.attributes.DeletionInitiated ||
-        (input.attributes.StatusMessage as string)?.includes("deletion");
-
-      if (isDeletionContext) {
-        // This is actually success for a delete operation - signal to delete the resource file
-        const resource = ModelResource.create({
-          id: input.id,
-          attributes: {
-            OperationStatus: "SUCCESS",
-            StatusMessage: "EC2 instance successfully deleted",
-            DeletionCompleted: true,
-          },
-        });
-        // NOTE: No follow-up actions - this terminates the workflow
-        // deleteResource flag signals that the resource file should be deleted
-        return { resource, deleteResource: true };
-      }
+    // If resource not found, treat as deleted
+    if (isResourceNotFoundError(error)) {
+      return createDeletedResult();
     }
-    // Re-throw other errors (including "not found" in non-deletion context)
     throw error;
   }
 }

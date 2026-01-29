@@ -438,3 +438,234 @@ Deno.test("calls progress callbacks during execution", async () => {
   assertEquals(events.includes("job-complete:job1"), true);
   assertEquals(events.includes("workflow-complete"), true);
 });
+
+/**
+ * Mock step executor that tracks concurrent execution for parallel testing.
+ */
+class ConcurrencyTrackingExecutor implements StepExecutor {
+  executedSteps: string[] = [];
+  concurrentExecutions: number[] = [];
+  private currentConcurrency = 0;
+  private maxConcurrency = 0;
+  private delay: number;
+
+  constructor(delayMs: number = 50) {
+    this.delay = delayMs;
+  }
+
+  async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    // Track that we started
+    this.currentConcurrency++;
+    this.concurrentExecutions.push(this.currentConcurrency);
+    if (this.currentConcurrency > this.maxConcurrency) {
+      this.maxConcurrency = this.currentConcurrency;
+    }
+
+    // Simulate some async work
+    await new Promise((resolve) => setTimeout(resolve, this.delay));
+
+    this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+
+    // Track that we finished
+    this.currentConcurrency--;
+
+    return { executed: true, step: step.name };
+  }
+
+  getMaxConcurrency(): number {
+    return this.maxConcurrency;
+  }
+}
+
+Deno.test("executes independent jobs in parallel", async () => {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new ConcurrencyTrackingExecutor(50);
+
+  // Create workflow with 3 independent jobs (no dependencies)
+  const workflow = Workflow.create({
+    name: "parallel-jobs",
+    jobs: [
+      Job.create({
+        name: "job-a",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.shell("echo") }),
+        ],
+      }),
+      Job.create({
+        name: "job-b",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.shell("echo") }),
+        ],
+      }),
+      Job.create({
+        name: "job-c",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.shell("echo") }),
+        ],
+      }),
+    ],
+  });
+
+  await workflowRepo.save(workflow);
+
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    ".",
+    executor,
+  );
+
+  const startTime = Date.now();
+  const run = await service.execute(workflow.name);
+  const elapsed = Date.now() - startTime;
+
+  assertEquals(run.status, "succeeded");
+  assertEquals(executor.executedSteps.length, 3);
+
+  // Verify jobs ran in parallel: max concurrency should be 3
+  assertEquals(executor.getMaxConcurrency(), 3);
+
+  // If running sequentially, it would take ~150ms (3 * 50ms)
+  // Running in parallel should take ~50-100ms
+  // Allow generous margin but should be less than sequential time
+  assertEquals(
+    elapsed < 140,
+    true,
+    `Expected parallel execution to be faster than 140ms, got ${elapsed}ms`,
+  );
+});
+
+Deno.test("executes dependent jobs sequentially across levels", async () => {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new ConcurrencyTrackingExecutor(30);
+
+  // Create workflow with diamond dependency pattern:
+  // job-a and job-b have no deps (level 1, parallel)
+  // job-c depends on job-a (level 2)
+  // job-d depends on both job-a and job-b (level 3)
+  const workflow = Workflow.create({
+    name: "diamond-deps",
+    jobs: [
+      Job.create({
+        name: "job-a",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.shell("echo") }),
+        ],
+      }),
+      Job.create({
+        name: "job-b",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.shell("echo") }),
+        ],
+      }),
+      Job.create({
+        name: "job-c",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.shell("echo") }),
+        ],
+        dependsOn: [
+          { job: "job-a", condition: TriggerCondition.succeeded("job-a") },
+        ],
+      }),
+      Job.create({
+        name: "job-d",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.shell("echo") }),
+        ],
+        dependsOn: [
+          { job: "job-a", condition: TriggerCondition.succeeded("job-a") },
+          { job: "job-b", condition: TriggerCondition.succeeded("job-b") },
+        ],
+      }),
+    ],
+  });
+
+  await workflowRepo.save(workflow);
+
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    ".",
+    executor,
+  );
+
+  const events: string[] = [];
+  const run = await service.execute(workflow.name, {
+    onJobStart: (_, jobName) => events.push(`start:${jobName}`),
+    onJobComplete: (_, jobName) => events.push(`complete:${jobName}`),
+  });
+
+  assertEquals(run.status, "succeeded");
+  assertEquals(executor.executedSteps.length, 4);
+
+  // Verify job-a and job-b both start before either completes (parallel in level 1)
+  const aStartIdx = events.indexOf("start:job-a");
+  const bStartIdx = events.indexOf("start:job-b");
+  const aCompleteIdx = events.indexOf("complete:job-a");
+  const bCompleteIdx = events.indexOf("complete:job-b");
+
+  // Both should start before both complete (proves parallel execution)
+  assertEquals(aStartIdx < aCompleteIdx, true);
+  assertEquals(bStartIdx < bCompleteIdx, true);
+  assertEquals(aStartIdx < bCompleteIdx, true);
+  assertEquals(bStartIdx < aCompleteIdx, true);
+
+  // job-c should start only after job-a completes
+  const cStartIdx = events.indexOf("start:job-c");
+  assertEquals(cStartIdx > aCompleteIdx, true);
+
+  // job-d should start only after both job-a and job-b complete
+  const dStartIdx = events.indexOf("start:job-d");
+  assertEquals(dStartIdx > aCompleteIdx, true);
+  assertEquals(dStartIdx > bCompleteIdx, true);
+});
+
+Deno.test("executes independent steps within a job in parallel", async () => {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new ConcurrencyTrackingExecutor(50);
+
+  // Create workflow with one job that has 3 independent steps
+  const workflow = Workflow.create({
+    name: "parallel-steps",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({ name: "step-a", task: StepTask.shell("echo") }),
+          Step.create({ name: "step-b", task: StepTask.shell("echo") }),
+          Step.create({ name: "step-c", task: StepTask.shell("echo") }),
+        ],
+      }),
+    ],
+  });
+
+  await workflowRepo.save(workflow);
+
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    ".",
+    executor,
+  );
+
+  const startTime = Date.now();
+  const run = await service.execute(workflow.name);
+  const elapsed = Date.now() - startTime;
+
+  assertEquals(run.status, "succeeded");
+  assertEquals(executor.executedSteps.length, 3);
+
+  // Verify steps ran in parallel: max concurrency should be 3
+  assertEquals(executor.getMaxConcurrency(), 3);
+
+  // If running sequentially, it would take ~150ms (3 * 50ms)
+  // Running in parallel should take ~50-100ms
+  assertEquals(
+    elapsed < 140,
+    true,
+    `Expected parallel execution to be faster than 140ms, got ${elapsed}ms`,
+  );
+});

@@ -7,7 +7,10 @@ import {
   EC2InstanceResourceAttributesSchema,
 } from "./ec2_instance_model.ts";
 import { ModelInput } from "../../../model_input.ts";
-import { createModelResourceId } from "../../../model_resource.ts";
+import {
+  createModelResourceId,
+  ModelResource,
+} from "../../../model_resource.ts";
 import type { MethodContext } from "../../../model.ts";
 import type { ResourceRepository } from "../../../repositories.ts";
 
@@ -222,4 +225,93 @@ Deno.test("EC2InstanceModel - delete method requires resourceRepository", async 
     Error,
     "Cannot delete: resourceRepository not provided in context",
   );
+});
+
+Deno.test("EC2InstanceModel - sync method treats 'not found' as deleted", async () => {
+  const input = ModelInput.create({
+    name: "test-instance",
+    attributes: {
+      RequestToken: "request-123",
+      ResourceIdentifier: "i-1234567890abcdef0",
+    },
+  });
+
+  // Mock CloudControl client where status check returns FAILED with "not found"
+  const mockClient = {
+    send: () =>
+      Promise.resolve({
+        ProgressEvent: {
+          OperationStatus: "FAILED",
+          StatusMessage:
+            "Resource of type 'AWS::EC2::Instance' with identifier 'i-1234567890abcdef0' was not found.",
+        },
+      }),
+  };
+
+  const context: MethodContext = {
+    repoDir: "/tmp/test-repo",
+    cloudControlClientFactory: () =>
+      mockClient as unknown as CloudControlClient,
+  };
+
+  const result = await ec2InstanceModel.methods.sync.execute(input, context);
+
+  // Should return success with deleteResource flag
+  assertEquals(result.resource.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource.attributes.DeletionCompleted, true);
+  assertEquals(result.deleteResource, true);
+  assertEquals(result.followUpActions, undefined);
+});
+
+Deno.test("EC2InstanceModel - delete method treats 'not found' as success", async () => {
+  const input = ModelInput.create({
+    name: "test-instance",
+    resourceId: "00000000-0000-4000-8000-000000000001",
+    attributes: {
+      ImageId: "ami-12345678",
+      InstanceType: "t2.micro",
+    },
+  });
+
+  // Mock resource repository that returns an existing resource with InstanceId
+  const existingResource = ModelResource.create({
+    id: "00000000-0000-4000-8000-000000000001",
+    attributes: {
+      InstanceId: "i-1234567890abcdef0",
+    },
+  });
+  const mockResourceRepository: ResourceRepository = {
+    findById: () => Promise.resolve(existingResource),
+    findAll: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createModelResourceId("mock-id"),
+    getPath: () => "/mock/path",
+  };
+
+  // Mock CloudControl client that returns "not found" error
+  const mockClient = {
+    send: () => {
+      const error = new Error(
+        "Resource of type 'AWS::EC2::Instance' with identifier 'i-1234567890abcdef0' was not found.",
+      );
+      error.name = "ResourceNotFoundException";
+      return Promise.reject(error);
+    },
+  };
+
+  const context: MethodContext = {
+    repoDir: "/tmp/test-repo",
+    resourceRepository: mockResourceRepository,
+    cloudControlClientFactory: () =>
+      mockClient as unknown as CloudControlClient,
+  };
+
+  const result = await ec2InstanceModel.methods.delete.execute(input, context);
+
+  // Should return success with deleteResource flag
+  assertEquals(result.resource.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource.attributes.DeletionCompleted, true);
+  assertEquals(result.deleteResource, true);
+  assertEquals(result.followUpActions, undefined);
 });

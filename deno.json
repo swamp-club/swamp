@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "exports": "./main.ts",
   "tasks": {
-    "dev": "deno run --allow-read --allow-write --allow-env --allow-run main.ts",
+    "dev": "deno run --allow-read --allow-write --allow-env --allow-run --allow-sys main.ts",
     "test": "deno test --allow-read --allow-write --allow-env --allow-run",
     "check": "deno check main.ts",
     "lint": "deno lint",
     "fmt": "deno fmt",
-    "compile": "deno compile --allow-read --allow-write --allow-env --allow-run --allow-net --include .claude/skills --output swamp main.ts"
+    "compile": "deno compile --allow-read --allow-write --allow-env --allow-run --allow-sys --allow-net --include .claude/skills --output swamp main.ts"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@1",
