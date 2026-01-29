@@ -60,6 +60,13 @@ export interface InputRepository {
   delete(type: ModelType, id: ModelInputId): Promise<void>;
 
   /**
+   * Finds all inputs across all model types.
+   *
+   * @returns Array of inputs with their types
+   */
+  findAllGlobal(): Promise<{ input: ModelInput; type: ModelType }[]>;
+
+  /**
    * Generates a new unique ID.
    */
   nextId(): ModelInputId;
