@@ -64,7 +64,7 @@ validate all workflows if none is specified.
 
 ### workflow search <search>
 
-Should work simiilarly to swamp type search - it uses fzf to search across all
+Should work similarly to swamp type search - it uses fzf to search across all
 the workflows by name or by id. Should produce json output or use interactive
 fuzzy search.
 
@@ -76,6 +76,17 @@ Should show the workflow yaml with syntax highlighting, and the path, similar to
 ### workflow run <id or name>
 
 Executes a workflow run.
+
+### workflow history get <id or name>
+
+Displays the run data (status, timing, step outputs/errors) for the latest
+workflow run
+
+### workflow history search <id or name>
+
+Should work similarly to workflow search - it uses fzf to search across all the
+workflow runs by name or by id. Should produce json output or use interactive
+fuzzy search.
 
 ### workflow schema get
 
