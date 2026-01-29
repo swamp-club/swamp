@@ -146,7 +146,7 @@ Deno.test("EC2InstanceModel - sync method without RequestToken fails", async () 
   await assertRejects(
     () => ec2InstanceModel.methods.sync.execute(input, context),
     Error,
-    "EC2 instance sync failed: no RequestToken found",
+    "AWS::EC2::Instance sync failed: no RequestToken found",
   );
 });
 
