@@ -1,9 +1,9 @@
 import { Command } from "@cliffy/command";
 import {
-  type ModelListData,
-  type ModelListItem,
-  renderModelList,
-} from "../../presentation/output/model_list_output.tsx";
+  type ModelSearchData,
+  type ModelSearchItem,
+  renderModelSearch,
+} from "../../presentation/output/model_search_output.tsx";
 import {
   type ModelGetData,
   renderModelGet,
@@ -19,11 +19,11 @@ import { modelRegistry } from "../../domain/models/model.ts";
 type AnyOptions = any;
 
 /**
- * Converts repository results to ModelListItem array.
+ * Converts repository results to ModelSearchItem array.
  */
-function toModelListItems(
+function toModelSearchItems(
   results: Awaited<ReturnType<YamlInputRepository["findAllGlobal"]>>,
-): ModelListItem[] {
+): ModelSearchItem[] {
   return results.map(({ input, type }) => ({
     id: input.id,
     name: input.name,
@@ -36,9 +36,9 @@ function toModelListItems(
  * Filters models by a query string (case-insensitive match on name, type, or id).
  */
 export function filterModels(
-  models: ModelListItem[],
+  models: ModelSearchItem[],
   query: string,
-): ModelListItem[] {
+): ModelSearchItem[] {
   if (!query) {
     return models;
   }
@@ -55,7 +55,7 @@ export function filterModels(
  * Displays the model get output for a selected model.
  */
 async function displayModelGet(
-  item: ModelListItem,
+  item: ModelSearchItem,
   repoDir: string,
   outputMode: "interactive" | "json",
 ): Promise<void> {
@@ -103,38 +103,38 @@ async function displayModelGet(
   renderModelGet(data, outputMode);
 }
 
-export const modelListCommand = new Command()
-  .name("list")
-  .description("List and search model inputs")
+export const modelSearchCommand = new Command()
+  .name("search")
+  .description("Search for model inputs")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, "model-list");
-    ctx.logger.debug`Listing models with query: ${query ?? "(none)"}`;
+    const ctx = createContext(options as GlobalOptions, "model-search");
+    ctx.logger.debug`Searching models with query: ${query ?? "(none)"}`;
 
     const repoDir = options.repoDir ?? ".";
     const inputRepo = new YamlInputRepository(repoDir);
 
     // Get all models from repository
     const allResults = await inputRepo.findAllGlobal();
-    const allModels = toModelListItems(allResults);
+    const allModels = toModelSearchItems(allResults);
 
     if (ctx.outputMode === "json") {
       // Non-interactive: filter and output JSON
       const filteredModels = filterModels(allModels, query ?? "");
-      const data: ModelListData = {
+      const data: ModelSearchData = {
         query: query ?? "",
         results: filteredModels,
       };
-      await renderModelList(data, ctx.outputMode);
+      await renderModelSearch(data, ctx.outputMode);
     } else {
       // Interactive: show fuzzy search UI
-      const data: ModelListData = {
+      const data: ModelSearchData = {
         query: query ?? "",
         results: allModels,
       };
 
-      const selected = await renderModelList(data, ctx.outputMode);
+      const selected = await renderModelSearch(data, ctx.outputMode);
 
       if (selected) {
         ctx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
@@ -145,5 +145,5 @@ export const modelListCommand = new Command()
       }
     }
 
-    ctx.logger.debug("Model list command completed");
+    ctx.logger.debug("Model search command completed");
   });

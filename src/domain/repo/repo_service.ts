@@ -132,11 +132,18 @@ export class RepoService {
     await this.skillAssets.copySkillsTo(skillsDir);
     const skillsUpdated = this.skillAssets.getSkillNames();
 
+    // createUpgradeMarker always sets upgradedAt, but TypeScript doesn't know this
+    if (!updatedMarker.upgradedAt) {
+      throw new Error(
+        "Internal error: upgradedAt was not set by createUpgradeMarker",
+      );
+    }
+
     return {
       path: repoPath.value,
       previousVersion,
       newVersion: this.currentVersion.toString(),
-      upgradedAt: updatedMarker.upgradedAt!,
+      upgradedAt: updatedMarker.upgradedAt,
       skillsUpdated,
     };
   }
