@@ -1,0 +1,197 @@
+import { assertEquals, assertThrows } from "@std/assert";
+import { Workflow } from "./workflow.ts";
+import { Job } from "./job.ts";
+import { Step } from "./step.ts";
+import { StepTask } from "./step_task.ts";
+import { TriggerCondition } from "./trigger_condition.ts";
+
+function createTestJob(name: string): Job {
+  return Job.create({
+    name,
+    steps: [
+      Step.create({
+        name: "step1",
+        task: StepTask.shell("echo", { args: [name] }),
+      }),
+    ],
+  });
+}
+
+Deno.test("Workflow.create generates UUID if not provided", () => {
+  const workflow = Workflow.create({ name: "test-workflow" });
+  assertEquals(typeof workflow.id, "string");
+  assertEquals(workflow.id.length, 36); // UUID length
+});
+
+Deno.test("Workflow.create uses provided ID", () => {
+  const id = "550e8400-e29b-41d4-a716-446655440000";
+  const workflow = Workflow.create({ id, name: "test-workflow" });
+  assertEquals(workflow.id, id);
+});
+
+Deno.test("Workflow.create sets default version to 1", () => {
+  const workflow = Workflow.create({ name: "test-workflow" });
+  assertEquals(workflow.version, 1);
+});
+
+Deno.test("Workflow.create uses provided version", () => {
+  const workflow = Workflow.create({
+    name: "test-workflow",
+    version: 3,
+    jobs: [createTestJob("job1")],
+  });
+  assertEquals(workflow.version, 3);
+});
+
+Deno.test("Workflow.create creates workflow with all props", () => {
+  const job = createTestJob("build");
+  const workflow = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "my-workflow",
+    description: "A test workflow",
+    jobs: [job],
+    version: 2,
+  });
+
+  assertEquals(workflow.id, "550e8400-e29b-41d4-a716-446655440000");
+  assertEquals(workflow.name, "my-workflow");
+  assertEquals(workflow.description, "A test workflow");
+  assertEquals(workflow.jobs.length, 1);
+  assertEquals(workflow.version, 2);
+});
+
+Deno.test("Workflow.create allows empty jobs for initial creation", () => {
+  const workflow = Workflow.create({ name: "empty-workflow" });
+  assertEquals(workflow.jobs.length, 0);
+});
+
+Deno.test("Workflow.getJob finds job by name", () => {
+  const job1 = createTestJob("job1");
+  const job2 = createTestJob("job2");
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [job1, job2],
+  });
+
+  const found = workflow.getJob("job2");
+  assertEquals(found?.name, "job2");
+
+  const notFound = workflow.getJob("nonexistent");
+  assertEquals(notFound, undefined);
+});
+
+Deno.test("Workflow.addJob adds job to workflow", () => {
+  const workflow = Workflow.create({ name: "test" });
+  assertEquals(workflow.jobs.length, 0);
+
+  const job = createTestJob("new-job");
+  workflow.addJob(job);
+  assertEquals(workflow.jobs.length, 1);
+  assertEquals(workflow.getJob("new-job")?.name, "new-job");
+});
+
+Deno.test("Workflow.addJob throws on duplicate job name", () => {
+  const job1 = createTestJob("job1");
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [job1],
+  });
+
+  const duplicate = createTestJob("job1");
+  assertThrows(
+    () => workflow.addJob(duplicate),
+    Error,
+    "already exists",
+  );
+});
+
+Deno.test("Workflow.fromData reconstructs workflow correctly", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    description: "Test description",
+    jobs: [
+      {
+        name: "job1",
+        steps: [
+          {
+            name: "step1",
+            task: { type: "shell" as const, command: "echo", args: [] },
+            dependsOn: [],
+            weight: 0,
+          },
+        ],
+        dependsOn: [],
+        weight: 0,
+      },
+    ],
+    version: 2,
+  };
+
+  const workflow = Workflow.fromData(data);
+  assertEquals(workflow.id, data.id);
+  assertEquals(workflow.name, data.name);
+  assertEquals(workflow.description, data.description);
+  assertEquals(workflow.jobs.length, 1);
+  assertEquals(workflow.version, data.version);
+});
+
+Deno.test("Workflow.toData returns correct structure", () => {
+  const job = createTestJob("job1");
+  const workflow = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    description: "Test description",
+    jobs: [job],
+    version: 2,
+  });
+
+  const data = workflow.toData();
+  assertEquals(data.id, "550e8400-e29b-41d4-a716-446655440000");
+  assertEquals(data.name, "test-workflow");
+  assertEquals(data.description, "Test description");
+  assertEquals(data.jobs.length, 1);
+  assertEquals(data.jobs[0].name, "job1");
+  assertEquals(data.version, 2);
+});
+
+Deno.test("Workflow.fromData and toData roundtrip correctly", () => {
+  const original = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "complex-workflow",
+    description: "A complex workflow",
+    jobs: [
+      Job.create({
+        name: "build",
+        steps: [
+          Step.create({
+            name: "compile",
+            task: StepTask.shell("npm", { args: ["run", "build"] }),
+          }),
+        ],
+      }),
+      Job.create({
+        name: "test",
+        steps: [
+          Step.create({
+            name: "unit",
+            task: StepTask.shell("npm", { args: ["test"] }),
+          }),
+        ],
+        dependsOn: [
+          { job: "build", condition: TriggerCondition.succeeded("build") },
+        ],
+      }),
+    ],
+    version: 3,
+  });
+
+  const data = original.toData();
+  const restored = Workflow.fromData(data);
+
+  assertEquals(restored.id, original.id);
+  assertEquals(restored.name, original.name);
+  assertEquals(restored.description, original.description);
+  assertEquals(restored.jobs.length, original.jobs.length);
+  assertEquals(restored.version, original.version);
+});

@@ -1,0 +1,18 @@
+import { Command } from "@cliffy/command";
+import { workflowCreateCommand } from "./workflow_create.ts";
+import { workflowGetCommand } from "./workflow_get.ts";
+import { workflowValidateCommand } from "./workflow_validate.ts";
+import { workflowSearchCommand } from "./workflow_search.ts";
+import { workflowRunCommand } from "./workflow_run.ts";
+
+export const workflowCommand = new Command()
+  .name("workflow")
+  .description("Manage workflows")
+  .action(function () {
+    this.showHelp();
+  })
+  .command("create", workflowCreateCommand)
+  .command("get", workflowGetCommand)
+  .command("validate", workflowValidateCommand)
+  .command("search", workflowSearchCommand)
+  .command("run", workflowRunCommand);
