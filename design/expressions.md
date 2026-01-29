@@ -1,0 +1,82 @@
+# Expressions
+
+Inputs and Workflow are stored as YAML files, and they can contain Google CEL
+expressions which get evaluated into the data structures they return and
+injected into the final data structure after parsing. These expressions should
+be able to reference models by name, then grab data from inputs or resources,
+and manipulate it in place (such as string manipulation, concatenating array
+members, etc).
+
+## Model Data
+
+You should be able to access models by name or id, and then input data or
+resource data through dot notation.
+
+## Examples
+
+The results of the expression should be inserted into the resulting data
+structure. Given an input like this:
+
+```yaml
+id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+name: foo
+version: 1
+tags: {}
+attributes:
+  message: "I like cheese"
+```
+
+Another can use a CEL expression to extract the message attribute:
+
+```yaml
+id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+name: bar
+version: 1
+tags: {}
+attributes:
+  message: ${{ model.foo.input.attributes.message }}
+```
+
+Or the resource output of the same model:
+
+```yaml
+id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+name: baz
+version: 1
+tags: {}
+attributes:
+  message: ${{ model.foo.resource.attributes.message }}
+```
+
+You can refer to your own model with `self`, for things like name, version,
+tags, and a models other attributes.
+
+You can also use the uuid of a model in order to reference it, rather than the
+name.
+
+For workflows, you should be able to reference other workflows by name or id, in
+addition to any model.
+
+## Workflow dependency and lazy evaluation
+
+When a model is referenced in a workflow step, any CEL expressions that
+reference other models should create an implicit dependency on the evaluation of
+that workflow. This ensures that data in a resource, for example, will be
+available when the later data is evaluatedd.
+
+## Extensibility
+
+Users should be able to extend the functions available to the CEL expressions by
+registering custom types, functions, etc in their swamp repo.
+
+## Runtime Guidance
+
+When loading the YAML, first parse the CEL expressions. Then take the data
+structures they emit and embed them in the data structure. Write those to a
+directory in the repository called inputs-evaluated/ whose structure is the same
+as inputs. This directory should be in a swamp repos .gitignore file.
+
+The same is true for workflows-evaluated/, and it should also be in .gitignore.

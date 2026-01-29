@@ -15,6 +15,7 @@ machine-readable output.
 | Search model types | `swamp type search [query] --json`                    |
 | Describe a type    | `swamp type describe <type> --json`                   |
 | Create model input | `swamp model create <type> <name> --json`             |
+| Evaluate input(s)  | `swamp model evaluate [id_or_name] --json`            |
 | Run a method       | `swamp model method run <id_or_name> <method> --json` |
 
 ## Search for Model Types
@@ -105,6 +106,78 @@ attributes:
   message: "Hello, world!"
 ```
 
+## Expression Language
+
+Model inputs support CEL (Common Expression Language) expressions using the
+`${{ <expression> }}` syntax. Expressions are evaluated at runtime and can
+reference other models.
+
+### Reference Types
+
+| Reference                                  | Description                        |
+| ------------------------------------------ | ---------------------------------- |
+| `model.<name>.input.attributes.<field>`    | Another model's input attribute    |
+| `model.<name>.resource.attributes.<field>` | Another model's resource attribute |
+| `self.name`                                | This model's name                  |
+| `self.version`                             | This model's version               |
+| `self.attributes.<field>`                  | This model's own input attribute   |
+
+### CEL Operations
+
+Expressions support standard CEL operations:
+
+- **String concatenation:** `self.name + "-suffix"`
+- **Arithmetic:** `self.attributes.count * 2`
+- **Conditionals:** `self.attributes.enabled ? "yes" : "no"`
+
+### Example with Expressions
+
+```yaml
+# inputs/aws/subnet/my-subnet.yaml
+apiVersion: swamp/v1
+kind: Input
+metadata:
+  name: my-subnet
+  type: aws/subnet
+attributes:
+  vpcId: ${{ model.my-vpc.resource.attributes.vpcId }}
+  cidrBlock: "10.0.1.0/24"
+  tags:
+    Name: ${{ self.name + "-subnet" }}
+```
+
+## Evaluate Model Inputs
+
+Evaluate expressions in model inputs and write the results to
+`inputs-evaluated/`.
+
+```bash
+swamp model evaluate my-subnet --json
+swamp model evaluate --all --json
+```
+
+**Arguments:**
+
+- `<id_or_name>` - The model's name or ID (optional if using `--all`)
+- `--all` - Evaluate all model inputs
+
+**Output shape:**
+
+```json
+{
+  "evaluatedInputs": [
+    {
+      "name": "my-subnet",
+      "type": "aws/subnet",
+      "path": "inputs-evaluated/aws/subnet/my-subnet.yaml"
+    }
+  ]
+}
+```
+
+The evaluated files contain the resolved attribute values with all expressions
+replaced by their computed results.
+
 ## Run Methods
 
 Execute a method on a model input.
@@ -127,5 +200,7 @@ results to the user.
 2. **Describe** to understand the schema:
    `swamp type describe swamp/echo --json`
 3. **Create** an input file: `swamp model create swamp/echo my-message --json`
-4. **Edit** the YAML file to set `attributes.message`
-5. **Run** the method: `swamp model method run my-message write --json`
+4. **Edit** the YAML file to set `attributes.message` (use expressions if
+   needed)
+5. **Evaluate** expressions: `swamp model evaluate my-message --json`
+6. **Run** the method: `swamp model method run my-message write --json`

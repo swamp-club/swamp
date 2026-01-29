@@ -4,7 +4,10 @@ import { render } from "ink";
 import type { OutputMode } from "./output.tsx";
 import type { WorkflowData } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import type { ExecutionProgressCallback } from "../../domain/workflows/execution_service.ts";
+import type {
+  ExecutionProgressCallback,
+  ImplicitDependencyMap,
+} from "../../domain/workflows/execution_service.ts";
 import {
   type JobRunData,
   renderWorkflowRun,
@@ -68,6 +71,9 @@ function createProgressAdapter(
   dispatch: React.Dispatch<ExecutionAction>,
 ): ExecutionProgressCallback {
   return {
+    onImplicitDependencies: (deps: ImplicitDependencyMap) => {
+      dispatch({ type: "SET_IMPLICIT_DEPENDENCIES", deps });
+    },
     onWorkflowStart: (run) => {
       dispatch({ type: "WORKFLOW_START", run: toRunData(run) });
     },

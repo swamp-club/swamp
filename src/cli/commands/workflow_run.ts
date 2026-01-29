@@ -12,6 +12,7 @@ import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_wo
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
   type ExecutionProgressCallback,
+  type ImplicitDependencyMap,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -26,7 +27,11 @@ type AnyOptions = any;
 /**
  * Converts a WorkflowRun to WorkflowRunData for presentation.
  */
-function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
+function toRunData(
+  run: WorkflowRun,
+  path?: string,
+  implicitDeps?: ImplicitDependencyMap,
+): WorkflowRunData {
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
 
@@ -38,6 +43,7 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
     jobs: run.jobs.map((job): JobRunData => {
       const jobStart = job.startedAt?.getTime();
       const jobEnd = job.completedAt?.getTime();
+      const jobImplicitDeps = implicitDeps?.get(job.jobName);
 
       return {
         name: job.jobName,
@@ -45,12 +51,14 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
         steps: job.steps.map((step): StepRunData => {
           const stepStart = step.startedAt?.getTime();
           const stepEnd = step.completedAt?.getTime();
+          const stepImplicitDeps = jobImplicitDeps?.get(step.stepName);
 
           return {
             name: step.stepName,
             status: step.status,
             error: step.error,
             duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
+            implicitDependencies: stepImplicitDeps,
           };
         }),
         duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,
@@ -122,7 +130,12 @@ export const workflowRunCommand = new Command()
         }
       } else {
         // JSON mode: execute with debug logging, output final result
+        let capturedImplicitDeps: ImplicitDependencyMap | undefined;
+
         const progress: ExecutionProgressCallback = {
+          onImplicitDependencies: (deps) => {
+            capturedImplicitDeps = deps;
+          },
           onJobStart: (_run, jobName) => {
             ctx.logger.debug`Job started: ${jobName}`;
           },
@@ -139,7 +152,7 @@ export const workflowRunCommand = new Command()
         // Get the path for the run
         const path = runRepo.getPath(workflow.id, run.id);
 
-        const data = toRunData(run, path);
+        const data = toRunData(run, path, capturedImplicitDeps);
         renderWorkflowRun(data, ctx.outputMode);
 
         ctx.logger.debug`Workflow run completed: status=${run.status}`;
