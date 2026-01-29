@@ -52,11 +52,25 @@ async function discoverModelFiles(): Promise<string[]> {
 }
 
 /**
+ * Strips comments from TypeScript/JavaScript content.
+ * Removes both single-line (//) and multi-line (/* *\/) comments.
+ */
+function stripComments(content: string): string {
+  // Remove single-line comments
+  const withoutSingleLine = content.replace(/\/\/.*$/gm, "");
+  // Remove multi-line comments (including JSDoc)
+  return withoutSingleLine.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/**
  * Extracts model export names from a file by parsing its content.
  * Looks for exports matching the pattern: export const xxxModel
+ * Ignores commented-out code.
  */
 async function extractModelExports(filePath: string): Promise<string[]> {
   const content = await Deno.readTextFile(filePath);
+  // Strip comments to avoid matching commented-out exports
+  const contentWithoutComments = stripComments(content);
   const exports: string[] = [];
 
   // Match: export const someNameModel = or export const someNameModel:
@@ -64,7 +78,7 @@ async function extractModelExports(filePath: string): Promise<string[]> {
   const exportRegex = /export\s+const\s+(\w+Model)\s*[=:]/g;
   let match;
 
-  while ((match = exportRegex.exec(content)) !== null) {
+  while ((match = exportRegex.exec(contentWithoutComments)) !== null) {
     const name = match[1];
     // Skip MODEL_TYPE constants (e.g., EC2_INSTANCE_MODEL_TYPE)
     if (!name.includes("MODEL_TYPE") && !name.includes("_MODEL_")) {

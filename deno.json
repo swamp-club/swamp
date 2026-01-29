@@ -9,6 +9,7 @@
     "lint": "deno lint",
     "fmt": "deno fmt",
     "generate:models": "deno run --allow-read --allow-write scripts/generate_model_registry.ts",
+    "check:models": "deno run --allow-read --allow-write --allow-run scripts/check_model_registry.ts",
     "compile": "deno task generate:models && deno compile --allow-read --allow-write --allow-env --allow-run --allow-sys --allow-net --include .claude/skills --output swamp main.ts"
   },
   "imports": {
