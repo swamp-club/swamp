@@ -16,16 +16,42 @@ import type { JobRunData } from "../../workflow_run_output.tsx";
 import { useTerminalSize } from "../../hooks/mod.ts";
 
 /**
+ * A dependency with type information (explicit or implicit).
+ */
+export interface PendingDep {
+  name: string;
+  isImplicit: boolean;
+}
+
+/**
  * Computes pending dependencies (ones that haven't succeeded yet).
+ * Returns dependencies with type info (explicit vs implicit).
  */
 function getPendingDependencies(
-  allDeps: string[],
+  explicitDeps: string[],
+  implicitDeps: string[],
   statuses: Map<string, string>,
-): string[] {
-  return allDeps.filter((dep) => {
+): PendingDep[] {
+  const result: PendingDep[] = [];
+
+  for (const dep of explicitDeps) {
     const status = statuses.get(dep);
-    return status !== "succeeded" && status !== "skipped";
-  });
+    if (status !== "succeeded" && status !== "skipped") {
+      result.push({ name: dep, isImplicit: false });
+    }
+  }
+
+  for (const dep of implicitDeps) {
+    const status = statuses.get(dep);
+    if (status !== "succeeded" && status !== "skipped") {
+      // Avoid duplicates if already in explicit deps
+      if (!explicitDeps.includes(dep)) {
+        result.push({ name: dep, isImplicit: true });
+      }
+    }
+  }
+
+  return result;
 }
 
 interface WorkflowExecutionUIProps {
@@ -131,24 +157,33 @@ export function WorkflowExecutionUI(
 
   // Compute pending dependencies for jobs
   const jobStatuses = new Map(jobs.map((j) => [j.name, j.status]));
-  const jobPendingDeps = new Map<string, string[]>();
+  const jobPendingDeps = new Map<string, PendingDep[]>();
   for (const job of workflow.jobs) {
-    const allDeps = job.dependsOn.map((d) => d.job);
-    const pendingDeps = getPendingDependencies(allDeps, jobStatuses);
+    const explicitDeps = job.dependsOn.map((d) => d.job);
+    // Jobs don't have implicit deps (only steps do)
+    const pendingDeps = getPendingDependencies(explicitDeps, [], jobStatuses);
     jobPendingDeps.set(job.name, pendingDeps);
   }
 
   // Compute pending dependencies for steps of selected job
-  const stepPendingDeps = new Map<string, string[]>();
+  const stepPendingDeps = new Map<string, PendingDep[]>();
   if (selectedJob) {
     const stepStatuses = new Map(
       selectedJob.steps.map((s) => [s.name, s.status]),
     );
     const workflowJob = workflow.jobs[state.selectedJobIndex];
     if (workflowJob) {
+      // Get implicit deps for this job from state
+      const jobImplicitDeps = state.implicitDependencies.get(workflowJob.name);
+
       for (const step of workflowJob.steps) {
-        const allDeps = step.dependsOn.map((d) => d.step);
-        const pendingDeps = getPendingDependencies(allDeps, stepStatuses);
+        const explicitDeps = step.dependsOn.map((d) => d.step);
+        const implicitDeps = jobImplicitDeps?.get(step.name) ?? [];
+        const pendingDeps = getPendingDependencies(
+          explicitDeps,
+          implicitDeps,
+          stepStatuses,
+        );
         stepPendingDeps.set(step.name, pendingDeps);
       }
     }
