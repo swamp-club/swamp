@@ -7,6 +7,7 @@ import {
 } from "../../presentation/output/model_validate_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import type { ModelInput } from "../../domain/models/model_input.ts";
+import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
@@ -65,7 +66,7 @@ export const modelValidateCommand = new Command()
             continue;
           }
 
-          const resource = await resourceRepo.findById(type, input.id as any);
+          const resource = await resourceRepo.findById(type, inputIdToResourceId(input.id));
           const validationResults = await validationService.validateModel(
             input,
             definition,
@@ -130,7 +131,7 @@ export const modelValidateCommand = new Command()
       }
 
       // Load the resource if it exists
-      const resource = await resourceRepo.findById(modelType, input.id as any);
+      const resource = await resourceRepo.findById(modelType, inputIdToResourceId(input.id));
       ctx.logger.debug`Resource exists: ${resource !== null}`;
 
       // Run validations

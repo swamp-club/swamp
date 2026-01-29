@@ -11,6 +11,7 @@ import {
 } from "../../presentation/output/model_get_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { createModelInputId } from "../../domain/models/model_input.ts";
+import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -78,7 +79,7 @@ async function displayModelGet(
   }
 
   // Load the resource if it exists
-  const resource = await resourceRepo.findById(modelType, input.id as any);
+  const resource = await resourceRepo.findById(modelType, inputIdToResourceId(input.id));
 
   // Build resource data
   let resourceData: ResourceData | undefined;

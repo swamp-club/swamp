@@ -58,8 +58,7 @@ Deno.test("EC2InstanceModel - has required methods", () => {
   assertEquals(Object.keys(ec2InstanceModel.methods).sort(), [
     "create",
     "delete",
-    "reconcile",
-    "update",
+    "sync",
   ]);
 });
 
@@ -132,78 +131,9 @@ Deno.test("EC2InstanceModel - resource schema validation", () => {
   assertEquals(result.success, true);
 });
 
-Deno.test("EC2InstanceModel - create method success", async () => {
-  const input = ModelInput.create({
-    name: "test-instance",
-    attributes: {
-      ImageId: "ami-12345678",
-      InstanceType: "t2.micro",
-      KeyName: "my-key",
-    },
-  });
 
-  const context: MethodContext = {
-    repoDir: "/tmp/test-repo",
-  };
 
-  // Mock successful creation
-  mockCloudControlClient.send = () =>
-    Promise.resolve({
-      ProgressEvent: {
-        Identifier: "i-1234567890abcdef0",
-        RequestToken: "request-123",
-      },
-      ResourceDescription: {
-        Properties: JSON.stringify({
-          InstanceId: "i-1234567890abcdef0",
-          State: { Name: "pending" },
-          ImageId: "ami-12345678",
-          InstanceType: "t2.micro",
-        }),
-      },
-    });
-
-  const result = await ec2InstanceModel.methods.create.execute(input, context);
-
-  assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
-});
-
-Deno.test("EC2InstanceModel - update method with resource ID", async () => {
-  const input = ModelInput.create({
-    name: "test-instance",
-    resourceId: "12345678-1234-1234-1234-123456789012", // Valid UUID
-    attributes: {
-      ImageId: "ami-12345678",
-      InstanceType: "t2.small", // Changed from t2.micro
-    },
-  });
-
-  const context: MethodContext = {
-    repoDir: "/tmp/test-repo",
-  };
-
-  // Mock successful update
-  mockCloudControlClient.send = () =>
-    Promise.resolve({
-      ProgressEvent: {
-        Identifier: "i-1234567890abcdef0",
-        RequestToken: "request-123",
-      },
-      ResourceDescription: {
-        Properties: JSON.stringify({
-          InstanceId: "i-1234567890abcdef0",
-          InstanceType: "t2.small",
-          State: { Name: "running" },
-        }),
-      },
-    });
-
-  const result = await ec2InstanceModel.methods.update.execute(input, context);
-
-  assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
-});
-
-Deno.test("EC2InstanceModel - update method without resource ID fails", async () => {
+Deno.test("EC2InstanceModel - sync method without resource ID fails", async () => {
   const input = ModelInput.create({
     name: "test-instance",
     attributes: {
@@ -217,44 +147,12 @@ Deno.test("EC2InstanceModel - update method without resource ID fails", async ()
   };
 
   await assertRejects(
-    () => ec2InstanceModel.methods.update.execute(input, context),
+    () => ec2InstanceModel.methods.sync.execute(input, context),
     Error,
-    "Cannot update: no resource ID found in input",
+    "Cannot sync: no RequestToken found to check operation status",
   );
 });
 
-Deno.test("EC2InstanceModel - delete method success", async () => {
-  const input = ModelInput.create({
-    name: "test-instance",
-    resourceId: "12345678-1234-1234-1234-123456789012", // Valid UUID
-    attributes: {
-      ImageId: "ami-12345678",
-      InstanceType: "t2.micro",
-    },
-  });
-
-  const context: MethodContext = {
-    repoDir: "/tmp/test-repo",
-  };
-
-  // Mock successful deletion
-  mockCloudControlClient.send = () =>
-    Promise.resolve({
-      ProgressEvent: {
-        Identifier: "i-1234567890abcdef0",
-        RequestToken: "request-123",
-      },
-    });
-
-  const result = await ec2InstanceModel.methods.delete.execute(input, context);
-
-  assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
-  assertEquals(
-    (result.resource.attributes.State as { Name: string }).Name,
-    "shutting-down",
-  );
-  assertEquals(result.resource.attributes.DeletionInitiated, true);
-});
 
 Deno.test("EC2InstanceModel - delete method without resource ID fails", async () => {
   const input = ModelInput.create({
@@ -276,107 +174,9 @@ Deno.test("EC2InstanceModel - delete method without resource ID fails", async ()
   );
 });
 
-Deno.test("EC2InstanceModel - reconcile method with drift", async () => {
-  const input = ModelInput.create({
-    name: "test-instance",
-    resourceId: "12345678-1234-1234-1234-123456789012", // Valid UUID
-    attributes: {
-      ImageId: "ami-12345678",
-      InstanceType: "t2.small", // Desired state
-      Monitoring: true,
-    },
-  });
 
-  const context: MethodContext = {
-    repoDir: "/tmp/test-repo",
-  };
 
-  let callCount = 0;
-  // Mock GetResource (current state) and UpdateResource
-  mockCloudControlClient.send = () => {
-    callCount++;
-    if (callCount === 1) {
-      // GetResource call - return current state with drift
-      return Promise.resolve({
-        ProgressEvent: {
-          Identifier: "i-1234567890abcdef0",
-          RequestToken: "request-123",
-        },
-        ResourceDescription: {
-          Properties: JSON.stringify({
-            InstanceId: "i-1234567890abcdef0",
-            InstanceType: "t2.micro", // Different from desired
-            Monitoring: { State: "disabled" },
-          }),
-        },
-      });
-    } else {
-      // UpdateResource call
-      return Promise.resolve({
-        ProgressEvent: {
-          Identifier: "i-1234567890abcdef0",
-          RequestToken: "request-123",
-        },
-        ResourceDescription: {
-          Properties: JSON.stringify({
-            InstanceId: "i-1234567890abcdef0",
-            InstanceType: "t2.small", // Updated to desired state
-            Monitoring: { State: "enabled" },
-          }),
-        },
-      });
-    }
-  };
-
-  const result = await ec2InstanceModel.methods.reconcile.execute(
-    input,
-    context,
-  );
-
-  assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
-});
-
-Deno.test("EC2InstanceModel - reconcile method without drift", async () => {
-  const input = ModelInput.create({
-    name: "test-instance",
-    resourceId: "12345678-1234-1234-1234-123456789012", // Valid UUID
-    attributes: {
-      ImageId: "ami-12345678",
-      InstanceType: "t2.micro",
-    },
-  });
-
-  const context: MethodContext = {
-    repoDir: "/tmp/test-repo",
-  };
-
-  // Mock GetResource returning state that matches desired state
-  mockCloudControlClient.send = () =>
-    Promise.resolve({
-      ProgressEvent: {
-        Identifier: "i-1234567890abcdef0",
-        RequestToken: "request-123",
-      },
-      ResourceDescription: {
-        Properties: JSON.stringify({
-          InstanceId: "i-1234567890abcdef0",
-          InstanceType: "t2.micro",
-          ImageId: "ami-12345678",
-          State: { Name: "running" },
-        }),
-      },
-    });
-
-  const result = await ec2InstanceModel.methods.reconcile.execute(
-    input,
-    context,
-  );
-
-  assertEquals(result.resource.attributes.InstanceId, "i-1234567890abcdef0");
-  assertEquals(result.resource.attributes.ReconciliationStatus, "in-sync");
-});
-
-Deno.test("EC2InstanceModel - reconcile method without resource ID fails", async () => {
+Deno.test("EC2InstanceModel - sync method without resource ID fails", async () => {
   const input = ModelInput.create({
     name: "test-instance",
     attributes: {
@@ -390,9 +190,9 @@ Deno.test("EC2InstanceModel - reconcile method without resource ID fails", async
   };
 
   await assertRejects(
-    () => ec2InstanceModel.methods.reconcile.execute(input, context),
+    () => ec2InstanceModel.methods.sync.execute(input, context),
     Error,
-    "Cannot reconcile: no resource ID found in input",
+    "Cannot sync: no RequestToken found to check operation status",
   );
 });
 
