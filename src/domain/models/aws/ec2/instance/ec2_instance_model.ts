@@ -4,11 +4,15 @@ import {
   CreateResourceCommand,
   DeleteResourceCommand,
   GetResourceCommand,
-  UpdateResourceCommand,
+  GetResourceRequestStatusCommand,
 } from "@aws-sdk/client-cloudcontrol";
 import { ModelType } from "../../../model_type.ts";
-import { ModelResource } from "../../../model_resource.ts";
+import {
+  createModelResourceId,
+  ModelResource,
+} from "../../../model_resource.ts";
 import type {
+  FollowUpAction,
   MethodContext,
   MethodResult,
   ModelDefinition,
@@ -234,87 +238,38 @@ async function executeCreate(
 
   const response = await client.send(command);
 
-  if (!response.ProgressEvent?.Identifier) {
-    throw new Error("Failed to create EC2 instance: no identifier returned");
+  if (!response.ProgressEvent?.RequestToken) {
+    throw new Error("Failed to create EC2 instance: no request token returned");
   }
 
-  // Get the created resource to get full details
-  const getCommand = new GetResourceCommand({
-    TypeName: "AWS::EC2::Instance",
-    Identifier: response.ProgressEvent.Identifier,
-  });
+  // CloudControl API is asynchronous, so we get a RequestToken to track progress
+  const requestToken = response.ProgressEvent.RequestToken;
 
-  const getResponse = await client.send(getCommand);
-  const resourceProperties = getResponse.ResourceDescription?.Properties
-    ? JSON.parse(getResponse.ResourceDescription.Properties)
-    : {};
-
+  // Create initial resource with request token
   const resource = ModelResource.create({
+    id: input.id,
     inputId: input.id,
     attributes: {
-      InstanceId: response.ProgressEvent.Identifier,
-      ...resourceProperties,
+      RequestToken: requestToken,
+      OperationStatus: response.ProgressEvent.OperationStatus || "IN_PROGRESS",
+      StatusMessage: "EC2 instance creation initiated via CloudControl API",
+      TypeName: "AWS::EC2::Instance",
+      EventTime: response.ProgressEvent.EventTime?.toISOString(),
+      ResourceIdentifier: response.ProgressEvent.Identifier, // Add the ResourceIdentifier from create response
     },
   });
 
-  return { resource };
-}
-
-/**
- * Executes the "update" method for the EC2 Instance model.
- *
- * Updates mutable properties of an existing EC2 instance.
- */
-async function executeUpdate(
-  input: ModelInput,
-  _context: MethodContext,
-): Promise<MethodResult> {
-  const attrs = EC2InstanceInputAttributesSchema.parse(input.attributes);
-
-  if (!input.resourceId) {
-    throw new Error("Cannot update: no resource ID found in input");
-  }
-
-  const client = createCloudControlClient();
-
-  const command = new UpdateResourceCommand({
-    TypeName: "AWS::EC2::Instance",
-    Identifier: input.resourceId,
-    PatchDocument: JSON.stringify([
-      {
-        op: "replace",
-        path: "/",
-        value: attrs,
-      },
-    ]),
-  });
-
-  const response = await client.send(command);
-
-  if (!response.ProgressEvent?.Identifier) {
-    throw new Error("Failed to update EC2 instance");
-  }
-
-  // Get the updated resource
-  const getCommand = new GetResourceCommand({
-    TypeName: "AWS::EC2::Instance",
-    Identifier: response.ProgressEvent.Identifier,
-  });
-
-  const getResponse = await client.send(getCommand);
-  const resourceProperties = getResponse.ResourceDescription?.Properties
-    ? JSON.parse(getResponse.ResourceDescription.Properties)
-    : {};
-
-  const resource = ModelResource.create({
-    inputId: input.id,
-    attributes: {
-      InstanceId: response.ProgressEvent.Identifier,
-      ...resourceProperties,
+  // Set up follow-up actions to immediately call sync, which will handle all polling
+  const followUpActions: FollowUpAction[] = [
+    {
+      methodName: "sync",
+      delayMs: 5000, // Wait 5 seconds before first sync call
+      maxRetries: 3, // Allow a few retries for the initial sync call
+      // Always call sync after create - sync will handle checking status and polling
     },
-  });
+  ];
 
-  return { resource };
+  return { resource, followUpActions };
 }
 
 /**
@@ -324,89 +279,250 @@ async function executeUpdate(
  */
 async function executeDelete(
   input: ModelInput,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   if (!input.resourceId) {
     throw new Error("Cannot delete: no resource ID found in input");
+  }
+
+  // Load existing resource to get the actual AWS instance ID
+  const { YamlResourceRepository } = await import(
+    "../../../../../infrastructure/persistence/yaml_resource_repository.ts"
+  );
+  const resourceRepo = new YamlResourceRepository(context.repoDir);
+  const existingResource = await resourceRepo.findById(
+    EC2_INSTANCE_MODEL_TYPE,
+    createModelResourceId(input.id),
+  );
+
+  let awsInstanceId = input.resourceId; // fallback
+  if (existingResource && existingResource.attributes.InstanceId) {
+    awsInstanceId = existingResource.attributes.InstanceId as string;
   }
 
   const client = createCloudControlClient();
 
   const command = new DeleteResourceCommand({
     TypeName: "AWS::EC2::Instance",
-    Identifier: input.resourceId,
+    Identifier: awsInstanceId,
   });
 
   const response = await client.send(command);
 
+  if (!response.ProgressEvent?.RequestToken) {
+    throw new Error(
+      "Failed to initiate EC2 instance deletion: no request token returned",
+    );
+  }
+
+  // CloudControl API is asynchronous, so we get a RequestToken to track progress
+  const requestToken = response.ProgressEvent.RequestToken;
+
+  // Create initial resource with request token
   const resource = ModelResource.create({
+    id: input.id,
     inputId: input.id,
     attributes: {
-      InstanceId: input.resourceId,
-      State: {
-        Name: "shutting-down",
-      },
+      RequestToken: requestToken,
+      OperationStatus: response.ProgressEvent.OperationStatus || "IN_PROGRESS",
+      StatusMessage: "EC2 instance deletion initiated via CloudControl API",
+      TypeName: "AWS::EC2::Instance",
+      ResourceIdentifier: awsInstanceId, // The AWS instance being deleted
+      EventTime: response.ProgressEvent.EventTime?.toISOString(),
       DeletionInitiated: true,
-      ProgressEventId: response.ProgressEvent?.RequestToken,
     },
   });
 
-  return { resource };
+  // Set up follow-up actions to poll deletion status until complete
+  const followUpActions: FollowUpAction[] = [
+    {
+      methodName: "sync",
+      delayMs: 5000, // Wait 5 seconds before first sync call
+      maxRetries: 3, // Allow a few retries for the initial sync call
+      // Always call sync after delete - sync will handle checking status and polling
+    },
+  ];
+
+  return { resource, followUpActions };
 }
 
 /**
- * Executes the "reconcile" method for the EC2 Instance model.
+ * Executes the "sync" method for the EC2 Instance model.
  *
- * Compares actual AWS state with desired state and corrects any drift.
+ * Gets the full EC2 instance details after CloudControl operation completes.
  */
-async function executeReconcile(
+async function executeSync(
   input: ModelInput,
   context: MethodContext,
 ): Promise<MethodResult> {
-  if (!input.resourceId) {
-    throw new Error("Cannot reconcile: no resource ID found in input");
+  // Get RequestToken from input attributes to check status first
+  let requestToken = input.attributes.RequestToken as string;
+  let resourceIdentifier = input.attributes.ResourceIdentifier as string;
+
+  // If not found, load from the existing resource (for standalone sync calls)
+  if (!requestToken || !resourceIdentifier) {
+    const { YamlResourceRepository } = await import(
+      "../../../../../infrastructure/persistence/yaml_resource_repository.ts"
+    );
+    const resourceRepo = new YamlResourceRepository(context.repoDir);
+    const existingResource = await resourceRepo.findById(
+      EC2_INSTANCE_MODEL_TYPE,
+      createModelResourceId(input.id),
+    );
+
+    if (existingResource) {
+      requestToken = existingResource.attributes.RequestToken as string;
+      resourceIdentifier = existingResource.attributes
+        .ResourceIdentifier as string;
+    }
+  }
+
+  if (!requestToken) {
+    throw new Error(
+      "Cannot sync: no RequestToken found to check operation status",
+    );
   }
 
   const client = createCloudControlClient();
 
-  // Get current state from AWS
-  const getCommand = new GetResourceCommand({
-    TypeName: "AWS::EC2::Instance",
-    Identifier: input.resourceId,
+  // Always check the CloudControl operation status first
+  const statusCommand = new GetResourceRequestStatusCommand({
+    RequestToken: requestToken,
   });
 
-  const getResponse = await client.send(getCommand);
-  const currentState = getResponse.ResourceDescription?.Properties
-    ? JSON.parse(getResponse.ResourceDescription.Properties)
-    : {};
+  const statusResponse = await client.send(statusCommand);
+  const currentStatus = statusResponse.ProgressEvent?.OperationStatus;
 
-  // Compare with desired state
-  const desiredAttrs = EC2InstanceInputAttributesSchema.parse(input.attributes);
+  // If still in progress, return current state with follow-up action to retry sync
+  if (currentStatus === "IN_PROGRESS") {
+    const resource = ModelResource.create({
+      id: input.id,
+      inputId: input.id,
+      attributes: {
+        RequestToken: requestToken,
+        OperationStatus: currentStatus,
+        StatusMessage: statusResponse.ProgressEvent?.StatusMessage,
+        TypeName: "AWS::EC2::Instance",
+        ResourceIdentifier: statusResponse.ProgressEvent?.Identifier ||
+          resourceIdentifier,
+        EventTime: statusResponse.ProgressEvent?.EventTime?.toISOString(),
+        // Preserve deletion context if it exists
+        DeletionInitiated: input.attributes.DeletionInitiated || undefined,
+      },
+    });
 
-  // Check if update is needed (simplified drift detection)
-  const needsUpdate = Object.keys(desiredAttrs).some((key) => {
-    const desired = desiredAttrs[key as keyof EC2InstanceInputAttributes];
-    const current = currentState[key];
-    return desired !== undefined &&
-      JSON.stringify(desired) !== JSON.stringify(current);
-  });
+    // Recursively call sync again after a delay
+    const followUpActions: FollowUpAction[] = [
+      {
+        methodName: "sync",
+        delayMs: 10000, // Wait 10 seconds before retrying
+        maxRetries: 30, // Allow up to 30 retries (5 minutes total)
+      },
+    ];
 
-  if (needsUpdate) {
-    // Perform update to correct drift
-    return executeUpdate(input, context);
+    return { resource, followUpActions };
   }
 
-  // No drift detected, return current state
-  const resource = ModelResource.create({
-    inputId: input.id,
-    attributes: {
-      InstanceId: input.resourceId,
-      ...currentState,
-      ReconciliationStatus: "in-sync",
-    },
+  // If operation failed, throw error
+  if (currentStatus === "FAILED") {
+    throw new Error(
+      `CloudControl operation failed: ${
+        statusResponse.ProgressEvent?.StatusMessage || "Unknown error"
+      }`,
+    );
+  }
+
+  // Operation is SUCCESS - now get the full resource details
+  if (!resourceIdentifier) {
+    resourceIdentifier = statusResponse.ProgressEvent?.Identifier || "";
+  }
+
+  if (!resourceIdentifier) {
+    throw new Error(
+      "Cannot get instance details: no ResourceIdentifier available",
+    );
+  }
+
+  const getCommand = new GetResourceCommand({
+    TypeName: "AWS::EC2::Instance",
+    Identifier: resourceIdentifier,
   });
 
-  return { resource };
+  try {
+    const response = await client.send(getCommand);
+
+    if (!response.ResourceDescription?.Properties) {
+      throw new Error("Failed to get EC2 instance details");
+    }
+
+    const instanceProperties = JSON.parse(
+      response.ResourceDescription.Properties,
+    );
+
+    const resource = ModelResource.create({
+      id: input.id,
+      inputId: input.id,
+      attributes: {
+        // Keep the original tracking info
+        RequestToken: requestToken,
+        OperationStatus: "SUCCESS",
+
+        // Add the full EC2 instance details
+        InstanceId: instanceProperties.InstanceId,
+        InstanceType: instanceProperties.InstanceType,
+        ImageId: instanceProperties.ImageId,
+        KeyName: instanceProperties.KeyName,
+        State: instanceProperties.State,
+        PublicIpAddress: instanceProperties.PublicIpAddress,
+        PrivateIpAddress: instanceProperties.PrivateIpAddress,
+        PublicDnsName: instanceProperties.PublicDnsName,
+        PrivateDnsName: instanceProperties.PrivateDnsName,
+        AvailabilityZone: instanceProperties.Placement?.AvailabilityZone,
+        VpcId: instanceProperties.VpcId,
+        SubnetId: instanceProperties.SubnetId,
+        SecurityGroups: instanceProperties.SecurityGroups,
+        Tags: instanceProperties.Tags,
+        LaunchTime: instanceProperties.LaunchTime,
+
+        // Store the raw properties for reference
+        RawProperties: instanceProperties,
+      },
+    });
+
+    return { resource };
+  } catch (error: unknown) {
+    // Handle the case where the resource was successfully deleted (not found)
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorName = error instanceof Error ? error.name : "";
+
+    if (
+      errorMessage.includes("was not found") ||
+      errorName === "ResourceNotFoundException"
+    ) {
+      // Check if this is in a deletion context by looking for DeletionInitiated flag
+      const isDeletionContext = input.attributes.DeletionInitiated ||
+        (input.attributes.StatusMessage as string)?.includes("deletion");
+
+      if (isDeletionContext) {
+        // This is actually success for a delete operation - workflow should terminate here
+        const resource = ModelResource.create({
+          id: input.id,
+          inputId: input.id,
+          attributes: {
+            RequestToken: requestToken,
+            OperationStatus: "SUCCESS",
+            StatusMessage: "EC2 instance successfully deleted",
+            ResourceIdentifier: resourceIdentifier,
+            DeletionCompleted: true,
+          },
+        });
+        // NOTE: No follow-up actions - this terminates the workflow
+        return { resource };
+      }
+    }
+    // Re-throw other errors (including "not found" in non-deletion context)
+    throw error;
+  }
 }
 
 /**
@@ -428,21 +544,24 @@ export const ec2InstanceModel: ModelDefinition<
       inputAttributesSchema: EC2InstanceInputAttributesSchema,
       execute: executeCreate,
     },
-    update: {
-      description: "Update an existing EC2 instance's mutable properties",
-      inputAttributesSchema: EC2InstanceInputAttributesSchema,
-      execute: executeUpdate,
-    },
     delete: {
       description: "Terminate an EC2 instance using AWS CloudControl API",
       inputAttributesSchema: EC2InstanceInputAttributesSchema,
       execute: executeDelete,
     },
-    reconcile: {
+    sync: {
       description:
-        "Compare actual vs desired state and correct any configuration drift",
-      inputAttributesSchema: EC2InstanceInputAttributesSchema,
-      execute: executeReconcile,
+        "Get full EC2 instance details after CloudControl operation completes",
+      inputAttributesSchema: z.object({
+        RequestToken: z.string().optional(),
+        OperationStatus: z.string().optional(),
+        StatusMessage: z.string().optional(),
+        TypeName: z.string().optional(),
+        EventTime: z.string().optional(),
+        ResourceIdentifier: z.string().optional(),
+        ErrorCode: z.string().optional(),
+      }).or(EC2InstanceInputAttributesSchema),
+      execute: executeSync,
     },
   },
 };

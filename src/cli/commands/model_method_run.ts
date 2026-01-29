@@ -113,10 +113,11 @@ export const modelMethodRunCommand = new Command()
 
       ctx.logger.debug`Executing method '${methodName}'`;
 
-      // Execute the method
-      const result = await executionService.execute(
+      // Execute the method (use workflow execution to handle follow-up actions)
+      const result = await executionService.executeWorkflow(
         input,
-        method,
+        definition,
+        methodName,
         { repoDir },
       );
 
@@ -129,11 +130,14 @@ export const modelMethodRunCommand = new Command()
 
       ctx.logger.debug`Resource saved to: ${resourcePath}`;
 
-      // Update input's resourceId and save
-      input.setResourceId(result.resource.id);
-      await inputRepo.save(modelType, input);
-
-      ctx.logger.debug`Input updated with resourceId: ${result.resource.id}`;
+      // Update input's resourceId if not already set (should now be same as input ID)
+      if (!input.resourceId) {
+        input.setResourceId(result.resource.id);
+        await inputRepo.save(modelType, input);
+        ctx.logger.debug`Input updated with resourceId: ${result.resource.id}`;
+      } else {
+        ctx.logger.debug`Input already has resourceId: ${input.resourceId}`;
+      }
 
       // Render output
       const data: ModelMethodRunData = {

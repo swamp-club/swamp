@@ -9,6 +9,24 @@ import {
 import { ModelInput } from "../../../model_input.ts";
 import type { MethodContext } from "../../../model.ts";
 
+/*
+Example instance attributes
+id: 9ad6033a-e77b-4e3b-8347-c5e10dad073b
+resourceId: 9ad6033a-e77b-4e3b-8347-c5e10dad073b
+name: peach
+version: 1
+tags: {}
+attributes:
+  ImageId: ami-0c02fb55956c7d316
+  InstanceType: t3.micro
+  AvailabilityZone: us-east-1a
+  Tags:
+    - Key: Name
+      Value: peach-instance
+    - Key: Environment
+      Value: development
+*/
+
 // Mock AWS SDK
 const mockCloudControlClient = {
   send: () =>
