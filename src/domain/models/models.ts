@@ -16,6 +16,7 @@ import "./echo/echo_model.ts";
 import "./aws/ec2/instance/ec2_instance_model.ts";
 import "./aws/ec2/subnet/ec2_subnet_model.ts";
 import "./aws/ec2/vpc/ec2_vpc_model.ts";
+import "./keeb/shell/shell_model.ts";
 
 // Re-export the registry for convenient access
 export { modelRegistry } from "./model.ts";
