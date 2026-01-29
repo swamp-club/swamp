@@ -35,6 +35,9 @@ jobs:
         run: deno test --allow-read --allow-write --allow-env --allow-run
 
   claude-review:
+    # NOTE: For this to block merges, enable branch protection on main with:
+    # "Require a pull request before merging" + "Require approving reviews"
+    # Claude will use --request-changes to block or --approve to allow
     name: Claude Code Review
     needs: test
     runs-on: ubuntu-latest
@@ -59,12 +62,27 @@ jobs:
             5. Security vulnerabilities and best practices
             6. Any potential bugs or edge cases
 
-            After reviewing, post your feedback as a comment on the PR using:
-            gh pr comment ${{ github.event.pull_request.number }} --body "your review here"
+            IMPORTANT: Categorize your findings into two types:
+            - **Blocking Issues**: Problems that MUST be fixed before merge (bugs, security issues, type errors, missing tests for new code, violations of CLAUDE.md requirements)
+            - **Suggestions**: Nice-to-have improvements that don't block merge (style preferences, optional refactoring, documentation improvements)
+
+            After reviewing, submit your review using ONE of these commands:
+
+            If there are NO blocking issues (only suggestions or the PR looks good):
+            ```
+            gh pr review ${{ github.event.pull_request.number }} --approve --body "your review here"
+            ```
+
+            If there ARE blocking issues that must be addressed:
+            ```
+            gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
+            ```
+
+            Your review body should clearly list any blocking issues at the top, followed by suggestions.
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-5-20251101
-            --allowedTools Bash(gh pr comment:*),Bash(gh pr view:*)
+            --allowedTools Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
 
   auto-merge:
     name: Auto-merge PR
