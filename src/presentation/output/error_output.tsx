@@ -46,7 +46,7 @@ function renderInteractiveError(message: string, stack?: string): void {
   const { lastFrame } = render(
     <ErrorDisplay message={message} stack={stack} />,
   );
-  console.log(lastFrame());
+  console.error(lastFrame());
 }
 
 interface ErrorDisplayProps {
