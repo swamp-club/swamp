@@ -23,7 +23,8 @@ export interface TypeDescribeData {
   };
   version: number;
   inputAttributesSchema: object;
-  resourceAttributesSchema: object;
+  resourceAttributesSchema?: object;
+  dataAttributesSchema?: object;
   methods: MethodDescribeData[];
 }
 
@@ -137,10 +138,20 @@ export function TypeDescribeDisplay(
       />
 
       {/* Resource Attributes Schema */}
-      <SchemaSection
-        title="Resource Attributes Schema"
-        schema={data.resourceAttributesSchema}
-      />
+      {data.resourceAttributesSchema && (
+        <SchemaSection
+          title="Resource Attributes Schema"
+          schema={data.resourceAttributesSchema}
+        />
+      )}
+
+      {/* Data Attributes Schema */}
+      {data.dataAttributesSchema && (
+        <SchemaSection
+          title="Data Attributes Schema"
+          schema={data.dataAttributesSchema}
+        />
+      )}
 
       {/* Methods */}
       <Box flexDirection="column" marginTop={1}>

@@ -60,9 +60,12 @@ function displayTypeDescribe(item: TypeSearchItem, options: AnyOptions): void {
   const inputAttributesSchema = zodToJsonSchema(
     definition.inputAttributesSchema,
   );
-  const resourceAttributesSchema = zodToJsonSchema(
-    definition.resourceAttributesSchema,
-  );
+  const resourceAttributesSchema = definition.resourceAttributesSchema
+    ? zodToJsonSchema(definition.resourceAttributesSchema)
+    : undefined;
+  const dataAttributesSchema = definition.dataAttributesSchema
+    ? zodToJsonSchema(definition.dataAttributesSchema)
+    : undefined;
 
   const methods = Object.entries(definition.methods).map(([name, method]) => ({
     name,
@@ -79,6 +82,7 @@ function displayTypeDescribe(item: TypeSearchItem, options: AnyOptions): void {
       version: definition.version,
       inputAttributesSchema,
       resourceAttributesSchema,
+      dataAttributesSchema,
       methods,
     },
     ctx.outputMode,

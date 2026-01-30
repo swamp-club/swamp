@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
-import { ModelResource } from "../../model_resource.ts";
+import { ModelData } from "../../model_data.ts";
 import {
   defineModel,
   type MethodContext,
@@ -31,9 +31,9 @@ export const ShellInputAttributesSchema = z.object({
 export type ShellInputAttributes = z.infer<typeof ShellInputAttributesSchema>;
 
 /**
- * Schema for shell model resource attributes.
+ * Schema for shell model data attributes.
  */
-export const ShellResourceAttributesSchema = z.object({
+export const ShellDataAttributesSchema = z.object({
   stdout: z.string().describe("Standard output from the command"),
   stderr: z.string().describe("Standard error from the command"),
   exitCode: z.number().int().describe("Exit code of the command"),
@@ -47,11 +47,9 @@ export const ShellResourceAttributesSchema = z.object({
 });
 
 /**
- * Type for shell model resource attributes.
+ * Type for shell model data attributes.
  */
-export type ShellResourceAttributes = z.infer<
-  typeof ShellResourceAttributesSchema
->;
+export type ShellDataAttributes = z.infer<typeof ShellDataAttributesSchema>;
 
 /**
  * The shell model type identifier.
@@ -130,8 +128,8 @@ async function executeCommand(
   const endTime = Date.now();
   const durationMs = endTime - startTime;
 
-  // Create the resource with execution results
-  const resource = ModelResource.create({
+  // Create the data artifact with execution results
+  const data = ModelData.create({
     id: input.id,
     attributes: {
       stdout,
@@ -143,7 +141,7 @@ async function executeCommand(
     },
   });
 
-  return { resource };
+  return { data };
 }
 
 /**
@@ -156,12 +154,13 @@ async function executeCommand(
  */
 export const shellModel: ModelDefinition<
   typeof ShellInputAttributesSchema,
-  typeof ShellResourceAttributesSchema
+  never,
+  typeof ShellDataAttributesSchema
 > = defineModel({
   type: SHELL_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: ShellInputAttributesSchema,
-  resourceAttributesSchema: ShellResourceAttributesSchema,
+  dataAttributesSchema: ShellDataAttributesSchema,
   methods: {
     execute: {
       description:

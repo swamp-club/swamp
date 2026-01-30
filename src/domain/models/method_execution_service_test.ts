@@ -20,8 +20,9 @@ Deno.test("execute with valid input returns method result", async () => {
     { repoDir: "." },
   );
 
-  assertEquals(result.resource.attributes.message, "Hello, world!");
-  assertEquals(typeof result.resource.attributes.timestamp, "string");
+  // Echo model now returns data artifacts instead of resources
+  assertEquals(result.data?.attributes.message, "Hello, world!");
+  assertEquals(typeof result.data?.attributes.timestamp, "string");
 });
 
 Deno.test("execute with missing required attribute throws error", () => {
@@ -174,7 +175,7 @@ Deno.test("executeWorkflow - basic execution without follow-up actions", async (
     { repoDir: "." },
   );
 
-  assertEquals(result.resource.attributes.value, "started");
+  assertEquals(result.resource?.attributes.value, "started");
 });
 
 Deno.test("executeWorkflow - throws error for unknown method", async () => {
@@ -232,8 +233,8 @@ Deno.test("executeWorkflow - processes follow-up actions", async () => {
     { repoDir: "." },
   );
 
-  assertEquals(result.resource.attributes.value, "completed");
-  assertEquals(result.resource.attributes.counter, 2);
+  assertEquals(result.resource?.attributes.value, "completed");
+  assertEquals(result.resource?.attributes.counter, 2);
 });
 
 Deno.test("executeWorkflow - respects continueCondition", async () => {
@@ -281,7 +282,7 @@ Deno.test("executeWorkflow - respects continueCondition", async () => {
 
   // Follow-up should not be called because condition was false
   assertEquals(followUpCallCount, 0);
-  assertEquals(result.resource.attributes.value, "started");
+  assertEquals(result.resource?.attributes.value, "started");
 });
 
 Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
@@ -325,7 +326,7 @@ Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
 
   // Should have succeeded on the 3rd attempt (1 initial + 2 retries)
   assertEquals(attemptCount, 3);
-  assertEquals(result.resource.attributes.value, "succeeded-on-retry");
+  assertEquals(result.resource?.attributes.value, "succeeded-on-retry");
 });
 
 Deno.test("executeWorkflow - fails after exhausting maxRetries", async () => {
@@ -431,7 +432,7 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
   );
 
   assertEquals(callSequence, ["start", "increment-1", "increment-2"]);
-  assertEquals(result.resource.attributes.step, 3);
+  assertEquals(result.resource?.attributes.step, 3);
 });
 
 Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
@@ -561,5 +562,5 @@ Deno.test("executeWorkflow - follow-up receives resource attributes from previou
   assertEquals(receivedAttributes.OperationStatus, "IN_PROGRESS");
 
   // Verify final result
-  assertEquals(result.resource.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource?.attributes.OperationStatus, "SUCCESS");
 });
