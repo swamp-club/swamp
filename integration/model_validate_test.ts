@@ -4,9 +4,9 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ModelInput } from "../src/domain/models/model_input.ts";
-import { ModelResource } from "../src/domain/models/model_resource.ts";
+import { ModelData } from "../src/domain/models/model_data.ts";
 import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../src/infrastructure/persistence/yaml_resource_repository.ts";
+import { YamlDataRepository } from "../src/infrastructure/persistence/yaml_data_repository.ts";
 import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -81,35 +81,36 @@ Deno.test("CLI: model validate passes for valid echo model input", async () => {
   });
 });
 
-Deno.test("CLI: model validate passes for valid echo model with resource", async () => {
+Deno.test("CLI: model validate passes for valid echo model with data", async () => {
   await withTempDir(async (repoDir) => {
     const inputRepo = new YamlInputRepository(repoDir);
-    const resourceRepo = new YamlResourceRepository(repoDir);
+    const dataRepo = new YamlDataRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
     // Create a valid echo model input
     const input = ModelInput.create({
-      name: "echo-with-resource",
+      name: "echo-with-data",
       attributes: { message: "Hello, world!" },
     });
     await inputRepo.save(modelType, input);
 
-    // Create a valid resource
-    const resource = ModelResource.create({
+    // Create a valid data artifact (note: data artifacts aren't validated by default,
+    // this is just to verify they don't cause validation errors)
+    const data = ModelData.create({
       id: input.id,
       attributes: {
         message: "Hello, world!",
         timestamp: new Date().toISOString(),
       },
     });
-    await resourceRepo.save(modelType, resource);
+    await dataRepo.save(modelType, data);
 
     // Run the validate command
     const result = await runCliCommand(
       [
         "model",
         "validate",
-        "echo-with-resource",
+        "echo-with-data",
         "--repo-dir",
         repoDir,
         "--json",
@@ -126,7 +127,9 @@ Deno.test("CLI: model validate passes for valid echo model with resource", async
     // Parse and verify JSON output
     const output = JSON.parse(result.stdout);
     assertEquals(output.passed, true);
-    assertEquals(output.validations.length, 5); // Input + Resource + Expression paths validations
+    // Echo model only validates: Input schema, Input attributes, Expression paths
+    // (no resource validation since echo uses data artifacts which aren't validated)
+    assertEquals(output.validations.length, 3);
   });
 });
 
@@ -174,60 +177,9 @@ Deno.test("CLI: model validate fails for invalid input attributes", async () => 
   });
 });
 
-Deno.test("CLI: model validate fails for invalid resource attributes", async () => {
-  await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
-    const resourceRepo = new YamlResourceRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
-
-    // Create a valid echo model input
-    const input = ModelInput.create({
-      name: "echo-invalid-resource",
-      attributes: { message: "Hello" },
-    });
-    await inputRepo.save(modelType, input);
-
-    // Create an invalid resource (missing timestamp)
-    const resource = ModelResource.create({
-      id: input.id,
-      attributes: {
-        message: "Hello",
-        // Missing required timestamp
-      },
-    });
-    await resourceRepo.save(modelType, resource);
-
-    // Run the validate command
-    const result = await runCliCommand(
-      [
-        "model",
-        "validate",
-        "echo-invalid-resource",
-        "--repo-dir",
-        repoDir,
-        "--json",
-      ],
-      Deno.cwd(),
-    );
-
-    assertEquals(
-      result.code,
-      1,
-      `Command should fail with exit code 1`,
-    );
-
-    // Parse and verify JSON output
-    const output = JSON.parse(result.stdout);
-    assertEquals(output.passed, false);
-
-    // Find the failing resource validation
-    const failedValidation = output.validations.find(
-      (v: { name: string; passed: boolean }) =>
-        v.name === "Resource attributes" && !v.passed,
-    );
-    assertEquals(failedValidation !== undefined, true);
-  });
-});
+// Note: Test for invalid resource attributes was removed because
+// the echo model now uses data artifacts instead of resources.
+// Resource validation tests should use models that produce resources (like AWS models).
 
 Deno.test("CLI: model validate can look up by UUID", async () => {
   await withTempDir(async (repoDir) => {

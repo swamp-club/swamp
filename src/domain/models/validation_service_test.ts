@@ -1,4 +1,5 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { z } from "zod";
 import {
   DefaultModelValidationService,
   ValidationResult,
@@ -9,6 +10,29 @@ import { echoModel } from "./echo/echo_model.ts";
 import type { InputRepository } from "./repositories.ts";
 import { ModelType } from "./model_type.ts";
 import type { ModelInputId } from "./model_input.ts";
+import { type ModelDefinition, modelRegistry } from "./model.ts";
+
+/**
+ * Test model with resource attributes schema for validation tests.
+ * This simulates models that produce persistent resources (like AWS models).
+ */
+const testResourceModel: ModelDefinition = {
+  type: ModelType.create("test/resource"),
+  version: 1,
+  inputAttributesSchema: z.object({
+    message: z.string().min(1),
+  }),
+  resourceAttributesSchema: z.object({
+    message: z.string(),
+    timestamp: z.string().datetime(),
+  }),
+  methods: {},
+};
+
+// Register the test model if not already registered
+if (!modelRegistry.has(testResourceModel.type)) {
+  modelRegistry.register(testResourceModel);
+}
 
 // ValidationResult value object tests
 
@@ -91,7 +115,12 @@ Deno.test("validateModel with valid input and valid resource returns 4 passing r
     },
   });
 
-  const results = await service.validateModel(input, echoModel, resource);
+  // Use testResourceModel which has resourceAttributesSchema
+  const results = await service.validateModel(
+    input,
+    testResourceModel,
+    resource,
+  );
 
   assertEquals(results.length, 4);
   assertEquals(results[0].name, "Input schema");
@@ -197,9 +226,10 @@ Deno.test("validateModel runs validations in parallel", async () => {
   });
 
   // Run multiple times to verify parallel execution doesn't cause issues
+  // Use testResourceModel which has resourceAttributesSchema
   const promises = Array.from(
     { length: 10 },
-    () => service.validateModel(input, echoModel, resource),
+    () => service.validateModel(input, testResourceModel, resource),
   );
 
   const allResults = await Promise.all(promises);
@@ -550,12 +580,18 @@ Deno.test("validateModel with resource path passes for valid path", async () => 
     },
   });
 
+  // Use test/resource type which has resourceAttributesSchema
   const mockRepo = createMockInputRepo([
-    { name: "target-model", type: "swamp/echo", input: targetInput },
-    { name: "test-input", type: "swamp/echo", input },
+    { name: "target-model", type: "test/resource", input: targetInput },
+    { name: "test-input", type: "test/resource", input },
   ]);
 
-  const results = await service.validateModel(input, echoModel, null, mockRepo);
+  const results = await service.validateModel(
+    input,
+    testResourceModel,
+    null,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -574,12 +610,18 @@ Deno.test("validateModel with resource path fails for invalid attribute", async 
     },
   });
 
+  // Use test/resource type which has resourceAttributesSchema
   const mockRepo = createMockInputRepo([
-    { name: "target-model", type: "swamp/echo", input: targetInput },
-    { name: "test-input", type: "swamp/echo", input },
+    { name: "target-model", type: "test/resource", input: targetInput },
+    { name: "test-input", type: "test/resource", input },
   ]);
 
-  const results = await service.validateModel(input, echoModel, null, mockRepo);
+  const results = await service.validateModel(
+    input,
+    testResourceModel,
+    null,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);

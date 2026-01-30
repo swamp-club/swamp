@@ -246,8 +246,8 @@ Deno.test("EC2SubnetModel - create method uses injected CloudControl client", as
 
   const result = await ec2SubnetModel.methods.create.execute(input, context);
 
-  assertEquals(result.resource.attributes.RequestToken, "request-123");
-  assertEquals(result.resource.attributes.OperationStatus, "IN_PROGRESS");
+  assertEquals(result.resource?.attributes.RequestToken, "request-123");
+  assertEquals(result.resource?.attributes.OperationStatus, "IN_PROGRESS");
   assertEquals(result.followUpActions?.length, 1);
   assertEquals(result.followUpActions?.[0].methodName, "sync");
 });
@@ -301,8 +301,8 @@ Deno.test("EC2SubnetModel - sync method treats 'not found' as deleted", async ()
 
   const result = await ec2SubnetModel.methods.sync.execute(input, context);
 
-  assertEquals(result.resource.attributes.OperationStatus, "SUCCESS");
-  assertEquals(result.resource.attributes.DeletionCompleted, true);
+  assertEquals(result.resource?.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource?.attributes.DeletionCompleted, true);
   assertEquals(result.deleteResource, true);
   assertEquals(result.followUpActions, undefined);
 });
@@ -351,8 +351,8 @@ Deno.test("EC2SubnetModel - delete method treats 'not found' as success", async 
 
   const result = await ec2SubnetModel.methods.delete.execute(input, context);
 
-  assertEquals(result.resource.attributes.OperationStatus, "SUCCESS");
-  assertEquals(result.resource.attributes.DeletionCompleted, true);
+  assertEquals(result.resource?.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource?.attributes.DeletionCompleted, true);
   assertEquals(result.deleteResource, true);
   assertEquals(result.followUpActions, undefined);
 });

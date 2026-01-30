@@ -2,9 +2,9 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ModelInput } from "../../model_input.ts";
 import {
   SHELL_MODEL_TYPE,
+  ShellDataAttributesSchema,
   ShellInputAttributesSchema,
   shellModel,
-  ShellResourceAttributesSchema,
 } from "./shell_model.ts";
 
 Deno.test("SHELL_MODEL_TYPE has correct normalized type", () => {
@@ -70,9 +70,9 @@ Deno.test("ShellInputAttributesSchema rejects zero timeout", () => {
   assertEquals(result.success, false);
 });
 
-// Resource schema validation tests
-Deno.test("ShellResourceAttributesSchema validates correct data", () => {
-  const result = ShellResourceAttributesSchema.safeParse({
+// Data schema validation tests
+Deno.test("ShellDataAttributesSchema validates correct data", () => {
+  const result = ShellDataAttributesSchema.safeParse({
     stdout: "hello\n",
     stderr: "",
     exitCode: 0,
@@ -83,8 +83,8 @@ Deno.test("ShellResourceAttributesSchema validates correct data", () => {
   assertEquals(result.success, true);
 });
 
-Deno.test("ShellResourceAttributesSchema validates without durationMs", () => {
-  const result = ShellResourceAttributesSchema.safeParse({
+Deno.test("ShellDataAttributesSchema validates without durationMs", () => {
+  const result = ShellDataAttributesSchema.safeParse({
     stdout: "hello\n",
     stderr: "",
     exitCode: 0,
@@ -94,8 +94,8 @@ Deno.test("ShellResourceAttributesSchema validates without durationMs", () => {
   assertEquals(result.success, true);
 });
 
-Deno.test("ShellResourceAttributesSchema rejects invalid timestamp", () => {
-  const result = ShellResourceAttributesSchema.safeParse({
+Deno.test("ShellDataAttributesSchema rejects invalid timestamp", () => {
+  const result = ShellDataAttributesSchema.safeParse({
     stdout: "",
     stderr: "",
     exitCode: 0,
@@ -125,12 +125,12 @@ Deno.test("shellModel.methods.execute runs simple command", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.attributes.stdout, "hello\n");
-  assertEquals(result.resource.attributes.stderr, "");
-  assertEquals(result.resource.attributes.exitCode, 0);
-  assertEquals(result.resource.attributes.command, "echo hello");
-  assertEquals(typeof result.resource.attributes.executedAt, "string");
-  assertEquals(typeof result.resource.attributes.durationMs, "number");
+  assertEquals(result.data?.attributes.stdout, "hello\n");
+  assertEquals(result.data?.attributes.stderr, "");
+  assertEquals(result.data?.attributes.exitCode, 0);
+  assertEquals(result.data?.attributes.command, "echo hello");
+  assertEquals(typeof result.data?.attributes.executedAt, "string");
+  assertEquals(typeof result.data?.attributes.durationMs, "number");
 });
 
 Deno.test("shellModel.methods.execute captures stderr", async () => {
@@ -143,9 +143,9 @@ Deno.test("shellModel.methods.execute captures stderr", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.attributes.stdout, "");
-  assertEquals(result.resource.attributes.stderr, "error\n");
-  assertEquals(result.resource.attributes.exitCode, 0);
+  assertEquals(result.data?.attributes.stdout, "");
+  assertEquals(result.data?.attributes.stderr, "error\n");
+  assertEquals(result.data?.attributes.exitCode, 0);
 });
 
 Deno.test("shellModel.methods.execute captures exit code", async () => {
@@ -158,7 +158,7 @@ Deno.test("shellModel.methods.execute captures exit code", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.attributes.exitCode, 42);
+  assertEquals(result.data?.attributes.exitCode, 42);
 });
 
 Deno.test("shellModel.methods.execute handles command failure gracefully", async () => {
@@ -171,7 +171,7 @@ Deno.test("shellModel.methods.execute handles command failure gracefully", async
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.attributes.exitCode, 1);
+  assertEquals(result.data?.attributes.exitCode, 1);
 });
 
 Deno.test("shellModel.methods.execute respects workingDir", async () => {
@@ -189,8 +189,8 @@ Deno.test("shellModel.methods.execute respects workingDir", async () => {
 
   // Use realPathSync to handle symlinks (e.g., /tmp -> /private/tmp on macOS)
   const expectedPath = Deno.realPathSync("/tmp");
-  assertEquals(result.resource.attributes.stdout, `${expectedPath}\n`);
-  assertEquals(result.resource.attributes.exitCode, 0);
+  assertEquals(result.data?.attributes.stdout, `${expectedPath}\n`);
+  assertEquals(result.data?.attributes.exitCode, 0);
 });
 
 Deno.test("shellModel.methods.execute respects env variables", async () => {
@@ -206,8 +206,8 @@ Deno.test("shellModel.methods.execute respects env variables", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.attributes.stdout, "test_value\n");
-  assertEquals(result.resource.attributes.exitCode, 0);
+  assertEquals(result.data?.attributes.stdout, "test_value\n");
+  assertEquals(result.data?.attributes.exitCode, 0);
 });
 
 Deno.test("shellModel.methods.execute handles pipes", async () => {
@@ -220,8 +220,8 @@ Deno.test("shellModel.methods.execute handles pipes", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.attributes.stdout, "Hello world\n");
-  assertEquals(result.resource.attributes.exitCode, 0);
+  assertEquals(result.data?.attributes.stdout, "Hello world\n");
+  assertEquals(result.data?.attributes.exitCode, 0);
 });
 
 Deno.test("shellModel.methods.execute handles complex commands", async () => {
@@ -235,8 +235,8 @@ Deno.test("shellModel.methods.execute handles complex commands", async () => {
   });
 
   // cd /tmp && pwd outputs the logical path, not the physical path
-  assertEquals(result.resource.attributes.stdout, "/tmp\n");
-  assertEquals(result.resource.attributes.exitCode, 0);
+  assertEquals(result.data?.attributes.stdout, "/tmp\n");
+  assertEquals(result.data?.attributes.exitCode, 0);
 });
 
 Deno.test("shellModel.methods.execute validates input attributes", async () => {
@@ -282,9 +282,9 @@ Deno.test("shellModel.methods.execute handles nonexistent command", async () => 
   });
 
   // Should return non-zero exit code and error in stderr
-  assertEquals(result.resource.attributes.exitCode !== 0, true);
+  assertEquals(result.data?.attributes.exitCode !== 0, true);
   assertStringIncludes(
-    result.resource.attributes.stderr as string,
+    result.data?.attributes.stderr as string,
     "nonexistent_command_12345",
   );
 });
@@ -299,7 +299,7 @@ Deno.test("shellModel.methods.execute records execution duration", async () => {
     repoDir: "/tmp",
   });
 
-  const durationMs = result.resource.attributes.durationMs as number;
+  const durationMs = result.data?.attributes.durationMs as number;
   // Should be at least 100ms (sleep 0.1 seconds)
   assertEquals(durationMs >= 100, true);
 });

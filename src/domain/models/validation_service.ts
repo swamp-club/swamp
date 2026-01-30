@@ -265,6 +265,14 @@ export class DefaultModelValidationService implements ModelValidationService {
     resource: ModelResource,
     definition: ModelDefinition,
   ): Promise<ValidationResult> {
+    if (!definition.resourceAttributesSchema) {
+      return Promise.resolve(
+        ValidationResult.fail(
+          "Resource attributes",
+          "Model definition has no resource attributes schema but a resource was provided",
+        ),
+      );
+    }
     return this.validateWithSchema(
       "Resource attributes",
       definition.resourceAttributesSchema,
@@ -394,7 +402,7 @@ export class DefaultModelValidationService implements ModelValidationService {
   private async validateModelPathReference(
     ref: {
       modelRef: string;
-      type: "input" | "resource";
+      type: "input" | "resource" | "data" | "file" | "log" | "execution";
       path: string[];
       rawExpression: string;
     },
@@ -430,6 +438,77 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
+    // For new artifact types (data, file, log, execution), validation is less strict
+    // as they may have dynamic attributes or fixed properties
+    if (ref.type === "data") {
+      // data artifacts have .attributes like resource
+      if (
+        firstSegment !== "attributes" && firstSegment !== "id" &&
+        firstSegment !== "version" && firstSegment !== "createdAt"
+      ) {
+        return {
+          expression: ref.rawExpression,
+          error: `Invalid path segment "${firstSegment}" for data artifact`,
+          suggestion: "Data artifacts have: id, version, createdAt, attributes",
+        };
+      }
+      return null;
+    }
+
+    if (ref.type === "file") {
+      const validFileSegments = [
+        "id",
+        "version",
+        "createdAt",
+        "filename",
+        "contentType",
+        "size",
+        "checksum",
+        "path",
+      ];
+      if (!validFileSegments.includes(firstSegment)) {
+        return {
+          expression: ref.rawExpression,
+          error: `Invalid path segment "${firstSegment}" for file artifact`,
+          suggestion: `File artifacts have: ${validFileSegments.join(", ")}`,
+        };
+      }
+      return null;
+    }
+
+    if (ref.type === "log") {
+      const validLogSegments = ["id", "version", "createdAt", "entries"];
+      if (!validLogSegments.includes(firstSegment)) {
+        return {
+          expression: ref.rawExpression,
+          error: `Invalid path segment "${firstSegment}" for log artifact`,
+          suggestion: `Log artifacts have: ${validLogSegments.join(", ")}`,
+        };
+      }
+      return null;
+    }
+
+    if (ref.type === "execution") {
+      const validExecSegments = [
+        "id",
+        "methodName",
+        "status",
+        "startedAt",
+        "completedAt",
+        "durationMs",
+        "error",
+      ];
+      if (!validExecSegments.includes(firstSegment)) {
+        return {
+          expression: ref.rawExpression,
+          error: `Invalid path segment "${firstSegment}" for execution`,
+          suggestion: `Execution has: ${validExecSegments.join(", ")}`,
+        };
+      }
+      return null;
+    }
+
+    // For input and resource, validate attributes path
     if (firstSegment !== "attributes") {
       // For now, we only support .attributes paths
       // Other valid paths like .id could be added later
@@ -449,9 +528,19 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    const schema = ref.type === "input"
-      ? targetDefinition.inputAttributesSchema
-      : targetDefinition.resourceAttributesSchema;
+    let schema;
+    if (ref.type === "input") {
+      schema = targetDefinition.inputAttributesSchema;
+    } else if (ref.type === "resource") {
+      schema = targetDefinition.resourceAttributesSchema;
+    } else if (ref.type === "data") {
+      schema = targetDefinition.dataAttributesSchema;
+    }
+
+    // If no schema is available for this artifact type, skip validation
+    if (!schema) {
+      return null;
+    }
 
     // Validate the path against the schema
     const validationResult = validateSchemaPath(schema, pathToValidate);

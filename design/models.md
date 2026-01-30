@@ -1,7 +1,10 @@
 # Models
 
-A model in swamp specifies _inputs_, that are passed to _methods_, that produce
-_outputs_, which may be _model inputs_ or _resources_.
+A model in swamp specifies an _input_, that is passed to many possible
+_methods_, that produce an _output_, which tracks the status of the method as it
+executes, and any artifacts the method has produced (such as _logs_, _files_, a
+_resource_, or ephemeral _data_. A method may produce many logs or files, but
+only a single resource or data artifact.
 
 ## Type
 
@@ -55,20 +58,82 @@ Each input has the following core properties:
 
 ## Methods
 
-Are named functions that take the model as an input, and produce other model
-inputs or resources as outputs.
+Are named functions that take the model as an input, and produce artifacts as
+outputs.
 
 The method should use a MethodInput zod schema to validate that any specific
 inputs it needs are present in the input model.
 
-## Resources
+The function body can create Artifacts, which will then be tracked, so when the
+function finishes we have a complete record of them.
 
-Resources are specified as YAML files that live in the /resources directory of a
-repository, underneath the normalized type as a directory. The file name is
-'${id}.yaml'. For example,
+## Artifacts
+
+Artifacts are information that is produced and stored by a method execution.
+They are created inline as the method executes, and tracked with some context
+that allows the output of the method to track every artifact created by the
+method.
+
+### Logs
+
+A method may produce 0..* log artifacts. They have a name, can have lines
+streamed to them, and by default are stored in /logs in the repository
+underneath the normalized model type as a directory. Logs are named like
+{model-id}-{method name}-{log name}-{timestamp}.log.
+
+They are unstructured, line oriented data.
+
+For example, a method might stream the logs for a remote kubernetes job to a log
+artifact named 'k8slog'.
+
+The stream of log output should have an event emitter attached to it, so we can
+stream logs in real time.
+
+By default, the /logs directory is not stored in git.
+
+### Files
+
+A method may store 0..* file artifacts. They have a name, and can be written to
+directly. By default they will be stored in the /files directory of the
+repository underneath the normalized model type as a directoy plus the model ID
+and method name. For example aws/s3/bucket/{model-id}/{method-name}/{filename}.
+
+By default, the /files directory is not stored in git.
+
+## Resource
+
+Resource artifacts are used to track data about an external resource that should
+be persisted over time (for example, the data about an AWS cloud resource).
+
+A method may produce 0..1 resource as specified as YAML files that live in the
+/resources directory of a repository, underneath the normalized type as a
+directory. The file name is '${id}.yaml'. For example,
 'aws/ec2/vpc/resource-fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml'.
 
 The valid shape of a resource is specified with a Zod 4 schema.
+
+Resources are tracked in git.
+
+## Data
+
+Data artifacts are pure data objects that are not persisted over time in git.
+
+A method may produce 0..1 data artifacts, stored as YAML files that in in the
+/data directory of a repository, underneath the normalized type as a directory.
+The file name is ${id}.yaml.
+
+The valid shape of data is specfiied with a zod 4 schema.
+
+Data is not tracked in git.
+
+## Output
+
+Each method invocation produces an output record, which gets tracked in the
+/outputs directory of a repository (which should not be tracked in git). The
+output record should track the state of the method execution, and the list of
+artifacts produced by the method. It should track state as the method executes.
+it should be structured as
+/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml
 
 ## CLI Commands
 
