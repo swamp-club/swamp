@@ -19,6 +19,7 @@ import "./aws/ec2/vpc/ec2_vpc_model.ts";
 import "./keeb/shell/shell_model.ts";
 import "./systemd/journalctl/journalctl_model.ts";
 import "./command/curl/curl_model.ts";
+import "./mermaid/workflow_diagram/workflow_diagram_model.ts";
 
 // Re-export the registry for convenient access
 export { modelRegistry } from "./model.ts";
