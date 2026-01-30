@@ -9,7 +9,7 @@ import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_outp
 import { modelRegistry } from "../../domain/models/model.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
-  findInputByIdGlobal,
+  findByIdOrName,
   isPartialId,
   matchByPartialId,
 } from "../../domain/models/model_lookup.ts";
@@ -87,9 +87,9 @@ export const modelOutputGetCommand = new Command()
             matchResult.matches.map((m) => `  ${m.id}`).join("\n"),
         );
       } else {
-        // not_found - try as model input ID
-        ctx.logger.debug`Output not found, trying as model input ID`;
-        const inputResult = await findInputByIdGlobal(
+        // not_found - try as model input ID or name
+        ctx.logger.debug`Output not found, trying as model input`;
+        const inputResult = await findByIdOrName(
           inputRepo,
           outputIdOrModelName,
         );
@@ -126,9 +126,9 @@ export const modelOutputGetCommand = new Command()
         };
       }
     } else {
-      // Look up by model name and get latest output
-      ctx.logger.debug`Looking up by model name: ${outputIdOrModelName}`;
-      const inputResult = await inputRepo.findByNameGlobal(outputIdOrModelName);
+      // Look up by model name or ID and get latest output
+      ctx.logger.debug`Looking up model: ${outputIdOrModelName}`;
+      const inputResult = await findByIdOrName(inputRepo, outputIdOrModelName);
       if (!inputResult) {
         throw new UserError(`Model not found: ${outputIdOrModelName}`);
       }

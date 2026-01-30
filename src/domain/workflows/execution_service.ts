@@ -23,8 +23,8 @@ import { StreamingLogRepository } from "../../infrastructure/persistence/streami
 import { modelRegistry } from "../models/model.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
-import { createModelInputId, ModelInput } from "../models/model_input.ts";
-import type { ModelType } from "../models/model_type.ts";
+import { ModelInput } from "../models/model_input.ts";
+import { findByIdOrName } from "../models/model_lookup.ts";
 import { computeInputHash, ModelOutput } from "../models/model_output.ts";
 import {
   extractExpressions,
@@ -133,16 +133,13 @@ export class DefaultStepExecutor implements StepExecutor {
     const executionService = new DefaultMethodExecutionService();
 
     // Look up the model input by ID or name
-    const lookupResult = await this.lookupModelInput(
-      inputRepo,
-      task.modelIdOrName,
-    );
+    const lookupResult = await findByIdOrName(inputRepo, task.modelIdOrName);
     if (!lookupResult) {
       throw new Error(`Model not found: ${task.modelIdOrName}`);
     }
 
     // Keep original input (with expressions) for saving
-    const { input: originalInput, modelType } = lookupResult;
+    const { input: originalInput, type: modelType } = lookupResult;
 
     // Get the model definition
     const definition = modelRegistry.get(modelType);
@@ -356,12 +353,6 @@ export class DefaultStepExecutor implements StepExecutor {
   }
 
   /**
-   * UUID v4 regex pattern for detecting if an argument is a UUID.
-   */
-  private static readonly UUID_PATTERN =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-  /**
    * Evaluates expressions in a model input.
    */
   private evaluateInputExpressions(
@@ -390,33 +381,6 @@ export class DefaultStepExecutor implements StepExecutor {
     return ModelInput.fromData(
       evaluatedData as ReturnType<typeof input.toData>,
     );
-  }
-
-  /**
-   * Looks up a model input by ID or name.
-   */
-  private async lookupModelInput(
-    inputRepo: YamlInputRepository,
-    idOrName: string,
-  ): Promise<{ input: ModelInput; modelType: ModelType } | null> {
-    if (DefaultStepExecutor.UUID_PATTERN.test(idOrName)) {
-      // Look up by ID across all model types
-      const inputId = createModelInputId(idOrName);
-      for (const type of modelRegistry.types()) {
-        const input = await inputRepo.findById(type, inputId);
-        if (input) {
-          return { input, modelType: type };
-        }
-      }
-      return null;
-    } else {
-      // Look up by name
-      const result = await inputRepo.findByNameGlobal(idOrName);
-      if (result) {
-        return { input: result.input, modelType: result.type };
-      }
-      return null;
-    }
   }
 }
 
@@ -658,7 +622,8 @@ export class WorkflowExecutionService {
         const task = step.task.data as { modelIdOrName: string };
 
         // Look up the model input to check for expressions
-        const lookupResult = await this.inputRepo.findByNameGlobal(
+        const lookupResult = await findByIdOrName(
+          this.inputRepo,
           task.modelIdOrName,
         );
         if (lookupResult) {

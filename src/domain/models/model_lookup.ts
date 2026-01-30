@@ -104,3 +104,21 @@ export async function findInputByIdGlobal(
 
   return null;
 }
+
+/**
+ * Finds an input by ID or name, searching across all registered model types.
+ * Tries name lookup first (most common in workflows), then falls back to ID.
+ */
+export async function findByIdOrName(
+  inputRepo: YamlInputRepository,
+  idOrName: string,
+): Promise<ModelLookupResult | null> {
+  // Try by name first (most common case in workflows)
+  const byName = await inputRepo.findByNameGlobal(idOrName);
+  if (byName) {
+    return { input: byName.input, type: byName.type };
+  }
+
+  // Fall back to ID lookup
+  return findInputByIdGlobal(inputRepo, idOrName);
+}

@@ -10,7 +10,7 @@ import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import { YamlEvaluatedInputRepository } from "../../infrastructure/persistence/yaml_evaluated_input_repository.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import { isUuid } from "../../domain/models/model_lookup.ts";
+import { findByIdOrName } from "../../domain/models/model_lookup.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -72,16 +72,8 @@ export const modelEvaluateCommand = new Command()
       ctx.logger.debug`Evaluating model: ${modelIdOrName}`;
 
       // Look up the model input
-      let lookupResult;
-      if (isUuid(modelIdOrName)) {
-        ctx.logger.debug`Looking up by ID: ${modelIdOrName}`;
-        const allInputs = await inputRepo.findAllGlobal();
-        lookupResult = allInputs.find((i) => i.input.id === modelIdOrName);
-      } else {
-        ctx.logger.debug`Looking up by name: ${modelIdOrName}`;
-        lookupResult = await inputRepo.findByNameGlobal(modelIdOrName);
-      }
-
+      ctx.logger.debug`Looking up model: ${modelIdOrName}`;
+      const lookupResult = await findByIdOrName(inputRepo, modelIdOrName);
       if (!lookupResult) {
         throw new Error(`Model not found: ${modelIdOrName}`);
       }

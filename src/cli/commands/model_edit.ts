@@ -15,10 +15,7 @@ import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
-import {
-  findInputByIdGlobal,
-  isUuid,
-} from "../../domain/models/model_lookup.ts";
+import { findByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -90,23 +87,15 @@ export const modelEditCommand = new Command()
       ctx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
 
       // Find the full input data
-      const result = await findInputByIdGlobal(inputRepo, selected.id);
+      const result = await findByIdOrName(inputRepo, selected.id);
       if (!result) {
         throw new UserError(`Model not found: ${selected.id}`);
       }
       input = result.input;
       modelType = result.type;
-    } else if (isUuid(modelIdOrName)) {
-      ctx.logger.debug`Looking up by ID: ${modelIdOrName}`;
-      const result = await findInputByIdGlobal(inputRepo, modelIdOrName);
-      if (!result) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
-      }
-      input = result.input;
-      modelType = result.type;
     } else {
-      ctx.logger.debug`Looking up by name: ${modelIdOrName}`;
-      const result = await inputRepo.findByNameGlobal(modelIdOrName);
+      ctx.logger.debug`Looking up model: ${modelIdOrName}`;
+      const result = await findByIdOrName(inputRepo, modelIdOrName);
       if (!result) {
         throw new UserError(`Model not found: ${modelIdOrName}`);
       }

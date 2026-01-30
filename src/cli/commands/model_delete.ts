@@ -5,15 +5,10 @@ import {
   renderModelDeleteCancelled,
 } from "../../presentation/output/model_delete_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import type { ModelInput } from "../../domain/models/model_input.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
 import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
-import {
-  findInputByIdGlobal,
-  isUuid,
-} from "../../domain/models/model_lookup.ts";
+import { findByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -58,26 +53,12 @@ export const modelDeleteCommand = new Command()
     const resourceRepo = new YamlResourceRepository(repoDir);
 
     // Look up the model input
-    let input: ModelInput;
-    let modelType: ModelType;
-
-    if (isUuid(modelIdOrName)) {
-      ctx.logger.debug`Looking up by ID: ${modelIdOrName}`;
-      const result = await findInputByIdGlobal(inputRepo, modelIdOrName);
-      if (!result) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
-      }
-      input = result.input;
-      modelType = result.type;
-    } else {
-      ctx.logger.debug`Looking up by name: ${modelIdOrName}`;
-      const result = await inputRepo.findByNameGlobal(modelIdOrName);
-      if (!result) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
-      }
-      input = result.input;
-      modelType = result.type;
+    ctx.logger.debug`Looking up model: ${modelIdOrName}`;
+    const result = await findByIdOrName(inputRepo, modelIdOrName);
+    if (!result) {
+      throw new UserError(`Model not found: ${modelIdOrName}`);
     }
+    const { input, type: modelType } = result;
 
     ctx.logger.debug`Found model: id=${input.id}, type=${modelType.normalized}`;
 
