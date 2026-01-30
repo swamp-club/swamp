@@ -36,7 +36,7 @@ jobs:
           cd test-repo
           
           # Initialize as swamp repo
-          ../swamp repo init --models-dir extensions/models
+          ../swamp repo init
 
       - name: Create test models with shell commands
         run: |
