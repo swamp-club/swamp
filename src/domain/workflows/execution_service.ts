@@ -19,6 +19,7 @@ import { YamlDataRepository } from "../../infrastructure/persistence/yaml_data_r
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
+import { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
 import { modelRegistry } from "../models/model.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
@@ -128,6 +129,7 @@ export class DefaultStepExecutor implements StepExecutor {
     const dataRepo = new YamlDataRepository(ctx.repoDir);
     const outputRepo = new YamlOutputRepository(ctx.repoDir);
     const fileRepo = new FileSystemFileRepository(ctx.repoDir);
+    const logRepo = new StreamingLogRepository(ctx.repoDir);
     const executionService = new DefaultMethodExecutionService();
 
     // Look up the model input by ID or name
@@ -229,6 +231,7 @@ export class DefaultStepExecutor implements StepExecutor {
         {
           repoDir: ctx.repoDir,
           resourceRepository: resourceRepo,
+          logRepository: logRepo,
           fileRepository: fileRepo,
         },
       );
@@ -309,6 +312,22 @@ export class DefaultStepExecutor implements StepExecutor {
             result.file.content,
           );
           output.setFileId(result.file.metadata.id);
+        }
+      }
+
+      // Handle log artifact persistence
+      if (result.logs && result.logs.length > 0) {
+        if (result.deleteLogs) {
+          for (const log of result.logs) {
+            await logRepo.delete(modelType, log.id);
+          }
+        } else {
+          const logIds: string[] = [];
+          for (const log of result.logs) {
+            await logRepo.save(modelType, log);
+            logIds.push(log.id);
+          }
+          output.setLogIds(logIds);
         }
       }
 
