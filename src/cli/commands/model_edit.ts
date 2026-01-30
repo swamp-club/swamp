@@ -41,9 +41,10 @@ function toModelSearchItems(
 export const modelEditCommand = new Command()
   .name("edit")
   .description("Edit a model input or resource file")
-  .arguments("[model_id_or_name:string]")
+  .arguments("[model_id_or_name:model_name]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--resource", "Edit the resource file instead of the input")
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
     const ctx = createContext(options as GlobalOptions, "model-edit");
     ctx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;

@@ -40,7 +40,8 @@ function toMethodDescribeData(
 
 export const typeDescribeCommand = new Command()
   .description("Describe a model type with schema details")
-  .arguments("<type:string>")
+  .arguments("<type:model_type>")
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(function (options: AnyOptions, typeArg: string) {
     const ctx = createContext(options as GlobalOptions, "type-describe");
     ctx.logger.debug`Describing type: ${typeArg}`;

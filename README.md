@@ -45,6 +45,50 @@ swamp model method run my-echo write
 Model inputs are stored in `inputs/swamp/echo/` and resources are written to
 `resources/swamp/echo/`.
 
+## Shell Completions
+
+Generate shell completions for tab-completion of commands, model names, and
+workflow names.
+
+### Bash
+
+Add to your `~/.bashrc`:
+
+```bash
+eval "$(swamp completions bash)"
+```
+
+### Zsh with oh-my-zsh
+
+Save the completion script to oh-my-zsh's completions directory:
+
+```bash
+mkdir -p ~/.oh-my-zsh/completions
+swamp completions zsh > ~/.oh-my-zsh/completions/_swamp
+rm -f ~/.zcompdump* && exec zsh
+```
+
+### Zsh without oh-my-zsh
+
+Add to your `~/.zshrc`:
+
+```bash
+eval "$(swamp completions zsh)"
+```
+
+### Fish
+
+Save the completion script to fish's completions directory:
+
+```bash
+swamp completions fish > ~/.config/fish/completions/swamp.fish
+```
+
+### Note
+
+Model and workflow name completions are directory-dependent. They return names
+from the current working directory's swamp repository.
+
 ## Development
 
 ```bash

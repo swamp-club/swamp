@@ -21,8 +21,9 @@ type AnyOptions = any;
 
 export const modelCreateCommand = new Command()
   .description("Create a new model input")
-  .arguments("<type:string> <name:string>")
+  .arguments("<type:model_type> <name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, typeArg: string, name: string) {
     const ctx = createContext(options as GlobalOptions, "model-create");
     ctx.logger.debug`Creating model input: type=${typeArg}, name=${name}`;

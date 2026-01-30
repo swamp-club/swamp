@@ -42,12 +42,13 @@ async function promptConfirmation(message: string): Promise<boolean> {
 export const modelDeleteCommand = new Command()
   .name("delete")
   .description("Delete a model input")
-  .arguments("<model_id_or_name:string>")
+  .arguments("<model_id_or_name:model_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(
     "-f, --force",
     "Skip confirmation and allow deletion when resource exists",
   )
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, "model-delete");
     ctx.logger.debug`Deleting model: ${modelIdOrName}`;

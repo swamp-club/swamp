@@ -52,9 +52,10 @@ type AnyOptions = any;
 export const modelMethodRunCommand = new Command()
   .name("run")
   .description("Execute a method on a model")
-  .arguments("<model_id_or_name:string> <method_name:string>")
+  .arguments("<model_id_or_name:model_name> <method_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(
+    // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
       options: AnyOptions,
       modelIdOrName: string,

@@ -22,8 +22,9 @@ type AnyOptions = any;
 export const modelGetCommand = new Command()
   .name("get")
   .description("Show details of a model input")
-  .arguments("<model_id_or_name:string>")
+  .arguments("<model_id_or_name:model_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, "model-get");
     ctx.logger.debug`Getting model: ${modelIdOrName}`;

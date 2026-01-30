@@ -49,8 +49,9 @@ function toSearchItem(workflow: Workflow): WorkflowSearchItem {
 export const workflowEditCommand = new Command()
   .name("edit")
   .description("Edit a workflow file")
-  .arguments("[workflow_id_or_name:string]")
+  .arguments("[workflow_id_or_name:workflow_name]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName?: string) {
     const ctx = createContext(options as GlobalOptions, "workflow-edit");
     ctx.logger.debug`Editing workflow: ${workflowIdOrName ?? "(interactive)"}`;
