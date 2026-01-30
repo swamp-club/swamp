@@ -56,6 +56,12 @@ Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple wor
     workflowExecution,
     title: "Test Workflow Diagram",
     includeSteps: true,
+    colorScheme: {
+      succeeded: "#90EE90",
+      failed: "#FFB6C1",
+      cancelled: "#D3D3D3",
+      skipped: "#FFFFE0",
+    },
   };
 
   const input = ModelInput.create({
@@ -65,7 +71,7 @@ Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple wor
 
   const result = await mermaidWorkflowModel.methods.generate.execute(
     input,
-    { repoPath: "/tmp" },
+    { repoDir: "/tmp" },
   );
 
   assertEquals(result.resource !== undefined, true);
@@ -113,6 +119,12 @@ Deno.test("mermaidWorkflowModel: generate creates simple diagram without steps",
   const inputAttributes: MermaidWorkflowInputAttributes = {
     workflowExecution,
     includeSteps: false, // Don't include step details
+    colorScheme: {
+      succeeded: "#90EE90",
+      failed: "#FFB6C1",
+      cancelled: "#D3D3D3",
+      skipped: "#FFFFE0",
+    },
   };
 
   const input = ModelInput.create({
@@ -122,7 +134,7 @@ Deno.test("mermaidWorkflowModel: generate creates simple diagram without steps",
 
   const result = await mermaidWorkflowModel.methods.generate.execute(
     input,
-    { repoPath: "/tmp" },
+    { repoDir: "/tmp" },
   );
 
   // Verify file content is simpler without steps
@@ -212,6 +224,12 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
   const inputAttributes: MermaidWorkflowInputAttributes = {
     workflowExecution,
     includeSteps: false,
+    colorScheme: {
+      succeeded: "#90EE90",
+      failed: "#FFB6C1",
+      cancelled: "#D3D3D3",
+      skipped: "#FFFFE0",
+    },
   };
 
   const input = ModelInput.create({
@@ -221,7 +239,7 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
 
   const result = await mermaidWorkflowModel.methods.generate.execute(
     input,
-    { repoPath: "/tmp" },
+    { repoDir: "/tmp" },
   );
 
   const diagramContent = new TextDecoder().decode(result.file!.content);
@@ -240,7 +258,7 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
 });
 
 Deno.test("mermaidWorkflowModel: model type is correctly defined", () => {
-  assertEquals(MERMAID_WORKFLOW_MODEL_TYPE.value, "mermaid/workflow-diagram");
+  assertEquals(MERMAID_WORKFLOW_MODEL_TYPE.normalized, "mermaid/workflow-diagram");
   assertEquals(mermaidWorkflowModel.type, MERMAID_WORKFLOW_MODEL_TYPE);
   assertEquals(mermaidWorkflowModel.version, 1);
 });
