@@ -112,3 +112,41 @@ Deno.test("SkillAssets.copySkillsTo rejects path traversal attempts", async () =
     assertEquals(realPath.startsWith(await Deno.realPath(dir)), true);
   });
 });
+
+Deno.test("SkillAssets includes swamp-extension-model skill", () => {
+  const assets = new SkillAssets();
+  const names = assets.getSkillNames();
+
+  assertEquals(names.includes("swamp-extension-model"), true);
+});
+
+Deno.test("SkillAssets.copySkillsTo copies nested reference files", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    // Check that swamp-extension-model skill and references were copied
+    const skillPath = join(dir, "swamp-extension-model", "SKILL.md");
+    const examplesPath = join(
+      dir,
+      "swamp-extension-model",
+      "references",
+      "examples.md",
+    );
+    const troubleshootingPath = join(
+      dir,
+      "swamp-extension-model",
+      "references",
+      "troubleshooting.md",
+    );
+
+    const skillStat = await Deno.stat(skillPath);
+    assertEquals(skillStat.isFile, true);
+
+    const examplesStat = await Deno.stat(examplesPath);
+    assertEquals(examplesStat.isFile, true);
+
+    const troubleshootingStat = await Deno.stat(troubleshootingPath);
+    assertEquals(troubleshootingStat.isFile, true);
+  });
+});

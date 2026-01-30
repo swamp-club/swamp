@@ -1,4 +1,5 @@
 import { Command } from "@cliffy/command";
+import { resolve } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
@@ -12,11 +13,72 @@ import {
   ModelTypeType,
   WorkflowNameType,
 } from "./completion_types.ts";
+import { UserModelLoader } from "../domain/models/user_model_loader.ts";
+import {
+  type RepoMarkerData,
+  RepoMarkerRepository,
+} from "../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../domain/repo/repo_path.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
 
+/**
+ * Resolves the models directory path.
+ * Priority: SWAMP_MODELS_DIR env var > .swamp.yaml config > default "extensions/models"
+ *
+ * @internal Exported for testing
+ */
+export function resolveModelsDir(marker: RepoMarkerData | null): string {
+  // Environment variable takes highest priority
+  const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
+  if (envModelsDir) {
+    return envModelsDir;
+  }
+
+  // Then .swamp.yaml config
+  if (marker?.modelsDir) {
+    return marker.modelsDir;
+  }
+
+  // Default
+  return "extensions/models";
+}
+
+/**
+ * Load user models from configured directory.
+ */
+async function loadUserModels(): Promise<void> {
+  const cwd = Deno.cwd();
+  const markerRepo = new RepoMarkerRepository();
+
+  try {
+    const repoPath = RepoPath.create(cwd);
+    const marker = await markerRepo.read(repoPath);
+
+    const modelsDir = resolveModelsDir(marker);
+    // Handle both absolute and relative paths
+    const absoluteModelsDir = modelsDir.startsWith("/")
+      ? modelsDir
+      : resolve(cwd, modelsDir);
+
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(absoluteModelsDir);
+
+    // Log failures as warnings (don't block CLI startup)
+    for (const failure of result.failed) {
+      console.error(
+        `Warning: Failed to load user model ${failure.file}: ${failure.error}`,
+      );
+    }
+  } catch {
+    // Not in a swamp repo or other error - silently skip user models
+  }
+}
+
 export async function runCli(args: string[]): Promise<void> {
+  // Load user models before setting up CLI
+  await loadUserModels();
   const cli = new Command()
     .name("swamp")
     .version(VERSION)

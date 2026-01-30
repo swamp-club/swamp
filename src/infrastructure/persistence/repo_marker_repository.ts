@@ -12,6 +12,7 @@ export interface RepoMarkerData {
   swampVersion: string;
   initializedAt: string;
   upgradedAt?: string;
+  modelsDir?: string;
 }
 
 /**
