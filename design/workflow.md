@@ -17,15 +17,15 @@ Jobs can have dependencies on other jobs. The entire workflow is executed with a
 weighted topological sort, so thtat htye have maximum paralleism through the
 workflow. Like steps, jobs also have conditions that trigger them.
 
-Workflows are specified in YAML files, that are validated with zod, in a
-workflows/ directory of the repository, with their workflow-{uuid}.yaml.
-Workflow run output is in subdirectories of workflows at
-workfows/workflow-{uuid}/workflow-run-{uuid}-{timestamp}.yaml.
+Workflows are specified in YAML files, that are validated with Zod, in the
+`/data/workflows/` directory of the repository, with their `{uuid}.yaml`.
+Workflow run output is stored in `/data/workflow-runs/` at
+`/data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
 
 ## Workflow Definition
 
-Workflows are specified in workflows/workflow-{uuid}.yaml. They have a unique
-id, a globally unique name, and a set of jobs.
+Workflows are specified in `/data/workflows/{uuid}.yaml`. They have a unique id,
+a globally unique name, and a set of jobs.
 
 ## Jobs
 
@@ -49,7 +49,63 @@ not vary between identical inputs. (If the inputs are identical, the run order
 should be deterministic.)
 
 The output of the run will be written to a workflow run log, kept in
-workflows/workflow-{uuid}/workflow-run-{uuid}-{timestamp}.yaml
+`/data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
+
+## Logical Views
+
+The RepoIndexService maintains a workflow-centric logical view at `/workflows/`
+that provides human/agent-friendly exploration of workflows by name.
+
+### Workflow View Structure
+
+```
+/workflows/{workflow-name}/
+  workflow.yaml   → symlink to /data/workflows/{uuid}.yaml
+  runs/
+    {run-id}/
+      run.yaml    → symlink to /data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml
+      steps/
+        {step-name}/
+          output.yaml → symlink to step output
+          model/      → symlink to /models/{model-name}/ (for model method steps)
+```
+
+This structure allows exploring workflow definitions and their run history using
+human-readable names.
+
+### Cross-View References
+
+When a workflow step executes a model method, the output appears in both views:
+
+- **Model view:** `/models/{model-name}/outputs/{method}/` contains the method
+  output
+- **Workflow view:** `/workflows/{workflow-name}/runs/{run-id}/steps/{step}/`
+  contains a symlink to the same output, plus a reference to the model's logical
+  view
+
+This enables exploration from either the model's perspective or the workflow's
+perspective.
+
+### Domain Events
+
+The WorkflowRepository and WorkflowRunRepository emit domain events:
+
+**Workflow Events:**
+
+- `WorkflowCreated` - Emitted when a new workflow is created via
+  `workflow create`
+- `WorkflowUpdated` - Emitted when a workflow definition is modified
+- `WorkflowDeleted` - Emitted when a workflow is deleted
+
+**WorkflowRun Events:**
+
+- `WorkflowRunStarted` - Emitted when `workflow run` begins execution
+- `WorkflowRunCompleted` - Emitted when a workflow run completes successfully
+- `WorkflowRunFailed` - Emitted when a workflow run fails
+
+The RepoIndexService subscribes to these events and updates the logical views
+accordingly, ensuring the `/workflows/` view stays synchronized with the data
+directory.
 
 ## CLI Commands
 

@@ -20,6 +20,38 @@ configuration drift.
 
 All this is stored in a 'swamp repo', which is a git repository.
 
+## Storage Architecture
+
+A swamp repo uses a dual-layer storage architecture:
+
+### Data Directory (`data/`)
+
+The `data/` directory is the internal storage format optimized for swamp's
+software architecture. Aggregate repositories (ModelRepository,
+WorkflowRepository, WorkflowRunRepository) persist domain objects here.
+
+Both agents and humans can explore the data directory directly, but its layout
+reflects swamp's internal domain model rather than user-facing concerns.
+
+### Logical Views
+
+Logical views are symlinked directories that provide human/agent-friendly
+perspectives into the data directory. They are automatically maintained by the
+RepoIndexService whenever aggregate repositories mutate data.
+
+**Model View (`/models/`):** Explore models by name, with easy access to inputs,
+resources, outputs, logs, and files for each model.
+
+**Workflow View (`/workflows/`):** Explore workflows by name, with access to
+workflow definitions and run history.
+
+These views allow exploration of the same underlying data from different
+perspectives. For example, a method output can be viewed from the model's
+perspective (`/models/{name}/outputs/`) or from the workflow run that triggered
+it (`/workflows/{name}/runs/{run}/steps/{step}/`).
+
+See [./repo.md] for detailed architecture documentation.
+
 ## Models
 
 See [./models.md].
