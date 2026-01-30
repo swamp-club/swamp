@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { ModelInputId } from "../../domain/models/model_input.ts";
@@ -152,6 +153,10 @@ export class YamlOutputRepository implements OutputRepository {
           const data = parseYaml(content) as ModelOutputData;
           if (data.id === id) {
             await Deno.remove(path);
+
+            // Clean up empty parent directories
+            const outputsDir = join(this.repoDir, "data", "outputs");
+            await cleanupEmptyParentDirs(path, outputsDir);
             return;
           }
         }

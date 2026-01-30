@@ -203,4 +203,26 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private getRunsDir(workflowId: WorkflowId): string {
     return join(this.repoDir, "data", "workflow-runs", workflowId);
   }
+
+  async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
+    const dir = this.getRunsDir(workflowId);
+
+    // Count the runs before deleting
+    const runs = await this.findAllByWorkflowId(workflowId);
+    const count = runs.length;
+
+    if (count === 0) {
+      return 0;
+    }
+
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    return count;
+  }
 }

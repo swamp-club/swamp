@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { DataRepository } from "../../domain/models/repositories.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -75,6 +76,10 @@ export class YamlDataRepository implements DataRepository {
     const path = this.getPath(type, id);
     try {
       await Deno.remove(path);
+
+      // Clean up empty parent directories
+      const dataDir = join(this.repoDir, "data", "data");
+      await cleanupEmptyParentDirs(path, dataDir);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;

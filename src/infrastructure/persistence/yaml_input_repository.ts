@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { InputRepository } from "../../domain/models/repositories.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -223,6 +224,10 @@ export class YamlInputRepository implements InputRepository {
 
     try {
       await Deno.remove(path);
+
+      // Clean up empty parent directories
+      const inputsDir = join(this.repoDir, "data", "inputs");
+      await cleanupEmptyParentDirs(path, inputsDir);
 
       // Emit event if we had a name
       if (this.eventBus && inputName) {

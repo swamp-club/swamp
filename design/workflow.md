@@ -129,6 +129,10 @@ fuzzy search.
 Should show the workflow yaml with syntax highlighting, and the path, similar to
 `model get`.
 
+### workflow delete <id or name>
+
+Should delete the workflow yaml as well as any run history for that workflow
+
 ### workflow run <id or name>
 
 Executes a workflow run.

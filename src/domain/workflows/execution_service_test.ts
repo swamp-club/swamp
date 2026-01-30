@@ -144,6 +144,13 @@ class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
   getPath(workflowId: WorkflowId, runId: WorkflowRunId): string {
     return `workflows/workflow-${workflowId}/workflow-run-${runId}.yaml`;
   }
+
+  deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
+    const runs = this.runs.get(workflowId) ?? [];
+    const count = runs.length;
+    this.runs.delete(workflowId);
+    return Promise.resolve(count);
+  }
 }
 
 function createSimpleWorkflow(): Workflow {
