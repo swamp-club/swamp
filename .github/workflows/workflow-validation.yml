@@ -140,13 +140,13 @@ jobs:
               fi
               
               # Check for hardcoded secrets in workflow
-              if grep -i "password\|secret\|token" "$file" | grep -v "\${{" | grep -v "secrets\." | grep -v "GITHUB_TOKEN"; then
+              if grep -i "password\|secret\|token" "$file" | grep -v '\${{' | grep -v "secrets\." | grep -v "GITHUB_TOKEN"; then
                 echo "  ⚠️ Warning: Potential hardcoded secrets found in $file"
                 ISSUES_FOUND=1
               fi
               
               # Check for shell injection risks
-              if grep -E '\$\{[^}]*\}' "$file" | grep -v '\${{'; then
+              if grep -E '\$\{[^}]*\}' "$file" | grep -v '\$\{\{'; then
                 echo "  ⚠️ Warning: Potential shell injection risk with unescaped variables in $file"
               fi
               
