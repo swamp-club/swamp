@@ -2,9 +2,9 @@ import { assertEquals } from "@std/assert";
 import { ModelInput } from "../model_input.ts";
 import {
   ECHO_MODEL_TYPE,
+  EchoDataAttributesSchema,
   EchoInputAttributesSchema,
   echoModel,
-  EchoResourceAttributesSchema,
 } from "./echo_model.ts";
 
 Deno.test("ECHO_MODEL_TYPE has correct normalized type", () => {
@@ -37,16 +37,16 @@ Deno.test("EchoInputAttributesSchema rejects missing message", () => {
   assertEquals(result.success, false);
 });
 
-Deno.test("EchoResourceAttributesSchema validates correct data", () => {
-  const result = EchoResourceAttributesSchema.safeParse({
+Deno.test("EchoDataAttributesSchema validates correct data", () => {
+  const result = EchoDataAttributesSchema.safeParse({
     message: "hello",
     timestamp: "2024-01-15T10:30:00.000Z",
   });
   assertEquals(result.success, true);
 });
 
-Deno.test("EchoResourceAttributesSchema rejects invalid timestamp", () => {
-  const result = EchoResourceAttributesSchema.safeParse({
+Deno.test("EchoDataAttributesSchema rejects invalid timestamp", () => {
+  const result = EchoDataAttributesSchema.safeParse({
     message: "hello",
     timestamp: "not-a-date",
   });
@@ -57,7 +57,7 @@ Deno.test("echoModel has write method", () => {
   assertEquals("write" in echoModel.methods, true);
   assertEquals(
     echoModel.methods.write.description,
-    "Write the input message to a resource with a timestamp",
+    "Write the input message to a data artifact with a timestamp",
   );
 });
 
@@ -71,11 +71,11 @@ Deno.test("echoModel.methods.write executes correctly", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.resource.attributes.message, "hello world");
-  assertEquals(typeof result.resource.attributes.timestamp, "string");
+  assertEquals(result.data?.attributes.message, "hello world");
+  assertEquals(typeof result.data?.attributes.timestamp, "string");
 
   // Verify timestamp is valid ISO date
-  const timestamp = new Date(result.resource.attributes.timestamp as string);
+  const timestamp = new Date(result.data?.attributes.timestamp as string);
   assertEquals(isNaN(timestamp.getTime()), false);
 });
 

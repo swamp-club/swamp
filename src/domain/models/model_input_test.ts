@@ -108,6 +108,9 @@ Deno.test("ModelInput.toData returns correct structure", () => {
   assertEquals(data, {
     id: "550e8400-e29b-41d4-a716-446655440000",
     resourceId: "550e8400-e29b-41d4-a716-446655440001",
+    dataId: undefined,
+    fileId: undefined,
+    logId: undefined,
     name: "test-input",
     version: 2,
     tags: { env: "prod" },

@@ -636,6 +636,7 @@ Deno.test("DefaultStepExecutor passes env to shell commands", async () => {
 
   const ctx: StepExecutionContext = {
     workflowId: createWorkflowId("test-workflow-id"),
+    workflowRunId: "test-run-id",
     workflowName: "test-workflow",
     repoDir: ".",
     jobName: "test-job",

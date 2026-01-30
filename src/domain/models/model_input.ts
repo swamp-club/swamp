@@ -18,6 +18,9 @@ export function createModelInputId(id: string): ModelInputId {
 export const ModelInputSchema = z.object({
   id: z.string().uuid(),
   resourceId: z.string().uuid().optional(),
+  dataId: z.string().uuid().optional(),
+  fileId: z.string().uuid().optional(),
+  logId: z.string().uuid().optional(),
   name: z.string().min(1),
   version: z.number().int().positive(),
   tags: z.record(z.string(), z.string()).default({}),
@@ -37,6 +40,9 @@ export interface CreateModelInputProps {
   name: string;
   version?: number;
   resourceId?: string;
+  dataId?: string;
+  fileId?: string;
+  logId?: string;
   tags?: Record<string, string>;
   attributes?: Record<string, unknown>;
 }
@@ -51,6 +57,9 @@ export class ModelInput {
   private constructor(
     readonly id: ModelInputId,
     private _resourceId: string | undefined,
+    private _dataId: string | undefined,
+    private _fileId: string | undefined,
+    private _logId: string | undefined,
     readonly name: string,
     readonly version: number,
     private _tags: Record<string, string>,
@@ -70,6 +79,9 @@ export class ModelInput {
     const validated = ModelInputSchema.parse({
       id,
       resourceId: props.resourceId,
+      dataId: props.dataId,
+      fileId: props.fileId,
+      logId: props.logId,
       name: props.name,
       version,
       tags: props.tags ?? {},
@@ -79,6 +91,9 @@ export class ModelInput {
     return new ModelInput(
       createModelInputId(validated.id),
       validated.resourceId,
+      validated.dataId,
+      validated.fileId,
+      validated.logId,
       validated.name,
       validated.version,
       validated.tags,
@@ -97,6 +112,9 @@ export class ModelInput {
     return new ModelInput(
       createModelInputId(validated.id),
       validated.resourceId,
+      validated.dataId,
+      validated.fileId,
+      validated.logId,
       validated.name,
       validated.version,
       validated.tags,
@@ -109,6 +127,27 @@ export class ModelInput {
    */
   get resourceId(): string | undefined {
     return this._resourceId;
+  }
+
+  /**
+   * Returns the data artifact ID if one has been assigned.
+   */
+  get dataId(): string | undefined {
+    return this._dataId;
+  }
+
+  /**
+   * Returns the file artifact ID if one has been assigned.
+   */
+  get fileId(): string | undefined {
+    return this._fileId;
+  }
+
+  /**
+   * Returns the log artifact ID if one has been assigned.
+   */
+  get logId(): string | undefined {
+    return this._logId;
   }
 
   /**
@@ -130,6 +169,27 @@ export class ModelInput {
    */
   setResourceId(resourceId: string | undefined): void {
     this._resourceId = resourceId;
+  }
+
+  /**
+   * Sets the data artifact ID for this input.
+   */
+  setDataId(dataId: string | undefined): void {
+    this._dataId = dataId;
+  }
+
+  /**
+   * Sets the file artifact ID for this input.
+   */
+  setFileId(fileId: string | undefined): void {
+    this._fileId = fileId;
+  }
+
+  /**
+   * Sets the log artifact ID for this input.
+   */
+  setLogId(logId: string | undefined): void {
+    this._logId = logId;
   }
 
   /**
@@ -160,6 +220,9 @@ export class ModelInput {
     return {
       id: this.id,
       resourceId: this._resourceId,
+      dataId: this._dataId,
+      fileId: this._fileId,
+      logId: this._logId,
       name: this.name,
       version: this.version,
       tags: { ...this._tags },

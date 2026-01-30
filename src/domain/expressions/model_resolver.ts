@@ -1,9 +1,20 @@
 import type { ModelInput } from "../models/model_input.ts";
 import type { ModelResource } from "../models/model_resource.ts";
+import type { ModelData as ModelDataEntity } from "../models/model_data.ts";
+import type { ModelFile } from "../models/model_file.ts";
+import type { ModelLog } from "../models/model_log.ts";
+import type { ModelOutput } from "../models/model_output.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import type { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import type { YamlDataRepository } from "../../infrastructure/persistence/yaml_data_repository.ts";
+import type { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
+import type { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
+import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { createModelResourceId } from "../models/model_resource.ts";
+import { createModelDataId } from "../models/model_data.ts";
+import { createModelFileId } from "../models/model_file.ts";
+import { createModelLogId } from "../models/model_log.ts";
 import { ModelNotFoundError } from "./errors.ts";
 
 /**
@@ -22,6 +33,39 @@ export interface ModelData {
     version: number;
     createdAt: string;
     attributes: Record<string, unknown>;
+  };
+  data?: {
+    id: string;
+    version: number;
+    createdAt: string;
+    attributes: Record<string, unknown>;
+  };
+  file?: {
+    id: string;
+    version: number;
+    createdAt: string;
+    filename: string;
+    contentType: string;
+    size: number;
+    checksum: string;
+    path: string;
+  };
+  log?: {
+    id: string;
+    version: number;
+    createdAt: string;
+    entries: Array<{
+      message: string;
+    }>;
+  };
+  execution?: {
+    id: string;
+    methodName: string;
+    status: string;
+    startedAt: string;
+    completedAt?: string;
+    durationMs?: number;
+    error?: { message: string; stack?: string };
   };
 }
 
@@ -46,13 +90,34 @@ export interface ExpressionContext {
 }
 
 /**
+ * Configuration for optional repositories.
+ */
+export interface ModelResolverRepositories {
+  dataRepo?: YamlDataRepository;
+  fileRepo?: FileSystemFileRepository;
+  logRepo?: StreamingLogRepository;
+  outputRepo?: YamlOutputRepository;
+}
+
+/**
  * Resolves model references to build CEL evaluation context.
  */
 export class ModelResolver {
+  private readonly dataRepo?: YamlDataRepository;
+  private readonly fileRepo?: FileSystemFileRepository;
+  private readonly logRepo?: StreamingLogRepository;
+  private readonly outputRepo?: YamlOutputRepository;
+
   constructor(
     private readonly inputRepo: YamlInputRepository,
     private readonly resourceRepo: YamlResourceRepository,
-  ) {}
+    repos?: ModelResolverRepositories,
+  ) {
+    this.dataRepo = repos?.dataRepo;
+    this.fileRepo = repos?.fileRepo;
+    this.logRepo = repos?.logRepo;
+    this.outputRepo = repos?.outputRepo;
+  }
 
   /**
    * Builds a complete expression context from all available models.
@@ -126,6 +191,94 @@ export class ModelResolver {
       }
     }
 
+    // Load data artifact if available
+    if (input.dataId && this.dataRepo) {
+      const dataId = createModelDataId(input.dataId);
+      const dataArtifact = await this.dataRepo.findById(type, dataId);
+      if (dataArtifact) {
+        data.data = {
+          id: dataArtifact.id,
+          version: dataArtifact.version,
+          createdAt: dataArtifact.createdAt.toISOString(),
+          attributes: dataArtifact.attributes,
+        };
+      }
+    }
+
+    // Load file artifact if available
+    // Note: We need to find the file using the output that created it
+    // to get the method name for the path structure
+    if (input.fileId && this.fileRepo && this.outputRepo) {
+      const fileId = createModelFileId(input.fileId);
+      // Find the output that created this file to get the method name
+      const latestOutput = await this.outputRepo.findLatestByModelInput(
+        type,
+        input.id,
+      );
+      const methodName = latestOutput?.methodName;
+
+      if (methodName) {
+        const fileArtifact = await this.fileRepo.findById(
+          type,
+          input.id,
+          methodName,
+          fileId,
+        );
+        if (fileArtifact) {
+          data.file = {
+            id: fileArtifact.id,
+            version: fileArtifact.version,
+            createdAt: fileArtifact.createdAt.toISOString(),
+            filename: fileArtifact.filename,
+            contentType: fileArtifact.contentType,
+            size: fileArtifact.size,
+            checksum: fileArtifact.checksum,
+            path: this.fileRepo.getContentPath(
+              type,
+              input.id,
+              methodName,
+              fileArtifact,
+            ),
+          };
+        }
+      }
+    }
+
+    // Load log artifact if available
+    if (input.logId && this.logRepo) {
+      const logId = createModelLogId(input.logId);
+      const logArtifact = await this.logRepo.findById(type, logId);
+      if (logArtifact) {
+        data.log = {
+          id: logArtifact.id,
+          version: logArtifact.version,
+          createdAt: logArtifact.createdAt.toISOString(),
+          entries: logArtifact.entries.map((e) => ({
+            message: e.message,
+          })),
+        };
+      }
+    }
+
+    // Load latest output if available
+    if (this.outputRepo) {
+      const latestOutput = await this.outputRepo.findLatestByModelInput(
+        type,
+        input.id,
+      );
+      if (latestOutput) {
+        data.execution = {
+          id: latestOutput.id,
+          methodName: latestOutput.methodName,
+          status: latestOutput.status,
+          startedAt: latestOutput.startedAt.toISOString(),
+          completedAt: latestOutput.completedAt?.toISOString(),
+          durationMs: latestOutput.durationMs,
+          error: latestOutput.error,
+        };
+      }
+    }
+
     return data;
   }
 
@@ -194,6 +347,109 @@ export class ModelResolver {
         version: resource.version,
         createdAt: resource.createdAt.toISOString(),
         attributes: resource.attributes,
+      };
+    }
+  }
+
+  /**
+   * Updates the context with fresh data artifact for a specific model.
+   *
+   * @param context - The context to update
+   * @param modelRef - The model name or UUID
+   * @param dataArtifact - The new data artifact
+   */
+  updateDataInContext(
+    context: ExpressionContext,
+    modelRef: string,
+    dataArtifact: ModelDataEntity,
+  ): void {
+    const modelData = context.model[modelRef];
+    if (modelData) {
+      modelData.data = {
+        id: dataArtifact.id,
+        version: dataArtifact.version,
+        createdAt: dataArtifact.createdAt.toISOString(),
+        attributes: dataArtifact.attributes,
+      };
+    }
+  }
+
+  /**
+   * Updates the context with fresh file artifact for a specific model.
+   *
+   * @param context - The context to update
+   * @param modelRef - The model name or UUID
+   * @param fileArtifact - The new file artifact
+   * @param filePath - The path to the file content
+   */
+  updateFileInContext(
+    context: ExpressionContext,
+    modelRef: string,
+    fileArtifact: ModelFile,
+    filePath: string,
+  ): void {
+    const modelData = context.model[modelRef];
+    if (modelData) {
+      modelData.file = {
+        id: fileArtifact.id,
+        version: fileArtifact.version,
+        createdAt: fileArtifact.createdAt.toISOString(),
+        filename: fileArtifact.filename,
+        contentType: fileArtifact.contentType,
+        size: fileArtifact.size,
+        checksum: fileArtifact.checksum,
+        path: filePath,
+      };
+    }
+  }
+
+  /**
+   * Updates the context with fresh log artifact for a specific model.
+   *
+   * @param context - The context to update
+   * @param modelRef - The model name or UUID
+   * @param logArtifact - The new log artifact
+   */
+  updateLogInContext(
+    context: ExpressionContext,
+    modelRef: string,
+    logArtifact: ModelLog,
+  ): void {
+    const modelData = context.model[modelRef];
+    if (modelData) {
+      modelData.log = {
+        id: logArtifact.id,
+        version: logArtifact.version,
+        createdAt: logArtifact.createdAt.toISOString(),
+        entries: logArtifact.entries.map((e) => ({
+          message: e.message,
+        })),
+      };
+    }
+  }
+
+  /**
+   * Updates the context with fresh output state for a specific model.
+   *
+   * @param context - The context to update
+   * @param modelRef - The model name or UUID
+   * @param output - The output state
+   */
+  updateOutputInContext(
+    context: ExpressionContext,
+    modelRef: string,
+    output: ModelOutput,
+  ): void {
+    const modelData = context.model[modelRef];
+    if (modelData) {
+      modelData.execution = {
+        id: output.id,
+        methodName: output.methodName,
+        status: output.status,
+        startedAt: output.startedAt.toISOString(),
+        completedAt: output.completedAt?.toISOString(),
+        durationMs: output.durationMs,
+        error: output.error,
       };
     }
   }

@@ -15,12 +15,16 @@ import type {
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlEvaluatedInputRepository } from "../../infrastructure/persistence/yaml_evaluated_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import { YamlDataRepository } from "../../infrastructure/persistence/yaml_data_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
 import { modelRegistry } from "../models/model.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import { createModelInputId, ModelInput } from "../models/model_input.ts";
 import type { ModelType } from "../models/model_type.ts";
+import { computeInputHash, ModelOutput } from "../models/model_output.ts";
 import {
   extractExpressions,
   replaceExpressions,
@@ -37,6 +41,7 @@ import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
  */
 export interface StepExecutionContext {
   workflowId: WorkflowId;
+  workflowRunId: string;
   workflowName: string;
   jobName: string;
   stepName: string;
@@ -120,6 +125,9 @@ export class DefaultStepExecutor implements StepExecutor {
     const inputRepo = new YamlInputRepository(ctx.repoDir);
     const evaluatedInputRepo = new YamlEvaluatedInputRepository(ctx.repoDir);
     const resourceRepo = new YamlResourceRepository(ctx.repoDir);
+    const dataRepo = new YamlDataRepository(ctx.repoDir);
+    const outputRepo = new YamlOutputRepository(ctx.repoDir);
+    const fileRepo = new FileSystemFileRepository(ctx.repoDir);
     const executionService = new DefaultMethodExecutionService();
 
     // Look up the model input by ID or name
@@ -189,46 +197,137 @@ export class DefaultStepExecutor implements StepExecutor {
       );
     }
 
-    // Execute the method with EVALUATED input
-    const result = await executionService.executeWorkflow(
-      evaluatedInput,
-      definition,
-      task.methodName,
-      { repoDir: ctx.repoDir, resourceRepository: resourceRepo },
-    );
+    // Create ModelOutput for tracking
+    const inputHash = await computeInputHash(evaluatedInput.attributes);
+    const output = ModelOutput.create({
+      modelInputId: originalInput.id,
+      methodName: task.methodName,
+      provenance: {
+        inputHash,
+        modelVersion: originalInput.version,
+        triggeredBy: "workflow",
+        workflowId: ctx.workflowId,
+        workflowRunId: ctx.workflowRunId,
+        stepName: ctx.stepName,
+      },
+    });
 
-    // Handle resource persistence based on operation type
-    let resourcePath: string;
-    if (result.deleteResource) {
-      // Delete the resource file
-      await resourceRepo.delete(modelType, result.resource.id);
-      resourcePath = "";
-    } else {
-      // Save the resource
-      await resourceRepo.save(modelType, result.resource);
-      resourcePath = resourceRepo.getPath(modelType, result.resource.id);
-    }
+    // Mark as running and save
+    output.markRunning();
+    await outputRepo.save(modelType, task.methodName, output);
 
-    // Update ORIGINAL input's resourceId (preserves expressions)
-    if (result.deleteResource) {
-      if (originalInput.resourceId) {
-        originalInput.setResourceId(undefined);
-        await inputRepo.save(modelType, originalInput);
+    let resourceId: string | undefined;
+    let resourcePath = "";
+    let resourceAttributes: Record<string, unknown> = {};
+
+    try {
+      // Execute the method with EVALUATED input
+      const result = await executionService.executeWorkflow(
+        evaluatedInput,
+        definition,
+        task.methodName,
+        {
+          repoDir: ctx.repoDir,
+          resourceRepository: resourceRepo,
+          fileRepository: fileRepo,
+        },
+      );
+
+      // Handle resource persistence based on operation type
+      if (result.resource) {
+        if (result.deleteResource) {
+          // Delete the resource file
+          await resourceRepo.delete(modelType, result.resource.id);
+        } else {
+          // Save the resource
+          await resourceRepo.save(modelType, result.resource);
+          resourcePath = resourceRepo.getPath(modelType, result.resource.id);
+          resourceId = result.resource.id;
+          resourceAttributes = result.resource.attributes;
+
+          // Track artifact in output
+          output.setResourceId(result.resource.id);
+        }
+
+        // Update ORIGINAL input's resourceId (preserves expressions)
+        if (result.deleteResource) {
+          if (originalInput.resourceId) {
+            originalInput.setResourceId(undefined);
+            await inputRepo.save(modelType, originalInput);
+          }
+        } else {
+          if (!originalInput.resourceId) {
+            originalInput.setResourceId(result.resource.id);
+            await inputRepo.save(modelType, originalInput);
+          }
+        }
       }
-    } else {
-      if (!originalInput.resourceId) {
-        originalInput.setResourceId(result.resource.id);
-        await inputRepo.save(modelType, originalInput);
+
+      // Handle data artifact persistence
+      if (result.data) {
+        if (result.deleteData) {
+          await dataRepo.delete(modelType, result.data.id);
+        } else {
+          await dataRepo.save(modelType, result.data);
+          output.setDataId(result.data.id);
+        }
+
+        // Update ORIGINAL input's dataId (preserves expressions)
+        if (result.deleteData) {
+          if (originalInput.dataId) {
+            originalInput.setDataId(undefined);
+            await inputRepo.save(modelType, originalInput);
+          }
+        } else {
+          if (!originalInput.dataId) {
+            originalInput.setDataId(result.data.id);
+            await inputRepo.save(modelType, originalInput);
+          }
+        }
       }
+
+      // Handle file artifact persistence
+      if (result.file) {
+        if (result.deleteFile) {
+          await fileRepo.delete(
+            modelType,
+            evaluatedInput.id,
+            task.methodName,
+            result.file.metadata,
+          );
+        } else {
+          await fileRepo.save(
+            modelType,
+            evaluatedInput.id,
+            task.methodName,
+            result.file.metadata,
+            result.file.content,
+          );
+          output.setFileId(result.file.metadata.id);
+        }
+      }
+
+      // Mark output as succeeded and save
+      output.markSucceeded();
+      await outputRepo.save(modelType, task.methodName, output);
+    } catch (error) {
+      // Mark output as failed and save
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      output.markFailed({ message: errorMessage, stack: errorStack });
+      await outputRepo.save(modelType, task.methodName, output);
+      throw error;
     }
 
     return {
       type: "model_method",
       model: task.modelIdOrName,
       method: task.methodName,
-      resourceId: result.resource.id,
+      resourceId: resourceId ?? "",
       resourcePath,
-      resourceAttributes: result.resource.attributes,
+      resourceAttributes,
     };
   }
 
@@ -611,6 +710,7 @@ export class WorkflowExecutionService {
     try {
       const ctx: StepExecutionContext = {
         workflowId: workflow.id,
+        workflowRunId: run.id,
         workflowName: workflow.name,
         jobName: job.name,
         stepName,

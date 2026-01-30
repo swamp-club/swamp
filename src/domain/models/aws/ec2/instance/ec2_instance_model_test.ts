@@ -199,8 +199,8 @@ Deno.test("EC2InstanceModel - create method uses injected CloudControl client", 
 
   const result = await ec2InstanceModel.methods.create.execute(input, context);
 
-  assertEquals(result.resource.attributes.RequestToken, "request-123");
-  assertEquals(result.resource.attributes.OperationStatus, "IN_PROGRESS");
+  assertEquals(result.resource?.attributes.RequestToken, "request-123");
+  assertEquals(result.resource?.attributes.OperationStatus, "IN_PROGRESS");
   assertEquals(result.followUpActions?.length, 1);
   assertEquals(result.followUpActions?.[0].methodName, "sync");
 });
@@ -257,8 +257,8 @@ Deno.test("EC2InstanceModel - sync method treats 'not found' as deleted", async 
   const result = await ec2InstanceModel.methods.sync.execute(input, context);
 
   // Should return success with deleteResource flag
-  assertEquals(result.resource.attributes.OperationStatus, "SUCCESS");
-  assertEquals(result.resource.attributes.DeletionCompleted, true);
+  assertEquals(result.resource?.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource?.attributes.DeletionCompleted, true);
   assertEquals(result.deleteResource, true);
   assertEquals(result.followUpActions, undefined);
 });
@@ -310,8 +310,8 @@ Deno.test("EC2InstanceModel - delete method treats 'not found' as success", asyn
   const result = await ec2InstanceModel.methods.delete.execute(input, context);
 
   // Should return success with deleteResource flag
-  assertEquals(result.resource.attributes.OperationStatus, "SUCCESS");
-  assertEquals(result.resource.attributes.DeletionCompleted, true);
+  assertEquals(result.resource?.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource?.attributes.DeletionCompleted, true);
   assertEquals(result.deleteResource, true);
   assertEquals(result.followUpActions, undefined);
 });
