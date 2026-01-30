@@ -72,6 +72,10 @@ Environment variables are resolved at runtime from the process environment. This
 allows configuration to be injected without hardcoding values in model inputs or
 workflows.
 
+Note: Accessing an undefined environment variable will result in a runtime error
+during expression evaluation. Ensure required environment variables are set
+before running workflows that depend on them.
+
 You can combine environment variables with model references:
 
 ```yaml
