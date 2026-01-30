@@ -262,6 +262,10 @@ function createMockInputRepo(
       }
       return Promise.resolve(null);
     },
+    findAllGlobal: () =>
+      Promise.resolve(
+        models.map((m) => ({ input: m.input, type: ModelType.create(m.type) })),
+      ),
     save: () => Promise.resolve(),
     delete: () => Promise.resolve(),
     nextId: () => crypto.randomUUID() as ModelInputId,

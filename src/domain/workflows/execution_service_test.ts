@@ -106,6 +106,16 @@ class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
     return Promise.resolve(workflowRuns[workflowRuns.length - 1] ?? null);
   }
 
+  findAllGlobal(): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+    const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
+    for (const [workflowId, runs] of this.runs.entries()) {
+      for (const run of runs) {
+        results.push({ run, workflowId: workflowId as WorkflowId });
+      }
+    }
+    return Promise.resolve(results);
+  }
+
   save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const existing = this.runs.get(workflowId) ?? [];
     const idx = existing.findIndex((r) => r.id === run.id);

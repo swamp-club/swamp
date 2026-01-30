@@ -48,6 +48,13 @@ export interface InputRepository {
   ): Promise<{ input: ModelInput; type: ModelType } | null>;
 
   /**
+   * Finds all inputs across all model types.
+   *
+   * @returns Array of all inputs with their types
+   */
+  findAllGlobal(): Promise<{ input: ModelInput; type: ModelType }[]>;
+
+  /**
    * Saves an input.
    *
    * @param type - The model type

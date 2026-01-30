@@ -62,3 +62,15 @@ After completing work, run these checks:
 - Use `ink-testing-library` for testing Ink components
 - Test private functions indirectly through public APIs
 - Run tests with `deno task test`
+
+## Experiments
+
+The `experiments/` directory contains optional, self-contained experiments. **Do
+not** include experiments in:
+
+- Testing or test coverage considerations
+- Refactoring or code improvement efforts
+- New feature development patterns
+- Architecture decisions
+
+These are isolated experiments that may be removed at any time.

@@ -65,6 +65,11 @@ export interface WorkflowRunRepository {
   findLatestByWorkflowId(workflowId: WorkflowId): Promise<WorkflowRun | null>;
 
   /**
+   * Finds all workflow runs across all workflows.
+   */
+  findAllGlobal(): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
+
+  /**
    * Saves a workflow run.
    */
   save(workflowId: WorkflowId, run: WorkflowRun): Promise<void>;

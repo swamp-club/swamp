@@ -5,3 +5,6 @@ resources/
 inputs-evaluated/
 workflows-evaluated/
 test-repo/
+experiments/webapp/frontend/node_modules/
+experiments/webapp/frontend/dist/
+experiments/webapp/frontend/tsconfig.tsbuildinfo
