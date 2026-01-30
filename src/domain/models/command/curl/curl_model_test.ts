@@ -7,6 +7,15 @@ import {
   CurlResourceAttributesSchema,
 } from "./curl_model.ts";
 
+// Check if we have network permission for integration tests
+const hasNetworkPermission = await (async () => {
+  const status = await Deno.permissions.query({
+    name: "net",
+    host: "httpbin.org",
+  });
+  return status.state === "granted";
+})();
+
 Deno.test("CURL_MODEL_TYPE has correct normalized type", () => {
   assertEquals(CURL_MODEL_TYPE.normalized, "command/curl");
 });
@@ -142,70 +151,82 @@ Deno.test("curlModel.methods.download validates input attributes", async () => {
   assertEquals(error !== null, true);
 });
 
-Deno.test("curlModel.methods.download executes correctly", async () => {
-  const input = ModelInput.create({
-    name: "test-curl",
-    attributes: { url: "https://httpbin.org/json" },
-  });
+Deno.test({
+  name: "curlModel.methods.download executes correctly",
+  ignore: !hasNetworkPermission,
+  fn: async () => {
+    const input = ModelInput.create({
+      name: "test-curl",
+      attributes: { url: "https://httpbin.org/json" },
+    });
 
-  const result = await curlModel.methods.download.execute(input, {
-    repoDir: "/tmp",
-  });
+    const result = await curlModel.methods.download.execute(input, {
+      repoDir: "/tmp",
+    });
 
-  // Check resource was created
-  assertExists(result.resource);
-  assertEquals(result.resource.attributes.url, "https://httpbin.org/json");
-  assertEquals(result.resource.attributes.statusCode, 200);
-  assertEquals(typeof result.resource.attributes.contentType, "string");
-  assertEquals(typeof result.resource.attributes.contentLength, "number");
-  assertEquals(typeof result.resource.attributes.downloadedAt, "string");
-  assertEquals(typeof result.resource.attributes.durationMs, "number");
-  assertEquals(typeof result.resource.attributes.fileId, "string");
+    // Check resource was created
+    assertExists(result.resource);
+    assertEquals(result.resource.attributes.url, "https://httpbin.org/json");
+    assertEquals(result.resource.attributes.statusCode, 200);
+    assertEquals(typeof result.resource.attributes.contentType, "string");
+    assertEquals(typeof result.resource.attributes.contentLength, "number");
+    assertEquals(typeof result.resource.attributes.downloadedAt, "string");
+    assertEquals(typeof result.resource.attributes.durationMs, "number");
+    assertEquals(typeof result.resource.attributes.fileId, "string");
 
-  // Verify downloadedAt is valid ISO date
-  const downloadedAt = new Date(
-    result.resource.attributes.downloadedAt as string,
-  );
-  assertEquals(isNaN(downloadedAt.getTime()), false);
+    // Verify downloadedAt is valid ISO date
+    const downloadedAt = new Date(
+      result.resource.attributes.downloadedAt as string,
+    );
+    assertEquals(isNaN(downloadedAt.getTime()), false);
 
-  // Check file artifact was created
-  assertExists(result.file);
-  assertExists(result.file.metadata);
-  assertExists(result.file.content);
-  assertEquals(result.file.content.length > 0, true);
-  assertEquals(result.file.metadata.id, result.resource.attributes.fileId);
+    // Check file artifact was created
+    assertExists(result.file);
+    assertExists(result.file.metadata);
+    assertExists(result.file.content);
+    assertEquals(result.file.content.length > 0, true);
+    assertEquals(result.file.metadata.id, result.resource.attributes.fileId);
+  },
 });
 
-Deno.test("curlModel.methods.download handles custom filename", async () => {
-  const input = ModelInput.create({
-    name: "test-curl-filename",
-    attributes: {
-      url: "https://httpbin.org/json",
-      outputFilename: "custom-response.json",
-    },
-  });
+Deno.test({
+  name: "curlModel.methods.download handles custom filename",
+  ignore: !hasNetworkPermission,
+  fn: async () => {
+    const input = ModelInput.create({
+      name: "test-curl-filename",
+      attributes: {
+        url: "https://httpbin.org/json",
+        outputFilename: "custom-response.json",
+      },
+    });
 
-  const result = await curlModel.methods.download.execute(input, {
-    repoDir: "/tmp",
-  });
+    const result = await curlModel.methods.download.execute(input, {
+      repoDir: "/tmp",
+    });
 
-  assertExists(result.file);
-  assertEquals(result.file.metadata.filename, "custom-response.json");
+    assertExists(result.file);
+    assertEquals(result.file.metadata.filename, "custom-response.json");
+  },
 });
 
-Deno.test("curlModel.methods.download handles HTTP errors", async () => {
-  const input = ModelInput.create({
-    name: "test-curl-error",
-    attributes: { url: "https://httpbin.org/status/404" },
-  });
+Deno.test({
+  name: "curlModel.methods.download handles HTTP errors",
+  ignore: !hasNetworkPermission,
+  fn: async () => {
+    const input = ModelInput.create({
+      name: "test-curl-error",
+      attributes: { url: "https://httpbin.org/status/404" },
+    });
 
-  let error: Error | null = null;
-  try {
-    await curlModel.methods.download.execute(input, { repoDir: "/tmp" });
-  } catch (e) {
-    error = e as Error;
-  }
+    let error: Error | null = null;
+    try {
+      await curlModel.methods.download.execute(input, { repoDir: "/tmp" });
+    } catch (e) {
+      error = e as Error;
+    }
 
-  assertEquals(error !== null, true);
-  assertEquals(error!.message.includes("404"), true);
+    assertEquals(error !== null, true);
+    assertEquals(error!.message.includes("404"), true);
+  },
 });

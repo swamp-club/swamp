@@ -32,7 +32,7 @@ jobs:
         run: deno fmt --check
 
       - name: Run deno test
-        run: deno test --allow-read --allow-write --allow-env --allow-run
+        run: deno test --allow-read --allow-write --allow-env --allow-run --allow-net
 
   claude-review:
     # NOTE: For this to block merges, enable branch protection on main with:
