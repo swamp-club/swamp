@@ -5,11 +5,12 @@ import {
   renderModelMethodRun,
 } from "../../presentation/output/model_method_run_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import {
-  createModelInputId,
-  type ModelInput,
-} from "../../domain/models/model_input.ts";
+import type { ModelInput } from "../../domain/models/model_input.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import {
+  findInputByIdGlobal,
+  isUuid,
+} from "../../domain/models/model_lookup.ts";
 import {
   computeInputHash,
   ModelOutput,
@@ -23,38 +24,9 @@ import { FileSystemFileRepository } from "../../infrastructure/persistence/fs_fi
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 
-/**
- * UUID v4 regex pattern for detecting if an argument is a UUID.
- */
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-/**
- * Checks if a string looks like a UUID.
- */
-function isUuid(value: string): boolean {
-  return UUID_PATTERN.test(value);
-}
-
-/**
- * Finds an input by ID, searching across all registered model types.
- */
-async function findInputByIdGlobal(
-  inputRepo: YamlInputRepository,
-  id: string,
-): Promise<{ input: ModelInput; type: ModelType } | null> {
-  const inputId = createModelInputId(id);
-
-  for (const type of modelRegistry.types()) {
-    const input = await inputRepo.findById(type, inputId);
-    if (input) {
-      return { input, type };
-    }
-  }
-
-  return null;
-}
-
+// Cliffy's custom type system returns `unknown` for custom types like `model_name`,
+// but we need to pass `options` to functions expecting specific types. Using `any`
+// here is the pragmatic workaround for Cliffy's type inference limitations.
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 

@@ -73,16 +73,23 @@ export class LogEntry {
 
   /**
    * Converts the entry to a plain text line for storage.
-   * Returns just the raw message without JSON wrapping.
+   *
+   * Note: Despite the name, this returns plain text, not JSON. The naming is
+   * historical - these methods originally used JSON Lines format but were
+   * simplified to plain text to preserve raw command output exactly as-is.
+   * Kept for API compatibility with StreamingLogRepository.
    */
-  toJsonLine(): string {
+  toLine(): string {
     return this.message;
   }
 
   /**
    * Parses a LogEntry from a plain text line.
+   *
+   * Note: Despite the name, this parses plain text, not JSON. See toLine()
+   * for naming rationale.
    */
-  static fromJsonLine(line: string): LogEntry {
+  static fromLine(line: string): LogEntry {
     return new LogEntry(line);
   }
 }
@@ -210,15 +217,21 @@ export class ModelLog {
   /**
    * Converts entries to plain text lines format for streaming persistence.
    * Each entry is stored as a raw line.
+   *
+   * Note: Despite the name, this returns plain text, not JSON Lines format.
+   * See LogEntry.toLine() for naming rationale.
    */
-  toJsonLines(): string {
-    return this._entries.map((e) => e.toJsonLine()).join("\n");
+  toLines(): string {
+    return this._entries.map((e) => e.toLine()).join("\n");
   }
 
   /**
    * Creates a ModelLog from plain text lines format.
+   *
+   * Note: Despite the name, this parses plain text, not JSON Lines format.
+   * See LogEntry.fromLine() for naming rationale.
    */
-  static fromJsonLines(
+  static fromLines(
     id: string,
     version: number,
     createdAt: Date,
@@ -227,7 +240,7 @@ export class ModelLog {
     const entries = lines
       .split("\n")
       .filter((line) => line.length > 0)
-      .map((line) => LogEntry.fromJsonLine(line));
+      .map((line) => LogEntry.fromLine(line));
 
     return new ModelLog(
       createModelLogId(id),

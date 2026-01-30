@@ -54,7 +54,7 @@ export class StreamingLogRepository implements LogRepository {
         // No entries file yet is fine
       }
 
-      return ModelLog.fromJsonLines(
+      return ModelLog.fromLines(
         metadata.id,
         metadata.version,
         new Date(metadata.createdAt),
@@ -117,7 +117,7 @@ export class StreamingLogRepository implements LogRepository {
     try {
       const encoder = new TextEncoder();
       for (const entry of log.entries) {
-        await file.write(encoder.encode(entry.toJsonLine() + "\n"));
+        await file.write(encoder.encode(entry.toLine() + "\n"));
       }
     } finally {
       file.close();
@@ -133,7 +133,7 @@ export class StreamingLogRepository implements LogRepository {
     await ensureDir(dir);
 
     const entriesPath = this.getPath(type, id);
-    const line = entry.toJsonLine() + "\n";
+    const line = entry.toLine() + "\n";
 
     // Append to file (creates if doesn't exist)
     const file = await Deno.open(entriesPath, {
@@ -184,14 +184,14 @@ export class StreamingLogRepository implements LogRepository {
           buffer = buffer.slice(newlineIndex + 1);
 
           if (line.length > 0) {
-            yield LogEntry.fromJsonLine(line);
+            yield LogEntry.fromLine(line);
           }
         }
       }
 
       // Process any remaining content
       if (buffer.length > 0) {
-        yield LogEntry.fromJsonLine(buffer);
+        yield LogEntry.fromLine(buffer);
       }
     } finally {
       file.close();

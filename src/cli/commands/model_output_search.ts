@@ -14,6 +14,9 @@ import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_outp
 import type { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 
+// Cliffy's custom type system returns `unknown` for custom types like `model_name`,
+// but we need to pass `options` to functions expecting specific types. Using `any`
+// here is the pragmatic workaround for Cliffy's type inference limitations.
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 

@@ -126,6 +126,25 @@ The valid shape of data is specfiied with a zod 4 schema.
 
 Data is not tracked in git.
 
+### When to Use Resource vs Data
+
+Use **resource artifacts** when:
+
+- The data represents state that should persist across executions (e.g., cloud
+  resource metadata, deployment status)
+- You need to track changes over time via git history
+- The data is needed for drift detection or reconciliation
+- Other team members need visibility into the current state
+
+Use **data artifacts** when:
+
+- The data is ephemeral or only relevant to a single execution (e.g., API
+  responses, query results)
+- The output changes frequently and git history would add noise
+- The data is large or contains sensitive information that shouldn't be
+  committed
+- You're capturing intermediate results that don't represent durable state
+
 ## Output
 
 Each method invocation produces an output record, which gets tracked in the

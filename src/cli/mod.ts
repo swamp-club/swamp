@@ -1,5 +1,5 @@
 import { Command } from "@cliffy/command";
-import { resolve } from "@std/path";
+import { isAbsolute, resolve } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
@@ -57,8 +57,8 @@ async function loadUserModels(): Promise<void> {
     const marker = await markerRepo.read(repoPath);
 
     const modelsDir = resolveModelsDir(marker);
-    // Handle both absolute and relative paths
-    const absoluteModelsDir = modelsDir.startsWith("/")
+    // Handle both absolute and relative paths (cross-platform)
+    const absoluteModelsDir = isAbsolute(modelsDir)
       ? modelsDir
       : resolve(cwd, modelsDir);
 
@@ -71,8 +71,11 @@ async function loadUserModels(): Promise<void> {
         `Warning: Failed to load user model ${failure.file}: ${failure.error}`,
       );
     }
-  } catch {
-    // Not in a swamp repo or other error - silently skip user models
+  } catch (error) {
+    // Not in a swamp repo or other error - log at debug level for troubleshooting
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      console.debug(`Skipping user models: ${error}`);
+    }
   }
 }
 

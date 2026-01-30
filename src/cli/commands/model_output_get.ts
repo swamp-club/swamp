@@ -18,6 +18,9 @@ import {
   isUuid,
 } from "../../domain/models/model_lookup.ts";
 
+// Cliffy's custom type system returns `unknown` for custom types like `model_name`,
+// but we need to pass `options` to functions expecting specific types. Using `any`
+// here is the pragmatic workaround for Cliffy's type inference limitations.
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 

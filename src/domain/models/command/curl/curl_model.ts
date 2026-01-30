@@ -21,7 +21,13 @@ export const CurlInputAttributesSchema = z.object({
   /** Optional HTTP headers */
   headers: z.record(z.string(), z.string()).optional(),
   /** Optional filename for the downloaded file (defaults to URL basename) */
-  outputFilename: z.string().optional(),
+  outputFilename: z.string()
+    .refine(
+      (name) =>
+        !name.includes("/") && !name.includes("\\") && !name.includes(".."),
+      { message: "Filename cannot contain path separators or '..' sequences" },
+    )
+    .optional(),
   /** Whether to follow redirects (default: true) */
   followRedirects: z.boolean().default(true),
   /** Request timeout in milliseconds */

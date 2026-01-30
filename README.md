@@ -89,6 +89,15 @@ swamp completions fish > ~/.config/fish/completions/swamp.fish
 Model and workflow name completions are directory-dependent. They return names
 from the current working directory's swamp repository.
 
+## User-Defined Models
+
+You can extend swamp with custom TypeScript models. Place your models in the
+`extensions/models/` directory (or configure via `SWAMP_MODELS_DIR` environment
+variable or `.swamp.yaml`).
+
+For detailed instructions on creating user-defined models, see the
+[swamp-extension-model skill documentation](.claude/skills/swamp-extension-model/SKILL.md).
+
 ## Development
 
 ```bash

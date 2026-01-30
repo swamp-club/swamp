@@ -27,24 +27,24 @@ Deno.test("LogEntry toData/fromData roundtrip", () => {
   assertEquals(restored.message, entry.message);
 });
 
-Deno.test("LogEntry toJsonLine returns raw message", () => {
+Deno.test("LogEntry toLine returns raw message", () => {
   const entry = LogEntry.create("Raw log line");
-  const line = entry.toJsonLine();
+  const line = entry.toLine();
 
   assertEquals(line, "Raw log line");
 });
 
-Deno.test("LogEntry fromJsonLine parses raw line", () => {
+Deno.test("LogEntry fromLine parses raw line", () => {
   const line = "Jan 01 12:00:00 host systemd[1]: Started service";
-  const entry = LogEntry.fromJsonLine(line);
+  const entry = LogEntry.fromLine(line);
 
   assertEquals(entry.message, line);
 });
 
-Deno.test("LogEntry toJsonLine/fromJsonLine roundtrip", () => {
+Deno.test("LogEntry toLine/fromLine roundtrip", () => {
   const original = LogEntry.create("Debug info");
-  const line = original.toJsonLine();
-  const restored = LogEntry.fromJsonLine(line);
+  const line = original.toLine();
+  const restored = LogEntry.fromLine(line);
 
   assertEquals(restored.message, original.message);
 });
@@ -198,14 +198,14 @@ Deno.test("ModelLog fromData with explicit data", () => {
   assertEquals(log.entries[0].message, "Test entry");
 });
 
-Deno.test("ModelLog toJsonLines/fromJsonLines roundtrip", () => {
+Deno.test("ModelLog toLines/fromLines roundtrip", () => {
   const log = ModelLog.create({});
   log.log("Line 1");
   log.log("Line 2");
   log.log("Line 3");
 
-  const lines = log.toJsonLines();
-  const restored = ModelLog.fromJsonLines(
+  const lines = log.toLines();
+  const restored = ModelLog.fromLines(
     log.id,
     log.version,
     log.createdAt,
@@ -218,22 +218,22 @@ Deno.test("ModelLog toJsonLines/fromJsonLines roundtrip", () => {
   assertEquals(restored.entries[2].message, "Line 3");
 });
 
-Deno.test("ModelLog.toJsonLines returns plain text lines", () => {
+Deno.test("ModelLog.toLines returns plain text lines", () => {
   const log = ModelLog.create({});
   log.log("first line");
   log.log("second line");
 
-  const lines = log.toJsonLines();
+  const lines = log.toLines();
 
   assertEquals(lines, "first line\nsecond line");
 });
 
-Deno.test("ModelLog.fromJsonLines handles empty lines in input", () => {
+Deno.test("ModelLog.fromLines handles empty lines in input", () => {
   const lines = `Line 1
 
 Line 2
 `;
-  const log = ModelLog.fromJsonLines(
+  const log = ModelLog.fromLines(
     "550e8400-e29b-41d4-a716-446655440000",
     1,
     new Date(),
