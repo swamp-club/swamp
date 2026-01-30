@@ -165,7 +165,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           id: input.id, // Use same input ID
           name: input.name,
           version: input.version,
-          resourceId: input.resourceId,
           tags: input.tags,
           attributes: currentResource.attributes, // Use resource attributes as input
         });

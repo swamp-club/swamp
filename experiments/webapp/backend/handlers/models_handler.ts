@@ -22,7 +22,6 @@ export function createModelsHandlers(inputRepository: InputRepository) {
       name: input.name,
       type: { raw: type.raw, normalized: type.normalized },
       version: input.version,
-      resourceId: input.resourceId,
       tags: input.tags,
       attributes: input.attributes,
     }));
@@ -42,7 +41,6 @@ export function createModelsHandlers(inputRepository: InputRepository) {
         name: input.name,
         type: { raw: modelType.raw, normalized: modelType.normalized },
         version: input.version,
-        resourceId: input.resourceId,
         tags: input.tags,
         attributes: input.attributes,
       }));
@@ -71,7 +69,6 @@ export function createModelsHandlers(inputRepository: InputRepository) {
         name: input.name,
         type: { raw: modelType.raw, normalized: modelType.normalized },
         version: input.version,
-        resourceId: input.resourceId,
         tags: input.tags,
         attributes: input.attributes,
       });
@@ -101,7 +98,6 @@ export function createModelsHandlers(inputRepository: InputRepository) {
       const input = ModelInput.create({
         name: body.name,
         version: body.version,
-        resourceId: body.resourceId,
         tags: body.tags,
         attributes: body.attributes,
       });
@@ -114,7 +110,6 @@ export function createModelsHandlers(inputRepository: InputRepository) {
           name: input.name,
           type: { raw: modelType.raw, normalized: modelType.normalized },
           version: input.version,
-          resourceId: input.resourceId,
           tags: input.tags,
           attributes: input.attributes,
         },
@@ -156,7 +151,6 @@ export function createModelsHandlers(inputRepository: InputRepository) {
         id: existing.id,
         name: body.name ?? existing.name,
         version: body.version ?? existing.version,
-        resourceId: body.resourceId ?? existing.resourceId,
         tags: body.tags ?? existing.tags,
         attributes: body.attributes ?? existing.attributes,
       });
@@ -168,7 +162,6 @@ export function createModelsHandlers(inputRepository: InputRepository) {
         name: updated.name,
         type: { raw: modelType.raw, normalized: modelType.normalized },
         version: updated.version,
-        resourceId: updated.resourceId,
         tags: updated.tags,
         attributes: updated.attributes,
       });

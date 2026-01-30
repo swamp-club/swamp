@@ -21,7 +21,6 @@ const testModels: ModelSearchItem[] = [
     id: "660e8400-e29b-41d4-a716-446655440001",
     name: "test-echo-2",
     type: "swamp/echo",
-    resourceId: "770e8400-e29b-41d4-a716-446655440002",
   },
 ];
 
@@ -154,24 +153,6 @@ Deno.test("renderModelSearch with json mode outputs valid JSON", () => {
     assertEquals(parsed.results.length, 2);
     assertEquals(parsed.results[0].name, "test-echo-1");
     assertEquals(parsed.results[1].name, "test-echo-2");
-  } finally {
-    console.log = originalLog;
-  }
-});
-
-Deno.test("renderModelSearch with json mode includes resourceId when present", () => {
-  const logs: string[] = [];
-  const originalLog = console.log;
-  console.log = (msg: string) => logs.push(msg);
-
-  try {
-    renderModelSearch(testData, "json");
-    const parsed = JSON.parse(logs[0]);
-    assertEquals(parsed.results[0].resourceId, undefined);
-    assertEquals(
-      parsed.results[1].resourceId,
-      "770e8400-e29b-41d4-a716-446655440002",
-    );
   } finally {
     console.log = originalLog;
   }

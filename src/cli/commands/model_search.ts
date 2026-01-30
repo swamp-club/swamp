@@ -29,7 +29,6 @@ function toModelSearchItems(
     id: input.id,
     name: input.name,
     type: type.normalized,
-    resourceId: input.resourceId,
   }));
 }
 

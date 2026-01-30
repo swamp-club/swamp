@@ -11,7 +11,6 @@ export interface ModelSearchItem {
   id: string;
   name: string;
   type: string;
-  resourceId?: string;
 }
 
 /**

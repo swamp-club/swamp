@@ -150,7 +150,7 @@ Deno.test("EC2InstanceModel - sync method without RequestToken fails", async () 
   );
 });
 
-Deno.test("EC2InstanceModel - delete method without resource ID fails", async () => {
+Deno.test("EC2InstanceModel - delete method without resource returns deleted result", async () => {
   const input = ModelInput.create({
     name: "test-instance",
     attributes: {
@@ -159,15 +159,26 @@ Deno.test("EC2InstanceModel - delete method without resource ID fails", async ()
     },
   });
 
-  const context: MethodContext = {
-    repoDir: "/tmp/test-repo",
+  const mockResourceRepository: ResourceRepository = {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createModelResourceId("mock-id"),
+    getPath: () => "/mock/path",
   };
 
-  await assertRejects(
-    () => ec2InstanceModel.methods.delete.execute(input, context),
-    Error,
-    "Cannot delete: no resource ID found in input",
-  );
+  const context: MethodContext = {
+    repoDir: "/tmp/test-repo",
+    resourceRepository: mockResourceRepository,
+  };
+
+  const result = await ec2InstanceModel.methods.delete.execute(input, context);
+
+  // Should return success with deleteResource flag since no resource exists
+  assertEquals(result.resource?.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource?.attributes.DeletionCompleted, true);
+  assertEquals(result.deleteResource, true);
 });
 
 Deno.test("EC2InstanceModel - create method uses injected CloudControl client", async () => {
@@ -208,7 +219,6 @@ Deno.test("EC2InstanceModel - create method uses injected CloudControl client", 
 Deno.test("EC2InstanceModel - delete method requires resourceRepository", async () => {
   const input = ModelInput.create({
     name: "test-instance",
-    resourceId: "00000000-0000-4000-8000-000000000001", // Valid UUID
     attributes: {
       ImageId: "ami-12345678",
       InstanceType: "t2.micro",
@@ -264,9 +274,10 @@ Deno.test("EC2InstanceModel - sync method treats 'not found' as deleted", async 
 });
 
 Deno.test("EC2InstanceModel - delete method treats 'not found' as success", async () => {
+  const inputId = "00000000-0000-4000-8000-000000000001";
   const input = ModelInput.create({
+    id: inputId,
     name: "test-instance",
-    resourceId: "00000000-0000-4000-8000-000000000001",
     attributes: {
       ImageId: "ami-12345678",
       InstanceType: "t2.micro",
@@ -275,7 +286,7 @@ Deno.test("EC2InstanceModel - delete method treats 'not found' as success", asyn
 
   // Mock resource repository that returns an existing resource with InstanceId
   const existingResource = ModelResource.create({
-    id: "00000000-0000-4000-8000-000000000001",
+    id: inputId,
     attributes: {
       InstanceId: "i-1234567890abcdef0",
     },
