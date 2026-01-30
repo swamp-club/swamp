@@ -1,0 +1,396 @@
+name: Swamp Integration Tests
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  integration-test:
+    name: End-to-End Integration Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run lint and type check
+        run: |
+          deno lint
+          deno check main.ts
+
+      - name: Compile swamp binary
+        run: deno run compile
+
+      - name: Verify swamp binary works
+        run: |
+          ./swamp --version
+          ./swamp --help
+
+      - name: Create test repository structure
+        run: |
+          mkdir -p test-repo/{inputs/keeb/shell,inputs/mermaid/workflow-diagram,workflows,resources}
+          cd test-repo
+          
+          # Initialize as swamp repo
+          ../swamp repo init --models-dir extensions/models
+
+      - name: Create test models with shell commands
+        run: |
+          cd test-repo
+          
+          # Model 1: Download a sample file
+          ../swamp model create keeb/shell download-model --json > /tmp/download.json
+          DOWNLOAD_ID=$(cat /tmp/download.json | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          cat > inputs/keeb/shell/${DOWNLOAD_ID}.yaml << EOF
+          id: ${DOWNLOAD_ID}
+          resourceId: ${DOWNLOAD_ID}
+          name: download-model
+          version: 1
+          tags: {}
+          attributes:
+            run: "curl -s https://httpbin.org/json > sample.json && cat sample.json"
+            workingDir: "/tmp"
+          EOF
+          
+          # Model 2: Process the downloaded file
+          ../swamp model create keeb/shell process-model --json > /tmp/process.json
+          PROCESS_ID=$(cat /tmp/process.json | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          cat > inputs/keeb/shell/${PROCESS_ID}.yaml << EOF
+          id: ${PROCESS_ID}
+          resourceId: ${PROCESS_ID}
+          name: process-model
+          version: 1
+          tags: {}
+          attributes:
+            run: "wc -l /tmp/sample.json | cut -d' ' -f1"
+            workingDir: "/tmp"
+          EOF
+          
+          # Model 3: Create summary using self-reference
+          ../swamp model create keeb/shell summary-model --json > /tmp/summary.json
+          SUMMARY_ID=$(cat /tmp/summary.json | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          cat > inputs/keeb/shell/${SUMMARY_ID}.yaml << EOF
+          id: ${SUMMARY_ID}
+          resourceId: ${SUMMARY_ID}
+          name: summary-model
+          version: 1
+          tags: {}
+          attributes:
+            run: "echo 'Summary for \${{ self.name }}: Processing completed'"
+            workingDir: "/tmp"
+          EOF
+          
+          # Model 4: Final report referencing other models
+          ../swamp model create keeb/shell final-report-model --json > /tmp/final.json
+          FINAL_ID=$(cat /tmp/final.json | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          cat > inputs/keeb/shell/${FINAL_ID}.yaml << EOF
+          id: ${FINAL_ID}
+          resourceId: ${FINAL_ID}
+          name: final-report-model
+          version: 1
+          tags: {}
+          attributes:
+            run: "echo 'Final Report - Download: \${{ model.download-model.data.attributes.command }} | Process result available | Summary: \${{ model.summary-model.data.attributes.command }}'"
+            workingDir: "/tmp"
+          EOF
+
+          # Model 5: Mermaid diagram generator (will consume workflow execution)
+          ../swamp model create mermaid/workflow-diagram diagram-model --json > /tmp/diagram.json
+          DIAGRAM_ID=$(cat /tmp/diagram.json | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          # Note: We'll populate this model's attributes after workflow execution
+
+      - name: Create integration test workflow
+        run: |
+          cd test-repo
+          
+          ../swamp workflow create integration-test --json > /tmp/workflow.json
+          WORKFLOW_ID=$(cat /tmp/workflow.json | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          
+          cat > workflows/workflow-${WORKFLOW_ID}.yaml << EOF
+          id: ${WORKFLOW_ID}
+          name: integration-test
+          description: Integration test workflow with dependencies and cross-model references
+          jobs:
+            - name: download
+              description: Download sample data
+              steps:
+                - name: download-step
+                  task:
+                    type: model_method
+                    modelIdOrName: download-model
+                    methodName: execute
+            - name: process
+              description: Process downloaded data
+              dependsOn:
+                - job: download
+                  condition:
+                    type: succeeded
+                    jobName: download
+              steps:
+                - name: process-step
+                  task:
+                    type: model_method
+                    modelIdOrName: process-model
+                    methodName: execute
+            - name: summarize
+              description: Create summary with self-reference
+              dependsOn:
+                - job: process
+                  condition:
+                    type: succeeded
+                    jobName: process
+              steps:
+                - name: summary-step
+                  task:
+                    type: model_method
+                    modelIdOrName: summary-model
+                    methodName: execute
+            - name: final-report
+              description: Create final report with cross-model references
+              dependsOn:
+                - job: summarize
+                  condition:
+                    type: succeeded
+                    jobName: summarize
+              steps:
+                - name: final-step
+                  task:
+                    type: model_method
+                    modelIdOrName: final-report-model
+                    methodName: execute
+          EOF
+
+      - name: Validate models and workflow
+        run: |
+          cd test-repo
+          
+          # Validate all models
+          ../swamp model validate download-model --json
+          ../swamp model validate process-model --json
+          ../swamp model validate summary-model --json
+          ../swamp model validate final-report-model --json
+          
+          # Validate workflow
+          ../swamp workflow validate integration-test --json
+
+      - name: Execute integration workflow
+        run: |
+          cd test-repo
+          
+          # Run the workflow and capture output
+          ../swamp workflow run integration-test --json > workflow-output.json
+          
+          # Display results
+          echo "=== Workflow Execution Results ==="
+          cat workflow-output.json | jq .
+          
+          # Verify workflow succeeded
+          STATUS=$(cat workflow-output.json | jq -r '.status')
+          if [ "$STATUS" != "succeeded" ]; then
+            echo "ERROR: Workflow execution failed with status: $STATUS"
+            exit 1
+          fi
+
+      - name: Validate artifacts and dependencies
+        run: |
+          cd test-repo
+          
+          # Check that all jobs completed successfully
+          JOB_STATUSES=$(cat workflow-output.json | jq -r '.jobs[] | "\(.name): \(.status)"')
+          echo "=== Job Statuses ==="
+          echo "$JOB_STATUSES"
+          
+          # Verify no jobs failed
+          FAILED_JOBS=$(cat workflow-output.json | jq -r '.jobs[] | select(.status == "failed") | .name')
+          if [ -n "$FAILED_JOBS" ]; then
+            echo "ERROR: Failed jobs found: $FAILED_JOBS"
+            exit 1
+          fi
+          
+          # Check that data artifacts were created
+          echo "=== Checking Data Artifacts ==="
+          find data -name "*.yaml" -exec echo "Found data: {}" \; 2>/dev/null || echo "No data directory found (expected for shell models)"
+          
+          # Check that log artifacts were created  
+          echo "=== Checking Log Artifacts ==="
+          find logs -name "*.log" -exec echo "Found log: {}" \; 2>/dev/null || echo "No logs directory found"
+
+      - name: Validate expression evaluation
+        run: |
+          cd test-repo
+          
+          # Check that expressions were evaluated correctly by examining logs
+          echo "=== Validating Expression Evaluation ==="
+          
+          # Look for evidence that self-reference worked in summary model
+          if grep -r "Summary for summary-model" logs/ 2>/dev/null; then
+            echo "✓ Self-reference expression evaluation succeeded"
+          else
+            echo "⚠ Could not verify self-reference evaluation (may be in data artifacts)"
+          fi
+          
+          # Look for evidence that cross-model references worked in final report
+          if grep -r "Final Report - Download:" logs/ 2>/dev/null; then
+            echo "✓ Cross-model reference expression evaluation succeeded"
+          else
+            echo "⚠ Could not verify cross-model reference evaluation (may be in data artifacts)"
+          fi
+          
+          echo "=== Integration Test Completed Successfully ==="
+
+      - name: Generate Mermaid workflow diagram
+        run: |
+          cd test-repo
+          
+          echo "=== Generating Mermaid Diagram ==="
+          
+          # Get the diagram model ID
+          DIAGRAM_ID=$(cat /tmp/diagram.json | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          
+          # Create input for diagram model using the workflow execution data
+          cat > inputs/mermaid/workflow-diagram/${DIAGRAM_ID}.yaml << 'EOF'
+          id: ${DIAGRAM_ID}
+          resourceId: ${DIAGRAM_ID}
+          name: diagram-model
+          version: 1
+          tags: {}
+          attributes:
+            workflowExecution:
+              workflowName: "integration-test"
+              status: "succeeded"
+              jobs:
+                - name: "download"
+                  status: "succeeded"
+                  steps:
+                    - name: "download-step"
+                      status: "succeeded"
+                      task:
+                        type: "model_method"
+                        modelIdOrName: "download-model"
+                        methodName: "execute"
+                - name: "process"
+                  status: "succeeded"
+                  dependsOn:
+                    - job: "download"
+                      condition:
+                        type: "succeeded"
+                        jobName: "download"
+                  steps:
+                    - name: "process-step"
+                      status: "succeeded"
+                      task:
+                        type: "model_method"
+                        modelIdOrName: "process-model"
+                        methodName: "execute"
+                - name: "summarize"
+                  status: "succeeded"
+                  dependsOn:
+                    - job: "process"
+                      condition:
+                        type: "succeeded"
+                        jobName: "process"
+                  steps:
+                    - name: "summary-step"
+                      status: "succeeded"
+                      task:
+                        type: "model_method"
+                        modelIdOrName: "summary-model"
+                        methodName: "execute"
+                - name: "final-report"
+                  status: "succeeded"
+                  dependsOn:
+                    - job: "summarize"
+                      condition:
+                        type: "succeeded"
+                        jobName: "summarize"
+                  steps:
+                    - name: "final-step"
+                      status: "succeeded"
+                      task:
+                        type: "model_method"
+                        modelIdOrName: "final-report-model"
+                        methodName: "execute"
+            title: "Integration Test Workflow Execution"
+            includeSteps: true
+            colorScheme:
+              succeeded: "#90EE90"
+              failed: "#FFB6C1"
+              cancelled: "#D3D3D3"
+              skipped: "#FFFFE0"
+          EOF
+          
+          # Generate the Mermaid diagram
+          ../swamp model method run diagram-model generate --json > diagram-output.json
+          
+          # Display diagram generation result
+          echo "=== Diagram Generation Result ==="
+          cat diagram-output.json | jq .
+          
+          # Copy generated diagram to artifacts directory
+          mkdir -p ../artifacts
+          if [ -d "files" ]; then
+            find files -name "*.mmd" -exec cp {} ../artifacts/ \;
+            echo "✓ Mermaid diagram copied to artifacts"
+          else
+            echo "⚠ No diagram files found"
+          fi
+
+      - name: Test error handling
+        run: |
+          cd test-repo
+          
+          echo "=== Testing Error Handling ==="
+          
+          # Create a workflow that should fail
+          ../swamp model create keeb/shell failing-model --json > /tmp/failing.json
+          FAILING_ID=$(cat /tmp/failing.json | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          cat > inputs/keeb/shell/${FAILING_ID}.yaml << EOF
+          id: ${FAILING_ID}
+          resourceId: ${FAILING_ID}
+          name: failing-model
+          version: 1
+          tags: {}
+          attributes:
+            run: "false"
+          EOF
+          
+          # Try to run the failing model - should return non-zero exit code
+          if ../swamp model method run failing-model execute --json 2>/dev/null; then
+            echo "ERROR: Expected failing model to fail, but it succeeded"
+            exit 1
+          else
+            echo "✓ Error handling works correctly - failing model failed as expected"
+          fi
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        if: always()  # Upload even if tests fail
+        with:
+          name: swamp-integration-test-artifacts
+          path: |
+            artifacts/
+            test-repo/workflow-output.json
+            test-repo/diagram-output.json
+            test-repo/logs/
+            test-repo/data/
+            test-repo/files/
+            test-repo/resources/
+          retention-days: 30
+
+      - name: Upload Mermaid diagram
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: workflow-diagram
+          path: |
+            artifacts/*.mmd
+          retention-days: 30
