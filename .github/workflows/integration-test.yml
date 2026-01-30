@@ -46,7 +46,7 @@ jobs:
           ../swamp model create keeb/shell download-model --json > /tmp/download.json
           DOWNLOAD_ID=$(cat /tmp/download.json | jq -r '.id')
           # Edit the generated file to add our attributes
-          cat > inputs/keeb/shell/${DOWNLOAD_ID}.yaml << EOF
+          cat > inputs/keeb/shell/${DOWNLOAD_ID}.yaml <<EOF
 id: ${DOWNLOAD_ID}
 name: download-model
 version: 1
@@ -59,7 +59,7 @@ EOF
           # Model 2: Process the downloaded file
           ../swamp model create keeb/shell process-model --json > /tmp/process.json
           PROCESS_ID=$(cat /tmp/process.json | jq -r '.id')
-          cat > inputs/keeb/shell/${PROCESS_ID}.yaml << EOF
+          cat > inputs/keeb/shell/${PROCESS_ID}.yaml <<EOF
 id: ${PROCESS_ID}
 name: process-model
 version: 1
@@ -72,7 +72,7 @@ EOF
           # Model 3: Create summary using self-reference
           ../swamp model create keeb/shell summary-model --json > /tmp/summary.json
           SUMMARY_ID=$(cat /tmp/summary.json | jq -r '.id')
-          cat > inputs/keeb/shell/${SUMMARY_ID}.yaml << EOF
+          cat > inputs/keeb/shell/${SUMMARY_ID}.yaml <<EOF
 id: ${SUMMARY_ID}
 name: summary-model
 version: 1
@@ -85,7 +85,7 @@ EOF
           # Model 4: Final report referencing other models
           ../swamp model create keeb/shell final-report-model --json > /tmp/final.json
           FINAL_ID=$(cat /tmp/final.json | jq -r '.id')
-          cat > inputs/keeb/shell/${FINAL_ID}.yaml << EOF
+          cat > inputs/keeb/shell/${FINAL_ID}.yaml <<EOF
 id: ${FINAL_ID}
 name: final-report-model
 version: 1
@@ -107,58 +107,58 @@ EOF
           ../swamp workflow create integration-test --json > /tmp/workflow.json
           WORKFLOW_ID=$(cat /tmp/workflow.json | jq -r '.id')
           
-          cat > workflows/workflow-${WORKFLOW_ID}.yaml << EOF
-          id: ${WORKFLOW_ID}
-          name: integration-test
-          description: Integration test workflow with dependencies and cross-model references
-          jobs:
-            - name: download
-              description: Download sample data
-              steps:
-                - name: download-step
-                  task:
-                    type: model_method
-                    modelIdOrName: download-model
-                    methodName: execute
-            - name: process
-              description: Process downloaded data
-              dependsOn:
-                - job: download
-                  condition:
-                    type: succeeded
-                    jobName: download
-              steps:
-                - name: process-step
-                  task:
-                    type: model_method
-                    modelIdOrName: process-model
-                    methodName: execute
-            - name: summarize
-              description: Create summary with self-reference
-              dependsOn:
-                - job: process
-                  condition:
-                    type: succeeded
-                    jobName: process
-              steps:
-                - name: summary-step
-                  task:
-                    type: model_method
-                    modelIdOrName: summary-model
-                    methodName: execute
-            - name: final-report
-              description: Create final report with cross-model references
-              dependsOn:
-                - job: summarize
-                  condition:
-                    type: succeeded
-                    jobName: summarize
-              steps:
-                - name: final-step
-                  task:
-                    type: model_method
-                    modelIdOrName: final-report-model
-                    methodName: execute
+          cat > workflows/workflow-${WORKFLOW_ID}.yaml <<EOF
+id: ${WORKFLOW_ID}
+name: integration-test
+description: Integration test workflow with dependencies and cross-model references
+jobs:
+  - name: download
+    description: Download sample data
+    steps:
+      - name: download-step
+        task:
+          type: model_method
+          modelIdOrName: download-model
+          methodName: execute
+  - name: process
+    description: Process downloaded data
+    dependsOn:
+      - job: download
+        condition:
+          type: succeeded
+          jobName: download
+    steps:
+      - name: process-step
+        task:
+          type: model_method
+          modelIdOrName: process-model
+          methodName: execute
+  - name: summarize
+    description: Create summary with self-reference
+    dependsOn:
+      - job: process
+        condition:
+          type: succeeded
+          jobName: process
+    steps:
+      - name: summary-step
+        task:
+          type: model_method
+          modelIdOrName: summary-model
+          methodName: execute
+  - name: final-report
+    description: Create final report with cross-model references
+    dependsOn:
+      - job: summarize
+        condition:
+          type: succeeded
+          jobName: summarize
+    steps:
+      - name: final-step
+        task:
+          type: model_method
+          modelIdOrName: final-report-model
+          methodName: execute
           EOF
 
       - name: Validate models and workflow
@@ -345,7 +345,7 @@ EOF
           # Create a workflow that should fail
           ../swamp model create keeb/shell failing-model --json > /tmp/failing.json
           FAILING_ID=$(cat /tmp/failing.json | jq -r '.id')
-          cat > inputs/keeb/shell/${FAILING_ID}.yaml << EOF
+          cat > inputs/keeb/shell/${FAILING_ID}.yaml <<EOF
 id: ${FAILING_ID}
 name: failing-model
 version: 1
