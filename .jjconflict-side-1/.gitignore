@@ -1,0 +1,6 @@
+dev-logs/*
+swamp
+inputs/
+resources/
+inputs-evaluated/
+workflows-evaluated/
