@@ -46,54 +46,22 @@ jobs:
           ../swamp model create keeb/shell download-model --json > /tmp/download.json
           DOWNLOAD_ID=$(cat /tmp/download.json | jq -r '.id')
           # Edit the generated file to add our attributes
-          cat > inputs/keeb/shell/${DOWNLOAD_ID}.yaml <<EOF
-id: ${DOWNLOAD_ID}
-name: download-model
-version: 1
-tags: {}
-attributes:
-  run: "curl -s https://httpbin.org/json > sample.json && cat sample.json"
-  workingDir: "/tmp"
-EOF
+          printf 'id: %s\nname: download-model\nversion: 1\ntags: {}\nattributes:\n  run: "curl -s https://httpbin.org/json > sample.json && cat sample.json"\n  workingDir: "/tmp"\n' "${DOWNLOAD_ID}" > "inputs/keeb/shell/${DOWNLOAD_ID}.yaml"
           
           # Model 2: Process the downloaded file
           ../swamp model create keeb/shell process-model --json > /tmp/process.json
           PROCESS_ID=$(cat /tmp/process.json | jq -r '.id')
-          cat > inputs/keeb/shell/${PROCESS_ID}.yaml <<EOF
-id: ${PROCESS_ID}
-name: process-model
-version: 1
-tags: {}
-attributes:
-  run: "wc -l /tmp/sample.json | cut -d' ' -f1"
-  workingDir: "/tmp"
-EOF
+          printf 'id: %s\nname: process-model\nversion: 1\ntags: {}\nattributes:\n  run: "wc -l /tmp/sample.json | cut -d'\''$'\'' -f1"\n  workingDir: "/tmp"\n' "${PROCESS_ID}" > "inputs/keeb/shell/${PROCESS_ID}.yaml"
           
           # Model 3: Create summary using self-reference
           ../swamp model create keeb/shell summary-model --json > /tmp/summary.json
           SUMMARY_ID=$(cat /tmp/summary.json | jq -r '.id')
-          cat > inputs/keeb/shell/${SUMMARY_ID}.yaml <<EOF
-id: ${SUMMARY_ID}
-name: summary-model
-version: 1
-tags: {}
-attributes:
-  run: "echo 'Summary for \${{ self.name }}: Processing completed'"
-  workingDir: "/tmp"
-EOF
+          printf 'id: %s\nname: summary-model\nversion: 1\ntags: {}\nattributes:\n  run: "echo '\''Summary for \\${{ self.name }}: Processing completed'\''"\n  workingDir: "/tmp"\n' "${SUMMARY_ID}" > "inputs/keeb/shell/${SUMMARY_ID}.yaml"
           
           # Model 4: Final report referencing other models
           ../swamp model create keeb/shell final-report-model --json > /tmp/final.json
           FINAL_ID=$(cat /tmp/final.json | jq -r '.id')
-          cat > inputs/keeb/shell/${FINAL_ID}.yaml <<EOF
-id: ${FINAL_ID}
-name: final-report-model
-version: 1
-tags: {}
-attributes:
-  run: "echo 'Final Report - Download: \${{ model.download-model.data.attributes.command }} | Process result available | Summary: \${{ model.summary-model.data.attributes.command }}'"
-  workingDir: "/tmp"
-EOF
+          printf 'id: %s\nname: final-report-model\nversion: 1\ntags: {}\nattributes:\n  run: "echo '\''Final Report - Download: \\${{ model.download-model.data.attributes.command }} | Process result available | Summary: \\${{ model.summary-model.data.attributes.command }}'\''"\n  workingDir: "/tmp"\n' "${FINAL_ID}" > "inputs/keeb/shell/${FINAL_ID}.yaml"
 
           # Model 5: Mermaid diagram generator (will consume workflow execution)
           ../swamp model create mermaid/workflow-diagram diagram-model --json > /tmp/diagram.json
@@ -107,7 +75,7 @@ EOF
           ../swamp workflow create integration-test --json > /tmp/workflow.json
           WORKFLOW_ID=$(cat /tmp/workflow.json | jq -r '.id')
           
-          cat > workflows/workflow-${WORKFLOW_ID}.yaml <<EOF
+          cat > workflows/workflow-${WORKFLOW_ID}.yaml << 'WORKFLOWEOF'
 id: ${WORKFLOW_ID}
 name: integration-test
 description: Integration test workflow with dependencies and cross-model references
@@ -159,7 +127,10 @@ jobs:
           type: model_method
           modelIdOrName: final-report-model
           methodName: execute
-          EOF
+WORKFLOWEOF
+          # Replace placeholder with actual workflow ID
+          sed -i.bak "s/\${WORKFLOW_ID}/${WORKFLOW_ID}/g" workflows/workflow-${WORKFLOW_ID}.yaml
+          rm workflows/workflow-${WORKFLOW_ID}.yaml.bak
 
       - name: Validate models and workflow
         run: |
@@ -345,14 +316,7 @@ jobs:
           # Create a workflow that should fail
           ../swamp model create keeb/shell failing-model --json > /tmp/failing.json
           FAILING_ID=$(cat /tmp/failing.json | jq -r '.id')
-          cat > inputs/keeb/shell/${FAILING_ID}.yaml <<EOF
-id: ${FAILING_ID}
-name: failing-model
-version: 1
-tags: {}
-attributes:
-  run: "false"
-EOF
+          printf 'id: %s\nname: failing-model\nversion: 1\ntags: {}\nattributes:\n  run: "false"\n' "${FAILING_ID}" > "inputs/keeb/shell/${FAILING_ID}.yaml"
           
           # Try to run the failing model - should return non-zero exit code
           if ../swamp model method run failing-model execute --json 2>/dev/null; then
