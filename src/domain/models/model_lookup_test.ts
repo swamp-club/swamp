@@ -1,5 +1,24 @@
 import { assertEquals } from "@std/assert";
-import { isPartialId, isUuid, matchByPartialId } from "./model_lookup.ts";
+import {
+  findByIdOrName,
+  isPartialId,
+  isUuid,
+  matchByPartialId,
+} from "./model_lookup.ts";
+import { ModelInput } from "./model_input.ts";
+import { ModelType } from "./model_type.ts";
+import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
+// Import models barrel to register all model types (needed for findByIdOrName tests)
+import "./models.ts";
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-lookup-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
 
 Deno.test("isUuid returns true for valid UUID v4", () => {
   assertEquals(isUuid("550e8400-e29b-41d4-a716-446655440000"), true);
@@ -142,4 +161,64 @@ Deno.test("matchByPartialId matches full UUID", () => {
   if (result.status === "found") {
     assertEquals(result.match, "item1");
   }
+});
+
+// findByIdOrName tests
+
+Deno.test("findByIdOrName finds model by name", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlInputRepository(dir);
+    const type = ModelType.create("swamp/echo");
+    const input = ModelInput.create({ name: "my-model" });
+    await repo.save(type, input);
+
+    const result = await findByIdOrName(repo, "my-model");
+
+    assertEquals(result?.input.id, input.id);
+    assertEquals(result?.input.name, "my-model");
+    assertEquals(result?.type.normalized, "swamp/echo");
+  });
+});
+
+Deno.test("findByIdOrName finds model by UUID", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlInputRepository(dir);
+    const type = ModelType.create("swamp/echo");
+    const input = ModelInput.create({ name: "my-model" });
+    await repo.save(type, input);
+
+    const result = await findByIdOrName(repo, input.id);
+
+    assertEquals(result?.input.id, input.id);
+    assertEquals(result?.input.name, "my-model");
+    assertEquals(result?.type.normalized, "swamp/echo");
+  });
+});
+
+Deno.test("findByIdOrName returns null when not found", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlInputRepository(dir);
+
+    const result = await findByIdOrName(repo, "nonexistent");
+
+    assertEquals(result, null);
+  });
+});
+
+Deno.test("findByIdOrName prefers name match over ID", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlInputRepository(dir);
+    const type = ModelType.create("swamp/echo");
+
+    // Create two models - one with a name that happens to be a UUID-like string
+    const model1 = ModelInput.create({ name: "abc123" });
+    const model2 = ModelInput.create({ name: "other-model" });
+    await repo.save(type, model1);
+    await repo.save(type, model2);
+
+    // Looking up by name should find model1
+    const result = await findByIdOrName(repo, "abc123");
+
+    assertEquals(result?.input.name, "abc123");
+  });
 });
