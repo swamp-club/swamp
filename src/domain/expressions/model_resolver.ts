@@ -18,6 +18,13 @@ import { createModelLogId } from "../models/model_log.ts";
 import { ModelNotFoundError } from "./errors.ts";
 
 /**
+ * Builds env context from Deno environment variables.
+ */
+export function buildEnvContext(): Record<string, string> {
+  return { ...Deno.env.toObject() };
+}
+
+/**
  * Data about a single model for CEL context.
  */
 export interface ModelData {
@@ -85,6 +92,8 @@ export interface ExpressionContext {
   };
   /** Workflow context (for workflow evaluation) */
   workflow?: Record<string, unknown>;
+  /** Environment variables */
+  env: Record<string, string>;
   /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }
@@ -132,6 +141,7 @@ export class ModelResolver {
   ): Promise<ExpressionContext> {
     const context: ExpressionContext = {
       model: {},
+      env: buildEnvContext(),
     };
 
     // Load all inputs

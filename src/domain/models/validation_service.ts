@@ -8,6 +8,7 @@ import { ModelResourceSchema } from "./model_resource.ts";
 import type { InputRepository } from "./repositories.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import {
+  extractEnvReferences,
   extractPathReferences,
   extractSelfReferences,
 } from "../expressions/expression_path_extractor.ts";
@@ -324,8 +325,13 @@ export class DefaultModelValidationService implements ModelValidationService {
         .filter((e): e is ExpressionPathError => e !== null);
       errors.push(...selfErrors);
 
+      // Extract env references (these are always valid - resolved at runtime)
+      const envRefs = extractEnvReferences(celExpression);
+
       // Check for expressions with valid ${{...}} syntax but no valid references
-      if (pathRefs.length === 0 && selfRefs.length === 0) {
+      if (
+        pathRefs.length === 0 && selfRefs.length === 0 && envRefs.length === 0
+      ) {
         const error = this.validateExpressionContent(celExpression, raw, path);
         if (error) errors.push(error);
       }
@@ -340,7 +346,7 @@ export class DefaultModelValidationService implements ModelValidationService {
   }
 
   /**
-   * Validates expression content when no valid model or self references were found.
+   * Validates expression content when no valid model, self, or env references were found.
    * This catches cases like ${{my-vpc.VpcId}} which should be ${{ model.my-vpc.resource.attributes.VpcId }}
    */
   private validateExpressionContent(
@@ -349,7 +355,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     path: string,
   ): ExpressionPathError | null {
     // First, check if it looks like a valid CEL literal or operation
-    // These are valid expressions that don't need model/self references
+    // These are valid expressions that don't need model/self/env references
     const looksLikeValidCel = /^[\d"'\[\{(]|^true$|^false$|^null$/.test(
       celExpression,
     );
@@ -380,9 +386,9 @@ export class DefaultModelValidationService implements ModelValidationService {
       return {
         expression: rawExpression,
         error:
-          `Invalid expression "${celExpression}" at "${path}". Expression must reference model or self`,
+          `Invalid expression "${celExpression}" at "${path}". Expression must reference model, self, or env`,
         suggestion:
-          `Use: model.${celExpression}.resource.attributes.<property> or self.attributes.<property>`,
+          `Use: model.${celExpression}.resource.attributes.<property>, self.attributes.<property>, or env.<VARIABLE_NAME>`,
       };
     }
 
@@ -390,9 +396,9 @@ export class DefaultModelValidationService implements ModelValidationService {
     return {
       expression: rawExpression,
       error:
-        `Expression "${celExpression}" at "${path}" does not contain valid model or self references`,
+        `Expression "${celExpression}" at "${path}" does not contain valid model, self, or env references`,
       suggestion:
-        "Expressions should use: model.<name>.resource.attributes.<property>, model.<name>.input.attributes.<property>, or self.attributes.<property>",
+        "Expressions should use: model.<name>.resource.attributes.<property>, model.<name>.input.attributes.<property>, self.attributes.<property>, or env.<VARIABLE_NAME>",
     };
   }
 

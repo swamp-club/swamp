@@ -10,7 +10,9 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
+import { YamlDataRepository } from "../src/infrastructure/persistence/yaml_data_repository.ts";
 import { ModelInput } from "../src/domain/models/model_input.ts";
+import { createModelDataId } from "../src/domain/models/model_data.ts";
 import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -25,12 +27,14 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 async function runCliCommand(
   args: string[],
   cwd: string,
+  env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const command = new Deno.Command(Deno.execPath(), {
     args: ["task", "dev", ...args],
     stdout: "piped",
     stderr: "piped",
     cwd,
+    env: env ? { ...Deno.env.toObject(), ...env } : undefined,
   });
 
   const { code, stdout, stderr } = await command.output();
@@ -1249,5 +1253,153 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
 
     assertEquals(getResult.code !== 0, true, "Workflow should not exist");
     assertStringIncludes(getResult.stderr, "not found");
+  });
+});
+
+// Environment variable expression tests
+
+Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model with an env variable expression
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = ModelInput.create({
+      name: "env-test-model",
+      attributes: {
+        // Use env variable expression
+        message: "${{ env.SWAMP_TEST_VAR }}",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, input);
+
+    // Create a workflow that runs the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "env-var-workflow",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-echo",
+              task: StepTask.modelMethod("env-test-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow with env var set
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "env-var-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+      { SWAMP_TEST_VAR: "hello-from-env" },
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+    assertEquals(output.jobs[0].steps[0].status, "succeeded");
+
+    // Verify the data artifact contains the evaluated env var
+    const dataRepo = new YamlDataRepository(repoDir);
+    const updatedInput = await inputRepo.findByName(
+      ECHO_MODEL_TYPE,
+      input.name,
+    );
+    if (!updatedInput?.dataId) {
+      throw new Error("Expected dataId to be set after workflow run");
+    }
+
+    const dataArtifact = await dataRepo.findById(
+      ECHO_MODEL_TYPE,
+      createModelDataId(updatedInput.dataId),
+    );
+    assertEquals(dataArtifact?.attributes.message, "hello-from-env");
+  });
+});
+
+Deno.test("CLI: workflow run evaluates inline env expression with surrounding text", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model with an inline env expression (not the entire value)
+    const inputRepo = new YamlInputRepository(repoDir);
+
+    const inlineEnvModel = ModelInput.create({
+      name: "inline-env-model",
+      attributes: {
+        // Inline env expression with surrounding text
+        message: "prefix-${{ env.SWAMP_VAR }}-suffix",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, inlineEnvModel);
+
+    // Create a workflow that runs the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "inline-env-workflow",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-inline",
+              task: StepTask.modelMethod("inline-env-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow with env var set
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "inline-env-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+      { SWAMP_VAR: "middle" },
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}, stdout: ${result.stdout}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+
+    // Verify the model's data has the evaluated expression
+    const dataRepo = new YamlDataRepository(repoDir);
+    const updatedModel = await inputRepo.findByName(
+      ECHO_MODEL_TYPE,
+      inlineEnvModel.name,
+    );
+    if (!updatedModel?.dataId) {
+      throw new Error("Expected dataId to be set after workflow run");
+    }
+
+    const dataArtifact = await dataRepo.findById(
+      ECHO_MODEL_TYPE,
+      createModelDataId(updatedModel.dataId),
+    );
+    assertEquals(dataArtifact?.attributes.message, "prefix-middle-suffix");
   });
 });

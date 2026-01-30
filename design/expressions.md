@@ -57,6 +57,28 @@ tags, and a models other attributes.
 You can also use the uuid of a model in order to reference it, rather than the
 name.
 
+## Environment Variables
+
+You can access environment variables using the `env` namespace:
+
+```yaml
+attributes:
+  region: ${{ env.AWS_REGION }}
+  api_key: ${{ env.API_KEY }}
+  path: /home/${{ env.USER }}/data
+```
+
+Environment variables are resolved at runtime from the process environment. This
+allows configuration to be injected without hardcoding values in model inputs or
+workflows.
+
+You can combine environment variables with model references:
+
+```yaml
+attributes:
+  bucket: ${{ env.ENV_PREFIX }}-${{ model.vpc.resource.attributes.id }}
+```
+
 For workflows, you should be able to reference other workflows by name or id, in
 addition to any model.
 
