@@ -109,8 +109,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     const result = await this.execute(input, method, context);
     let currentResource = result.resource;
 
-    // Process follow-up actions
-    if (result.followUpActions) {
+    // Process follow-up actions (requires resource)
+    if (result.followUpActions && currentResource) {
       const finalResult = await this.processFollowUpActions(
         input,
         modelDef,
@@ -122,7 +122,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       currentResource = finalResult.resource;
     }
 
-    return { resource: currentResource };
+    return {
+      ...result,
+      resource: currentResource,
+    };
   }
 
   private async processFollowUpActions(
@@ -180,6 +183,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             followUpMethod,
             context,
           );
+
+          // Follow-up actions require resources to continue
+          if (!result.resource) {
+            throw new Error(
+              `Follow-up method '${action.methodName}' must return a resource`,
+            );
+          }
           currentResource = result.resource;
 
           // If this follow-up method has its own follow-up actions, process them recursively

@@ -65,9 +65,12 @@ export const typeDescribeCommand = new Command()
     const inputAttributesSchema = zodToJsonSchema(
       definition.inputAttributesSchema,
     );
-    const resourceAttributesSchema = zodToJsonSchema(
-      definition.resourceAttributesSchema,
-    );
+    const resourceAttributesSchema = definition.resourceAttributesSchema
+      ? zodToJsonSchema(definition.resourceAttributesSchema)
+      : undefined;
+    const dataAttributesSchema = definition.dataAttributesSchema
+      ? zodToJsonSchema(definition.dataAttributesSchema)
+      : undefined;
 
     // Build method descriptions
     const methods: MethodDescribeData[] = Object.entries(definition.methods)
@@ -84,6 +87,7 @@ export const typeDescribeCommand = new Command()
       version: definition.version,
       inputAttributesSchema,
       resourceAttributesSchema,
+      dataAttributesSchema,
       methods,
     };
 

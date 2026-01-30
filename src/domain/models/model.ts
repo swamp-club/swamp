@@ -3,7 +3,16 @@ import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import { ModelType } from "./model_type.ts";
 import type { ModelInput } from "./model_input.ts";
 import type { ModelResource } from "./model_resource.ts";
-import type { ResourceRepository } from "./repositories.ts";
+import type { ModelData } from "./model_data.ts";
+import type { ModelFile } from "./model_file.ts";
+import type { ModelLog } from "./model_log.ts";
+import type {
+  DataRepository,
+  FileRepository,
+  LogRepository,
+  OutputRepository,
+  ResourceRepository,
+} from "./repositories.ts";
 
 /**
  * Context provided to method execution.
@@ -23,6 +32,26 @@ export interface MethodContext {
    * Optional resource repository for accessing persisted resources.
    */
   resourceRepository?: ResourceRepository;
+
+  /**
+   * Optional data repository for accessing persisted data artifacts.
+   */
+  dataRepository?: DataRepository;
+
+  /**
+   * Optional file repository for accessing persisted file artifacts.
+   */
+  fileRepository?: FileRepository;
+
+  /**
+   * Optional log repository for accessing persisted log artifacts.
+   */
+  logRepository?: LogRepository;
+
+  /**
+   * Optional output repository for tracking execution history.
+   */
+  outputRepository?: OutputRepository;
 }
 
 /**
@@ -56,9 +85,27 @@ export interface FollowUpAction {
  */
 export interface MethodResult {
   /**
-   * The resource created by the method.
+   * The resource created by the method (optional with new artifact types).
    */
-  resource: ModelResource;
+  resource?: ModelResource;
+
+  /**
+   * Structured data output produced by the method.
+   */
+  data?: ModelData;
+
+  /**
+   * File output produced by the method.
+   */
+  file?: {
+    metadata: ModelFile;
+    content: Uint8Array;
+  };
+
+  /**
+   * Log outputs produced by the method.
+   */
+  logs?: ModelLog[];
 
   /**
    * Optional follow-up actions to execute.
@@ -70,6 +117,21 @@ export interface MethodResult {
    * Used for operations like delete that complete by removing the resource.
    */
   deleteResource?: boolean;
+
+  /**
+   * If true, the data artifact should be deleted.
+   */
+  deleteData?: boolean;
+
+  /**
+   * If true, the file artifact should be deleted.
+   */
+  deleteFile?: boolean;
+
+  /**
+   * If true, the log artifacts should be deleted.
+   */
+  deleteLogs?: boolean;
 }
 
 /**
@@ -106,12 +168,16 @@ export interface MethodDefinition<
  * - Its type identifier
  * - Current version
  * - Schema for input attributes
- * - Schema for resource attributes
+ * - Schema for resource attributes (optional, for persistent resources)
+ * - Schema for data attributes (optional, for ephemeral data)
  * - Available methods
+ *
+ * At least one of resourceAttributesSchema or dataAttributesSchema should be provided.
  */
 export interface ModelDefinition<
   TInputAttrs extends z.ZodTypeAny = z.ZodTypeAny,
   TResourceAttrs extends z.ZodTypeAny = z.ZodTypeAny,
+  TDataAttrs extends z.ZodTypeAny = z.ZodTypeAny,
 > {
   /**
    * The model type.
@@ -129,9 +195,14 @@ export interface ModelDefinition<
   inputAttributesSchema: TInputAttrs;
 
   /**
-   * Zod schema for validating resource attributes.
+   * Zod schema for validating resource attributes (persistent, git-tracked).
    */
-  resourceAttributesSchema: TResourceAttrs;
+  resourceAttributesSchema?: TResourceAttrs;
+
+  /**
+   * Zod schema for validating data attributes (ephemeral, not git-tracked).
+   */
+  dataAttributesSchema?: TDataAttrs;
 
   /**
    * Available methods on this model.
@@ -204,10 +275,11 @@ export const modelRegistry = new ModelRegistry();
  */
 export function defineModel<
   TInputAttrs extends z.ZodTypeAny,
-  TResourceAttrs extends z.ZodTypeAny,
+  TResourceAttrs extends z.ZodTypeAny = z.ZodTypeAny,
+  TDataAttrs extends z.ZodTypeAny = z.ZodTypeAny,
 >(
-  definition: ModelDefinition<TInputAttrs, TResourceAttrs>,
-): ModelDefinition<TInputAttrs, TResourceAttrs> {
+  definition: ModelDefinition<TInputAttrs, TResourceAttrs, TDataAttrs>,
+): ModelDefinition<TInputAttrs, TResourceAttrs, TDataAttrs> {
   if (!modelRegistry.has(definition.type)) {
     modelRegistry.register(definition);
   }
