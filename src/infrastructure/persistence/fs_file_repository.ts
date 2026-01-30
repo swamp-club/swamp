@@ -21,8 +21,8 @@ interface FileMetadata extends ModelFileData {
  * File system implementation of FileRepository.
  *
  * Stores file artifacts with metadata and content as separate files:
- * - Metadata: {repoDir}/files/{normalized-type}/{model-id}/{method-name}/{file-id}.yaml
- * - Content:  {repoDir}/files/{normalized-type}/{model-id}/{method-name}/{actual-filename}
+ * - Metadata: {repoDir}/data/files/{normalized-type}/{model-id}/{method-name}/{file-id}.yaml
+ * - Content:  {repoDir}/data/files/{normalized-type}/{model-id}/{method-name}/{actual-filename}
  */
 export class FileSystemFileRepository implements FileRepository {
   constructor(private readonly repoDir: string) {}
@@ -178,7 +178,7 @@ export class FileSystemFileRepository implements FileRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "files", type.toDirectoryPath());
+    return join(this.repoDir, "data", "files", type.toDirectoryPath());
   }
 
   private getFileDir(

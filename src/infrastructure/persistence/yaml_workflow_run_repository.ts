@@ -16,7 +16,7 @@ import {
  * YAML-based implementation of WorkflowRunRepository.
  *
  * Stores workflow runs as YAML files in the directory structure:
- * {repoDir}/workflows/workflow-{workflowId}/workflow-run-{runId}-{timestamp}.yaml
+ * {repoDir}/data/workflow-runs/{workflowId}/workflow-run-{runId}.yaml
  */
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   constructor(private readonly repoDir: string) {}
@@ -96,13 +96,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     { run: WorkflowRun; workflowId: WorkflowId }[]
   > {
     const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
-    const workflowsDir = join(this.repoDir, "workflows");
+    const workflowRunsDir = join(this.repoDir, "data", "workflow-runs");
 
     try {
-      for await (const entry of Deno.readDir(workflowsDir)) {
-        if (entry.isDirectory && entry.name.startsWith("workflow-")) {
-          // Extract workflow ID from directory name (format: workflow-{uuid})
-          const workflowIdStr = entry.name.slice("workflow-".length);
+      for await (const entry of Deno.readDir(workflowRunsDir)) {
+        if (entry.isDirectory) {
+          // Directory name is the workflow ID
+          const workflowIdStr = entry.name;
           const workflowId = workflowIdStr as WorkflowId;
           const runs = await this.findAllByWorkflowId(workflowId);
           for (const run of runs) {
@@ -149,6 +149,6 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   private getRunsDir(workflowId: WorkflowId): string {
-    return join(this.repoDir, "workflows", `workflow-${workflowId}`);
+    return join(this.repoDir, "data", "workflow-runs", workflowId);
   }
 }

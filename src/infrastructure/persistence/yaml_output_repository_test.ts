@@ -37,7 +37,13 @@ Deno.test("YamlOutputRepository.save creates directory structure", async () => {
 
     await repo.save(testType, "create", output);
 
-    const expectedDir = join(dir, "outputs", testType.normalized, "create");
+    const expectedDir = join(
+      dir,
+      "data",
+      "outputs",
+      testType.normalized,
+      "create",
+    );
     const stat = await Deno.stat(expectedDir);
     assertEquals(stat.isDirectory, true);
   });

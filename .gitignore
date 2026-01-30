@@ -1,9 +1,15 @@
 dev-logs/*
 swamp
-inputs/
-resources/
-inputs-evaluated/
-workflows-evaluated/
+
+# Generated/runtime data (ignored)
+data/data/
+data/outputs/
+data/workflow-runs/
+data/inputs-evaluated/
+data/workflows-evaluated/
+data/logs/
+data/files/
+
 test-repo/
 experiments/webapp/frontend/node_modules/
 experiments/webapp/frontend/dist/

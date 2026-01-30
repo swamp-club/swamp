@@ -14,7 +14,7 @@ import {
  * YAML-based implementation of InputRepository.
  *
  * Stores inputs as YAML files in the directory structure:
- * {repoDir}/inputs/{normalized-type}/{id}.yaml
+ * {repoDir}/data/inputs/{normalized-type}/{id}.yaml
  */
 export class YamlInputRepository implements InputRepository {
   constructor(private readonly repoDir: string) {}
@@ -67,7 +67,7 @@ export class YamlInputRepository implements InputRepository {
   async findByNameGlobal(
     name: string,
   ): Promise<{ input: ModelInput; type: ModelType } | null> {
-    const inputsDir = join(this.repoDir, "inputs");
+    const inputsDir = join(this.repoDir, "data", "inputs");
     return await this.searchInputByName(inputsDir, [], name);
   }
 
@@ -120,7 +120,7 @@ export class YamlInputRepository implements InputRepository {
    * Finds all inputs across all model types in the repository.
    */
   async findAllGlobal(): Promise<{ input: ModelInput; type: ModelType }[]> {
-    const inputsDir = join(this.repoDir, "inputs");
+    const inputsDir = join(this.repoDir, "data", "inputs");
     const results: { input: ModelInput; type: ModelType }[] = [];
     await this.collectAllInputs(inputsDir, [], results);
     return results;
@@ -195,6 +195,6 @@ export class YamlInputRepository implements InputRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "inputs", type.toDirectoryPath());
+    return join(this.repoDir, "data", "inputs", type.toDirectoryPath());
   }
 }

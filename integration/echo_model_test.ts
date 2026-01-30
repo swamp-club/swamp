@@ -122,8 +122,8 @@ Deno.test("Echo model: directory structure is correct", async () => {
     await dataRepo.save(modelType, result.data!);
 
     // Verify directory structure
-    const inputDir = join(repoDir, "inputs", "swamp/echo");
-    const dataDir = join(repoDir, "data", "swamp/echo");
+    const inputDir = join(repoDir, "data", "inputs", "swamp/echo");
+    const dataDir = join(repoDir, "data", "data", "swamp/echo");
 
     assertEquals(existsSync(inputDir), true, "Input directory should exist");
     assertEquals(

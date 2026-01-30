@@ -16,7 +16,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
  * YAML-based implementation of OutputRepository.
  *
  * Stores outputs as YAML files in the directory structure:
- * {repoDir}/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml
+ * {repoDir}/data/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml
  */
 export class YamlOutputRepository implements OutputRepository {
   constructor(private readonly repoDir: string) {}
@@ -174,7 +174,7 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   private getOutputsDir(): string {
-    return join(this.repoDir, "outputs");
+    return join(this.repoDir, "data", "outputs");
   }
 
   private getTypeDir(type: ModelType): string {

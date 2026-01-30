@@ -25,7 +25,7 @@ Deno.test("StreamingLogRepository.save creates directory structure", async () =>
 
     await repo.save(type, log);
 
-    const expectedDir = join(dir, "logs", "swamp/echo");
+    const expectedDir = join(dir, "data", "logs", "swamp/echo");
     const stat = await Deno.stat(expectedDir);
     assertEquals(stat.isDirectory, true);
   });
@@ -42,7 +42,13 @@ Deno.test("StreamingLogRepository.save creates metadata and entries files", asyn
     await repo.save(type, log);
 
     // Check metadata file
-    const metadataPath = join(dir, "logs", "swamp/echo", `${log.id}.yaml`);
+    const metadataPath = join(
+      dir,
+      "data",
+      "logs",
+      "swamp/echo",
+      `${log.id}.yaml`,
+    );
     const metadataContent = await Deno.readTextFile(metadataPath);
     assertStringIncludes(metadataContent, `id: ${log.id}`);
     assertStringIncludes(metadataContent, "version: 1");
@@ -255,7 +261,7 @@ Deno.test("StreamingLogRepository.getPath returns correct path", () => {
   const path = repo.getPath(type, id);
   assertEquals(
     path,
-    "/repo/logs/swamp/echo/550e8400-e29b-41d4-a716-446655440001.log",
+    "/repo/data/logs/swamp/echo/550e8400-e29b-41d4-a716-446655440001.log",
   );
 });
 

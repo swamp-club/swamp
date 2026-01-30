@@ -38,63 +38,70 @@ function toMethodDescribeData(
   };
 }
 
+/**
+ * Core action for describing a model type.
+ * Shared between 'describe' and 'get' commands.
+ */
+function typeDescribeAction(options: AnyOptions, typeArg: string): void {
+  const ctx = createContext(options as GlobalOptions, "type-describe");
+  ctx.logger.debug`Describing type: ${typeArg}`;
+
+  // Parse and validate the model type
+  const modelType = ModelType.create(typeArg);
+  ctx.logger.debug`Normalized type: ${modelType.normalized}`;
+
+  // Look up the model definition
+  const definition = modelRegistry.get(modelType);
+  if (!definition) {
+    const availableTypes = modelRegistry.types().map((t) => t.normalized)
+      .join(", ");
+    throw new UserError(
+      `Unknown model type: ${typeArg}. Available types: ${
+        availableTypes || "none"
+      }`,
+    );
+  }
+
+  // Convert Zod schemas to JSON Schema
+  const inputAttributesSchema = zodToJsonSchema(
+    definition.inputAttributesSchema,
+  );
+  const resourceAttributesSchema = definition.resourceAttributesSchema
+    ? zodToJsonSchema(definition.resourceAttributesSchema)
+    : undefined;
+  const dataAttributesSchema = definition.dataAttributesSchema
+    ? zodToJsonSchema(definition.dataAttributesSchema)
+    : undefined;
+
+  // Build method descriptions
+  const methods: MethodDescribeData[] = Object.entries(definition.methods)
+    .map(
+      ([name, method]) => toMethodDescribeData(name, method),
+    );
+
+  // Build the output data
+  const data: TypeDescribeData = {
+    type: {
+      raw: modelType.raw,
+      normalized: modelType.normalized,
+    },
+    version: definition.version,
+    inputAttributesSchema,
+    resourceAttributesSchema,
+    dataAttributesSchema,
+    methods,
+  };
+
+  renderTypeDescribe(data, ctx.outputMode);
+  ctx.logger.debug("Type describe command completed");
+}
+
 export const typeDescribeCommand = new Command()
   .description("Describe a model type with schema details")
+  .alias("get")
   .arguments("<type:model_type>")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(function (options: AnyOptions, typeArg: string) {
-    const ctx = createContext(options as GlobalOptions, "type-describe");
-    ctx.logger.debug`Describing type: ${typeArg}`;
-
-    // Parse and validate the model type
-    const modelType = ModelType.create(typeArg);
-    ctx.logger.debug`Normalized type: ${modelType.normalized}`;
-
-    // Look up the model definition
-    const definition = modelRegistry.get(modelType);
-    if (!definition) {
-      const availableTypes = modelRegistry.types().map((t) => t.normalized)
-        .join(", ");
-      throw new UserError(
-        `Unknown model type: ${typeArg}. Available types: ${
-          availableTypes || "none"
-        }`,
-      );
-    }
-
-    // Convert Zod schemas to JSON Schema
-    const inputAttributesSchema = zodToJsonSchema(
-      definition.inputAttributesSchema,
-    );
-    const resourceAttributesSchema = definition.resourceAttributesSchema
-      ? zodToJsonSchema(definition.resourceAttributesSchema)
-      : undefined;
-    const dataAttributesSchema = definition.dataAttributesSchema
-      ? zodToJsonSchema(definition.dataAttributesSchema)
-      : undefined;
-
-    // Build method descriptions
-    const methods: MethodDescribeData[] = Object.entries(definition.methods)
-      .map(
-        ([name, method]) => toMethodDescribeData(name, method),
-      );
-
-    // Build the output data
-    const data: TypeDescribeData = {
-      type: {
-        raw: modelType.raw,
-        normalized: modelType.normalized,
-      },
-      version: definition.version,
-      inputAttributesSchema,
-      resourceAttributesSchema,
-      dataAttributesSchema,
-      methods,
-    };
-
-    renderTypeDescribe(data, ctx.outputMode);
-    ctx.logger.debug("Type describe command completed");
-  });
+  .action(typeDescribeAction);
 
 export const typeCommand = new Command()
   .name("type")

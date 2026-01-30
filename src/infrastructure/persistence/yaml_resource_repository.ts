@@ -14,7 +14,7 @@ import {
  * YAML-based implementation of ResourceRepository.
  *
  * Stores resources as YAML files in the directory structure:
- * {repoDir}/resources/{normalized-type}/{id}.yaml
+ * {repoDir}/data/resources/{normalized-type}/{id}.yaml
  */
 export class YamlResourceRepository implements ResourceRepository {
   constructor(private readonly repoDir: string) {}
@@ -91,6 +91,6 @@ export class YamlResourceRepository implements ResourceRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "resources", type.toDirectoryPath());
+    return join(this.repoDir, "data", "resources", type.toDirectoryPath());
   }
 }

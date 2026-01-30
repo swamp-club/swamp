@@ -83,6 +83,35 @@ Deno.test("RepoService.init copies skills", async () => {
   });
 });
 
+Deno.test("RepoService.init creates data directory structure", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Check all data subdirectories exist
+    const expectedDirs = [
+      "data/inputs",
+      "data/resources",
+      "data/workflows",
+      "data/data",
+      "data/outputs",
+      "data/workflow-runs",
+      "data/inputs-evaluated",
+      "data/workflows-evaluated",
+      "data/logs",
+      "data/files",
+    ];
+
+    for (const dir of expectedDirs) {
+      const dirPath = join(tempDir, dir);
+      const stat = await Deno.stat(dirPath);
+      assertEquals(stat.isDirectory, true, `${dir} should exist`);
+    }
+  });
+});
+
 Deno.test("RepoService.init throws if already initialized without force", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");

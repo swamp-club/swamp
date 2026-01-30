@@ -14,7 +14,7 @@ import {
  * YAML-based implementation of DataRepository.
  *
  * Stores data artifacts as YAML files in the directory structure:
- * {repoDir}/data/{normalized-type}/{id}.yaml
+ * {repoDir}/data/data/{normalized-type}/{id}.yaml
  */
 export class YamlDataRepository implements DataRepository {
   constructor(private readonly repoDir: string) {}
@@ -91,6 +91,6 @@ export class YamlDataRepository implements DataRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "data", type.toDirectoryPath());
+    return join(this.repoDir, "data", "data", type.toDirectoryPath());
   }
 }

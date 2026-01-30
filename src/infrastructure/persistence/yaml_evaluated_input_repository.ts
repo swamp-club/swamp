@@ -11,7 +11,7 @@ import {
 /**
  * Repository for storing evaluated model inputs.
  *
- * Writes to {repoDir}/inputs-evaluated/{normalized-type}/{id}.yaml
+ * Writes to {repoDir}/data/inputs-evaluated/{normalized-type}/{id}.yaml
  * This directory contains inputs with all expressions resolved.
  */
 export class YamlEvaluatedInputRepository {
@@ -96,7 +96,7 @@ export class YamlEvaluatedInputRepository {
    * Clears all evaluated inputs.
    */
   async clear(): Promise<void> {
-    const dir = join(this.repoDir, "inputs-evaluated");
+    const dir = join(this.repoDir, "data", "inputs-evaluated");
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {
@@ -114,6 +114,11 @@ export class YamlEvaluatedInputRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "inputs-evaluated", type.toDirectoryPath());
+    return join(
+      this.repoDir,
+      "data",
+      "inputs-evaluated",
+      type.toDirectoryPath(),
+    );
   }
 }

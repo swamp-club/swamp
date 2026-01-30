@@ -24,8 +24,8 @@ interface LogMetadata {
  * Streaming implementation of LogRepository using plain text lines format.
  *
  * Stores log artifacts in two files:
- * - Metadata: {repoDir}/logs/{normalized-type}/{id}.yaml
- * - Entries:  {repoDir}/logs/{normalized-type}/{id}.log
+ * - Metadata: {repoDir}/data/logs/{normalized-type}/{id}.yaml
+ * - Entries:  {repoDir}/data/logs/{normalized-type}/{id}.log
  *
  * The .log format stores raw lines, allowing appending entries without
  * reading/rewriting the whole file.
@@ -233,6 +233,6 @@ export class StreamingLogRepository implements LogRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "logs", type.toDirectoryPath());
+    return join(this.repoDir, "data", "logs", type.toDirectoryPath());
   }
 }
