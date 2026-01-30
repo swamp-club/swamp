@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   integration-test:
-    name: End-to-End Integration Test
+    name: Swamp Integration Test - Shell Dependencies and Mermaid Diagrams
     runs-on: ubuntu-latest
     
     steps:
@@ -80,7 +80,7 @@ jobs:
           version: 1
           tags: {}
           attributes:
-            run: "echo 'Summary for \${{ self.name }}: Processing completed'"
+            run: "echo 'Summary for ${{ '{{' }} self.name {{ '}}' }}: Processing completed'"
             workingDir: "/tmp"
           EOF
           
@@ -94,7 +94,7 @@ jobs:
           version: 1
           tags: {}
           attributes:
-            run: "echo 'Final Report - Download: \${{ model.download-model.data.attributes.command }} | Process result available | Summary: \${{ model.summary-model.data.attributes.command }}'"
+            run: "echo 'Final Report - Download: ${{ '{{' }} model.download-model.data.attributes.command {{ '}}' }} | Process result available | Summary: ${{ '{{' }} model.summary-model.data.attributes.command {{ '}}' }}'"
             workingDir: "/tmp"
           EOF
 
