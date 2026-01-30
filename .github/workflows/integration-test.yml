@@ -56,12 +56,15 @@ jobs:
           # Model 3: Create summary using self-reference
           ../swamp model create keeb/shell summary-model --json > /tmp/summary.json
           SUMMARY_ID=$(cat /tmp/summary.json | jq -r '.id')
-          printf 'id: %s\nname: summary-model\nversion: 1\ntags: {}\nattributes:\n  run: "echo '\''Summary for \\${{ self.name }}: Processing completed'\''"\n  workingDir: "/tmp"\n' "${SUMMARY_ID}" > "inputs/keeb/shell/${SUMMARY_ID}.yaml"
+          SELF_EXPR=$(printf '%s' '$' '{{ self.name }}')
+          printf 'id: %s\nname: summary-model\nversion: 1\ntags: {}\nattributes:\n  run: "echo '\''Summary for %s: Processing completed'\''"\n  workingDir: "/tmp"\n' "${SUMMARY_ID}" "${SELF_EXPR}" > "inputs/keeb/shell/${SUMMARY_ID}.yaml"
           
           # Model 4: Final report referencing other models
           ../swamp model create keeb/shell final-report-model --json > /tmp/final.json
           FINAL_ID=$(cat /tmp/final.json | jq -r '.id')
-          printf 'id: %s\nname: final-report-model\nversion: 1\ntags: {}\nattributes:\n  run: "echo '\''Final Report - Download: \\${{ model.download-model.data.attributes.command }} | Process result available | Summary: \\${{ model.summary-model.data.attributes.command }}'\''"\n  workingDir: "/tmp"\n' "${FINAL_ID}" > "inputs/keeb/shell/${FINAL_ID}.yaml"
+          MODEL_DOWNLOAD_EXPR=$(printf '%s' '$' '{{ model.download-model.data.attributes.command }}')
+          MODEL_SUMMARY_EXPR=$(printf '%s' '$' '{{ model.summary-model.data.attributes.command }}')
+          printf 'id: %s\nname: final-report-model\nversion: 1\ntags: {}\nattributes:\n  run: "echo '\''Final Report - Download: %s | Process result available | Summary: %s'\''"\n  workingDir: "/tmp"\n' "${FINAL_ID}" "${MODEL_DOWNLOAD_EXPR}" "${MODEL_SUMMARY_EXPR}" > "inputs/keeb/shell/${FINAL_ID}.yaml"
 
           # Model 5: Mermaid diagram generator (will consume workflow execution)
           ../swamp model create mermaid/workflow-diagram diagram-model --json > /tmp/diagram.json
@@ -165,76 +168,8 @@ jobs:
           # Get the diagram model ID
           DIAGRAM_ID=$(cat /tmp/diagram.json | jq -r '.id')
           
-          # Create input for diagram model - create a temporary file first
-          cat > "/tmp/diagram-template.yaml" << 'DIAGRAMEOF'
-id: DIAGRAM_ID_PLACEHOLDER
-name: diagram-model
-version: 1
-tags: {}
-attributes:
-  workflowExecution:
-    workflowName: "integration-test"
-    status: "succeeded"
-    jobs:
-      - name: "download"
-        status: "succeeded"
-        steps:
-          - name: "download-step"
-            status: "succeeded"
-            task:
-              type: "model_method"
-              modelIdOrName: "download-model"
-              methodName: "execute"
-      - name: "process"
-        status: "succeeded"
-        dependsOn:
-          - job: "download"
-            condition:
-              type: "succeeded"
-              jobName: "download"
-        steps:
-          - name: "process-step"
-            status: "succeeded"
-            task:
-              type: "model_method"
-              modelIdOrName: "process-model"
-              methodName: "execute"
-      - name: "summarize"
-        status: "succeeded"
-        dependsOn:
-          - job: "process"
-            condition:
-              type: "succeeded"
-              jobName: "process"
-        steps:
-          - name: "summary-step"
-            status: "succeeded"
-            task:
-              type: "model_method"
-              modelIdOrName: "summary-model"
-              methodName: "execute"
-      - name: "final-report"
-        status: "succeeded"
-        dependsOn:
-          - job: "summarize"
-            condition:
-              type: "succeeded"
-              jobName: "summarize"
-        steps:
-          - name: "final-step"
-            status: "succeeded"
-            task:
-              type: "model_method"
-              modelIdOrName: "final-report-model"
-              methodName: "execute"
-  title: "Integration Test Workflow Execution"
-  includeSteps: true
-  colorScheme:
-    succeeded: "#90EE90"
-    failed: "#FFB6C1"
-    cancelled: "#D3D3D3"
-    skipped: "#FFFFE0"
-DIAGRAMEOF
+          # Create input for diagram model using printf to avoid YAML parsing issues
+          printf 'id: DIAGRAM_ID_PLACEHOLDER\nname: diagram-model\nversion: 1\ntags: {}\nattributes:\n  workflowExecution:\n    workflowName: "integration-test"\n    status: "succeeded"\n    jobs:\n      - name: "download"\n        status: "succeeded"\n        steps:\n          - name: "download-step"\n            status: "succeeded"\n            task:\n              type: "model_method"\n              modelIdOrName: "download-model"\n              methodName: "execute"\n      - name: "process"\n        status: "succeeded"\n        dependsOn:\n          - job: "download"\n            condition:\n              type: "succeeded"\n              jobName: "download"\n        steps:\n          - name: "process-step"\n            status: "succeeded"\n            task:\n              type: "model_method"\n              modelIdOrName: "process-model"\n              methodName: "execute"\n      - name: "summarize"\n        status: "succeeded"\n        dependsOn:\n          - job: "process"\n            condition:\n              type: "succeeded"\n              jobName: "process"\n        steps:\n          - name: "summary-step"\n            status: "succeeded"\n            task:\n              type: "model_method"\n              modelIdOrName: "summary-model"\n              methodName: "execute"\n      - name: "final-report"\n        status: "succeeded"\n        dependsOn:\n          - job: "summarize"\n            condition:\n              type: "succeeded"\n              jobName: "summarize"\n        steps:\n          - name: "final-step"\n            status: "succeeded"\n            task:\n              type: "model_method"\n              modelIdOrName: "final-report-model"\n              methodName: "execute"\n  title: "Integration Test Workflow Execution"\n  includeSteps: true\n  colorScheme:\n    succeeded: "#90EE90"\n    failed: "#FFB6C1"\n    cancelled: "#D3D3D3"\n    skipped: "#FFFFE0"\n' > "/tmp/diagram-template.yaml"
           # Replace placeholder and copy to final location
           sed "s/DIAGRAM_ID_PLACEHOLDER/${DIAGRAM_ID}/g" "/tmp/diagram-template.yaml" > "inputs/mermaid/workflow-diagram/${DIAGRAM_ID}.yaml"
           
