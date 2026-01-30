@@ -200,12 +200,15 @@ jobs:
           FAILING_ID=$(cat /tmp/failing.json | jq -r '.id')
           printf 'id: %s\nname: failing-model\nversion: 1\ntags: {}\nattributes:\n  run: "false"\n' "${FAILING_ID}" > "inputs/keeb/shell/${FAILING_ID}.yaml"
           
-          # Try to run the failing model - should return non-zero exit code
-          if ../swamp model method run failing-model execute --json 2>/dev/null; then
-            echo "ERROR: Expected failing model to fail, but it succeeded"
-            exit 1
+          # Run the failing model and check the exit code in the output
+          ../swamp model method run failing-model execute --json > failing-output.json
+          EXIT_CODE=$(cat failing-output.json | jq -r '.data.attributes.exitCode')
+          if [ "$EXIT_CODE" = "1" ]; then
+            echo "✓ Error handling works correctly - model command failed with exit code $EXIT_CODE"
           else
-            echo "✓ Error handling works correctly - failing model failed as expected"
+            echo "ERROR: Expected failing model command to have exitCode 1, but got: $EXIT_CODE"
+            cat failing-output.json | jq .
+            exit 1
           fi
 
       - name: Upload workflow artifacts
