@@ -62,7 +62,12 @@ export const MermaidWorkflowInputAttributesSchema = z.object({
     failed: z.string().default("#FFB6C1"),
     cancelled: z.string().default("#D3D3D3"),
     skipped: z.string().default("#FFFFE0"),
-  }).default({}),
+  }).default({
+    succeeded: "#90EE90",
+    failed: "#FFB6C1",
+    cancelled: "#D3D3D3",
+    skipped: "#FFFFE0",
+  }),
 });
 
 /**

@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   integration-test:
-    name: Swamp Integration Test - Shell Dependencies and Mermaid Diagrams
+    name: Integration Test
     runs-on: ubuntu-latest
     
     steps:
