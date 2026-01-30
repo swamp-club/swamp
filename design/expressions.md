@@ -60,6 +60,26 @@ name.
 For workflows, you should be able to reference other workflows by name or id, in
 addition to any model.
 
+## Sensitive Data
+
+You should be able to access sensitive data by referencing the storage keys they
+were stored with, under a subkey of the vault where they reside.
+
+## Examples
+
+Setting keyData out of the configured aws vault from the machineKeyData key
+value
+
+```yaml
+id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+name: baz
+version: 1
+tags: {}
+attributes:
+  keyData: ${{ vault.get(aws, machineKeyData) }}
+```
+
 ## Workflow dependency and lazy evaluation
 
 When a model is referenced in a workflow step, any CEL expressions that
