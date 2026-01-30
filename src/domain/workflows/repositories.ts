@@ -83,4 +83,9 @@ export interface WorkflowRunRepository {
    * Gets the file path for a workflow run.
    */
   getPath(workflowId: WorkflowId, runId: WorkflowRunId): string;
+
+  /**
+   * Deletes all runs for a workflow.
+   */
+  deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number>;
 }

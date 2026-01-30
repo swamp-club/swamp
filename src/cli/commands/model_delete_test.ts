@@ -16,7 +16,7 @@ Deno.test("modelDeleteCommand has correct description", async () => {
   const { modelDeleteCommand } = await import("./model_delete.ts");
   assertEquals(
     modelDeleteCommand.getDescription(),
-    "Delete a model input",
+    "Delete a model and all related artifacts",
   );
 });
 

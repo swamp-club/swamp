@@ -17,6 +17,9 @@ const testData: ModelDeleteData = {
   type: "swamp/echo",
   inputPath: "inputs/swamp/echo/550e8400-e29b-41d4-a716-446655440000.yaml",
   resourceDeleted: false,
+  outputsDeleted: 0,
+  evaluatedInputDeleted: false,
+  dataDeleted: false,
 };
 
 const testDataWithResource: ModelDeleteData = {
@@ -26,6 +29,21 @@ const testDataWithResource: ModelDeleteData = {
   inputPath: "inputs/swamp/echo/550e8400-e29b-41d4-a716-446655440000.yaml",
   resourcePath: "resources/swamp/echo/resource-id.yaml",
   resourceDeleted: true,
+  outputsDeleted: 0,
+  evaluatedInputDeleted: false,
+  dataDeleted: false,
+};
+
+const testDataWithAllArtifacts: ModelDeleteData = {
+  id: "550e8400-e29b-41d4-a716-446655440000",
+  name: "test-echo",
+  type: "swamp/echo",
+  inputPath: "inputs/swamp/echo/550e8400-e29b-41d4-a716-446655440000.yaml",
+  resourcePath: "resources/swamp/echo/resource-id.yaml",
+  resourceDeleted: true,
+  outputsDeleted: 5,
+  evaluatedInputDeleted: true,
+  dataDeleted: true,
 };
 
 Deno.test({
@@ -62,7 +80,7 @@ Deno.test({
     );
     const output = lastFrame() ?? "";
 
-    assertStringIncludes(output, "Resource also deleted");
+    assertStringIncludes(output, "Resource deleted");
     assertStringIncludes(output, "resources/swamp/echo/resource-id.yaml");
   },
 });
@@ -75,7 +93,58 @@ Deno.test({
     const { lastFrame } = render(<ModelDeleteDisplay {...testData} />);
     const output = lastFrame() ?? "";
 
-    assertEquals(output.includes("Resource also deleted"), false);
+    assertEquals(output.includes("Resource deleted"), false);
+  },
+});
+
+Deno.test({
+  name: "ModelDeleteDisplay shows outputs deleted count when > 0",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <ModelDeleteDisplay {...testDataWithAllArtifacts} />,
+    );
+    const output = lastFrame() ?? "";
+
+    assertStringIncludes(output, "Outputs deleted");
+    assertStringIncludes(output, "5");
+  },
+});
+
+Deno.test({
+  name: "ModelDeleteDisplay does not show outputs when count is 0",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(<ModelDeleteDisplay {...testData} />);
+    const output = lastFrame() ?? "";
+
+    assertEquals(output.includes("Outputs deleted"), false);
+  },
+});
+
+Deno.test({
+  name: "ModelDeleteDisplay shows evaluated input deleted when true",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <ModelDeleteDisplay {...testDataWithAllArtifacts} />,
+    );
+    const output = lastFrame() ?? "";
+
+    assertStringIncludes(output, "Evaluated input deleted");
+  },
+});
+
+Deno.test({
+  name: "ModelDeleteDisplay shows data artifact deleted when true",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <ModelDeleteDisplay {...testDataWithAllArtifacts} />,
+    );
+    const output = lastFrame() ?? "";
+
+    assertStringIncludes(output, "Data artifact deleted");
   },
 });
 
@@ -93,6 +162,9 @@ Deno.test("renderModelDelete with json mode outputs valid JSON", () => {
     assertEquals(parsed.deleted.name, testData.name);
     assertEquals(parsed.deleted.inputPath, testData.inputPath);
     assertEquals(parsed.resourceDeleted, false);
+    assertEquals(parsed.outputsDeleted, 0);
+    assertEquals(parsed.evaluatedInputDeleted, false);
+    assertEquals(parsed.dataDeleted, false);
   } finally {
     console.log = originalLog;
   }
@@ -112,6 +184,23 @@ Deno.test("renderModelDelete with json mode includes resourcePath when resource 
       testDataWithResource.resourcePath,
     );
     assertEquals(parsed.resourceDeleted, true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderModelDelete with json mode includes all artifact counts", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelDelete(testDataWithAllArtifacts, "json");
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.outputsDeleted, 5);
+    assertEquals(parsed.evaluatedInputDeleted, true);
+    assertEquals(parsed.dataDeleted, true);
   } finally {
     console.log = originalLog;
   }

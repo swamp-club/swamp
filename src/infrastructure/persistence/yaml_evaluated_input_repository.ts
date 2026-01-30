@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import {
@@ -85,6 +86,10 @@ export class YamlEvaluatedInputRepository {
     const path = this.getPath(type, id);
     try {
       await Deno.remove(path);
+
+      // Clean up empty parent directories
+      const evaluatedDir = join(this.repoDir, "data", "inputs-evaluated");
+      await cleanupEmptyParentDirs(path, evaluatedDir);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
