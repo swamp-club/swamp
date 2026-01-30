@@ -7,7 +7,11 @@ import {
   GetResourceRequestStatusCommand,
 } from "@aws-sdk/client-cloudcontrol";
 import type { ModelType } from "../model_type.ts";
-import { createModelResourceId, ModelResource } from "../model_resource.ts";
+import {
+  createModelResourceId,
+  inputIdToResourceId,
+  ModelResource,
+} from "../model_resource.ts";
 import {
   defineModel,
   type FollowUpAction,
@@ -232,29 +236,33 @@ export abstract class AWSCloudControlModel<
     input: ModelInput,
     context: MethodContext,
   ): Promise<MethodResult> {
-    if (!input.resourceId) {
-      throw new Error("Cannot delete: no resource ID found in input");
-    }
-
     if (!context.resourceRepository) {
       throw new Error(
         "Cannot delete: resourceRepository not provided in context",
       );
     }
 
+    // Look up resource by input ID (convention: resource ID equals input ID)
+    const resourceId = inputIdToResourceId(input.id);
     const existingResource = await context.resourceRepository.findById(
       this.modelType,
-      createModelResourceId(input.id),
+      resourceId,
     );
 
-    let awsResourceId = input.resourceId;
-    if (existingResource) {
-      const extractedId = this.extractResourceIdentifier(
-        existingResource.attributes,
+    if (!existingResource) {
+      // No resource exists - nothing to delete
+      return this.createDeletedResult(input.id);
+    }
+
+    // Extract AWS resource identifier from resource attributes
+    const awsResourceId = this.extractResourceIdentifier(
+      existingResource.attributes,
+    );
+
+    if (!awsResourceId) {
+      throw new Error(
+        "Cannot delete: unable to extract AWS resource identifier from resource attributes",
       );
-      if (extractedId) {
-        awsResourceId = extractedId;
-      }
     }
 
     const client = this.createClient(context);

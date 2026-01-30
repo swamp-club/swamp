@@ -19,7 +19,6 @@ structure. Given an input like this:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
-resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: foo
 version: 1
 tags: {}
@@ -31,7 +30,6 @@ Another can use a CEL expression to extract the message attribute:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
-resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: bar
 version: 1
 tags: {}
@@ -43,7 +41,6 @@ Or the resource output of the same model:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
-resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: baz
 version: 1
 tags: {}

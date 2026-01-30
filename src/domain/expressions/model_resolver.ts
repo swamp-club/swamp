@@ -11,7 +11,7 @@ import type { YamlDataRepository } from "../../infrastructure/persistence/yaml_d
 import type { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
 import type { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
-import { createModelResourceId } from "../models/model_resource.ts";
+import { inputIdToResourceId } from "../models/model_resource.ts";
 import { createModelDataId } from "../models/model_data.ts";
 import { createModelFileId } from "../models/model_file.ts";
 import { createModelLogId } from "../models/model_log.ts";
@@ -187,18 +187,16 @@ export class ModelResolver {
       },
     };
 
-    // Load resource if available
-    if (input.resourceId) {
-      const resourceId = createModelResourceId(input.resourceId);
-      const resource = await this.resourceRepo.findById(type, resourceId);
-      if (resource) {
-        data.resource = {
-          id: resource.id,
-          version: resource.version,
-          createdAt: resource.createdAt.toISOString(),
-          attributes: resource.attributes,
-        };
-      }
+    // Load resource if available (resource ID equals input ID by convention)
+    const resourceId = inputIdToResourceId(input.id);
+    const resource = await this.resourceRepo.findById(type, resourceId);
+    if (resource) {
+      data.resource = {
+        id: resource.id,
+        version: resource.version,
+        createdAt: resource.createdAt.toISOString(),
+        attributes: resource.attributes,
+      };
     }
 
     // Load data artifact if available
@@ -307,12 +305,12 @@ export class ModelResolver {
     // Try by name first
     const byName = await this.inputRepo.findByNameGlobal(modelRef);
     if (byName) {
-      const resource = byName.input.resourceId
-        ? await this.resourceRepo.findById(
-          byName.type,
-          createModelResourceId(byName.input.resourceId),
-        )
-        : undefined;
+      // Resource ID equals input ID by convention
+      const resourceId = inputIdToResourceId(byName.input.id);
+      const resource = await this.resourceRepo.findById(
+        byName.type,
+        resourceId,
+      );
       return {
         input: byName.input,
         type: byName.type,
@@ -324,12 +322,9 @@ export class ModelResolver {
     const allInputs = await this.inputRepo.findAllGlobal();
     for (const { input, type } of allInputs) {
       if (input.id === modelRef) {
-        const resource = input.resourceId
-          ? await this.resourceRepo.findById(
-            type,
-            createModelResourceId(input.resourceId),
-          )
-          : undefined;
+        // Resource ID equals input ID by convention
+        const resourceId = inputIdToResourceId(input.id);
+        const resource = await this.resourceRepo.findById(type, resourceId);
         return { input, type, resource: resource ?? undefined };
       }
     }

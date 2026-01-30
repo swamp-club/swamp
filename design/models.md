@@ -49,12 +49,14 @@ The valid shape of an input is specified with a Zod 4 schema.
 
 Each input has the following core properties:
 
-- id: the models unqiue id
-- resourceId: an optional resource id, if one exists
+- id: the models unique id
 - name: a unique human readable name
 - tags: string based key value pairs
 - attributes: domain specific data for the input (for example, the model of a
   VPC from above).
+
+Resources are linked to inputs by convention: the resource ID always equals the
+input ID. Use `inputIdToResourceId(input.id)` to find the associated resource.
 
 ## Methods
 

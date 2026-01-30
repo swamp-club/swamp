@@ -59,15 +59,6 @@ Deno.test("ModelInput.create throws on invalid version", () => {
   );
 });
 
-Deno.test("ModelInput.setResourceId updates resourceId", () => {
-  const input = ModelInput.create({ name: "test-input" });
-  assertEquals(input.resourceId, undefined);
-
-  const resourceId = "550e8400-e29b-41d4-a716-446655440001";
-  input.setResourceId(resourceId);
-  assertEquals(input.resourceId, resourceId);
-});
-
 Deno.test("ModelInput.setTag adds/updates tags", () => {
   const input = ModelInput.create({ name: "test-input" });
   input.setTag("env", "production");
@@ -102,12 +93,10 @@ Deno.test("ModelInput.toData returns correct structure", () => {
     tags: { env: "prod" },
     attributes: { message: "hello" },
   });
-  input.setResourceId("550e8400-e29b-41d4-a716-446655440001");
 
   const data = input.toData();
   assertEquals(data, {
     id: "550e8400-e29b-41d4-a716-446655440000",
-    resourceId: "550e8400-e29b-41d4-a716-446655440001",
     dataId: undefined,
     fileId: undefined,
     logId: undefined,
@@ -121,7 +110,6 @@ Deno.test("ModelInput.toData returns correct structure", () => {
 Deno.test("ModelInput.fromData reconstructs input correctly", () => {
   const data = {
     id: "550e8400-e29b-41d4-a716-446655440000",
-    resourceId: "550e8400-e29b-41d4-a716-446655440001",
     name: "test-input",
     version: 2,
     tags: { env: "prod" },
@@ -130,7 +118,6 @@ Deno.test("ModelInput.fromData reconstructs input correctly", () => {
 
   const input = ModelInput.fromData(data);
   assertEquals(input.id, data.id);
-  assertEquals(input.resourceId, data.resourceId);
   assertEquals(input.name, data.name);
   assertEquals(input.version, data.version);
   assertEquals(input.tags, data.tags);

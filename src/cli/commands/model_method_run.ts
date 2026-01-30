@@ -142,27 +142,6 @@ export const modelMethodRunCommand = new Command()
               attributes: result.resource.attributes,
             };
           }
-
-          // Update input's resourceId based on operation type
-          if (result.deleteResource) {
-            // For delete operations, clear the resourceId since the resource no longer exists
-            if (input.resourceId) {
-              input.setResourceId(undefined);
-              await inputRepo.save(modelType, input);
-              ctx.logger.debug`Input resourceId cleared after deletion`;
-            }
-          } else {
-            // For create/update operations, set the resourceId if not already set
-            if (!input.resourceId) {
-              input.setResourceId(result.resource.id);
-              await inputRepo.save(modelType, input);
-              ctx.logger
-                .debug`Input updated with resourceId: ${result.resource.id}`;
-            } else {
-              ctx.logger
-                .debug`Input already has resourceId: ${input.resourceId}`;
-            }
-          }
         }
 
         // Handle data artifact persistence

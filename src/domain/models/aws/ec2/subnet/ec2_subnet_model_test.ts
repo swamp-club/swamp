@@ -197,7 +197,7 @@ Deno.test("EC2SubnetModel - sync method without RequestToken fails", async () =>
   );
 });
 
-Deno.test("EC2SubnetModel - delete method without resource ID fails", async () => {
+Deno.test("EC2SubnetModel - delete method without resource returns deleted result", async () => {
   const input = ModelInput.create({
     name: "test-subnet",
     attributes: {
@@ -206,15 +206,26 @@ Deno.test("EC2SubnetModel - delete method without resource ID fails", async () =
     },
   });
 
-  const context: MethodContext = {
-    repoDir: "/tmp/test-repo",
+  const mockResourceRepository: ResourceRepository = {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createModelResourceId("mock-id"),
+    getPath: () => "/mock/path",
   };
 
-  await assertRejects(
-    () => ec2SubnetModel.methods.delete.execute(input, context),
-    Error,
-    "Cannot delete: no resource ID found in input",
-  );
+  const context: MethodContext = {
+    repoDir: "/tmp/test-repo",
+    resourceRepository: mockResourceRepository,
+  };
+
+  const result = await ec2SubnetModel.methods.delete.execute(input, context);
+
+  // Should return success with deleteResource flag since no resource exists
+  assertEquals(result.resource?.attributes.OperationStatus, "SUCCESS");
+  assertEquals(result.resource?.attributes.DeletionCompleted, true);
+  assertEquals(result.deleteResource, true);
 });
 
 Deno.test("EC2SubnetModel - create method uses injected CloudControl client", async () => {
@@ -255,7 +266,6 @@ Deno.test("EC2SubnetModel - create method uses injected CloudControl client", as
 Deno.test("EC2SubnetModel - delete method requires resourceRepository", async () => {
   const input = ModelInput.create({
     name: "test-subnet",
-    resourceId: "00000000-0000-4000-8000-000000000001",
     attributes: {
       VpcId: "vpc-12345678",
       CidrBlock: "10.0.1.0/24",
@@ -308,9 +318,10 @@ Deno.test("EC2SubnetModel - sync method treats 'not found' as deleted", async ()
 });
 
 Deno.test("EC2SubnetModel - delete method treats 'not found' as success", async () => {
+  const inputId = "00000000-0000-4000-8000-000000000001";
   const input = ModelInput.create({
+    id: inputId,
     name: "test-subnet",
-    resourceId: "00000000-0000-4000-8000-000000000001",
     attributes: {
       VpcId: "vpc-12345678",
       CidrBlock: "10.0.1.0/24",
@@ -318,7 +329,7 @@ Deno.test("EC2SubnetModel - delete method treats 'not found' as success", async 
   });
 
   const existingResource = ModelResource.create({
-    id: "00000000-0000-4000-8000-000000000001",
+    id: inputId,
     attributes: {
       SubnetId: "subnet-12345678",
     },
