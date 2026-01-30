@@ -8,6 +8,28 @@ description: Work with swamp models for AI-native automation. Use when searching
 Work with swamp models through the CLI. All commands support `--json` for
 machine-readable output.
 
+## Repository Structure
+
+Swamp uses a dual-layer architecture:
+
+- **Data directory (`/data/`)** - Internal storage organized by entity type
+- **Logical views (`/models/`)** - Human-friendly symlinked directories
+
+The `/models/` directory provides convenient exploration of each model:
+
+```
+/models/{model-name}/
+  input.yaml → ../data/inputs/{type}/{id}.yaml
+  resource.yaml → ../data/resources/{type}/{id}.yaml
+  data.yaml → ../data/data/{type}/{id}.yaml
+  outputs/ → ../data/outputs/{type}/{id}/
+  logs/ → ../data/logs/{type}/{id}/
+  files/ → ../data/files/{type}/{id}/
+```
+
+This structure is maintained automatically. Use `swamp repo index` to rebuild if
+needed.
+
 ## Quick Reference
 
 | Task               | Command                                               |

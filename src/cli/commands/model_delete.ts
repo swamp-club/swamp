@@ -6,8 +6,7 @@ import {
 } from "../../presentation/output/model_delete_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { findByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -49,8 +48,9 @@ export const modelDeleteCommand = new Command()
     ctx.logger.debug`Deleting model: ${modelIdOrName}`;
 
     const repoDir = options.repoDir ?? ".";
-    const inputRepo = new YamlInputRepository(repoDir);
-    const resourceRepo = new YamlResourceRepository(repoDir);
+    const repoContext = createRepositoryContext({ repoDir });
+    const inputRepo = repoContext.inputRepo;
+    const resourceRepo = repoContext.resourceRepo;
 
     // Look up the model input
     ctx.logger.debug`Looking up model: ${modelIdOrName}`;

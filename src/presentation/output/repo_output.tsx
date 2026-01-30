@@ -126,3 +126,198 @@ export function RepoUpgradeDisplay(
     </Box>
   );
 }
+
+// ============================================================================
+// Repo Index Output
+// ============================================================================
+
+/**
+ * Data for repo index rebuild output.
+ */
+export interface RepoIndexRebuildData {
+  path: string;
+  modelsIndexed: number;
+  workflowsIndexed: number;
+  workflowRunsIndexed: number;
+}
+
+/**
+ * Data for repo index verify output.
+ */
+export interface RepoIndexVerifyData {
+  path: string;
+  valid: boolean;
+  brokenLinks: string[];
+  missingTargets: string[];
+}
+
+/**
+ * Data for repo index prune output.
+ */
+export interface RepoIndexPruneData {
+  path: string;
+  removedLinks: string[];
+}
+
+export function renderRepoIndexRebuild(
+  data: RepoIndexRebuildData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+  } else {
+    renderInteractiveRepoIndexRebuild(data);
+  }
+}
+
+function renderInteractiveRepoIndexRebuild(data: RepoIndexRebuildData): void {
+  const { lastFrame } = render(<RepoIndexRebuildDisplay {...data} />);
+  console.log(lastFrame());
+}
+
+export function renderRepoIndexVerify(
+  data: RepoIndexVerifyData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+  } else {
+    renderInteractiveRepoIndexVerify(data);
+  }
+}
+
+function renderInteractiveRepoIndexVerify(data: RepoIndexVerifyData): void {
+  const { lastFrame } = render(<RepoIndexVerifyDisplay {...data} />);
+  console.log(lastFrame());
+}
+
+export function renderRepoIndexPrune(
+  data: RepoIndexPruneData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+  } else {
+    renderInteractiveRepoIndexPrune(data);
+  }
+}
+
+function renderInteractiveRepoIndexPrune(data: RepoIndexPruneData): void {
+  const { lastFrame } = render(<RepoIndexPruneDisplay {...data} />);
+  console.log(lastFrame());
+}
+
+interface RepoIndexRebuildDisplayProps {
+  path: string;
+  modelsIndexed: number;
+  workflowsIndexed: number;
+  workflowRunsIndexed: number;
+}
+
+export function RepoIndexRebuildDisplay(
+  props: RepoIndexRebuildDisplayProps,
+): React.ReactElement {
+  const total = props.modelsIndexed + props.workflowsIndexed +
+    props.workflowRunsIndexed;
+  return (
+    <Box flexDirection="column">
+      <Text color="green">Rebuilt repository index:</Text>
+      <Box marginLeft={2} flexDirection="column">
+        <Text>
+          <Text color="cyan">Path:</Text>
+          <Text>{props.path}</Text>
+        </Text>
+        <Text>
+          <Text color="cyan">Models:</Text>
+          <Text>{props.modelsIndexed}</Text>
+        </Text>
+        <Text>
+          <Text color="cyan">Workflows:</Text>
+          <Text>{props.workflowsIndexed}</Text>
+        </Text>
+        <Text>
+          <Text color="cyan">Workflow runs:</Text>
+          <Text>{props.workflowRunsIndexed}</Text>
+        </Text>
+        <Text>
+          <Text color="cyan">Total:</Text>
+          <Text>{total} entries indexed</Text>
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+interface RepoIndexVerifyDisplayProps {
+  path: string;
+  valid: boolean;
+  brokenLinks: string[];
+  missingTargets: string[];
+}
+
+export function RepoIndexVerifyDisplay(
+  props: RepoIndexVerifyDisplayProps,
+): React.ReactElement {
+  return (
+    <Box flexDirection="column">
+      <Text color={props.valid ? "green" : "red"}>
+        Index verification: {props.valid ? "VALID" : "INVALID"}
+      </Text>
+      <Box marginLeft={2} flexDirection="column">
+        <Text>
+          <Text color="cyan">Path:</Text>
+          <Text>{props.path}</Text>
+        </Text>
+        {props.brokenLinks.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color="yellow">
+              Broken symlinks ({props.brokenLinks.length}):
+            </Text>
+            {props.brokenLinks.map((link, i) => (
+              <Text key={i} color="gray">
+                {link}
+              </Text>
+            ))}
+          </Box>
+        )}
+        {props.valid && <Text color="green">All symlinks are valid.</Text>}
+      </Box>
+    </Box>
+  );
+}
+
+interface RepoIndexPruneDisplayProps {
+  path: string;
+  removedLinks: string[];
+}
+
+export function RepoIndexPruneDisplay(
+  props: RepoIndexPruneDisplayProps,
+): React.ReactElement {
+  return (
+    <Box flexDirection="column">
+      <Text color="green">
+        Pruned {props.removedLinks.length} broken symlink(s)
+      </Text>
+      <Box marginLeft={2} flexDirection="column">
+        <Text>
+          <Text color="cyan">Path:</Text>
+          <Text>{props.path}</Text>
+        </Text>
+        {props.removedLinks.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color="yellow">Removed:</Text>
+            {props.removedLinks.map((link, i) => (
+              <Text key={i} color="gray">
+                {link}
+              </Text>
+            ))}
+          </Box>
+        )}
+        {props.removedLinks.length === 0 && (
+          <Text color="green">No broken symlinks found.</Text>
+        )}
+      </Box>
+    </Box>
+  );
+}

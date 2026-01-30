@@ -6,7 +6,7 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { ModelInput } from "../../domain/models/model_input.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
+import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
@@ -44,9 +44,10 @@ export const modelCreateCommand = new Command()
       );
     }
 
-    // Create the repository and input
+    // Create the repository context (with indexing enabled)
     const repoDir = options.repoDir ?? ".";
-    const inputRepo = new YamlInputRepository(repoDir);
+    const repoContext = createRepositoryContext({ repoDir });
+    const inputRepo = repoContext.inputRepo;
 
     // Check if name already exists (globally unique across all types)
     const existing = await inputRepo.findByNameGlobal(name);
