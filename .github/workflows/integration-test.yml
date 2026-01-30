@@ -75,62 +75,8 @@ jobs:
           ../swamp workflow create integration-test --json > /tmp/workflow.json
           WORKFLOW_ID=$(cat /tmp/workflow.json | jq -r '.id')
           
-          cat > workflows/workflow-${WORKFLOW_ID}.yaml << 'WORKFLOWEOF'
-id: ${WORKFLOW_ID}
-name: integration-test
-description: Integration test workflow with dependencies and cross-model references
-jobs:
-  - name: download
-    description: Download sample data
-    steps:
-      - name: download-step
-        task:
-          type: model_method
-          modelIdOrName: download-model
-          methodName: execute
-  - name: process
-    description: Process downloaded data
-    dependsOn:
-      - job: download
-        condition:
-          type: succeeded
-          jobName: download
-    steps:
-      - name: process-step
-        task:
-          type: model_method
-          modelIdOrName: process-model
-          methodName: execute
-  - name: summarize
-    description: Create summary with self-reference
-    dependsOn:
-      - job: process
-        condition:
-          type: succeeded
-          jobName: process
-    steps:
-      - name: summary-step
-        task:
-          type: model_method
-          modelIdOrName: summary-model
-          methodName: execute
-  - name: final-report
-    description: Create final report with cross-model references
-    dependsOn:
-      - job: summarize
-        condition:
-          type: succeeded
-          jobName: summarize
-    steps:
-      - name: final-step
-        task:
-          type: model_method
-          modelIdOrName: final-report-model
-          methodName: execute
-WORKFLOWEOF
-          # Replace placeholder with actual workflow ID
-          sed -i.bak "s/\${WORKFLOW_ID}/${WORKFLOW_ID}/g" workflows/workflow-${WORKFLOW_ID}.yaml
-          rm workflows/workflow-${WORKFLOW_ID}.yaml.bak
+          # Create workflow YAML file using printf
+          printf 'id: %s\nname: integration-test\ndescription: Integration test workflow with dependencies and cross-model references\njobs:\n  - name: download\n    description: Download sample data\n    steps:\n      - name: download-step\n        task:\n          type: model_method\n          modelIdOrName: download-model\n          methodName: execute\n  - name: process\n    description: Process downloaded data\n    dependsOn:\n      - job: download\n        condition:\n          type: succeeded\n          jobName: download\n    steps:\n      - name: process-step\n        task:\n          type: model_method\n          modelIdOrName: process-model\n          methodName: execute\n  - name: summarize\n    description: Create summary with self-reference\n    dependsOn:\n      - job: process\n        condition:\n          type: succeeded\n          jobName: process\n    steps:\n      - name: summary-step\n        task:\n          type: model_method\n          modelIdOrName: summary-model\n          methodName: execute\n  - name: final-report\n    description: Create final report with cross-model references\n    dependsOn:\n      - job: summarize\n        condition:\n          type: succeeded\n          jobName: summarize\n    steps:\n      - name: final-step\n        task:\n          type: model_method\n          modelIdOrName: final-report-model\n          methodName: execute\n' "${WORKFLOW_ID}" > "workflows/workflow-${WORKFLOW_ID}.yaml"
 
       - name: Validate models and workflow
         run: |
@@ -219,77 +165,78 @@ WORKFLOWEOF
           # Get the diagram model ID
           DIAGRAM_ID=$(cat /tmp/diagram.json | jq -r '.id')
           
-          # Create input for diagram model using the workflow execution data
-          cat > inputs/mermaid/workflow-diagram/${DIAGRAM_ID}.yaml << 'EOF'
-          id: ${DIAGRAM_ID}
-          resourceId: ${DIAGRAM_ID}
-          name: diagram-model
-          version: 1
-          tags: {}
-          attributes:
-            workflowExecution:
-              workflowName: "integration-test"
-              status: "succeeded"
-              jobs:
-                - name: "download"
-                  status: "succeeded"
-                  steps:
-                    - name: "download-step"
-                      status: "succeeded"
-                      task:
-                        type: "model_method"
-                        modelIdOrName: "download-model"
-                        methodName: "execute"
-                - name: "process"
-                  status: "succeeded"
-                  dependsOn:
-                    - job: "download"
-                      condition:
-                        type: "succeeded"
-                        jobName: "download"
-                  steps:
-                    - name: "process-step"
-                      status: "succeeded"
-                      task:
-                        type: "model_method"
-                        modelIdOrName: "process-model"
-                        methodName: "execute"
-                - name: "summarize"
-                  status: "succeeded"
-                  dependsOn:
-                    - job: "process"
-                      condition:
-                        type: "succeeded"
-                        jobName: "process"
-                  steps:
-                    - name: "summary-step"
-                      status: "succeeded"
-                      task:
-                        type: "model_method"
-                        modelIdOrName: "summary-model"
-                        methodName: "execute"
-                - name: "final-report"
-                  status: "succeeded"
-                  dependsOn:
-                    - job: "summarize"
-                      condition:
-                        type: "succeeded"
-                        jobName: "summarize"
-                  steps:
-                    - name: "final-step"
-                      status: "succeeded"
-                      task:
-                        type: "model_method"
-                        modelIdOrName: "final-report-model"
-                        methodName: "execute"
-            title: "Integration Test Workflow Execution"
-            includeSteps: true
-            colorScheme:
-              succeeded: "#90EE90"
-              failed: "#FFB6C1"
-              cancelled: "#D3D3D3"
-              skipped: "#FFFFE0"
-          EOF
+          # Create input for diagram model - create a temporary file first
+          cat > "/tmp/diagram-template.yaml" << 'DIAGRAMEOF'
+id: DIAGRAM_ID_PLACEHOLDER
+name: diagram-model
+version: 1
+tags: {}
+attributes:
+  workflowExecution:
+    workflowName: "integration-test"
+    status: "succeeded"
+    jobs:
+      - name: "download"
+        status: "succeeded"
+        steps:
+          - name: "download-step"
+            status: "succeeded"
+            task:
+              type: "model_method"
+              modelIdOrName: "download-model"
+              methodName: "execute"
+      - name: "process"
+        status: "succeeded"
+        dependsOn:
+          - job: "download"
+            condition:
+              type: "succeeded"
+              jobName: "download"
+        steps:
+          - name: "process-step"
+            status: "succeeded"
+            task:
+              type: "model_method"
+              modelIdOrName: "process-model"
+              methodName: "execute"
+      - name: "summarize"
+        status: "succeeded"
+        dependsOn:
+          - job: "process"
+            condition:
+              type: "succeeded"
+              jobName: "process"
+        steps:
+          - name: "summary-step"
+            status: "succeeded"
+            task:
+              type: "model_method"
+              modelIdOrName: "summary-model"
+              methodName: "execute"
+      - name: "final-report"
+        status: "succeeded"
+        dependsOn:
+          - job: "summarize"
+            condition:
+              type: "succeeded"
+              jobName: "summarize"
+        steps:
+          - name: "final-step"
+            status: "succeeded"
+            task:
+              type: "model_method"
+              modelIdOrName: "final-report-model"
+              methodName: "execute"
+  title: "Integration Test Workflow Execution"
+  includeSteps: true
+  colorScheme:
+    succeeded: "#90EE90"
+    failed: "#FFB6C1"
+    cancelled: "#D3D3D3"
+    skipped: "#FFFFE0"
+DIAGRAMEOF
+          # Replace placeholder and copy to final location
+          sed "s/DIAGRAM_ID_PLACEHOLDER/${DIAGRAM_ID}/g" "/tmp/diagram-template.yaml" > "inputs/mermaid/workflow-diagram/${DIAGRAM_ID}.yaml"
           
           # Generate the Mermaid diagram
           ../swamp model method run diagram-model generate --json > diagram-output.json
