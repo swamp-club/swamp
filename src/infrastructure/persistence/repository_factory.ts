@@ -3,6 +3,32 @@
  *
  * This factory provides a centralized way to create repositories that
  * automatically emit domain events for index updates.
+ *
+ * ## When to Use createRepositoryContext
+ *
+ * Use `createRepositoryContext()` when:
+ * - **Creating or mutating data** (model create, delete, workflow run, etc.)
+ * - You need the logical views (`/models/`, `/workflows/`) to stay in sync
+ * - You want automatic index updates via domain events
+ *
+ * ## When to Use Direct Repository Instantiation
+ *
+ * Use direct instantiation (e.g., `new YamlInputRepository(repoDir)`) when:
+ * - **Read-only operations** (search, get, validate, describe)
+ * - You don't need index updates (faster, less overhead)
+ * - You're in a context where the index service isn't needed
+ *
+ * ## Examples
+ *
+ * ```typescript
+ * // Mutation operation - use createRepositoryContext
+ * const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
+ * await ctx.inputRepo.save(type, model); // Will update /models/ index
+ *
+ * // Read-only operation - direct instantiation is fine
+ * const inputRepo = new YamlInputRepository(repoDir);
+ * const model = await inputRepo.findById(type, id); // No index needed
+ * ```
  */
 
 import { YamlInputRepository } from "./yaml_input_repository.ts";

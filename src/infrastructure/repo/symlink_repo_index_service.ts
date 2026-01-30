@@ -7,6 +7,7 @@
 
 import { ensureDir } from "@std/fs";
 import { join, relative } from "@std/path";
+import { getLogger } from "@logtape/logtape";
 import type {
   PruneResult,
   RebuildResult,
@@ -33,6 +34,8 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
+
+const logger = getLogger(["swamp", "repo-index"]);
 
 /**
  * Index mode for symlink creation.
@@ -336,8 +339,8 @@ export class SymlinkRepoIndexService implements RepoIndexService {
             );
           }
         }
-      } catch {
-        // Ignore errors when reading directory
+      } catch (error) {
+        logger.debug`Failed to read outputs directory: ${error}`;
       }
     }
   }
@@ -449,8 +452,8 @@ export class SymlinkRepoIndexService implements RepoIndexService {
           }
         }
       }
-    } catch {
-      // Ignore errors
+    } catch (error) {
+      logger.debug`Failed to read runs directory for latest symlink: ${error}`;
     }
 
     // Create symlink to the latest directory
@@ -460,17 +463,11 @@ export class SymlinkRepoIndexService implements RepoIndexService {
 
   /**
    * Creates a symlink atomically using temp + rename pattern.
+   *
+   * This avoids race conditions by creating the symlink at a temporary path
+   * and then atomically renaming it to the final location.
    */
   private async createSymlink(target: string, path: string): Promise<void> {
-    // Remove existing symlink if it exists
-    try {
-      await Deno.remove(path);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
-    }
-
     // Calculate relative path from symlink location to target
     const linkDir = join(path, "..");
     const relativeTarget = relative(linkDir, target);
@@ -480,8 +477,9 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     try {
       const stat = await Deno.stat(target);
       isDirectory = stat.isDirectory;
-    } catch {
+    } catch (error) {
       // Target doesn't exist yet, assume file
+      logger.debug`Target ${target} doesn't exist yet, assuming file: ${error}`;
     }
 
     // Create symlink with appropriate options
@@ -491,8 +489,12 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       ? "dir"
       : "file";
 
+    // Create a temporary symlink path
+    const tempPath = `${path}.tmp.${crypto.randomUUID()}`;
+
     try {
-      await Deno.symlink(relativeTarget, path, { type: symlinkType });
+      // Create symlink at temp location
+      await Deno.symlink(relativeTarget, tempPath, { type: symlinkType });
     } catch (error) {
       // On Windows, if symlinks fail, try with type: "junction" for directories
       if (
@@ -500,9 +502,24 @@ export class SymlinkRepoIndexService implements RepoIndexService {
         error instanceof Deno.errors.PermissionDenied
       ) {
         if (isDirectory) {
-          await Deno.symlink(relativeTarget, path, { type: "junction" });
-          return;
+          await Deno.symlink(relativeTarget, tempPath, { type: "junction" });
+        } else {
+          throw error;
         }
+      } else {
+        throw error;
+      }
+    }
+
+    // Atomically rename temp symlink to final path
+    try {
+      await Deno.rename(tempPath, path);
+    } catch (error) {
+      // Clean up temp symlink on failure
+      try {
+        await Deno.remove(tempPath);
+      } catch {
+        // Ignore cleanup errors
       }
       throw error;
     }
@@ -560,8 +577,9 @@ export class SymlinkRepoIndexService implements RepoIndexService {
               try {
                 const target = await Deno.readLink(fullPath);
                 missingTargets.push(target);
-              } catch {
-                // Can't read link target
+              } catch (readLinkError) {
+                logger
+                  .debug`Failed to read link target for ${fullPath}: ${readLinkError}`;
               }
             }
           }
