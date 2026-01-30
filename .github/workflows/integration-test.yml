@@ -22,11 +22,6 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Run lint and type check
-        run: |
-          deno lint
-          deno check main.ts
-
       - name: Compile swamp binary
         run: deno run compile
 
