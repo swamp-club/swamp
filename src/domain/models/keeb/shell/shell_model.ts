@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import { ModelData } from "../../model_data.ts";
+import { ModelLog } from "../../model_log.ts";
 import {
   defineModel,
   type MethodContext,
@@ -32,10 +33,10 @@ export type ShellInputAttributes = z.infer<typeof ShellInputAttributesSchema>;
 
 /**
  * Schema for shell model data attributes.
+ * Note: stdout/stderr are now stored in log artifacts, but kept here for
+ * backward compatibility with existing outputs and for structured access.
  */
 export const ShellDataAttributesSchema = z.object({
-  stdout: z.string().describe("Standard output from the command"),
-  stderr: z.string().describe("Standard error from the command"),
   exitCode: z.number().int().describe("Exit code of the command"),
   executedAt: z.string().datetime().describe(
     "Timestamp when execution completed",
@@ -128,12 +129,19 @@ async function executeCommand(
   const endTime = Date.now();
   const durationMs = endTime - startTime;
 
-  // Create the data artifact with execution results
+  // Create log artifact for command output
+  const outputLog = ModelLog.create({ id: input.id });
+  if (stdout) {
+    outputLog.log(`[stdout]\n${stdout}`);
+  }
+  if (stderr) {
+    outputLog.log(`[stderr]\n${stderr}`);
+  }
+
+  // Create the data artifact with structured metadata
   const data = ModelData.create({
     id: input.id,
     attributes: {
-      stdout,
-      stderr,
       exitCode,
       executedAt: new Date().toISOString(),
       command: attrs.run,
@@ -141,7 +149,7 @@ async function executeCommand(
     },
   });
 
-  return { data };
+  return { data, logs: [outputLog] };
 }
 
 /**

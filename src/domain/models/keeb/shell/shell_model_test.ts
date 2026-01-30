@@ -1,11 +1,22 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ModelInput } from "../../model_input.ts";
+import type { ModelLog } from "../../model_log.ts";
 import {
   SHELL_MODEL_TYPE,
   ShellDataAttributesSchema,
   ShellInputAttributesSchema,
   shellModel,
 } from "./shell_model.ts";
+
+/**
+ * Helper to get combined log content from ModelLog array.
+ */
+function getLogContent(logs: ModelLog[] | undefined): string {
+  if (!logs || logs.length === 0) return "";
+  return logs
+    .flatMap((log) => log.entries.map((e) => e.message))
+    .join("\n");
+}
 
 Deno.test("SHELL_MODEL_TYPE has correct normalized type", () => {
   assertEquals(SHELL_MODEL_TYPE.normalized, "keeb/shell");
@@ -73,8 +84,6 @@ Deno.test("ShellInputAttributesSchema rejects zero timeout", () => {
 // Data schema validation tests
 Deno.test("ShellDataAttributesSchema validates correct data", () => {
   const result = ShellDataAttributesSchema.safeParse({
-    stdout: "hello\n",
-    stderr: "",
     exitCode: 0,
     executedAt: "2024-01-15T10:30:00.000Z",
     command: "echo hello",
@@ -85,8 +94,6 @@ Deno.test("ShellDataAttributesSchema validates correct data", () => {
 
 Deno.test("ShellDataAttributesSchema validates without durationMs", () => {
   const result = ShellDataAttributesSchema.safeParse({
-    stdout: "hello\n",
-    stderr: "",
     exitCode: 0,
     executedAt: "2024-01-15T10:30:00.000Z",
     command: "echo hello",
@@ -125,12 +132,16 @@ Deno.test("shellModel.methods.execute runs simple command", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.data?.attributes.stdout, "hello\n");
-  assertEquals(result.data?.attributes.stderr, "");
+  // Check data attributes
   assertEquals(result.data?.attributes.exitCode, 0);
   assertEquals(result.data?.attributes.command, "echo hello");
   assertEquals(typeof result.data?.attributes.executedAt, "string");
   assertEquals(typeof result.data?.attributes.durationMs, "number");
+
+  // Check log artifacts contain stdout
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, "[stdout]");
+  assertStringIncludes(logContent, "hello");
 });
 
 Deno.test("shellModel.methods.execute captures stderr", async () => {
@@ -143,9 +154,12 @@ Deno.test("shellModel.methods.execute captures stderr", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.data?.attributes.stdout, "");
-  assertEquals(result.data?.attributes.stderr, "error\n");
   assertEquals(result.data?.attributes.exitCode, 0);
+
+  // Check log artifacts contain stderr
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, "[stderr]");
+  assertStringIncludes(logContent, "error");
 });
 
 Deno.test("shellModel.methods.execute captures exit code", async () => {
@@ -189,8 +203,11 @@ Deno.test("shellModel.methods.execute respects workingDir", async () => {
 
   // Use realPathSync to handle symlinks (e.g., /tmp -> /private/tmp on macOS)
   const expectedPath = Deno.realPathSync("/tmp");
-  assertEquals(result.data?.attributes.stdout, `${expectedPath}\n`);
   assertEquals(result.data?.attributes.exitCode, 0);
+
+  // Check log artifacts contain the working directory
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, expectedPath);
 });
 
 Deno.test("shellModel.methods.execute respects env variables", async () => {
@@ -206,8 +223,11 @@ Deno.test("shellModel.methods.execute respects env variables", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.data?.attributes.stdout, "test_value\n");
   assertEquals(result.data?.attributes.exitCode, 0);
+
+  // Check log artifacts contain the env variable value
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, "test_value");
 });
 
 Deno.test("shellModel.methods.execute handles pipes", async () => {
@@ -220,8 +240,11 @@ Deno.test("shellModel.methods.execute handles pipes", async () => {
     repoDir: "/tmp",
   });
 
-  assertEquals(result.data?.attributes.stdout, "Hello world\n");
   assertEquals(result.data?.attributes.exitCode, 0);
+
+  // Check log artifacts contain the piped output
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, "Hello world");
 });
 
 Deno.test("shellModel.methods.execute handles complex commands", async () => {
@@ -234,9 +257,11 @@ Deno.test("shellModel.methods.execute handles complex commands", async () => {
     repoDir: "/tmp",
   });
 
-  // cd /tmp && pwd outputs the logical path, not the physical path
-  assertEquals(result.data?.attributes.stdout, "/tmp\n");
   assertEquals(result.data?.attributes.exitCode, 0);
+
+  // Check log artifacts contain /tmp (cd /tmp && pwd outputs the logical path)
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, "/tmp");
 });
 
 Deno.test("shellModel.methods.execute validates input attributes", async () => {
@@ -281,12 +306,13 @@ Deno.test("shellModel.methods.execute handles nonexistent command", async () => 
     repoDir: "/tmp",
   });
 
-  // Should return non-zero exit code and error in stderr
+  // Should return non-zero exit code and error in log stderr
   assertEquals(result.data?.attributes.exitCode !== 0, true);
-  assertStringIncludes(
-    result.data?.attributes.stderr as string,
-    "nonexistent_command_12345",
-  );
+
+  // Check log artifacts contain error about nonexistent command
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, "[stderr]");
+  assertStringIncludes(logContent, "nonexistent_command_12345");
 });
 
 Deno.test("shellModel.methods.execute records execution duration", async () => {
@@ -302,4 +328,40 @@ Deno.test("shellModel.methods.execute records execution duration", async () => {
   const durationMs = result.data?.attributes.durationMs as number;
   // Should be at least 100ms (sleep 0.1 seconds)
   assertEquals(durationMs >= 100, true);
+});
+
+Deno.test("shellModel.methods.execute returns log artifact", async () => {
+  const input = ModelInput.create({
+    name: "test-shell",
+    attributes: { run: "echo hello && echo error >&2" },
+  });
+
+  const result = await shellModel.methods.execute.execute(input, {
+    repoDir: "/tmp",
+  });
+
+  // Should have exactly one log artifact
+  assertEquals(result.logs?.length, 1);
+
+  // Log should have entries for both stdout and stderr
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, "[stdout]");
+  assertStringIncludes(logContent, "hello");
+  assertStringIncludes(logContent, "[stderr]");
+  assertStringIncludes(logContent, "error");
+});
+
+Deno.test("shellModel.methods.execute creates empty log for no output", async () => {
+  const input = ModelInput.create({
+    name: "test-shell",
+    attributes: { run: "true" }, // Command with no output
+  });
+
+  const result = await shellModel.methods.execute.execute(input, {
+    repoDir: "/tmp",
+  });
+
+  // Should still have a log artifact, but with no entries
+  assertEquals(result.logs?.length, 1);
+  assertEquals(result.logs?.[0].entryCount, 0);
 });

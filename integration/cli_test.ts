@@ -40,9 +40,11 @@ Deno.test("CLI with --version shows version", async () => {
   assertStringIncludes(stdout, "0.1.0");
 });
 
-Deno.test("CLI version command works", async () => {
+Deno.test("CLI version command works (auto-detects non-TTY for JSON)", async () => {
   const { stdout } = await runCliCommand(["version"]);
-  assertStringIncludes(stdout, "swamp");
+  // In non-TTY environment, output is auto-detected as JSON
+  const parsed = JSON.parse(stdout);
+  assertStringIncludes(parsed.version, "0.1.0");
 });
 
 Deno.test("CLI version command with --json outputs JSON", async () => {

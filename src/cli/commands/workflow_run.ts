@@ -3,6 +3,7 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import {
   type JobRunData,
   renderWorkflowRun,
+  type StepArtifactsData,
   type StepRunData,
   type WorkflowRunData,
 } from "../../presentation/output/workflow_run_output.tsx";
@@ -15,7 +16,10 @@ import {
   type ImplicitDependencyMap,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type {
+  StepRun,
+  WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -25,12 +29,54 @@ import {
 type AnyOptions = any;
 
 /**
+ * Extracts artifact data from a step's output for verbose mode.
+ * Only returns artifacts if there's actual content to display.
+ */
+function extractStepArtifacts(step: StepRun): StepArtifactsData | undefined {
+  if (step.output === undefined || step.output === null) {
+    return undefined;
+  }
+
+  const output = step.output as Record<string, unknown>;
+
+  // Shell command output: { stdout, exitCode }
+  if (
+    typeof output.stdout === "string" || typeof output.exitCode === "number"
+  ) {
+    const artifacts: StepArtifactsData = {};
+    if (output.stdout) artifacts.stdout = output.stdout as string;
+    if (output.stderr) artifacts.stderr = output.stderr as string;
+    if (typeof output.exitCode === "number") {
+      artifacts.exitCode = output.exitCode;
+    }
+
+    // Only return if there's actual content
+    return Object.keys(artifacts).length > 0 ? artifacts : undefined;
+  }
+
+  // Model method output: { type, model, method, resourceId, resourcePath, resourceAttributes }
+  if (output.type === "model_method") {
+    const attrs = output.resourceAttributes as
+      | Record<string, unknown>
+      | undefined;
+    // Only include if attributes exist and have content
+    if (attrs && Object.keys(attrs).length > 0) {
+      return { dataAttributes: attrs };
+    }
+    return undefined;
+  }
+
+  return undefined;
+}
+
+/**
  * Converts a WorkflowRun to WorkflowRunData for presentation.
  */
 function toRunData(
   run: WorkflowRun,
   path?: string,
   implicitDeps?: ImplicitDependencyMap,
+  verbose?: boolean,
 ): WorkflowRunData {
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
@@ -53,13 +99,23 @@ function toRunData(
           const stepEnd = step.completedAt?.getTime();
           const stepImplicitDeps = jobImplicitDeps?.get(step.stepName);
 
-          return {
+          const stepData: StepRunData = {
             name: step.stepName,
             status: step.status,
             error: step.error,
             duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
             implicitDependencies: stepImplicitDeps,
           };
+
+          // Include artifacts in verbose mode
+          if (verbose) {
+            const artifacts = extractStepArtifacts(step);
+            if (artifacts) {
+              stepData.artifacts = artifacts;
+            }
+          }
+
+          return stepData;
         }),
         duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,
       };
@@ -153,7 +209,12 @@ export const workflowRunCommand = new Command()
         // Get the path for the run
         const path = runRepo.getPath(workflow.id, run.id);
 
-        const data = toRunData(run, path, capturedImplicitDeps);
+        const data = toRunData(
+          run,
+          path,
+          capturedImplicitDeps,
+          ctx.verbosity === "verbose",
+        );
         renderWorkflowRun(data, ctx.outputMode);
 
         ctx.logger.debug`Workflow run completed: status=${run.status}`;

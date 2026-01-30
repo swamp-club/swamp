@@ -243,7 +243,7 @@ Deno.test("CLI: model validate errors for non-existent model", async () => {
   });
 });
 
-Deno.test("CLI: model validate interactive output shows checkmarks and summary", async () => {
+Deno.test("CLI: model validate auto-detects non-TTY and uses JSON output", async () => {
   await withTempDir(async (repoDir) => {
     const inputRepo = new YamlInputRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
@@ -255,7 +255,7 @@ Deno.test("CLI: model validate interactive output shows checkmarks and summary",
     });
     await inputRepo.save(modelType, input);
 
-    // Run without --json to get interactive output
+    // Run without --json - should auto-detect non-TTY and use JSON output
     const result = await runCliCommand(
       [
         "model",
@@ -273,10 +273,11 @@ Deno.test("CLI: model validate interactive output shows checkmarks and summary",
       `Command should succeed. stderr: ${result.stderr}`,
     );
 
-    // Verify interactive output contains expected elements
-    assertStringIncludes(result.stdout, "interactive-test");
-    assertStringIncludes(result.stdout, "swamp/echo");
-    assertStringIncludes(result.stdout, "PASSED");
+    // Verify JSON output is produced due to auto-detection
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.modelName, "interactive-test");
+    assertEquals(output.type, "swamp/echo");
+    assertEquals(output.passed, true);
   });
 });
 
@@ -400,7 +401,7 @@ Deno.test("CLI: model validate with no args errors when no models found", async 
   });
 });
 
-Deno.test("CLI: model validate with no args interactive output shows all models", async () => {
+Deno.test("CLI: model validate with no args auto-detects non-TTY and uses JSON output", async () => {
   await withTempDir(async (repoDir) => {
     const inputRepo = new YamlInputRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
@@ -417,7 +418,7 @@ Deno.test("CLI: model validate with no args interactive output shows all models"
     await inputRepo.save(modelType, input1);
     await inputRepo.save(modelType, input2);
 
-    // Run without --json to get interactive output
+    // Run without --json - should auto-detect non-TTY and use JSON output
     const result = await runCliCommand(
       [
         "model",
@@ -434,11 +435,11 @@ Deno.test("CLI: model validate with no args interactive output shows all models"
       `Command should succeed. stderr: ${result.stderr}`,
     );
 
-    // Verify interactive output contains expected elements
-    assertStringIncludes(result.stdout, "Validating all models...");
-    assertStringIncludes(result.stdout, "interactive-all-1");
-    assertStringIncludes(result.stdout, "interactive-all-2");
-    assertStringIncludes(result.stdout, "2/2 models passed");
-    assertStringIncludes(result.stdout, "PASSED");
+    // Verify JSON output is produced due to auto-detection
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.totalPassed, 2);
+    assertEquals(output.totalFailed, 0);
+    assertEquals(output.passed, true);
+    assertEquals(output.models.length, 2);
   });
 });

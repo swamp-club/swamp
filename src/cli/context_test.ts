@@ -9,10 +9,11 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 // Initialize logging once before tests run
 await initializeLogging({ debugLogs: false });
 
-Deno.test("createContext returns interactive mode by default", () => {
+Deno.test("createContext returns json mode in non-TTY environment", () => {
+  // Tests run in a non-TTY environment, so auto-detection defaults to JSON
   const options: GlobalOptions = {};
   const context = createContext(options);
-  assertEquals(context.outputMode, "interactive");
+  assertEquals(context.outputMode, "json");
 });
 
 Deno.test("createContext returns json mode when json option is true", () => {
@@ -60,9 +61,10 @@ Deno.test("createContext uses custom logger name when provided", () => {
   assertEquals(typeof context.logger.error, "function");
 });
 
-Deno.test("getOutputModeFromArgs returns interactive by default", () => {
-  assertEquals(getOutputModeFromArgs([]), "interactive");
-  assertEquals(getOutputModeFromArgs(["model", "create"]), "interactive");
+Deno.test("getOutputModeFromArgs returns json in non-TTY environment", () => {
+  // Tests run in a non-TTY environment, so auto-detection defaults to JSON
+  assertEquals(getOutputModeFromArgs([]), "json");
+  assertEquals(getOutputModeFromArgs(["model", "create"]), "json");
 });
 
 Deno.test("getOutputModeFromArgs returns json when --json is present", () => {

@@ -4,18 +4,14 @@ import {
   renderModelOutputGet,
 } from "../../presentation/output/model_output_get_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import {
-  createModelOutputId,
-  type ModelOutputId,
-} from "../../domain/models/model_output.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   findInputByIdGlobal,
-  isUuid,
+  isPartialId,
+  matchByPartialId,
 } from "../../domain/models/model_lookup.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
@@ -23,29 +19,6 @@ import {
 // here is the pragmatic workaround for Cliffy's type inference limitations.
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Finds an output by ID across all types and methods.
- */
-async function findOutputByIdGlobal(
-  outputRepo: YamlOutputRepository,
-  id: ModelOutputId,
-): Promise<
-  | {
-    output: NonNullable<Awaited<ReturnType<YamlOutputRepository["findById"]>>>;
-    type: ModelType;
-    method: string;
-  }
-  | null
-> {
-  const allOutputs = await outputRepo.findAllGlobal();
-  for (const result of allOutputs) {
-    if (result.output.id === id) {
-      return result;
-    }
-  }
-  return null;
-}
 
 export const modelOutputGetCommand = new Command()
   .name("get")
@@ -62,14 +35,17 @@ export const modelOutputGetCommand = new Command()
 
     let outputData: ModelOutputGetData;
 
-    if (isUuid(outputIdOrModelName)) {
-      // Try to find by output ID first
-      ctx.logger.debug`Looking up output by ID: ${outputIdOrModelName}`;
-      const outputId = createModelOutputId(outputIdOrModelName);
-      const result = await findOutputByIdGlobal(outputRepo, outputId);
+    if (isPartialId(outputIdOrModelName)) {
+      // Try to find by output ID (partial or full) using partial ID matching
+      ctx.logger.debug`Looking up output by partial ID: ${outputIdOrModelName}`;
+      const allOutputs = await outputRepo.findAllGlobal();
+      const matchResult = matchByPartialId(
+        allOutputs.map((o) => ({ id: o.output.id, item: o })),
+        outputIdOrModelName,
+      );
 
-      if (result) {
-        const { output, type } = result;
+      if (matchResult.status === "found") {
+        const { output, type } = matchResult.match;
 
         // Try to get model name
         let modelName: string | undefined;
@@ -105,8 +81,13 @@ export const modelOutputGetCommand = new Command()
           artifacts: output.artifacts,
           error: output.error,
         };
+      } else if (matchResult.status === "ambiguous") {
+        throw new UserError(
+          `Ambiguous ID prefix "${outputIdOrModelName}" matches:\n` +
+            matchResult.matches.map((m) => `  ${m.id}`).join("\n"),
+        );
       } else {
-        // Maybe it's a model input ID - get the latest output for that model
+        // not_found - try as model input ID
         ctx.logger.debug`Output not found, trying as model input ID`;
         const inputResult = await findInputByIdGlobal(
           inputRepo,

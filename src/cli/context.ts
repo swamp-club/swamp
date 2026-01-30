@@ -23,12 +23,31 @@ function getVerbosity(options: GlobalOptions): Verbosity {
   return "normal";
 }
 
+/**
+ * Checks if stdin is a TTY (terminal).
+ * Returns false if stdin is not a terminal (e.g., piped input).
+ */
+function isStdinTty(): boolean {
+  try {
+    return Deno.stdin.isTerminal();
+  } catch {
+    return false;
+  }
+}
+
 export function createContext(
   options: GlobalOptions,
   loggerName: string = "cli",
 ): CommandContext {
+  // Auto-detect output mode: use JSON if explicitly requested or if not a TTY
+  const outputMode: OutputMode = options.json
+    ? "json"
+    : isStdinTty()
+    ? "interactive"
+    : "json";
+
   return {
-    outputMode: options.json ? "json" : "interactive",
+    outputMode,
     verbosity: getVerbosity(options),
     logger: getSwampLogger(loggerName),
   };
@@ -37,7 +56,11 @@ export function createContext(
 /**
  * Determines the output mode from raw CLI arguments.
  * Used for error handling before the CLI has fully parsed options.
+ * Falls back to JSON mode if stdin is not a TTY.
  */
 export function getOutputModeFromArgs(args: string[]): OutputMode {
-  return args.includes("--json") ? "json" : "interactive";
+  if (args.includes("--json")) {
+    return "json";
+  }
+  return isStdinTty() ? "interactive" : "json";
 }

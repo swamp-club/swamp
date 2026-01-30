@@ -4,6 +4,16 @@ import { Box, Text } from "ink";
 import { render } from "ink-testing-library";
 import type { OutputMode } from "./output.tsx";
 
+/**
+ * Artifact data included when --verbose is set.
+ */
+export interface StepArtifactsData {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  dataAttributes?: Record<string, unknown>;
+}
+
 export interface StepRunData {
   name: string;
   status: "pending" | "running" | "succeeded" | "failed" | "skipped";
@@ -11,6 +21,10 @@ export interface StepRunData {
   duration?: number;
   /** Dependencies inferred from ${{ }} expressions */
   implicitDependencies?: string[];
+  /** Output ID if this step produced an output (for model methods) */
+  outputId?: string;
+  /** Step artifacts included when --verbose is set */
+  artifacts?: StepArtifactsData;
 }
 
 export interface JobRunData {

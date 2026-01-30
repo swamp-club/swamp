@@ -192,3 +192,84 @@ Deno.test("YamlWorkflowRunRepository preserves error information", async () => {
     );
   });
 });
+
+function createTestWorkflow2(): Workflow {
+  return Workflow.create({
+    id: "660e8400-e29b-41d4-a716-446655440001",
+    name: "test-workflow-2",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.shell("echo", { args: ["world"] }),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("YamlWorkflowRunRepository.findAllGlobal returns runs from multiple workflows", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow1 = createTestWorkflow();
+    const workflow2 = createTestWorkflow2();
+
+    // Create runs for workflow 1
+    const run1 = WorkflowRun.create(workflow1);
+    run1.start();
+    await repo.save(workflow1.id, run1);
+
+    // Create runs for workflow 2
+    const run2 = WorkflowRun.create(workflow2);
+    run2.start();
+    await repo.save(workflow2.id, run2);
+
+    const allRuns = await repo.findAllGlobal();
+    assertEquals(allRuns.length, 2);
+
+    // Verify both workflows are represented
+    const workflowIds = allRuns.map((r) => r.workflowId);
+    assertEquals(workflowIds.includes(workflow1.id), true);
+    assertEquals(workflowIds.includes(workflow2.id), true);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findAllGlobal returns empty for no workflows", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+
+    const allRuns = await repo.findAllGlobal();
+    assertEquals(allRuns, []);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findAllGlobal sorts by startedAt descending", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow1 = createTestWorkflow();
+    const workflow2 = createTestWorkflow2();
+
+    // Create first run (older)
+    const run1 = WorkflowRun.create(workflow1);
+    run1.start();
+    await repo.save(workflow1.id, run1);
+
+    // Small delay to ensure different timestamps
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Create second run (newer)
+    const run2 = WorkflowRun.create(workflow2);
+    run2.start();
+    await repo.save(workflow2.id, run2);
+
+    const allRuns = await repo.findAllGlobal();
+    assertEquals(allRuns.length, 2);
+
+    // Most recent should be first
+    assertEquals(allRuns[0].run.id, run2.id);
+    assertEquals(allRuns[1].run.id, run1.id);
+  });
+});

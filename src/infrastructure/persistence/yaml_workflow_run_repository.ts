@@ -89,6 +89,42 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return runs[0] ?? null;
   }
 
+  /**
+   * Finds all workflow runs across all workflows.
+   */
+  async findAllGlobal(): Promise<
+    { run: WorkflowRun; workflowId: WorkflowId }[]
+  > {
+    const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
+    const workflowsDir = join(this.repoDir, "workflows");
+
+    try {
+      for await (const entry of Deno.readDir(workflowsDir)) {
+        if (entry.isDirectory && entry.name.startsWith("workflow-")) {
+          // Extract workflow ID from directory name (format: workflow-{uuid})
+          const workflowIdStr = entry.name.slice("workflow-".length);
+          const workflowId = workflowIdStr as WorkflowId;
+          const runs = await this.findAllByWorkflowId(workflowId);
+          for (const run of runs) {
+            results.push({ run, workflowId });
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    // Sort by startedAt descending (most recent first)
+    return results.sort((a, b) => {
+      const aTime = a.run.startedAt?.getTime() ?? 0;
+      const bTime = b.run.startedAt?.getTime() ?? 0;
+      return bTime - aTime;
+    });
+  }
+
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const dir = this.getRunsDir(workflowId);
     await ensureDir(dir);

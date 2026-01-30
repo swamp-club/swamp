@@ -286,6 +286,11 @@ export class DefaultStepExecutor implements StepExecutor {
         }
       }
 
+      // If no resource but we have data, use data attributes for verbose output
+      if (!result.resource && result.data) {
+        resourceAttributes = result.data.attributes;
+      }
+
       // Handle file artifact persistence
       if (result.file) {
         if (result.deleteFile) {
