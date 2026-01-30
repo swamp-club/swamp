@@ -1,0 +1,214 @@
+import { z } from "zod";
+import { ModelType } from "../../model_type.ts";
+import { ModelResource } from "../../model_resource.ts";
+import { computeChecksum, ModelFile } from "../../model_file.ts";
+import {
+  defineModel,
+  type MethodContext,
+  type MethodResult,
+  type ModelDefinition,
+} from "../../model.ts";
+import type { ModelInput } from "../../model_input.ts";
+
+/**
+ * Schema for curl model input attributes.
+ */
+export const CurlInputAttributesSchema = z.object({
+  /** URL to download */
+  url: z.string().url(),
+  /** HTTP method (default: GET) */
+  method: z.enum(["GET", "HEAD", "POST", "PUT", "DELETE"]).default("GET"),
+  /** Optional HTTP headers */
+  headers: z.record(z.string(), z.string()).optional(),
+  /** Optional filename for the downloaded file (defaults to URL basename) */
+  outputFilename: z.string().optional(),
+  /** Whether to follow redirects (default: true) */
+  followRedirects: z.boolean().default(true),
+  /** Request timeout in milliseconds */
+  timeout: z.number().int().positive().optional(),
+});
+
+/**
+ * Type for curl model input attributes.
+ */
+export type CurlInputAttributes = z.infer<typeof CurlInputAttributesSchema>;
+
+/**
+ * Schema for curl model resource attributes.
+ */
+export const CurlResourceAttributesSchema = z.object({
+  /** The URL that was downloaded */
+  url: z.string().url(),
+  /** HTTP status code */
+  statusCode: z.number().int(),
+  /** Content-Type header from the response */
+  contentType: z.string(),
+  /** Content-Length from response (or actual size) */
+  contentLength: z.number().int().nonnegative(),
+  /** Timestamp when download completed */
+  downloadedAt: z.string().datetime(),
+  /** Duration of the download in milliseconds */
+  durationMs: z.number().int().nonnegative(),
+  /** Reference to the file artifact containing the downloaded content */
+  fileId: z.string().uuid(),
+});
+
+/**
+ * Type for curl model resource attributes.
+ */
+export type CurlResourceAttributes = z.infer<
+  typeof CurlResourceAttributesSchema
+>;
+
+/**
+ * The curl model type identifier.
+ */
+export const CURL_MODEL_TYPE = ModelType.create("command/curl");
+
+/**
+ * Extracts filename from URL or Content-Disposition header.
+ */
+function extractFilename(url: string, headers: Headers): string {
+  // Check Content-Disposition header first
+  const disposition = headers.get("content-disposition");
+  if (disposition) {
+    const match = disposition.match(/filename[*]?=['"]?([^'"\s;]+)['"]?/i);
+    if (match) {
+      return match[1];
+    }
+  }
+
+  // Fall back to URL path
+  try {
+    const urlObj = new URL(url);
+    const pathname = urlObj.pathname;
+    const basename = pathname.split("/").pop();
+    if (basename && basename.length > 0) {
+      return basename;
+    }
+  } catch {
+    // URL parsing failed
+  }
+
+  // Default filename
+  return "download";
+}
+
+/**
+ * Executes the "download" method for the curl model.
+ *
+ * Downloads the URL and returns both resource metadata and file artifact.
+ */
+async function executeDownload(
+  input: ModelInput,
+  _context: MethodContext,
+): Promise<MethodResult> {
+  const attrs = CurlInputAttributesSchema.parse(input.attributes);
+  const startTime = Date.now();
+
+  // Build fetch options
+  const fetchOptions: RequestInit = {
+    method: attrs.method,
+    redirect: attrs.followRedirects ? "follow" : "manual",
+  };
+
+  // Add headers if provided
+  if (attrs.headers) {
+    fetchOptions.headers = new Headers(
+      Object.entries(attrs.headers) as [string, string][],
+    );
+  }
+
+  // Add timeout via AbortController if specified
+  let abortController: AbortController | undefined;
+  if (attrs.timeout) {
+    abortController = new AbortController();
+    fetchOptions.signal = abortController.signal;
+    setTimeout(() => abortController?.abort(), attrs.timeout);
+  }
+
+  // Perform the fetch
+  const response = await fetch(attrs.url, fetchOptions);
+
+  if (!response.ok) {
+    // Consume the response body to avoid resource leak
+    await response.body?.cancel();
+    throw new Error(
+      `HTTP request failed: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  // Read the response body
+  const content = new Uint8Array(await response.arrayBuffer());
+  const endTime = Date.now();
+  const durationMs = endTime - startTime;
+
+  // Determine filename
+  const filename = attrs.outputFilename ??
+    extractFilename(attrs.url, response.headers);
+
+  // Get content type
+  const contentType = response.headers.get("content-type") ??
+    "application/octet-stream";
+
+  // Compute checksum
+  const checksum = await computeChecksum(content);
+
+  // Create file artifact
+  const fileId = crypto.randomUUID();
+  const file = ModelFile.create({
+    id: fileId,
+    filename,
+    contentType,
+    size: content.length,
+    checksum,
+  });
+
+  // Create the resource with download metadata
+  const resource = ModelResource.create({
+    id: input.id,
+    attributes: {
+      url: attrs.url,
+      statusCode: response.status,
+      contentType,
+      contentLength: content.length,
+      downloadedAt: new Date().toISOString(),
+      durationMs,
+      fileId,
+    },
+  });
+
+  return {
+    resource,
+    file: {
+      metadata: file,
+      content,
+    },
+  };
+}
+
+/**
+ * The curl model definition.
+ *
+ * A model that downloads files via HTTP and stores them as file artifacts.
+ * Returns both resource metadata (URL, status, timing) and the actual file content.
+ *
+ * Self-registers with the global model registry when this module is imported.
+ */
+export const curlModel: ModelDefinition<
+  typeof CurlInputAttributesSchema,
+  typeof CurlResourceAttributesSchema
+> = defineModel({
+  type: CURL_MODEL_TYPE,
+  version: 1,
+  inputAttributesSchema: CurlInputAttributesSchema,
+  resourceAttributesSchema: CurlResourceAttributesSchema,
+  methods: {
+    download: {
+      description:
+        "Download a file from the URL and store it as a file artifact",
+      inputAttributesSchema: CurlInputAttributesSchema,
+      execute: executeDownload,
+    },
+  },
+});

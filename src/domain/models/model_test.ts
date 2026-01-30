@@ -137,8 +137,8 @@ Deno.test("ModelDefinition method can execute", async () => {
   });
 
   const result = await model.methods.write.execute(input, { repoDir: "/tmp" });
-  assertEquals(result.resource.attributes.message, "hello world");
-  assertEquals(typeof result.resource.attributes.timestamp, "string");
+  assertEquals(result.resource?.attributes.message, "hello world");
+  assertEquals(typeof result.resource?.attributes.timestamp, "string");
 });
 
 // defineModel tests use unique type names to avoid conflicts with other tests

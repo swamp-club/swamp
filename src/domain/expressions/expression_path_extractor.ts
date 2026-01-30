@@ -6,9 +6,9 @@ import type { DependencyType } from "./dependency_extractor.ts";
 export interface ExpressionPathReference {
   /** The model reference (name or UUID) */
   modelRef: string;
-  /** Whether the reference is to input or resource data */
+  /** The artifact type (input, resource, data, file, log, execution) */
   type: DependencyType;
-  /** The path segments after input/resource (e.g., ["attributes", "VpcId"]) */
+  /** The path segments after the artifact type (e.g., ["attributes", "VpcId"]) */
   path: string[];
   /** The full path string (e.g., "resource.attributes.VpcId") */
   fullPath: string;
@@ -18,14 +18,14 @@ export interface ExpressionPathReference {
 
 /**
  * Pattern to match model references with full paths in CEL expressions.
- * Matches: model.<name-or-uuid>.(input|resource)(.<property>|[<index>])*
+ * Matches: model.<name-or-uuid>.(input|resource|data|file|log|execution)(.<property>|[<index>])*
  *
  * Group 1: model name or UUID
- * Group 2: "input" or "resource"
+ * Group 2: artifact type
  * Group 3: remaining path (property accesses and array indices)
  */
 const MODEL_PATH_PATTERN =
-  /model\.([a-zA-Z0-9_-]+)\.(input|resource)((?:\.[a-zA-Z0-9_]+|\[\d+\])*)/g;
+  /model\.([a-zA-Z0-9_-]+)\.(input|resource|data|file|log|execution)((?:\.[a-zA-Z0-9_]+|\[\d+\])*)/g;
 
 /**
  * Pattern to match self references with full paths.

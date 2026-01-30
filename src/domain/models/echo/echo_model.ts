@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
-import { ModelResource } from "../model_resource.ts";
+import { ModelData } from "../model_data.ts";
 import {
   defineModel,
   type MethodContext,
@@ -22,19 +22,17 @@ export const EchoInputAttributesSchema = z.object({
 export type EchoInputAttributes = z.infer<typeof EchoInputAttributesSchema>;
 
 /**
- * Schema for echo model resource attributes.
+ * Schema for echo model data attributes.
  */
-export const EchoResourceAttributesSchema = z.object({
+export const EchoDataAttributesSchema = z.object({
   message: z.string(),
   timestamp: z.string().datetime(),
 });
 
 /**
- * Type for echo model resource attributes.
+ * Type for echo model data attributes.
  */
-export type EchoResourceAttributes = z.infer<
-  typeof EchoResourceAttributesSchema
->;
+export type EchoDataAttributes = z.infer<typeof EchoDataAttributesSchema>;
 
 /**
  * The echo model type identifier.
@@ -44,7 +42,7 @@ export const ECHO_MODEL_TYPE = ModelType.create("swamp/echo");
 /**
  * Executes the "write" method for the echo model.
  *
- * Takes the message from the input and writes it to a resource
+ * Takes the message from the input and writes it to a data artifact
  * along with a timestamp.
  */
 function executeWrite(
@@ -54,8 +52,8 @@ function executeWrite(
   // Validate input attributes
   const attrs = EchoInputAttributesSchema.parse(input.attributes);
 
-  // Create the resource with message and timestamp
-  const resource = ModelResource.create({
+  // Create the data artifact with message and timestamp
+  const data = ModelData.create({
     id: input.id, // Use same ID as input for consistency
     attributes: {
       message: attrs.message,
@@ -63,28 +61,30 @@ function executeWrite(
     },
   });
 
-  return Promise.resolve({ resource });
+  return Promise.resolve({ data });
 }
 
 /**
  * The echo model definition.
  *
  * A simple model that takes a string message input and writes it
- * to a resource with a timestamp.
+ * to a data artifact with a timestamp.
  *
  * Self-registers with the global model registry when this module is imported.
  */
 export const echoModel: ModelDefinition<
   typeof EchoInputAttributesSchema,
-  typeof EchoResourceAttributesSchema
+  never,
+  typeof EchoDataAttributesSchema
 > = defineModel({
   type: ECHO_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: EchoInputAttributesSchema,
-  resourceAttributesSchema: EchoResourceAttributesSchema,
+  dataAttributesSchema: EchoDataAttributesSchema,
   methods: {
     write: {
-      description: "Write the input message to a resource with a timestamp",
+      description:
+        "Write the input message to a data artifact with a timestamp",
       inputAttributesSchema: EchoInputAttributesSchema,
       execute: executeWrite,
     },
