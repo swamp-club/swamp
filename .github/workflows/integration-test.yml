@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   integration-test:
-    name: Integration Test
+    name: System Test
     runs-on: ubuntu-latest
     
     steps:
