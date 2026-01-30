@@ -62,8 +62,8 @@ jobs:
           # Model 4: Final report referencing other models
           ../swamp model create keeb/shell final-report-model --json > /tmp/final.json
           FINAL_ID=$(cat /tmp/final.json | jq -r '.id')
-          MODEL_DOWNLOAD_EXPR=$(printf '%s' '$' '{{ model.download-model.data.attributes.command }}')
-          MODEL_SUMMARY_EXPR=$(printf '%s' '$' '{{ model.summary-model.data.attributes.command }}')
+          MODEL_DOWNLOAD_EXPR=$(printf '%s' '$' '{{ model.download-model.input.attributes.run }}')
+          MODEL_SUMMARY_EXPR=$(printf '%s' '$' '{{ model.summary-model.input.attributes.run }}')
           printf 'id: %s\nname: final-report-model\nversion: 1\ntags: {}\nattributes:\n  run: "echo '\''Final Report - Download: %s | Process result available | Summary: %s'\''"\n  workingDir: "/tmp"\n' "${FINAL_ID}" "${MODEL_DOWNLOAD_EXPR}" "${MODEL_SUMMARY_EXPR}" > "inputs/keeb/shell/${FINAL_ID}.yaml"
 
           # Model 5: Mermaid diagram generator (will consume workflow execution)
