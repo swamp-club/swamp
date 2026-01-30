@@ -1,0 +1,352 @@
+import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { SymlinkRepoIndexService } from "./symlink_repo_index_service.ts";
+import { YamlInputRepository } from "../persistence/yaml_input_repository.ts";
+import { YamlWorkflowRepository } from "../persistence/yaml_workflow_repository.ts";
+import { YamlWorkflowRunRepository } from "../persistence/yaml_workflow_run_repository.ts";
+import { ModelInput } from "../../domain/models/model_input.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  createModelCreated,
+  createModelDeleted,
+} from "../../domain/events/types.ts";
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-index-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+async function setupRepoDir(dir: string): Promise<void> {
+  // Create standard data directory structure
+  const subdirs = [
+    "data/inputs",
+    "data/resources",
+    "data/data",
+    "data/outputs",
+    "data/workflows",
+    "data/workflow-runs",
+    "data/logs",
+    "data/files",
+    "models",
+    "workflows",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(dir, subdir));
+  }
+}
+
+function createIndexService(dir: string) {
+  const inputRepo = new YamlInputRepository(dir);
+  const workflowRepo = new YamlWorkflowRepository(dir);
+  const workflowRunRepo = new YamlWorkflowRunRepository(dir);
+
+  return {
+    indexService: new SymlinkRepoIndexService({
+      repoDir: dir,
+      inputRepo,
+      workflowRepo,
+      workflowRunRepo,
+    }),
+    inputRepo,
+    workflowRepo,
+    workflowRunRepo,
+  };
+}
+
+Deno.test("SymlinkRepoIndexService.handleModelCreated creates model directory", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, inputRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+    const input = ModelInput.create({ name: "my-test-model" });
+    await inputRepo.save(type, input);
+
+    const event = createModelCreated(type.normalized, input.id, input.name);
+    await indexService.handleModelCreated(event);
+
+    // Check that the model directory was created
+    const modelDir = join(dir, "models", "my-test-model");
+    const stat = await Deno.stat(modelDir);
+    assertEquals(stat.isDirectory, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.handleModelCreated creates input.yaml symlink", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, inputRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+    const input = ModelInput.create({ name: "my-model" });
+    await inputRepo.save(type, input);
+
+    const event = createModelCreated(type.normalized, input.id, input.name);
+    await indexService.handleModelCreated(event);
+
+    // Check that input.yaml symlink exists and points to correct file
+    const symlinkPath = join(dir, "models", "my-model", "input.yaml");
+    const linkInfo = await Deno.lstat(symlinkPath);
+    assertEquals(linkInfo.isSymlink, true);
+
+    // Read through symlink should work
+    const content = await Deno.readTextFile(symlinkPath);
+    assertEquals(content.includes("my-model"), true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.handleModelDeleted removes model directory", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, inputRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+    const input = ModelInput.create({ name: "delete-me" });
+    await inputRepo.save(type, input);
+
+    // Create the model view
+    const createEvent = createModelCreated(
+      type.normalized,
+      input.id,
+      input.name,
+    );
+    await indexService.handleModelCreated(createEvent);
+
+    // Verify it exists
+    const modelDir = join(dir, "models", "delete-me");
+    const stat = await Deno.stat(modelDir);
+    assertEquals(stat.isDirectory, true);
+
+    // Delete it
+    const deleteEvent = createModelDeleted(
+      type.normalized,
+      input.id,
+      input.name,
+    );
+    await indexService.handleModelDeleted(deleteEvent);
+
+    // Verify it's gone
+    let exists = true;
+    try {
+      await Deno.stat(modelDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertEquals(exists, false);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.rebuildAll indexes all models", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, inputRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    // Create multiple models
+    const model1 = ModelInput.create({ name: "model-one" });
+    const model2 = ModelInput.create({ name: "model-two" });
+    await inputRepo.save(type, model1);
+    await inputRepo.save(type, model2);
+
+    // Rebuild all
+    const result = await indexService.rebuildAll();
+
+    assertEquals(result.modelsIndexed, 2);
+
+    // Verify both model directories exist
+    const dir1 = join(dir, "models", "model-one");
+    const dir2 = join(dir, "models", "model-two");
+    const stat1 = await Deno.stat(dir1);
+    const stat2 = await Deno.stat(dir2);
+    assertEquals(stat1.isDirectory, true);
+    assertEquals(stat2.isDirectory, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.rebuildAll removes stale indexes", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, inputRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    // Create a model and its index
+    const model = ModelInput.create({ name: "my-model" });
+    await inputRepo.save(type, model);
+
+    const event = createModelCreated(type.normalized, model.id, model.name);
+    await indexService.handleModelCreated(event);
+
+    // Create a stale directory that shouldn't exist after rebuild
+    // (represents a model that was deleted from data but index wasn't updated)
+    const staleDir = join(dir, "models", "stale-model");
+    await ensureDir(staleDir);
+
+    // Rebuild - should remove stale-model since it doesn't exist in data
+    await indexService.rebuildAll();
+
+    // Stale directory should be gone
+    let exists = true;
+    try {
+      await Deno.stat(staleDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertEquals(exists, false);
+
+    // But the real model should still be indexed
+    const realDir = join(dir, "models", "my-model");
+    const stat = await Deno.stat(realDir);
+    assertEquals(stat.isDirectory, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.verify detects broken symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    // Create a model directory with a broken symlink
+    const modelDir = join(dir, "models", "broken-model");
+    await ensureDir(modelDir);
+    await Deno.symlink(
+      "../data/inputs/nonexistent/file.yaml",
+      join(modelDir, "input.yaml"),
+    );
+
+    const result = await indexService.verify();
+
+    assertEquals(result.valid, false);
+    assertEquals(result.brokenLinks.length, 1);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.verify returns valid for good symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, inputRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    // Create a model with valid symlinks
+    const model = ModelInput.create({ name: "good-model" });
+    await inputRepo.save(type, model);
+
+    const event = createModelCreated(type.normalized, model.id, model.name);
+    await indexService.handleModelCreated(event);
+
+    const result = await indexService.verify();
+
+    assertEquals(result.valid, true);
+    assertEquals(result.brokenLinks.length, 0);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.prune removes broken symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    // Create a model directory with a broken symlink
+    const modelDir = join(dir, "models", "broken-model");
+    await ensureDir(modelDir);
+    const brokenLink = join(modelDir, "input.yaml");
+    await Deno.symlink(
+      "../data/inputs/nonexistent/file.yaml",
+      brokenLink,
+    );
+
+    const result = await indexService.prune();
+
+    assertEquals(result.removedLinks.length, 1);
+
+    // Verify the symlink is gone
+    let exists = true;
+    try {
+      await Deno.lstat(brokenLink);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertEquals(exists, false);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService indexes workflows", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, workflowRepo } = createIndexService(dir);
+
+    // Create a workflow
+    const step = Step.create({
+      name: "step1",
+      task: StepTask.shell("echo hello"),
+    });
+    const job = Job.create({ name: "job1", steps: [step] });
+    const workflow = Workflow.create({ name: "my-workflow", jobs: [job] });
+    await workflowRepo.save(workflow);
+
+    // Rebuild to index
+    const result = await indexService.rebuildAll();
+
+    assertEquals(result.workflowsIndexed, 1);
+
+    // Verify workflow directory exists
+    const workflowDir = join(dir, "workflows", "my-workflow");
+    const stat = await Deno.stat(workflowDir);
+    assertEquals(stat.isDirectory, true);
+
+    // Verify workflow.yaml symlink exists
+    const symlinkPath = join(workflowDir, "workflow.yaml");
+    const linkInfo = await Deno.lstat(symlinkPath);
+    assertEquals(linkInfo.isSymlink, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService indexes workflow runs with latest symlink", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, workflowRepo, workflowRunRepo } = createIndexService(
+      dir,
+    );
+
+    // Create a workflow
+    const step = Step.create({
+      name: "step1",
+      task: StepTask.shell("echo hello"),
+    });
+    const job = Job.create({ name: "job1", steps: [step] });
+    const workflow = Workflow.create({ name: "my-workflow", jobs: [job] });
+    await workflowRepo.save(workflow);
+
+    // Create a workflow run
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await workflowRunRepo.save(workflow.id, run);
+
+    // Rebuild to index
+    const result = await indexService.rebuildAll();
+
+    assertEquals(result.workflowRunsIndexed, 1);
+
+    // Verify runs directory exists
+    const runsDir = join(dir, "workflows", "my-workflow", "runs");
+    const runsDirStat = await Deno.stat(runsDir);
+    assertEquals(runsDirStat.isDirectory, true);
+
+    // Verify latest symlink exists
+    const latestPath = join(runsDir, "latest");
+    const latestInfo = await Deno.lstat(latestPath);
+    assertEquals(latestInfo.isSymlink, true);
+  });
+});

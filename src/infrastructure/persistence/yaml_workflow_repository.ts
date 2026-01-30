@@ -10,6 +10,12 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
+import type { EventBus } from "../../domain/events/event_bus.ts";
+import {
+  createWorkflowCreated,
+  createWorkflowDeleted,
+  createWorkflowUpdated,
+} from "../../domain/events/types.ts";
 
 /**
  * YAML-based implementation of WorkflowRepository.
@@ -18,7 +24,10 @@ import {
  * {repoDir}/data/workflows/workflow-{uuid}.yaml
  */
 export class YamlWorkflowRepository implements WorkflowRepository {
-  constructor(private readonly repoDir: string) {}
+  constructor(
+    private readonly repoDir: string,
+    private readonly eventBus?: EventBus,
+  ) {}
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
     const path = this.getPath(id);
@@ -70,17 +79,58 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     await ensureDir(dir);
 
     const path = this.getPath(workflow.id);
+
+    // Check if this is a new workflow or an update
+    const isNew = !(await this.exists(path));
+
     const data = workflow.toData();
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await Deno.writeTextFile(path, content);
+
+    // Emit event
+    if (this.eventBus) {
+      const event = isNew
+        ? createWorkflowCreated(workflow.id, workflow.name)
+        : createWorkflowUpdated(workflow.id, workflow.name);
+      await this.eventBus.publish(event);
+    }
+  }
+
+  /**
+   * Checks if a file exists.
+   */
+  private async exists(path: string): Promise<boolean> {
+    try {
+      await Deno.stat(path);
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async delete(id: WorkflowId): Promise<void> {
     const path = this.getPath(id);
+
+    // Get the workflow name before deleting for the event
+    let workflowName: string | undefined;
+    if (this.eventBus) {
+      const workflow = await this.findById(id);
+      workflowName = workflow?.name;
+    }
+
     try {
       await Deno.remove(path);
+
+      // Emit event if we had a name
+      if (this.eventBus && workflowName) {
+        const event = createWorkflowDeleted(id, workflowName);
+        await this.eventBus.publish(event);
+      }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;

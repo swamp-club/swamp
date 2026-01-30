@@ -1,0 +1,169 @@
+/**
+ * RepoIndexService maintains logical views of the repository data.
+ *
+ * Logical views are symlinked directories that provide human/agent-friendly
+ * exploration of the data directory, organized by model name and workflow name
+ * rather than by type and UUID.
+ */
+
+import type {
+  ModelCreated,
+  ModelDeleted,
+  ModelUpdated,
+  WorkflowCreated,
+  WorkflowDeleted,
+  WorkflowRunCompleted,
+  WorkflowRunFailed,
+  WorkflowRunStarted,
+  WorkflowUpdated,
+} from "../events/types.ts";
+
+/**
+ * Result of a verify operation.
+ */
+export interface VerifyResult {
+  valid: boolean;
+  brokenLinks: string[];
+  missingTargets: string[];
+}
+
+/**
+ * Result of a prune operation.
+ */
+export interface PruneResult {
+  removedLinks: string[];
+}
+
+/**
+ * Result of a rebuild operation.
+ */
+export interface RebuildResult {
+  modelsIndexed: number;
+  workflowsIndexed: number;
+  workflowRunsIndexed: number;
+}
+
+/**
+ * RepoIndexService interface for maintaining logical repository views.
+ *
+ * The service creates and maintains two logical view directories:
+ *
+ * Model View (`/models/{model-name}/`):
+ * ```
+ * input.yaml      → ../data/inputs/{type}/{id}.yaml
+ * resource.yaml   → ../data/resources/{type}/{id}.yaml
+ * data.yaml       → ../data/data/{type}/{id}.yaml
+ * logs/           → ../data/logs/{type}/{id}/
+ * files/          → ../data/files/{type}/{id}/
+ * outputs/
+ *   {method}/     → ../data/outputs/{type}/{method}/
+ * ```
+ *
+ * Workflow View (`/workflows/{workflow-name}/`):
+ * ```
+ * workflow.yaml   → ../data/workflows/workflow-{id}.yaml
+ * runs/
+ *   latest/       → {latest-timestamp}/
+ *   {timestamp}/
+ *     run.yaml    → ../data/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
+ *     steps/
+ *       {step-name}/
+ *         output.yaml → symlink to step output
+ *         model/      → ../models/{model-name}/
+ * ```
+ */
+export interface RepoIndexService {
+  // ============================================================================
+  // Model Event Handlers
+  // ============================================================================
+
+  /**
+   * Handles a ModelCreated event.
+   * Creates the model view directory with symlinks.
+   */
+  handleModelCreated(event: ModelCreated): Promise<void>;
+
+  /**
+   * Handles a ModelUpdated event.
+   * Updates symlinks for changed artifacts.
+   */
+  handleModelUpdated(event: ModelUpdated): Promise<void>;
+
+  /**
+   * Handles a ModelDeleted event.
+   * Removes the model view directory.
+   */
+  handleModelDeleted(event: ModelDeleted): Promise<void>;
+
+  // ============================================================================
+  // Workflow Event Handlers
+  // ============================================================================
+
+  /**
+   * Handles a WorkflowCreated event.
+   * Creates the workflow view directory with symlinks.
+   */
+  handleWorkflowCreated(event: WorkflowCreated): Promise<void>;
+
+  /**
+   * Handles a WorkflowUpdated event.
+   * Updates symlinks for the workflow definition.
+   */
+  handleWorkflowUpdated(event: WorkflowUpdated): Promise<void>;
+
+  /**
+   * Handles a WorkflowDeleted event.
+   * Removes the workflow view directory.
+   */
+  handleWorkflowDeleted(event: WorkflowDeleted): Promise<void>;
+
+  // ============================================================================
+  // WorkflowRun Event Handlers
+  // ============================================================================
+
+  /**
+   * Handles a WorkflowRunStarted event.
+   * Creates the run directory and updates the latest symlink.
+   */
+  handleWorkflowRunStarted(event: WorkflowRunStarted): Promise<void>;
+
+  /**
+   * Handles a WorkflowRunCompleted event.
+   * Updates step output symlinks.
+   */
+  handleWorkflowRunCompleted(event: WorkflowRunCompleted): Promise<void>;
+
+  /**
+   * Handles a WorkflowRunFailed event.
+   * Updates step output symlinks for the failed run.
+   */
+  handleWorkflowRunFailed(event: WorkflowRunFailed): Promise<void>;
+
+  // ============================================================================
+  // Maintenance Operations
+  // ============================================================================
+
+  /**
+   * Verifies the integrity of all symlinks.
+   *
+   * @returns Verification result with broken links
+   */
+  verify(): Promise<VerifyResult>;
+
+  /**
+   * Removes broken symlinks without rebuilding.
+   *
+   * @returns Prune result with removed links
+   */
+  prune(): Promise<PruneResult>;
+
+  /**
+   * Rebuilds all logical views from scratch.
+   *
+   * Deletes existing /models/ and /workflows/ directories
+   * and recreates them from the /data/ directory.
+   *
+   * @returns Rebuild result with counts
+   */
+  rebuildAll(): Promise<RebuildResult>;
+}
