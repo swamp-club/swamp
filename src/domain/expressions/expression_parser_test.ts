@@ -156,6 +156,82 @@ Deno.test("replaceExpressions leaves unmatched expressions unchanged", () => {
   assertEquals(result.unknown, "${{ unknown }}");
 });
 
+Deno.test("replaceExpressions JSON stringifies arrays in inline expressions", () => {
+  const data = {
+    message: "Items: ${{ items }}",
+  };
+  const values = new Map<string, unknown>([
+    ["${{ items }}", ["apple", "banana", "cherry"]],
+  ]);
+
+  const result = replaceExpressions(data, values) as typeof data;
+  assertEquals(
+    result.message,
+    `Items: [
+  "apple",
+  "banana",
+  "cherry"
+]`,
+  );
+});
+
+Deno.test("replaceExpressions JSON stringifies objects in inline expressions", () => {
+  const data = {
+    message: "Config: ${{ config }}",
+  };
+  const values = new Map<string, unknown>([
+    ["${{ config }}", { host: "localhost", port: 8080 }],
+  ]);
+
+  const result = replaceExpressions(data, values) as typeof data;
+  assertEquals(
+    result.message,
+    `Config: {
+  "host": "localhost",
+  "port": 8080
+}`,
+  );
+});
+
+Deno.test("replaceExpressions handles null and undefined in inline expressions", () => {
+  const data = {
+    withNull: "Value: ${{ nullVal }}",
+    withUndefined: "Value: ${{ undefinedVal }}",
+  };
+  const values = new Map<string, unknown>([
+    ["${{ nullVal }}", null],
+    ["${{ undefinedVal }}", undefined],
+  ]);
+
+  const result = replaceExpressions(data, values) as typeof data;
+  assertEquals(result.withNull, "Value: ");
+  assertEquals(result.withUndefined, "Value: ");
+});
+
+Deno.test("replaceExpressions preserves array type for single expression", () => {
+  const data = {
+    items: "${{ items }}",
+  };
+  const values = new Map<string, unknown>([
+    ["${{ items }}", ["apple", "banana"]],
+  ]);
+
+  const result = replaceExpressions(data, values) as { items: unknown };
+  assertEquals(result.items, ["apple", "banana"]);
+});
+
+Deno.test("replaceExpressions preserves object type for single expression", () => {
+  const data = {
+    config: "${{ config }}",
+  };
+  const values = new Map<string, unknown>([
+    ["${{ config }}", { host: "localhost", port: 8080 }],
+  ]);
+
+  const result = replaceExpressions(data, values) as { config: unknown };
+  assertEquals(result.config, { host: "localhost", port: 8080 });
+});
+
 Deno.test("extractCelExpression extracts expression from wrapper", () => {
   assertEquals(
     extractCelExpression("${{ model.foo.input.x }}"),
