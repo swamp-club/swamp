@@ -49,6 +49,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Claude environment
+        run: |
+          mkdir -p ~/.claude
+          # Exclude experiments folder from Claude's view
+          echo 'experiments/' > .claudeignore
+
       - name: Claude Code Review
         uses: anthropics/claude-code-action@v1
         with:
@@ -57,10 +63,13 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
+            First, read CLAUDE.md to understand the project's code style and requirements.
+            Then use the `ddd` skill to review code for domain-driven design principles.
+
             Review this PR for:
             1. Code quality and adherence to the project's TypeScript strict mode requirements
             2. Compliance with the code style guidelines in CLAUDE.md (named exports, no any types, etc.)
-            3. Domain-driven design principles
+            3. Domain-driven design principles (use the ddd skill)
             4. Test coverage (unit tests should live next to source files)
             5. Security vulnerabilities and best practices
             6. Any potential bugs or edge cases
@@ -85,7 +94,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-5-20251101
-            --allowedTools Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
+            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
 
   auto-merge:
     name: Auto-merge PR
