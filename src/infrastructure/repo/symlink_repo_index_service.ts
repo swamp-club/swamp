@@ -492,7 +492,9 @@ export class SymlinkRepoIndexService implements RepoIndexService {
 
   /**
    * Creates or updates the index for a vault.
-   * Structure: /vaults/{vault-name}/vault.yaml -> /.data/vault/{vault-type}/{id}.yaml
+   * Structure:
+   *   /vaults/{vault-name}/vault.yaml -> /.data/vault/{vault-type}/{id}.yaml
+   *   /vaults/{vault-name}/secrets/   -> /.data/secrets/{vault-type}/{vault-name}/ (local vaults only)
    */
   private async indexVault(
     vaultId: string,
@@ -511,6 +513,26 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       `${vaultId}.yaml`,
     );
     await this.createSymlink(vaultTarget, join(vaultDir, "vault.yaml"));
+
+    // For local_encryption vaults, also create secrets symlink
+    if (vaultType === "local_encryption") {
+      const secretsDir = join(
+        this.repoDir,
+        ".data",
+        "secrets",
+        vaultType,
+        vaultName,
+      );
+      // Ensure secrets directory exists with restricted permissions
+      await ensureDir(secretsDir);
+      try {
+        await Deno.chmod(secretsDir, 0o700);
+      } catch {
+        // chmod may fail on some systems (e.g., Windows), ignore
+      }
+
+      await this.createSymlink(secretsDir, join(vaultDir, "secrets"));
+    }
   }
 
   /**
