@@ -3,7 +3,7 @@ import React from "react";
 import { render } from "ink-testing-library";
 import { VersionDisplay } from "./components/VersionDisplay.tsx";
 
-export type OutputMode = "interactive" | "json";
+export type OutputMode = "interactive" | "json" | "stream";
 
 export interface VersionData {
   version: string;

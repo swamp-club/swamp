@@ -8,6 +8,7 @@ import {
   type ModelOutputGetData,
   renderModelOutputGet,
 } from "../../presentation/output/model_output_get_output.tsx";
+import type { OutputMode } from "../../presentation/output/output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
@@ -85,7 +86,7 @@ export function filterOutputs(
 async function displayModelOutputGet(
   item: ModelOutputSearchItem,
   repoDir: string,
-  outputMode: "interactive" | "json",
+  outputMode: OutputMode,
 ): Promise<void> {
   const inputRepo = new YamlInputRepository(repoDir);
   const outputRepo = new YamlOutputRepository(repoDir);

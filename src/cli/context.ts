@@ -7,6 +7,7 @@ export type Verbosity = "quiet" | "normal" | "verbose";
 export interface GlobalOptions {
   debugLogs?: boolean;
   json?: boolean;
+  stream?: boolean;
   quiet?: boolean;
   verbose?: boolean;
 }
@@ -39,8 +40,10 @@ export function createContext(
   options: GlobalOptions,
   loggerName: string = "cli",
 ): CommandContext {
-  // Auto-detect output mode: use JSON if explicitly requested or if not a TTY
-  const outputMode: OutputMode = options.json
+  // Auto-detect output mode: stream > json > interactive (TTY) > json (non-TTY)
+  const outputMode: OutputMode = options.stream
+    ? "stream"
+    : options.json
     ? "json"
     : isStdinTty()
     ? "interactive"
@@ -59,6 +62,9 @@ export function createContext(
  * Falls back to JSON mode if stdin is not a TTY.
  */
 export function getOutputModeFromArgs(args: string[]): OutputMode {
+  if (args.includes("--stream")) {
+    return "stream";
+  }
   if (args.includes("--json")) {
     return "json";
   }

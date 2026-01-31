@@ -36,9 +36,35 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 class MockStepExecutor implements StepExecutor {
   executedSteps: string[] = [];
   shouldFail: Set<string> = new Set();
+  /** If set, executor will call streaming callbacks with these lines */
+  streamOutput?: { stdout?: string[]; stderr?: string[] };
 
   execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+
+    // Call streaming callbacks if configured
+    if (this.streamOutput && ctx.progress && ctx.workflowRun) {
+      if (this.streamOutput.stdout && ctx.progress.onStepStdout) {
+        for (const line of this.streamOutput.stdout) {
+          ctx.progress.onStepStdout(
+            ctx.workflowRun,
+            ctx.jobName,
+            ctx.stepName,
+            line,
+          );
+        }
+      }
+      if (this.streamOutput.stderr && ctx.progress.onStepStderr) {
+        for (const line of this.streamOutput.stderr) {
+          ctx.progress.onStepStderr(
+            ctx.workflowRun,
+            ctx.jobName,
+            ctx.stepName,
+            line,
+          );
+        }
+      }
+    }
 
     if (this.shouldFail.has(step.name)) {
       return Promise.reject(new Error(`Step ${step.name} failed`));
@@ -747,5 +773,76 @@ Deno.test("executes independent steps within a job in parallel", async () => {
       true,
       `Expected parallel execution to be faster than 140ms, got ${elapsed}ms`,
     );
+  });
+});
+
+// Streaming tests
+Deno.test("passes streaming callbacks to step executor", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.streamOutput = {
+      stdout: ["line1", "line2"],
+      stderr: ["err1"],
+    };
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const stdoutLines: { job: string; step: string; line: string }[] = [];
+    const stderrLines: { job: string; step: string; line: string }[] = [];
+
+    const run = await service.execute(workflow.name, {
+      onStepStdout: (_run, jobName, stepName, line) => {
+        stdoutLines.push({ job: jobName, step: stepName, line });
+      },
+      onStepStderr: (_run, jobName, stepName, line) => {
+        stderrLines.push({ job: jobName, step: stepName, line });
+      },
+    });
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(stdoutLines.length, 2);
+    assertEquals(stdoutLines[0], { job: "job1", step: "step1", line: "line1" });
+    assertEquals(stdoutLines[1], { job: "job1", step: "step1", line: "line2" });
+    assertEquals(stderrLines.length, 1);
+    assertEquals(stderrLines[0], { job: "job1", step: "step1", line: "err1" });
+  });
+});
+
+Deno.test("streaming callbacks receive correct workflow run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.streamOutput = { stdout: ["test"] };
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    let receivedRunId: string | undefined;
+
+    const run = await service.execute(workflow.name, {
+      onStepStdout: (workflowRun, _jobName, _stepName, _line) => {
+        receivedRunId = workflowRun.id;
+      },
+    });
+
+    assertEquals(receivedRunId, run.id);
   });
 });

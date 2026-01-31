@@ -15,6 +15,21 @@ import type {
 } from "./repositories.ts";
 
 /**
+ * Callbacks for streaming output from method execution.
+ */
+export interface MethodStreamingCallbacks {
+  /**
+   * Called for each line of stdout.
+   */
+  onStdout?: (line: string) => void;
+
+  /**
+   * Called for each line of stderr.
+   */
+  onStderr?: (line: string) => void;
+}
+
+/**
  * Context provided to method execution.
  */
 export interface MethodContext {
@@ -52,6 +67,11 @@ export interface MethodContext {
    * Optional output repository for tracking execution history.
    */
   outputRepository?: OutputRepository;
+
+  /**
+   * Optional callbacks for streaming stdout/stderr output.
+   */
+  streaming?: MethodStreamingCallbacks;
 }
 
 /**

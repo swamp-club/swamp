@@ -91,6 +91,7 @@ export async function runCli(args: string[]): Promise<void> {
     .globalType("workflow_name", new WorkflowNameType())
     .globalOption("--debug-logs", "Enable debug logging to dev-logs directory")
     .globalOption("--json", "Output in JSON format (non-interactive)")
+    .globalOption("--stream", "Stream logs in real-time during execution")
     .globalOption("-q, --quiet", "Suppress non-essential output")
     .globalOption("-v, --verbose", "Show detailed output")
     .globalAction(async function (options: GlobalOptions) {

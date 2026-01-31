@@ -49,6 +49,10 @@ export interface StepExecutionContext {
   repoDir: string;
   /** Expression context for evaluating ${{ }} expressions */
   expressionContext?: ExpressionContext;
+  /** Progress callback for streaming output */
+  progress?: ExecutionProgressCallback;
+  /** Current workflow run for progress callbacks */
+  workflowRun?: WorkflowRun;
 }
 
 /**
@@ -108,6 +112,12 @@ export class DefaultStepExecutor implements StepExecutor {
 
     const command = new Deno.Command(task.command, commandOptions);
 
+    // Use streaming if progress callbacks are provided
+    if (ctx.progress?.onStepStdout || ctx.progress?.onStepStderr) {
+      return await this.executeShellStreaming(command, ctx);
+    }
+
+    // Buffered execution (original behavior)
     const result = await command.output();
 
     if (!result.success) {
@@ -117,6 +127,94 @@ export class DefaultStepExecutor implements StepExecutor {
 
     const stdout = new TextDecoder().decode(result.stdout);
     return { stdout: stdout.trim(), exitCode: result.code };
+  }
+
+  private async executeShellStreaming(
+    command: Deno.Command,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    const process = command.spawn();
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+
+    // Stream stdout and stderr concurrently
+    const stdoutPromise = this.streamOutput(
+      process.stdout,
+      (line) => {
+        stdoutLines.push(line);
+        if (ctx.progress?.onStepStdout && ctx.workflowRun) {
+          ctx.progress.onStepStdout(
+            ctx.workflowRun,
+            ctx.jobName,
+            ctx.stepName,
+            line,
+          );
+        }
+      },
+    );
+
+    const stderrPromise = this.streamOutput(
+      process.stderr,
+      (line) => {
+        stderrLines.push(line);
+        if (ctx.progress?.onStepStderr && ctx.workflowRun) {
+          ctx.progress.onStepStderr(
+            ctx.workflowRun,
+            ctx.jobName,
+            ctx.stepName,
+            line,
+          );
+        }
+      },
+    );
+
+    // Wait for streams to complete and process to exit
+    const [, , status] = await Promise.all([
+      stdoutPromise,
+      stderrPromise,
+      process.status,
+    ]);
+
+    if (!status.success) {
+      throw new Error(`Shell command failed: ${stderrLines.join("\n")}`);
+    }
+
+    return { stdout: stdoutLines.join("\n").trim(), exitCode: status.code };
+  }
+
+  private async streamOutput(
+    stream: ReadableStream<Uint8Array>,
+    onLine: (line: string) => void,
+  ): Promise<void> {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+
+        // Process all complete lines
+        for (let i = 0; i < lines.length - 1; i++) {
+          onLine(lines[i]);
+        }
+
+        // Keep the incomplete line in the buffer
+        buffer = lines[lines.length - 1];
+      }
+
+      // Process any remaining content
+      if (buffer) {
+        onLine(buffer);
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
 
   private async executeModelMethod(
@@ -220,6 +318,31 @@ export class DefaultStepExecutor implements StepExecutor {
     let resourceAttributes: Record<string, unknown> = {};
 
     try {
+      // Build streaming callbacks if progress callbacks are available
+      const streaming =
+        (ctx.progress?.onStepStdout || ctx.progress?.onStepStderr)
+          ? {
+            onStdout: ctx.progress?.onStepStdout && ctx.workflowRun
+              ? (line: string) =>
+                ctx.progress!.onStepStdout!(
+                  ctx.workflowRun!,
+                  ctx.jobName,
+                  ctx.stepName,
+                  line,
+                )
+              : undefined,
+            onStderr: ctx.progress?.onStepStderr && ctx.workflowRun
+              ? (line: string) =>
+                ctx.progress!.onStepStderr!(
+                  ctx.workflowRun!,
+                  ctx.jobName,
+                  ctx.stepName,
+                  line,
+                )
+              : undefined,
+          }
+          : undefined;
+
       // Execute the method with EVALUATED input
       const result = await executionService.executeWorkflow(
         evaluatedInput,
@@ -230,6 +353,7 @@ export class DefaultStepExecutor implements StepExecutor {
           resourceRepository: resourceRepo,
           logRepository: logRepo,
           fileRepository: fileRepo,
+          streaming,
         },
       );
 
@@ -396,6 +520,20 @@ export interface ExecutionProgressCallback {
   onWorkflowComplete?(run: WorkflowRun): void;
   /** Called once at start with implicit dependency mappings */
   onImplicitDependencies?(implicitDeps: ImplicitDependencyMap): void;
+  /** Called for each line of stdout from shell commands */
+  onStepStdout?(
+    run: WorkflowRun,
+    jobName: string,
+    stepName: string,
+    line: string,
+  ): void;
+  /** Called for each line of stderr from shell commands */
+  onStepStderr?(
+    run: WorkflowRun,
+    jobName: string,
+    stepName: string,
+    line: string,
+  ): void;
 }
 
 /**
@@ -692,6 +830,8 @@ export class WorkflowExecutionService {
         stepName,
         repoDir: this.repoDir,
         expressionContext,
+        progress,
+        workflowRun: run,
       };
 
       const output = await this.executor.execute(step, ctx);

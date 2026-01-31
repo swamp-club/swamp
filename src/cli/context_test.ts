@@ -72,3 +72,32 @@ Deno.test("getOutputModeFromArgs returns json when --json is present", () => {
   assertEquals(getOutputModeFromArgs(["model", "create", "--json"]), "json");
   assertEquals(getOutputModeFromArgs(["--json", "model", "create"]), "json");
 });
+
+Deno.test("createContext returns stream mode when stream option is true", () => {
+  const options: GlobalOptions = { stream: true };
+  const context = createContext(options);
+  assertEquals(context.outputMode, "stream");
+});
+
+Deno.test("createContext prefers stream over json when both are true", () => {
+  const options: GlobalOptions = { stream: true, json: true };
+  const context = createContext(options);
+  assertEquals(context.outputMode, "stream");
+});
+
+Deno.test("getOutputModeFromArgs returns stream when --stream is present", () => {
+  assertEquals(getOutputModeFromArgs(["--stream"]), "stream");
+  assertEquals(
+    getOutputModeFromArgs(["workflow", "run", "--stream"]),
+    "stream",
+  );
+  assertEquals(
+    getOutputModeFromArgs(["--stream", "workflow", "run"]),
+    "stream",
+  );
+});
+
+Deno.test("getOutputModeFromArgs prefers stream over json when both are present", () => {
+  assertEquals(getOutputModeFromArgs(["--stream", "--json"]), "stream");
+  assertEquals(getOutputModeFromArgs(["--json", "--stream"]), "stream");
+});

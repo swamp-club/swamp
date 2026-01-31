@@ -24,6 +24,7 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
+import { createStreamProgressCallback } from "../../presentation/output/stream_output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -154,7 +155,18 @@ export const workflowRunCommand = new Command()
         throw new Error(`Workflow not found: ${workflowIdOrName}`);
       }
 
-      if (ctx.outputMode === "interactive") {
+      if (ctx.outputMode === "stream") {
+        // Stream mode: real-time colored output
+        const progress = createStreamProgressCallback();
+        const run = await executionService.execute(workflow.name, progress);
+
+        ctx.logger.debug`Workflow run completed: status=${run.status}`;
+
+        // Exit with code 1 if workflow failed
+        if (run.status === "failed") {
+          Deno.exit(1);
+        }
+      } else if (ctx.outputMode === "interactive") {
         // Interactive mode: use the new live dashboard
         const workflowData = workflow.toData();
         // Remove undefined values since YAML can't stringify them

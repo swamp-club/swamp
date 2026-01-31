@@ -365,3 +365,94 @@ Deno.test("shellModel.methods.execute creates empty log for no output", async ()
   assertEquals(result.logs?.length, 1);
   assertEquals(result.logs?.[0].entryCount, 0);
 });
+
+// Streaming tests
+Deno.test("shellModel.methods.execute streams stdout when callback provided", async () => {
+  const stdoutLines: string[] = [];
+  const input = ModelInput.create({
+    name: "test-shell",
+    attributes: { run: "echo line1 && echo line2 && echo line3" },
+  });
+
+  const result = await shellModel.methods.execute.execute(input, {
+    repoDir: "/tmp",
+    streaming: {
+      onStdout: (line) => stdoutLines.push(line),
+    },
+  });
+
+  assertEquals(result.data?.attributes.exitCode, 0);
+  // Should have captured all three lines
+  assertEquals(stdoutLines.length, 3);
+  assertEquals(stdoutLines[0], "line1");
+  assertEquals(stdoutLines[1], "line2");
+  assertEquals(stdoutLines[2], "line3");
+});
+
+Deno.test("shellModel.methods.execute streams stderr when callback provided", async () => {
+  const stderrLines: string[] = [];
+  const input = ModelInput.create({
+    name: "test-shell",
+    attributes: { run: "echo err1 >&2 && echo err2 >&2" },
+  });
+
+  const result = await shellModel.methods.execute.execute(input, {
+    repoDir: "/tmp",
+    streaming: {
+      onStderr: (line) => stderrLines.push(line),
+    },
+  });
+
+  assertEquals(result.data?.attributes.exitCode, 0);
+  // Should have captured both lines
+  assertEquals(stderrLines.length, 2);
+  assertEquals(stderrLines[0], "err1");
+  assertEquals(stderrLines[1], "err2");
+});
+
+Deno.test("shellModel.methods.execute streams both stdout and stderr simultaneously", async () => {
+  const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
+  const input = ModelInput.create({
+    name: "test-shell",
+    attributes: { run: "echo stdout && echo stderr >&2" },
+  });
+
+  const result = await shellModel.methods.execute.execute(input, {
+    repoDir: "/tmp",
+    streaming: {
+      onStdout: (line) => stdoutLines.push(line),
+      onStderr: (line) => stderrLines.push(line),
+    },
+  });
+
+  assertEquals(result.data?.attributes.exitCode, 0);
+  assertEquals(stdoutLines.length, 1);
+  assertEquals(stdoutLines[0], "stdout");
+  assertEquals(stderrLines.length, 1);
+  assertEquals(stderrLines[0], "stderr");
+});
+
+Deno.test("shellModel.methods.execute still populates logs when streaming", async () => {
+  const stdoutLines: string[] = [];
+  const input = ModelInput.create({
+    name: "test-shell",
+    attributes: { run: "echo hello" },
+  });
+
+  const result = await shellModel.methods.execute.execute(input, {
+    repoDir: "/tmp",
+    streaming: {
+      onStdout: (line) => stdoutLines.push(line),
+    },
+  });
+
+  // Streaming callback should receive the output
+  assertEquals(stdoutLines.length, 1);
+  assertEquals(stdoutLines[0], "hello");
+
+  // Log artifact should also contain the output
+  const logContent = getLogContent(result.logs);
+  assertStringIncludes(logContent, "[stdout]");
+  assertStringIncludes(logContent, "hello");
+});

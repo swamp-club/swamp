@@ -249,19 +249,38 @@ export const modelMethodRunCommand = new Command()
         throw error;
       }
 
-      // Render output
-      const data: ModelMethodRunData = {
-        modelId: input.id,
-        modelName: input.name,
-        type: modelType.normalized,
-        methodName,
-        resource: resourceArtifact,
-        data: dataArtifact,
-        file: fileArtifact,
-        logs: logArtifacts.length > 0 ? logArtifacts : undefined,
-      };
+      // Render output based on output mode
+      if (ctx.outputMode === "stream") {
+        // Stream mode: print simple colored success message
+        // Note: standalone model method runs don't support real-time streaming
+        // (streaming is only available in workflow context)
+        const GREEN = "\x1b[32m";
+        const RESET = "\x1b[0m";
+        const prefix = `${GREEN}[${input.name}/${methodName}]${RESET}`;
+        console.log(`${prefix} Method completed successfully`);
+        if (resourceArtifact) {
+          console.log(`${prefix} Resource: ${resourceArtifact.path}`);
+        }
+        if (dataArtifact) {
+          console.log(`${prefix} Data: ${dataArtifact.path}`);
+        }
+        if (fileArtifact) {
+          console.log(`${prefix} File: ${fileArtifact.path}`);
+        }
+      } else {
+        const data: ModelMethodRunData = {
+          modelId: input.id,
+          modelName: input.name,
+          type: modelType.normalized,
+          methodName,
+          resource: resourceArtifact,
+          data: dataArtifact,
+          file: fileArtifact,
+          logs: logArtifacts.length > 0 ? logArtifacts : undefined,
+        };
 
-      renderModelMethodRun(data, ctx.outputMode);
+        renderModelMethodRun(data, ctx.outputMode);
+      }
       ctx.logger.debug("Method run command completed");
     },
   );

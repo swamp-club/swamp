@@ -9,6 +9,7 @@ import {
   renderModelGet,
   type ResourceData,
 } from "../../presentation/output/model_get_output.tsx";
+import type { OutputMode } from "../../presentation/output/output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { createModelInputId } from "../../domain/models/model_input.ts";
 import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
@@ -57,7 +58,7 @@ export function filterModels(
 async function displayModelGet(
   item: ModelSearchItem,
   repoDir: string,
-  outputMode: "interactive" | "json",
+  outputMode: OutputMode,
 ): Promise<void> {
   const inputRepo = new YamlInputRepository(repoDir);
   const resourceRepo = new YamlResourceRepository(repoDir);

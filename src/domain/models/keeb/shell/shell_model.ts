@@ -58,11 +58,58 @@ export type ShellDataAttributes = z.infer<typeof ShellDataAttributesSchema>;
 export const SHELL_MODEL_TYPE = ModelType.create("keeb/shell");
 
 /**
+ * Streams output from a readable stream, calling onLine for each line.
+ * Returns the complete output as a string.
+ */
+async function streamOutput(
+  stream: ReadableStream<Uint8Array>,
+  onLine?: (line: string) => void,
+): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const lines: string[] = [];
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const bufferLines = buffer.split("\n");
+
+      // Process all complete lines
+      for (let i = 0; i < bufferLines.length - 1; i++) {
+        lines.push(bufferLines[i]);
+        if (onLine) {
+          onLine(bufferLines[i]);
+        }
+      }
+
+      // Keep the incomplete line in the buffer
+      buffer = bufferLines[bufferLines.length - 1];
+    }
+
+    // Process any remaining content
+    if (buffer) {
+      lines.push(buffer);
+      if (onLine) {
+        onLine(buffer);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return lines.join("\n");
+}
+
+/**
  * Executes a shell command and captures the output.
  */
 async function executeCommand(
   input: ModelInput,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   // Validate input attributes
   const attrs = ShellInputAttributesSchema.parse(input.attributes);
@@ -89,10 +136,22 @@ async function executeCommand(
 
     const command = new Deno.Command("sh", commandOptions);
 
-    let output: Deno.CommandOutput;
+    // Use streaming if callbacks are provided
+    if (context.streaming?.onStdout || context.streaming?.onStderr) {
+      const process = command.spawn();
 
-    if (attrs.timeout) {
-      // Handle timeout with AbortSignal
+      // Stream stdout and stderr concurrently
+      const [stdoutResult, stderrResult, status] = await Promise.all([
+        streamOutput(process.stdout, context.streaming?.onStdout),
+        streamOutput(process.stderr, context.streaming?.onStderr),
+        process.status,
+      ]);
+
+      stdout = stdoutResult;
+      stderr = stderrResult;
+      exitCode = status.code;
+    } else if (attrs.timeout) {
+      // Handle timeout with AbortSignal (non-streaming)
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), attrs.timeout);
 
@@ -107,19 +166,23 @@ async function executeCommand(
           });
         });
 
-        output = await Promise.race([child.output(), timeoutPromise]);
+        const output = await Promise.race([child.output(), timeoutPromise]);
         clearTimeout(timeoutId);
+
+        stdout = new TextDecoder().decode(output.stdout);
+        stderr = new TextDecoder().decode(output.stderr);
+        exitCode = output.code;
       } catch (error) {
         clearTimeout(timeoutId);
         throw error;
       }
     } else {
-      output = await command.output();
+      // Buffered execution (original behavior)
+      const output = await command.output();
+      stdout = new TextDecoder().decode(output.stdout);
+      stderr = new TextDecoder().decode(output.stderr);
+      exitCode = output.code;
     }
-
-    stdout = new TextDecoder().decode(output.stdout);
-    stderr = new TextDecoder().decode(output.stderr);
-    exitCode = output.code;
   } catch (error) {
     // Handle execution errors (command not found, timeout, etc.)
     stderr = error instanceof Error ? error.message : String(error);
