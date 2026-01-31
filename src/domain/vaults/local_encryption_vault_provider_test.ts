@@ -464,3 +464,109 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
     },
   );
 });
+
+Deno.test("LocalEncryptionVaultProvider - list secrets", async (t) => {
+  await t.step("should return empty list when no secrets exist", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider(
+        "empty-list-vault",
+        config,
+      );
+
+      const secrets = await vault.list();
+      assertEquals(secrets.length, 0);
+    });
+  });
+
+  await t.step("should list all stored secrets", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider("list-vault", config);
+
+      await vault.put("api-key", "secret1");
+      await vault.put("db-password", "secret2");
+      await vault.put("jwt-token", "secret3");
+
+      const secrets = await vault.list();
+      assertEquals(secrets.length, 3);
+      assertEquals(secrets.includes("api-key"), true);
+      assertEquals(secrets.includes("db-password"), true);
+      assertEquals(secrets.includes("jwt-token"), true);
+    });
+  });
+
+  await t.step("should return secrets in sorted order", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider(
+        "sorted-list-vault",
+        config,
+      );
+
+      // Store in non-alphabetical order
+      await vault.put("zebra", "z");
+      await vault.put("apple", "a");
+      await vault.put("mango", "m");
+
+      const secrets = await vault.list();
+      assertEquals(secrets.length, 3);
+      assertEquals(secrets[0], "apple");
+      assertEquals(secrets[1], "mango");
+      assertEquals(secrets[2], "zebra");
+    });
+  });
+
+  await t.step("should only list .enc files", async () => {
+    await withTempDir(async (dir) => {
+      const vaultSecretsDir = secretsDir(dir, "enc-only-vault");
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider("enc-only-vault", config);
+
+      // Store a secret first to create the directory
+      await vault.put("real-secret", "value");
+
+      // Create a non-.enc file in the vault directory
+      await Deno.writeTextFile(
+        join(vaultSecretsDir, "not-a-secret.txt"),
+        "other",
+      );
+      await Deno.writeTextFile(join(vaultSecretsDir, "another.json"), "{}");
+
+      const secrets = await vault.list();
+      assertEquals(secrets.length, 1);
+      assertEquals(secrets[0], "real-secret");
+    });
+  });
+
+  await t.step("should not include .key file in list", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider(
+        "key-excluded-vault",
+        config,
+      );
+
+      await vault.put("my-secret", "value");
+
+      const secrets = await vault.list();
+      assertEquals(secrets.length, 1);
+      assertEquals(secrets.includes(".key"), false);
+    });
+  });
+});

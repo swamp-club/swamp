@@ -855,3 +855,421 @@ attributes:
     );
   });
 });
+
+// ============================================================================
+// vault put CLI tests
+// ============================================================================
+
+Deno.test("CLI: vault put stores secret in vault", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a local_encryption vault
+    const createResult = await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "put-test-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+    assertEquals(
+      createResult.code,
+      0,
+      `Vault create should succeed. stderr: ${createResult.stderr}`,
+    );
+
+    // Store a secret using vault put
+    const result = await runCliCommand([
+      "vault",
+      "put",
+      "put-test-vault",
+      "API_KEY=secret-value-123",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.vaultName, "put-test-vault");
+    assertEquals(output.secretKey, "API_KEY");
+    assertEquals(output.vaultType, "local_encryption");
+    assertEquals(output.overwritten, false);
+
+    // Verify the secret file was created
+    const secretPath = join(
+      repoDir,
+      ".data",
+      "secrets",
+      "local_encryption",
+      "put-test-vault",
+      "API_KEY.enc",
+    );
+    assertEquals(existsSync(secretPath), true, "Secret file should exist");
+  });
+});
+
+Deno.test("CLI: vault put handles values with equals signs", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a vault
+    await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "equals-test-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // Store a value that contains equals signs
+    const result = await runCliCommand([
+      "vault",
+      "put",
+      "equals-test-vault",
+      "TOKEN=abc=def=ghi",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(result.code, 0);
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.secretKey, "TOKEN");
+
+    // The secret should be stored - we can't easily verify the value
+    // but we can verify the file exists
+    const secretPath = join(
+      repoDir,
+      ".data",
+      "secrets",
+      "local_encryption",
+      "equals-test-vault",
+      "TOKEN.enc",
+    );
+    assertEquals(existsSync(secretPath), true);
+  });
+});
+
+Deno.test("CLI: vault put fails for non-existent vault", async () => {
+  await withTempDir(async (repoDir) => {
+    const result = await runCliCommand([
+      "vault",
+      "put",
+      "nonexistent-vault",
+      "KEY=value",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(result.code !== 0, true, "Should fail for non-existent vault");
+
+    const output = JSON.parse(result.stderr);
+    assertStringIncludes(output.error, "not found");
+  });
+});
+
+Deno.test("CLI: vault put fails for invalid KEY=VALUE format", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a vault
+    await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "format-test-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // Missing equals sign
+    const result = await runCliCommand([
+      "vault",
+      "put",
+      "format-test-vault",
+      "invalid-no-equals",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(result.code !== 0, true, "Should fail for invalid format");
+
+    const output = JSON.parse(result.stderr);
+    assertStringIncludes(output.error, "Invalid argument format");
+  });
+});
+
+Deno.test("CLI: vault put --force skips overwrite confirmation", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a vault
+    await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "force-test-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // Store initial secret
+    await runCliCommand([
+      "vault",
+      "put",
+      "force-test-vault",
+      "KEY=initial-value",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // Overwrite with --force flag
+    const result = await runCliCommand([
+      "vault",
+      "put",
+      "force-test-vault",
+      "KEY=new-value",
+      "--force",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.secretKey, "KEY");
+    assertEquals(output.overwritten, true);
+  });
+});
+
+Deno.test("CLI: vault put allows empty value", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a vault
+    await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "empty-value-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // Store empty value
+    const result = await runCliCommand([
+      "vault",
+      "put",
+      "empty-value-vault",
+      "EMPTY_KEY=",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(result.code, 0);
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.secretKey, "EMPTY_KEY");
+  });
+});
+
+// ============================================================================
+// vault list-keys CLI tests
+// ============================================================================
+
+Deno.test("CLI: vault list-keys returns empty list for vault with no secrets", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a local_encryption vault
+    await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "list-empty-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // List secret keys
+    const result = await runCliCommand([
+      "vault",
+      "list-keys",
+      "list-empty-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.vaultName, "list-empty-vault");
+    assertEquals(output.vaultType, "local_encryption");
+    assertEquals(output.secretKeys.length, 0);
+    assertEquals(output.count, 0);
+  });
+});
+
+Deno.test("CLI: vault list-keys returns stored secret keys", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a vault
+    await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "list-test-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // Store some secrets
+    await runCliCommand([
+      "vault",
+      "put",
+      "list-test-vault",
+      "API_KEY=secret1",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+    await runCliCommand([
+      "vault",
+      "put",
+      "list-test-vault",
+      "DATABASE_PASSWORD=secret2",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+    await runCliCommand([
+      "vault",
+      "put",
+      "list-test-vault",
+      "JWT_SECRET=secret3",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // List secret keys
+    const result = await runCliCommand([
+      "vault",
+      "list-keys",
+      "list-test-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.vaultName, "list-test-vault");
+    assertEquals(output.count, 3);
+    assertEquals(output.secretKeys.includes("API_KEY"), true);
+    assertEquals(output.secretKeys.includes("DATABASE_PASSWORD"), true);
+    assertEquals(output.secretKeys.includes("JWT_SECRET"), true);
+  });
+});
+
+Deno.test("CLI: vault list-keys fails for non-existent vault", async () => {
+  await withTempDir(async (repoDir) => {
+    const result = await runCliCommand([
+      "vault",
+      "list-keys",
+      "nonexistent-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(result.code !== 0, true, "Should fail for non-existent vault");
+
+    const output = JSON.parse(result.stderr);
+    assertStringIncludes(output.error, "not found");
+  });
+});
+
+Deno.test("CLI: vault list-keys returns keys in sorted order", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a vault
+    await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "sorted-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // Store secrets in non-alphabetical order
+    await runCliCommand([
+      "vault",
+      "put",
+      "sorted-vault",
+      "ZEBRA=z",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+    await runCliCommand([
+      "vault",
+      "put",
+      "sorted-vault",
+      "APPLE=a",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+    await runCliCommand([
+      "vault",
+      "put",
+      "sorted-vault",
+      "MANGO=m",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    // List secret keys
+    const result = await runCliCommand([
+      "vault",
+      "list-keys",
+      "sorted-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(result.code, 0);
+
+    const output = JSON.parse(result.stdout);
+    // Verify alphabetical order
+    assertEquals(output.secretKeys[0], "APPLE");
+    assertEquals(output.secretKeys[1], "MANGO");
+    assertEquals(output.secretKeys[2], "ZEBRA");
+  });
+});

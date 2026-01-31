@@ -402,3 +402,14 @@ If no vault is specified interactively, shows a search interface.
 
 Editor selection: Uses $EDITOR if set, otherwise falls back to: vscode, zed,
 nvim, vim, nano, emacs.
+
+### vault <vault_name> put KEY=VALUE
+
+We should allow a user to be able to store a secret in the vault using the CLI.
+This will error if there's no vault for that name. It should prompt a user if
+they want to overwrite an existing secret if it exists.
+
+### vault <vault_name> secret-list
+
+This should list all of the secret names in the vault. It should NOT return any
+values that go with them.

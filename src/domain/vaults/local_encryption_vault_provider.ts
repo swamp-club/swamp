@@ -93,6 +93,32 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     return this.name;
   }
 
+  async list(): Promise<string[]> {
+    const secretKeys: string[] = [];
+
+    try {
+      for await (const entry of Deno.readDir(this.vaultDir)) {
+        if (entry.isFile && entry.name.endsWith(".enc")) {
+          // Remove the .enc extension to get the secret key name
+          const keyName = entry.name.slice(0, -4);
+          secretKeys.push(keyName);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        // Vault directory doesn't exist yet, return empty list
+        return [];
+      }
+      throw new Error(
+        `Failed to list secrets in local vault '${this.name}': ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    return secretKeys.sort();
+  }
+
   /**
    * Derives the master encryption key for a specific salt.
    * Note: Each secret has a unique salt, so we cannot cache the derived key.

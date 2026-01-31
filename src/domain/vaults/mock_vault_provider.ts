@@ -41,6 +41,10 @@ export class MockVaultProvider implements VaultProvider {
     return this.name;
   }
 
+  list(): Promise<string[]> {
+    return Promise.resolve(Array.from(this.secrets.keys()).sort());
+  }
+
   /**
    * Adds a secret to the mock vault.
    */
@@ -50,6 +54,7 @@ export class MockVaultProvider implements VaultProvider {
 
   /**
    * Lists all available secrets (for testing).
+   * @deprecated Use list() instead
    */
   listSecrets(): string[] {
     return Array.from(this.secrets.keys());

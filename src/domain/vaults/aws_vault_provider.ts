@@ -1,6 +1,7 @@
 import {
   CreateSecretCommand,
   GetSecretValueCommand,
+  ListSecretsCommand,
   PutSecretValueCommand,
   ResourceNotFoundException,
   SecretsManagerClient,
@@ -68,5 +69,30 @@ export class AwsVaultProvider implements VaultProvider {
 
   getName(): string {
     return this.name;
+  }
+
+  async list(): Promise<string[]> {
+    const secretNames: string[] = [];
+    let nextToken: string | undefined;
+
+    do {
+      const command = new ListSecretsCommand({
+        NextToken: nextToken,
+      });
+
+      const response = await this.client.send(command);
+
+      if (response.SecretList) {
+        for (const secret of response.SecretList) {
+          if (secret.Name) {
+            secretNames.push(secret.Name);
+          }
+        }
+      }
+
+      nextToken = response.NextToken;
+    } while (nextToken);
+
+    return secretNames.sort();
   }
 }

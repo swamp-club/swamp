@@ -21,6 +21,14 @@ export interface VaultProvider {
   put(secretKey: string, secretValue: string): Promise<void>;
 
   /**
+   * Lists all secret keys in the vault.
+   * Returns only the key names, not the secret values.
+   *
+   * @returns Array of secret key names
+   */
+  list(): Promise<string[]>;
+
+  /**
    * Gets the name/type of this vault provider.
    */
   getName(): string;

@@ -128,6 +128,32 @@ export class VaultService {
   }
 
   /**
+   * Lists all secret keys in the specified vault.
+   * Returns only key names, not values.
+   */
+  async list(vaultName: string): Promise<string[]> {
+    const provider = this.providers.get(vaultName);
+    if (!provider) {
+      const availableVaults = Array.from(this.providers.keys());
+      if (availableVaults.length === 0) {
+        throw new Error(
+          `Vault '${vaultName}' not found. No vaults are configured. ` +
+            `Create a vault using: swamp vault create <type> ${vaultName}`,
+        );
+      } else {
+        throw new Error(
+          `Vault '${vaultName}' not found. Available vaults: ${
+            availableVaults.join(", ")
+          }. ` +
+            `Create '${vaultName}' using: swamp vault create <type> ${vaultName}`,
+        );
+      }
+    }
+
+    return await provider.list();
+  }
+
+  /**
    * Lists all registered vault names.
    */
   getVaultNames(): string[] {
