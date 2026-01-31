@@ -22,7 +22,7 @@ import {
  * YAML-based implementation of WorkflowRunRepository.
  *
  * Stores workflow runs as YAML files in the directory structure:
- * {repoDir}/data/workflow-runs/{workflowId}/workflow-run-{runId}.yaml
+ * {repoDir}/.data/workflow-runs/{workflowId}/workflow-run-{runId}.yaml
  */
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   constructor(

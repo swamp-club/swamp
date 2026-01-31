@@ -15,7 +15,7 @@ import {
  * YAML-based implementation of ResourceRepository.
  *
  * Stores resources as YAML files in the directory structure:
- * {repoDir}/data/resources/{normalized-type}/{id}.yaml
+ * {repoDir}/.data/resources/{normalized-type}/{id}.yaml
  */
 export class YamlResourceRepository implements ResourceRepository {
   constructor(private readonly repoDir: string) {}

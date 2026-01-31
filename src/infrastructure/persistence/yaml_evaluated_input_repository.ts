@@ -12,7 +12,7 @@ import {
 /**
  * Repository for storing evaluated model inputs.
  *
- * Writes to {repoDir}/data/inputs-evaluated/{normalized-type}/{id}.yaml
+ * Writes to {repoDir}/.data/inputs-evaluated/{normalized-type}/{id}.yaml
  * This directory contains inputs with all expressions resolved.
  */
 export class YamlEvaluatedInputRepository {

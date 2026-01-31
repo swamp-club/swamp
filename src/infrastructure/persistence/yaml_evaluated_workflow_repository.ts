@@ -10,7 +10,7 @@ import {
 /**
  * Repository for storing evaluated workflows.
  *
- * Writes to {repoDir}/data/workflows-evaluated/workflow-{uuid}.yaml
+ * Writes to {repoDir}/.data/workflows-evaluated/workflow-{uuid}.yaml
  * This directory contains workflows with all expressions resolved.
  */
 export class YamlEvaluatedWorkflowRepository {

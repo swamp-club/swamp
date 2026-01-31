@@ -21,7 +21,7 @@ import {
  * YAML-based implementation of InputRepository.
  *
  * Stores inputs as YAML files in the directory structure:
- * {repoDir}/data/inputs/{normalized-type}/{id}.yaml
+ * {repoDir}/.data/inputs/{normalized-type}/{id}.yaml
  */
 export class YamlInputRepository implements InputRepository {
   constructor(
