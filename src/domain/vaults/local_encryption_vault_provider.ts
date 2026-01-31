@@ -36,7 +36,8 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
   private readonly name: string;
   private readonly config: LocalEncryptionConfig;
   private readonly vaultDir: string;
-  private keyCache?: CryptoKey;
+  /** Cache for key material (not the derived key, since each secret has unique salt) */
+  private keyMaterialCache?: CryptoKey;
 
   constructor(name: string, config: LocalEncryptionConfig = {}) {
     this.name = name;
@@ -88,18 +89,16 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
   }
 
   /**
-   * Derives or retrieves the master encryption key.
+   * Derives the master encryption key for a specific salt.
+   * Note: Each secret has a unique salt, so we cannot cache the derived key.
+   * We cache the key material instead to avoid repeated file reads.
    */
   private async getMasterKey(saltBase64: string): Promise<CryptoKey> {
-    // Check if we have a cached key
-    if (this.keyCache) {
-      return this.keyCache;
-    }
-
     const keyMaterial = await this.getKeyMaterial();
     const salt = this.base64ToArrayBuffer(saltBase64);
 
     // Derive AES key using PBKDF2 from SSH key or generated key
+    // Each salt produces a unique derived key, so this must be done per-secret
     const key = await crypto.subtle.deriveKey(
       {
         name: "PBKDF2",
@@ -113,14 +112,28 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
       ["encrypt", "decrypt"],
     );
 
-    this.keyCache = key;
     return key;
   }
 
   /**
    * Gets the key material from SSH key or auto-generated key.
+   * Key material is cached to avoid repeated file reads.
    */
   private async getKeyMaterial(): Promise<CryptoKey> {
+    // Return cached key material if available
+    if (this.keyMaterialCache) {
+      return this.keyMaterialCache;
+    }
+
+    const keyMaterial = await this.loadKeyMaterial();
+    this.keyMaterialCache = keyMaterial;
+    return keyMaterial;
+  }
+
+  /**
+   * Loads key material from SSH key or auto-generated key file.
+   */
+  private async loadKeyMaterial(): Promise<CryptoKey> {
     // Try SSH key if explicitly configured
     if (this.config.ssh_key_path) {
       try {

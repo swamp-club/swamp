@@ -76,13 +76,15 @@ export const VAULT_MODEL_TYPE = ModelType.create("swamp/lets-get-sensitive");
 /**
  * Creates and configures the vault service with the current repository context.
  */
-function createVaultService(context: MethodContext): VaultService {
+async function createVaultService(
+  context: MethodContext,
+): Promise<VaultService> {
   const vaultService = new VaultService();
 
   // Load vault configuration from the repository
   try {
     const configPath = `${context.repoDir}/.swamp.yaml`;
-    const configText = Deno.readTextFileSync(configPath);
+    const configText = await Deno.readTextFile(configPath);
     const config = parse(configText) as SwampConfig;
 
     if (config.vaults) {
@@ -94,8 +96,14 @@ function createVaultService(context: MethodContext): VaultService {
         });
       }
     }
-  } catch (_error) {
-    // Ignore file read errors - vault service will provide helpful error messages
+  } catch (error) {
+    // Log at debug level for troubleshooting, but don't fail
+    // Vault service will provide helpful error messages when vaults are accessed
+    console.debug(
+      `[vault] Could not load vault configuration: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 
   // Ensure default vaults are set up if needed
@@ -127,7 +135,7 @@ async function executeGet(
   vaultLog.log(`[vault] Secret key: ${attrs.secretKey}`);
 
   try {
-    const vaultService = createVaultService(_context);
+    const vaultService = await createVaultService(_context);
     vaultLog.log(
       `[vault] Created VaultService for repository: ${_context.repoDir}`,
     );
@@ -196,7 +204,7 @@ async function executePut(
   );
 
   try {
-    const vaultService = createVaultService(_context);
+    const vaultService = await createVaultService(_context);
     vaultLog.log(
       `[vault] Created VaultService for repository: ${_context.repoDir}`,
     );

@@ -49,7 +49,7 @@ The valid shape of an input is specified with a Zod 4 schema.
 
 Each input has the following core properties:
 
-- id: the models unqiue id
+- id: the models unique id
 - resourceId: an optional resource id, if one exists
 - name: a unique human readable name
 - tags: string based key value pairs
@@ -210,7 +210,7 @@ When run non-interactively, it should produce a json output that has the list.
 
 ### model create <type> <name>
 
-Creates a new instance of a type with the given unqiue name. Type should accept
+Creates a new instance of a type with the given unique name. Type should accept
 either the domain specific type or the normalized type. It should return the id
 and path to the model that is created.
 
