@@ -31,6 +31,7 @@ export const modelEvaluateCommand = new Command()
       const evaluationService = new ExpressionEvaluationService(
         inputRepo,
         resourceRepo,
+        repoDir,
       );
 
       // If --all flag or no argument, evaluate all inputs

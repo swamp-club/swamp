@@ -39,10 +39,13 @@ export class ExpressionEvaluationService {
   constructor(
     private readonly inputRepo: YamlInputRepository,
     private readonly resourceRepo: YamlResourceRepository,
+    repoDir?: string,
   ) {
     this.celEvaluator = new CelEvaluator();
     this.sortService = new TopologicalSortService();
-    this.modelResolver = new ModelResolver(inputRepo, resourceRepo);
+    this.modelResolver = new ModelResolver(inputRepo, resourceRepo, {
+      repoDir,
+    });
   }
 
   /**

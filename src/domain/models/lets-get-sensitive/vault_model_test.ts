@@ -42,15 +42,17 @@ async function withTestRepo<T>(
 ): Promise<T> {
   const tempDir = await Deno.makeTempDir();
   try {
-    // Create a test vault configuration
+    // Create a test vault configuration in .data/vault/
+    const vaultDir = `${tempDir}/.data/vault/local_encryption`;
+    await Deno.mkdir(vaultDir, { recursive: true });
     await Deno.writeTextFile(
-      `${tempDir}/.swamp.yaml`,
-      `
-vaults:
-  test-vault:
-    type: local_encryption
-    config:
-      auto_generate: true
+      `${vaultDir}/test-vault-id.yaml`,
+      `id: test-vault-id
+name: test-vault
+type: local_encryption
+config:
+  auto_generate: true
+createdAt: "2024-01-01T00:00:00.000Z"
 `,
     );
 

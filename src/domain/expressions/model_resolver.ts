@@ -113,6 +113,8 @@ export interface ModelResolverRepositories {
   outputRepo?: YamlOutputRepository;
   /** Optional vault service for dependency injection (useful for testing) */
   vaultService?: VaultService;
+  /** Repository directory for lazy loading vault configurations */
+  repoDir?: string;
 }
 
 /**
@@ -123,7 +125,9 @@ export class ModelResolver {
   private readonly fileRepo?: FileSystemFileRepository;
   private readonly logRepo?: StreamingLogRepository;
   private readonly outputRepo?: YamlOutputRepository;
-  private readonly vaultService: VaultService;
+  private vaultService?: VaultService;
+  private readonly repoDir?: string;
+  private vaultServiceInitialized = false;
 
   constructor(
     private readonly inputRepo: YamlInputRepository,
@@ -134,12 +138,34 @@ export class ModelResolver {
     this.fileRepo = repos?.fileRepo;
     this.logRepo = repos?.logRepo;
     this.outputRepo = repos?.outputRepo;
-    // Use provided vault service or create a new one
-    this.vaultService = repos?.vaultService ?? new VaultService();
-    // Ensure default vaults are available (only if we created the service)
-    if (!repos?.vaultService) {
+    this.repoDir = repos?.repoDir;
+    // If a vault service was provided, use it directly
+    if (repos?.vaultService) {
+      this.vaultService = repos.vaultService;
+      this.vaultServiceInitialized = true;
+    }
+  }
+
+  /**
+   * Gets or lazily initializes the vault service.
+   * If a VaultService was provided in the constructor, it's used directly.
+   * Otherwise, vaults are loaded from the repository (if repoDir was provided).
+   */
+  private async getVaultService(): Promise<VaultService> {
+    if (this.vaultServiceInitialized && this.vaultService) {
+      return this.vaultService;
+    }
+
+    // Lazy initialization: load vaults from repository if repoDir is available
+    if (this.repoDir) {
+      this.vaultService = await VaultService.fromRepository(this.repoDir);
+    } else {
+      // No repoDir, create an empty vault service with defaults
+      this.vaultService = new VaultService();
       this.vaultService.ensureDefaultVaults();
     }
+    this.vaultServiceInitialized = true;
+    return this.vaultService;
   }
 
   /**
@@ -488,10 +514,17 @@ export class ModelResolver {
     let resolvedValue = value;
     const matches = Array.from(value.matchAll(vaultPattern));
 
+    if (matches.length === 0) {
+      return resolvedValue;
+    }
+
+    // Get vault service (lazy initialization if needed)
+    const vaultService = await this.getVaultService();
+
     for (const match of matches) {
       const [fullMatch, , vaultName, , secretKey] = match;
       try {
-        const secretValue = await this.vaultService.get(vaultName, secretKey);
+        const secretValue = await vaultService.get(vaultName, secretKey);
         // Escape special characters to prevent CEL parsing issues and injection attacks
         const escapedValue = secretValue
           .replace(/\\/g, "\\\\")

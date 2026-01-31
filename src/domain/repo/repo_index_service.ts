@@ -76,7 +76,7 @@ export interface RebuildResult {
  *         model/      → ../models/{model-name}/
  * ```
  *
- * Vault View (`/vaults/{vault-type}/{vault-name}/`):
+ * Vault View (`/vaults/{vault-name}/`):
  * ```
  * vault.yaml      → ../.data/vault/{vault-type}/{id}.yaml
  * ```

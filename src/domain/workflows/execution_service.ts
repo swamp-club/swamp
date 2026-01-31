@@ -483,7 +483,9 @@ export class DefaultStepExecutor implements StepExecutor {
     // Create ModelResolver for vault expression handling
     const inputRepo = new YamlInputRepository(repoDir);
     const resourceRepo = new YamlResourceRepository(repoDir);
-    const modelResolver = new ModelResolver(inputRepo, resourceRepo);
+    const modelResolver = new ModelResolver(inputRepo, resourceRepo, {
+      repoDir,
+    });
 
     // Evaluate each expression
     const evaluatedValues = new Map<string, unknown>();
@@ -568,7 +570,9 @@ export class WorkflowExecutionService {
     this.executor = executor ?? new DefaultStepExecutor();
     this.inputRepo = new YamlInputRepository(repoDir);
     this.resourceRepo = new YamlResourceRepository(repoDir);
-    this.modelResolver = new ModelResolver(this.inputRepo, this.resourceRepo);
+    this.modelResolver = new ModelResolver(this.inputRepo, this.resourceRepo, {
+      repoDir,
+    });
   }
 
   /**

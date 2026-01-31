@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { parse } from "@std/yaml";
 import { ModelType } from "../model_type.ts";
 import { ModelData } from "../model_data.ts";
 import { ModelLog } from "../model_log.ts";
@@ -11,21 +10,7 @@ import {
 } from "../model.ts";
 import type { ModelInput } from "../model_input.ts";
 import { VaultService } from "../../vaults/vault_service.ts";
-
-/**
- * Interface for vault configuration in .swamp.yaml
- */
-interface VaultConfig {
-  type: string;
-  config: Record<string, unknown>;
-}
-
-/**
- * Interface for the root configuration object
- */
-interface SwampConfig {
-  vaults?: Record<string, VaultConfig>;
-}
+import { YamlVaultConfigRepository } from "../../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
 /**
  * Schema for vault model input attributes.
@@ -75,26 +60,24 @@ export const VAULT_MODEL_TYPE = ModelType.create("swamp/lets-get-sensitive");
 
 /**
  * Creates and configures the vault service with the current repository context.
+ * Loads vault configurations from .data/vault/{type}/{id}.yaml files.
  */
 async function createVaultService(
   context: MethodContext,
 ): Promise<VaultService> {
   const vaultService = new VaultService();
 
-  // Load vault configuration from the repository
+  // Load vault configurations from the repository
   try {
-    const configPath = `${context.repoDir}/.swamp.yaml`;
-    const configText = await Deno.readTextFile(configPath);
-    const config = parse(configText) as SwampConfig;
+    const vaultRepo = new YamlVaultConfigRepository(context.repoDir);
+    const vaultConfigs = await vaultRepo.findAll();
 
-    if (config.vaults) {
-      for (const [name, vaultConfig] of Object.entries(config.vaults)) {
-        vaultService.registerVault({
-          name,
-          type: vaultConfig.type,
-          config: vaultConfig.config,
-        });
-      }
+    for (const vaultConfig of vaultConfigs) {
+      vaultService.registerVault({
+        name: vaultConfig.name,
+        type: vaultConfig.type,
+        config: vaultConfig.config,
+      });
     }
   } catch (error) {
     // Log at debug level for troubleshooting, but don't fail

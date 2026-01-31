@@ -22,13 +22,8 @@ Deno.test("Direct Vault Service Error Messages", async (t) => {
       );
       assertStringIncludes(
         error.message,
-        "Add vault configuration to your .swamp.yaml file:",
+        "swamp vault create aws production",
       );
-      assertStringIncludes(error.message, "vaults:");
-      assertStringIncludes(error.message, "production:");
-      assertStringIncludes(error.message, "type: aws");
-      assertStringIncludes(error.message, "config:");
-      assertStringIncludes(error.message, "region: us-east-1");
       assertStringIncludes(
         error.message,
         "Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables",
@@ -48,7 +43,8 @@ Deno.test("Direct Vault Service Error Messages", async (t) => {
       );
 
       assertStringIncludes(error.message, "Vault 'my-custom-vault' not found");
-      assertStringIncludes(error.message, "my-custom-vault:");
+      assertStringIncludes(error.message, "swamp vault create");
+      assertStringIncludes(error.message, "my-custom-vault");
     },
   );
 });

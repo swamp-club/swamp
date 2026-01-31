@@ -671,3 +671,187 @@ Deno.test("CLI: vault edit with --type narrows search", async () => {
     assertStringIncludes(output.error, "has type 'aws'");
   });
 });
+
+// ============================================================================
+// Vault config loading tests (regression tests for vault storage location)
+// ============================================================================
+
+Deno.test("CLI: vault configs are loaded from .data/vault/ directory", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a vault using the CLI (stores in .data/vault/)
+    const createResult = await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "test-storage-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(
+      createResult.code,
+      0,
+      `Vault create should succeed. stderr: ${createResult.stderr}`,
+    );
+
+    // Verify the vault config file exists in .data/vault/local_encryption/
+    const vaultDir = join(repoDir, ".data", "vault", "local_encryption");
+    assertEquals(existsSync(vaultDir), true, "Vault directory should exist");
+
+    // Verify we can retrieve the vault via vault get (which uses the repository)
+    const getResult = await runCliCommand([
+      "vault",
+      "get",
+      "test-storage-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+
+    assertEquals(
+      getResult.code,
+      0,
+      `Vault get should succeed. stderr: ${getResult.stderr}`,
+    );
+
+    const output = JSON.parse(getResult.stdout);
+    assertEquals(output.name, "test-storage-vault");
+    assertEquals(output.type, "local_encryption");
+    assertStringIncludes(
+      output.storagePath,
+      ".data/vault/local_encryption/",
+      "Storage path should be in .data/vault/",
+    );
+  });
+});
+
+// ============================================================================
+// End-to-end vault expression tests
+// ============================================================================
+
+Deno.test("CLI: vault expression resolves secrets from created vault", async () => {
+  await withTempDir(async (repoDir) => {
+    // 1. Create a local_encryption vault via CLI
+    const vaultCreateResult = await runCliCommand([
+      "vault",
+      "create",
+      "local_encryption",
+      "e2e-test-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+    assertEquals(
+      vaultCreateResult.code,
+      0,
+      `Vault create should succeed. stderr: ${vaultCreateResult.stderr}`,
+    );
+
+    // 2. Create a vault model input to store a secret
+    const secretValue = "my-super-secret-api-key-12345";
+    // Use valid UUID v4 format (version 4 = third group starts with 4, variant = fourth group starts with 8-b)
+    const putInputId = "a1b2c3d4-e5f6-4789-8abc-def012345678";
+    const putInputContent = `
+id: ${putInputId}
+name: store-secret
+version: 1
+tags: {}
+attributes:
+  vaultName: e2e-test-vault
+  secretKey: api-key
+  secretValue: "${secretValue}"
+  operation: put
+`;
+    const vaultInputDir = join(
+      repoDir,
+      ".data",
+      "inputs",
+      "swamp",
+      "lets-get-sensitive",
+    );
+    await Deno.mkdir(vaultInputDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(vaultInputDir, `${putInputId}.yaml`),
+      putInputContent,
+    );
+
+    // Run the vault put method to store the secret
+    const putResult = await runCliCommand([
+      "model",
+      "method",
+      "run",
+      "store-secret",
+      "put",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+    assertEquals(
+      putResult.code,
+      0,
+      `Vault put should succeed. stderr: ${putResult.stderr}`,
+    );
+
+    // 3. Create an echo model input with a vault.get() expression
+    const echoInputId = "b2c3d4e5-f6a7-4890-9bcd-ef0123456789";
+    const echoInputContent = `
+id: ${echoInputId}
+name: echo-with-vault
+version: 1
+tags: {}
+attributes:
+  message: "\${{ vault.get(e2e-test-vault, api-key) }}"
+`;
+    const echoInputDir = join(repoDir, ".data", "inputs", "swamp", "echo");
+    await Deno.mkdir(echoInputDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(echoInputDir, `${echoInputId}.yaml`),
+      echoInputContent,
+    );
+
+    // 4. Evaluate the expression using model evaluate
+    const evalResult = await runCliCommand([
+      "model",
+      "evaluate",
+      "echo-with-vault",
+      "--repo-dir",
+      repoDir,
+      "--json",
+    ]);
+    assertEquals(
+      evalResult.code,
+      0,
+      `Model evaluate should succeed. stderr: ${evalResult.stderr}`,
+    );
+
+    // 5. Verify the evaluated input contains the resolved secret
+    const evaluatedInputPath = join(
+      repoDir,
+      ".data",
+      "inputs-evaluated",
+      "swamp",
+      "echo",
+      `${echoInputId}.yaml`,
+    );
+    assertEquals(
+      existsSync(evaluatedInputPath),
+      true,
+      "Evaluated input should exist",
+    );
+
+    const evaluatedContent = await Deno.readTextFile(evaluatedInputPath);
+    const evaluatedData = parseYaml(evaluatedContent) as Record<
+      string,
+      unknown
+    >;
+    const attributes = evaluatedData.attributes as Record<string, unknown>;
+
+    // The secret should be resolved in the evaluated input
+    assertEquals(
+      attributes.message,
+      secretValue,
+      "Vault expression should resolve to the secret value",
+    );
+  });
+});

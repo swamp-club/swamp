@@ -5,12 +5,40 @@ import {
   type LocalEncryptionConfig,
   LocalEncryptionVaultProvider,
 } from "./local_encryption_vault_provider.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
 /**
  * Service for managing vault providers and resolving vault operations.
  */
 export class VaultService {
   private readonly providers = new Map<string, VaultProvider>();
+
+  /**
+   * Creates a VaultService instance loaded with vault configurations from the repository.
+   * This is the preferred way to create a VaultService that should have access to
+   * all configured vaults.
+   *
+   * @param repoDir - The repository directory containing vault configurations
+   * @returns A VaultService with all configured vaults loaded
+   */
+  static async fromRepository(repoDir: string): Promise<VaultService> {
+    const vaultService = new VaultService();
+    try {
+      const vaultRepo = new YamlVaultConfigRepository(repoDir);
+      const vaultConfigs = await vaultRepo.findAll();
+      for (const vaultConfig of vaultConfigs) {
+        vaultService.registerVault({
+          name: vaultConfig.name,
+          type: vaultConfig.type as "aws" | "mock" | "local_encryption",
+          config: vaultConfig.config,
+        });
+      }
+    } catch {
+      // Repository may not exist yet, that's fine
+    }
+    vaultService.ensureDefaultVaults();
+    return vaultService;
+  }
 
   /**
    * Registers a vault provider with the given configuration.
@@ -51,14 +79,8 @@ export class VaultService {
       if (availableVaults.length === 0) {
         throw new Error(
           `Vault '${vaultName}' not found. No vaults are configured. ` +
-            `Add vault configuration to your .swamp.yaml file:\n\n` +
-            `vaults:\n` +
-            `  ${vaultName}:\n` +
-            `    type: aws  # or local_encryption\n` +
-            `    config:\n` +
-            `      region: us-east-1  # for aws\n` +
-            `      # ssh_key_path: "~/.ssh/id_rsa"  # for local_encryption\n` +
-            `      # auto_generate: true  # for local_encryption\n\n` +
+            `Create a vault using:\n\n` +
+            `  swamp vault create aws ${vaultName}\n\n` +
             `Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables for default vault.`,
         );
       } else {
@@ -66,7 +88,7 @@ export class VaultService {
           `Vault '${vaultName}' not found. Available vaults: ${
             availableVaults.join(", ")
           }. ` +
-            `Add '${vaultName}' to your .swamp.yaml vault configuration.`,
+            `Create '${vaultName}' using: swamp vault create <type> ${vaultName}`,
         );
       }
     }
@@ -88,14 +110,14 @@ export class VaultService {
       if (availableVaults.length === 0) {
         throw new Error(
           `Vault '${vaultName}' not found. No vaults are configured. ` +
-            `Add vault configuration to your .swamp.yaml file.`,
+            `Create a vault using: swamp vault create <type> ${vaultName}`,
         );
       } else {
         throw new Error(
           `Vault '${vaultName}' not found. Available vaults: ${
             availableVaults.join(", ")
           }. ` +
-            `Add '${vaultName}' to your .swamp.yaml vault configuration.`,
+            `Create '${vaultName}' using: swamp vault create <type> ${vaultName}`,
         );
       }
     }
