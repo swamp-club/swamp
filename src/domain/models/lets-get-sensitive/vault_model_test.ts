@@ -95,7 +95,10 @@ Deno.test("Vault Model - Get Operation", async () => {
       assertEquals(result.data.attributes.secretKey, "test-secret-key");
       assertEquals(result.data.attributes.operation, "get");
       assertEquals(result.data.attributes.success, true);
-      assertEquals(result.data.attributes.secretLength, "test-secret-value".length);
+      assertEquals(
+        result.data.attributes.secretLength,
+        "test-secret-value".length,
+      );
     }
   });
 });

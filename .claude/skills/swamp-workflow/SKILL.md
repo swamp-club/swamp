@@ -508,8 +508,10 @@ jobs:
 
 ### Vault Types and Configuration
 
-####
-Any vault that is referenced in a workflow file or step, must already exist in the .swamp.yaml otherwise an error should be thrown
+#### 
+
+Any vault that is referenced in a workflow file or step, must already exist in
+the .swamp.yaml otherwise an error should be thrown
 
 #### Local Encryption Vault
 
