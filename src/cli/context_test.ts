@@ -9,11 +9,13 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 // Initialize logging once before tests run
 await initializeLogging({ debugLogs: false });
 
-Deno.test("createContext returns json mode in non-TTY environment", () => {
-  // Tests run in a non-TTY environment, so auto-detection defaults to JSON
+Deno.test("createContext auto-detects output mode based on TTY state", () => {
+  // When no explicit mode is set, auto-detection uses TTY state:
+  // TTY = interactive, non-TTY = json
   const options: GlobalOptions = {};
   const context = createContext(options);
-  assertEquals(context.outputMode, "json");
+  const isTty = Deno.stdin.isTerminal();
+  assertEquals(context.outputMode, isTty ? "interactive" : "json");
 });
 
 Deno.test("createContext returns json mode when json option is true", () => {
@@ -61,10 +63,13 @@ Deno.test("createContext uses custom logger name when provided", () => {
   assertEquals(typeof context.logger.error, "function");
 });
 
-Deno.test("getOutputModeFromArgs returns json in non-TTY environment", () => {
-  // Tests run in a non-TTY environment, so auto-detection defaults to JSON
-  assertEquals(getOutputModeFromArgs([]), "json");
-  assertEquals(getOutputModeFromArgs(["model", "create"]), "json");
+Deno.test("getOutputModeFromArgs auto-detects based on TTY state", () => {
+  // When no explicit mode flag is passed, auto-detection uses TTY state:
+  // TTY = interactive, non-TTY = json
+  const isTty = Deno.stdin.isTerminal();
+  const expected = isTty ? "interactive" : "json";
+  assertEquals(getOutputModeFromArgs([]), expected);
+  assertEquals(getOutputModeFromArgs(["model", "create"]), expected);
 });
 
 Deno.test("getOutputModeFromArgs returns json when --json is present", () => {

@@ -10,13 +10,29 @@ retrieval and storage during workflow execution.
 The vault system is built around a named vault architecture where:
 
 - **Named Vaults**: Each vault instance has a user-defined name configured in
-  `.swamp.yaml`
+  `/.data/vault/{vault type}/{id}.yaml`
 - **Vault Types**: The underlying storage system (AWS Secrets Manager, HashiCorp
   Vault, etc.) is specified per vault
 - **Clean Interface**: All vaults implement a common interface for consistent
   access patterns
 - **Expression Integration**: Vaults are accessed through CEL expressions using
   `${{ vault.get(vault_name, key) }}` syntax
+
+## Logical Views
+
+The RepoIndexService maintains a vault-centric logical view at `/vaults/` that
+provides human/agent-friendly exploration of vaults by name.
+
+### Vault View Structure
+
+```
+/vaults/{vault-name}/
+  vault.yaml   → symlink to /.data/vault/{vault-type}/{id}.yaml
+```
+
+Since vault names are unique across all types, the logical view uses a flat
+structure that allows exploring vault definitions using human-readable names
+without needing to know the vault type.
 
 ## Vault Provider Interface
 
@@ -33,31 +49,6 @@ interface VaultProvider {
   // Validate the vault configuration
   validateConfig(): Promise<boolean>;
 }
-```
-
-## Configuration
-
-Vaults are configured in the `.swamp.yaml` file under the `vaults` section. Each
-vault has:
-
-- **name**: User-defined identifier for the vault
-- **type**: The vault provider type (e.g., `aws`)
-- **configuration**: Provider-specific settings
-
-```yaml
-vaults:
-  aws:
-    type: "aws"
-    region: "us-east-1"
-
-  backup:
-    type: "aws"
-    region: "us-west-2"
-
-  local-dev:
-    type: "aws"
-    region: "us-east-1"
-    profile: "development"
 ```
 
 ## Expression Syntax
@@ -81,7 +72,7 @@ The expression syntax is:
 
 - `vault.get(vault_name, key)` - Retrieve a secret from the named vault
 - `vault.put(vault_name, key, value)` - Store a secret value in the named vault
-- `vault_name` - References a configured vault in `.swamp.yaml`
+- `vault_name` - References a configured vault
 - `key` - The secret identifier within that vault
 - `value` - The value to store (for put operations)
 
@@ -353,3 +344,36 @@ All errors include:
 - Vault name and key information (when safe to expose)
 - Suggested resolution steps
 - Reference to relevant documentation sections
+
+## CLI Commands
+
+### vault type search
+
+Should work similarly to swamp type search - it uses fzf to search across all
+the available vault types. Should produce json output or use interactive fuzzy
+search.
+
+### vault create <type> <name>
+
+This will create a new vault of the specified type with the given name.
+
+### vault search
+
+Should work similarly to swamp vault type search - it uses fzf to search across
+all the initialised vaults in the current repository. Should produce json output
+or use interactive fuzzy search.
+
+### vault get <model_id_or_name>
+
+Shows the entire details of the vault configuration.
+
+when specifying json, it should have the same content.
+
+### vault edit [model_id_or_name]
+
+Opens the vault config file in the user's preferred editor.
+
+If no vault is specified interactively, shows a search interface.
+
+Editor selection: Uses $EDITOR if set, otherwise falls back to: vscode, zed,
+nvim, vim, nano, emacs.

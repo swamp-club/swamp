@@ -128,7 +128,10 @@ export type RepositoryEvent =
   | WorkflowDeleted
   | WorkflowRunStarted
   | WorkflowRunCompleted
-  | WorkflowRunFailed;
+  | WorkflowRunFailed
+  | VaultCreated
+  | VaultUpdated
+  | VaultDeleted;
 
 /**
  * Event type discriminator values.
@@ -282,6 +285,91 @@ export function createWorkflowRunFailed(
     workflowId,
     workflowName,
     runId,
+    timestamp: new Date(),
+  };
+}
+
+// ============================================================================
+// Vault Events
+// ============================================================================
+
+/**
+ * Emitted when a new vault configuration is created.
+ */
+export interface VaultCreated extends DomainEvent {
+  readonly type: "VaultCreated";
+  readonly vaultId: string;
+  readonly vaultType: string;
+  readonly vaultName: string;
+}
+
+/**
+ * Emitted when a vault configuration is updated.
+ */
+export interface VaultUpdated extends DomainEvent {
+  readonly type: "VaultUpdated";
+  readonly vaultId: string;
+  readonly vaultType: string;
+  readonly vaultName: string;
+}
+
+/**
+ * Emitted when a vault configuration is deleted.
+ */
+export interface VaultDeleted extends DomainEvent {
+  readonly type: "VaultDeleted";
+  readonly vaultId: string;
+  readonly vaultType: string;
+  readonly vaultName: string;
+}
+
+/**
+ * Creates a VaultCreated event.
+ */
+export function createVaultCreated(
+  vaultId: string,
+  vaultType: string,
+  vaultName: string,
+): VaultCreated {
+  return {
+    type: "VaultCreated",
+    vaultId,
+    vaultType,
+    vaultName,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Creates a VaultUpdated event.
+ */
+export function createVaultUpdated(
+  vaultId: string,
+  vaultType: string,
+  vaultName: string,
+): VaultUpdated {
+  return {
+    type: "VaultUpdated",
+    vaultId,
+    vaultType,
+    vaultName,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Creates a VaultDeleted event.
+ */
+export function createVaultDeleted(
+  vaultId: string,
+  vaultType: string,
+  vaultName: string,
+): VaultDeleted {
+  return {
+    type: "VaultDeleted",
+    vaultId,
+    vaultType,
+    vaultName,
     timestamp: new Date(),
   };
 }

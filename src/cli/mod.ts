@@ -7,6 +7,7 @@ import { typeCommand } from "./commands/type_describe.ts";
 import { repoCommand } from "./commands/repo_init.ts";
 import { workflowCommand } from "./commands/workflow.ts";
 import { completionCommand } from "./commands/completion.ts";
+import { vaultCommand } from "./commands/vault.ts";
 import type { GlobalOptions } from "./context.ts";
 import {
   ModelNameType,
@@ -107,6 +108,7 @@ export async function runCli(args: string[]): Promise<void> {
     .command("type", typeCommand)
     .command("repo", repoCommand)
     .command("workflow", workflowCommand)
+    .command("vault", vaultCommand)
     .command("completions", completionCommand);
 
   await cli.parse(args);

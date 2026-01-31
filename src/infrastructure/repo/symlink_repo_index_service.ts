@@ -18,6 +18,9 @@ import type {
   ModelCreated,
   ModelDeleted,
   ModelUpdated,
+  VaultCreated,
+  VaultDeleted,
+  VaultUpdated,
   WorkflowCreated,
   WorkflowDeleted,
   WorkflowRunCompleted,
@@ -34,6 +37,7 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
+import type { YamlVaultConfigRepository } from "../persistence/yaml_vault_config_repository.ts";
 
 const logger = getLogger(["swamp", "repo-index"]);
 
@@ -52,6 +56,7 @@ export interface SymlinkRepoIndexServiceConfig {
   inputRepo: InputRepository;
   workflowRepo: WorkflowRepository;
   workflowRunRepo: WorkflowRunRepository;
+  vaultConfigRepo?: YamlVaultConfigRepository;
   mode?: IndexMode;
 }
 
@@ -63,6 +68,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   private readonly inputRepo: InputRepository;
   private readonly workflowRepo: WorkflowRepository;
   private readonly workflowRunRepo: WorkflowRunRepository;
+  private readonly vaultConfigRepo: YamlVaultConfigRepository | null;
   private readonly mode: IndexMode;
 
   constructor(config: SymlinkRepoIndexServiceConfig) {
@@ -70,6 +76,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     this.inputRepo = config.inputRepo;
     this.workflowRepo = config.workflowRepo;
     this.workflowRunRepo = config.workflowRunRepo;
+    this.vaultConfigRepo = config.vaultConfigRepo ?? null;
     this.mode = config.mode ??
       (Deno.build.os === "windows" ? "junction" : "symlink");
   }
@@ -137,6 +144,23 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   }
 
   // ============================================================================
+  // Vault Event Handlers
+  // ============================================================================
+
+  async handleVaultCreated(event: VaultCreated): Promise<void> {
+    await this.indexVault(event.vaultId, event.vaultType, event.vaultName);
+  }
+
+  async handleVaultUpdated(event: VaultUpdated): Promise<void> {
+    await this.indexVault(event.vaultId, event.vaultType, event.vaultName);
+  }
+
+  async handleVaultDeleted(event: VaultDeleted): Promise<void> {
+    const vaultDir = join(this.repoDir, "vaults", event.vaultName);
+    await this.removeDirectory(vaultDir);
+  }
+
+  // ============================================================================
   // Maintenance Operations
   // ============================================================================
 
@@ -151,6 +175,10 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Check workflows directory
     const workflowsDir = join(this.repoDir, "workflows");
     await this.verifyDirectory(workflowsDir, brokenLinks, missingTargets);
+
+    // Check vaults directory
+    const vaultsDir = join(this.repoDir, "vaults");
+    await this.verifyDirectory(vaultsDir, brokenLinks, missingTargets);
 
     return {
       valid: brokenLinks.length === 0 && missingTargets.length === 0,
@@ -170,6 +198,10 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     const workflowsDir = join(this.repoDir, "workflows");
     await this.pruneDirectory(workflowsDir, removedLinks);
 
+    // Prune vaults directory
+    const vaultsDir = join(this.repoDir, "vaults");
+    await this.pruneDirectory(vaultsDir, removedLinks);
+
     return { removedLinks };
   }
 
@@ -177,10 +209,12 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Ensure index directories exist
     await ensureDir(join(this.repoDir, "models"));
     await ensureDir(join(this.repoDir, "workflows"));
+    await ensureDir(join(this.repoDir, "vaults"));
 
     let modelsIndexed = 0;
     let workflowsIndexed = 0;
     let workflowRunsIndexed = 0;
+    let vaultsIndexed = 0;
 
     // Get all models from data directory
     const allInputs = await this.inputRepo.findAllGlobal();
@@ -235,10 +269,34 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       }
     }
 
+    // Index vaults if repository is available
+    if (this.vaultConfigRepo) {
+      const allVaults = await this.vaultConfigRepo.findAll();
+      const dataVaultNames = new Set(allVaults.map((v) => v.name));
+
+      // Get existing indexed vault directories
+      const vaultsDir = join(this.repoDir, "vaults");
+      const indexedVaultNames = await this.getIndexedNames(vaultsDir);
+
+      // Remove indexes for vaults that no longer exist in data
+      for (const name of indexedVaultNames) {
+        if (!dataVaultNames.has(name)) {
+          await this.removeDirectory(join(vaultsDir, name));
+        }
+      }
+
+      // Index all vaults
+      for (const vault of allVaults) {
+        await this.indexVault(vault.id, vault.type, vault.name);
+        vaultsIndexed++;
+      }
+    }
+
     return {
       modelsIndexed,
       workflowsIndexed,
       workflowRunsIndexed,
+      vaultsIndexed,
     };
   }
 
@@ -430,6 +488,29 @@ export class SymlinkRepoIndexService implements RepoIndexService {
         }
       }
     }
+  }
+
+  /**
+   * Creates or updates the index for a vault.
+   * Structure: /vaults/{vault-name}/vault.yaml -> /.data/vault/{vault-type}/{id}.yaml
+   */
+  private async indexVault(
+    vaultId: string,
+    vaultType: string,
+    vaultName: string,
+  ): Promise<void> {
+    const vaultDir = join(this.repoDir, "vaults", vaultName);
+    await ensureDir(vaultDir);
+
+    // Symlink to vault.yaml
+    const vaultTarget = join(
+      this.repoDir,
+      ".data",
+      "vault",
+      vaultType,
+      `${vaultId}.yaml`,
+    );
+    await this.createSymlink(vaultTarget, join(vaultDir, "vault.yaml"));
   }
 
   /**

@@ -10,6 +10,9 @@ import type {
   ModelCreated,
   ModelDeleted,
   ModelUpdated,
+  VaultCreated,
+  VaultDeleted,
+  VaultUpdated,
   WorkflowCreated,
   WorkflowDeleted,
   WorkflowRunCompleted,
@@ -41,12 +44,13 @@ export interface RebuildResult {
   modelsIndexed: number;
   workflowsIndexed: number;
   workflowRunsIndexed: number;
+  vaultsIndexed: number;
 }
 
 /**
  * RepoIndexService interface for maintaining logical repository views.
  *
- * The service creates and maintains two logical view directories:
+ * The service creates and maintains three logical view directories:
  *
  * Model View (`/models/{model-name}/`):
  * ```
@@ -70,6 +74,11 @@ export interface RebuildResult {
  *       {step-name}/
  *         output.yaml → symlink to step output
  *         model/      → ../models/{model-name}/
+ * ```
+ *
+ * Vault View (`/vaults/{vault-type}/{vault-name}/`):
+ * ```
+ * vault.yaml      → ../.data/vault/{vault-type}/{id}.yaml
  * ```
  */
 export interface RepoIndexService {
@@ -138,6 +147,28 @@ export interface RepoIndexService {
    * Updates step output symlinks for the failed run.
    */
   handleWorkflowRunFailed(event: WorkflowRunFailed): Promise<void>;
+
+  // ============================================================================
+  // Vault Event Handlers
+  // ============================================================================
+
+  /**
+   * Handles a VaultCreated event.
+   * Creates the vault view directory with symlinks.
+   */
+  handleVaultCreated(event: VaultCreated): Promise<void>;
+
+  /**
+   * Handles a VaultUpdated event.
+   * Updates symlinks for the vault configuration.
+   */
+  handleVaultUpdated(event: VaultUpdated): Promise<void>;
+
+  /**
+   * Handles a VaultDeleted event.
+   * Removes the vault view directory.
+   */
+  handleVaultDeleted(event: VaultDeleted): Promise<void>;
 
   // ============================================================================
   // Maintenance Operations

@@ -46,6 +46,9 @@ import type {
   ModelCreated,
   ModelDeleted,
   ModelUpdated,
+  VaultCreated,
+  VaultDeleted,
+  VaultUpdated,
   WorkflowCreated,
   WorkflowDeleted,
   WorkflowRunCompleted,
@@ -53,6 +56,7 @@ import type {
   WorkflowRunStarted,
   WorkflowUpdated,
 } from "../../domain/events/types.ts";
+import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
 
 /**
  * Configuration for the repository factory.
@@ -76,6 +80,7 @@ export interface RepositoryContext {
   outputRepo: YamlOutputRepository;
   logRepo: StreamingLogRepository;
   fileRepo: FileSystemFileRepository;
+  vaultConfigRepo: YamlVaultConfigRepository;
 }
 
 /**
@@ -113,12 +118,19 @@ export function createRepositoryContext(
   const logRepo = new StreamingLogRepository(repoDir);
   const fileRepo = new FileSystemFileRepository(repoDir);
 
+  // Vault config repository with event bus
+  const vaultConfigRepo = new YamlVaultConfigRepository(
+    repoDir,
+    enableIndexing ? eventBus : undefined,
+  );
+
   // Create index service
   const indexService = new SymlinkRepoIndexService({
     repoDir,
     inputRepo,
     workflowRepo,
     workflowRunRepo,
+    vaultConfigRepo,
   });
 
   // Subscribe index service to events
@@ -159,6 +171,18 @@ export function createRepositoryContext(
       "WorkflowRunFailed",
       (event) => indexService.handleWorkflowRunFailed(event),
     );
+    eventBus.subscribe<VaultCreated>(
+      "VaultCreated",
+      (event) => indexService.handleVaultCreated(event),
+    );
+    eventBus.subscribe<VaultUpdated>(
+      "VaultUpdated",
+      (event) => indexService.handleVaultUpdated(event),
+    );
+    eventBus.subscribe<VaultDeleted>(
+      "VaultDeleted",
+      (event) => indexService.handleVaultDeleted(event),
+    );
   }
 
   return {
@@ -172,5 +196,6 @@ export function createRepositoryContext(
     outputRepo,
     logRepo,
     fileRepo,
+    vaultConfigRepo,
   };
 }
