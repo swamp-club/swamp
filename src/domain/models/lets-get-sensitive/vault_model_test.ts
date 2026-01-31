@@ -37,69 +37,93 @@ Deno.test("VaultInputAttributesSchema validates put operation", () => {
   assertEquals(result.success, true);
 });
 
-Deno.test("Vault Model - Get Operation", async () => {
-  const input = ModelInput.create({
-    name: "test-vault-get",
-    version: 1,
-    attributes: {
-      vaultName: "aws",
-      secretKey: "test-secret-key",
-      operation: "get",
-    },
-  });
+async function withTestRepo<T>(
+  fn: (repoDir: string) => Promise<T>,
+): Promise<T> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    // Create a test vault configuration
+    await Deno.writeTextFile(
+      `${tempDir}/.swamp.yaml`,
+      `
+vaults:
+  test-vault:
+    type: local_encryption
+    config:
+      auto_generate: true
+`,
+    );
 
-  const context = {
-    repoDir: "/tmp/test",
-  };
-
-  const result = await vaultModel.methods.get.execute(input, context);
-
-  assertEquals(result.data !== undefined, true);
-  if (result.data) {
-    assertEquals(result.data.attributes.vaultName, "aws");
-    assertEquals(result.data.attributes.secretKey, "test-secret-key");
-    assertEquals(result.data.attributes.operation, "get");
-    // Success depends on AWS credentials and secret existence
-    assertEquals(typeof result.data.attributes.success, "boolean");
-    if (result.data.attributes.success) {
-      assertEquals(typeof result.data.attributes.retrievedValue, "string");
-    } else {
-      assertEquals(typeof result.data.attributes.error, "string");
-    }
+    return await fn(tempDir);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
   }
+}
+
+Deno.test("Vault Model - Get Operation", async () => {
+  await withTestRepo(async (repoDir) => {
+    // First store a secret
+    const putInput = ModelInput.create({
+      name: "test-vault-put-setup",
+      version: 1,
+      attributes: {
+        vaultName: "test-vault",
+        secretKey: "test-secret-key",
+        secretValue: "test-secret-value",
+        operation: "put",
+      },
+    });
+
+    await vaultModel.methods.put.execute(putInput, { repoDir });
+
+    // Now test getting the secret
+    const getInput = ModelInput.create({
+      name: "test-vault-get",
+      version: 1,
+      attributes: {
+        vaultName: "test-vault",
+        secretKey: "test-secret-key",
+        operation: "get",
+      },
+    });
+
+    const result = await vaultModel.methods.get.execute(getInput, { repoDir });
+
+    assertEquals(result.data !== undefined, true);
+    if (result.data) {
+      assertEquals(result.data.attributes.vaultName, "test-vault");
+      assertEquals(result.data.attributes.secretKey, "test-secret-key");
+      assertEquals(result.data.attributes.operation, "get");
+      assertEquals(result.data.attributes.success, true);
+      assertEquals(result.data.attributes.secretLength, "test-secret-value".length);
+    }
+  });
 });
 
 Deno.test("Vault Model - Put Operation", async () => {
-  const input = ModelInput.create({
-    name: "test-vault-put",
-    version: 1,
-    attributes: {
-      vaultName: "aws",
-      secretKey: "test-secret-key",
-      secretValue: "sensitive-data-value",
-      operation: "put",
-    },
-  });
+  await withTestRepo(async (repoDir) => {
+    const input = ModelInput.create({
+      name: "test-vault-put",
+      version: 1,
+      attributes: {
+        vaultName: "test-vault",
+        secretKey: "test-secret-key",
+        secretValue: "test-secret-value",
+        operation: "put",
+      },
+    });
 
-  const context = {
-    repoDir: "/tmp/test",
-  };
+    const result = await vaultModel.methods.put.execute(input, { repoDir });
 
-  const result = await vaultModel.methods.put.execute(input, context);
-
-  assertEquals(result.data !== undefined, true);
-  if (result.data) {
-    assertEquals(result.data.attributes.vaultName, "aws");
-    assertEquals(result.data.attributes.secretKey, "test-secret-key");
-    assertEquals(result.data.attributes.operation, "put");
-    // Success depends on AWS credentials and permissions
-    assertEquals(typeof result.data.attributes.success, "boolean");
-    if (result.data.attributes.success) {
+    assertEquals(result.data !== undefined, true);
+    if (result.data) {
+      assertEquals(result.data.attributes.vaultName, "test-vault");
+      assertEquals(result.data.attributes.secretKey, "test-secret-key");
+      assertEquals(result.data.attributes.operation, "put");
+      assertEquals(result.data.attributes.success, true);
       assertEquals(result.data.attributes.storedKey, "test-secret-key");
-    } else {
-      assertEquals(typeof result.data.attributes.error, "string");
     }
-  }
+  });
 });
 
 Deno.test("Vault Model - Get with wrong operation fails", async () => {

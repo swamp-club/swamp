@@ -184,7 +184,8 @@ vaults:
 
 ## Vault Model
 
-A dedicated `swamp/lets-get-sensitive` model provides direct vault operations in workflows:
+A dedicated `swamp/lets-get-sensitive` model provides direct vault operations in
+workflows:
 
 ### Input Attributes
 

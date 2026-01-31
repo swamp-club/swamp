@@ -77,7 +77,11 @@ export class VaultService {
   /**
    * Stores a secret in the specified vault.
    */
-  async put(vaultName: string, secretKey: string, secretValue: string): Promise<void> {
+  async put(
+    vaultName: string,
+    secretKey: string,
+    secretValue: string,
+  ): Promise<void> {
     const provider = this.providers.get(vaultName);
     if (!provider) {
       const availableVaults = Array.from(this.providers.keys());

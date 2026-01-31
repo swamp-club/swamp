@@ -13,6 +13,21 @@ import type { ModelInput } from "../model_input.ts";
 import { VaultService } from "../../vaults/vault_service.ts";
 
 /**
+ * Interface for vault configuration in .swamp.yaml
+ */
+interface VaultConfig {
+  type: string;
+  config: Record<string, unknown>;
+}
+
+/**
+ * Interface for the root configuration object
+ */
+interface SwampConfig {
+  vaults?: Record<string, VaultConfig>;
+}
+
+/**
  * Schema for vault model input attributes.
  */
 export const VaultInputAttributesSchema = z.object({
@@ -63,29 +78,29 @@ export const VAULT_MODEL_TYPE = ModelType.create("swamp/lets-get-sensitive");
  */
 function createVaultService(context: MethodContext): VaultService {
   const vaultService = new VaultService();
-  
+
   // Load vault configuration from the repository
   try {
     const configPath = `${context.repoDir}/.swamp.yaml`;
     const configText = Deno.readTextFileSync(configPath);
-    const config = parse(configText) as any;
-    
+    const config = parse(configText) as SwampConfig;
+
     if (config.vaults) {
       for (const [name, vaultConfig] of Object.entries(config.vaults)) {
         vaultService.registerVault({
           name,
-          type: (vaultConfig as any).type,
-          config: (vaultConfig as any).config,
+          type: vaultConfig.type,
+          config: vaultConfig.config,
         });
       }
     }
-  } catch (error) {
+  } catch (_error) {
     // Ignore file read errors - vault service will provide helpful error messages
   }
-  
+
   // Ensure default vaults are set up if needed
   vaultService.ensureDefaultVaults();
-  
+
   return vaultService;
 }
 
@@ -113,10 +128,15 @@ async function executeGet(
 
   try {
     const vaultService = createVaultService(_context);
-    vaultLog.log(`[vault] Created VaultService for repository: ${_context.repoDir}`);
+    vaultLog.log(
+      `[vault] Created VaultService for repository: ${_context.repoDir}`,
+    );
 
     vaultLog.log(`[vault] Retrieving secret from vault '${attrs.vaultName}'`);
-    const retrievedValue = await vaultService.get(attrs.vaultName, attrs.secretKey);
+    const retrievedValue = await vaultService.get(
+      attrs.vaultName,
+      attrs.secretKey,
+    );
 
     vaultLog.log(
       `[vault] ✅ Secret retrieved successfully (length: ${retrievedValue.length} characters)`,
@@ -177,7 +197,9 @@ async function executePut(
 
   try {
     const vaultService = createVaultService(_context);
-    vaultLog.log(`[vault] Created VaultService for repository: ${_context.repoDir}`);
+    vaultLog.log(
+      `[vault] Created VaultService for repository: ${_context.repoDir}`,
+    );
 
     vaultLog.log(`[vault] Storing secret in vault '${attrs.vaultName}'`);
     await vaultService.put(attrs.vaultName, attrs.secretKey, attrs.secretValue);
