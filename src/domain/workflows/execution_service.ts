@@ -219,6 +219,8 @@ export class DefaultStepExecutor implements StepExecutor {
     let resourceId: string | undefined;
     let resourcePath = "";
     let resourceAttributes: Record<string, unknown> = {};
+    let dataId: string | undefined;
+    let dataAttributes: Record<string, unknown> = {};
 
     try {
       // Execute the method with EVALUATED input
@@ -258,6 +260,8 @@ export class DefaultStepExecutor implements StepExecutor {
         } else {
           await dataRepo.save(modelType, result.data);
           output.setDataId(result.data.id);
+          dataId = result.data.id;
+          dataAttributes = result.data.attributes;
         }
 
         // Update ORIGINAL input's dataId (preserves expressions)
@@ -337,6 +341,8 @@ export class DefaultStepExecutor implements StepExecutor {
       resourceId: resourceId ?? "",
       resourcePath,
       resourceAttributes,
+      dataId: dataId ?? "",
+      dataAttributes,
     };
   }
 
@@ -419,6 +425,7 @@ export class WorkflowExecutionService {
   private readonly executor: StepExecutor;
   private readonly inputRepo: YamlInputRepository;
   private readonly resourceRepo: YamlResourceRepository;
+  private readonly dataRepo: YamlDataRepository;
   private readonly modelResolver: ModelResolver;
 
   constructor(
@@ -430,7 +437,10 @@ export class WorkflowExecutionService {
     this.executor = executor ?? new DefaultStepExecutor();
     this.inputRepo = new YamlInputRepository(repoDir);
     this.resourceRepo = new YamlResourceRepository(repoDir);
-    this.modelResolver = new ModelResolver(this.inputRepo, this.resourceRepo);
+    this.dataRepo = new YamlDataRepository(repoDir);
+    this.modelResolver = new ModelResolver(this.inputRepo, this.resourceRepo, {
+      dataRepo: this.dataRepo,
+    });
   }
 
   /**
@@ -709,26 +719,36 @@ export class WorkflowExecutionService {
 
       const output = await this.executor.execute(step, ctx);
 
-      // Update expression context with new resource data if this was a model method
+      // Update expression context with new resource/data if this was a model method
       if (step.task.isModelMethod() && output && typeof output === "object") {
         const taskOutput = output as {
           model?: string;
           resourceId?: string;
           resourceAttributes?: Record<string, unknown>;
+          dataId?: string;
+          dataAttributes?: Record<string, unknown>;
         };
-        if (
-          taskOutput.model && taskOutput.resourceId &&
-          taskOutput.resourceAttributes
-        ) {
-          // Update the context with the new resource data
+        if (taskOutput.model) {
           const modelData = expressionContext.model[taskOutput.model];
           if (modelData) {
-            modelData.resource = {
-              id: taskOutput.resourceId,
-              version: 1,
-              createdAt: new Date().toISOString(),
-              attributes: taskOutput.resourceAttributes,
-            };
+            // Update resource if present
+            if (taskOutput.resourceId && taskOutput.resourceAttributes) {
+              modelData.resource = {
+                id: taskOutput.resourceId,
+                version: 1,
+                createdAt: new Date().toISOString(),
+                attributes: taskOutput.resourceAttributes,
+              };
+            }
+            // Update data if present
+            if (taskOutput.dataId && taskOutput.dataAttributes) {
+              modelData.data = {
+                id: taskOutput.dataId,
+                version: 1,
+                createdAt: new Date().toISOString(),
+                attributes: taskOutput.dataAttributes,
+              };
+            }
           }
         }
       }
