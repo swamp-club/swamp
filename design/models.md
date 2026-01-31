@@ -40,10 +40,10 @@ A model can migrate its inputs and resources from one version to the next.
 
 ## Inputs
 
-Inputs are specified as YAML files that live in the `/data/inputs/` directory of
-a repository, underneath the normalized type as a directory. The file name is
+Inputs are specified as YAML files that live in the `/.data/inputs/` directory
+of a repository, underneath the normalized type as a directory. The file name is
 `${id}.yaml`. For example,
-`data/inputs/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
+`.data/inputs/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
 
 The valid shape of an input is specified with a Zod 4 schema.
 
@@ -79,7 +79,7 @@ method.
 ### Logs
 
 A method may produce 0..\* log artifacts. They have a name, can have lines
-streamed to them, and by default are stored in `/data/logs/` in the repository
+streamed to them, and by default are stored in `/.data/logs/` in the repository
 underneath the normalized model type as a directory. Logs are named like
 `{model-id}-{method name}-{log name}-{timestamp}.log`.
 
@@ -91,17 +91,17 @@ artifact named 'k8slog'.
 The stream of log output should have an event emitter attached to it, so we can
 stream logs in real time.
 
-By default, the `/data/logs/` directory is not stored in git.
+By default, the `/.data/logs/` directory is not stored in git.
 
 ### Files
 
 A method may store 0..\* file artifacts. They have a name, and can be written to
-directly. By default they will be stored in the `/data/files/` directory of the
+directly. By default they will be stored in the `/.data/files/` directory of the
 repository underneath the normalized model type as a directory plus the model ID
 and method name. For example
-`data/files/aws/s3/bucket/{model-id}/{method-name}/{filename}`.
+`.data/files/aws/s3/bucket/{model-id}/{method-name}/{filename}`.
 
-By default, the `/data/files/` directory is not stored in git.
+By default, the `/.data/files/` directory is not stored in git.
 
 ## Resource
 
@@ -109,9 +109,9 @@ Resource artifacts are used to track data about an external resource that should
 be persisted over time (for example, the data about an AWS cloud resource).
 
 A method may produce 0..1 resource as specified as YAML files that live in the
-`/data/resources/` directory of a repository, underneath the normalized type as
+`/.data/resources/` directory of a repository, underneath the normalized type as
 a directory. The file name is `${id}.yaml`. For example,
-`data/resources/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
+`.data/resources/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
 
 The valid shape of a resource is specified with a Zod 4 schema.
 
@@ -122,7 +122,7 @@ Resources are tracked in git.
 Data artifacts are pure data objects that are not persisted over time in git.
 
 A method may produce 0..1 data artifacts, stored as YAML files in the
-`/data/data/` directory of a repository, underneath the normalized type as a
+`/.data/data/` directory of a repository, underneath the normalized type as a
 directory. The file name is `${id}.yaml`.
 
 The valid shape of data is specified with a Zod 4 schema.
@@ -151,11 +151,11 @@ Use **data artifacts** when:
 ## Output
 
 Each method invocation produces an output record, which gets tracked in the
-`/data/outputs/` directory of a repository (which should not be tracked in git).
-The output record should track the state of the method execution, and the list
-of artifacts produced by the method. It should track state as the method
+`/.data/outputs/` directory of a repository (which should not be tracked in
+git). The output record should track the state of the method execution, and the
+list of artifacts produced by the method. It should track state as the method
 executes. It should be structured as
-`/data/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml`.
+`/.data/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml`.
 
 ## Logical Views
 
@@ -166,13 +166,13 @@ provides human/agent-friendly exploration of models by name.
 
 ```
 /models/{model-name}/
-  input.yaml      → symlink to /data/inputs/{type}/{id}.yaml
-  resource.yaml   → symlink to /data/resources/{type}/{id}.yaml
-  data.yaml       → symlink to /data/data/{type}/{id}.yaml
-  logs/           → symlink to /data/logs/{type}/{id}/
-  files/          → symlink to /data/files/{type}/{id}/
+  input.yaml      → symlink to /.data/inputs/{type}/{id}.yaml
+  resource.yaml   → symlink to /.data/resources/{type}/{id}.yaml
+  data.yaml       → symlink to /.data/data/{type}/{id}.yaml
+  logs/           → symlink to /.data/logs/{type}/{id}/
+  files/          → symlink to /.data/files/{type}/{id}/
   outputs/
-    {method}/     → symlinks to /data/outputs/{type}/{method}/{id}-*.yaml
+    {method}/     → symlinks to /.data/outputs/{type}/{method}/{id}-*.yaml
 ```
 
 This structure allows exploring all artifacts for a model in one place, using

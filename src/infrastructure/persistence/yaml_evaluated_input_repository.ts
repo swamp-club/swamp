@@ -88,7 +88,7 @@ export class YamlEvaluatedInputRepository {
       await Deno.remove(path);
 
       // Clean up empty parent directories
-      const evaluatedDir = join(this.repoDir, "data", "inputs-evaluated");
+      const evaluatedDir = join(this.repoDir, ".data", "inputs-evaluated");
       await cleanupEmptyParentDirs(path, evaluatedDir);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
@@ -101,7 +101,7 @@ export class YamlEvaluatedInputRepository {
    * Clears all evaluated inputs.
    */
   async clear(): Promise<void> {
-    const dir = join(this.repoDir, "data", "inputs-evaluated");
+    const dir = join(this.repoDir, ".data", "inputs-evaluated");
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {
@@ -121,7 +121,7 @@ export class YamlEvaluatedInputRepository {
   private getTypeDir(type: ModelType): string {
     return join(
       this.repoDir,
-      "data",
+      ".data",
       "inputs-evaluated",
       type.toDirectoryPath(),
     );

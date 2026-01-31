@@ -50,22 +50,22 @@ export interface RebuildResult {
  *
  * Model View (`/models/{model-name}/`):
  * ```
- * input.yaml      → ../data/inputs/{type}/{id}.yaml
- * resource.yaml   → ../data/resources/{type}/{id}.yaml
- * data.yaml       → ../data/data/{type}/{id}.yaml
- * logs/           → ../data/logs/{type}/{id}/
- * files/          → ../data/files/{type}/{id}/
+ * input.yaml      → ../.data/inputs/{type}/{id}.yaml
+ * resource.yaml   → ../.data/resources/{type}/{id}.yaml
+ * data.yaml       → ../.data/data/{type}/{id}.yaml
+ * logs/           → ../.data/logs/{type}/{id}/
+ * files/          → ../.data/files/{type}/{id}/
  * outputs/
- *   {method}/     → ../data/outputs/{type}/{method}/
+ *   {method}/     → ../.data/outputs/{type}/{method}/
  * ```
  *
  * Workflow View (`/workflows/{workflow-name}/`):
  * ```
- * workflow.yaml   → ../data/workflows/workflow-{id}.yaml
+ * workflow.yaml   → ../.data/workflows/workflow-{id}.yaml
  * runs/
  *   latest/       → {latest-timestamp}/
  *   {timestamp}/
- *     run.yaml    → ../data/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
+ *     run.yaml    → ../.data/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
  *     steps/
  *       {step-name}/
  *         output.yaml → symlink to step output
@@ -161,7 +161,7 @@ export interface RepoIndexService {
    * Rebuilds all logical views from scratch.
    *
    * Deletes existing /models/ and /workflows/ directories
-   * and recreates them from the /data/ directory.
+   * and recreates them from the /.data/ directory.
    *
    * @returns Rebuild result with counts
    */

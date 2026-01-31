@@ -147,6 +147,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   private getWorkflowsDir(): string {
-    return join(this.repoDir, "data", "workflows");
+    return join(this.repoDir, ".data", "workflows");
   }
 }

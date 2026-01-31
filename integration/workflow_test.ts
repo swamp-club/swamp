@@ -1121,7 +1121,7 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
     assertEquals(createResult.code, 0, "Model create should succeed");
 
     // Verify the directory structure was created
-    const inputsDir = `${repoDir}/data/inputs`;
+    const inputsDir = `${repoDir}/.data/inputs`;
     const echoDir = `${inputsDir}/swamp/echo`;
     const swampDir = `${inputsDir}/swamp`;
 

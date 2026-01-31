@@ -77,7 +77,7 @@ export class YamlInputRepository implements InputRepository {
   async findByNameGlobal(
     name: string,
   ): Promise<{ input: ModelInput; type: ModelType } | null> {
-    const inputsDir = join(this.repoDir, "data", "inputs");
+    const inputsDir = join(this.repoDir, ".data", "inputs");
     return await this.searchInputByName(inputsDir, [], name);
   }
 
@@ -130,7 +130,7 @@ export class YamlInputRepository implements InputRepository {
    * Finds all inputs across all model types in the repository.
    */
   async findAllGlobal(): Promise<{ input: ModelInput; type: ModelType }[]> {
-    const inputsDir = join(this.repoDir, "data", "inputs");
+    const inputsDir = join(this.repoDir, ".data", "inputs");
     const results: { input: ModelInput; type: ModelType }[] = [];
     await this.collectAllInputs(inputsDir, [], results);
     return results;
@@ -226,7 +226,7 @@ export class YamlInputRepository implements InputRepository {
       await Deno.remove(path);
 
       // Clean up empty parent directories
-      const inputsDir = join(this.repoDir, "data", "inputs");
+      const inputsDir = join(this.repoDir, ".data", "inputs");
       await cleanupEmptyParentDirs(path, inputsDir);
 
       // Emit event if we had a name
@@ -250,6 +250,6 @@ export class YamlInputRepository implements InputRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "data", "inputs", type.toDirectoryPath());
+    return join(this.repoDir, ".data", "inputs", type.toDirectoryPath());
   }
 }

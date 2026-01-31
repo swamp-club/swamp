@@ -22,7 +22,7 @@ are the recommended way to explore and understand the repository structure.
 
 ### Data Directory (Direct Access)
 
-The `/data/` directory contains the internal storage format. Agents can access
+The `/.data/` directory contains the internal storage format. Agents can access
 it directly when needed, but the layout reflects swamp's internal architecture
 rather than user-facing concerns.
 
