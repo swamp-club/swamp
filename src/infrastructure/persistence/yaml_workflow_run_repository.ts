@@ -11,15 +11,24 @@ import {
   WorkflowRun,
   type WorkflowRunData,
 } from "../../domain/workflows/workflow_run.ts";
+import type { EventBus } from "../../domain/events/event_bus.ts";
+import {
+  createWorkflowRunCompleted,
+  createWorkflowRunFailed,
+  createWorkflowRunStarted,
+} from "../../domain/events/types.ts";
 
 /**
  * YAML-based implementation of WorkflowRunRepository.
  *
  * Stores workflow runs as YAML files in the directory structure:
- * {repoDir}/workflows/workflow-{workflowId}/workflow-run-{runId}-{timestamp}.yaml
+ * {repoDir}/data/workflow-runs/{workflowId}/workflow-run-{runId}.yaml
  */
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
-  constructor(private readonly repoDir: string) {}
+  constructor(
+    private readonly repoDir: string,
+    private readonly eventBus?: EventBus,
+  ) {}
 
   async findById(
     workflowId: WorkflowId,
@@ -96,13 +105,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     { run: WorkflowRun; workflowId: WorkflowId }[]
   > {
     const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
-    const workflowsDir = join(this.repoDir, "workflows");
+    const workflowRunsDir = join(this.repoDir, "data", "workflow-runs");
 
     try {
-      for await (const entry of Deno.readDir(workflowsDir)) {
-        if (entry.isDirectory && entry.name.startsWith("workflow-")) {
-          // Extract workflow ID from directory name (format: workflow-{uuid})
-          const workflowIdStr = entry.name.slice("workflow-".length);
+      for await (const entry of Deno.readDir(workflowRunsDir)) {
+        if (entry.isDirectory) {
+          // Directory name is the workflow ID
+          const workflowIdStr = entry.name;
           const workflowId = workflowIdStr as WorkflowId;
           const runs = await this.findAllByWorkflowId(workflowId);
           for (const run of runs) {
@@ -130,11 +139,54 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     await ensureDir(dir);
 
     const path = this.getPath(workflowId, run.id);
+
+    // Get the previous status to detect state changes
+    let previousStatus: string | undefined;
+    if (this.eventBus) {
+      const existingRun = await this.findById(workflowId, run.id);
+      previousStatus = existingRun?.status;
+    }
+
     const data = run.toData();
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await Deno.writeTextFile(path, content);
+
+    // Emit events based on status changes
+    if (this.eventBus) {
+      const currentStatus = run.status;
+
+      if (previousStatus !== currentStatus) {
+        // Emit WorkflowRunStarted for new runs (previousStatus undefined) or
+        // transitions from pending to running
+        if (
+          currentStatus === "running" &&
+          (previousStatus === "pending" || previousStatus === undefined)
+        ) {
+          const event = createWorkflowRunStarted(
+            workflowId,
+            run.workflowName,
+            run.id,
+          );
+          await this.eventBus.publish(event);
+        } else if (currentStatus === "succeeded") {
+          const event = createWorkflowRunCompleted(
+            workflowId,
+            run.workflowName,
+            run.id,
+          );
+          await this.eventBus.publish(event);
+        } else if (currentStatus === "failed") {
+          const event = createWorkflowRunFailed(
+            workflowId,
+            run.workflowName,
+            run.id,
+          );
+          await this.eventBus.publish(event);
+        }
+      }
+    }
   }
 
   nextId(): WorkflowRunId {
@@ -149,6 +201,28 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   private getRunsDir(workflowId: WorkflowId): string {
-    return join(this.repoDir, "workflows", `workflow-${workflowId}`);
+    return join(this.repoDir, "data", "workflow-runs", workflowId);
+  }
+
+  async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
+    const dir = this.getRunsDir(workflowId);
+
+    // Count the runs before deleting
+    const runs = await this.findAllByWorkflowId(workflowId);
+    const count = runs.length;
+
+    if (count === 0) {
+      return 0;
+    }
+
+    try {
+      await Deno.remove(dir, { recursive: true });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    return count;
   }
 }

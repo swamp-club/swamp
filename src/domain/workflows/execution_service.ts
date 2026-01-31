@@ -249,19 +249,6 @@ export class DefaultStepExecutor implements StepExecutor {
           // Track artifact in output
           output.setResourceId(result.resource.id);
         }
-
-        // Update ORIGINAL input's resourceId (preserves expressions)
-        if (result.deleteResource) {
-          if (originalInput.resourceId) {
-            originalInput.setResourceId(undefined);
-            await inputRepo.save(modelType, originalInput);
-          }
-        } else {
-          if (!originalInput.resourceId) {
-            originalInput.setResourceId(result.resource.id);
-            await inputRepo.save(modelType, originalInput);
-          }
-        }
       }
 
       // Handle data artifact persistence

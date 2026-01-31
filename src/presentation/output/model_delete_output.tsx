@@ -14,6 +14,9 @@ export interface ModelDeleteData {
   inputPath: string;
   resourcePath?: string;
   resourceDeleted: boolean;
+  outputsDeleted: number;
+  evaluatedInputDeleted: boolean;
+  dataDeleted: boolean;
 }
 
 /**
@@ -28,6 +31,9 @@ export interface ModelDeleteJsonOutput {
     resourcePath?: string;
   };
   resourceDeleted: boolean;
+  outputsDeleted: number;
+  evaluatedInputDeleted: boolean;
+  dataDeleted: boolean;
 }
 
 /**
@@ -46,6 +52,9 @@ export function renderModelDelete(
         inputPath: data.inputPath,
       },
       resourceDeleted: data.resourceDeleted,
+      outputsDeleted: data.outputsDeleted,
+      evaluatedInputDeleted: data.evaluatedInputDeleted,
+      dataDeleted: data.dataDeleted,
     };
     if (data.resourcePath) {
       output.deleted.resourcePath = data.resourcePath;
@@ -68,6 +77,9 @@ interface ModelDeleteDisplayProps {
   inputPath: string;
   resourcePath?: string;
   resourceDeleted: boolean;
+  outputsDeleted: number;
+  evaluatedInputDeleted: boolean;
+  dataDeleted: boolean;
 }
 
 /**
@@ -98,8 +110,26 @@ export function ModelDeleteDisplay(
         </Text>
         {props.resourceDeleted && props.resourcePath && (
           <Text>
-            <Text color="cyan">Resource also deleted:</Text>
+            <Text color="cyan">Resource deleted:</Text>
             <Text dimColor>{props.resourcePath}</Text>
+          </Text>
+        )}
+        {props.outputsDeleted > 0 && (
+          <Text>
+            <Text color="cyan">Outputs deleted:</Text>
+            <Text>{props.outputsDeleted}</Text>
+          </Text>
+        )}
+        {props.evaluatedInputDeleted && (
+          <Text>
+            <Text color="cyan">Evaluated input deleted:</Text>
+            <Text>yes</Text>
+          </Text>
+        )}
+        {props.dataDeleted && (
+          <Text>
+            <Text color="cyan">Data artifact deleted:</Text>
+            <Text>yes</Text>
           </Text>
         )}
       </Box>

@@ -267,3 +267,33 @@ Deno.test("transformHyphenatedModelRefs handles multiple hyphens", () => {
     'model["a-b-c-d"].resource.id',
   );
 });
+
+Deno.test("CelEvaluator evaluates env variable access", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    env: { HOME: "/home/user", USER: "testuser" },
+  };
+  assertEquals(evaluator.evaluate("env.HOME", context), "/home/user");
+  assertEquals(evaluator.evaluate("env.USER", context), "testuser");
+});
+
+Deno.test("CelEvaluator evaluates env in string concatenation", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    env: { PREFIX: "prod" },
+    model: {
+      vpc: {
+        input: {
+          attributes: {
+            name: "main",
+          },
+        },
+      },
+    },
+  };
+  const result = evaluator.evaluate(
+    'env.PREFIX + "-" + model.vpc.input.attributes.name',
+    context,
+  );
+  assertEquals(result, "prod-main");
+});

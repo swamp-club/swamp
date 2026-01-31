@@ -36,6 +36,14 @@ const MODEL_PATH_PATTERN =
 const SELF_PATH_PATTERN = /\bself((?:\.[a-zA-Z0-9_]+|\[\d+\])*)/g;
 
 /**
+ * Pattern to match env references with full paths.
+ * Matches: env.<variable_name>
+ *
+ * Group 1: variable name (allows underscores, letters, digits)
+ */
+const ENV_PATH_PATTERN = /\benv\.([a-zA-Z_][a-zA-Z0-9_]*)/g;
+
+/**
  * Represents a self-reference path extracted from an expression.
  */
 export interface SelfPathReference {
@@ -44,6 +52,16 @@ export interface SelfPathReference {
   /** The full path string (e.g., "attributes.VpcId") */
   fullPath: string;
   /** The raw expression that was matched (e.g., "self.attributes.VpcId") */
+  rawExpression: string;
+}
+
+/**
+ * Represents an environment variable reference extracted from an expression.
+ */
+export interface EnvPathReference {
+  /** The environment variable name */
+  variableName: string;
+  /** The raw expression that was matched (e.g., "env.HOME") */
   rawExpression: string;
 }
 
@@ -139,6 +157,36 @@ export function extractSelfReferences(
       references.push({
         path,
         fullPath,
+        rawExpression,
+      });
+    }
+  }
+
+  return references;
+}
+
+/**
+ * Extracts environment variable references from a CEL expression.
+ *
+ * @param expression - The CEL expression to analyze
+ * @returns Array of env references found in the expression
+ */
+export function extractEnvReferences(
+  expression: string,
+): EnvPathReference[] {
+  const references: EnvPathReference[] = [];
+  const seen = new Set<string>();
+
+  const matches = expression.matchAll(ENV_PATH_PATTERN);
+  for (const match of matches) {
+    const variableName = match[1];
+    const rawExpression = match[0];
+
+    // Deduplicate based on raw expression
+    if (!seen.has(rawExpression)) {
+      seen.add(rawExpression);
+      references.push({
+        variableName,
         rawExpression,
       });
     }

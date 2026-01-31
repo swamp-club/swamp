@@ -10,7 +10,9 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
+import { YamlDataRepository } from "../src/infrastructure/persistence/yaml_data_repository.ts";
 import { ModelInput } from "../src/domain/models/model_input.ts";
+import { createModelDataId } from "../src/domain/models/model_data.ts";
 import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -25,12 +27,14 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 async function runCliCommand(
   args: string[],
   cwd: string,
+  env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const command = new Deno.Command(Deno.execPath(), {
     args: ["task", "dev", ...args],
     stdout: "piped",
     stderr: "piped",
     cwd,
+    env: env ? { ...Deno.env.toObject(), ...env } : undefined,
   });
 
   const { code, stdout, stderr } = await command.output();
@@ -854,5 +858,548 @@ Deno.test("CLI: workflow run succeeds with self reference expressions", async ()
 
     const output = JSON.parse(result.stdout);
     assertEquals(output.status, "succeeded");
+  });
+});
+
+// Model deletion blocked by workflow reference tests
+
+Deno.test("CLI: model delete blocked when referenced by workflow, succeeds after workflow deleted", async () => {
+  await withTempDir(async (repoDir) => {
+    // Step 1: Create a model using CLI
+    const createModelResult = await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "my-test-model",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      createModelResult.code,
+      0,
+      `Model create should succeed. stderr: ${createModelResult.stderr}`,
+    );
+
+    const modelOutput = JSON.parse(createModelResult.stdout);
+    assertEquals(modelOutput.name, "my-test-model");
+    const modelId = modelOutput.id;
+
+    // Step 2: Create a workflow that references the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "workflow-using-model",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-echo",
+              task: StepTask.modelMethod("my-test-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Step 3: Try to delete the model - should fail because workflow references it
+    const deleteModelBlockedResult = await runCliCommand(
+      [
+        "model",
+        "delete",
+        "my-test-model",
+        "--repo-dir",
+        repoDir,
+        "--force",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      deleteModelBlockedResult.code !== 0,
+      true,
+      "Model delete should fail when referenced by workflow",
+    );
+    assertStringIncludes(
+      deleteModelBlockedResult.stderr,
+      "workflow-using-model",
+    );
+    assertStringIncludes(
+      deleteModelBlockedResult.stderr,
+      "referenced by workflow",
+    );
+
+    // Step 4: Delete the workflow using CLI
+    const deleteWorkflowResult = await runCliCommand(
+      [
+        "workflow",
+        "delete",
+        "workflow-using-model",
+        "--repo-dir",
+        repoDir,
+        "--force",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      deleteWorkflowResult.code,
+      0,
+      `Workflow delete should succeed. stderr: ${deleteWorkflowResult.stderr}`,
+    );
+
+    const workflowDeleteOutput = JSON.parse(deleteWorkflowResult.stdout);
+    assertEquals(workflowDeleteOutput.deleted.name, "workflow-using-model");
+
+    // Step 5: Now model delete should succeed
+    const deleteModelSuccessResult = await runCliCommand(
+      [
+        "model",
+        "delete",
+        modelId,
+        "--repo-dir",
+        repoDir,
+        "--force",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      deleteModelSuccessResult.code,
+      0,
+      `Model delete should succeed after workflow deleted. stderr: ${deleteModelSuccessResult.stderr}`,
+    );
+
+    const modelDeleteOutput = JSON.parse(deleteModelSuccessResult.stdout);
+    assertEquals(modelDeleteOutput.deleted.name, "my-test-model");
+    assertEquals(modelDeleteOutput.deleted.id, modelId);
+  });
+});
+
+Deno.test("CLI: model delete blocked when referenced by workflow using model ID", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = ModelInput.create({
+      name: "id-ref-model",
+      attributes: {
+        message: "test message",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, input);
+
+    // Create a workflow that references the model by ID (not name)
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "workflow-using-id",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-echo",
+              // Reference by ID instead of name
+              task: StepTask.modelMethod(input.id, "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Try to delete the model - should fail because workflow references it by ID
+    const deleteModelResult = await runCliCommand(
+      [
+        "model",
+        "delete",
+        "id-ref-model",
+        "--repo-dir",
+        repoDir,
+        "--force",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      deleteModelResult.code !== 0,
+      true,
+      "Model delete should fail when referenced by workflow using ID",
+    );
+    assertStringIncludes(
+      deleteModelResult.stderr,
+      "workflow-using-id",
+    );
+  });
+});
+
+Deno.test("CLI: model delete succeeds when not referenced by any workflow", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model
+    const createModelResult = await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "standalone-model",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(createModelResult.code, 0);
+
+    // Create a workflow that does NOT reference the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "unrelated-workflow",
+      jobs: [
+        Job.create({
+          name: "shell-job",
+          steps: [
+            Step.create({
+              name: "echo-step",
+              task: StepTask.shell("echo", { args: ["hello"] }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Delete the model - should succeed because workflow doesn't reference it
+    const deleteModelResult = await runCliCommand(
+      [
+        "model",
+        "delete",
+        "standalone-model",
+        "--repo-dir",
+        repoDir,
+        "--force",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      deleteModelResult.code,
+      0,
+      `Model delete should succeed. stderr: ${deleteModelResult.stderr}`,
+    );
+
+    const output = JSON.parse(deleteModelResult.stdout);
+    assertEquals(output.deleted.name, "standalone-model");
+  });
+});
+
+Deno.test("CLI: model delete cleans up empty type directories", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model using CLI
+    const createResult = await runCliCommand(
+      [
+        "model",
+        "create",
+        "swamp/echo",
+        "cleanup-test-model",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(createResult.code, 0, "Model create should succeed");
+
+    // Verify the directory structure was created
+    const inputsDir = `${repoDir}/data/inputs`;
+    const echoDir = `${inputsDir}/swamp/echo`;
+    const swampDir = `${inputsDir}/swamp`;
+
+    // Check that directories exist using Deno.stat
+    const echoStatBefore = await Deno.stat(echoDir).catch(() => null);
+    assertEquals(
+      echoStatBefore !== null && echoStatBefore.isDirectory,
+      true,
+      "swamp/echo directory should exist before delete",
+    );
+
+    // Delete the model
+    const deleteResult = await runCliCommand(
+      [
+        "model",
+        "delete",
+        "cleanup-test-model",
+        "--repo-dir",
+        repoDir,
+        "--force",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      deleteResult.code,
+      0,
+      `Model delete should succeed. stderr: ${deleteResult.stderr}`,
+    );
+
+    // Verify the swamp/echo directory was cleaned up (should not exist)
+    const echoStatAfter = await Deno.stat(echoDir).catch(() => null);
+    assertEquals(
+      echoStatAfter,
+      null,
+      "swamp/echo directory should be cleaned up",
+    );
+
+    // Verify the swamp directory was also cleaned up
+    const swampStatAfter = await Deno.stat(swampDir).catch(() => null);
+    assertEquals(
+      swampStatAfter,
+      null,
+      "swamp directory should be cleaned up",
+    );
+
+    // But inputs directory should still exist
+    const inputsStatAfter = await Deno.stat(inputsDir).catch(() => null);
+    assertEquals(
+      inputsStatAfter !== null && inputsStatAfter.isDirectory,
+      true,
+      "inputs directory should still exist",
+    );
+  });
+});
+
+Deno.test("CLI: workflow delete command removes workflow and all runs", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a workflow
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "delete-test-workflow",
+      jobs: [
+        Job.create({
+          name: "echo-job",
+          steps: [
+            Step.create({
+              name: "echo-step",
+              task: StepTask.shell("echo", { args: ["hello"] }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow to create run history
+    const runResult = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "delete-test-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(runResult.code, 0, "Workflow run should succeed");
+
+    // Delete the workflow
+    const deleteResult = await runCliCommand(
+      [
+        "workflow",
+        "delete",
+        "delete-test-workflow",
+        "--repo-dir",
+        repoDir,
+        "--force",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      deleteResult.code,
+      0,
+      `Workflow delete should succeed. stderr: ${deleteResult.stderr}`,
+    );
+
+    const output = JSON.parse(deleteResult.stdout);
+    assertEquals(output.deleted.name, "delete-test-workflow");
+    assertEquals(output.runsDeleted, 1);
+
+    // Verify workflow is gone
+    const getResult = await runCliCommand(
+      [
+        "workflow",
+        "get",
+        "delete-test-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(getResult.code !== 0, true, "Workflow should not exist");
+    assertStringIncludes(getResult.stderr, "not found");
+  });
+});
+
+// Environment variable expression tests
+
+Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model with an env variable expression
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = ModelInput.create({
+      name: "env-test-model",
+      attributes: {
+        // Use env variable expression
+        message: "${{ env.SWAMP_TEST_VAR }}",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, input);
+
+    // Create a workflow that runs the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "env-var-workflow",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-echo",
+              task: StepTask.modelMethod("env-test-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow with env var set
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "env-var-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+      { SWAMP_TEST_VAR: "hello-from-env" },
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+    assertEquals(output.jobs[0].steps[0].status, "succeeded");
+
+    // Verify the data artifact contains the evaluated env var
+    const dataRepo = new YamlDataRepository(repoDir);
+    const updatedInput = await inputRepo.findByName(
+      ECHO_MODEL_TYPE,
+      input.name,
+    );
+    if (!updatedInput?.dataId) {
+      throw new Error("Expected dataId to be set after workflow run");
+    }
+
+    const dataArtifact = await dataRepo.findById(
+      ECHO_MODEL_TYPE,
+      createModelDataId(updatedInput.dataId),
+    );
+    assertEquals(dataArtifact?.attributes.message, "hello-from-env");
+  });
+});
+
+Deno.test("CLI: workflow run evaluates inline env expression with surrounding text", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model with an inline env expression (not the entire value)
+    const inputRepo = new YamlInputRepository(repoDir);
+
+    const inlineEnvModel = ModelInput.create({
+      name: "inline-env-model",
+      attributes: {
+        // Inline env expression with surrounding text
+        message: "prefix-${{ env.SWAMP_VAR }}-suffix",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, inlineEnvModel);
+
+    // Create a workflow that runs the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "inline-env-workflow",
+      jobs: [
+        Job.create({
+          name: "run-model",
+          steps: [
+            Step.create({
+              name: "write-inline",
+              task: StepTask.modelMethod("inline-env-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow with env var set
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "inline-env-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+      { SWAMP_VAR: "middle" },
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}, stdout: ${result.stdout}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+
+    // Verify the model's data has the evaluated expression
+    const dataRepo = new YamlDataRepository(repoDir);
+    const updatedModel = await inputRepo.findByName(
+      ECHO_MODEL_TYPE,
+      inlineEnvModel.name,
+    );
+    if (!updatedModel?.dataId) {
+      throw new Error("Expected dataId to be set after workflow run");
+    }
+
+    const dataArtifact = await dataRepo.findById(
+      ECHO_MODEL_TYPE,
+      createModelDataId(updatedModel.dataId),
+    );
+    assertEquals(dataArtifact?.attributes.message, "prefix-middle-suffix");
   });
 });

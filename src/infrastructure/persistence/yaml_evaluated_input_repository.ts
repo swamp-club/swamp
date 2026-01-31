@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import {
@@ -11,7 +12,7 @@ import {
 /**
  * Repository for storing evaluated model inputs.
  *
- * Writes to {repoDir}/inputs-evaluated/{normalized-type}/{id}.yaml
+ * Writes to {repoDir}/data/inputs-evaluated/{normalized-type}/{id}.yaml
  * This directory contains inputs with all expressions resolved.
  */
 export class YamlEvaluatedInputRepository {
@@ -85,6 +86,10 @@ export class YamlEvaluatedInputRepository {
     const path = this.getPath(type, id);
     try {
       await Deno.remove(path);
+
+      // Clean up empty parent directories
+      const evaluatedDir = join(this.repoDir, "data", "inputs-evaluated");
+      await cleanupEmptyParentDirs(path, evaluatedDir);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
@@ -96,7 +101,7 @@ export class YamlEvaluatedInputRepository {
    * Clears all evaluated inputs.
    */
   async clear(): Promise<void> {
-    const dir = join(this.repoDir, "inputs-evaluated");
+    const dir = join(this.repoDir, "data", "inputs-evaluated");
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {
@@ -114,6 +119,11 @@ export class YamlEvaluatedInputRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "inputs-evaluated", type.toDirectoryPath());
+    return join(
+      this.repoDir,
+      "data",
+      "inputs-evaluated",
+      type.toDirectoryPath(),
+    );
   }
 }

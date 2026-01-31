@@ -11,12 +11,19 @@ import type { YamlDataRepository } from "../../infrastructure/persistence/yaml_d
 import type { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
 import type { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
-import { createModelResourceId } from "../models/model_resource.ts";
+import { inputIdToResourceId } from "../models/model_resource.ts";
 import { createModelDataId } from "../models/model_data.ts";
 import { createModelFileId } from "../models/model_file.ts";
 import { createModelLogId } from "../models/model_log.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+
+/**
+ * Builds env context from Deno environment variables.
+ */
+export function buildEnvContext(): Record<string, string> {
+  return { ...Deno.env.toObject() };
+}
 
 /**
  * Data about a single model for CEL context.
@@ -90,6 +97,8 @@ export interface ExpressionContext {
   vault?: {
     get(vaultName: string, secretKey: string): string;
   };
+  /** Environment variables */
+  env: Record<string, string>;
   /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }
@@ -141,6 +150,7 @@ export class ModelResolver {
   ): Promise<ExpressionContext> {
     const context: ExpressionContext = {
       model: {},
+      env: buildEnvContext(),
     };
 
     // Load all inputs
@@ -186,18 +196,16 @@ export class ModelResolver {
       },
     };
 
-    // Load resource if available
-    if (input.resourceId) {
-      const resourceId = createModelResourceId(input.resourceId);
-      const resource = await this.resourceRepo.findById(type, resourceId);
-      if (resource) {
-        data.resource = {
-          id: resource.id,
-          version: resource.version,
-          createdAt: resource.createdAt.toISOString(),
-          attributes: resource.attributes,
-        };
-      }
+    // Load resource if available (resource ID equals input ID by convention)
+    const resourceId = inputIdToResourceId(input.id);
+    const resource = await this.resourceRepo.findById(type, resourceId);
+    if (resource) {
+      data.resource = {
+        id: resource.id,
+        version: resource.version,
+        createdAt: resource.createdAt.toISOString(),
+        attributes: resource.attributes,
+      };
     }
 
     // Load data artifact if available
@@ -306,12 +314,12 @@ export class ModelResolver {
     // Try by name first
     const byName = await this.inputRepo.findByNameGlobal(modelRef);
     if (byName) {
-      const resource = byName.input.resourceId
-        ? await this.resourceRepo.findById(
-          byName.type,
-          createModelResourceId(byName.input.resourceId),
-        )
-        : undefined;
+      // Resource ID equals input ID by convention
+      const resourceId = inputIdToResourceId(byName.input.id);
+      const resource = await this.resourceRepo.findById(
+        byName.type,
+        resourceId,
+      );
       return {
         input: byName.input,
         type: byName.type,
@@ -323,12 +331,9 @@ export class ModelResolver {
     const allInputs = await this.inputRepo.findAllGlobal();
     for (const { input, type } of allInputs) {
       if (input.id === modelRef) {
-        const resource = input.resourceId
-          ? await this.resourceRepo.findById(
-            type,
-            createModelResourceId(input.resourceId),
-          )
-          : undefined;
+        // Resource ID equals input ID by convention
+        const resourceId = inputIdToResourceId(input.id);
+        const resource = await this.resourceRepo.findById(type, resourceId);
         return { input, type, resource: resource ?? undefined };
       }
     }

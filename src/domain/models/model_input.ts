@@ -17,7 +17,6 @@ export function createModelInputId(id: string): ModelInputId {
  */
 export const ModelInputSchema = z.object({
   id: z.string().uuid(),
-  resourceId: z.string().uuid().optional(),
   dataId: z.string().uuid().optional(),
   fileId: z.string().uuid().optional(),
   logId: z.string().uuid().optional(),
@@ -39,7 +38,6 @@ export interface CreateModelInputProps {
   id?: string;
   name: string;
   version?: number;
-  resourceId?: string;
   dataId?: string;
   fileId?: string;
   logId?: string;
@@ -56,7 +54,6 @@ export interface CreateModelInputProps {
 export class ModelInput {
   private constructor(
     readonly id: ModelInputId,
-    private _resourceId: string | undefined,
     private _dataId: string | undefined,
     private _fileId: string | undefined,
     private _logId: string | undefined,
@@ -78,7 +75,6 @@ export class ModelInput {
 
     const validated = ModelInputSchema.parse({
       id,
-      resourceId: props.resourceId,
       dataId: props.dataId,
       fileId: props.fileId,
       logId: props.logId,
@@ -90,7 +86,6 @@ export class ModelInput {
 
     return new ModelInput(
       createModelInputId(validated.id),
-      validated.resourceId,
       validated.dataId,
       validated.fileId,
       validated.logId,
@@ -111,7 +106,6 @@ export class ModelInput {
     const validated = ModelInputSchema.parse(data);
     return new ModelInput(
       createModelInputId(validated.id),
-      validated.resourceId,
       validated.dataId,
       validated.fileId,
       validated.logId,
@@ -120,13 +114,6 @@ export class ModelInput {
       validated.tags,
       validated.attributes,
     );
-  }
-
-  /**
-   * Returns the resource ID if one has been assigned.
-   */
-  get resourceId(): string | undefined {
-    return this._resourceId;
   }
 
   /**
@@ -162,13 +149,6 @@ export class ModelInput {
    */
   get attributes(): Record<string, unknown> {
     return { ...this._attributes };
-  }
-
-  /**
-   * Sets the resource ID for this input.
-   */
-  setResourceId(resourceId: string | undefined): void {
-    this._resourceId = resourceId;
   }
 
   /**
@@ -219,7 +199,6 @@ export class ModelInput {
   toData(): ModelInputData {
     return {
       id: this.id,
-      resourceId: this._resourceId,
       dataId: this._dataId,
       fileId: this._fileId,
       logId: this._logId,

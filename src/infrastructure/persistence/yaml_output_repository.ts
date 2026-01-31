@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { ModelInputId } from "../../domain/models/model_input.ts";
@@ -16,7 +17,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
  * YAML-based implementation of OutputRepository.
  *
  * Stores outputs as YAML files in the directory structure:
- * {repoDir}/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml
+ * {repoDir}/data/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml
  */
 export class YamlOutputRepository implements OutputRepository {
   constructor(private readonly repoDir: string) {}
@@ -152,6 +153,10 @@ export class YamlOutputRepository implements OutputRepository {
           const data = parseYaml(content) as ModelOutputData;
           if (data.id === id) {
             await Deno.remove(path);
+
+            // Clean up empty parent directories
+            const outputsDir = join(this.repoDir, "data", "outputs");
+            await cleanupEmptyParentDirs(path, outputsDir);
             return;
           }
         }
@@ -174,7 +179,7 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   private getOutputsDir(): string {
-    return join(this.repoDir, "outputs");
+    return join(this.repoDir, "data", "outputs");
   }
 
   private getTypeDir(type: ModelType): string {

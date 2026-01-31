@@ -86,6 +86,9 @@ export class RepoService {
     const markerData = this.markerRepo.createInitMarker(this.currentVersion);
     await this.markerRepo.write(repoPath, markerData);
 
+    // Create data directory structure
+    await this.createDataDirectoryStructure(repoPath);
+
     // Copy skills
     const skillsDir = join(repoPath.value, ".claude", "skills");
     await this.skillAssets.copySkillsTo(skillsDir);
@@ -194,5 +197,30 @@ Always start by using the \`swamp-model\` skill to work with swamp models.
 
 Use \`swamp --help\` to see available commands.
 `;
+  }
+
+  /**
+   * Creates the data directory structure for storing repository artifacts.
+   */
+  private async createDataDirectoryStructure(
+    repoPath: RepoPath,
+  ): Promise<void> {
+    const dataDir = join(repoPath.value, "data");
+    const subdirs = [
+      "inputs",
+      "resources",
+      "workflows",
+      "data",
+      "outputs",
+      "workflow-runs",
+      "inputs-evaluated",
+      "workflows-evaluated",
+      "logs",
+      "files",
+    ];
+
+    for (const subdir of subdirs) {
+      await ensureDir(join(dataDir, subdir));
+    }
   }
 }

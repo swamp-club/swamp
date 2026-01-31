@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { InputRepository } from "../../domain/models/repositories.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -9,15 +10,24 @@ import {
   type ModelInputData,
   type ModelInputId,
 } from "../../domain/models/model_input.ts";
+import type { EventBus } from "../../domain/events/event_bus.ts";
+import {
+  createModelCreated,
+  createModelDeleted,
+  createModelUpdated,
+} from "../../domain/events/types.ts";
 
 /**
  * YAML-based implementation of InputRepository.
  *
  * Stores inputs as YAML files in the directory structure:
- * {repoDir}/inputs/{normalized-type}/{id}.yaml
+ * {repoDir}/data/inputs/{normalized-type}/{id}.yaml
  */
 export class YamlInputRepository implements InputRepository {
-  constructor(private readonly repoDir: string) {}
+  constructor(
+    private readonly repoDir: string,
+    private readonly eventBus?: EventBus,
+  ) {}
 
   async findById(
     type: ModelType,
@@ -67,7 +77,7 @@ export class YamlInputRepository implements InputRepository {
   async findByNameGlobal(
     name: string,
   ): Promise<{ input: ModelInput; type: ModelType } | null> {
-    const inputsDir = join(this.repoDir, "inputs");
+    const inputsDir = join(this.repoDir, "data", "inputs");
     return await this.searchInputByName(inputsDir, [], name);
   }
 
@@ -120,7 +130,7 @@ export class YamlInputRepository implements InputRepository {
    * Finds all inputs across all model types in the repository.
    */
   async findAllGlobal(): Promise<{ input: ModelInput; type: ModelType }[]> {
-    const inputsDir = join(this.repoDir, "inputs");
+    const inputsDir = join(this.repoDir, "data", "inputs");
     const results: { input: ModelInput; type: ModelType }[] = [];
     await this.collectAllInputs(inputsDir, [], results);
     return results;
@@ -168,17 +178,62 @@ export class YamlInputRepository implements InputRepository {
     await ensureDir(dir);
 
     const path = this.getPath(type, input.id);
+
+    // Check if this is a new input or an update
+    const isNew = !(await this.exists(path));
+
     const data = input.toData();
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await Deno.writeTextFile(path, content);
+
+    // Emit event
+    if (this.eventBus) {
+      const event = isNew
+        ? createModelCreated(type.normalized, input.id, input.name)
+        : createModelUpdated(type.normalized, input.id, input.name);
+      await this.eventBus.publish(event);
+    }
+  }
+
+  /**
+   * Checks if a file exists.
+   */
+  private async exists(path: string): Promise<boolean> {
+    try {
+      await Deno.stat(path);
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async delete(type: ModelType, id: ModelInputId): Promise<void> {
     const path = this.getPath(type, id);
+
+    // Get the input name before deleting for the event
+    let inputName: string | undefined;
+    if (this.eventBus) {
+      const input = await this.findById(type, id);
+      inputName = input?.name;
+    }
+
     try {
       await Deno.remove(path);
+
+      // Clean up empty parent directories
+      const inputsDir = join(this.repoDir, "data", "inputs");
+      await cleanupEmptyParentDirs(path, inputsDir);
+
+      // Emit event if we had a name
+      if (this.eventBus && inputName) {
+        const event = createModelDeleted(type.normalized, id, inputName);
+        await this.eventBus.publish(event);
+      }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
@@ -195,6 +250,6 @@ export class YamlInputRepository implements InputRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "inputs", type.toDirectoryPath());
+    return join(this.repoDir, "data", "inputs", type.toDirectoryPath());
   }
 }

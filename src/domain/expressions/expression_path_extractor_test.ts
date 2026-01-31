@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
+  extractEnvReferences,
   extractPathReferences,
   extractSelfReferences,
 } from "./expression_path_extractor.ts";
@@ -150,4 +151,62 @@ Deno.test("extractSelfReferences does not match 'myself'", () => {
 Deno.test("extractSelfReferences returns empty for no self references", () => {
   const refs = extractSelfReferences("model.vpc.input.x");
   assertEquals(refs.length, 0);
+});
+
+// extractEnvReferences tests
+
+Deno.test("extractEnvReferences extracts simple env reference", () => {
+  const refs = extractEnvReferences("env.HOME");
+  assertEquals(refs.length, 1);
+  assertEquals(refs[0].variableName, "HOME");
+  assertEquals(refs[0].rawExpression, "env.HOME");
+});
+
+Deno.test("extractEnvReferences extracts multiple env references", () => {
+  const refs = extractEnvReferences("env.HOME + env.USER");
+  assertEquals(refs.length, 2);
+  assertEquals(refs[0].variableName, "HOME");
+  assertEquals(refs[1].variableName, "USER");
+});
+
+Deno.test("extractEnvReferences deduplicates identical references", () => {
+  const refs = extractEnvReferences("env.HOME + env.HOME");
+  assertEquals(refs.length, 1);
+  assertEquals(refs[0].variableName, "HOME");
+});
+
+Deno.test("extractEnvReferences handles underscores in variable names", () => {
+  const refs = extractEnvReferences("env.AWS_REGION");
+  assertEquals(refs.length, 1);
+  assertEquals(refs[0].variableName, "AWS_REGION");
+});
+
+Deno.test("extractEnvReferences handles digits in variable names", () => {
+  const refs = extractEnvReferences("env.VAR123");
+  assertEquals(refs.length, 1);
+  assertEquals(refs[0].variableName, "VAR123");
+});
+
+Deno.test("extractEnvReferences handles complex variable names", () => {
+  const refs = extractEnvReferences("env.MY_APP_CONFIG_V2");
+  assertEquals(refs.length, 1);
+  assertEquals(refs[0].variableName, "MY_APP_CONFIG_V2");
+});
+
+Deno.test("extractEnvReferences returns empty for no env references", () => {
+  const refs = extractEnvReferences("model.vpc.input.x + self.name");
+  assertEquals(refs.length, 0);
+});
+
+Deno.test("extractEnvReferences does not match 'myenv'", () => {
+  const refs = extractEnvReferences("myenv.HOME");
+  assertEquals(refs.length, 0);
+});
+
+Deno.test("extractEnvReferences handles env mixed with model refs", () => {
+  const refs = extractEnvReferences(
+    "env.PREFIX + model.vpc.resource.attributes.id",
+  );
+  assertEquals(refs.length, 1);
+  assertEquals(refs[0].variableName, "PREFIX");
 });

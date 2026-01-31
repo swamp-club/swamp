@@ -8,6 +8,27 @@ description: Work with swamp workflows for AI-native automation. Use when search
 Work with swamp workflows through the CLI. All commands support `--json` for
 machine-readable output.
 
+## Repository Structure
+
+Swamp uses a dual-layer architecture:
+
+- **Data directory (`/data/`)** - Internal storage organized by entity type
+- **Logical views (`/workflows/`)** - Human-friendly symlinked directories
+
+The `/workflows/` directory provides convenient exploration of each workflow:
+
+```
+/workflows/{workflow-name}/
+  workflow.yaml → ../data/workflows/{id}.yaml
+  runs/
+    latest → {most-recent-run}/
+    {timestamp}/
+      run.yaml → ../data/workflow-runs/{id}/{run-id}.yaml
+```
+
+This structure is maintained automatically. Use `swamp repo index` to rebuild if
+needed.
+
 ## Quick Reference
 
 | Task              | Command                                       |

@@ -24,7 +24,7 @@ Deno.test("YamlResourceRepository.save creates directory structure", async () =>
 
     await repo.save(type, resource);
 
-    const expectedDir = join(dir, "resources", "swamp/echo");
+    const expectedDir = join(dir, "data", "resources", "swamp/echo");
     const stat = await Deno.stat(expectedDir);
     assertEquals(stat.isDirectory, true);
   });
@@ -143,6 +143,6 @@ Deno.test("YamlResourceRepository.getPath returns correct path", () => {
   const path = repo.getPath(type, id);
   assertEquals(
     path,
-    "/repo/resources/swamp/echo/550e8400-e29b-41d4-a716-446655440001.yaml",
+    "/repo/data/resources/swamp/echo/550e8400-e29b-41d4-a716-446655440001.yaml",
   );
 });
