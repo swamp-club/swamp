@@ -31,14 +31,14 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function setupRepoDir(dir: string): Promise<void> {
   const subdirs = [
-    "data/inputs",
-    "data/resources",
-    "data/data",
-    "data/outputs",
-    "data/workflows",
-    "data/workflow-runs",
-    "data/logs",
-    "data/files",
+    ".data/inputs",
+    ".data/resources",
+    ".data/data",
+    ".data/outputs",
+    ".data/workflows",
+    ".data/workflow-runs",
+    ".data/logs",
+    ".data/files",
     "models",
     "workflows",
   ];
@@ -318,7 +318,7 @@ Deno.test("Integration: repo index verify detects broken symlinks", async () => 
     const modelDir = join(repoDir, "models", "broken-model");
     await ensureDir(modelDir);
     await Deno.symlink(
-      "../data/inputs/nonexistent/file.yaml",
+      "../.data/inputs/nonexistent/file.yaml",
       join(modelDir, "input.yaml"),
     );
 
@@ -341,7 +341,7 @@ Deno.test("Integration: repo index prune removes broken symlinks", async () => {
     await ensureDir(modelDir);
     const brokenLink = join(modelDir, "input.yaml");
     await Deno.symlink(
-      "../data/inputs/nonexistent/file.yaml",
+      "../.data/inputs/nonexistent/file.yaml",
       brokenLink,
     );
 
@@ -453,7 +453,7 @@ Deno.test("CLI: repo index --verify fails on broken symlinks", async () => {
     const modelDir = join(repoDir, "models", "broken-verify-test");
     await ensureDir(modelDir);
     await Deno.symlink(
-      "../data/inputs/nonexistent/file.yaml",
+      "../.data/inputs/nonexistent/file.yaml",
       join(modelDir, "input.yaml"),
     );
 
@@ -481,7 +481,7 @@ Deno.test("CLI: repo index --prune removes broken symlinks", async () => {
     await ensureDir(modelDir);
     const brokenLink = join(modelDir, "input.yaml");
     await Deno.symlink(
-      "../data/inputs/nonexistent/file.yaml",
+      "../.data/inputs/nonexistent/file.yaml",
       brokenLink,
     );
 

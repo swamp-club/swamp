@@ -155,7 +155,7 @@ export class YamlOutputRepository implements OutputRepository {
             await Deno.remove(path);
 
             // Clean up empty parent directories
-            const outputsDir = join(this.repoDir, "data", "outputs");
+            const outputsDir = join(this.repoDir, ".data", "outputs");
             await cleanupEmptyParentDirs(path, outputsDir);
             return;
           }
@@ -179,7 +179,7 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   private getOutputsDir(): string {
-    return join(this.repoDir, "data", "outputs");
+    return join(this.repoDir, ".data", "outputs");
   }
 
   private getTypeDir(type: ModelType): string {

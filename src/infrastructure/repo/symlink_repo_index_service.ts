@@ -278,7 +278,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
 
     // Symlink to input.yaml
     const inputTarget = join(
-      "data",
+      ".data",
       "inputs",
       modelType,
       `${modelInputId}.yaml`,
@@ -290,7 +290,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
 
     // Symlink to resource.yaml if it exists
     const resourceTarget = join(
-      "data",
+      ".data",
       "resources",
       modelType,
       `${modelInputId}.yaml`,
@@ -301,21 +301,21 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     }
 
     // Symlink to data.yaml if it exists
-    const dataTarget = join("data", "data", modelType, `${modelInputId}.yaml`);
+    const dataTarget = join(".data", "data", modelType, `${modelInputId}.yaml`);
     const dataPath = join(this.repoDir, dataTarget);
     if (await this.exists(dataPath)) {
       await this.createSymlink(dataPath, join(modelDir, "data.yaml"));
     }
 
     // Symlink to logs directory if it exists
-    const logsTarget = join("data", "logs", modelType, modelInputId);
+    const logsTarget = join(".data", "logs", modelType, modelInputId);
     const logsPath = join(this.repoDir, logsTarget);
     if (await this.exists(logsPath)) {
       await this.createSymlink(logsPath, join(modelDir, "logs"));
     }
 
     // Symlink to files directory if it exists
-    const filesTarget = join("data", "files", modelType, modelInputId);
+    const filesTarget = join(".data", "files", modelType, modelInputId);
     const filesPath = join(this.repoDir, filesTarget);
     if (await this.exists(filesPath)) {
       await this.createSymlink(filesPath, join(modelDir, "files"));
@@ -326,7 +326,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     await ensureDir(outputsDir);
 
     // Scan for output method directories
-    const methodsDir = join(this.repoDir, "data", "outputs", modelType);
+    const methodsDir = join(this.repoDir, ".data", "outputs", modelType);
     if (await this.exists(methodsDir)) {
       try {
         for await (const entry of Deno.readDir(methodsDir)) {
@@ -358,7 +358,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Symlink to workflow.yaml
     const workflowTarget = join(
       this.repoDir,
-      "data",
+      ".data",
       "workflows",
       `workflow-${workflowId}.yaml`,
     );
@@ -404,7 +404,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Symlink to run.yaml
     const runTarget = join(
       this.repoDir,
-      "data",
+      ".data",
       "workflow-runs",
       workflowId,
       `workflow-run-${runId}.yaml`,

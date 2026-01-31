@@ -105,7 +105,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     { run: WorkflowRun; workflowId: WorkflowId }[]
   > {
     const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
-    const workflowRunsDir = join(this.repoDir, "data", "workflow-runs");
+    const workflowRunsDir = join(this.repoDir, ".data", "workflow-runs");
 
     try {
       for await (const entry of Deno.readDir(workflowRunsDir)) {
@@ -201,7 +201,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   private getRunsDir(workflowId: WorkflowId): string {
-    return join(this.repoDir, "data", "workflow-runs", workflowId);
+    return join(this.repoDir, ".data", "workflow-runs", workflowId);
   }
 
   async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {

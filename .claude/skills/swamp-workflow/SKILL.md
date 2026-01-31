@@ -12,18 +12,18 @@ machine-readable output.
 
 Swamp uses a dual-layer architecture:
 
-- **Data directory (`/data/`)** - Internal storage organized by entity type
+- **Data directory (`/.data/`)** - Internal storage organized by entity type
 - **Logical views (`/workflows/`)** - Human-friendly symlinked directories
 
 The `/workflows/` directory provides convenient exploration of each workflow:
 
 ```
 /workflows/{workflow-name}/
-  workflow.yaml → ../data/workflows/{id}.yaml
+  workflow.yaml → ../.data/workflows/{id}.yaml
   runs/
     latest → {most-recent-run}/
     {timestamp}/
-      run.yaml → ../data/workflow-runs/{id}/{run-id}.yaml
+      run.yaml → ../.data/workflow-runs/{id}/{run-id}.yaml
 ```
 
 This structure is maintained automatically. Use `swamp repo index` to rebuild if

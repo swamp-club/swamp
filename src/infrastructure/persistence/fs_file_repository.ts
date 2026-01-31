@@ -178,7 +178,7 @@ export class FileSystemFileRepository implements FileRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "data", "files", type.toDirectoryPath());
+    return join(this.repoDir, ".data", "files", type.toDirectoryPath());
   }
 
   private getFileDir(

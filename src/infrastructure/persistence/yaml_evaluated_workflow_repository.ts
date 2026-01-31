@@ -98,6 +98,6 @@ export class YamlEvaluatedWorkflowRepository {
   }
 
   private getWorkflowsDir(): string {
-    return join(this.repoDir, "data", "workflows-evaluated");
+    return join(this.repoDir, ".data", "workflows-evaluated");
   }
 }

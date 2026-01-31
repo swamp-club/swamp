@@ -78,7 +78,7 @@ export class YamlDataRepository implements DataRepository {
       await Deno.remove(path);
 
       // Clean up empty parent directories
-      const dataDir = join(this.repoDir, "data", "data");
+      const dataDir = join(this.repoDir, ".data", "data");
       await cleanupEmptyParentDirs(path, dataDir);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
@@ -96,6 +96,6 @@ export class YamlDataRepository implements DataRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "data", "data", type.toDirectoryPath());
+    return join(this.repoDir, ".data", "data", type.toDirectoryPath());
   }
 }

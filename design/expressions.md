@@ -99,11 +99,11 @@ registering custom types, functions, etc in their swamp repo.
 
 When loading the YAML, first parse the CEL expressions. Then take the data
 structures they emit and embed them in the data structure. Write those to a
-directory in the repository called `/data/inputs-evaluated/` whose structure is
-the same as `/data/inputs/`. This directory should be in a swamp repo's
+directory in the repository called `/.data/inputs-evaluated/` whose structure is
+the same as `/.data/inputs/`. This directory should be in a swamp repo's
 .gitignore file.
 
-The same is true for `/data/workflows-evaluated/`, and it should also be in
+The same is true for `/.data/workflows-evaluated/`, and it should also be in
 .gitignore.
 
 These evaluated directories are internal working directories in the data layer,

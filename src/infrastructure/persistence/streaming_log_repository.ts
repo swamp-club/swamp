@@ -233,6 +233,6 @@ export class StreamingLogRepository implements LogRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "data", "logs", type.toDirectoryPath());
+    return join(this.repoDir, ".data", "logs", type.toDirectoryPath());
   }
 }
