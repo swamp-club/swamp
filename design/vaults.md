@@ -41,21 +41,21 @@ Vaults are configured in the `.swamp.yaml` file under the `vaults` section. Each
 vault has:
 
 - **name**: User-defined identifier for the vault
-- **type**: The vault provider type (e.g., `aws-secrets-manager`)
+- **type**: The vault provider type (e.g., `aws`)
 - **configuration**: Provider-specific settings
 
 ```yaml
 vaults:
   aws:
-    type: "aws-secrets-manager"
+    type: "aws"
     region: "us-east-1"
 
   backup:
-    type: "aws-secrets-manager"
+    type: "aws"
     region: "us-west-2"
 
   local-dev:
-    type: "aws-secrets-manager"
+    type: "aws"
     region: "us-east-1"
     profile: "development"
 ```
@@ -162,7 +162,7 @@ The AWS Secrets Manager provider is the initial implementation supporting:
 ```yaml
 vaults:
   aws:
-    type: "aws-secrets-manager"
+    type: "aws"
     region: "us-east-1" # Required: AWS region
     profile: "production" # Optional: AWS profile name
     endpoint_url: "https://custom.com" # Optional: Custom endpoint

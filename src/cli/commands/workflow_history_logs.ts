@@ -45,9 +45,10 @@ interface WorkflowRunLogsData {
 export const workflowHistoryLogsCommand = new Command()
   .name("logs")
   .description("Show logs/output for a workflow run")
-  .arguments("<run_id_or_workflow:string> [step:string]")
+  .arguments("<run_id_or_workflow:workflow_name> [step:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--job <name:string>", "Filter by job name")
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (
     options: AnyOptions,
     runIdOrWorkflow: string,

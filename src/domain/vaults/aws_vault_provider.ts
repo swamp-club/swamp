@@ -1,5 +1,8 @@
 import {
+  CreateSecretCommand,
   GetSecretValueCommand,
+  PutSecretValueCommand,
+  ResourceNotFoundException,
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
 import type { VaultProvider } from "./vault_provider.ts";
@@ -41,10 +44,26 @@ export class AwsVaultProvider implements VaultProvider {
     return secretValue;
   }
 
-  put(_secretKey: string, _secretValue: string): Promise<void> {
-    // This is a read-only provider for expressions - put operations
-    // are handled by the vault model itself
-    throw new Error("Put operations not supported in expression context");
+  async put(secretKey: string, secretValue: string): Promise<void> {
+    try {
+      // Try to update existing secret first
+      const putCommand = new PutSecretValueCommand({
+        SecretId: secretKey,
+        SecretString: secretValue,
+      });
+      await this.client.send(putCommand);
+    } catch (error) {
+      // If secret doesn't exist, create it
+      if (error instanceof ResourceNotFoundException) {
+        const createCommand = new CreateSecretCommand({
+          Name: secretKey,
+          SecretString: secretValue,
+        });
+        await this.client.send(createCommand);
+      } else {
+        throw error;
+      }
+    }
   }
 
   getName(): string {

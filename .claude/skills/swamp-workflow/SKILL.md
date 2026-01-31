@@ -355,10 +355,9 @@ vaults:
 
   # AWS Secrets Manager vault
   aws-vault:
-    type: aws-secrets-manager
+    type: aws
     config:
       region: "us-east-1"
-      profile: "production"
 ```
 
 ### Vault Expression Syntax
@@ -539,13 +538,13 @@ Integrates with AWS Secrets Manager:
 ```yaml
 vaults:
   aws-vault:
-    type: aws-secrets-manager
+    type: aws
     config:
       region: "us-west-2" # Required: AWS region
-      profile: "production" # Optional: AWS profile
-      endpoint_url: "https://custom.com" # Optional: custom endpoint
-      secret_prefix: "myapp/" # Optional: prefix for secret names
 ```
+
+Note: AWS credentials are obtained from the default AWS credential chain
+(environment variables, shared credentials file, IAM role, etc.).
 
 ### Vault Operations Reference
 

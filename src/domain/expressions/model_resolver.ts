@@ -104,13 +104,15 @@ export interface ExpressionContext {
 }
 
 /**
- * Configuration for optional repositories.
+ * Configuration for optional repositories and services.
  */
 export interface ModelResolverRepositories {
   dataRepo?: YamlDataRepository;
   fileRepo?: FileSystemFileRepository;
   logRepo?: StreamingLogRepository;
   outputRepo?: YamlOutputRepository;
+  /** Optional vault service for dependency injection (useful for testing) */
+  vaultService?: VaultService;
 }
 
 /**
@@ -132,9 +134,12 @@ export class ModelResolver {
     this.fileRepo = repos?.fileRepo;
     this.logRepo = repos?.logRepo;
     this.outputRepo = repos?.outputRepo;
-    this.vaultService = new VaultService();
-    // Ensure default vaults are available
-    this.vaultService.ensureDefaultVaults();
+    // Use provided vault service or create a new one
+    this.vaultService = repos?.vaultService ?? new VaultService();
+    // Ensure default vaults are available (only if we created the service)
+    if (!repos?.vaultService) {
+      this.vaultService.ensureDefaultVaults();
+    }
   }
 
   /**
@@ -487,8 +492,15 @@ export class ModelResolver {
       const [fullMatch, , vaultName, , secretKey] = match;
       try {
         const secretValue = await this.vaultService.get(vaultName, secretKey);
-        // Replace the entire vault.get(...) call with the secret value wrapped in quotes for CEL
-        resolvedValue = resolvedValue.replace(fullMatch, `"${secretValue}"`);
+        // Escape special characters to prevent CEL parsing issues and injection attacks
+        const escapedValue = secretValue
+          .replace(/\\/g, "\\\\")
+          .replace(/"/g, '\\"')
+          .replace(/\n/g, "\\n")
+          .replace(/\r/g, "\\r")
+          .replace(/\t/g, "\\t");
+        // Replace the entire vault.get(...) call with the escaped secret value wrapped in quotes for CEL
+        resolvedValue = resolvedValue.replace(fullMatch, `"${escapedValue}"`);
       } catch (error) {
         throw new Error(
           `Failed to resolve vault expression ${fullMatch}: ${
