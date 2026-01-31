@@ -16,6 +16,7 @@ import { createModelDataId } from "../models/model_data.ts";
 import { createModelFileId } from "../models/model_file.ts";
 import { createModelLogId } from "../models/model_log.ts";
 import { ModelNotFoundError } from "./errors.ts";
+import { VaultService } from "../vaults/vault_service.ts";
 
 /**
  * Data about a single model for CEL context.
@@ -85,6 +86,10 @@ export interface ExpressionContext {
   };
   /** Workflow context (for workflow evaluation) */
   workflow?: Record<string, unknown>;
+  /** Vault operations for secure secret access */
+  vault?: {
+    get(vaultName: string, secretKey: string): string;
+  };
   /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }
@@ -107,6 +112,7 @@ export class ModelResolver {
   private readonly fileRepo?: FileSystemFileRepository;
   private readonly logRepo?: StreamingLogRepository;
   private readonly outputRepo?: YamlOutputRepository;
+  private readonly vaultService: VaultService;
 
   constructor(
     private readonly inputRepo: YamlInputRepository,
@@ -117,6 +123,9 @@ export class ModelResolver {
     this.fileRepo = repos?.fileRepo;
     this.logRepo = repos?.logRepo;
     this.outputRepo = repos?.outputRepo;
+    this.vaultService = new VaultService();
+    // Ensure default vaults are available
+    this.vaultService.ensureDefaultVaults();
   }
 
   /**
@@ -452,5 +461,38 @@ export class ModelResolver {
         error: output.error,
       };
     }
+  }
+
+  /**
+   * Resolves vault expressions in a string by evaluating vault.get() calls.
+   *
+   * @param value - The string that may contain vault expressions
+   * @returns The string with vault expressions resolved to actual secret values
+   */
+  async resolveVaultExpressions(value: string): Promise<string> {
+    // Pattern to match vault.get(vaultName, secretKey) expressions
+    // Handles both quoted and unquoted arguments
+    const vaultPattern =
+      /vault\.get\(\s*(['"`]?)([^'"`\s,]+)\1\s*,\s*(['"`]?)([^'"`\s,]+)\3\s*\)/g;
+
+    let resolvedValue = value;
+    const matches = Array.from(value.matchAll(vaultPattern));
+
+    for (const match of matches) {
+      const [fullMatch, , vaultName, , secretKey] = match;
+      try {
+        const secretValue = await this.vaultService.get(vaultName, secretKey);
+        // Replace the entire vault.get(...) call with the secret value wrapped in quotes for CEL
+        resolvedValue = resolvedValue.replace(fullMatch, `"${secretValue}"`);
+      } catch (error) {
+        throw new Error(
+          `Failed to resolve vault expression ${fullMatch}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    return resolvedValue;
   }
 }

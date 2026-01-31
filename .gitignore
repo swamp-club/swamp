@@ -8,3 +8,4 @@ test-repo/
 experiments/webapp/frontend/node_modules/
 experiments/webapp/frontend/dist/
 experiments/webapp/frontend/tsconfig.tsbuildinfo
+.vault-*/

@@ -72,7 +72,13 @@ export class ExpressionEvaluationService {
     // Evaluate each expression
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      const value = this.celEvaluator.evaluate(expr.celExpression, ctx);
+      // First resolve any vault expressions in the CEL expression
+      const resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
+        expr.celExpression,
+      );
+
+      // Then evaluate the CEL expression
+      const value = this.celEvaluator.evaluate(resolvedCelExpr, ctx);
       evaluatedValues.set(expr.raw, value);
     }
 
@@ -233,10 +239,10 @@ export class ExpressionEvaluationService {
    * @param context - The evaluation context
    * @returns The data with expressions replaced
    */
-  evaluateData(
+  async evaluateData(
     data: unknown,
     context: ExpressionContext,
-  ): unknown {
+  ): Promise<unknown> {
     const expressions = extractExpressions(data);
     if (expressions.length === 0) {
       return data;
@@ -244,7 +250,13 @@ export class ExpressionEvaluationService {
 
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      const value = this.celEvaluator.evaluate(expr.celExpression, context);
+      // First resolve any vault expressions in the CEL expression
+      const resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
+        expr.celExpression,
+      );
+
+      // Then evaluate the CEL expression
+      const value = this.celEvaluator.evaluate(resolvedCelExpr, context);
       evaluatedValues.set(expr.raw, value);
     }
 
