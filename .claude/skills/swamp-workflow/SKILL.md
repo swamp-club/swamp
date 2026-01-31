@@ -508,6 +508,9 @@ jobs:
 
 ### Vault Types and Configuration
 
+####
+Any vault that is referenced in a workflow file or step, must already exist in the .swamp.yaml otherwise an error should be thrown
+
 #### Local Encryption Vault
 
 Stores secrets encrypted locally using AES-256-GCM:
@@ -558,6 +561,28 @@ Vault operations include comprehensive error handling:
 - **Authentication Failures**: Detailed credential configuration guidance
 - **Network Errors**: Retry logic with exponential backoff for cloud vaults
 - **Invalid Configuration**: Validation during vault initialization
+
+## Environment Variables
+
+For workflows, you should be able to reference other workflows by name or id, in
+addition to any model.
+
+You can access environment variables using the `env` namespace:
+
+```yaml
+attributes:
+  region: ${{ env.AWS_REGION }}
+  api_key: ${{ env.API_KEY }}
+  path: /home/${{ env.USER }}/data
+```
+
+Environment variables are resolved at runtime from the process environment. This
+allows configuration to be injected without hardcoding values in model inputs or
+workflows.
+
+Note: Accessing an undefined environment variable will result in a runtime error
+during expression evaluation. Ensure required environment variables are set
+before running workflows that depend on them.
 
 ## Workflow Example
 
