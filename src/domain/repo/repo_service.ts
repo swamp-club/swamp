@@ -205,7 +205,7 @@ Use \`swamp --help\` to see available commands.
   private async createDataDirectoryStructure(
     repoPath: RepoPath,
   ): Promise<void> {
-    const dataDir = join(repoPath.value, "data");
+    const dataDir = join(repoPath.value, ".data");
     const subdirs = [
       "inputs",
       "resources",

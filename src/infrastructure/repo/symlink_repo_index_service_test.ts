@@ -29,14 +29,14 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 async function setupRepoDir(dir: string): Promise<void> {
   // Create standard data directory structure
   const subdirs = [
-    "data/inputs",
-    "data/resources",
-    "data/data",
-    "data/outputs",
-    "data/workflows",
-    "data/workflow-runs",
-    "data/logs",
-    "data/files",
+    ".data/inputs",
+    ".data/resources",
+    ".data/data",
+    ".data/outputs",
+    ".data/workflows",
+    ".data/workflow-runs",
+    ".data/logs",
+    ".data/files",
     "models",
     "workflows",
   ];
@@ -220,7 +220,7 @@ Deno.test("SymlinkRepoIndexService.verify detects broken symlinks", async () => 
     const modelDir = join(dir, "models", "broken-model");
     await ensureDir(modelDir);
     await Deno.symlink(
-      "../data/inputs/nonexistent/file.yaml",
+      "../.data/inputs/nonexistent/file.yaml",
       join(modelDir, "input.yaml"),
     );
 
@@ -261,7 +261,7 @@ Deno.test("SymlinkRepoIndexService.prune removes broken symlinks", async () => {
     await ensureDir(modelDir);
     const brokenLink = join(modelDir, "input.yaml");
     await Deno.symlink(
-      "../data/inputs/nonexistent/file.yaml",
+      "../.data/inputs/nonexistent/file.yaml",
       brokenLink,
     );
 

@@ -45,7 +45,7 @@ Deno.test("FileSystemFileRepository.save creates directory structure", async () 
 
     const expectedDir = join(
       dir,
-      "data",
+      ".data",
       "files",
       "swamp/echo",
       testModelId,
@@ -269,7 +269,7 @@ Deno.test("FileSystemFileRepository.getPath returns correct path", () => {
   const path = repo.getPath(type, testModelId, testMethodName, id);
   assertEquals(
     path,
-    `/repo/data/files/swamp/echo/${testModelId}/${testMethodName}/550e8400-e29b-41d4-a716-446655440001.yaml`,
+    `/repo/.data/files/swamp/echo/${testModelId}/${testMethodName}/550e8400-e29b-41d4-a716-446655440001.yaml`,
   );
 });
 
@@ -284,7 +284,7 @@ Deno.test("FileSystemFileRepository.getContentPath returns correct path with act
   const path = repo.getContentPath(type, testModelId, testMethodName, file);
   assertEquals(
     path,
-    `/repo/data/files/swamp/echo/${testModelId}/${testMethodName}/my-downloaded-file.tar.gz`,
+    `/repo/.data/files/swamp/echo/${testModelId}/${testMethodName}/my-downloaded-file.tar.gz`,
   );
 });
 

@@ -126,24 +126,24 @@ The RepoIndexService maintains two primary logical views:
 
 ```
 /models/{model-name}/
-  input.yaml → /data/inputs/{type}/{id}.yaml
-  resource.yaml → /data/resources/{type}/{id}.yaml
-  data.yaml → /data/data/{type}/{id}.yaml
-  logs/ → /data/logs/{type}/{id}/
-  files/ → /data/files/{type}/{id}/
+  input.yaml → /.data/inputs/{type}/{id}.yaml
+  resource.yaml → /.data/resources/{type}/{id}.yaml
+  data.yaml → /.data/data/{type}/{id}.yaml
+  logs/ → /.data/logs/{type}/{id}/
+  files/ → /.data/files/{type}/{id}/
   outputs/
-    {method}/ → /data/outputs/{type}/{method}/{id}-{timestamp}.yaml
+    {method}/ → /.data/outputs/{type}/{method}/{id}-{timestamp}.yaml
 ```
 
 **Workflow View (`/workflows/`):**
 
 ```
 /workflows/{workflow-name}/
-  workflow.yaml → /data/workflows/{id}.yaml
+  workflow.yaml → /.data/workflows/{id}.yaml
   runs/
     latest/ -> (points to latest timestamp)
     {timestamp}/
-      run.yaml → /data/workflow-runs/{workflow-id}/{run-id}.yaml
+      run.yaml → /.data/workflow-runs/{workflow-id}/{run-id}.yaml
       steps/
         {step-name}/
           output.yaml → symlink to step output

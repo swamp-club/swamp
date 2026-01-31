@@ -18,14 +18,14 @@ weighted topological sort, so thtat htye have maximum paralleism through the
 workflow. Like steps, jobs also have conditions that trigger them.
 
 Workflows are specified in YAML files, that are validated with Zod, in the
-`/data/workflows/` directory of the repository, with their `{uuid}.yaml`.
-Workflow run output is stored in `/data/workflow-runs/` at
-`/data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
+`/.data/workflows/` directory of the repository, with their `{uuid}.yaml`.
+Workflow run output is stored in `/.data/workflow-runs/` at
+`/.data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
 
 ## Workflow Definition
 
-Workflows are specified in `/data/workflows/{uuid}.yaml`. They have a unique id,
-a globally unique name, and a set of jobs.
+Workflows are specified in `/.data/workflows/{uuid}.yaml`. They have a unique
+id, a globally unique name, and a set of jobs.
 
 ## Jobs
 
@@ -49,7 +49,7 @@ not vary between identical inputs. (If the inputs are identical, the run order
 should be deterministic.)
 
 The output of the run will be written to a workflow run log, kept in
-`/data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
+`/.data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
 
 ## Logical Views
 
@@ -60,10 +60,10 @@ that provides human/agent-friendly exploration of workflows by name.
 
 ```
 /workflows/{workflow-name}/
-  workflow.yaml   → symlink to /data/workflows/{uuid}.yaml
+  workflow.yaml   → symlink to /.data/workflows/{uuid}.yaml
   runs/
     {run-id}/
-      run.yaml    → symlink to /data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml
+      run.yaml    → symlink to /.data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml
       steps/
         {step-name}/
           output.yaml → symlink to step output

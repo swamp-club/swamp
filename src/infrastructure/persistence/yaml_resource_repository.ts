@@ -15,7 +15,7 @@ import {
  * YAML-based implementation of ResourceRepository.
  *
  * Stores resources as YAML files in the directory structure:
- * {repoDir}/data/resources/{normalized-type}/{id}.yaml
+ * {repoDir}/.data/resources/{normalized-type}/{id}.yaml
  */
 export class YamlResourceRepository implements ResourceRepository {
   constructor(private readonly repoDir: string) {}
@@ -78,7 +78,7 @@ export class YamlResourceRepository implements ResourceRepository {
       await Deno.remove(path);
 
       // Clean up empty parent directories
-      const resourcesDir = join(this.repoDir, "data", "resources");
+      const resourcesDir = join(this.repoDir, ".data", "resources");
       await cleanupEmptyParentDirs(path, resourcesDir);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
@@ -96,6 +96,6 @@ export class YamlResourceRepository implements ResourceRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, "data", "resources", type.toDirectoryPath());
+    return join(this.repoDir, ".data", "resources", type.toDirectoryPath());
   }
 }
