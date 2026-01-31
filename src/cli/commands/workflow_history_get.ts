@@ -56,8 +56,9 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
 export const workflowHistoryGetCommand = new Command()
   .name("get")
   .description("Show the latest run for a workflow")
-  .arguments("<workflow_id_or_name:string>")
+  .arguments("<workflow_id_or_name:workflow_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, "workflow-history-get");
     ctx.logger.debug`Getting latest run for workflow: ${workflowIdOrName}`;

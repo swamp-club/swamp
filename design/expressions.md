@@ -19,6 +19,7 @@ structure. Given an input like this:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: foo
 version: 1
 tags: {}
@@ -30,6 +31,7 @@ Another can use a CEL expression to extract the message attribute:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: bar
 version: 1
 tags: {}
@@ -41,6 +43,7 @@ Or the resource output of the same model:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
 name: baz
 version: 1
 tags: {}
@@ -54,34 +57,28 @@ tags, and a models other attributes.
 You can also use the uuid of a model in order to reference it, rather than the
 name.
 
-## Environment Variables
-
-You can access environment variables using the `env` namespace:
-
-```yaml
-attributes:
-  region: ${{ env.AWS_REGION }}
-  api_key: ${{ env.API_KEY }}
-  path: /home/${{ env.USER }}/data
-```
-
-Environment variables are resolved at runtime from the process environment. This
-allows configuration to be injected without hardcoding values in model inputs or
-workflows.
-
-Note: Accessing an undefined environment variable will result in a runtime error
-during expression evaluation. Ensure required environment variables are set
-before running workflows that depend on them.
-
-You can combine environment variables with model references:
-
-```yaml
-attributes:
-  bucket: ${{ env.ENV_PREFIX }}-${{ model.vpc.resource.attributes.id }}
-```
-
 For workflows, you should be able to reference other workflows by name or id, in
 addition to any model.
+
+## Sensitive Data
+
+You should be able to access sensitive data by referencing the storage keys they
+were stored with, under a subkey of the vault where they reside.
+
+## Examples
+
+Setting keyData out of the configured aws vault from the machineKeyData key
+value
+
+```yaml
+id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+resourceId: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
+name: baz
+version: 1
+tags: {}
+attributes:
+  keyData: ${{ vault.get(aws, machineKeyData) }}
+```
 
 ## Workflow dependency and lazy evaluation
 

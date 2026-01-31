@@ -51,6 +51,17 @@ So any time a change is made through a given entities repository, the index
 service will analyze the repo and update the logical views, ensuring they are
 always up to date.
 
+## Configuration
+
+The swamp repo can be configured with an environment file that can specify
+attributes to control the behaviour of the swamp operations.
+
+### Supported Configuration Options
+
+- `vaults`: The swamp vault key specifies stores where sensitive data can be
+  sent to and retrieved from when evaluating and running workflow steps.
+  Multitple vaults can be specified for a each swamp repository.
+
 ## CLI Commands
 
 ### repo init <path>

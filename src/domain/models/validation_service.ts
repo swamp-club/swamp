@@ -363,6 +363,12 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
+    // Check if it's a valid vault expression (vault.get(...))
+    const vaultPattern = /^vault\.get\(.*\)$/;
+    if (vaultPattern.test(celExpression)) {
+      return null; // Valid vault expression
+    }
+
     // Check if it looks like an incomplete model reference (e.g., "my-vpc.VpcId")
     // Pattern: word characters/hyphens followed by dot and more content
     const incompleteModelRefPattern = /^([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_.]+)$/;

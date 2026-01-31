@@ -49,14 +49,12 @@ The valid shape of an input is specified with a Zod 4 schema.
 
 Each input has the following core properties:
 
-- id: the models unique id
+- id: the models unqiue id
+- resourceId: an optional resource id, if one exists
 - name: a unique human readable name
 - tags: string based key value pairs
 - attributes: domain specific data for the input (for example, the model of a
   VPC from above).
-
-Resources are linked to inputs by convention: the resource ID always equals the
-input ID. Use `inputIdToResourceId(input.id)` to find the associated resource.
 
 ## Methods
 
@@ -78,7 +76,7 @@ method.
 
 ### Logs
 
-A method may produce 0..\* log artifacts. They have a name, can have lines
+A method may produce 0..* log artifacts. They have a name, can have lines
 streamed to them, and by default are stored in `/.data/logs/` in the repository
 underneath the normalized model type as a directory. Logs are named like
 `{model-id}-{method name}-{log name}-{timestamp}.log`.
@@ -95,7 +93,7 @@ By default, the `/.data/logs/` directory is not stored in git.
 
 ### Files
 
-A method may store 0..\* file artifacts. They have a name, and can be written to
+A method may store 0..* file artifacts. They have a name, and can be written to
 directly. By default they will be stored in the `/.data/files/` directory of the
 repository underneath the normalized model type as a directory plus the model ID
 and method name. For example
@@ -232,13 +230,6 @@ Shows the entire details of the model. It should not include the type schema or
 the methods.
 
 when specifying json, it should have the same content.
-
-### model delete <model_id_or_name>
-
-Delete a specific model and all of its inputs, inputs-evaluated and outputs -
-and anything else related! A model should not be able to be deleted if it's part
-of a workflow or if it has a resource associated. The user should be told to
-delete the resource first
 
 ### model validate <model_id_or_name>
 

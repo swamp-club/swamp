@@ -177,9 +177,10 @@ export class DefaultStepExecutor implements StepExecutor {
         attributes: originalInput.attributes,
       };
 
-      evaluatedInput = this.evaluateInputExpressions(
+      evaluatedInput = await this.evaluateInputExpressions(
         originalInput,
         ctx.expressionContext,
+        ctx.repoDir,
       );
       // Save evaluated input to inputs-evaluated/
       await evaluatedInputRepo.save(modelType, evaluatedInput);
@@ -342,10 +343,11 @@ export class DefaultStepExecutor implements StepExecutor {
   /**
    * Evaluates expressions in a model input.
    */
-  private evaluateInputExpressions(
+  private async evaluateInputExpressions(
     input: ModelInput,
     context: ExpressionContext,
-  ): ModelInput {
+    repoDir: string,
+  ): Promise<ModelInput> {
     const celEvaluator = new CelEvaluator();
     const inputData = input.toData();
     const expressions = extractExpressions(inputData);
@@ -354,10 +356,21 @@ export class DefaultStepExecutor implements StepExecutor {
       return input;
     }
 
+    // Create ModelResolver for vault expression handling
+    const inputRepo = new YamlInputRepository(repoDir);
+    const resourceRepo = new YamlResourceRepository(repoDir);
+    const modelResolver = new ModelResolver(inputRepo, resourceRepo);
+
     // Evaluate each expression
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      const value = celEvaluator.evaluate(expr.celExpression, context);
+      // First resolve any vault expressions in the CEL expression
+      const resolvedCelExpr = await modelResolver.resolveVaultExpressions(
+        expr.celExpression,
+      );
+
+      // Then evaluate the CEL expression
+      const value = celEvaluator.evaluate(resolvedCelExpr, context);
       evaluatedValues.set(expr.raw, value);
     }
 
@@ -441,7 +454,7 @@ export class WorkflowExecutionService {
     const expressionContext = await this.modelResolver.buildContext();
 
     // Evaluate workflow and save to workflows-evaluated/
-    const evaluatedWorkflow = this.evaluateWorkflow(
+    const evaluatedWorkflow = await this.evaluateWorkflow(
       workflow,
       expressionContext,
     );
@@ -784,10 +797,10 @@ export class WorkflowExecutionService {
   /**
    * Evaluates expressions in a workflow.
    */
-  private evaluateWorkflow(
+  private async evaluateWorkflow(
     workflow: Workflow,
     context: ExpressionContext,
-  ): Workflow {
+  ): Promise<Workflow> {
     const celEvaluator = new CelEvaluator();
     const workflowData = workflow.toData();
     const expressions = extractExpressions(workflowData);
@@ -799,7 +812,13 @@ export class WorkflowExecutionService {
     // Evaluate each expression
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      const value = celEvaluator.evaluate(expr.celExpression, context);
+      // First resolve any vault expressions in the CEL expression
+      const resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
+        expr.celExpression,
+      );
+
+      // Then evaluate the CEL expression
+      const value = celEvaluator.evaluate(resolvedCelExpr, context);
       evaluatedValues.set(expr.raw, value);
     }
 
