@@ -7,6 +7,7 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
+import { UserError } from "../errors.ts";
 
 const CLAUDE_MD_FILENAME = "CLAUDE.md";
 
@@ -74,7 +75,7 @@ export class RepoService {
     const isAlreadyInit = await this.isInitialized(repoPath);
 
     if (isAlreadyInit && !options.force) {
-      throw new Error(
+      throw new UserError(
         `Repository already initialized at ${repoPath.value}. Use --force to reinitialize.`,
       );
     }
@@ -116,7 +117,7 @@ export class RepoService {
     const existingMarker = await this.markerRepo.read(repoPath);
 
     if (!existingMarker) {
-      throw new Error(
+      throw new UserError(
         `Not a swamp repository: ${repoPath.value}. Run 'swamp repo init' first.`,
       );
     }
