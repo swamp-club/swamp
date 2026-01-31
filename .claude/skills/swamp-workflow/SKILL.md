@@ -329,6 +329,233 @@ In this example, `subnet-input` references
 ensures `create-vpc` runs before `create-subnet`, regardless of their declared
 order.
 
+## Working with Vaults in Workflows
+
+Swamp provides a comprehensive vault system for secure secret management in workflows. Vaults allow you to store and retrieve sensitive data like API keys, passwords, and tokens without exposing them in workflow files.
+
+### Vault Configuration
+
+Configure vaults in your repository's `.swamp.yaml` file:
+
+```yaml
+vaults:
+  # Local encryption vault (development)
+  dev-secrets:
+    type: local_encryption
+    config:
+      auto_generate: true
+  
+  # SSH key-based vault (production)
+  prod-secrets:
+    type: local_encryption
+    config:
+      ssh_key_path: "~/.ssh/production_key"
+  
+  # AWS Secrets Manager vault
+  aws-vault:
+    type: aws-secrets-manager
+    config:
+      region: "us-east-1"
+      profile: "production"
+```
+
+### Vault Expression Syntax
+
+Access secrets in workflows using vault expressions:
+
+```yaml
+# Basic secret retrieval
+apiKey: ${{ vault.get(dev-secrets, api-key) }}
+
+# Environment-specific secrets
+prodToken: ${{ vault.get(prod-secrets, auth-token) }}
+devToken: ${{ vault.get(dev-secrets, auth-token) }}
+
+# AWS Secrets Manager
+dbPassword: ${{ vault.get(aws-vault, database/password) }}
+```
+
+### Storing Secrets with CLI Commands
+
+Use the swamp CLI to manage secrets:
+
+```bash
+# Store a secret in a vault
+swamp vault store dev-secrets api-key "sk-1234567890abcdef"
+
+# Retrieve a secret from a vault
+swamp vault get dev-secrets api-key
+
+# List all secrets in a vault
+swamp vault list dev-secrets
+```
+
+### Using the Vault Model (swamp/lets-get-sensitive)
+
+For advanced vault operations within workflows, use the dedicated vault model:
+
+```yaml
+# Store a generated secret
+- name: store-api-key
+  task:
+    type: model_method
+    modelIdOrName: store-api-secret
+    methodName: store-secret
+
+# Where store-api-secret model has:
+# type: swamp/lets-get-sensitive
+# attributes:
+#   vaultName: prod-secrets
+#   secretKey: generated-api-key
+#   secretValue: ${{ model.api-generator.data.attributes.apiKey }}
+#   operation: put
+```
+
+```yaml
+# Retrieve a stored secret
+- name: get-db-credentials
+  task:
+    type: model_method
+    modelIdOrName: get-db-secret
+    methodName: get-secret
+
+# Where get-db-secret model has:
+# type: swamp/lets-get-sensitive
+# attributes:
+#   vaultName: aws-vault
+#   secretKey: database/credentials
+#   operation: get
+```
+
+### Vault Security Best Practices
+
+1. **Environment Separation**: Use different vaults for dev/staging/prod environments
+2. **Least Privilege**: Configure vault access with minimal required permissions
+3. **Key Rotation**: Regularly rotate secrets and vault encryption keys
+4. **No Hardcoding**: Never put secrets directly in workflow files
+5. **Audit Logging**: Monitor vault access through provider audit logs
+
+### Example: Complete Vault Workflow
+
+```yaml
+id: vault-demo-workflow
+name: vault-demo
+description: Demonstrate vault usage for secure secret management
+version: 1
+jobs:
+  - name: setup
+    description: Setup environment with vault secrets
+    steps:
+      - name: configure-api
+        description: Configure API with vault-stored credentials
+        task:
+          type: shell
+          command: bash
+          args:
+            - -c
+            - |
+              echo "Configuring API with vault credentials..."
+              # API key comes from vault expression
+              export API_KEY="${{ vault.get(prod-secrets, api-key) }}"
+              export DB_PASSWORD="${{ vault.get(aws-vault, database/password) }}"
+              
+              # Use credentials to configure application
+              ./configure-app.sh
+  
+  - name: deploy
+    description: Deploy application with vault-managed secrets
+    dependsOn:
+      - job: setup
+        condition:
+          type: succeeded
+          ref: setup
+    steps:
+      - name: deploy-service
+        description: Deploy with environment-specific secrets
+        task:
+          type: model_method
+          modelIdOrName: deployment-config
+          methodName: deploy
+        # Where deployment-config model attributes include:
+        # serviceToken: ${{ vault.get(prod-secrets, service-token) }}
+        # webhookSecret: ${{ vault.get(prod-secrets, webhook-secret) }}
+  
+  - name: post-deploy
+    description: Store generated deployment artifacts
+    dependsOn:
+      - job: deploy
+        condition:
+          type: succeeded
+          ref: deploy
+    steps:
+      - name: store-deployment-id
+        description: Store deployment ID for future reference
+        task:
+          type: model_method
+          modelIdOrName: store-deployment-info
+          methodName: store-secret
+        # Where store-deployment-info model has:
+        # type: swamp/lets-get-sensitive
+        # attributes:
+        #   vaultName: prod-secrets
+        #   secretKey: latest-deployment-id
+        #   secretValue: ${{ model.deployment-config.data.attributes.deploymentId }}
+        #   operation: put
+```
+
+### Vault Types and Configuration
+
+#### Local Encryption Vault
+
+Stores secrets encrypted locally using AES-256-GCM:
+
+```yaml
+vaults:
+  local-vault:
+    type: local_encryption
+    config:
+      # Auto-generate encryption key (development)
+      auto_generate: true
+      
+      # OR use custom key file location
+      key_file: "vault.key"
+      
+      # OR use SSH key for encryption (production)
+      ssh_key_path: "~/.ssh/vault_key"
+```
+
+#### AWS Secrets Manager Vault
+
+Integrates with AWS Secrets Manager:
+
+```yaml
+vaults:
+  aws-vault:
+    type: aws-secrets-manager
+    config:
+      region: "us-west-2"                    # Required: AWS region
+      profile: "production"                  # Optional: AWS profile
+      endpoint_url: "https://custom.com"     # Optional: custom endpoint
+      secret_prefix: "myapp/"                # Optional: prefix for secret names
+```
+
+### Vault Operations Reference
+
+| Operation | Expression Syntax | CLI Command | Description |
+|-----------|------------------|-------------|-------------|
+| Get secret | `${{ vault.get(vault-name, key) }}` | `swamp vault get vault-name key` | Retrieve a secret value |
+| Store secret | Use vault model with `operation: put` | `swamp vault store vault-name key value` | Store a secret value |
+| List secrets | N/A | `swamp vault list vault-name` | List all secret keys |
+
+### Error Handling
+
+Vault operations include comprehensive error handling:
+
+- **Missing Secrets**: Clear error messages with vault and key information
+- **Authentication Failures**: Detailed credential configuration guidance
+- **Network Errors**: Retry logic with exponential backoff for cloud vaults
+- **Invalid Configuration**: Validation during vault initialization
+
 ## Workflow Example
 
 End-to-end workflow for creating and running a new workflow:
