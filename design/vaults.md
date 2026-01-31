@@ -28,11 +28,36 @@ provides human/agent-friendly exploration of vaults by name.
 ```
 /vaults/{vault-name}/
   vault.yaml   → symlink to /.data/vault/{vault-type}/{id}.yaml
+  secrets/     → symlink to /.data/secrets/{vault-type}/{vault-name}/ (local vaults only)
 ```
 
 Since vault names are unique across all types, the logical view uses a flat
 structure that allows exploring vault definitions using human-readable names
 without needing to know the vault type.
+
+For vault types that store secrets locally (e.g., `local_encryption`), a
+`secrets/` symlink is included to provide access to the encrypted secret files.
+Remote vault types (e.g., `aws`) do not have a local secrets directory.
+
+## Secret Storage
+
+Vault secrets are stored in `.data/secrets/` organized by vault type and name:
+
+```
+.data/
+├── vault/
+│   └── {vault-type}/
+│       └── {id}.yaml              # Vault configuration
+└── secrets/
+    └── {vault-type}/
+        └── {vault-name}/
+            ├── .key               # Encryption key (for local_encryption with auto_generate)
+            └── {secret-key}.enc   # Encrypted secret files
+```
+
+The secrets path is computed at runtime from `base_dir` + vault type + vault
+name. The vault configuration stores the `base_dir` (repository root), and the
+full path is derived as `{base_dir}/.data/secrets/{vault-type}/{vault-name}/`.
 
 ## Vault Provider Interface
 

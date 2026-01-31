@@ -9,6 +9,7 @@ swamp
 .data/workflows-evaluated/
 .data/logs/
 .data/files/
+.data/secrets/
 
 test-repo/
 experiments/webapp/frontend/node_modules/

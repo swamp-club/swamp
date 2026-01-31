@@ -1,3 +1,4 @@
+import { getLogger } from "@logtape/logtape";
 import type { VaultConfiguration, VaultProvider } from "./vault_provider.ts";
 import { AwsVaultProvider } from "./aws_vault_provider.ts";
 import { MockVaultProvider } from "./mock_vault_provider.ts";
@@ -29,12 +30,13 @@ export class VaultService {
       for (const vaultConfig of vaultConfigs) {
         vaultService.registerVault({
           name: vaultConfig.name,
-          type: vaultConfig.type as "aws" | "mock" | "local_encryption",
+          type: vaultConfig.type, // Let registerVault validate and throw for unsupported types
           config: vaultConfig.config,
         });
       }
-    } catch {
-      // Repository may not exist yet, that's fine
+    } catch (error) {
+      // Repository may not exist yet, or vault config may be invalid
+      getLogger("vaults").debug`Failed to load vault configs: ${error}`;
     }
     vaultService.ensureDefaultVaults();
     return vaultService;

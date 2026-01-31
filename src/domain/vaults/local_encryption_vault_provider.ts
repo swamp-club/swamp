@@ -9,8 +9,10 @@ export interface LocalEncryptionConfig {
   ssh_key_path?: string;
   /** Auto-generate an encryption key if no SSH key specified */
   auto_generate?: boolean;
-  /** Custom path for auto-generated key file (defaults to .vault-<name>/.key) */
+  /** Custom path for auto-generated key file (defaults to computed secrets dir/.key) */
   key_file?: string;
+  /** Base directory for the repository (defaults to current working directory) */
+  base_dir?: string;
 }
 
 /**
@@ -42,7 +44,10 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
   constructor(name: string, config: LocalEncryptionConfig = {}) {
     this.name = name;
     this.config = config;
-    this.vaultDir = `.vault-${name}`;
+    // Compute secrets directory from base_dir + vault name
+    // Path: {base_dir}/.data/secrets/local_encryption/{vault_name}
+    const baseDir = config.base_dir ?? Deno.cwd();
+    this.vaultDir = join(baseDir, ".data", "secrets", "local_encryption", name);
   }
 
   async get(secretKey: string): Promise<string> {

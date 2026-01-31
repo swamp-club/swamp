@@ -18,7 +18,11 @@ type AnyOptions = any;
 /**
  * Default configuration for each vault type.
  */
-function getDefaultConfig(vaultType: string): Record<string, unknown> {
+function getDefaultConfig(
+  vaultType: string,
+  repoDir: string,
+  _vaultName: string,
+): Record<string, unknown> {
   switch (vaultType) {
     case "aws":
       return {
@@ -27,6 +31,7 @@ function getDefaultConfig(vaultType: string): Record<string, unknown> {
     case "local_encryption":
       return {
         auto_generate: true,
+        base_dir: repoDir,
       };
     default:
       return {};
@@ -116,7 +121,7 @@ export const vaultCreateCommand = new Command()
       }
 
       // Create the vault config
-      const defaultConfig = getDefaultConfig(vaultType);
+      const defaultConfig = getDefaultConfig(vaultType, repoDir, vaultName);
       const vaultId = createVaultConfigId(generateVaultId());
       const vaultConfig = VaultConfig.create(
         vaultId,
