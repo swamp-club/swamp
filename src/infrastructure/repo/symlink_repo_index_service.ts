@@ -20,6 +20,7 @@ import type {
   ModelUpdated,
   VaultCreated,
   VaultDeleted,
+  VaultSecretUpdated,
   VaultUpdated,
   WorkflowCreated,
   WorkflowDeleted,
@@ -158,6 +159,11 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   async handleVaultDeleted(event: VaultDeleted): Promise<void> {
     const vaultDir = join(this.repoDir, "vaults", event.vaultName);
     await this.removeDirectory(vaultDir);
+  }
+
+  async handleVaultSecretUpdated(event: VaultSecretUpdated): Promise<void> {
+    // Re-index the vault to update the secrets symlinks
+    await this.indexVault(event.vaultId, event.vaultType, event.vaultName);
   }
 
   // ============================================================================
@@ -494,7 +500,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
    * Creates or updates the index for a vault.
    * Structure:
    *   /vaults/{vault-name}/vault.yaml -> /.data/vault/{vault-type}/{id}.yaml
-   *   /vaults/{vault-name}/secrets/   -> /.data/secrets/{vault-type}/{vault-name}/ (local vaults only)
+   *   /vaults/{vault-name}/secrets/{key} -> /.data/secrets/{vault-type}/{vault-name}/{key}.enc (local vaults only)
    */
   private async indexVault(
     vaultId: string,
@@ -514,24 +520,74 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     );
     await this.createSymlink(vaultTarget, join(vaultDir, "vault.yaml"));
 
-    // For local_encryption vaults, also create secrets symlink
+    // For local_encryption vaults, create secrets directory with individual key symlinks
     if (vaultType === "local_encryption") {
-      const secretsDir = join(
+      const actualSecretsDir = join(
         this.repoDir,
         ".data",
         "secrets",
         vaultType,
         vaultName,
       );
-      // Ensure secrets directory exists with restricted permissions
-      await ensureDir(secretsDir);
+      // Ensure actual secrets directory exists with restricted permissions
+      await ensureDir(actualSecretsDir);
       try {
-        await Deno.chmod(secretsDir, 0o700);
+        await Deno.chmod(actualSecretsDir, 0o700);
       } catch {
         // chmod may fail on some systems (e.g., Windows), ignore
       }
 
-      await this.createSymlink(secretsDir, join(vaultDir, "secrets"));
+      // Create logical view secrets directory
+      const logicalSecretsDir = join(vaultDir, "secrets");
+      await this.refreshSecretsIndex(
+        logicalSecretsDir,
+        actualSecretsDir,
+        vaultName,
+      );
+    }
+  }
+
+  /**
+   * Refreshes the secrets index for a local_encryption vault.
+   * Creates symlinks for each secret key, removing the .enc extension.
+   */
+  private async refreshSecretsIndex(
+    logicalSecretsDir: string,
+    actualSecretsDir: string,
+    vaultName: string,
+  ): Promise<void> {
+    // Remove existing logical secrets directory if it exists (could be old symlink or directory)
+    try {
+      const stat = await Deno.lstat(logicalSecretsDir);
+      if (stat.isSymlink || stat.isDirectory) {
+        await Deno.remove(logicalSecretsDir, { recursive: true });
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    // Create fresh logical secrets directory
+    await ensureDir(logicalSecretsDir);
+
+    // List all .enc files in the actual secrets directory
+    try {
+      for await (const entry of Deno.readDir(actualSecretsDir)) {
+        if (entry.isFile && entry.name.endsWith(".enc")) {
+          // Remove .enc extension for the symlink name
+          const keyName = entry.name.slice(0, -4);
+          const targetPath = join(actualSecretsDir, entry.name);
+          const linkPath = join(logicalSecretsDir, keyName);
+          await this.createSymlink(targetPath, linkPath);
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        logger
+          .warn`Failed to read secrets directory for vault '${vaultName}': ${error}`;
+      }
+      // Directory may not exist yet, that's OK
     }
   }
 

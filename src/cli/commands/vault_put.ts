@@ -8,6 +8,8 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { UserError } from "../../domain/errors.ts";
+import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import { createVaultSecretUpdated } from "../../domain/events/types.ts";
 
 /**
  * Prompts user for confirmation in interactive mode.
@@ -137,6 +139,17 @@ export const vaultPutCommand = new Command()
     // Store the secret
     await vaultService.put(vaultName, key, value);
     ctx.logger.debug`Secret stored successfully`;
+
+    // Emit event to update the logical view symlinks
+    const repoContext = createRepositoryContext({ repoDir });
+    const event = createVaultSecretUpdated(
+      vaultConfig.id,
+      vaultConfig.type,
+      vaultConfig.name,
+      key,
+    );
+    await repoContext.eventBus.publish(event);
+    ctx.logger.debug`Emitted VaultSecretUpdated event`;
 
     const data: VaultPutData = {
       vaultName,

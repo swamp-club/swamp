@@ -48,6 +48,7 @@ import type {
   ModelUpdated,
   VaultCreated,
   VaultDeleted,
+  VaultSecretUpdated,
   VaultUpdated,
   WorkflowCreated,
   WorkflowDeleted,
@@ -182,6 +183,10 @@ export function createRepositoryContext(
     eventBus.subscribe<VaultDeleted>(
       "VaultDeleted",
       (event) => indexService.handleVaultDeleted(event),
+    );
+    eventBus.subscribe<VaultSecretUpdated>(
+      "VaultSecretUpdated",
+      (event) => indexService.handleVaultSecretUpdated(event),
     );
   }
 

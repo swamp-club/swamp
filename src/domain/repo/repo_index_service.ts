@@ -12,6 +12,7 @@ import type {
   ModelUpdated,
   VaultCreated,
   VaultDeleted,
+  VaultSecretUpdated,
   VaultUpdated,
   WorkflowCreated,
   WorkflowDeleted,
@@ -169,6 +170,12 @@ export interface RepoIndexService {
    * Removes the vault view directory.
    */
   handleVaultDeleted(event: VaultDeleted): Promise<void>;
+
+  /**
+   * Handles a VaultSecretUpdated event.
+   * Updates the secrets symlinks for the vault.
+   */
+  handleVaultSecretUpdated(event: VaultSecretUpdated): Promise<void>;
 
   // ============================================================================
   // Maintenance Operations

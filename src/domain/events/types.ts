@@ -131,7 +131,8 @@ export type RepositoryEvent =
   | WorkflowRunFailed
   | VaultCreated
   | VaultUpdated
-  | VaultDeleted;
+  | VaultDeleted
+  | VaultSecretUpdated;
 
 /**
  * Event type discriminator values.
@@ -324,6 +325,17 @@ export interface VaultDeleted extends DomainEvent {
 }
 
 /**
+ * Emitted when a secret is added or updated in a vault.
+ */
+export interface VaultSecretUpdated extends DomainEvent {
+  readonly type: "VaultSecretUpdated";
+  readonly vaultId: string;
+  readonly vaultType: string;
+  readonly vaultName: string;
+  readonly secretKey: string;
+}
+
+/**
  * Creates a VaultCreated event.
  */
 export function createVaultCreated(
@@ -370,6 +382,25 @@ export function createVaultDeleted(
     vaultId,
     vaultType,
     vaultName,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Creates a VaultSecretUpdated event.
+ */
+export function createVaultSecretUpdated(
+  vaultId: string,
+  vaultType: string,
+  vaultName: string,
+  secretKey: string,
+): VaultSecretUpdated {
+  return {
+    type: "VaultSecretUpdated",
+    vaultId,
+    vaultType,
+    vaultName,
+    secretKey,
     timestamp: new Date(),
   };
 }
