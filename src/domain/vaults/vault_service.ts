@@ -7,6 +7,8 @@ import {
   LocalEncryptionVaultProvider,
 } from "./local_encryption_vault_provider.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../repo/repo_path.ts";
 
 /**
  * Service for managing vault providers and resolving vault operations.
@@ -19,11 +21,48 @@ export class VaultService {
    * This is the preferred way to create a VaultService that should have access to
    * all configured vaults.
    *
+   * Vaults are loaded from two sources (in order of priority):
+   * 1. .data/vault/ directory (created via `swamp vault create`)
+   * 2. .swamp.yaml file (vaults section)
+   *
+   * If the same vault name exists in both, the .data/vault/ version takes precedence.
+   *
    * @param repoDir - The repository directory containing vault configurations
    * @returns A VaultService with all configured vaults loaded
    */
   static async fromRepository(repoDir: string): Promise<VaultService> {
     const vaultService = new VaultService();
+    const logger = getLogger("vaults");
+
+    // First, load vaults from .swamp.yaml (lower priority)
+    try {
+      const repoMarkerRepo = new RepoMarkerRepository();
+      const repoPath = RepoPath.create(repoDir);
+      const markerData = await repoMarkerRepo.read(repoPath);
+
+      if (markerData?.vaults) {
+        for (
+          const [vaultName, vaultConfig] of Object.entries(markerData.vaults)
+        ) {
+          try {
+            vaultService.registerVault({
+              name: vaultName,
+              type: vaultConfig.type,
+              config: vaultConfig.config ?? {},
+            });
+            logger.debug`Loaded vault '${vaultName}' from .swamp.yaml`;
+          } catch (error) {
+            logger
+              .debug`Failed to register vault '${vaultName}' from .swamp.yaml: ${error}`;
+          }
+        }
+      }
+    } catch (error) {
+      // .swamp.yaml may not exist or be invalid
+      logger.debug`Failed to load vaults from .swamp.yaml: ${error}`;
+    }
+
+    // Then, load vaults from .data/vault/ (higher priority - will override .swamp.yaml)
     try {
       const vaultRepo = new YamlVaultConfigRepository(repoDir);
       const vaultConfigs = await vaultRepo.findAll();
@@ -33,11 +72,13 @@ export class VaultService {
           type: vaultConfig.type, // Let registerVault validate and throw for unsupported types
           config: vaultConfig.config,
         });
+        logger.debug`Loaded vault '${vaultConfig.name}' from .data/vault/`;
       }
     } catch (error) {
       // Repository may not exist yet, or vault config may be invalid
-      getLogger("vaults").debug`Failed to load vault configs: ${error}`;
+      logger.debug`Failed to load vault configs from .data/vault/: ${error}`;
     }
+
     vaultService.ensureDefaultVaults();
     return vaultService;
   }

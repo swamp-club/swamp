@@ -6,6 +6,15 @@ import type { RepoPath } from "../../domain/repo/repo_path.ts";
 const MARKER_FILENAME = ".swamp.yaml";
 
 /**
+ * Vault configuration as specified in .swamp.yaml.
+ * The key is the vault name, and the value contains type and config.
+ */
+export interface RepoMarkerVaultConfig {
+  type: string;
+  config?: Record<string, unknown>;
+}
+
+/**
  * Data structure for the .swamp.yaml marker file.
  */
 export interface RepoMarkerData {
@@ -13,6 +22,8 @@ export interface RepoMarkerData {
   initializedAt: string;
   upgradedAt?: string;
   modelsDir?: string;
+  /** Vault configurations keyed by vault name */
+  vaults?: Record<string, RepoMarkerVaultConfig>;
 }
 
 /**
