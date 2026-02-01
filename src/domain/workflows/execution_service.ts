@@ -440,9 +440,28 @@ export class DefaultStepExecutor implements StepExecutor {
         }
       }
 
+      // Capture data artifact info if available (for context refresh)
+      let dataId: string | undefined;
+      let dataAttributes: Record<string, unknown> = {};
+      if (result.data && !result.deleteData) {
+        dataId = result.data.id;
+        dataAttributes = result.data.attributes;
+      }
+
       // Mark output as succeeded and save
       output.markSucceeded();
       await outputRepo.save(modelType, task.methodName, output);
+
+      return {
+        type: "model_method",
+        model: task.modelIdOrName,
+        method: task.methodName,
+        resourceId: resourceId ?? "",
+        resourcePath,
+        resourceAttributes,
+        dataId: dataId ?? "",
+        dataAttributes,
+      };
     } catch (error) {
       // Mark output as failed and save
       const errorMessage = error instanceof Error
@@ -453,15 +472,6 @@ export class DefaultStepExecutor implements StepExecutor {
       await outputRepo.save(modelType, task.methodName, output);
       throw error;
     }
-
-    return {
-      type: "model_method",
-      model: task.modelIdOrName,
-      method: task.methodName,
-      resourceId: resourceId ?? "",
-      resourcePath,
-      resourceAttributes,
-    };
   }
 
   /**
@@ -853,25 +863,46 @@ export class WorkflowExecutionService {
 
       const output = await this.executor.execute(step, ctx);
 
-      // Update expression context with new resource data if this was a model method
+      // Update expression context with new resource and data if this was a model method
       if (step.task.isModelMethod() && output && typeof output === "object") {
         const taskOutput = output as {
           model?: string;
           resourceId?: string;
           resourceAttributes?: Record<string, unknown>;
+          dataId?: string;
+          dataAttributes?: Record<string, unknown>;
         };
-        if (
-          taskOutput.model && taskOutput.resourceId &&
-          taskOutput.resourceAttributes
-        ) {
-          // Update the context with the new resource data
+        if (taskOutput.model) {
+          // Create model entry if it doesn't exist
+          if (!expressionContext.model[taskOutput.model]) {
+            expressionContext.model[taskOutput.model] = {
+              input: {
+                id: "",
+                name: taskOutput.model,
+                version: 1,
+                tags: {},
+                attributes: {},
+              },
+            };
+          }
           const modelData = expressionContext.model[taskOutput.model];
-          if (modelData) {
+
+          // Update resource context if available
+          if (taskOutput.resourceId && taskOutput.resourceAttributes) {
             modelData.resource = {
               id: taskOutput.resourceId,
               version: 1,
               createdAt: new Date().toISOString(),
               attributes: taskOutput.resourceAttributes,
+            };
+          }
+          // Update data context if available
+          if (taskOutput.dataId && taskOutput.dataAttributes) {
+            modelData.data = {
+              id: taskOutput.dataId,
+              version: 1,
+              createdAt: new Date().toISOString(),
+              attributes: taskOutput.dataAttributes,
             };
           }
         }
