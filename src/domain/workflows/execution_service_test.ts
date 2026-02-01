@@ -846,3 +846,199 @@ Deno.test("streaming callbacks receive correct workflow run", async () => {
     assertEquals(receivedRunId, run.id);
   });
 });
+
+/**
+ * Mock step executor that simulates model method execution with data artifacts.
+ * Used to test that data context is refreshed between workflow steps.
+ */
+class ModelMethodMockExecutor implements StepExecutor {
+  executedSteps: string[] = [];
+  /** Maps step name to the model output it should return */
+  stepOutputs: Map<string, {
+    model: string;
+    resourceId?: string;
+    resourceAttributes?: Record<string, unknown>;
+    dataId?: string;
+    dataAttributes?: Record<string, unknown>;
+  }> = new Map();
+  /** Captures the expression context at each step for verification */
+  capturedContexts: Map<string, Record<string, unknown>> = new Map();
+
+  execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    this.executedSteps.push(`${ctx.jobName}/${ctx.stepName}`);
+
+    // Capture the expression context for this step
+    if (ctx.expressionContext) {
+      this.capturedContexts.set(
+        ctx.stepName,
+        JSON.parse(JSON.stringify(ctx.expressionContext.model)),
+      );
+    }
+
+    // Return configured output for this step, or a default
+    const output = this.stepOutputs.get(step.name);
+    if (output) {
+      return Promise.resolve({
+        type: "model_method",
+        method: "test",
+        resourceId: "",
+        resourcePath: "",
+        resourceAttributes: {},
+        dataId: "",
+        dataAttributes: {},
+        ...output,
+      });
+    }
+
+    return Promise.resolve({ executed: true, step: step.name });
+  }
+}
+
+Deno.test("updates data context between workflow steps", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new ModelMethodMockExecutor();
+
+    // Configure step1 to produce data that step2 should be able to see
+    executor.stepOutputs.set("step1", {
+      model: "auth-model",
+      dataId: "auth-data-123",
+      dataAttributes: { token: "secret-token", expiresAt: "2024-01-01" },
+    });
+
+    // step2 depends on step1, should see the data written by step1
+    executor.stepOutputs.set("step2", {
+      model: "list-model",
+      resourceId: "list-resource-456",
+      resourceAttributes: { items: ["a", "b", "c"] },
+    });
+
+    const workflow = Workflow.create({
+      name: "data-context-refresh",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.modelMethod("auth-model", "authenticate"),
+            }),
+            Step.create({
+              name: "step2",
+              task: StepTask.modelMethod("list-model", "list"),
+              dependsOn: [
+                {
+                  step: "step1",
+                  condition: TriggerCondition.succeeded("step1"),
+                },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps, ["job1/step1", "job1/step2"]);
+
+    // Verify step2 saw the data context updated from step1
+    const step2Context = executor.capturedContexts.get("step2");
+    const authModelData = step2Context?.["auth-model"] as {
+      data?: { id: string; attributes: Record<string, unknown> };
+    };
+
+    // The data should be available in the context when step2 runs
+    assertEquals(authModelData?.data?.id, "auth-data-123");
+    assertEquals(authModelData?.data?.attributes?.token, "secret-token");
+    assertEquals(authModelData?.data?.attributes?.expiresAt, "2024-01-01");
+  });
+});
+
+Deno.test("updates both resource and data context when step produces both", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new ModelMethodMockExecutor();
+
+    // Configure step1 to produce both resource and data
+    executor.stepOutputs.set("step1", {
+      model: "sync-model",
+      resourceId: "resource-123",
+      resourceAttributes: { status: "synced" },
+      dataId: "data-456",
+      dataAttributes: { lastSyncTime: "2024-01-01T00:00:00Z" },
+    });
+
+    executor.stepOutputs.set("step2", {
+      model: "report-model",
+    });
+
+    const workflow = Workflow.create({
+      name: "resource-and-data-context",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.modelMethod("sync-model", "sync"),
+            }),
+            Step.create({
+              name: "step2",
+              task: StepTask.modelMethod("report-model", "generate"),
+              dependsOn: [
+                {
+                  step: "step1",
+                  condition: TriggerCondition.succeeded("step1"),
+                },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+
+    // Verify step2 saw both resource and data context from step1
+    const step2Context = executor.capturedContexts.get("step2");
+    const syncModelData = step2Context?.["sync-model"] as {
+      resource?: { id: string; attributes: Record<string, unknown> };
+      data?: { id: string; attributes: Record<string, unknown> };
+    };
+
+    // Resource should be in context
+    assertEquals(syncModelData?.resource?.id, "resource-123");
+    assertEquals(syncModelData?.resource?.attributes?.status, "synced");
+
+    // Data should also be in context
+    assertEquals(syncModelData?.data?.id, "data-456");
+    assertEquals(
+      syncModelData?.data?.attributes?.lastSyncTime,
+      "2024-01-01T00:00:00Z",
+    );
+  });
+});
