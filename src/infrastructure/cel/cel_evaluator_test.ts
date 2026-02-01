@@ -268,6 +268,65 @@ Deno.test("transformHyphenatedModelRefs handles multiple hyphens", () => {
   );
 });
 
+Deno.test("transformHyphenatedModelRefs handles data references", () => {
+  assertEquals(
+    transformHyphenatedModelRefs("model.proxmox-auth.data.attributes.ticket"),
+    'model["proxmox-auth"].data.attributes.ticket',
+  );
+});
+
+Deno.test("transformHyphenatedModelRefs handles file references", () => {
+  assertEquals(
+    transformHyphenatedModelRefs("model.my-config.file.path"),
+    'model["my-config"].file.path',
+  );
+});
+
+Deno.test("transformHyphenatedModelRefs handles log references", () => {
+  assertEquals(
+    transformHyphenatedModelRefs("model.my-service.log.entries"),
+    'model["my-service"].log.entries',
+  );
+});
+
+Deno.test("transformHyphenatedModelRefs handles execution references", () => {
+  assertEquals(
+    transformHyphenatedModelRefs("model.my-task.execution.status"),
+    'model["my-task"].execution.status',
+  );
+});
+
+Deno.test("CelEvaluator handles hyphenated model names in data access", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    model: {
+      "proxmox-auth": {
+        data: {
+          attributes: {
+            ticket: "PVE:user@pve:123456789::abc123",
+            csrfToken: "12345678:abcdef",
+          },
+        },
+      },
+    },
+  };
+
+  assertEquals(
+    evaluator.evaluate(
+      "model.proxmox-auth.data.attributes.ticket",
+      context,
+    ),
+    "PVE:user@pve:123456789::abc123",
+  );
+  assertEquals(
+    evaluator.evaluate(
+      "model.proxmox-auth.data.attributes.csrfToken",
+      context,
+    ),
+    "12345678:abcdef",
+  );
+});
+
 Deno.test("CelEvaluator evaluates env variable access", () => {
   const evaluator = new CelEvaluator();
   const context = {
