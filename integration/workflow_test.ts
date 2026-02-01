@@ -108,6 +108,58 @@ Deno.test("CLI: workflow create creates new workflow file", async () => {
   });
 });
 
+Deno.test("CLI: workflow create creates logical view symlink", async () => {
+  await withTempDir(async (repoDir) => {
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "create",
+        "symlink-test",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    const workflowId = output.id;
+
+    // Verify the logical view symlink exists at /workflows/{name}/workflow.yaml
+    const symlinkPath = `${repoDir}/workflows/symlink-test/workflow.yaml`;
+    const symlinkStat = await Deno.lstat(symlinkPath).catch(() => null);
+    assertEquals(
+      symlinkStat !== null && symlinkStat.isSymlink,
+      true,
+      "Symlink should exist at /workflows/{name}/workflow.yaml",
+    );
+
+    // Verify the symlink points to the correct data file
+    const symlinkTarget = await Deno.readLink(symlinkPath);
+    assertStringIncludes(
+      symlinkTarget,
+      `.data/workflows/workflow-${workflowId}.yaml`,
+      "Symlink should point to .data/workflows/workflow-{id}.yaml",
+    );
+
+    // Verify the runs directory was also created
+    const runsDirStat = await Deno.stat(
+      `${repoDir}/workflows/symlink-test/runs`,
+    ).catch(() => null);
+    assertEquals(
+      runsDirStat !== null && runsDirStat.isDirectory,
+      true,
+      "Runs directory should exist at /workflows/{name}/runs/",
+    );
+  });
+});
+
 Deno.test("CLI: workflow create rejects duplicate names", async () => {
   await withTempDir(async (repoDir) => {
     // Create first workflow

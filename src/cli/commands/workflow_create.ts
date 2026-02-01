@@ -8,7 +8,7 @@ import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -22,7 +22,8 @@ export const workflowCreateCommand = new Command()
     ctx.logger.debug`Creating workflow: name=${name}`;
 
     const repoDir = options.repoDir ?? ".";
-    const repo = new YamlWorkflowRepository(repoDir);
+    const repoContext = createRepositoryContext({ repoDir });
+    const repo = repoContext.workflowRepo;
 
     // Check if name already exists
     const existing = await repo.findByName(name);
