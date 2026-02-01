@@ -1455,3 +1455,120 @@ Deno.test("CLI: workflow run evaluates inline env expression with surrounding te
     assertEquals(dataArtifact?.attributes.message, "prefix-middle-suffix");
   });
 });
+
+// Vault expression tests in workflows
+
+Deno.test("CLI: workflow run resolves vault expressions in model inputs", async () => {
+  await withTempDir(async (repoDir) => {
+    // 1. Create a local_encryption vault via CLI
+    const vaultCreateResult = await runCliCommand(
+      [
+        "vault",
+        "create",
+        "local_encryption",
+        "workflow-vault",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(
+      vaultCreateResult.code,
+      0,
+      `Vault create should succeed. stderr: ${vaultCreateResult.stderr}`,
+    );
+
+    // 2. Store a secret in the vault using vault put
+    const secretValue = "secret-from-vault-123";
+    const vaultPutResult = await runCliCommand(
+      [
+        "vault",
+        "put",
+        "workflow-vault",
+        `API_KEY=${secretValue}`,
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(
+      vaultPutResult.code,
+      0,
+      `Vault put should succeed. stderr: ${vaultPutResult.stderr}`,
+    );
+
+    // 3. Create a model that uses a vault.get() expression
+    const inputRepo = new YamlInputRepository(repoDir);
+    const input = ModelInput.create({
+      name: "vault-model",
+      attributes: {
+        // Use vault expression to get the secret
+        message: "${{ vault.get(workflow-vault, API_KEY) }}",
+      },
+    });
+    await inputRepo.save(ECHO_MODEL_TYPE, input);
+
+    // 4. Create a workflow that runs the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "vault-workflow",
+      jobs: [
+        Job.create({
+          name: "run-vault-model",
+          steps: [
+            Step.create({
+              name: "write-echo",
+              task: StepTask.modelMethod("vault-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // 5. Run the workflow
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "vault-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Workflow run should succeed. stderr: ${result.stderr}, stdout: ${result.stdout}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+    assertEquals(output.jobs[0].steps[0].status, "succeeded");
+
+    // 6. Verify the model's data has the resolved vault secret
+    const dataRepo = new YamlDataRepository(repoDir);
+    const updatedModel = await inputRepo.findByName(
+      ECHO_MODEL_TYPE,
+      input.name,
+    );
+    if (!updatedModel?.dataId) {
+      throw new Error("Expected dataId to be set after workflow run");
+    }
+
+    const dataArtifact = await dataRepo.findById(
+      ECHO_MODEL_TYPE,
+      createModelDataId(updatedModel.dataId),
+    );
+    assertEquals(
+      dataArtifact?.attributes.message,
+      secretValue,
+      "Vault expression should resolve to the secret value",
+    );
+  });
+});
