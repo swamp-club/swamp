@@ -1,0 +1,197 @@
+import { assertEquals, assertRejects } from "@std/assert";
+import { ModelInput } from "../../model_input.ts";
+import {
+  AWS_CLI_MODEL_TYPE,
+  AwsCliDataAttributesSchema,
+  AwsCliInputAttributesSchema,
+  awsCliModel,
+  parseCommand,
+} from "./aws_cli_model.ts";
+
+Deno.test("AWS_CLI_MODEL_TYPE has correct normalized type", () => {
+  assertEquals(AWS_CLI_MODEL_TYPE.normalized, "aws/cli");
+});
+
+Deno.test("awsCliModel has correct version", () => {
+  assertEquals(awsCliModel.version, 1);
+});
+
+Deno.test("awsCliModel.type equals AWS_CLI_MODEL_TYPE", () => {
+  assertEquals(awsCliModel.type.equals(AWS_CLI_MODEL_TYPE), true);
+});
+
+Deno.test("AwsCliInputAttributesSchema validates command", () => {
+  const result = AwsCliInputAttributesSchema.safeParse({
+    command: "s3 ls",
+  });
+  assertEquals(result.success, true);
+  if (result.success) {
+    assertEquals(result.data.command, "s3 ls");
+    assertEquals(result.data.timeout, 60000); // default
+    assertEquals(result.data.parseJson, false); // default
+  }
+});
+
+Deno.test("AwsCliInputAttributesSchema validates with all options", () => {
+  const result = AwsCliInputAttributesSchema.safeParse({
+    command: "ec2 describe-instances",
+    region: "us-west-2",
+    profile: "production",
+    timeout: 30000,
+    parseJson: true,
+  });
+  assertEquals(result.success, true);
+  if (result.success) {
+    assertEquals(result.data.command, "ec2 describe-instances");
+    assertEquals(result.data.region, "us-west-2");
+    assertEquals(result.data.profile, "production");
+    assertEquals(result.data.timeout, 30000);
+    assertEquals(result.data.parseJson, true);
+  }
+});
+
+Deno.test("AwsCliInputAttributesSchema rejects empty command", () => {
+  const result = AwsCliInputAttributesSchema.safeParse({
+    command: "",
+  });
+  assertEquals(result.success, false);
+});
+
+Deno.test("AwsCliInputAttributesSchema rejects missing command", () => {
+  const result = AwsCliInputAttributesSchema.safeParse({});
+  assertEquals(result.success, false);
+});
+
+Deno.test("AwsCliInputAttributesSchema rejects negative timeout", () => {
+  const result = AwsCliInputAttributesSchema.safeParse({
+    command: "s3 ls",
+    timeout: -1000,
+  });
+  assertEquals(result.success, false);
+});
+
+Deno.test("AwsCliInputAttributesSchema rejects zero timeout", () => {
+  const result = AwsCliInputAttributesSchema.safeParse({
+    command: "s3 ls",
+    timeout: 0,
+  });
+  assertEquals(result.success, false);
+});
+
+Deno.test("AwsCliDataAttributesSchema validates correct data", () => {
+  const result = AwsCliDataAttributesSchema.safeParse({
+    output: "bucket-1\nbucket-2",
+    exitCode: 0,
+    executedAt: "2024-01-15T10:30:00.000Z",
+    durationMs: 150,
+  });
+  assertEquals(result.success, true);
+});
+
+Deno.test("AwsCliDataAttributesSchema validates with json attribute", () => {
+  const result = AwsCliDataAttributesSchema.safeParse({
+    output: '{"Images": []}',
+    json: { Images: [] },
+    exitCode: 0,
+    executedAt: "2024-01-15T10:30:00.000Z",
+    durationMs: 150,
+  });
+  assertEquals(result.success, true);
+  if (result.success) {
+    assertEquals(result.data.json, { Images: [] });
+  }
+});
+
+Deno.test("AwsCliDataAttributesSchema rejects invalid timestamp", () => {
+  const result = AwsCliDataAttributesSchema.safeParse({
+    output: "test",
+    exitCode: 0,
+    executedAt: "not-a-date",
+    durationMs: 150,
+  });
+  assertEquals(result.success, false);
+});
+
+Deno.test("awsCliModel has run method", () => {
+  assertEquals("run" in awsCliModel.methods, true);
+  assertEquals(
+    awsCliModel.methods.run.description,
+    "Run an AWS CLI command and capture output as data attributes",
+  );
+});
+
+Deno.test("parseCommand handles simple commands", () => {
+  assertEquals(parseCommand("s3 ls"), ["s3", "ls"]);
+  assertEquals(parseCommand("ec2 describe-instances"), [
+    "ec2",
+    "describe-instances",
+  ]);
+});
+
+Deno.test("parseCommand handles multiple spaces", () => {
+  assertEquals(parseCommand("s3   ls"), ["s3", "ls"]);
+  assertEquals(parseCommand("  s3 ls  "), ["s3", "ls"]);
+});
+
+Deno.test("parseCommand handles double-quoted arguments", () => {
+  assertEquals(
+    parseCommand('ec2 describe-images --filters "Name=state,Values=available"'),
+    ["ec2", "describe-images", "--filters", "Name=state,Values=available"],
+  );
+});
+
+Deno.test("parseCommand handles single-quoted arguments", () => {
+  assertEquals(parseCommand("ec2 describe-images --filters 'Name=state'"), [
+    "ec2",
+    "describe-images",
+    "--filters",
+    "Name=state",
+  ]);
+});
+
+Deno.test("parseCommand handles mixed quotes", () => {
+  assertEquals(
+    parseCommand("s3 cp 's3://bucket/file with spaces.txt' \"local file.txt\""),
+    ["s3", "cp", "s3://bucket/file with spaces.txt", "local file.txt"],
+  );
+});
+
+Deno.test("parseCommand handles escaped characters", () => {
+  assertEquals(parseCommand("s3 ls s3://bucket/path\\ with\\ spaces"), [
+    "s3",
+    "ls",
+    "s3://bucket/path with spaces",
+  ]);
+});
+
+Deno.test("parseCommand handles complex AWS CLI command", () => {
+  const command =
+    `ec2 describe-images --owners 099720109477 --filters "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-*" --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text`;
+  const args = parseCommand(command);
+  assertEquals(args, [
+    "ec2",
+    "describe-images",
+    "--owners",
+    "099720109477",
+    "--filters",
+    "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-*",
+    "--query",
+    "sort_by(Images,&CreationDate)[-1].ImageId",
+    "--output",
+    "text",
+  ]);
+});
+
+Deno.test("awsCliModel.methods.run validates input attributes", async () => {
+  const input = ModelInput.create({
+    name: "test-aws-cli",
+    attributes: { notACommand: "value" },
+  });
+
+  await assertRejects(
+    async () => {
+      await awsCliModel.methods.run.execute(input, { repoDir: "/tmp" });
+    },
+    Error,
+  );
+});
