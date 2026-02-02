@@ -3,7 +3,7 @@ swamp
 
 # Local swamp repo data
 .swamp.yaml
-workflows/
+/workflows/
 workflows-evaluated/
 resources/
 
