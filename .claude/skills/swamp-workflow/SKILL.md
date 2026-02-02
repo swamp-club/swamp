@@ -536,6 +536,40 @@ swamp vault create aws my-aws-vault
 Note: AWS credentials are obtained from the default AWS credential chain
 (environment variables, shared credentials file, IAM role, etc.).
 
+#### Customizing Vault Configuration
+
+Vaults are created with default configuration. To customize settings (e.g., AWS
+region), edit the vault config file directly:
+
+```bash
+# Edit a vault's configuration
+swamp vault edit my-aws-vault
+
+# Or edit the file directly at:
+# .data/vault/{type}/{name}.yaml
+```
+
+Example AWS vault config:
+
+```yaml
+id: abc-123
+name: my-aws-vault
+type: aws
+config:
+  region: us-west-2 # Change from default us-east-1
+```
+
+Example local encryption vault config:
+
+```yaml
+id: def-456
+name: my-vault
+type: local_encryption
+config:
+  auto_generate: true
+  base_dir: .
+```
+
 ### Vault Operations Reference
 
 | Operation    | Expression Syntax                   | CLI Command                              | Description             |
