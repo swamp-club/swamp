@@ -239,6 +239,12 @@ export const workflowHistoryLogsCommand = new Command()
                     console.log(`    ${line}`);
                   }
                 }
+                if (output.stderr) {
+                  const lines = output.stderr.split("\n");
+                  for (const line of lines) {
+                    console.error(`    ${line}`);
+                  }
+                }
               }
             }
           }
