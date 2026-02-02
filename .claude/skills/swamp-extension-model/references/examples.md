@@ -165,3 +165,83 @@ export const model = {
   },
 };
 ```
+
+## Data Chaining Model
+
+Models that produce data can be chained together using CEL expressions. The
+output from one model's `data.attributes` can be referenced by another model.
+
+```typescript
+// extensions/models/config_generator.ts
+import { z } from "npm:zod@4";
+
+const InputSchema = z.object({
+  environment: z.enum(["dev", "staging", "prod"]),
+  serviceName: z.string(),
+});
+
+const DataSchema = z.object({
+  configJson: z.object({
+    endpoint: z.string(),
+    timeout: z.number(),
+    retries: z.number(),
+  }),
+  generatedAt: z.string(),
+});
+
+export const model = {
+  type: "myorg/config-generator",
+  version: 1,
+  inputAttributesSchema: InputSchema,
+  dataAttributesSchema: DataSchema,
+  methods: {
+    generate: {
+      description: "Generate service configuration based on environment",
+      execute: async (input, _context) => {
+        const { environment, serviceName } = input.attributes;
+
+        // Generate environment-specific configuration
+        const configs = {
+          dev: { timeout: 30000, retries: 1 },
+          staging: { timeout: 15000, retries: 2 },
+          prod: { timeout: 5000, retries: 3 },
+        };
+
+        const envConfig = configs[environment];
+        const endpoint =
+          `https://${serviceName}.${environment}.example.com/api`;
+
+        return {
+          data: {
+            id: input.id,
+            attributes: {
+              configJson: {
+                endpoint,
+                timeout: envConfig.timeout,
+                retries: envConfig.retries,
+              },
+              generatedAt: new Date().toISOString(),
+            },
+          },
+        };
+      },
+    },
+  },
+};
+```
+
+**Using the chained output in another model input:**
+
+```yaml
+# Model input that references config-generator output
+name: my-service-client
+attributes:
+  # Reference the generated config from another model's data output
+  endpoint: ${{ model.api-config.data.attributes.configJson.endpoint }}
+  timeout: ${{ model.api-config.data.attributes.configJson.timeout }}
+  retries: ${{ model.api-config.data.attributes.configJson.retries }}
+```
+
+This pattern enables dynamic configuration where one model generates values that
+are consumed by dependent models, with the workflow engine automatically
+resolving execution order based on expression dependencies.

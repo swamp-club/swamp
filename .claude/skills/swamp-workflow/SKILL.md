@@ -624,3 +624,9 @@ End-to-end workflow for creating and running a new workflow:
 4. **Validate** the workflow: `swamp workflow validate my-task --json`
 5. **Fix** any validation errors and re-validate
 6. **Run** the workflow: `swamp workflow run my-task --json`
+
+## References
+
+- **Data chaining**: See
+  [references/data-chaining.md](references/data-chaining.md) for aws/cli model
+  workflow examples and chaining patterns

@@ -139,6 +139,7 @@ reference other models.
 | ------------------------------------------ | ---------------------------------- |
 | `model.<name>.input.attributes.<field>`    | Another model's input attribute    |
 | `model.<name>.resource.attributes.<field>` | Another model's resource attribute |
+| `model.<name>.data.attributes.<field>`     | Another model's data attribute     |
 | `self.name`                                | This model's name                  |
 | `self.version`                             | This model's version               |
 | `self.attributes.<field>`                  | This model's own input attribute   |
@@ -224,3 +225,9 @@ results to the user.
    needed)
 5. **Evaluate** expressions: `swamp model evaluate my-message --json`
 6. **Run** the method: `swamp model method run my-message write --json`
+
+## References
+
+- **Data chaining**: See
+  [references/data-chaining.md](references/data-chaining.md) for aws/cli model
+  examples and chaining patterns
