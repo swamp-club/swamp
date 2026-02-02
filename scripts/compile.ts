@@ -24,7 +24,7 @@ async function main() {
     "deno",
     "compile",
     "--allow-read",
-    "--allow-write", 
+    "--allow-write",
     "--allow-env",
     "--allow-run",
     "--allow-sys",
@@ -40,7 +40,9 @@ async function main() {
         console.log(`Including web experiment from ${webDistPath}`);
         baseCommand.push("--include", webDistPath);
       } else {
-        console.error(`Error: Web experiment not built. Run 'deno run webapp:build' first.`);
+        console.error(
+          `Error: Web experiment not built. Run 'deno run webapp:build' first.`,
+        );
         Deno.exit(1);
       }
     } else {
@@ -52,7 +54,7 @@ async function main() {
   baseCommand.push("--output", "swamp", "main.ts");
 
   console.log(`Running: ${baseCommand.join(" ")}`);
-  
+
   const command = new Deno.Command(baseCommand[0], {
     args: baseCommand.slice(1),
     stdout: "inherit",
@@ -60,7 +62,7 @@ async function main() {
   });
 
   const { success } = await command.output();
-  
+
   if (!success) {
     Deno.exit(1);
   }
