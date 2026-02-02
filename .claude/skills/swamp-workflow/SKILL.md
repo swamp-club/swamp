@@ -171,13 +171,11 @@ After creation, edit the YAML file at the returned `path` to add jobs and steps.
 **Example workflow file structure:**
 
 ```yaml
-# workflows/workflow-abc-123.yaml
-apiVersion: swamp/v1
-kind: Workflow
-metadata:
-  id: abc-123
-  name: my-deploy-workflow
-  version: 1
+# .data/workflows/workflow-abc-123.yaml
+id: abc-123
+name: my-deploy-workflow
+description: Deploy workflow with build and deploy jobs
+version: 1
 jobs:
   - name: build
     description: Build the application
@@ -190,7 +188,11 @@ jobs:
           args: ["task", "build"]
   - name: deploy
     description: Deploy the application
-    needs: [build]
+    dependsOn:
+      - job: build
+        condition:
+          type: succeeded
+          ref: build
     steps:
       - name: upload
         description: Upload artifacts

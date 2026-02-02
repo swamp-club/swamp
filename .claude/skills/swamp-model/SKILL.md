@@ -118,12 +118,11 @@ attributes according to the `inputAttributesSchema` from `type describe`.
 **Example input file structure:**
 
 ```yaml
-# inputs/swamp/echo/my-echo.yaml
-apiVersion: swamp/v1
-kind: Input
-metadata:
-  name: my-echo
-  type: swamp/echo
+# .data/inputs/swamp/echo/<uuid>.yaml
+id: 550e8400-e29b-41d4-a716-446655440000
+name: my-echo
+version: 1
+tags: {}
 attributes:
   message: "Hello, world!"
 ```
@@ -155,12 +154,11 @@ Expressions support standard CEL operations:
 ### Example with Expressions
 
 ```yaml
-# inputs/aws/subnet/my-subnet.yaml
-apiVersion: swamp/v1
-kind: Input
-metadata:
-  name: my-subnet
-  type: aws/subnet
+# .data/inputs/aws/subnet/<uuid>.yaml
+id: 550e8400-e29b-41d4-a716-446655440001
+name: my-subnet
+version: 1
+tags: {}
 attributes:
   vpcId: ${{ model.my-vpc.resource.attributes.vpcId }}
   cidrBlock: "10.0.1.0/24"
