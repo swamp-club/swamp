@@ -23,11 +23,19 @@ Deno.test("VaultService - missing vault configuration error handling", async (t)
       );
       assertStringIncludes(
         error.message,
-        "swamp vault create aws",
+        "Vaults are NOT configured in .swamp.yaml",
       );
       assertStringIncludes(
         error.message,
-        "Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables",
+        "swamp vault create <type> aws",
+      );
+      assertStringIncludes(
+        error.message,
+        "Available vault types: aws, local_encryption",
+      );
+      assertStringIncludes(
+        error.message,
+        "Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
       );
     },
   );

@@ -22,32 +22,28 @@ export const vaultListKeysCommand = new Command()
 
     const repoDir = options.repoDir ?? ".";
 
-    // Load vault service (loads from both .data/vault/ and .swamp.yaml)
-    const vaultService = await VaultService.fromRepository(repoDir);
-
     // Verify vault exists
-    const availableVaults = vaultService.getVaultNames();
-    if (!availableVaults.includes(vaultName)) {
-      if (availableVaults.length === 0) {
+    const repo = new YamlVaultConfigRepository(repoDir);
+    const vaultConfig = await repo.findByName(vaultName);
+    if (!vaultConfig) {
+      // List available vaults for helpful error message
+      const allVaults = await repo.findAll();
+      if (allVaults.length === 0) {
         throw new UserError(
           `Vault '${vaultName}' not found. No vaults are configured.\n` +
-            `Create a vault using: swamp vault create <type> ${vaultName}\n` +
-            `Or configure a vault in .swamp.yaml`,
+            `Create a vault using: swamp vault create <type> ${vaultName}`,
         );
       }
+      const vaultNames = allVaults.map((v) => v.name).join(", ");
       throw new UserError(
-        `Vault '${vaultName}' not found. Available vaults: ${
-          availableVaults.join(", ")
-        }`,
+        `Vault '${vaultName}' not found. Available vaults: ${vaultNames}`,
       );
     }
 
-    // Get vault type for display (from .data/vault/ if available)
-    const repo = new YamlVaultConfigRepository(repoDir);
-    const vaultConfig = await repo.findByName(vaultName);
-    const vaultType = vaultConfig?.type ?? "configured";
+    ctx.logger.debug`Found vault: ${vaultConfig.name} (${vaultConfig.type})`;
 
-    ctx.logger.debug`Found vault: ${vaultName} (${vaultType})`;
+    // Load vault service to list secrets
+    const vaultService = await VaultService.fromRepository(repoDir);
 
     // List secret keys
     const secretKeys = await vaultService.list(vaultName);
@@ -55,7 +51,7 @@ export const vaultListKeysCommand = new Command()
 
     const data: VaultListKeysData = {
       vaultName,
-      vaultType,
+      vaultType: vaultConfig.type,
       secretKeys,
       count: secretKeys.length,
     };
