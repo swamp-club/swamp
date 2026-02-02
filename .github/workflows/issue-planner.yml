@@ -60,9 +60,6 @@ jobs:
 
       - name: Generate implementation plan
         uses: anthropics/claude-code-action@v1
-        env:
-          EXISTING_PLAN_COMMENT_ID: ${{ steps.find-plan.outputs.comment_id }}
-          PLAN_EXISTS: ${{ steps.find-plan.outputs.found }}
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
@@ -155,15 +152,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Update plan based on feedback comments
+  # Update plan based on /plan-update command with feedback
   update-plan:
     name: Update Plan with Feedback
     runs-on: ubuntu-latest
-    # Run on non-/plan comments from maintainers, but only if a plan already exists
+    # Run on /plan-update commands from maintainers
     if: |
       github.event.issue.pull_request == null &&
-      github.event.comment.body != '/plan' &&
-      !startsWith(github.event.comment.body, '/') &&
+      startsWith(github.event.comment.body, '/plan-update') &&
       (
         github.event.comment.author_association == 'OWNER' ||
         github.event.comment.author_association == 'MEMBER' ||
@@ -182,12 +178,6 @@ jobs:
             echo "found=true" >> $GITHUB_OUTPUT
             echo "comment_id=$PLAN_COMMENT_ID" >> $GITHUB_OUTPUT
             echo "Found existing plan comment: $PLAN_COMMENT_ID"
-
-            # Get the existing plan content
-            PLAN_BODY=$(gh api "/repos/${{ github.repository }}/issues/comments/$PLAN_COMMENT_ID" --jq '.body')
-            # Save to file to avoid escaping issues
-            echo "$PLAN_BODY" > /tmp/existing_plan.md
-            echo "plan_file=/tmp/existing_plan.md" >> $GITHUB_OUTPUT
           else
             echo "found=false" >> $GITHUB_OUTPUT
             echo "No existing plan comment found, skipping"
@@ -251,7 +241,10 @@ jobs:
             ${{ steps.get-plan.outputs.plan }}
 
             USER FEEDBACK (from @${{ github.event.comment.user.login }}):
+            The user commented with `/plan-update` followed by their feedback. Here is the full comment:
             ${{ github.event.comment.body }}
+
+            Extract the feedback by removing the `/plan-update` prefix from the comment.
 
             CRITICAL: Before doing anything else, you MUST:
             1. Read CLAUDE.md at the repository root - this contains mandatory project standards
