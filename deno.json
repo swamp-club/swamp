@@ -35,5 +35,5 @@
     "jsx": "react",
     "strict": true
   },
-  "exclude": ["experiments/"]
+  "exclude": ["experiments/webapp/"]
 }

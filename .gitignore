@@ -1,6 +1,12 @@
 dev-logs/*
 swamp
 
+# Local swamp repo data
+.swamp.yaml
+workflows/
+workflows-evaluated/
+resources/
+
 # Generated/runtime data (ignored)
 .data/data/
 .data/outputs/

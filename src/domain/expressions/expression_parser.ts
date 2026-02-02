@@ -113,9 +113,15 @@ function replaceExpressionsRecursive(
       for (const [rawExpr, value] of values) {
         if (result.includes(rawExpr)) {
           // Convert value to string for inline replacement
-          const stringValue = value === null || value === undefined
-            ? ""
-            : String(value);
+          // JSON stringify arrays/objects to preserve structure
+          let stringValue: string;
+          if (value === null || value === undefined) {
+            stringValue = "";
+          } else if (typeof value === "object") {
+            stringValue = JSON.stringify(value, null, 2);
+          } else {
+            stringValue = String(value);
+          }
           result = result.split(rawExpr).join(stringValue);
         }
       }
