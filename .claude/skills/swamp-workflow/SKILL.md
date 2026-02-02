@@ -337,28 +337,28 @@ passwords, and tokens without exposing them in workflow files.
 
 ### Vault Configuration
 
-Configure vaults in your repository's `.swamp.yaml` file:
+Vaults are created using the CLI, **not** configured in `.swamp.yaml`. The
+`.swamp.yaml` file only stores repository metadata.
 
-```yaml
-vaults:
-  # Local encryption vault (development)
-  dev-secrets:
-    type: local_encryption
-    config:
-      auto_generate: true
+```bash
+# Create a local encryption vault (for development)
+swamp vault create local_encryption dev-secrets
 
-  # SSH key-based vault (production)
-  prod-secrets:
-    type: local_encryption
-    config:
-      ssh_key_path: "~/.ssh/production_key"
+# Create an AWS Secrets Manager vault (for production)
+swamp vault create aws prod-secrets
 
-  # AWS Secrets Manager vault
-  aws-vault:
-    type: aws
-    config:
-      region: "us-east-1"
+# Store secrets in a vault
+swamp vault put dev-secrets api-key=sk-1234567890abcdef
+
+# List available vaults
+swamp vault search
+
+# List keys in a vault
+swamp vault list-keys dev-secrets
 ```
+
+Vaults are stored in `.data/vault/{vault-type}/{name}.yaml` and loaded
+automatically when workflows execute.
 
 ### Vault Expression Syntax
 
@@ -376,19 +376,19 @@ devToken: ${{ vault.get(dev-secrets, auth-token) }}
 dbPassword: ${{ vault.get(aws-vault, database/password) }}
 ```
 
-### Storing Secrets with CLI Commands
+### Managing Secrets with CLI Commands
 
 Use the swamp CLI to manage secrets:
 
 ```bash
 # Store a secret in a vault
-swamp vault store dev-secrets api-key "sk-1234567890abcdef"
+swamp vault put dev-secrets api-key=sk-1234567890abcdef
 
 # Retrieve a secret from a vault
 swamp vault get dev-secrets api-key
 
-# List all secrets in a vault
-swamp vault list dev-secrets
+# List all secret keys in a vault
+swamp vault list-keys dev-secrets
 ```
 
 ### Using the Vault Model (swamp/lets-get-sensitive)
@@ -507,52 +507,78 @@ jobs:
 
 ### Vault Types and Configuration
 
-#### 
+#### Vault Requirements
 
-Any vault that is referenced in a workflow file or step, must already exist in
-the .swamp.yaml otherwise an error should be thrown
+Any vault referenced in a workflow file must be created via the CLI before the
+workflow runs. Create vaults using `swamp vault create <type> <name>`.
 
 #### Local Encryption Vault
 
 Stores secrets encrypted locally using AES-256-GCM:
 
-```yaml
-vaults:
-  local-vault:
-    type: local_encryption
-    config:
-      # Auto-generate encryption key (development)
-      auto_generate: true
+```bash
+# Create a local encryption vault
+swamp vault create local_encryption my-vault
 
-      # OR use custom key file location
-      key_file: "vault.key"
-
-      # OR use SSH key for encryption (production)
-      ssh_key_path: "~/.ssh/vault_key"
+# The vault is stored in .data/vault/local_encryption/my-vault.yaml
+# Encryption keys are auto-generated and stored securely
 ```
 
 #### AWS Secrets Manager Vault
 
 Integrates with AWS Secrets Manager:
 
-```yaml
-vaults:
-  aws-vault:
-    type: aws
-    config:
-      region: "us-west-2" # Required: AWS region
+```bash
+# Create an AWS Secrets Manager vault
+swamp vault create aws my-aws-vault
 ```
 
 Note: AWS credentials are obtained from the default AWS credential chain
 (environment variables, shared credentials file, IAM role, etc.).
 
+#### Customizing Vault Configuration
+
+Vaults are created with default configuration. To customize settings (e.g., AWS
+region), edit the vault config file directly:
+
+```bash
+# Edit a vault's configuration
+swamp vault edit my-aws-vault
+
+# Or edit the file directly at:
+# .data/vault/{type}/{name}.yaml
+```
+
+Example AWS vault config:
+
+```yaml
+id: abc-123
+name: my-aws-vault
+type: aws
+config:
+  region: us-west-2 # Change from default us-east-1
+```
+
+Example local encryption vault config:
+
+```yaml
+id: def-456
+name: my-vault
+type: local_encryption
+config:
+  auto_generate: true
+  base_dir: .
+```
+
 ### Vault Operations Reference
 
-| Operation    | Expression Syntax                     | CLI Command                              | Description             |
-| ------------ | ------------------------------------- | ---------------------------------------- | ----------------------- |
-| Get secret   | `${{ vault.get(vault-name, key) }}`   | `swamp vault get vault-name key`         | Retrieve a secret value |
-| Store secret | Use vault model with `operation: put` | `swamp vault store vault-name key value` | Store a secret value    |
-| List secrets | N/A                                   | `swamp vault list vault-name`            | List all secret keys    |
+| Operation    | Expression Syntax                   | CLI Command                              | Description             |
+| ------------ | ----------------------------------- | ---------------------------------------- | ----------------------- |
+| Create vault | N/A                                 | `swamp vault create <type> <name>`       | Create a new vault      |
+| Get secret   | `${{ vault.get(vault-name, key) }}` | `swamp vault get <vault-name> <key>`     | Retrieve a secret value |
+| Store secret | N/A                                 | `swamp vault put <vault-name> key=value` | Store a secret value    |
+| List vaults  | N/A                                 | `swamp vault search`                     | List all vaults         |
+| List keys    | N/A                                 | `swamp vault list-keys <vault-name>`     | List all secret keys    |
 
 ### Error Handling
 

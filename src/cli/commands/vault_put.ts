@@ -98,34 +98,28 @@ export const vaultPutCommand = new Command()
     const { key, value } = parsed;
     ctx.logger.debug`Parsed key: ${key}`;
 
-    // Load vault service to interact with secrets
-    // This loads vaults from both .data/vault/ and .swamp.yaml
-    const vaultService = await VaultService.fromRepository(repoDir);
-
-    // Verify vault exists by checking if VaultService knows about it
-    const availableVaults = vaultService.getVaultNames();
-    if (!availableVaults.includes(vaultName)) {
-      if (availableVaults.length === 0) {
+    // Verify vault exists
+    const repo = new YamlVaultConfigRepository(repoDir);
+    const vaultConfig = await repo.findByName(vaultName);
+    if (!vaultConfig) {
+      // List available vaults for helpful error message
+      const allVaults = await repo.findAll();
+      if (allVaults.length === 0) {
         throw new UserError(
           `Vault '${vaultName}' not found. No vaults are configured.\n` +
-            `Create a vault using: swamp vault create <type> ${vaultName}\n` +
-            `Or configure a vault in .swamp.yaml`,
+            `Create a vault using: swamp vault create <type> ${vaultName}`,
         );
       }
+      const vaultNames = allVaults.map((v) => v.name).join(", ");
       throw new UserError(
-        `Vault '${vaultName}' not found. Available vaults: ${
-          availableVaults.join(", ")
-        }`,
+        `Vault '${vaultName}' not found. Available vaults: ${vaultNames}`,
       );
     }
 
-    // Get vault config for display purposes (from .data/vault/ if available)
-    const repo = new YamlVaultConfigRepository(repoDir);
-    const vaultConfig = await repo.findByName(vaultName);
-    // If not in .data/vault/, the vault is from .swamp.yaml - we'll report the type as "configured"
-    const vaultType = vaultConfig?.type ?? "configured";
+    ctx.logger.debug`Found vault: ${vaultConfig.name} (${vaultConfig.type})`;
 
-    ctx.logger.debug`Found vault: ${vaultName} (${vaultType})`;
+    // Load vault service to interact with secrets
+    const vaultService = await VaultService.fromRepository(repoDir);
 
     // Check if secret already exists
     const exists = await secretExists(vaultService, vaultName, key);
@@ -146,23 +140,21 @@ export const vaultPutCommand = new Command()
     await vaultService.put(vaultName, key, value);
     ctx.logger.debug`Secret stored successfully`;
 
-    // Emit event to update the logical view symlinks (only if vault is from .data/vault/)
-    if (vaultConfig) {
-      const repoContext = createRepositoryContext({ repoDir });
-      const event = createVaultSecretUpdated(
-        vaultConfig.id,
-        vaultConfig.type,
-        vaultConfig.name,
-        key,
-      );
-      await repoContext.eventBus.publish(event);
-      ctx.logger.debug`Emitted VaultSecretUpdated event`;
-    }
+    // Emit event to update the logical view symlinks
+    const repoContext = createRepositoryContext({ repoDir });
+    const event = createVaultSecretUpdated(
+      vaultConfig.id,
+      vaultConfig.type,
+      vaultConfig.name,
+      key,
+    );
+    await repoContext.eventBus.publish(event);
+    ctx.logger.debug`Emitted VaultSecretUpdated event`;
 
     const data: VaultPutData = {
       vaultName,
       secretKey: key,
-      vaultType,
+      vaultType: vaultConfig.type,
       overwritten: exists,
       timestamp: new Date().toISOString(),
     };

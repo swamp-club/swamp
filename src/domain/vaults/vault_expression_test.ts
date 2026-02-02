@@ -22,11 +22,19 @@ Deno.test("Direct Vault Service Error Messages", async (t) => {
       );
       assertStringIncludes(
         error.message,
-        "swamp vault create aws production",
+        "Vaults are NOT configured in .swamp.yaml",
       );
       assertStringIncludes(
         error.message,
-        "Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables",
+        "swamp vault create <type> production",
+      );
+      assertStringIncludes(
+        error.message,
+        "Available vault types: aws, local_encryption",
+      );
+      assertStringIncludes(
+        error.message,
+        "Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
       );
     },
   );
