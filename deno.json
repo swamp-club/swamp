@@ -10,10 +10,11 @@
     "fmt": "deno fmt",
     "webapp:install": "cd experiments/webapp/frontend && npm install",
     "webapp:build": "cd experiments/webapp/frontend && npm run build",
-    "compile": "deno compile --allow-read --allow-write --allow-env --allow-run --allow-sys --allow-net --include .claude/skills --include experiments/webapp/frontend/dist --output swamp main.ts"
+    "compile": "deno run -A scripts/compile.ts"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@1",
+    "@std/cli": "jsr:@std/cli@1",
     "@std/fs": "jsr:@std/fs@1",
     "@std/path": "jsr:@std/path@1",
     "@std/yaml": "jsr:@std/yaml@1",

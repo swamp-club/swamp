@@ -7,6 +7,7 @@
     "jsr:@cliffy/table@1.0.0-rc.8": "1.0.0-rc.8",
     "jsr:@logtape/logtape@0.8": "0.8.2",
     "jsr:@std/assert@1": "1.0.11",
+    "jsr:@std/cli@1": "1.0.27",
     "jsr:@std/fmt@~1.0.2": "1.0.9",
     "jsr:@std/fs@1": "1.0.22",
     "jsr:@std/internal@^1.0.12": "1.0.12",
@@ -60,6 +61,9 @@
       "dependencies": [
         "jsr:@std/internal@^1.0.5"
       ]
+    },
+    "@std/cli@1.0.27": {
+      "integrity": "eba97edd0891871a7410e835dd94b3c260c709cca5983df2689c25a71fbe04de"
     },
     "@std/fmt@1.0.9": {
       "integrity": "2487343e8899fb2be5d0e3d35013e54477ada198854e52dd05ed0422eddcabe0"
@@ -1255,6 +1259,7 @@
       "jsr:@cliffy/command@1.0.0-rc.8",
       "jsr:@logtape/logtape@0.8",
       "jsr:@std/assert@1",
+      "jsr:@std/cli@1",
       "jsr:@std/fs@1",
       "jsr:@std/path@1",
       "jsr:@std/yaml@1",
