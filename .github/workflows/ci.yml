@@ -41,6 +41,7 @@ jobs:
     name: Claude Code Review
     needs: test
     runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true
