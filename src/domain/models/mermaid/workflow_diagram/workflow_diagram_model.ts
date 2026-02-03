@@ -1,14 +1,13 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
-import { ModelResource } from "../../model_resource.ts";
-import { computeChecksum, ModelFile } from "../../model_file.ts";
+import { computeChecksum } from "../../model_file.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
 } from "../../model.ts";
-import type { ModelInput } from "../../model_input.ts";
+import type { Definition } from "../../../definitions/definition.ts";
 
 /**
  * Schema for workflow execution data that will be converted to Mermaid diagram.
@@ -274,10 +273,12 @@ function generateMermaidDiagram(
  * Executes the "generate" method for the mermaid workflow diagram model.
  */
 async function executeGenerate(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = MermaidWorkflowInputAttributesSchema.parse(input.attributes);
+  const attrs = MermaidWorkflowInputAttributesSchema.parse(
+    definition.attributes,
+  );
 
   // Generate the Mermaid diagram
   const diagramContent = generateMermaidDiagram(attrs.workflowExecution, {
@@ -289,16 +290,8 @@ async function executeGenerate(
   // Convert to bytes
   const content = new TextEncoder().encode(diagramContent);
   const checksum = await computeChecksum(content);
-
-  // Create file artifact
-  const fileId = crypto.randomUUID();
-  const file = ModelFile.create({
-    id: fileId,
-    filename: `workflow-${attrs.workflowExecution.workflowName}-diagram.mmd`,
-    contentType: "text/plain",
-    size: content.length,
-    checksum,
-  });
+  const filename =
+    `workflow-${attrs.workflowExecution.workflowName}-diagram.mmd`;
 
   // Count jobs and steps
   const jobCount = attrs.workflowExecution.jobs.length;
@@ -307,25 +300,54 @@ async function executeGenerate(
     0,
   );
 
-  // Create the resource
-  const resource = ModelResource.create({
-    id: input.id,
-    attributes: {
-      workflowName: attrs.workflowExecution.workflowName,
-      jobCount,
-      stepCount,
-      workflowStatus: attrs.workflowExecution.status,
-      generatedAt: new Date().toISOString(),
-      diagramFileId: fileId,
-    },
-  });
+  // Create metadata attributes
+  const metadataAttributes = {
+    workflowName: attrs.workflowExecution.workflowName,
+    jobCount,
+    stepCount,
+    workflowStatus: attrs.workflowExecution.status,
+    generatedAt: new Date().toISOString(),
+    filename,
+    checksum,
+  };
+
+  const definitionHash = await definition.computeHash();
 
   return {
-    resource,
-    file: {
-      metadata: file,
-      content,
-    },
+    dataOutputs: [
+      {
+        name: `${definition.name}-metadata`,
+        content: new TextEncoder().encode(JSON.stringify(metadataAttributes)),
+        metadata: {
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "data" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "generate",
+          },
+        },
+      },
+      {
+        name: `${definition.name}-diagram`,
+        content,
+        metadata: {
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "file", filename },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "generate",
+          },
+        },
+      },
+    ],
   };
 }
 
@@ -338,13 +360,11 @@ async function executeGenerate(
  * Self-registers with the global model registry when this module is imported.
  */
 export const mermaidWorkflowModel: ModelDefinition<
-  typeof MermaidWorkflowInputAttributesSchema,
-  typeof MermaidWorkflowResourceAttributesSchema
+  typeof MermaidWorkflowInputAttributesSchema
 > = defineModel({
   type: MERMAID_WORKFLOW_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: MermaidWorkflowInputAttributesSchema,
-  resourceAttributesSchema: MermaidWorkflowResourceAttributesSchema,
   methods: {
     generate: {
       description: "Generate a Mermaid diagram from workflow execution data",

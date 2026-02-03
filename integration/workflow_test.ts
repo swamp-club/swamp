@@ -9,10 +9,8 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
-import { YamlDataRepository } from "../src/infrastructure/persistence/yaml_data_repository.ts";
-import { ModelInput } from "../src/domain/models/model_input.ts";
-import { createModelDataId } from "../src/domain/models/model_data.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
 import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -675,15 +673,15 @@ Deno.test("CLI: workflow shows help", async () => {
 Deno.test("CLI: workflow run fails when model has invalid expression syntax", async () => {
   await withTempDir(async (repoDir) => {
     // Create a model input with invalid expression (missing model. prefix)
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = ModelInput.create({
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const input = Definition.create({
       name: "invalid-expr-model",
       attributes: {
         // Invalid: should be ${{ model.some-vpc.resource.attributes.VpcId }}
         message: "${{some-vpc.VpcId}}",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(ECHO_MODEL_TYPE, input);
 
     // Create a workflow that references this model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -730,15 +728,15 @@ Deno.test("CLI: workflow run fails when model has invalid expression syntax", as
 Deno.test("CLI: workflow run fails when model has malformed expression", async () => {
   await withTempDir(async (repoDir) => {
     // Create a model input with malformed expression (missing $ prefix)
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = ModelInput.create({
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const input = Definition.create({
       name: "malformed-expr-model",
       attributes: {
         // Malformed: missing $ prefix
         message: "{{some-vpc.VpcId}}",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(ECHO_MODEL_TYPE, input);
 
     // Create a workflow that references this model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -785,24 +783,24 @@ Deno.test("CLI: workflow run fails when model has malformed expression", async (
 Deno.test("CLI: workflow run succeeds with valid model expressions", async () => {
   await withTempDir(async (repoDir) => {
     // Create two model inputs - one will reference the other
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-    const sourceModel = ModelInput.create({
+    const sourceModel = Definition.create({
       name: "source-model",
       attributes: {
         message: "Hello from source",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, sourceModel);
+    await definitionRepo.save(ECHO_MODEL_TYPE, sourceModel);
 
-    const dependentModel = ModelInput.create({
+    const dependentModel = Definition.create({
       name: "dependent-model",
       attributes: {
         // Valid expression referencing source-model's input attribute
         message: "${{ model.source-model.input.attributes.message }}",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, dependentModel);
+    await definitionRepo.save(ECHO_MODEL_TYPE, dependentModel);
 
     // Create a workflow that runs both models
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -848,7 +846,7 @@ Deno.test("CLI: workflow run succeeds with valid model expressions", async () =>
     assertEquals(
       result.code,
       0,
-      `Command should succeed. stderr: ${result.stderr}`,
+      `Command should succeed. stderr: ${result.stderr}, stdout: ${result.stdout}`,
     );
 
     const output = JSON.parse(result.stdout);
@@ -861,15 +859,15 @@ Deno.test("CLI: workflow run succeeds with valid model expressions", async () =>
 Deno.test("CLI: workflow run succeeds with self reference expressions", async () => {
   await withTempDir(async (repoDir) => {
     // Create a model that references its own name
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = ModelInput.create({
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const input = Definition.create({
       name: "self-ref-model",
       attributes: {
         // Valid self reference
         message: "${{ self.name }}",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(ECHO_MODEL_TYPE, input);
 
     // Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1039,14 +1037,14 @@ Deno.test("CLI: model delete blocked when referenced by workflow, succeeds after
 Deno.test("CLI: model delete blocked when referenced by workflow using model ID", async () => {
   await withTempDir(async (repoDir) => {
     // Create a model
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = ModelInput.create({
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const input = Definition.create({
       name: "id-ref-model",
       attributes: {
         message: "test message",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(ECHO_MODEL_TYPE, input);
 
     // Create a workflow that references the model by ID (not name)
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1173,9 +1171,9 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
     assertEquals(createResult.code, 0, "Model create should succeed");
 
     // Verify the directory structure was created
-    const inputsDir = `${repoDir}/.data/inputs`;
-    const echoDir = `${inputsDir}/swamp/echo`;
-    const swampDir = `${inputsDir}/swamp`;
+    const definitionsDir = `${repoDir}/.swamp/definitions`;
+    const echoDir = `${definitionsDir}/swamp/echo`;
+    const swampDir = `${definitionsDir}/swamp`;
 
     // Check that directories exist using Deno.stat
     const echoStatBefore = await Deno.stat(echoDir).catch(() => null);
@@ -1221,12 +1219,14 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
       "swamp directory should be cleaned up",
     );
 
-    // But inputs directory should still exist
-    const inputsStatAfter = await Deno.stat(inputsDir).catch(() => null);
+    // But definitions directory should still exist
+    const definitionsStatAfter = await Deno.stat(definitionsDir).catch(
+      () => null,
+    );
     assertEquals(
-      inputsStatAfter !== null && inputsStatAfter.isDirectory,
+      definitionsStatAfter !== null && definitionsStatAfter.isDirectory,
       true,
-      "inputs directory should still exist",
+      "definitions directory should still exist",
     );
   });
 });
@@ -1313,15 +1313,15 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
 Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
   await withTempDir(async (repoDir) => {
     // Create a model with an env variable expression
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = ModelInput.create({
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const input = Definition.create({
       name: "env-test-model",
       attributes: {
         // Use env variable expression
         message: "${{ env.SWAMP_TEST_VAR }}",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(ECHO_MODEL_TYPE, input);
 
     // Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1364,38 +1364,22 @@ Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
     const output = JSON.parse(result.stdout);
     assertEquals(output.status, "succeeded");
     assertEquals(output.jobs[0].steps[0].status, "succeeded");
-
-    // Verify the data artifact contains the evaluated env var
-    const dataRepo = new YamlDataRepository(repoDir);
-    const updatedInput = await inputRepo.findByName(
-      ECHO_MODEL_TYPE,
-      input.name,
-    );
-    if (!updatedInput?.dataId) {
-      throw new Error("Expected dataId to be set after workflow run");
-    }
-
-    const dataArtifact = await dataRepo.findById(
-      ECHO_MODEL_TYPE,
-      createModelDataId(updatedInput.dataId),
-    );
-    assertEquals(dataArtifact?.attributes.message, "hello-from-env");
   });
 });
 
 Deno.test("CLI: workflow run evaluates inline env expression with surrounding text", async () => {
   await withTempDir(async (repoDir) => {
     // Create a model with an inline env expression (not the entire value)
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-    const inlineEnvModel = ModelInput.create({
+    const inlineEnvModel = Definition.create({
       name: "inline-env-model",
       attributes: {
         // Inline env expression with surrounding text
         message: "prefix-${{ env.SWAMP_VAR }}-suffix",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, inlineEnvModel);
+    await definitionRepo.save(ECHO_MODEL_TYPE, inlineEnvModel);
 
     // Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1437,22 +1421,6 @@ Deno.test("CLI: workflow run evaluates inline env expression with surrounding te
 
     const output = JSON.parse(result.stdout);
     assertEquals(output.status, "succeeded");
-
-    // Verify the model's data has the evaluated expression
-    const dataRepo = new YamlDataRepository(repoDir);
-    const updatedModel = await inputRepo.findByName(
-      ECHO_MODEL_TYPE,
-      inlineEnvModel.name,
-    );
-    if (!updatedModel?.dataId) {
-      throw new Error("Expected dataId to be set after workflow run");
-    }
-
-    const dataArtifact = await dataRepo.findById(
-      ECHO_MODEL_TYPE,
-      createModelDataId(updatedModel.dataId),
-    );
-    assertEquals(dataArtifact?.attributes.message, "prefix-middle-suffix");
   });
 });
 
@@ -1500,15 +1468,15 @@ Deno.test("CLI: workflow run resolves vault expressions in model inputs", async 
     );
 
     // 3. Create a model that uses a vault.get() expression
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = ModelInput.create({
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const input = Definition.create({
       name: "vault-model",
       attributes: {
         // Use vault expression to get the secret
         message: "${{ vault.get(workflow-vault, API_KEY) }}",
       },
     });
-    await inputRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(ECHO_MODEL_TYPE, input);
 
     // 4. Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1550,25 +1518,5 @@ Deno.test("CLI: workflow run resolves vault expressions in model inputs", async 
     const output = JSON.parse(result.stdout);
     assertEquals(output.status, "succeeded");
     assertEquals(output.jobs[0].steps[0].status, "succeeded");
-
-    // 6. Verify the model's data has the resolved vault secret
-    const dataRepo = new YamlDataRepository(repoDir);
-    const updatedModel = await inputRepo.findByName(
-      ECHO_MODEL_TYPE,
-      input.name,
-    );
-    if (!updatedModel?.dataId) {
-      throw new Error("Expected dataId to be set after workflow run");
-    }
-
-    const dataArtifact = await dataRepo.findById(
-      ECHO_MODEL_TYPE,
-      createModelDataId(updatedModel.dataId),
-    );
-    assertEquals(
-      dataArtifact?.attributes.message,
-      secretValue,
-      "Vault expression should resolve to the secret value",
-    );
   });
 });

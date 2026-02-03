@@ -9,13 +9,11 @@ import {
   renderModelSearch,
 } from "../../presentation/output/model_search_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import type { ModelInput } from "../../domain/models/model_input.ts";
+import type { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
-import { findByIdOrName } from "../../domain/models/model_lookup.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -25,34 +23,31 @@ type AnyOptions = any;
  * Converts repository results to ModelSearchItem array.
  */
 function toModelSearchItems(
-  results: Awaited<ReturnType<YamlInputRepository["findAllGlobal"]>>,
+  results: Awaited<ReturnType<YamlDefinitionRepository["findAllGlobal"]>>,
 ): ModelSearchItem[] {
-  return results.map(({ input, type }) => ({
-    id: input.id,
-    name: input.name,
+  return results.map(({ definition, type }) => ({
+    id: definition.id,
+    name: definition.name,
     type: type.normalized,
   }));
 }
 
 export const modelEditCommand = new Command()
   .name("edit")
-  .description("Edit a model input or resource file")
+  .description("Edit a model definition file")
   .arguments("[model_id_or_name:model_name]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .option("--resource", "Edit the resource file instead of the input")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
     const ctx = createContext(options as GlobalOptions, "model-edit");
     ctx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;
 
     const repoDir = options.repoDir ?? ".";
-    const inputRepo = new YamlInputRepository(repoDir);
-    const resourceRepo = new YamlResourceRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const editorService = new EditorService();
-    const editResource = options.resource === true;
 
-    // Look up the model input
-    let input: ModelInput;
+    // Look up the model definition
+    let definition: Definition;
     let modelType: ModelType;
 
     if (!modelIdOrName) {
@@ -64,7 +59,7 @@ export const modelEditCommand = new Command()
       }
 
       // Show search UI to select a model
-      const allResults = await inputRepo.findAllGlobal();
+      const allResults = await definitionRepo.findAllGlobal();
       const allModels = toModelSearchItems(allResults);
 
       if (allModels.length === 0) {
@@ -85,46 +80,34 @@ export const modelEditCommand = new Command()
 
       ctx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
 
-      // Find the full input data
-      const result = await findByIdOrName(inputRepo, selected.id);
+      // Find the full definition data
+      const result = await findDefinitionByIdOrName(
+        definitionRepo,
+        selected.id,
+      );
       if (!result) {
         throw new UserError(`Model not found: ${selected.id}`);
       }
-      input = result.input;
+      definition = result.definition;
       modelType = result.type;
     } else {
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-      const result = await findByIdOrName(inputRepo, modelIdOrName);
+      const result = await findDefinitionByIdOrName(
+        definitionRepo,
+        modelIdOrName,
+      );
       if (!result) {
         throw new UserError(`Model not found: ${modelIdOrName}`);
       }
-      input = result.input;
+      definition = result.definition;
       modelType = result.type;
     }
 
-    ctx.logger.debug`Found model: id=${input.id}, type=${modelType.normalized}`;
+    ctx.logger
+      .debug`Found model: id=${definition.id}, type=${modelType.normalized}`;
 
     // Get the file path
-    let filePath: string;
-    if (editResource) {
-      const resourceId = inputIdToResourceId(input.id);
-      filePath = resourceRepo.getPath(modelType, resourceId);
-
-      // Check if resource file exists
-      try {
-        await Deno.stat(filePath);
-      } catch (error) {
-        if (error instanceof Deno.errors.NotFound) {
-          throw new UserError(
-            `Resource file not found for model '${input.name}'. ` +
-              `Run a method to create the resource first.`,
-          );
-        }
-        throw error;
-      }
-    } else {
-      filePath = inputRepo.getPath(modelType, input.id);
-    }
+    const filePath = definitionRepo.getPath(modelType, definition.id);
 
     ctx.logger.debug`Opening file: ${filePath}`;
 
@@ -135,9 +118,9 @@ export const modelEditCommand = new Command()
       path: filePath,
       editor: result.editor,
       status: "opened",
-      name: input.name,
+      name: definition.name,
       type: modelType.normalized,
-      editType: editResource ? "resource" : "input",
+      editType: "definition",
     };
 
     renderModelEdit(data, ctx.outputMode);

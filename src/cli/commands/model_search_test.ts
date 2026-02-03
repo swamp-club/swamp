@@ -17,7 +17,7 @@ Deno.test("modelSearchCommand has correct description", async () => {
   const { modelSearchCommand } = await import("./model_search.ts");
   assertEquals(
     modelSearchCommand.getDescription(),
-    "Search for model inputs",
+    "Search for model definitions",
   );
 });
 

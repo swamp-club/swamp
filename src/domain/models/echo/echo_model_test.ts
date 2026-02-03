@@ -1,11 +1,84 @@
 import { assertEquals } from "@std/assert";
-import { ModelInput } from "../model_input.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../../definitions/definition.ts";
 import {
   ECHO_MODEL_TYPE,
   EchoDataAttributesSchema,
   EchoInputAttributesSchema,
   echoModel,
 } from "./echo_model.ts";
+import type { MethodContext } from "../model.ts";
+import type { UnifiedDataRepository } from "../../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../../definitions/repositories.ts";
+import { generateDataId } from "../../data/data_id.ts";
+
+/**
+ * Creates a mock UnifiedDataRepository for testing.
+ */
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+/**
+ * Creates a mock DefinitionRepository for testing.
+ */
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+/**
+ * Creates a test MethodContext with mocked repositories.
+ */
+function createTestContext(): MethodContext {
+  return {
+    repoDir: "/tmp",
+    modelType: ECHO_MODEL_TYPE,
+    modelId: crypto.randomUUID(),
+    dataRepository: createMockDataRepo(),
+    definitionRepository: createMockDefinitionRepo(),
+  };
+}
+
+/**
+ * Helper to get attributes from a DataOutput.
+ */
+function getDataOutputAttributes(
+  dataOutputs: { content: Uint8Array }[] | undefined,
+  index = 0,
+): Record<string, unknown> | undefined {
+  if (!dataOutputs || dataOutputs.length <= index) {
+    return undefined;
+  }
+  const content = new TextDecoder().decode(dataOutputs[index].content);
+  return JSON.parse(content);
+}
 
 Deno.test("ECHO_MODEL_TYPE has correct normalized type", () => {
   assertEquals(ECHO_MODEL_TYPE.normalized, "swamp/echo");
@@ -57,37 +130,38 @@ Deno.test("echoModel has write method", () => {
   assertEquals("write" in echoModel.methods, true);
   assertEquals(
     echoModel.methods.write.description,
-    "Write the input message to a data artifact with a timestamp",
+    "Write the definition message to a data artifact with a timestamp",
   );
 });
 
 Deno.test("echoModel.methods.write executes correctly", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-echo",
     attributes: { message: "hello world" },
   });
 
-  const result = await echoModel.methods.write.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await echoModel.methods.write.execute(definition, context);
 
-  assertEquals(result.data?.attributes.message, "hello world");
-  assertEquals(typeof result.data?.attributes.timestamp, "string");
+  const attrs = getDataOutputAttributes(result.dataOutputs);
+  assertEquals(attrs?.message, "hello world");
+  assertEquals(typeof attrs?.timestamp, "string");
 
   // Verify timestamp is valid ISO date
-  const timestamp = new Date(result.data?.attributes.timestamp as string);
+  const timestamp = new Date(attrs?.timestamp as string);
   assertEquals(isNaN(timestamp.getTime()), false);
 });
 
 Deno.test("echoModel.methods.write validates input attributes", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-echo",
     attributes: { notAMessage: "value" },
   });
 
+  const context = createTestContext();
   let error: Error | null = null;
   try {
-    await echoModel.methods.write.execute(input, { repoDir: "/tmp" });
+    await echoModel.methods.write.execute(definition, context);
   } catch (e) {
     error = e as Error;
   }
@@ -96,14 +170,15 @@ Deno.test("echoModel.methods.write validates input attributes", async () => {
 });
 
 Deno.test("echoModel.methods.write rejects empty message", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-echo",
     attributes: { message: "" },
   });
 
+  const context = createTestContext();
   let error: Error | null = null;
   try {
-    await echoModel.methods.write.execute(input, { repoDir: "/tmp" });
+    await echoModel.methods.write.execute(definition, context);
   } catch (e) {
     error = e as Error;
   }

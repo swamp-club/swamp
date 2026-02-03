@@ -12,21 +12,18 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlEvaluatedInputRepository } from "../../infrastructure/persistence/yaml_evaluated_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
-import { YamlDataRepository } from "../../infrastructure/persistence/yaml_data_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
-import { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
-import { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
+import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import { modelRegistry } from "../models/model.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
-import { ModelInput } from "../models/model_input.ts";
-import { findByIdOrName } from "../models/model_lookup.ts";
-import { computeDefinitionHash, ModelOutput } from "../models/model_output.ts";
-import type { DefinitionId } from "../definitions/definition.ts";
+import type { Definition } from "../definitions/definition.ts";
+import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
+import { ModelOutput } from "../models/model_output.ts";
 import {
   extractExpressions,
   replaceExpressions,
@@ -222,37 +219,34 @@ export class DefaultStepExecutor implements StepExecutor {
     task: { modelIdOrName: string; methodName: string },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
-    const inputRepo = new YamlInputRepository(ctx.repoDir);
-    const evaluatedInputRepo = new YamlEvaluatedInputRepository(ctx.repoDir);
-    const resourceRepo = new YamlResourceRepository(ctx.repoDir);
-    const dataRepo = new YamlDataRepository(ctx.repoDir);
+    const definitionRepo = new YamlDefinitionRepository(ctx.repoDir);
+    const unifiedDataRepo = new FileSystemUnifiedDataRepository(ctx.repoDir);
     const outputRepo = new YamlOutputRepository(ctx.repoDir);
-    const fileRepo = new FileSystemFileRepository(ctx.repoDir);
-    const logRepo = new StreamingLogRepository(ctx.repoDir);
     const executionService = new DefaultMethodExecutionService();
 
-    // Look up the model input by ID or name
-    const lookupResult = await findByIdOrName(inputRepo, task.modelIdOrName);
+    // Look up the model definition by ID or name
+    const lookupResult = await findDefinitionByIdOrName(
+      definitionRepo,
+      task.modelIdOrName,
+    );
     if (!lookupResult) {
       throw new Error(`Model not found: ${task.modelIdOrName}`);
     }
 
-    // Keep original input (with expressions) for saving
-    const { input: originalInput, type: modelType } = lookupResult;
+    // Keep original definition (with expressions)
+    const { definition: originalDefinition, type: modelType } = lookupResult;
 
-    // Get the model definition
-    const definition = modelRegistry.get(modelType);
-    if (!definition) {
+    // Get the model definition from registry
+    const modelDef = modelRegistry.get(modelType);
+    if (!modelDef) {
       throw new Error(`Unknown model type: ${modelType.normalized}`);
     }
 
-    // Validate the model input (including expression paths) BEFORE evaluation
-    // This catches malformed expressions and invalid paths early
+    // Validate the model definition (including expression paths) BEFORE evaluation
     const validationResults = await this.validationService.validateModel(
-      originalInput,
-      definition,
-      null, // resource doesn't exist yet
-      inputRepo,
+      originalDefinition,
+      modelDef,
+      definitionRepo,
     );
 
     // Fail fast if validation fails
@@ -260,35 +254,33 @@ export class DefaultStepExecutor implements StepExecutor {
     if (failures.length > 0) {
       const errors = failures.map((f) => `  ${f.name}: ${f.error}`).join("\n");
       throw new Error(
-        `Model validation failed for "${originalInput.name}":\n${errors}`,
+        `Model validation failed for "${originalDefinition.name}":\n${errors}`,
       );
     }
 
     // Evaluate expressions for execution (after validation passes)
-    let evaluatedInput = originalInput;
+    let evaluatedDefinition = originalDefinition;
     if (ctx.expressionContext) {
       // Set self context for this specific model before evaluating
       ctx.expressionContext.self = {
-        id: originalInput.id,
-        name: originalInput.name,
-        version: originalInput.version,
-        tags: originalInput.tags,
-        attributes: originalInput.attributes,
+        id: originalDefinition.id,
+        name: originalDefinition.name,
+        version: originalDefinition.version,
+        tags: originalDefinition.tags,
+        attributes: originalDefinition.attributes,
       };
 
-      evaluatedInput = await this.evaluateInputExpressions(
-        originalInput,
+      evaluatedDefinition = await this.evaluateDefinitionExpressions(
+        originalDefinition,
         ctx.expressionContext,
         ctx.repoDir,
       );
-      // Save evaluated input to inputs-evaluated/
-      await evaluatedInputRepo.save(modelType, evaluatedInput);
     }
 
     // Validate method exists on the model
-    const method = definition.methods[task.methodName];
+    const method = modelDef.methods[task.methodName];
     if (!method) {
-      const availableMethods = Object.keys(definition.methods).join(", ");
+      const availableMethods = Object.keys(modelDef.methods).join(", ");
       throw new Error(
         `Unknown method '${task.methodName}' for type '${modelType.normalized}'. Available methods: ${
           availableMethods || "none"
@@ -297,16 +289,13 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Create ModelOutput for tracking
-    // Use originalInput.id as definitionId (for backwards compatibility during migration)
-    const definitionHash = await computeDefinitionHash(
-      evaluatedInput.attributes,
-    );
+    const definitionHash = await evaluatedDefinition.computeHash();
     const output = ModelOutput.create({
-      definitionId: originalInput.id as unknown as DefinitionId,
+      definitionId: originalDefinition.id,
       methodName: task.methodName,
       provenance: {
         definitionHash,
-        modelVersion: originalInput.version,
+        modelVersion: originalDefinition.version,
         triggeredBy: "workflow",
         workflowId: ctx.workflowId,
         workflowRunId: ctx.workflowRunId,
@@ -318,9 +307,9 @@ export class DefaultStepExecutor implements StepExecutor {
     output.markRunning();
     await outputRepo.save(modelType, task.methodName, output);
 
-    let resourceId: string | undefined;
-    let resourcePath = "";
-    let resourceAttributes: Record<string, unknown> = {};
+    // Track data outputs for context refresh
+    let dataAttributes: Record<string, unknown> = {};
+    let dataId: string | undefined;
 
     try {
       // Build streaming callbacks if progress callbacks are available
@@ -348,126 +337,65 @@ export class DefaultStepExecutor implements StepExecutor {
           }
           : undefined;
 
-      // Execute the method with EVALUATED input
+      // Execute the method with EVALUATED definition
       const result = await executionService.executeWorkflow(
-        evaluatedInput,
-        definition,
+        evaluatedDefinition,
+        modelDef,
         task.methodName,
         {
           repoDir: ctx.repoDir,
-          resourceRepository: resourceRepo,
-          logRepository: logRepo,
-          fileRepository: fileRepo,
+          modelType,
+          modelId: evaluatedDefinition.id,
+          dataRepository: unifiedDataRepo,
+          definitionRepository: definitionRepo,
           streaming,
         },
       );
 
-      // Handle resource persistence based on operation type
-      if (result.resource) {
-        if (result.deleteResource) {
-          // Delete the resource file
-          await resourceRepo.delete(modelType, result.resource.id);
-        } else {
-          // Save the resource
-          await resourceRepo.save(modelType, result.resource);
-          resourcePath = resourceRepo.getPath(modelType, result.resource.id);
-          resourceId = result.resource.id;
-          resourceAttributes = result.resource.attributes;
+      // Handle data output persistence
+      if (result.dataOutputs && result.dataOutputs.length > 0) {
+        for (const dataOutput of result.dataOutputs) {
+          // Create Data entity from DataOutput
+          const { Data } = await import("../data/mod.ts");
+          const data = Data.create({
+            name: dataOutput.name,
+            contentType: dataOutput.metadata.contentType,
+            lifetime: dataOutput.metadata.lifetime,
+            garbageCollection: dataOutput.metadata.garbageCollection,
+            streaming: dataOutput.metadata.streaming,
+            tags: dataOutput.metadata.tags,
+            ownerDefinition: dataOutput.metadata.ownerDefinition,
+          });
+
+          // Save the data
+          const saveResult = await unifiedDataRepo.save(
+            modelType,
+            evaluatedDefinition.id,
+            data,
+            dataOutput.content,
+          );
 
           // Track artifact in output
           output.addDataArtifact({
-            dataId: result.resource.id,
-            name: `${originalInput.name}-resource`,
-            version: result.resource.version,
-            tags: { type: "resource" },
+            dataId: data.id,
+            name: dataOutput.name,
+            version: saveResult.version,
+            tags: dataOutput.metadata.tags,
           });
-        }
-      }
 
-      // Handle data artifact persistence
-      if (result.data) {
-        if (result.deleteData) {
-          await dataRepo.delete(modelType, result.data.id);
-        } else {
-          await dataRepo.save(modelType, result.data);
-          output.addDataArtifact({
-            dataId: result.data.id,
-            name: `${originalInput.name}-data`,
-            version: result.data.version,
-            tags: { type: "data" },
-          });
-        }
-
-        // Update ORIGINAL input's dataId (preserves expressions)
-        if (result.deleteData) {
-          if (originalInput.dataId) {
-            originalInput.setDataId(undefined);
-            await inputRepo.save(modelType, originalInput);
-          }
-        } else {
-          if (!originalInput.dataId) {
-            originalInput.setDataId(result.data.id);
-            await inputRepo.save(modelType, originalInput);
+          // Use first data output for context refresh
+          if (
+            !dataId && dataOutput.metadata.contentType === "application/json"
+          ) {
+            dataId = data.id;
+            try {
+              const text = new TextDecoder().decode(dataOutput.content);
+              dataAttributes = JSON.parse(text) as Record<string, unknown>;
+            } catch {
+              // Not valid JSON, skip attributes
+            }
           }
         }
-      }
-
-      // If no resource but we have data, use data attributes for verbose output
-      if (!result.resource && result.data) {
-        resourceAttributes = result.data.attributes;
-      }
-
-      // Handle file artifact persistence
-      if (result.file) {
-        if (result.deleteFile) {
-          await fileRepo.delete(
-            modelType,
-            evaluatedInput.id,
-            task.methodName,
-            result.file.metadata,
-          );
-        } else {
-          await fileRepo.save(
-            modelType,
-            evaluatedInput.id,
-            task.methodName,
-            result.file.metadata,
-            result.file.content,
-          );
-          output.addDataArtifact({
-            dataId: result.file.metadata.id,
-            name: result.file.metadata.filename,
-            version: 1,
-            tags: { type: "file" },
-          });
-        }
-      }
-
-      // Handle log artifact persistence
-      if (result.logs && result.logs.length > 0) {
-        if (result.deleteLogs) {
-          for (const log of result.logs) {
-            await logRepo.delete(modelType, log.id);
-          }
-        } else {
-          for (const log of result.logs) {
-            await logRepo.save(modelType, log);
-            output.addDataArtifact({
-              dataId: log.id,
-              name: `${originalInput.name}-log`,
-              version: 1,
-              tags: { type: "log" },
-            });
-          }
-        }
-      }
-
-      // Capture data artifact info if available (for context refresh)
-      let dataId: string | undefined;
-      let dataAttributes: Record<string, unknown> = {};
-      if (result.data && !result.deleteData) {
-        dataId = result.data.id;
-        dataAttributes = result.data.attributes;
       }
 
       // Mark output as succeeded and save
@@ -478,9 +406,9 @@ export class DefaultStepExecutor implements StepExecutor {
         type: "model_method",
         model: task.modelIdOrName,
         method: task.methodName,
-        resourceId: resourceId ?? "",
-        resourcePath,
-        resourceAttributes,
+        resourceId: "", // Legacy field, now empty
+        resourcePath: "", // Legacy field, now empty
+        resourceAttributes: dataAttributes, // Use dataAttributes for backward compat
         dataId: dataId ?? "",
         dataAttributes,
       };
@@ -497,26 +425,29 @@ export class DefaultStepExecutor implements StepExecutor {
   }
 
   /**
-   * Evaluates expressions in a model input.
+   * Evaluates expressions in a definition.
    */
-  private async evaluateInputExpressions(
-    input: ModelInput,
+  private async evaluateDefinitionExpressions(
+    definition: Definition,
     context: ExpressionContext,
     repoDir: string,
-  ): Promise<ModelInput> {
+  ): Promise<Definition> {
     const celEvaluator = new CelEvaluator();
-    const inputData = input.toData();
-    const expressions = extractExpressions(inputData);
+    const definitionData = definition.toData();
+    const expressions = extractExpressions(definitionData);
 
     if (expressions.length === 0) {
-      return input;
+      return definition;
     }
 
     // Create ModelResolver for vault expression handling
+    // Use legacy repos for ModelResolver compatibility during migration
     const inputRepo = new YamlInputRepository(repoDir);
     const resourceRepo = new YamlResourceRepository(repoDir);
+    const definitionRepoForResolver = new YamlDefinitionRepository(repoDir);
     const modelResolver = new ModelResolver(inputRepo, resourceRepo, {
       repoDir,
+      definitionRepo: definitionRepoForResolver,
     });
 
     // Evaluate each expression
@@ -533,11 +464,14 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Replace expressions with evaluated values
-    const evaluatedData = replaceExpressions(inputData, evaluatedValues);
+    const evaluatedData = replaceExpressions(definitionData, evaluatedValues);
 
-    // Create new ModelInput from evaluated data
-    return ModelInput.fromData(
-      evaluatedData as ReturnType<typeof input.toData>,
+    // Create new Definition from evaluated data
+    const { Definition: DefClass } = await import(
+      "../definitions/definition.ts"
+    );
+    return DefClass.fromData(
+      evaluatedData as ReturnType<typeof definition.toData>,
     );
   }
 }
@@ -589,8 +523,7 @@ export interface ExecutionProgressCallback {
 export class WorkflowExecutionService {
   private readonly sortService = new TopologicalSortService();
   private readonly executor: StepExecutor;
-  private readonly inputRepo: YamlInputRepository;
-  private readonly resourceRepo: YamlResourceRepository;
+  private readonly definitionRepo: YamlDefinitionRepository;
   private readonly modelResolver: ModelResolver;
 
   constructor(
@@ -600,10 +533,13 @@ export class WorkflowExecutionService {
     executor?: StepExecutor,
   ) {
     this.executor = executor ?? new DefaultStepExecutor();
-    this.inputRepo = new YamlInputRepository(repoDir);
-    this.resourceRepo = new YamlResourceRepository(repoDir);
-    this.modelResolver = new ModelResolver(this.inputRepo, this.resourceRepo, {
+    this.definitionRepo = new YamlDefinitionRepository(repoDir);
+    // Use legacy repos for ModelResolver compatibility during migration
+    const inputRepo = new YamlInputRepository(repoDir);
+    const resourceRepo = new YamlResourceRepository(repoDir);
+    this.modelResolver = new ModelResolver(inputRepo, resourceRepo, {
       repoDir,
+      definitionRepo: this.definitionRepo,
     });
   }
 
@@ -795,14 +731,14 @@ export class WorkflowExecutionService {
       if (step.task.isModelMethod()) {
         const task = step.task.data as { modelIdOrName: string };
 
-        // Look up the model input to check for expressions
-        const lookupResult = await findByIdOrName(
-          this.inputRepo,
+        // Look up the model definition to check for expressions
+        const lookupResult = await findDefinitionByIdOrName(
+          this.definitionRepo,
           task.modelIdOrName,
         );
         if (lookupResult) {
-          const inputData = lookupResult.input.toData();
-          const expressions = extractExpressions(inputData);
+          const definitionData = lookupResult.definition.toData();
+          const expressions = extractExpressions(definitionData);
 
           // Extract resource dependencies from expressions
           for (const expr of expressions) {

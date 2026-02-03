@@ -1,5 +1,8 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { ModelInput } from "../../model_input.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../../../definitions/definition.ts";
 import {
   AWS_CLI_MODEL_TYPE,
   AwsCliDataAttributesSchema,
@@ -7,6 +10,62 @@ import {
   awsCliModel,
   parseCommand,
 } from "./aws_cli_model.ts";
+import type { MethodContext } from "../../model.ts";
+import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../../../definitions/repositories.ts";
+import { generateDataId } from "../../../data/data_id.ts";
+
+/**
+ * Creates a mock UnifiedDataRepository for testing.
+ */
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+/**
+ * Creates a mock DefinitionRepository for testing.
+ */
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+/**
+ * Creates a test MethodContext with mocked repositories.
+ */
+function createTestContext(): MethodContext {
+  return {
+    repoDir: "/tmp",
+    modelType: AWS_CLI_MODEL_TYPE,
+    modelId: crypto.randomUUID(),
+    dataRepository: createMockDataRepo(),
+    definitionRepository: createMockDefinitionRepo(),
+  };
+}
 
 Deno.test("AWS_CLI_MODEL_TYPE has correct normalized type", () => {
   assertEquals(AWS_CLI_MODEL_TYPE.normalized, "aws/cli");
@@ -183,14 +242,16 @@ Deno.test("parseCommand handles complex AWS CLI command", () => {
 });
 
 Deno.test("awsCliModel.methods.run validates input attributes", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-aws-cli",
     attributes: { notACommand: "value" },
   });
 
+  const context = createTestContext();
+
   await assertRejects(
     async () => {
-      await awsCliModel.methods.run.execute(input, { repoDir: "/tmp" });
+      await awsCliModel.methods.run.execute(definition, context);
     },
     Error,
   );

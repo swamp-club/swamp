@@ -1,14 +1,12 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
-import { ModelData } from "../model_data.ts";
-import { ModelLog } from "../model_log.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
 } from "../model.ts";
-import type { ModelInput } from "../model_input.ts";
+import type { Definition } from "../../definitions/definition.ts";
 import { VaultService } from "../../vaults/vault_service.ts";
 import { YamlVaultConfigRepository } from "../../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
@@ -101,56 +99,90 @@ async function createVaultService(
  * Retrieves a secret value from the specified vault.
  */
 async function executeGet(
-  input: ModelInput,
-  _context: MethodContext,
+  definition: Definition,
+  context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = VaultInputAttributesSchema.parse(input.attributes);
+  const attrs = VaultInputAttributesSchema.parse(definition.attributes);
 
   if (attrs.operation !== "get") {
     throw new Error("Get method requires operation to be 'get'");
   }
 
-  // Create log artifact for vault operations
-  const vaultLog = ModelLog.create({ id: input.id });
-  vaultLog.log(
+  // Build log content
+  const logLines: string[] = [];
+  logLines.push(
     `[vault] Starting secret retrieval from vault '${attrs.vaultName}'`,
   );
-  vaultLog.log(`[vault] Secret key: ${attrs.secretKey}`);
+  logLines.push(`[vault] Secret key: ${attrs.secretKey}`);
 
   try {
-    const vaultService = await createVaultService(_context);
-    vaultLog.log(
-      `[vault] Created VaultService for repository: ${_context.repoDir}`,
+    const vaultService = await createVaultService(context);
+    logLines.push(
+      `[vault] Created VaultService for repository: ${context.repoDir}`,
     );
 
-    vaultLog.log(`[vault] Retrieving secret from vault '${attrs.vaultName}'`);
+    logLines.push(`[vault] Retrieving secret from vault '${attrs.vaultName}'`);
     const retrievedValue = await vaultService.get(
       attrs.vaultName,
       attrs.secretKey,
     );
 
-    vaultLog.log(
+    logLines.push(
       `[vault] ✅ Secret retrieved successfully (length: ${retrievedValue.length} characters)`,
     );
 
-    const data = ModelData.create({
-      id: input.id,
-      attributes: {
-        vaultName: attrs.vaultName,
-        secretKey: attrs.secretKey,
-        operation: attrs.operation,
-        // retrievedValue is NOT stored in data attributes for security
-        // Secret values should only be accessed through vault expressions
-        secretLength: retrievedValue.length,
-        timestamp: new Date().toISOString(),
-        success: true,
-      },
-    });
+    const dataAttributes = {
+      vaultName: attrs.vaultName,
+      secretKey: attrs.secretKey,
+      operation: attrs.operation,
+      // retrievedValue is NOT stored in data attributes for security
+      // Secret values should only be accessed through vault expressions
+      secretLength: retrievedValue.length,
+      timestamp: new Date().toISOString(),
+      success: true,
+    };
 
-    return Promise.resolve({ data, logs: [vaultLog] });
+    const definitionHash = await definition.computeHash();
+
+    return {
+      dataOutputs: [
+        {
+          name: `${definition.name}-result`,
+          content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+          metadata: {
+            contentType: "application/json",
+            lifetime: "infinite",
+            garbageCollection: 10,
+            streaming: false,
+            tags: { type: "data" },
+            ownerDefinition: {
+              definitionHash,
+              ownerType: "model-method",
+              ownerRef: "get",
+            },
+          },
+        },
+        {
+          name: `${definition.name}-audit-log`,
+          content: new TextEncoder().encode(logLines.join("\n")),
+          metadata: {
+            contentType: "text/plain",
+            lifetime: "infinite",
+            garbageCollection: 10,
+            streaming: false,
+            tags: { type: "log" },
+            ownerDefinition: {
+              definitionHash,
+              ownerType: "model-method",
+              ownerRef: "get",
+            },
+          },
+        },
+      ],
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    vaultLog.log(`[vault] ❌ Failed to retrieve secret: ${errorMessage}`);
+    logLines.push(`[vault] ❌ Failed to retrieve secret: ${errorMessage}`);
 
     // Throw exception instead of returning failed data - this will fail the workflow
     throw new Error(
@@ -165,10 +197,10 @@ async function executeGet(
  * Stores a secret value in the specified vault.
  */
 async function executePut(
-  input: ModelInput,
-  _context: MethodContext,
+  definition: Definition,
+  context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = VaultInputAttributesSchema.parse(input.attributes);
+  const attrs = VaultInputAttributesSchema.parse(definition.attributes);
 
   if (attrs.operation !== "put") {
     throw new Error("Put method requires operation to be 'put'");
@@ -178,40 +210,76 @@ async function executePut(
     throw new Error("Put method requires secretValue to be provided");
   }
 
-  // Create log artifact for vault operations
-  const vaultLog = ModelLog.create({ id: input.id });
-  vaultLog.log(`[vault] Starting secret storage in vault '${attrs.vaultName}'`);
-  vaultLog.log(`[vault] Secret key: ${attrs.secretKey}`);
-  vaultLog.log(
+  // Build log content
+  const logLines: string[] = [];
+  logLines.push(
+    `[vault] Starting secret storage in vault '${attrs.vaultName}'`,
+  );
+  logLines.push(`[vault] Secret key: ${attrs.secretKey}`);
+  logLines.push(
     `[vault] Secret value length: ${attrs.secretValue.length} characters`,
   );
 
   try {
-    const vaultService = await createVaultService(_context);
-    vaultLog.log(
-      `[vault] Created VaultService for repository: ${_context.repoDir}`,
+    const vaultService = await createVaultService(context);
+    logLines.push(
+      `[vault] Created VaultService for repository: ${context.repoDir}`,
     );
 
-    vaultLog.log(`[vault] Storing secret in vault '${attrs.vaultName}'`);
+    logLines.push(`[vault] Storing secret in vault '${attrs.vaultName}'`);
     await vaultService.put(attrs.vaultName, attrs.secretKey, attrs.secretValue);
-    vaultLog.log(`[vault] ✅ Secret stored successfully`);
+    logLines.push(`[vault] ✅ Secret stored successfully`);
 
-    const data = ModelData.create({
-      id: input.id,
-      attributes: {
-        vaultName: attrs.vaultName,
-        secretKey: attrs.secretKey,
-        operation: attrs.operation,
-        storedKey: attrs.secretKey,
-        timestamp: new Date().toISOString(),
-        success: true,
-      },
-    });
+    const dataAttributes = {
+      vaultName: attrs.vaultName,
+      secretKey: attrs.secretKey,
+      operation: attrs.operation,
+      storedKey: attrs.secretKey,
+      timestamp: new Date().toISOString(),
+      success: true,
+    };
 
-    return Promise.resolve({ data, logs: [vaultLog] });
+    const definitionHash = await definition.computeHash();
+
+    return {
+      dataOutputs: [
+        {
+          name: `${definition.name}-result`,
+          content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+          metadata: {
+            contentType: "application/json",
+            lifetime: "infinite",
+            garbageCollection: 10,
+            streaming: false,
+            tags: { type: "data" },
+            ownerDefinition: {
+              definitionHash,
+              ownerType: "model-method",
+              ownerRef: "put",
+            },
+          },
+        },
+        {
+          name: `${definition.name}-audit-log`,
+          content: new TextEncoder().encode(logLines.join("\n")),
+          metadata: {
+            contentType: "text/plain",
+            lifetime: "infinite",
+            garbageCollection: 10,
+            streaming: false,
+            tags: { type: "log" },
+            ownerDefinition: {
+              definitionHash,
+              ownerType: "model-method",
+              ownerRef: "put",
+            },
+          },
+        },
+      ],
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    vaultLog.log(`[vault] ❌ Failed to store secret: ${errorMessage}`);
+    logLines.push(`[vault] ❌ Failed to store secret: ${errorMessage}`);
 
     // Throw exception instead of returning failed data - this will fail the workflow
     throw new Error(
@@ -233,14 +301,11 @@ async function executePut(
  * Self-registers with the global model registry when this module is imported.
  */
 export const vaultModel: ModelDefinition<
-  typeof VaultInputAttributesSchema,
-  never,
-  typeof VaultDataAttributesSchema
+  typeof VaultInputAttributesSchema
 > = defineModel({
   type: VAULT_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: VaultInputAttributesSchema,
-  dataAttributesSchema: VaultDataAttributesSchema,
   methods: {
     get: {
       description: "Retrieve a secret value from the specified vault",

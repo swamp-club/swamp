@@ -16,7 +16,7 @@ Deno.test("modelGetCommand has correct description", async () => {
   const { modelGetCommand } = await import("./model_get.ts");
   assertEquals(
     modelGetCommand.getDescription(),
-    "Show details of a model input",
+    "Show details of a model definition",
   );
 });
 

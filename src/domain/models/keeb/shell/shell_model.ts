@@ -1,14 +1,12 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
-import { ModelData } from "../../model_data.ts";
-import { ModelLog } from "../../model_log.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
 } from "../../model.ts";
-import type { ModelInput } from "../../model_input.ts";
+import type { Definition } from "../../../definitions/definition.ts";
 
 /**
  * Schema for shell model input attributes.
@@ -108,11 +106,11 @@ async function streamOutput(
  * Executes a shell command and captures the output.
  */
 async function executeCommand(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  // Validate input attributes
-  const attrs = ShellInputAttributesSchema.parse(input.attributes);
+  // Validate definition attributes
+  const attrs = ShellInputAttributesSchema.parse(definition.attributes);
 
   const startTime = Date.now();
   let stdout = "";
@@ -192,27 +190,62 @@ async function executeCommand(
   const endTime = Date.now();
   const durationMs = endTime - startTime;
 
-  // Create log artifact for command output
-  const outputLog = ModelLog.create({ id: input.id });
+  const definitionHash = await definition.computeHash();
+
+  // Create data attributes for the result
+  const resultAttributes = {
+    exitCode,
+    executedAt: new Date().toISOString(),
+    command: attrs.run,
+    durationMs,
+  };
+
+  // Create output log content
+  const outputLogParts: string[] = [];
   if (stdout) {
-    outputLog.log(`[stdout]\n${stdout}`);
+    outputLogParts.push(`[stdout]\n${stdout}`);
   }
   if (stderr) {
-    outputLog.log(`[stderr]\n${stderr}`);
+    outputLogParts.push(`[stderr]\n${stderr}`);
   }
+  const outputLogContent = outputLogParts.join("\n");
 
-  // Create the data artifact with structured metadata
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      exitCode,
-      executedAt: new Date().toISOString(),
-      command: attrs.run,
-      durationMs,
-    },
-  });
-
-  return { data, logs: [outputLog] };
+  return {
+    dataOutputs: [
+      {
+        name: `${definition.name}-result`,
+        content: new TextEncoder().encode(JSON.stringify(resultAttributes)),
+        metadata: {
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "data" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "execute",
+          },
+        },
+      },
+      {
+        name: `${definition.name}-output`,
+        content: new TextEncoder().encode(outputLogContent),
+        metadata: {
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "log" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "execute",
+          },
+        },
+      },
+    ],
+  };
 }
 
 /**
@@ -224,14 +257,11 @@ async function executeCommand(
  * Self-registers with the global model registry when this module is imported.
  */
 export const shellModel: ModelDefinition<
-  typeof ShellInputAttributesSchema,
-  never,
-  typeof ShellDataAttributesSchema
+  typeof ShellInputAttributesSchema
 > = defineModel({
   type: SHELL_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: ShellInputAttributesSchema,
-  dataAttributesSchema: ShellDataAttributesSchema,
   methods: {
     execute: {
       description:

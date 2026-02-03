@@ -2,12 +2,68 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { UserModelLoader } from "./user_model_loader.ts";
 import { modelRegistry } from "./model.ts";
-import { ModelResource } from "./model_resource.ts";
-import { ModelData } from "./model_data.ts";
-import { ModelInput } from "./model_input.ts";
+import { Definition } from "../definitions/definition.ts";
+import type { MethodContext } from "./model.ts";
+import type { ModelType } from "./model_type.ts";
+import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import { generateDataId } from "../data/data_id.ts";
+import { createDefinitionId } from "../definitions/definition.ts";
 
 // Import models barrel to ensure swamp/echo is registered for duplicate test
 import "./models.ts";
+
+/**
+ * Creates a mock UnifiedDataRepository for testing.
+ */
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+/**
+ * Creates a mock DefinitionRepository for testing.
+ */
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+/**
+ * Creates a test MethodContext with mocked repositories.
+ */
+function createTestContext(modelType: ModelType): MethodContext {
+  return {
+    repoDir: "/tmp",
+    modelType,
+    modelId: crypto.randomUUID(),
+    dataRepository: createMockDataRepo(),
+    definitionRepository: createMockDefinitionRepo(),
+  };
+}
 
 // Helper to create a temporary directory with model files
 async function withTempModels(
@@ -25,7 +81,7 @@ async function withTempModels(
   }
 }
 
-Deno.test("UserModelLoader loads valid model with dataAttributesSchema", async () => {
+Deno.test("UserModelLoader loads valid model with dataOutputs", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -33,28 +89,22 @@ const InputSchema = z.object({
   message: z.string(),
 });
 
-const DataSchema = z.object({
-  message: z.string(),
-  processedAt: z.string(),
-});
-
 export const model = {
   type: "test/data-model-${Date.now()}",
   version: 1,
   inputAttributesSchema: InputSchema,
-  dataAttributesSchema: DataSchema,
   methods: {
     process: {
       description: "Process the message",
-      execute: async (input, _context) => {
+      execute: async (definition, _context) => {
         return {
-          data: {
-            id: input.id,
-            attributes: {
-              message: input.attributes.message,
+          dataOutputs: [{
+            name: definition.name + "-data",
+            content: JSON.stringify({
+              message: definition.attributes.message,
               processedAt: new Date().toISOString(),
-            },
-          },
+            }),
+          }],
         };
       },
     },
@@ -69,88 +119,6 @@ export const model = {
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "data_model.ts");
     assertEquals(result.failed.length, 0);
-  });
-});
-
-Deno.test("UserModelLoader loads valid model with resourceAttributesSchema", async () => {
-  const modelCode = `
-import { z } from "npm:zod@4";
-
-const InputSchema = z.object({
-  name: z.string(),
-});
-
-const ResourceSchema = z.object({
-  resourceId: z.string(),
-  status: z.string(),
-});
-
-export const model = {
-  type: "test/resource-model-${Date.now()}",
-  version: 1,
-  inputAttributesSchema: InputSchema,
-  resourceAttributesSchema: ResourceSchema,
-  methods: {
-    create: {
-      description: "Create a resource",
-      execute: async (input, _context) => {
-        return {
-          resource: {
-            id: input.id,
-            attributes: {
-              resourceId: "res-123",
-              status: "created",
-            },
-          },
-        };
-      },
-    },
-  },
-};
-`;
-
-  await withTempModels({ "resource_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
-
-    assertEquals(result.loaded.length, 1);
-    assertEquals(result.loaded[0], "resource_model.ts");
-    assertEquals(result.failed.length, 0);
-  });
-});
-
-Deno.test("UserModelLoader rejects model with neither schema", async () => {
-  const modelCode = `
-import { z } from "npm:zod@4";
-
-const InputSchema = z.object({
-  message: z.string(),
-});
-
-export const model = {
-  type: "test/invalid-model",
-  version: 1,
-  inputAttributesSchema: InputSchema,
-  methods: {
-    process: {
-      description: "Process something",
-      execute: async () => ({}),
-    },
-  },
-};
-`;
-
-  await withTempModels({ "invalid_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
-
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertEquals(result.failed[0].file, "invalid_model.ts");
-    assertStringIncludes(
-      result.failed[0].error,
-      "Model must have at least one of resourceAttributesSchema or dataAttributesSchema",
-    );
   });
 });
 
@@ -207,11 +175,15 @@ export const model = {
   type: "test/regular-${Date.now()}",
   version: 1,
   inputAttributesSchema: z.object({ msg: z.string() }),
-  dataAttributesSchema: z.object({ result: z.string() }),
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ data: { id: crypto.randomUUID(), attributes: { result: "ok" } } }),
+      execute: async (definition) => ({
+        dataOutputs: [{
+          name: definition.name + "-result",
+          content: JSON.stringify({ result: "ok" }),
+        }],
+      }),
     },
   },
 };
@@ -240,11 +212,10 @@ export const model = {
   type: "swamp/echo",
   version: 1,
   inputAttributesSchema: z.object({ message: z.string() }),
-  dataAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
       description: "Write message",
-      execute: async () => ({}),
+      execute: async () => ({ dataOutputs: [] }),
     },
   },
 };
@@ -261,8 +232,8 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader converts plain resource objects to ModelResource", async () => {
-  const typeId = `test/convert-resource-${Date.now()}`;
+Deno.test("UserModelLoader converts plain dataOutputs to proper DataOutput format", async () => {
+  const typeId = `test/convert-data-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -270,88 +241,23 @@ const InputSchema = z.object({
   name: z.string(),
 });
 
-const ResourceSchema = z.object({
-  id: z.string(),
-});
-
 export const model = {
   type: "${typeId}",
   version: 1,
   inputAttributesSchema: InputSchema,
-  resourceAttributesSchema: ResourceSchema,
   methods: {
     create: {
       description: "Create a resource",
-      execute: async (input, _context) => {
-        // Return a plain object, not a ModelResource instance
+      execute: async (definition, _context) => {
+        // Return plain objects - the loader should add proper metadata
         return {
-          resource: {
-            id: input.id,
-            attributes: {
-              id: "resource-" + input.id,
-            },
-          },
-        };
-      },
-    },
-  },
-};
-`;
-
-  await withTempModels({ "convert_resource.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
-
-    assertEquals(result.loaded.length, 1);
-
-    // Get the registered model and execute its method
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
-
-    const input = ModelInput.create({
-      name: "test-input",
-      attributes: { name: "test" },
-    });
-    const methodResult = await modelDef!.methods.create.execute(input, {
-      repoDir: "/tmp",
-    });
-
-    // Verify the resource was converted to a ModelResource instance
-    assertEquals(methodResult.resource instanceof ModelResource, true);
-    assertEquals(String(methodResult.resource?.id), String(input.id));
-  });
-});
-
-Deno.test("UserModelLoader converts plain data objects to ModelData", async () => {
-  const typeId = `test/convert-data-${Date.now()}`;
-  const modelCode = `
-import { z } from "npm:zod@4";
-
-const InputSchema = z.object({
-  value: z.string(),
-});
-
-const DataSchema = z.object({
-  processedValue: z.string(),
-});
-
-export const model = {
-  type: "${typeId}",
-  version: 1,
-  inputAttributesSchema: InputSchema,
-  dataAttributesSchema: DataSchema,
-  methods: {
-    process: {
-      description: "Process data",
-      execute: async (input, _context) => {
-        // Return a plain object, not a ModelData instance
-        return {
-          data: {
-            id: input.id,
-            attributes: {
-              processedValue: input.attributes.value.toUpperCase(),
-            },
-          },
+          dataOutputs: [{
+            name: definition.name + "-data",
+            content: JSON.stringify({
+              id: "resource-123",
+              status: "created",
+            }),
+          }],
         };
       },
     },
@@ -369,18 +275,34 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    const input = ModelInput.create({
+    const definition = Definition.create({
       name: "test-input",
-      attributes: { value: "hello" },
-    });
-    const methodResult = await modelDef!.methods.process.execute(input, {
-      repoDir: "/tmp",
+      attributes: { name: "test" },
     });
 
-    // Verify the data was converted to a ModelData instance
-    assertEquals(methodResult.data instanceof ModelData, true);
-    assertEquals(String(methodResult.data?.id), String(input.id));
-    assertEquals(methodResult.data?.attributes.processedValue, "HELLO");
+    const context = createTestContext(modelDef!.type);
+    const methodResult = await modelDef!.methods.create.execute(
+      definition,
+      context,
+    );
+
+    // Verify the dataOutputs have proper structure
+    assertEquals(methodResult.dataOutputs !== undefined, true);
+    assertEquals(methodResult.dataOutputs!.length, 1);
+
+    const dataOutput = methodResult.dataOutputs![0];
+    assertEquals(dataOutput.name, "test-input-data");
+    assertEquals(dataOutput.metadata !== undefined, true);
+    assertEquals(dataOutput.metadata.contentType, "application/octet-stream");
+    assertEquals(dataOutput.metadata.lifetime, "infinite");
+    assertEquals(dataOutput.metadata.ownerDefinition !== undefined, true);
+    assertEquals(dataOutput.metadata.ownerDefinition.ownerType, "model-method");
+    assertEquals(dataOutput.metadata.ownerDefinition.ownerRef, "create");
+
+    // Verify the content
+    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
+    assertEquals(content.id, "resource-123");
+    assertEquals(content.status, "created");
   });
 });
 
@@ -393,27 +315,20 @@ const InputSchema = z.object({
   message: z.string(),
 });
 
-const DataSchema = z.object({
-  result: z.string(),
-});
-
 export const model = {
   type: "${typeId}",
   version: 1,
   inputAttributesSchema: InputSchema,
-  dataAttributesSchema: DataSchema,
   methods: {
     run: {
       description: "Run without own schema",
       // No inputAttributesSchema here - should inherit from model
-      execute: async (input, _context) => {
+      execute: async (definition, _context) => {
         return {
-          data: {
-            id: input.id,
-            attributes: {
-              result: "processed",
-            },
-          },
+          dataOutputs: [{
+            name: definition.name + "-result",
+            content: JSON.stringify({ result: "processed" }),
+          }],
         };
       },
     },
@@ -445,9 +360,11 @@ export const model = {
   type: "test/multi-a-${Date.now()}",
   version: 1,
   inputAttributesSchema: z.object({ a: z.string() }),
-  dataAttributesSchema: z.object({ a: z.string() }),
   methods: {
-    run: { description: "Run A", execute: async (i) => ({ data: { id: i.id, attributes: { a: "a" } } }) },
+    run: {
+      description: "Run A",
+      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-a", content: JSON.stringify({ a: "a" }) }] }),
+    },
   },
 };
 `;
@@ -458,9 +375,11 @@ export const model = {
   type: "test/multi-b-${Date.now()}",
   version: 1,
   inputAttributesSchema: z.object({ b: z.string() }),
-  dataAttributesSchema: z.object({ b: z.string() }),
   methods: {
-    run: { description: "Run B", execute: async (i) => ({ data: { id: i.id, attributes: { b: "b" } } }) },
+    run: {
+      description: "Run B",
+      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-b", content: JSON.stringify({ b: "b" }) }] }),
+    },
   },
 };
 `;

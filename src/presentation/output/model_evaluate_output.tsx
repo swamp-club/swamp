@@ -10,6 +10,7 @@ export interface ModelEvaluateItemData {
   type: string;
   hadExpressions: boolean;
   outputPath?: string;
+  attributes?: Record<string, unknown>;
 }
 
 export interface ModelEvaluateData {
@@ -46,7 +47,7 @@ export function ModelEvaluateDisplay(
   return (
     <Box flexDirection="column">
       <Text color="green">
-        Evaluated {props.evaluated} of {props.total} model inputs:
+        Evaluated {props.evaluated} of {props.total} model definitions:
       </Text>
       <Box marginLeft={2} flexDirection="column" marginTop={1}>
         {props.items.map((item) => (
@@ -87,7 +88,7 @@ export function ModelEvaluateSingleDisplay(
 ): React.ReactElement {
   return (
     <Box flexDirection="column">
-      <Text color="green">Evaluated model input:</Text>
+      <Text color="green">Evaluated model definition:</Text>
       <Box marginLeft={2} flexDirection="column">
         <Text>
           <Text color="cyan">Name:</Text>

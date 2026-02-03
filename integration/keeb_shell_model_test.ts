@@ -9,8 +9,8 @@ import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
-import { ModelInput } from "../src/domain/models/model_input.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
 import { SHELL_MODEL_TYPE } from "../src/domain/models/keeb/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -44,15 +44,15 @@ async function runCliCommand(
 Deno.test("CLI: keeb/shell model executes simple shell commands", async () => {
   await withTempDir(async (repoDir) => {
     // Create a shell model that echoes a message
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = ModelInput.create({
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const definition = Definition.create({
       name: "simple-shell",
       attributes: {
         run: "echo 'Hello from shell'",
         workingDir: "/tmp",
       },
     });
-    await inputRepo.save(SHELL_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     // Execute the model
     const result = await runCliCommand(
@@ -84,15 +84,15 @@ Deno.test("CLI: keeb/shell model executes simple shell commands", async () => {
 Deno.test("CLI: keeb/shell model handles failing commands", async () => {
   await withTempDir(async (repoDir) => {
     // Create a shell model that runs a failing command
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = ModelInput.create({
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const definition = Definition.create({
       name: "failing-shell",
       attributes: {
         run: "false", // Command that always fails
         workingDir: "/tmp",
       },
     });
-    await inputRepo.save(SHELL_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     // Execute the model
     const result = await runCliCommand(
@@ -123,27 +123,27 @@ Deno.test("CLI: keeb/shell model handles failing commands", async () => {
 
 Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
 
     // Create first model that creates a file
-    const downloadModel = ModelInput.create({
+    const downloadModel = Definition.create({
       name: "download-data",
       attributes: {
         run: "echo 'Downloaded data' > /tmp/data.txt",
         workingDir: "/tmp",
       },
     });
-    await inputRepo.save(SHELL_MODEL_TYPE, downloadModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, downloadModel);
 
     // Create second model that processes the file
-    const processModel = ModelInput.create({
+    const processModel = Definition.create({
       name: "process-data",
       attributes: {
         run: "echo 'Processing: $(cat /tmp/data.txt)' > /tmp/processed.txt",
         workingDir: "/tmp",
       },
     });
-    await inputRepo.save(SHELL_MODEL_TYPE, processModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, processModel);
 
     // Create workflow with dependencies
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -212,20 +212,20 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
 
 Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
 
     // Create source model
-    const sourceModel = ModelInput.create({
+    const sourceModel = Definition.create({
       name: "source-shell",
       attributes: {
         run: "echo 'Source command executed'",
         workingDir: "/tmp",
       },
     });
-    await inputRepo.save(SHELL_MODEL_TYPE, sourceModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, sourceModel);
 
     // Create dependent model that references the source model
-    const dependentModel = ModelInput.create({
+    const dependentModel = Definition.create({
       name: "dependent-shell",
       attributes: {
         run:
@@ -233,7 +233,7 @@ Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
         workingDir: "/tmp",
       },
     });
-    await inputRepo.save(SHELL_MODEL_TYPE, dependentModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, dependentModel);
 
     // Create workflow that runs both models
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -291,17 +291,17 @@ Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
 
 Deno.test("CLI: keeb/shell model with self-reference expressions", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
 
     // Create model that references its own name
-    const selfRefModel = ModelInput.create({
+    const selfRefModel = Definition.create({
       name: "self-ref-shell",
       attributes: {
         run: "echo 'My name is ${{ self.name }}'",
         workingDir: "/tmp",
       },
     });
-    await inputRepo.save(SHELL_MODEL_TYPE, selfRefModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, selfRefModel);
 
     // Execute the model
     const result = await runCliCommand(

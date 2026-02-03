@@ -1,21 +1,96 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { ModelInput } from "../../model_input.ts";
-import type { ModelLog } from "../../model_log.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../../../definitions/definition.ts";
 import {
   SHELL_MODEL_TYPE,
   ShellDataAttributesSchema,
   ShellInputAttributesSchema,
   shellModel,
 } from "./shell_model.ts";
+import type { MethodContext } from "../../model.ts";
+import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../../../definitions/repositories.ts";
+import { generateDataId } from "../../../data/data_id.ts";
 
 /**
- * Helper to get combined log content from ModelLog array.
+ * Creates a mock UnifiedDataRepository for testing.
  */
-function getLogContent(logs: ModelLog[] | undefined): string {
-  if (!logs || logs.length === 0) return "";
-  return logs
-    .flatMap((log) => log.entries.map((e) => e.message))
-    .join("\n");
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+/**
+ * Creates a mock DefinitionRepository for testing.
+ */
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+/**
+ * Creates a test MethodContext with mocked repositories.
+ */
+function createTestContext(
+  overrides?: Partial<MethodContext>,
+): MethodContext {
+  return {
+    repoDir: "/tmp",
+    modelType: SHELL_MODEL_TYPE,
+    modelId: crypto.randomUUID(),
+    dataRepository: createMockDataRepo(),
+    definitionRepository: createMockDefinitionRepo(),
+    ...overrides,
+  };
+}
+
+/**
+ * Helper to get attributes from a DataOutput by name.
+ */
+function getDataOutputAttributes(
+  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
+  name: string,
+): Record<string, unknown> | undefined {
+  const dataOutput = dataOutputs?.find((d) => d.name.includes(name));
+  if (!dataOutput) return undefined;
+  const content = new TextDecoder().decode(dataOutput.content);
+  return JSON.parse(content);
+}
+
+/**
+ * Helper to get output log content as string.
+ */
+function getOutputLogContent(
+  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
+): string {
+  const logOutput = dataOutputs?.find((d) => d.name.includes("output"));
+  if (!logOutput) return "";
+  return new TextDecoder().decode(logOutput.content);
 }
 
 Deno.test("SHELL_MODEL_TYPE has correct normalized type", () => {
@@ -123,73 +198,71 @@ Deno.test("shellModel has execute method", () => {
 
 // Execute method tests
 Deno.test("shellModel.methods.execute runs simple command", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo hello" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
   // Check data attributes
-  assertEquals(result.data?.attributes.exitCode, 0);
-  assertEquals(result.data?.attributes.command, "echo hello");
-  assertEquals(typeof result.data?.attributes.executedAt, "string");
-  assertEquals(typeof result.data?.attributes.durationMs, "number");
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
+  assertEquals(attrs?.command, "echo hello");
+  assertEquals(typeof attrs?.executedAt, "string");
+  assertEquals(typeof attrs?.durationMs, "number");
 
-  // Check log artifacts contain stdout
-  const logContent = getLogContent(result.logs);
-  assertStringIncludes(logContent, "[stdout]");
+  // Check output contains stdout
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, "hello");
 });
 
 Deno.test("shellModel.methods.execute captures stderr", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo error >&2" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 0);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
 
-  // Check log artifacts contain stderr
-  const logContent = getLogContent(result.logs);
-  assertStringIncludes(logContent, "[stderr]");
+  // Check output contains stderr
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, "error");
 });
 
 Deno.test("shellModel.methods.execute captures exit code", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "exit 42" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 42);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 42);
 });
 
 Deno.test("shellModel.methods.execute handles command failure gracefully", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "false" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 1);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 1);
 });
 
 Deno.test("shellModel.methods.execute respects workingDir", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: {
       run: "pwd",
@@ -197,21 +270,21 @@ Deno.test("shellModel.methods.execute respects workingDir", async () => {
     },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
   // Use realPathSync to handle symlinks (e.g., /tmp -> /private/tmp on macOS)
   const expectedPath = Deno.realPathSync("/tmp");
-  assertEquals(result.data?.attributes.exitCode, 0);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
 
-  // Check log artifacts contain the working directory
-  const logContent = getLogContent(result.logs);
+  // Check output contains the working directory
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, expectedPath);
 });
 
 Deno.test("shellModel.methods.execute respects env variables", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: {
       run: "echo $MY_TEST_VAR",
@@ -219,60 +292,61 @@ Deno.test("shellModel.methods.execute respects env variables", async () => {
     },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 0);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
 
-  // Check log artifacts contain the env variable value
-  const logContent = getLogContent(result.logs);
+  // Check output contains the env variable value
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, "test_value");
 });
 
 Deno.test("shellModel.methods.execute handles pipes", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo 'hello world' | tr 'h' 'H'" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 0);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
 
-  // Check log artifacts contain the piped output
-  const logContent = getLogContent(result.logs);
+  // Check output contains the piped output
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, "Hello world");
 });
 
 Deno.test("shellModel.methods.execute handles complex commands", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "cd /tmp && pwd" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 0);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
 
-  // Check log artifacts contain /tmp (cd /tmp && pwd outputs the logical path)
-  const logContent = getLogContent(result.logs);
+  // Check output contains /tmp (cd /tmp && pwd outputs the logical path)
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, "/tmp");
 });
 
 Deno.test("shellModel.methods.execute validates input attributes", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { notRun: "value" },
   });
 
+  const context = createTestContext();
   let error: Error | null = null;
   try {
-    await shellModel.methods.execute.execute(input, { repoDir: "/tmp" });
+    await shellModel.methods.execute.execute(definition, context);
   } catch (e) {
     error = e as Error;
   }
@@ -281,14 +355,15 @@ Deno.test("shellModel.methods.execute validates input attributes", async () => {
 });
 
 Deno.test("shellModel.methods.execute rejects empty run command", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "" },
   });
 
+  const context = createTestContext();
   let error: Error | null = null;
   try {
-    await shellModel.methods.execute.execute(input, { repoDir: "/tmp" });
+    await shellModel.methods.execute.execute(definition, context);
   } catch (e) {
     error = e as Error;
   }
@@ -297,91 +372,87 @@ Deno.test("shellModel.methods.execute rejects empty run command", async () => {
 });
 
 Deno.test("shellModel.methods.execute handles nonexistent command", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "nonexistent_command_12345" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  // Should return non-zero exit code and error in log stderr
-  assertEquals(result.data?.attributes.exitCode !== 0, true);
+  // Should return non-zero exit code and error in output
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode !== 0, true);
 
-  // Check log artifacts contain error about nonexistent command
-  const logContent = getLogContent(result.logs);
-  assertStringIncludes(logContent, "[stderr]");
+  // Check output contains error about nonexistent command
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, "nonexistent_command_12345");
 });
 
 Deno.test("shellModel.methods.execute records execution duration", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "sleep 0.1" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  const durationMs = result.data?.attributes.durationMs as number;
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const durationMs = attrs?.durationMs as number;
   // Should be at least 100ms (sleep 0.1 seconds)
   assertEquals(durationMs >= 100, true);
 });
 
-Deno.test("shellModel.methods.execute returns log artifact", async () => {
-  const input = ModelInput.create({
+Deno.test("shellModel.methods.execute returns dataOutputs", async () => {
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo hello && echo error >&2" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  // Should have exactly one log artifact
-  assertEquals(result.logs?.length, 1);
+  // Should have data outputs (data and output)
+  assertEquals(result.dataOutputs !== undefined, true);
+  assertEquals(result.dataOutputs!.length >= 1, true);
 
-  // Log should have entries for both stdout and stderr
-  const logContent = getLogContent(result.logs);
-  assertStringIncludes(logContent, "[stdout]");
+  // Output should contain both stdout and stderr
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, "hello");
-  assertStringIncludes(logContent, "[stderr]");
   assertStringIncludes(logContent, "error");
 });
 
-Deno.test("shellModel.methods.execute creates empty log for no output", async () => {
-  const input = ModelInput.create({
+Deno.test("shellModel.methods.execute returns output for no output command", async () => {
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "true" }, // Command with no output
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
-  });
+  const context = createTestContext();
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  // Should still have a log artifact, but with no entries
-  assertEquals(result.logs?.length, 1);
-  assertEquals(result.logs?.[0].entryCount, 0);
+  // Should still have data outputs
+  assertEquals(result.dataOutputs !== undefined, true);
 });
 
 // Streaming tests
 Deno.test("shellModel.methods.execute streams stdout when callback provided", async () => {
   const stdoutLines: string[] = [];
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo line1 && echo line2 && echo line3" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
+  const context = createTestContext({
     streaming: {
       onStdout: (line) => stdoutLines.push(line),
     },
   });
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 0);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
   // Should have captured all three lines
   assertEquals(stdoutLines.length, 3);
   assertEquals(stdoutLines[0], "line1");
@@ -391,19 +462,20 @@ Deno.test("shellModel.methods.execute streams stdout when callback provided", as
 
 Deno.test("shellModel.methods.execute streams stderr when callback provided", async () => {
   const stderrLines: string[] = [];
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo err1 >&2 && echo err2 >&2" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
+  const context = createTestContext({
     streaming: {
       onStderr: (line) => stderrLines.push(line),
     },
   });
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 0);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
   // Should have captured both lines
   assertEquals(stderrLines.length, 2);
   assertEquals(stderrLines[0], "err1");
@@ -413,46 +485,46 @@ Deno.test("shellModel.methods.execute streams stderr when callback provided", as
 Deno.test("shellModel.methods.execute streams both stdout and stderr simultaneously", async () => {
   const stdoutLines: string[] = [];
   const stderrLines: string[] = [];
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo stdout && echo stderr >&2" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
+  const context = createTestContext({
     streaming: {
       onStdout: (line) => stdoutLines.push(line),
       onStderr: (line) => stderrLines.push(line),
     },
   });
+  const result = await shellModel.methods.execute.execute(definition, context);
 
-  assertEquals(result.data?.attributes.exitCode, 0);
+  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  assertEquals(attrs?.exitCode, 0);
   assertEquals(stdoutLines.length, 1);
   assertEquals(stdoutLines[0], "stdout");
   assertEquals(stderrLines.length, 1);
   assertEquals(stderrLines[0], "stderr");
 });
 
-Deno.test("shellModel.methods.execute still populates logs when streaming", async () => {
+Deno.test("shellModel.methods.execute still populates dataOutputs when streaming", async () => {
   const stdoutLines: string[] = [];
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo hello" },
   });
 
-  const result = await shellModel.methods.execute.execute(input, {
-    repoDir: "/tmp",
+  const context = createTestContext({
     streaming: {
       onStdout: (line) => stdoutLines.push(line),
     },
   });
+  const result = await shellModel.methods.execute.execute(definition, context);
 
   // Streaming callback should receive the output
   assertEquals(stdoutLines.length, 1);
   assertEquals(stdoutLines[0], "hello");
 
-  // Log artifact should also contain the output
-  const logContent = getLogContent(result.logs);
-  assertStringIncludes(logContent, "[stdout]");
+  // Data outputs should also contain the output
+  const logContent = getOutputLogContent(result.dataOutputs);
   assertStringIncludes(logContent, "hello");
 });

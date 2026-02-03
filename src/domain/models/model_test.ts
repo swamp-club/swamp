@@ -1,32 +1,120 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
-import { defineModel, type ModelDefinition, ModelRegistry } from "./model.ts";
+import {
+  defineModel,
+  type MethodContext,
+  type ModelDefinition,
+  ModelRegistry,
+} from "./model.ts";
 import { ModelType } from "./model_type.ts";
-import { ModelInput } from "./model_input.ts";
-import { ModelResource } from "./model_resource.ts";
+import { createDefinitionId, Definition } from "../definitions/definition.ts";
+import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import { generateDataId } from "../data/data_id.ts";
+
+/**
+ * Creates a mock UnifiedDataRepository for testing.
+ */
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+/**
+ * Creates a mock DefinitionRepository for testing.
+ */
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+/**
+ * Creates a test MethodContext with mocked repositories.
+ */
+function createTestContext(modelType: ModelType): MethodContext {
+  return {
+    repoDir: "/tmp",
+    modelType,
+    modelId: crypto.randomUUID(),
+    dataRepository: createMockDataRepo(),
+    definitionRepository: createMockDefinitionRepo(),
+  };
+}
+
+/**
+ * Helper to get attributes from a DataOutput.
+ */
+function getDataOutputAttributes(
+  dataOutputs: { content: Uint8Array }[] | undefined,
+  index = 0,
+): Record<string, unknown> | undefined {
+  if (!dataOutputs || dataOutputs.length <= index) {
+    return undefined;
+  }
+  const content = new TextDecoder().decode(dataOutputs[index].content);
+  return JSON.parse(content);
+}
 
 function createTestModel(typeString: string): ModelDefinition {
+  const type = ModelType.create(typeString);
   return {
-    type: ModelType.create(typeString),
+    type,
     version: 1,
     inputAttributesSchema: z.object({ message: z.string() }),
-    resourceAttributesSchema: z.object({
-      message: z.string(),
-      timestamp: z.string(),
-    }),
     methods: {
       write: {
-        description: "Write message to resource",
+        description: "Write message to data",
         inputAttributesSchema: z.object({ message: z.string() }),
-        execute: (input: ModelInput) => {
-          const resource = ModelResource.create({
-            id: input.id,
-            attributes: {
-              message: input.attributes.message,
+        execute: (definition: Definition, _context: MethodContext) => {
+          const content = new TextEncoder().encode(
+            JSON.stringify({
+              message: definition.attributes.message,
               timestamp: new Date().toISOString(),
-            },
+            }),
+          );
+          return Promise.resolve({
+            dataOutputs: [
+              {
+                name: `${definition.name}-data`,
+                content,
+                metadata: {
+                  contentType: "application/json",
+                  lifetime: "infinite" as const,
+                  garbageCollection: 10,
+                  streaming: false,
+                  tags: { type: "data" },
+                  ownerDefinition: {
+                    definitionHash: "test-hash",
+                    ownerType: "model-method" as const,
+                    ownerRef: "write",
+                  },
+                },
+              },
+            ],
           });
-          return Promise.resolve({ resource });
         },
       },
     },
@@ -131,14 +219,16 @@ Deno.test("ModelRegistry.types returns empty array when no models", () => {
 
 Deno.test("ModelDefinition method can execute", async () => {
   const model = createTestModel("swamp/echo");
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test",
     attributes: { message: "hello world" },
   });
 
-  const result = await model.methods.write.execute(input, { repoDir: "/tmp" });
-  assertEquals(result.resource?.attributes.message, "hello world");
-  assertEquals(typeof result.resource?.attributes.timestamp, "string");
+  const context = createTestContext(model.type);
+  const result = await model.methods.write.execute(definition, context);
+  const attrs = getDataOutputAttributes(result.dataOutputs);
+  assertEquals(attrs?.message, "hello world");
+  assertEquals(typeof attrs?.timestamp, "string");
 });
 
 // defineModel tests use unique type names to avoid conflicts with other tests

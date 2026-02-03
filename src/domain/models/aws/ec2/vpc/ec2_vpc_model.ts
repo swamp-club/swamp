@@ -147,15 +147,13 @@ export const EC2_VPC_MODEL_TYPE = ModelType.create("AWS::EC2::VPC");
  * EC2 VPC model implementation using AWS CloudControl base class.
  */
 class EC2VpcModel extends AWSCloudControlModel<
-  typeof EC2VpcInputAttributesSchema,
-  typeof EC2VpcResourceAttributesSchema
+  typeof EC2VpcInputAttributesSchema
 > {
   constructor() {
     super({
       typeName: "AWS::EC2::VPC",
       modelType: EC2_VPC_MODEL_TYPE,
       inputAttributesSchema: EC2VpcInputAttributesSchema,
-      resourceAttributesSchema: EC2VpcResourceAttributesSchema,
       extractResourceIdentifier: (attributes) => {
         return (attributes.VpcId as string | undefined) ||
           (attributes.ResourceIdentifier as string | undefined);
@@ -189,6 +187,5 @@ const ec2VpcModelInstance = new EC2VpcModel();
  * Self-registers with the global model registry when this module is imported.
  */
 export const ec2VpcModel: ModelDefinition<
-  typeof EC2VpcInputAttributesSchema,
-  typeof EC2VpcResourceAttributesSchema
+  typeof EC2VpcInputAttributesSchema
 > = ec2VpcModelInstance.defineAndRegister();

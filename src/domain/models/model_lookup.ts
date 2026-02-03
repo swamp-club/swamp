@@ -3,6 +3,9 @@ import { createModelInputId } from "./model_input.ts";
 import type { ModelType } from "./model_type.ts";
 import { modelRegistry } from "./model.ts";
 import type { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
+import type { Definition, DefinitionId } from "../definitions/definition.ts";
+import { createDefinitionId } from "../definitions/definition.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 
 /**
  * UUID v4 regex pattern for detecting if an argument is a UUID.
@@ -121,4 +124,49 @@ export async function findByIdOrName(
 
   // Fall back to ID lookup
   return findInputByIdGlobal(inputRepo, idOrName);
+}
+
+/**
+ * Result of a global definition lookup.
+ */
+export interface DefinitionLookupResult {
+  definition: Definition;
+  type: ModelType;
+}
+
+/**
+ * Finds a definition by ID, searching across all registered model types.
+ */
+export async function findDefinitionByIdGlobal(
+  definitionRepo: YamlDefinitionRepository,
+  id: string,
+): Promise<DefinitionLookupResult | null> {
+  const definitionId = createDefinitionId(id) as DefinitionId;
+
+  for (const type of modelRegistry.types()) {
+    const definition = await definitionRepo.findById(type, definitionId);
+    if (definition) {
+      return { definition, type };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Finds a definition by ID or name, searching across all registered model types.
+ * Tries name lookup first (most common in workflows), then falls back to ID.
+ */
+export async function findDefinitionByIdOrName(
+  definitionRepo: YamlDefinitionRepository,
+  idOrName: string,
+): Promise<DefinitionLookupResult | null> {
+  // Try by name first (most common case in workflows)
+  const byName = await definitionRepo.findByNameGlobal(idOrName);
+  if (byName) {
+    return { definition: byName.definition, type: byName.type };
+  }
+
+  // Fall back to ID lookup
+  return findDefinitionByIdGlobal(definitionRepo, idOrName);
 }

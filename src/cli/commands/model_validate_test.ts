@@ -16,6 +16,6 @@ Deno.test("modelValidateCommand has correct description", async () => {
   const { modelValidateCommand } = await import("./model_validate.ts");
   assertEquals(
     modelValidateCommand.getDescription(),
-    "Validate a model input against its schema",
+    "Validate a model definition against its schema",
   );
 });

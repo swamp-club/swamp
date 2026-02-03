@@ -16,7 +16,7 @@ Deno.test("modelEditCommand has correct description", async () => {
   const { modelEditCommand } = await import("./model_edit.ts");
   assertEquals(
     modelEditCommand.getDescription(),
-    "Edit a model input or resource file",
+    "Edit a model definition file",
   );
 });
 

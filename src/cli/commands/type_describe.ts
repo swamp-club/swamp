@@ -66,12 +66,6 @@ function typeDescribeAction(options: AnyOptions, typeArg: string): void {
   const inputAttributesSchema = zodToJsonSchema(
     definition.inputAttributesSchema,
   );
-  const resourceAttributesSchema = definition.resourceAttributesSchema
-    ? zodToJsonSchema(definition.resourceAttributesSchema)
-    : undefined;
-  const dataAttributesSchema = definition.dataAttributesSchema
-    ? zodToJsonSchema(definition.dataAttributesSchema)
-    : undefined;
 
   // Build method descriptions
   const methods: MethodDescribeData[] = Object.entries(definition.methods)
@@ -87,8 +81,6 @@ function typeDescribeAction(options: AnyOptions, typeArg: string): void {
     },
     version: definition.version,
     inputAttributesSchema,
-    resourceAttributesSchema,
-    dataAttributesSchema,
     methods,
   };
 

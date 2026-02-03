@@ -198,15 +198,13 @@ export const EC2_INSTANCE_MODEL_TYPE = ModelType.create("AWS::EC2::Instance");
  * EC2 Instance model implementation using AWS CloudControl base class.
  */
 class EC2InstanceModel extends AWSCloudControlModel<
-  typeof EC2InstanceInputAttributesSchema,
-  typeof EC2InstanceResourceAttributesSchema
+  typeof EC2InstanceInputAttributesSchema
 > {
   constructor() {
     super({
       typeName: "AWS::EC2::Instance",
       modelType: EC2_INSTANCE_MODEL_TYPE,
       inputAttributesSchema: EC2InstanceInputAttributesSchema,
-      resourceAttributesSchema: EC2InstanceResourceAttributesSchema,
       extractResourceIdentifier: (attributes) => {
         return (attributes.InstanceId as string | undefined) ||
           (attributes.ResourceIdentifier as string | undefined);
@@ -246,8 +244,7 @@ const ec2InstanceModelInstance = new EC2InstanceModel();
  * Self-registers with the global model registry when this module is imported.
  */
 export const ec2InstanceModel: ModelDefinition<
-  typeof EC2InstanceInputAttributesSchema,
-  typeof EC2InstanceResourceAttributesSchema
+  typeof EC2InstanceInputAttributesSchema
 > = ec2InstanceModelInstance.defineAndRegister();
 
 /**

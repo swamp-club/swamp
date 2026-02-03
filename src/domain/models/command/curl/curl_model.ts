@@ -1,14 +1,13 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
-import { ModelResource } from "../../model_resource.ts";
-import { computeChecksum, ModelFile } from "../../model_file.ts";
+import { computeChecksum } from "../../model_file.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
 } from "../../model.ts";
-import type { ModelInput } from "../../model_input.ts";
+import type { Definition } from "../../../definitions/definition.ts";
 
 /**
  * Schema for curl model input attributes.
@@ -103,13 +102,13 @@ function extractFilename(url: string, headers: Headers): string {
 /**
  * Executes the "download" method for the curl model.
  *
- * Downloads the URL and returns both resource metadata and file artifact.
+ * Downloads the URL and returns both metadata and file content as data outputs.
  */
 async function executeDownload(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = CurlInputAttributesSchema.parse(input.attributes);
+  const attrs = CurlInputAttributesSchema.parse(definition.attributes);
   const startTime = Date.now();
 
   // Build fetch options
@@ -160,59 +159,76 @@ async function executeDownload(
   // Compute checksum
   const checksum = await computeChecksum(content);
 
-  // Create file artifact
-  const fileId = crypto.randomUUID();
-  const file = ModelFile.create({
-    id: fileId,
-    filename,
-    contentType,
-    size: content.length,
-    checksum,
-  });
+  const definitionHash = await definition.computeHash();
 
-  // Create the resource with download metadata
-  const resource = ModelResource.create({
-    id: input.id,
-    attributes: {
-      url: attrs.url,
-      statusCode: response.status,
-      contentType,
-      contentLength: content.length,
-      downloadedAt: new Date().toISOString(),
-      durationMs,
-      fileId,
-    },
-  });
+  // Create metadata attributes
+  const metadataAttributes = {
+    url: attrs.url,
+    statusCode: response.status,
+    contentType,
+    contentLength: content.length,
+    downloadedAt: new Date().toISOString(),
+    durationMs,
+    filename,
+    checksum,
+  };
 
   return {
-    resource,
-    file: {
-      metadata: file,
-      content,
-    },
+    dataOutputs: [
+      {
+        name: `${definition.name}-metadata`,
+        content: new TextEncoder().encode(JSON.stringify(metadataAttributes)),
+        metadata: {
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "data" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "download",
+          },
+        },
+      },
+      {
+        name: `${definition.name}-file`,
+        content,
+        metadata: {
+          contentType,
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "file", filename },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "download",
+          },
+        },
+      },
+    ],
   };
 }
 
 /**
  * The curl model definition.
  *
- * A model that downloads files via HTTP and stores them as file artifacts.
- * Returns both resource metadata (URL, status, timing) and the actual file content.
+ * A model that downloads files via HTTP and stores them as data artifacts.
+ * Returns both metadata (URL, status, timing) and the actual file content.
  *
  * Self-registers with the global model registry when this module is imported.
  */
 export const curlModel: ModelDefinition<
-  typeof CurlInputAttributesSchema,
-  typeof CurlResourceAttributesSchema
+  typeof CurlInputAttributesSchema
 > = defineModel({
   type: CURL_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: CurlInputAttributesSchema,
-  resourceAttributesSchema: CurlResourceAttributesSchema,
   methods: {
     download: {
       description:
-        "Download a file from the URL and store it as a file artifact",
+        "Download a file from the URL and store it as a data artifact",
       inputAttributesSchema: CurlInputAttributesSchema,
       execute: executeDownload,
     },
