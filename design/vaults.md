@@ -10,7 +10,7 @@ retrieval and storage during workflow execution.
 The vault system is built around a named vault architecture where:
 
 - **Named Vaults**: Each vault instance has a user-defined name configured in
-  `/.data/vault/{vault type}/{id}.yaml`
+  `/.swamp/vault/{vault type}/{id}.yaml`
 - **Vault Types**: The underlying storage system (AWS Secrets Manager, HashiCorp
   Vault, etc.) is specified per vault
 - **Clean Interface**: All vaults implement a common interface for consistent
@@ -27,8 +27,8 @@ provides human/agent-friendly exploration of vaults by name.
 
 ```
 /vaults/{vault-name}/
-  vault.yaml   → symlink to /.data/vault/{vault-type}/{id}.yaml
-  secrets/     → symlink to /.data/secrets/{vault-type}/{vault-name}/ (local vaults only)
+  vault.yaml   → symlink to /.swamp/vault/{vault-type}/{id}.yaml
+  secrets/     → symlink to /.swamp/secrets/{vault-type}/{vault-name}/ (local vaults only)
 ```
 
 Since vault names are unique across all types, the logical view uses a flat
@@ -41,10 +41,10 @@ Remote vault types (e.g., `aws`) do not have a local secrets directory.
 
 ## Secret Storage
 
-Vault secrets are stored in `.data/secrets/` organized by vault type and name:
+Vault secrets are stored in `.swamp/secrets/` organized by vault type and name:
 
 ```
-.data/
+.swamp/
 ├── vault/
 │   └── {vault-type}/
 │       └── {id}.yaml              # Vault configuration
@@ -57,7 +57,7 @@ Vault secrets are stored in `.data/secrets/` organized by vault type and name:
 
 The secrets path is computed at runtime from `base_dir` + vault type + vault
 name. The vault configuration stores the `base_dir` (repository root), and the
-full path is derived as `{base_dir}/.data/secrets/{vault-type}/{vault-name}/`.
+full path is derived as `{base_dir}/.swamp/secrets/{vault-type}/{vault-name}/`.
 
 ## Vault Provider Interface
 

@@ -18,14 +18,50 @@ weighted topological sort, so thtat htye have maximum paralleism through the
 workflow. Like steps, jobs also have conditions that trigger them.
 
 Workflows are specified in YAML files, that are validated with Zod, in the
-`/.data/workflows/` directory of the repository, with their `{uuid}.yaml`.
-Workflow run output is stored in `/.data/workflow-runs/` at
-`/.data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
+`/.swamp/workflows/` directory of the repository, with their `{uuid}.yaml`.
+Workflow run output is stored in `/.swamp/workflow-runs/` at
+`/.swamp/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
 
 ## Workflow Definition
 
-Workflows are specified in `/.data/workflows/{uuid}.yaml`. They have a unique
-id, a globally unique name, and a set of jobs.
+Workflows are specified in `/.swamp/workflows/{uuid}.yaml`. They have a unique
+id, a globally unique name, a set of jobs, and optionally workflow inputs.
+
+### Workflow Inputs
+
+Like model definitions, workflows can specify custom inputs (workflow inputs) as
+JsonSchema. These inputs allow parameterizing workflows without modifying the
+workflow definition file:
+
+```yaml
+id: abc123
+name: deploy-application
+inputs:
+  environment:
+    type: string
+    enum: ["dev", "staging", "production"]
+    description: "Target environment for deployment"
+  version:
+    type: string
+    description: "Application version to deploy"
+  enableRollback:
+    type: boolean
+    default: true
+    description: "Enable automatic rollback on failure"
+jobs:
+# ... job definitions can reference ${{ inputs.environment }}, etc.
+```
+
+**Workflow Input Rules:**
+
+- Specified as JsonSchema (same rules as model inputs)
+- Can be required or optional
+- Accessed through CEL expressions: `${{ inputs.someWorkflowParameter }}`
+- Distinguish as "workflow inputs" (different from "model inputs")
+- Provide dynamic configuration for workflow execution
+
+See [./expressions.md] for CEL expression syntax and [./models.md] for detailed
+input specification patterns.
 
 ## Jobs
 
@@ -49,7 +85,7 @@ not vary between identical inputs. (If the inputs are identical, the run order
 should be deterministic.)
 
 The output of the run will be written to a workflow run log, kept in
-`/.data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
+`/.swamp/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
 
 ## Logical Views
 
@@ -60,10 +96,10 @@ that provides human/agent-friendly exploration of workflows by name.
 
 ```
 /workflows/{workflow-name}/
-  workflow.yaml   → symlink to /.data/workflows/{uuid}.yaml
+  workflow.yaml   → symlink to /.swamp/workflows/{uuid}.yaml
   runs/
     {run-id}/
-      run.yaml    → symlink to /.data/workflow-runs/{workflow-uuid}/{run-uuid}.yaml
+      run.yaml    → symlink to /.swamp/workflow-runs/{workflow-uuid}/{run-uuid}.yaml
       steps/
         {step-name}/
           output.yaml → symlink to step output
@@ -75,10 +111,10 @@ human-readable names.
 
 ### Cross-View References
 
-When a workflow step executes a model method, the output appears in both views:
+When a workflow step executes a model method, the data appears in both views:
 
 - **Model view:** `/models/{model-name}/outputs/{method}/` contains the method
-  output
+  output and generated data
 - **Workflow view:** `/workflows/{workflow-name}/runs/{run-id}/steps/{step}/`
   contains a symlink to the same output, plus a reference to the model's logical
   view

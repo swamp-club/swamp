@@ -12,17 +12,17 @@ Agents can explore a swamp repository through two layers:
 
 The logical views provide human/agent-friendly exploration:
 
-- **`/models/{name}/`** - Model-centric view with inputs, resources, outputs,
-  logs, and files organized by model name
+- **`/models/{name}/`** - Model-centric view with definitions, data (resources,
+  logs, files), and outputs organized by model name
 - **`/workflows/{name}/`** - Workflow-centric view with definitions and run
   history organized by workflow name
 
 These views use symlinks to reference data in the internal data directory. They
 are the recommended way to explore and understand the repository structure.
 
-### Data Directory (Direct Access)
+### Internal Storage Directory (Direct Access)
 
-The `/.data/` directory contains the internal storage format. Agents can access
+The `/.swamp/` directory contains the internal storage format. Agents can access
 it directly when needed, but the layout reflects swamp's internal architecture
 rather than user-facing concerns.
 
@@ -42,21 +42,22 @@ Use the `swamp type search --json` command, and select the correct type.
 
 ### Describe specific model types
 
-Learn the shape and validations for inputs, resources, and callable methods for
-a model with `swamp type describe --json`.
+Learn the shape and validations for definitions (including inputs as
+variables/parameters), data, and callable methods for a model with
+`swamp type describe --json`.
 
-### Create model inputs
+### Create model definitions
 
-Use `swamp model create --json` command to create a new model input, according
-to the type description from `swamp type describe`.
+Use `swamp model create --json` command to create a new model definition,
+according to the type description from `swamp type describe`.
 
-Then edit the resulting file and set any attributes or metadata that is
-neccessary.
+Then edit the resulting definition.yaml file and set any attributes, metadata,
+or model inputs (variables/parameters) that are necessary.
 
 ### Run individual methods
 
-Use `swamp model method run` to run methods, then look at the resulting resource
-and report on what happened.
+Use `swamp model method run` to run methods, then look at the resulting data
+(resources, logs, files) and report on what happened.
 
 ## swamp-workflow Skill
 

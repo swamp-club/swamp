@@ -1,10 +1,14 @@
 # Models
 
-A model in swamp specifies an _input_, that is passed to many possible
-_methods_, that produce an _output_, which tracks the status of the method as it
-executes, and any artifacts the method has produced (such as _logs_, _files_, a
-_resource_, or ephemeral _data_. A method may produce many logs or files, but
-only a single resource or data artifact.
+A model in swamp is defined by a _type_. They are instantiated by creating a
+_definition_, whose attributes can be set statically or dynamically through
+_inputs_. An instantiated _model_ can be used through calling _methods_, which
+_output_ their results and can store _data_ that is immutable, has a _lifetime_,
+a _content type_, can be marked as _streamable_, can be _tagged_ with
+capabilities, and stores the _definition_ that created it (so the model can be
+instantiated from the data it produces). Data produced by a model can only be
+written again by the an instantiated model with the same definition as the
+original data.
 
 ## Type
 
@@ -24,8 +28,7 @@ mapped into directory structures like 'aws/ec2/vpc' or 'docker/run' or
 
 ## ID
 
-Each instance of a model has a unique ID that is a uuidv4. That id is used for
-each instance input and resource.
+Each instance of a model has a unique ID that is a uuidv4.
 
 ## Version
 
@@ -36,124 +39,134 @@ For example, a model '4' can read data from version 1-4, but not '5'.
 
 ## Migration
 
-A model can migrate its inputs and resources from one version to the next.
+A model can migrate its definitions and data from one version to the next.
 
-## Inputs
+## Definitions
 
-Inputs are specified as YAML files that live in the `/.data/inputs/` directory
-of a repository, underneath the normalized type as a directory. The file name is
-`${id}.yaml`. For example,
-`.data/inputs/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
+Definitions are specified as YAML files that live in the `/.swamp/definitions/`
+directory of a repository, underneath the normalized type as a directory. The
+file name is `${id}.yaml`. For example,
+`.swamp/definitions/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
 
-The valid shape of an input is specified with a Zod 4 schema.
+The valid shape of a definition is specified with a Zod 4 schema as part of the
+type.
 
-Each input has the following core properties:
+Each definition has the following core properties:
 
 - id: the models unique id
-- resourceId: an optional resource id, if one exists
 - name: a unique human readable name
 - tags: string based key value pairs
-- attributes: domain specific data for the input (for example, the model of a
-  VPC from above).
+- attributes: domain specific data for the input (for example, the specific
+  properties of a VPC from above).
+
+### Input
+
+A definition file can also specify custom inputs as JsonSchema serialized to
+yaml. By default, every definition has optional inputs that map to the full set
+of defined attributes of the definition. If a type specifies that a particular
+attribute is required, but it is not present in the static definition, then it
+is a required input. If it is present in the definition, than it will be
+optional (and can be over-ridden by an input.)
+
+Custom input values can be accessed through CEL expressions.
+
+## Instance
+
+A model is instantiated by feeding its definition to the models constructor. The
+models definition is hashed to provide an instantiation id. From the
+instantiation id and a record of the definition, a model can always be
+re-instantiated.
+
+We call this an instance of a model.
 
 ## Methods
 
-Are named functions that take the model as an input, and produce artifacts as
-outputs.
+Methods can be called on instantiated models, taking the definition as an input.
+They can extract data from the definition for use the in the method using a
+MethodInput zod schmea to validate the shape.
 
-The method should use a MethodInput zod schema to validate that any specific
-inputs it needs are present in the input model.
+Methods can write data, which is tracked by the method invocation and the
+definiton requried to re-instantiate the object.
 
-The function body can create Artifacts, which will then be tracked, so when the
-function finishes we have a complete record of them.
+Each method invocation records its status in an output, which records any data
+that was written in the invocation, status, and information about how it was
+called.
 
-## Artifacts
-
-Artifacts are information that is produced and stored by a method execution.
-They are created inline as the method executes, and tracked with some context
-that allows the output of the method to track every artifact created by the
-method.
-
-### Logs
-
-A method may produce 0..* log artifacts. They have a name, can have lines
-streamed to them, and by default are stored in `/.data/logs/` in the repository
-underneath the normalized model type as a directory. Logs are named like
-`{model-id}-{method name}-{log name}-{timestamp}.log`.
-
-They are unstructured, line oriented data.
-
-For example, a method might stream the logs for a remote kubernetes job to a log
-artifact named 'k8slog'.
-
-The stream of log output should have an event emitter attached to it, so we can
-stream logs in real time.
-
-By default, the `/.data/logs/` directory is not stored in git.
-
-### Files
-
-A method may store 0..* file artifacts. They have a name, and can be written to
-directly. By default they will be stored in the `/.data/files/` directory of the
-repository underneath the normalized model type as a directory plus the model ID
-and method name. For example
-`.data/files/aws/s3/bucket/{model-id}/{method-name}/{filename}`.
-
-By default, the `/.data/files/` directory is not stored in git.
-
-## Resource
-
-Resource artifacts are used to track data about an external resource that should
-be persisted over time (for example, the data about an AWS cloud resource).
-
-A method may produce 0..1 resource as specified as YAML files that live in the
-`/.data/resources/` directory of a repository, underneath the normalized type as
-a directory. The file name is `${id}.yaml`. For example,
-`.data/resources/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
-
-The valid shape of a resource is specified with a Zod 4 schema.
-
-Resources are tracked in git.
+Methods can also instantiate a model, from either an existing definition by name
+or by supplying the definiton directly, then can invoke methods on those models.
 
 ## Data
 
-Data artifacts are pure data objects that are not persisted over time in git.
+Models can store data, identified by a unique name for a given instance of a
+model. The raw data is written, alongside metadata needed to understand what is
+within each data file.
 
-A method may produce 0..1 data artifacts, stored as YAML files in the
-`/.data/data/` directory of a repository, underneath the normalized type as a
-directory. The file name is `${id}.yaml`.
+A method should use an interface to write data, and specify the behavior and the
+information itself. When a method writes some data, it will be tracked in the
+output automatically.
 
-The valid shape of data is specified with a Zod 4 schema.
+Data is immutable. Each write to the same unique name creates a new version of
+the data. The latest version can always be referred to as "latest". When used in
+a CEL expression, "latest" is implied. Old versions can only be retrieved by a
+CEL function. Versions will be auto-incrementing integers, starting at 1.
 
-Data is not tracked in git.
+Data can only be written by a model instantiated from the same definiton that
+originally wrote the data. This is called the _owner_ of the data.
 
-### When to Use Resource vs Data
+Data has metadata, which consists of:
 
-Use **resource artifacts** when:
+- A unique name for the data
+- A unique id for the data
+- The full definition of the model that wrote the data, so we can re-instantiate
+  a model to operate on the data
+- A content type
+- A lifetime, which defines how long the data should persist. Lifetimes can be
+  expressed as a duration string (1h, 5m, 10d, 1mo, 10y). A lifetime of
+  "ephemeral" means the data will only be stored for the duration of a method
+  invocation or workflow execution. A lifetime of "infinite" will store the data
+  forever. There are two special lifetimes, which are:
+  - Job: the data persists only while the job that create it exists/is running
+  - Workflow: The data persists until the workflow that created it exists/is
+    running
+- A garbage collection setting, which defines how many versions should be
+  stored. This has the same values as lifetime, but can also accept a raw
+  integer that specifies a specific number.
+- A streaming flag, which indicates the data is line-oriented and should provide
+  a streaming event
+- A set of tags, which are used to mark data for human indexing and retrieval
+  later. A standardized 'type' is always present. For example, a 'log' would
+  have type=log tag.
 
-- The data represents state that should persist across executions (e.g., cloud
-  resource metadata, deployment status)
-- You need to track changes over time via git history
-- The data is needed for drift detection or reconciliation
-- Other team members need visibility into the current state
+The raw data will be written to
+`.swamp/data/{normalized-type}/{model id}/{data id}/{data version}/raw`.
 
-Use **data artifacts** when:
+The metadata will be written to
+`.swamp/data/{normalized-type}/{model id}/{data id}/{data version}/metadata.yaml`.
 
-- The data is ephemeral or only relevant to a single execution (e.g., API
-  responses, query results)
-- The output changes frequently and git history would add noise
-- The data is large or contains sensitive information that shouldn't be
-  committed
-- You're capturing intermediate results that don't represent durable state
+There will be a symlink to the latest version as
+`.swamp/data/{normalized-type}/{model id}/{data id}/latest/metadata.yaml`.
+
+### Logs
+
+Logs will have a tag of 'type=log' and be set to streaming, with a content type
+of plain text.
+
+### Files
+
+Files will have a data tag of 'type=file'.
+
+### Resources
+
+Files that represent external resource data will be tagged with 'type=resource'.
 
 ## Output
 
 Each method invocation produces an output record, which gets tracked in the
-`/.data/outputs/` directory of a repository (which should not be tracked in
+`/.swamp/outputs/` directory of a repository (which should not be tracked in
 git). The output record should track the state of the method execution, and the
 list of artifacts produced by the method. It should track state as the method
 executes. It should be structured as
-`/.data/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml`.
+`/.swamp/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml`.
 
 ## Logical Views
 
@@ -164,13 +177,10 @@ provides human/agent-friendly exploration of models by name.
 
 ```
 /models/{model-name}/
-  input.yaml      → symlink to /.data/inputs/{type}/{id}.yaml
-  resource.yaml   → symlink to /.data/resources/{type}/{id}.yaml
-  data.yaml       → symlink to /.data/data/{type}/{id}.yaml
-  logs/           → symlink to /.data/logs/{type}/{id}/
-  files/          → symlink to /.data/files/{type}/{id}/
+  definition.yaml      → symlink to /.swamp/definitions/{type}/{id}.yaml
+  {data tag key}/{data tag value/           → symlink to /.swamp/data for the data as tagged
   outputs/
-    {method}/     → symlinks to /.data/outputs/{type}/{method}/{id}-*.yaml
+    {method}/     → symlinks to /.swamp/outputs/{type}/{method}/{id}-*.yaml
 ```
 
 This structure allows exploring all artifacts for a model in one place, using
@@ -180,8 +190,9 @@ the model's human-readable name rather than UUIDs or type-based paths.
 
 The ModelRepository emits domain events when model data changes:
 
-- `ModelCreated` - Emitted when a new model input is created via `model create`
-- `ModelUpdated` - Emitted when a model input or resource is modified
+- `ModelCreated` - Emitted when a new model definition is created via
+  `model create`
+- `ModelUpdated` - Emitted when a model definition or data is modified
 - `ModelDeleted` - Emitted when a model is deleted
 
 The RepoIndexService subscribes to these events and updates the logical views
