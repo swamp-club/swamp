@@ -1,8 +1,7 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
-import { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
-import { createModelLogId } from "../../domain/models/model_log.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   isPartialId,
@@ -24,7 +23,7 @@ export const modelOutputLogsCommand = new Command()
 
     const repoDir = options.repoDir ?? ".";
     const outputRepo = new YamlOutputRepository(repoDir);
-    const logRepo = new StreamingLogRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
 
     // Find the output using partial ID matching
     const allOutputs = await outputRepo.findAllGlobal();
@@ -58,22 +57,36 @@ export const modelOutputLogsCommand = new Command()
     const logArtifacts = output.artifacts.dataArtifacts.filter(
       (a) => a.tags.type === "log",
     );
-    const logIds = logArtifacts.map((a) => a.dataId);
-    if (logIds.length === 0) {
+    if (logArtifacts.length === 0) {
       throw new UserError(
         `Output ${output.id} has no log artifacts. ` +
           `Status: ${output.status}, Method: ${output.methodName}`,
       );
     }
 
-    // Fetch and display logs
+    // Fetch and display logs from unified data repository
     const allEntries: string[] = [];
 
-    for (const logId of logIds) {
-      const log = await logRepo.findById(type, createModelLogId(logId));
-      if (log) {
-        for (const entry of log.entries) {
-          allEntries.push(entry.message);
+    for (const artifact of logArtifacts) {
+      // Log data is stored with the artifact name in the unified data repository
+      // findByName without a version returns the latest version
+      const dataResult = await dataRepo.findByName(
+        type,
+        output.definitionId,
+        artifact.name,
+      );
+      if (dataResult) {
+        // Read the log content (without version argument to get latest)
+        const content = await dataRepo.getContent(
+          type,
+          output.definitionId,
+          artifact.name,
+        );
+        if (content) {
+          const text = new TextDecoder().decode(content);
+          // Split into lines
+          const lines = text.split("\n").filter((line) => line.length > 0);
+          allEntries.push(...lines);
         }
       }
     }
@@ -89,7 +102,7 @@ export const modelOutputLogsCommand = new Command()
           {
             outputId: output.id,
             methodName: output.methodName,
-            logIds,
+            logArtifacts: logArtifacts.map((a) => a.name),
             lines: entriesToShow,
             totalLines: allEntries.length,
             showingLines: entriesToShow.length,

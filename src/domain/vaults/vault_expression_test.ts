@@ -1,8 +1,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { VaultService } from "./vault_service.ts";
 import { ModelResolver } from "../expressions/model_resolver.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 
 Deno.test("Direct Vault Service Error Messages", async (t) => {
   await t.step(
@@ -71,9 +70,8 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       type: "mock",
       config: secrets,
     });
-    const inputRepo = new YamlInputRepository(tempDir);
-    const resourceRepo = new YamlResourceRepository(tempDir);
-    return new ModelResolver(inputRepo, resourceRepo, { vaultService });
+    const definitionRepo = new YamlDefinitionRepository(tempDir);
+    return new ModelResolver(definitionRepo, { vaultService });
   }
 
   await t.step("should resolve basic vault expression", async () => {

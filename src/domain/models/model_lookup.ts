@@ -1,8 +1,5 @@
-import type { ModelInput } from "./model_input.ts";
-import { createModelInputId } from "./model_input.ts";
 import type { ModelType } from "./model_type.ts";
 import { modelRegistry } from "./model.ts";
-import type { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import type { Definition, DefinitionId } from "../definitions/definition.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -79,51 +76,6 @@ export function matchByPartialId<T>(
     status: "ambiguous",
     matches: matches.map((m) => ({ match: m.item, id: m.id })),
   };
-}
-
-/**
- * Result of a global model lookup.
- */
-export interface ModelLookupResult {
-  input: ModelInput;
-  type: ModelType;
-}
-
-/**
- * Finds an input by ID, searching across all registered model types.
- */
-export async function findInputByIdGlobal(
-  inputRepo: YamlInputRepository,
-  id: string,
-): Promise<ModelLookupResult | null> {
-  const inputId = createModelInputId(id);
-
-  for (const type of modelRegistry.types()) {
-    const input = await inputRepo.findById(type, inputId);
-    if (input) {
-      return { input, type };
-    }
-  }
-
-  return null;
-}
-
-/**
- * Finds an input by ID or name, searching across all registered model types.
- * Tries name lookup first (most common in workflows), then falls back to ID.
- */
-export async function findByIdOrName(
-  inputRepo: YamlInputRepository,
-  idOrName: string,
-): Promise<ModelLookupResult | null> {
-  // Try by name first (most common case in workflows)
-  const byName = await inputRepo.findByNameGlobal(idOrName);
-  if (byName) {
-    return { input: byName.input, type: byName.type };
-  }
-
-  // Fall back to ID lookup
-  return findInputByIdGlobal(inputRepo, idOrName);
 }
 
 /**

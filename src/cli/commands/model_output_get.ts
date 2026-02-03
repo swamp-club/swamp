@@ -4,12 +4,12 @@ import {
   renderModelOutputGet,
 } from "../../presentation/output/model_output_get_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
-  findByIdOrName,
+  findDefinitionByIdOrName,
   isPartialId,
   matchByPartialId,
 } from "../../domain/models/model_lookup.ts";
@@ -30,7 +30,7 @@ export const modelOutputGetCommand = new Command()
     ctx.logger.debug`Getting output: ${outputIdOrModelName}`;
 
     const repoDir = options.repoDir ?? ".";
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const outputRepo = new YamlOutputRepository(repoDir);
 
     let outputData: ModelOutputGetData;
@@ -55,14 +55,12 @@ export const modelOutputGetCommand = new Command()
             output.definitionId,
           );
           if (outputs.length > 0) {
-            // During migration, definitionId may be a modelInputId
-            const input = await inputRepo.findById(
+            const definition = await definitionRepo.findById(
               modelType,
-              output
-                .definitionId as unknown as import("../../domain/models/model_input.ts").ModelInputId,
+              output.definitionId,
             );
-            if (input) {
-              modelName = input.name;
+            if (definition) {
+              modelName = definition.name;
               break;
             }
           }
@@ -89,35 +87,33 @@ export const modelOutputGetCommand = new Command()
             matchResult.matches.map((m) => `  ${m.id}`).join("\n"),
         );
       } else {
-        // not_found - try as model input ID or name
-        ctx.logger.debug`Output not found, trying as model input`;
-        const inputResult = await findByIdOrName(
-          inputRepo,
+        // not_found - try as definition ID or name
+        ctx.logger.debug`Output not found, trying as model definition`;
+        const definitionResult = await findDefinitionByIdOrName(
+          definitionRepo,
           outputIdOrModelName,
         );
-        if (!inputResult) {
+        if (!definitionResult) {
           throw new UserError(
             `Output or model not found: ${outputIdOrModelName}`,
           );
         }
 
-        // During migration, definitionId is used as modelInputId
         const latestOutput = await outputRepo.findLatestByDefinition(
-          inputResult.type,
-          inputResult.input
-            .id as unknown as import("../../domain/definitions/definition.ts").DefinitionId,
+          definitionResult.type,
+          definitionResult.definition.id,
         );
         if (!latestOutput) {
           throw new UserError(
-            `No outputs found for model: ${inputResult.input.name}`,
+            `No outputs found for model: ${definitionResult.definition.name}`,
           );
         }
 
         outputData = {
           id: latestOutput.id,
           definitionId: latestOutput.definitionId,
-          modelName: inputResult.input.name,
-          type: inputResult.type.normalized,
+          modelName: definitionResult.definition.name,
+          type: definitionResult.type.normalized,
           methodName: latestOutput.methodName,
           status: latestOutput.status,
           startedAt: latestOutput.startedAt.toISOString(),
@@ -132,28 +128,29 @@ export const modelOutputGetCommand = new Command()
     } else {
       // Look up by model name or ID and get latest output
       ctx.logger.debug`Looking up model: ${outputIdOrModelName}`;
-      const inputResult = await findByIdOrName(inputRepo, outputIdOrModelName);
-      if (!inputResult) {
+      const definitionResult = await findDefinitionByIdOrName(
+        definitionRepo,
+        outputIdOrModelName,
+      );
+      if (!definitionResult) {
         throw new UserError(`Model not found: ${outputIdOrModelName}`);
       }
 
-      // During migration, definitionId is used as modelInputId
       const latestOutput = await outputRepo.findLatestByDefinition(
-        inputResult.type,
-        inputResult.input
-          .id as unknown as import("../../domain/definitions/definition.ts").DefinitionId,
+        definitionResult.type,
+        definitionResult.definition.id,
       );
       if (!latestOutput) {
         throw new UserError(
-          `No outputs found for model: ${inputResult.input.name}`,
+          `No outputs found for model: ${definitionResult.definition.name}`,
         );
       }
 
       outputData = {
         id: latestOutput.id,
         definitionId: latestOutput.definitionId,
-        modelName: inputResult.input.name,
-        type: inputResult.type.normalized,
+        modelName: definitionResult.definition.name,
+        type: definitionResult.type.normalized,
         methodName: latestOutput.methodName,
         status: latestOutput.status,
         startedAt: latestOutput.startedAt.toISOString(),

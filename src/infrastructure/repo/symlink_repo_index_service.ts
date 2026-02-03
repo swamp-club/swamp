@@ -29,7 +29,6 @@ import type {
   WorkflowRunStarted,
   WorkflowUpdated,
 } from "../../domain/events/types.ts";
-import type { InputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import type { UnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import type {
@@ -57,9 +56,7 @@ export type IndexMode = "symlink" | "junction";
  */
 export interface SymlinkRepoIndexServiceConfig {
   repoDir: string;
-  /** @deprecated Use definitionRepo instead */
-  inputRepo?: InputRepository;
-  /** Repository for definitions - the new storage format */
+  /** Repository for definitions */
   definitionRepo?: DefinitionRepository;
   /** Repository for unified versioned data with tags */
   unifiedDataRepo?: UnifiedDataRepository;
@@ -74,7 +71,6 @@ export interface SymlinkRepoIndexServiceConfig {
  */
 export class SymlinkRepoIndexService implements RepoIndexService {
   private readonly repoDir: string;
-  private readonly inputRepo: InputRepository | null;
   private readonly definitionRepo: DefinitionRepository | null;
   private readonly unifiedDataRepo: UnifiedDataRepository | null;
   private readonly workflowRepo: WorkflowRepository;
@@ -84,7 +80,6 @@ export class SymlinkRepoIndexService implements RepoIndexService {
 
   constructor(config: SymlinkRepoIndexServiceConfig) {
     this.repoDir = config.repoDir;
-    this.inputRepo = config.inputRepo ?? null;
     this.definitionRepo = config.definitionRepo ?? null;
     this.unifiedDataRepo = config.unifiedDataRepo ?? null;
     this.workflowRepo = config.workflowRepo;
@@ -235,35 +230,19 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     let vaultsIndexed = 0;
 
     // Collect all model names and their sources for indexing
-    // During transition, we combine models from both definition and input repos
     const modelSources: Map<
       string,
-      { type: string; id: string; source: "definition" | "input" }
+      { type: string; id: string }
     > = new Map();
 
-    // Collect from definition repo (new format)
+    // Collect from definition repo
     if (this.definitionRepo) {
       const allDefinitions = await this.definitionRepo.findAllGlobal();
       for (const { definition, type } of allDefinitions) {
         modelSources.set(definition.name, {
           type: type.normalized,
           id: definition.id,
-          source: "definition",
         });
-      }
-    }
-
-    // Collect from input repo (legacy format) - don't overwrite definitions
-    if (this.inputRepo) {
-      const allInputs = await this.inputRepo.findAllGlobal();
-      for (const { input, type } of allInputs) {
-        if (!modelSources.has(input.name)) {
-          modelSources.set(input.name, {
-            type: type.normalized,
-            id: input.id,
-            source: "input",
-          });
-        }
       }
     }
 
@@ -396,7 +375,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Create ModelType for path generation
     const type = ModelType.create(modelType);
 
-    // Symlink to definition.yaml (new .swamp/ path)
+    // Symlink to definition.yaml
     const definitionTarget = join(
       ".swamp",
       "definitions",
@@ -409,18 +388,6 @@ export class SymlinkRepoIndexService implements RepoIndexService {
         definitionPath,
         join(modelDir, "definition.yaml"),
       );
-    } else {
-      // Fallback to legacy .data/inputs/ path for backward compatibility
-      const inputTarget = join(
-        ".data",
-        "inputs",
-        modelType,
-        `${modelInputId}.yaml`,
-      );
-      const inputPath = join(this.repoDir, inputTarget);
-      if (await this.exists(inputPath)) {
-        await this.createSymlink(inputPath, join(modelDir, "input.yaml"));
-      }
     }
 
     // Create type/ subdirectory for tag-based data organization
@@ -430,35 +397,20 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Index tag-based data if unified data repository is available
     if (this.unifiedDataRepo) {
       await this.indexTagBasedData(type, modelInputId, typeDir);
-    } else {
-      // Fallback to legacy paths for backward compatibility
-      await this.indexLegacyData(modelType, modelInputId, modelDir);
     }
 
     // Create outputs directory and symlink method directories
     const outputsDir = join(modelDir, "outputs");
     await ensureDir(outputsDir);
 
-    // Try new .swamp/outputs/ path first
-    const newMethodsDir = join(
+    const methodsDir = join(
       this.repoDir,
       ".swamp",
       "outputs",
       type.normalized,
     );
-    if (await this.exists(newMethodsDir)) {
-      await this.indexOutputMethods(newMethodsDir, outputsDir);
-    } else {
-      // Fallback to legacy .data/outputs/ path
-      const legacyMethodsDir = join(
-        this.repoDir,
-        ".data",
-        "outputs",
-        modelType,
-      );
-      if (await this.exists(legacyMethodsDir)) {
-        await this.indexOutputMethods(legacyMethodsDir, outputsDir);
-      }
+    if (await this.exists(methodsDir)) {
+      await this.indexOutputMethods(methodsDir, outputsDir);
     }
   }
 
@@ -576,48 +528,6 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       }
     } catch (error) {
       logger.debug`Failed to index tag-based data: ${error}`;
-    }
-  }
-
-  /**
-   * Indexes legacy data paths for backward compatibility.
-   */
-  private async indexLegacyData(
-    modelType: string,
-    modelInputId: string,
-    modelDir: string,
-  ): Promise<void> {
-    // Symlink to resource.yaml if it exists
-    const resourceTarget = join(
-      ".data",
-      "resources",
-      modelType,
-      `${modelInputId}.yaml`,
-    );
-    const resourcePath = join(this.repoDir, resourceTarget);
-    if (await this.exists(resourcePath)) {
-      await this.createSymlink(resourcePath, join(modelDir, "resource.yaml"));
-    }
-
-    // Symlink to data.yaml if it exists
-    const dataTarget = join(".data", "data", modelType, `${modelInputId}.yaml`);
-    const dataPath = join(this.repoDir, dataTarget);
-    if (await this.exists(dataPath)) {
-      await this.createSymlink(dataPath, join(modelDir, "data.yaml"));
-    }
-
-    // Symlink to logs directory if it exists
-    const logsTarget = join(".data", "logs", modelType, modelInputId);
-    const logsPath = join(this.repoDir, logsTarget);
-    if (await this.exists(logsPath)) {
-      await this.createSymlink(logsPath, join(modelDir, "logs"));
-    }
-
-    // Symlink to files directory if it exists
-    const filesTarget = join(".data", "files", modelType, modelInputId);
-    const filesPath = join(this.repoDir, filesTarget);
-    if (await this.exists(filesPath)) {
-      await this.createSymlink(filesPath, join(modelDir, "files"));
     }
   }
 

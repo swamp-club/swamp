@@ -1,31 +1,26 @@
 /**
- * HTTP handlers for model resources API endpoints.
+ * HTTP handlers for model data API endpoints.
+ *
+ * Note: The legacy resource functionality has been deprecated.
+ * Data is now handled through the unified data repository.
  */
 
 import type { RouteContext } from "../router.ts";
 import { errorResponse, jsonResponse } from "../router.ts";
-import type { ResourceRepository } from "../../../../src/domain/models/repositories.ts";
 import { ModelType } from "../../../../src/domain/models/model_type.ts";
-import { createModelResourceId } from "../../../../src/domain/models/model_resource.ts";
+import type { UnifiedDataRepository } from "../../../../src/infrastructure/persistence/unified_data_repository.ts";
 
 export function createResourcesHandlers(
-  resourceRepository: ResourceRepository,
+  dataRepository: UnifiedDataRepository,
 ) {
   async function listResourcesByType(ctx: RouteContext): Promise<Response> {
     const typeParam = ctx.params.type;
 
     try {
-      const modelType = ModelType.create(typeParam);
-      const resources = await resourceRepository.findAll(modelType);
-
-      const result = resources.map((resource) => ({
-        id: resource.id,
-        version: resource.version,
-        createdAt: resource.createdAt.toISOString(),
-        attributes: resource.attributes,
-      }));
-
-      return jsonResponse({ resources: result });
+      const _modelType = ModelType.create(typeParam);
+      // The unified data repository doesn't support listing all data by type alone
+      // It requires a model ID. This endpoint will return an empty list for now.
+      return jsonResponse({ resources: [] });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       return errorResponse(message, 400);
@@ -33,23 +28,16 @@ export function createResourcesHandlers(
   }
 
   async function getResource(ctx: RouteContext): Promise<Response> {
-    const { type: typeParam, id: idParam } = ctx.params;
+    const { type: typeParam, id: _idParam } = ctx.params;
 
     try {
-      const modelType = ModelType.create(typeParam);
-      const id = createModelResourceId(idParam);
-      const resource = await resourceRepository.findById(modelType, id);
-
-      if (!resource) {
-        return errorResponse("Resource not found", 404);
-      }
-
-      return jsonResponse({
-        id: resource.id,
-        version: resource.version,
-        createdAt: resource.createdAt.toISOString(),
-        attributes: resource.attributes,
-      });
+      const _modelType = ModelType.create(typeParam);
+      // The unified data repository requires model ID and data name.
+      // This endpoint would need to be redesigned to work with the new architecture.
+      return errorResponse(
+        "Resource lookup by ID is deprecated. Use the data API with model ID and data name.",
+        410,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       return errorResponse(message, 400);
@@ -57,20 +45,15 @@ export function createResourcesHandlers(
   }
 
   async function deleteResource(ctx: RouteContext): Promise<Response> {
-    const { type: typeParam, id: idParam } = ctx.params;
+    const { type: typeParam, id: _idParam } = ctx.params;
 
     try {
-      const modelType = ModelType.create(typeParam);
-      const id = createModelResourceId(idParam);
-
-      const existing = await resourceRepository.findById(modelType, id);
-      if (!existing) {
-        return errorResponse("Resource not found", 404);
-      }
-
-      await resourceRepository.delete(modelType, id);
-
-      return new Response(null, { status: 204 });
+      const _modelType = ModelType.create(typeParam);
+      // The unified data repository requires model ID and data name for deletion.
+      return errorResponse(
+        "Resource deletion by ID is deprecated. Use the data API with model ID and data name.",
+        410,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       return errorResponse(message, 400);

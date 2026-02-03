@@ -1,22 +1,8 @@
-import type { ModelInput } from "../models/model_input.ts";
-import type { ModelResource } from "../models/model_resource.ts";
-import type { ModelData as ModelDataEntity } from "../models/model_data.ts";
-import type { ModelFile } from "../models/model_file.ts";
-import type { ModelLog } from "../models/model_log.ts";
 import type { ModelOutput } from "../models/model_output.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { Definition, InputsSchema } from "../definitions/definition.ts";
-import type { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import type { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
-import type { YamlDataRepository } from "../../infrastructure/persistence/yaml_data_repository.ts";
-import type { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
-import type { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { inputIdToResourceId } from "../models/model_resource.ts";
-import { createModelDataId } from "../models/model_data.ts";
-import { createModelFileId } from "../models/model_file.ts";
-import { createModelLogId } from "../models/model_log.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 
@@ -119,11 +105,7 @@ export interface ExpressionContext {
  * Configuration for optional repositories and services.
  */
 export interface ModelResolverRepositories {
-  dataRepo?: YamlDataRepository;
-  fileRepo?: FileSystemFileRepository;
-  logRepo?: StreamingLogRepository;
   outputRepo?: YamlOutputRepository;
-  definitionRepo?: YamlDefinitionRepository;
   /** Optional vault service for dependency injection (useful for testing) */
   vaultService?: VaultService;
   /** Repository directory for lazy loading vault configurations */
@@ -134,25 +116,16 @@ export interface ModelResolverRepositories {
  * Resolves model references to build CEL evaluation context.
  */
 export class ModelResolver {
-  private readonly dataRepo?: YamlDataRepository;
-  private readonly fileRepo?: FileSystemFileRepository;
-  private readonly logRepo?: StreamingLogRepository;
   private readonly outputRepo?: YamlOutputRepository;
-  private readonly definitionRepo?: YamlDefinitionRepository;
   private vaultService?: VaultService;
   private readonly repoDir?: string;
   private vaultServiceInitialized = false;
 
   constructor(
-    private readonly inputRepo: YamlInputRepository,
-    private readonly resourceRepo: YamlResourceRepository,
+    private readonly definitionRepo: YamlDefinitionRepository,
     repos?: ModelResolverRepositories,
   ) {
-    this.dataRepo = repos?.dataRepo;
-    this.fileRepo = repos?.fileRepo;
-    this.logRepo = repos?.logRepo;
     this.outputRepo = repos?.outputRepo;
-    this.definitionRepo = repos?.definitionRepo;
     this.repoDir = repos?.repoDir;
     // If a vault service was provided, use it directly
     if (repos?.vaultService) {
@@ -186,12 +159,12 @@ export class ModelResolver {
   /**
    * Builds a complete expression context from all available models.
    *
-   * @param selfInput - The input currently being evaluated (for self reference)
-   * @param selfType - The model type of the self input
+   * @param selfDefinition - The definition currently being evaluated (for self reference)
+   * @param selfType - The model type of the self definition
    * @returns The expression context
    */
   async buildContext(
-    selfInput?: ModelInput,
+    selfDefinition?: Definition,
     selfType?: ModelType,
   ): Promise<ExpressionContext> {
     const context: ExpressionContext = {
@@ -199,66 +172,43 @@ export class ModelResolver {
       env: buildEnvContext(),
     };
 
-    // Load all inputs (legacy support)
-    const allInputs = await this.inputRepo.findAllGlobal();
+    // Load all definitions
+    const allDefinitions = await this.definitionRepo.findAllGlobal();
 
-    for (const { input, type } of allInputs) {
-      const modelData = await this.buildModelData(input, type);
+    for (const { definition, type: _defType } of allDefinitions) {
+      // Build model data from definition
+      const modelData: ModelData = {
+        input: {
+          id: definition.id,
+          name: definition.name,
+          version: definition.version,
+          tags: definition.tags,
+          attributes: definition.attributes,
+        },
+        definition: {
+          id: definition.id,
+          name: definition.name,
+          version: definition.version,
+          tags: definition.tags,
+          attributes: definition.attributes,
+          inputs: definition.inputs,
+        },
+      };
 
       // Index by name
-      context.model[input.name] = modelData;
+      context.model[definition.name] = modelData;
       // Also index by UUID for direct ID references
-      context.model[input.id] = modelData;
-    }
-
-    // Also load definitions that don't have corresponding inputs
-    // This supports the new Definition-based workflow
-    if (this.definitionRepo) {
-      const allDefinitions = await this.definitionRepo.findAllGlobal();
-
-      for (const { definition, type: _defType } of allDefinitions) {
-        // Skip if already loaded from inputs
-        if (context.model[definition.name]) {
-          continue;
-        }
-
-        // Build model data from definition (use definition attributes as input attributes)
-        const modelData: ModelData = {
-          input: {
-            id: definition.id,
-            name: definition.name,
-            version: definition.version,
-            tags: definition.tags,
-            attributes: definition.attributes,
-          },
-          definition: {
-            id: definition.id,
-            name: definition.name,
-            version: definition.version,
-            tags: definition.tags,
-            attributes: definition.attributes,
-            inputs: definition.inputs,
-          },
-        };
-
-        // Load data artifact if available (from unified data repository)
-        // Note: We can't load from the old data repo here since definitions use DataOutput
-
-        // Index by name
-        context.model[definition.name] = modelData;
-        // Also index by UUID for direct ID references
-        context.model[definition.id] = modelData;
-      }
+      context.model[definition.id] = modelData;
     }
 
     // Build self context if provided
-    if (selfInput && selfType) {
+    if (selfDefinition && selfType) {
       context.self = {
-        id: selfInput.id,
-        name: selfInput.name,
-        version: selfInput.version,
-        tags: selfInput.tags,
-        attributes: selfInput.attributes,
+        id: selfDefinition.id,
+        name: selfDefinition.name,
+        version: selfDefinition.version,
+        tags: selfDefinition.tags,
+        attributes: selfDefinition.attributes,
       };
     }
 
@@ -266,285 +216,34 @@ export class ModelResolver {
   }
 
   /**
-   * Builds model data for a single input.
-   */
-  private async buildModelData(
-    input: ModelInput,
-    type: ModelType,
-  ): Promise<ModelData> {
-    const data: ModelData = {
-      input: {
-        id: input.id,
-        name: input.name,
-        version: input.version,
-        tags: input.tags,
-        attributes: input.attributes,
-      },
-    };
-
-    // Load definition if available (by name match)
-    if (this.definitionRepo) {
-      const definition = await this.definitionRepo.findByName(type, input.name);
-      if (definition) {
-        data.definition = {
-          id: definition.id,
-          name: definition.name,
-          version: definition.version,
-          tags: definition.tags,
-          attributes: definition.attributes,
-          inputs: definition.inputs,
-        };
-      }
-    }
-
-    // Load resource if available (resource ID equals input ID by convention)
-    const resourceId = inputIdToResourceId(input.id);
-    const resource = await this.resourceRepo.findById(type, resourceId);
-    if (resource) {
-      data.resource = {
-        id: resource.id,
-        version: resource.version,
-        createdAt: resource.createdAt.toISOString(),
-        attributes: resource.attributes,
-      };
-    }
-
-    // Load data artifact if available
-    if (input.dataId && this.dataRepo) {
-      const dataId = createModelDataId(input.dataId);
-      const dataArtifact = await this.dataRepo.findById(type, dataId);
-      if (dataArtifact) {
-        data.data = {
-          id: dataArtifact.id,
-          version: dataArtifact.version,
-          createdAt: dataArtifact.createdAt.toISOString(),
-          attributes: dataArtifact.attributes,
-        };
-      }
-    }
-
-    // Load file artifact if available
-    // Note: We need to find the file using the output that created it
-    // to get the method name for the path structure
-    if (input.fileId && this.fileRepo && this.outputRepo) {
-      const fileId = createModelFileId(input.fileId);
-      // Find the output that created this file to get the method name
-      // During migration, use input.id as definitionId
-      const latestOutput = await this.outputRepo.findLatestByDefinition(
-        type,
-        input
-          .id as unknown as import("../definitions/definition.ts").DefinitionId,
-      );
-      const methodName = latestOutput?.methodName;
-
-      if (methodName) {
-        const fileArtifact = await this.fileRepo.findById(
-          type,
-          input.id,
-          methodName,
-          fileId,
-        );
-        if (fileArtifact) {
-          data.file = {
-            id: fileArtifact.id,
-            version: fileArtifact.version,
-            createdAt: fileArtifact.createdAt.toISOString(),
-            filename: fileArtifact.filename,
-            contentType: fileArtifact.contentType,
-            size: fileArtifact.size,
-            checksum: fileArtifact.checksum,
-            path: this.fileRepo.getContentPath(
-              type,
-              input.id,
-              methodName,
-              fileArtifact,
-            ),
-          };
-        }
-      }
-    }
-
-    // Load log artifact if available
-    if (input.logId && this.logRepo) {
-      const logId = createModelLogId(input.logId);
-      const logArtifact = await this.logRepo.findById(type, logId);
-      if (logArtifact) {
-        data.log = {
-          id: logArtifact.id,
-          version: logArtifact.version,
-          createdAt: logArtifact.createdAt.toISOString(),
-          entries: logArtifact.entries.map((e) => ({
-            message: e.message,
-          })),
-        };
-      }
-    }
-
-    // Load latest output if available
-    if (this.outputRepo) {
-      // During migration, use input.id as definitionId
-      const latestOutput = await this.outputRepo.findLatestByDefinition(
-        type,
-        input
-          .id as unknown as import("../definitions/definition.ts").DefinitionId,
-      );
-      if (latestOutput) {
-        data.execution = {
-          id: latestOutput.id,
-          methodName: latestOutput.methodName,
-          status: latestOutput.status,
-          startedAt: latestOutput.startedAt.toISOString(),
-          completedAt: latestOutput.completedAt?.toISOString(),
-          durationMs: latestOutput.durationMs,
-          error: latestOutput.error,
-        };
-      }
-    }
-
-    return data;
-  }
-
-  /**
    * Resolves a single model reference by name or ID.
    *
    * @param modelRef - The model name or UUID
-   * @returns The model data
+   * @returns The definition and model type
    * @throws ModelNotFoundError if the model cannot be found
    */
   async resolveModel(modelRef: string): Promise<{
-    input: ModelInput;
+    definition: Definition;
     type: ModelType;
-    resource?: ModelResource;
   }> {
     // Try by name first
-    const byName = await this.inputRepo.findByNameGlobal(modelRef);
+    const byName = await this.definitionRepo.findByNameGlobal(modelRef);
     if (byName) {
-      // Resource ID equals input ID by convention
-      const resourceId = inputIdToResourceId(byName.input.id);
-      const resource = await this.resourceRepo.findById(
-        byName.type,
-        resourceId,
-      );
       return {
-        input: byName.input,
+        definition: byName.definition,
         type: byName.type,
-        resource: resource ?? undefined,
       };
     }
 
     // Try by UUID - search across all types
-    const allInputs = await this.inputRepo.findAllGlobal();
-    for (const { input, type } of allInputs) {
-      if (input.id === modelRef) {
-        // Resource ID equals input ID by convention
-        const resourceId = inputIdToResourceId(input.id);
-        const resource = await this.resourceRepo.findById(type, resourceId);
-        return { input, type, resource: resource ?? undefined };
+    const allDefinitions = await this.definitionRepo.findAllGlobal();
+    for (const { definition, type } of allDefinitions) {
+      if (definition.id === modelRef) {
+        return { definition, type };
       }
     }
 
     throw new ModelNotFoundError(modelRef);
-  }
-
-  /**
-   * Updates the context with fresh resource data for a specific model.
-   * Used during workflow execution when resources are created.
-   *
-   * @param context - The context to update
-   * @param modelRef - The model name or UUID
-   * @param resource - The new resource data
-   */
-  updateResourceInContext(
-    context: ExpressionContext,
-    modelRef: string,
-    resource: ModelResource,
-  ): void {
-    const modelData = context.model[modelRef];
-    if (modelData) {
-      modelData.resource = {
-        id: resource.id,
-        version: resource.version,
-        createdAt: resource.createdAt.toISOString(),
-        attributes: resource.attributes,
-      };
-    }
-  }
-
-  /**
-   * Updates the context with fresh data artifact for a specific model.
-   *
-   * @param context - The context to update
-   * @param modelRef - The model name or UUID
-   * @param dataArtifact - The new data artifact
-   */
-  updateDataInContext(
-    context: ExpressionContext,
-    modelRef: string,
-    dataArtifact: ModelDataEntity,
-  ): void {
-    const modelData = context.model[modelRef];
-    if (modelData) {
-      modelData.data = {
-        id: dataArtifact.id,
-        version: dataArtifact.version,
-        createdAt: dataArtifact.createdAt.toISOString(),
-        attributes: dataArtifact.attributes,
-      };
-    }
-  }
-
-  /**
-   * Updates the context with fresh file artifact for a specific model.
-   *
-   * @param context - The context to update
-   * @param modelRef - The model name or UUID
-   * @param fileArtifact - The new file artifact
-   * @param filePath - The path to the file content
-   */
-  updateFileInContext(
-    context: ExpressionContext,
-    modelRef: string,
-    fileArtifact: ModelFile,
-    filePath: string,
-  ): void {
-    const modelData = context.model[modelRef];
-    if (modelData) {
-      modelData.file = {
-        id: fileArtifact.id,
-        version: fileArtifact.version,
-        createdAt: fileArtifact.createdAt.toISOString(),
-        filename: fileArtifact.filename,
-        contentType: fileArtifact.contentType,
-        size: fileArtifact.size,
-        checksum: fileArtifact.checksum,
-        path: filePath,
-      };
-    }
-  }
-
-  /**
-   * Updates the context with fresh log artifact for a specific model.
-   *
-   * @param context - The context to update
-   * @param modelRef - The model name or UUID
-   * @param logArtifact - The new log artifact
-   */
-  updateLogInContext(
-    context: ExpressionContext,
-    modelRef: string,
-    logArtifact: ModelLog,
-  ): void {
-    const modelData = context.model[modelRef];
-    if (modelData) {
-      modelData.log = {
-        id: logArtifact.id,
-        version: logArtifact.version,
-        createdAt: logArtifact.createdAt.toISOString(),
-        entries: logArtifact.entries.map((e) => ({
-          message: e.message,
-        })),
-      };
-    }
   }
 
   /**

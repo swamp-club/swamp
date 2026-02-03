@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
-import { computeChecksum } from "../../model_file.ts";
+import { computeChecksum } from "../../checksum.ts";
 import {
   defineModel,
   type MethodContext,

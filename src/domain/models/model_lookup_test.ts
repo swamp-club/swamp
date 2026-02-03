@@ -1,14 +1,14 @@
 import { assertEquals } from "@std/assert";
 import {
-  findByIdOrName,
+  findDefinitionByIdOrName,
   isPartialId,
   isUuid,
   matchByPartialId,
 } from "./model_lookup.ts";
-import { ModelInput } from "./model_input.ts";
+import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-// Import models barrel to register all model types (needed for findByIdOrName tests)
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+// Import models barrel to register all model types (needed for findDefinitionByIdOrName tests)
 import "./models.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -163,62 +163,82 @@ Deno.test("matchByPartialId matches full UUID", () => {
   }
 });
 
-// findByIdOrName tests
+// findDefinitionByIdOrName tests
 
-Deno.test("findByIdOrName finds model by name", async () => {
+Deno.test("findDefinitionByIdOrName finds definition by name", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlInputRepository(dir);
+    const repo = new YamlDefinitionRepository(dir);
     const type = ModelType.create("swamp/echo");
-    const input = ModelInput.create({ name: "my-model" });
-    await repo.save(type, input);
+    const definition = Definition.create({
+      name: "my-model",
+      version: 1,
+      tags: {},
+      attributes: { message: "hello" },
+    });
+    await repo.save(type, definition);
 
-    const result = await findByIdOrName(repo, "my-model");
+    const result = await findDefinitionByIdOrName(repo, "my-model");
 
-    assertEquals(result?.input.id, input.id);
-    assertEquals(result?.input.name, "my-model");
+    assertEquals(result?.definition.id, definition.id);
+    assertEquals(result?.definition.name, "my-model");
     assertEquals(result?.type.normalized, "swamp/echo");
   });
 });
 
-Deno.test("findByIdOrName finds model by UUID", async () => {
+Deno.test("findDefinitionByIdOrName finds definition by UUID", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlInputRepository(dir);
+    const repo = new YamlDefinitionRepository(dir);
     const type = ModelType.create("swamp/echo");
-    const input = ModelInput.create({ name: "my-model" });
-    await repo.save(type, input);
+    const definition = Definition.create({
+      name: "my-model",
+      version: 1,
+      tags: {},
+      attributes: { message: "hello" },
+    });
+    await repo.save(type, definition);
 
-    const result = await findByIdOrName(repo, input.id);
+    const result = await findDefinitionByIdOrName(repo, definition.id);
 
-    assertEquals(result?.input.id, input.id);
-    assertEquals(result?.input.name, "my-model");
+    assertEquals(result?.definition.id, definition.id);
+    assertEquals(result?.definition.name, "my-model");
     assertEquals(result?.type.normalized, "swamp/echo");
   });
 });
 
-Deno.test("findByIdOrName returns null when not found", async () => {
+Deno.test("findDefinitionByIdOrName returns null when not found", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlInputRepository(dir);
+    const repo = new YamlDefinitionRepository(dir);
 
-    const result = await findByIdOrName(repo, "nonexistent");
+    const result = await findDefinitionByIdOrName(repo, "nonexistent");
 
     assertEquals(result, null);
   });
 });
 
-Deno.test("findByIdOrName prefers name match over ID", async () => {
+Deno.test("findDefinitionByIdOrName prefers name match over ID", async () => {
   await withTempDir(async (dir) => {
-    const repo = new YamlInputRepository(dir);
+    const repo = new YamlDefinitionRepository(dir);
     const type = ModelType.create("swamp/echo");
 
-    // Create two models - one with a name that happens to be a UUID-like string
-    const model1 = ModelInput.create({ name: "abc123" });
-    const model2 = ModelInput.create({ name: "other-model" });
-    await repo.save(type, model1);
-    await repo.save(type, model2);
+    // Create two definitions - one with a name that happens to be a UUID-like string
+    const def1 = Definition.create({
+      name: "abc123",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    const def2 = Definition.create({
+      name: "other-model",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await repo.save(type, def1);
+    await repo.save(type, def2);
 
-    // Looking up by name should find model1
-    const result = await findByIdOrName(repo, "abc123");
+    // Looking up by name should find def1
+    const result = await findDefinitionByIdOrName(repo, "abc123");
 
-    assertEquals(result?.input.name, "abc123");
+    assertEquals(result?.definition.name, "abc123");
   });
 });

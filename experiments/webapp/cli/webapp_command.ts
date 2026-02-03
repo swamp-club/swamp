@@ -13,13 +13,11 @@ import {
   createWorkflowsHandlers,
   listTypes,
 } from "../backend/mod.ts";
-import { YamlInputRepository } from "../../../src/infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../../src/infrastructure/persistence/yaml_resource_repository.ts";
+import { YamlDefinitionRepository } from "../../../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRepository } from "../../../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlOutputRepository } from "../../../src/infrastructure/persistence/yaml_output_repository.ts";
-import { YamlDataRepository } from "../../../src/infrastructure/persistence/yaml_data_repository.ts";
-import { StreamingLogRepository } from "../../../src/infrastructure/persistence/streaming_log_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../../../src/infrastructure/persistence/unified_data_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -66,17 +64,15 @@ export const repoWebappCommand = new Command()
     const repoDir = repoPath.value;
 
     // Initialize repositories
-    const inputRepository = new YamlInputRepository(repoDir);
-    const resourceRepository = new YamlResourceRepository(repoDir);
+    const definitionRepository = new YamlDefinitionRepository(repoDir);
     const workflowRepository = new YamlWorkflowRepository(repoDir);
     const workflowRunRepository = new YamlWorkflowRunRepository(repoDir);
     const outputRepository = new YamlOutputRepository(repoDir);
-    const dataRepository = new YamlDataRepository(repoDir);
-    const logRepository = new StreamingLogRepository(repoDir);
+    const dataRepository = new FileSystemUnifiedDataRepository(repoDir);
 
     // Create handlers
-    const modelsHandlers = createModelsHandlers(inputRepository);
-    const resourcesHandlers = createResourcesHandlers(resourceRepository);
+    const modelsHandlers = createModelsHandlers(definitionRepository);
+    const resourcesHandlers = createResourcesHandlers(dataRepository);
     const workflowsHandlers = createWorkflowsHandlers(workflowRepository);
     const workflowRunsHandlers = createWorkflowRunsHandlers(
       workflowRunRepository,
@@ -85,9 +81,8 @@ export const repoWebappCommand = new Command()
     );
     const outputsHandlers = createOutputsHandlers(
       outputRepository,
-      inputRepository,
+      definitionRepository,
       dataRepository,
-      logRepository,
     );
 
     // Resolve webapp directory
@@ -121,7 +116,7 @@ export const repoWebappCommand = new Command()
     router.put("/api/v1/models/:type/:id", modelsHandlers.updateModel);
     router.delete("/api/v1/models/:type/:id", modelsHandlers.deleteModel);
 
-    // Resources endpoints
+    // Resources endpoints (deprecated, use data API)
     router.get(
       "/api/v1/resources/:type",
       resourcesHandlers.listResourcesByType,

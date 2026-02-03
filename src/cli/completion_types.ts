@@ -1,5 +1,5 @@
 import { Type } from "@cliffy/command";
-import { YamlInputRepository } from "../infrastructure/persistence/yaml_input_repository.ts";
+import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRepository } from "../infrastructure/persistence/yaml_workflow_repository.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 
@@ -40,9 +40,9 @@ export class ModelNameType extends Type<string> {
 
   override async complete(): Promise<string[]> {
     try {
-      const inputRepo = new YamlInputRepository(".");
-      const models = await inputRepo.findAllGlobal();
-      return models.map((m) => m.input.name);
+      const definitionRepo = new YamlDefinitionRepository(".");
+      const definitions = await definitionRepo.findAllGlobal();
+      return definitions.map((d) => d.definition.name);
     } catch (_error) {
       // Graceful degradation: return empty completions if repository
       // is not accessible (e.g., not in a swamp repo, permissions issue).

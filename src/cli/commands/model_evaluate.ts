@@ -6,8 +6,6 @@ import {
   renderModelEvaluateSingle,
 } from "../../presentation/output/model_evaluate_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -25,14 +23,10 @@ export const modelEvaluateCommand = new Command()
     async function (options: AnyOptions, modelIdOrName?: string) {
       const ctx = createContext(options as GlobalOptions, "model-evaluate");
       const repoDir = options.repoDir ?? ".";
-      const inputRepo = new YamlInputRepository(repoDir);
-      const resourceRepo = new YamlResourceRepository(repoDir);
       const definitionRepo = new YamlDefinitionRepository(repoDir);
       const evaluationService = new ExpressionEvaluationService(
-        inputRepo,
-        resourceRepo,
+        definitionRepo,
         repoDir,
-        { definitionRepo },
       );
 
       // If --all flag or no argument, evaluate all definitions

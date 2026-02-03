@@ -1,29 +1,29 @@
 /**
- * HTTP handlers for model inputs API endpoints.
+ * HTTP handlers for model definitions API endpoints.
  */
 
 import type { RouteContext } from "../router.ts";
 import { errorResponse, jsonResponse } from "../router.ts";
 import { ModelType } from "../../../../src/domain/models/model_type.ts";
 import {
-  createModelInputId,
-  ModelInput,
-} from "../../../../src/domain/models/model_input.ts";
-import type { InputRepository } from "../../../../src/domain/models/repositories.ts";
-import { findInputByIdGlobal } from "../../../../src/domain/models/model_lookup.ts";
-import type { YamlInputRepository } from "../../../../src/infrastructure/persistence/yaml_input_repository.ts";
+  createDefinitionId,
+  Definition,
+} from "../../../../src/domain/definitions/definition.ts";
+import type { DefinitionRepository } from "../../../../src/domain/definitions/repositories.ts";
+import { findDefinitionByIdGlobal } from "../../../../src/domain/models/model_lookup.ts";
+import type { YamlDefinitionRepository } from "../../../../src/infrastructure/persistence/yaml_definition_repository.ts";
 
-export function createModelsHandlers(inputRepository: InputRepository) {
+export function createModelsHandlers(definitionRepository: DefinitionRepository) {
   async function listAllModels(_ctx: RouteContext): Promise<Response> {
-    const allInputs = await inputRepository.findAllGlobal();
+    const allDefinitions = await definitionRepository.findAllGlobal();
 
-    const models = allInputs.map(({ input, type }) => ({
-      id: input.id,
-      name: input.name,
+    const models = allDefinitions.map(({ definition, type }) => ({
+      id: definition.id,
+      name: definition.name,
       type: { raw: type.raw, normalized: type.normalized },
-      version: input.version,
-      tags: input.tags,
-      attributes: input.attributes,
+      version: definition.version,
+      tags: definition.tags,
+      attributes: definition.attributes,
     }));
 
     return jsonResponse({ models });
@@ -34,15 +34,15 @@ export function createModelsHandlers(inputRepository: InputRepository) {
 
     try {
       const modelType = ModelType.create(typeParam);
-      const inputs = await inputRepository.findAll(modelType);
+      const definitions = await definitionRepository.findAll(modelType);
 
-      const models = inputs.map((input) => ({
-        id: input.id,
-        name: input.name,
+      const models = definitions.map((definition) => ({
+        id: definition.id,
+        name: definition.name,
         type: { raw: modelType.raw, normalized: modelType.normalized },
-        version: input.version,
-        tags: input.tags,
-        attributes: input.attributes,
+        version: definition.version,
+        tags: definition.tags,
+        attributes: definition.attributes,
       }));
 
       return jsonResponse({ models });
@@ -57,20 +57,20 @@ export function createModelsHandlers(inputRepository: InputRepository) {
 
     try {
       const modelType = ModelType.create(typeParam);
-      const id = createModelInputId(idParam);
-      const input = await inputRepository.findById(modelType, id);
+      const id = createDefinitionId(idParam);
+      const definition = await definitionRepository.findById(modelType, id);
 
-      if (!input) {
-        return errorResponse("Model input not found", 404);
+      if (!definition) {
+        return errorResponse("Model definition not found", 404);
       }
 
       return jsonResponse({
-        id: input.id,
-        name: input.name,
+        id: definition.id,
+        name: definition.name,
         type: { raw: modelType.raw, normalized: modelType.normalized },
-        version: input.version,
-        tags: input.tags,
-        attributes: input.attributes,
+        version: definition.version,
+        tags: definition.tags,
+        attributes: definition.attributes,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -86,7 +86,7 @@ export function createModelsHandlers(inputRepository: InputRepository) {
       const body = await ctx.request.json();
 
       if (body.name) {
-        const existing = await inputRepository.findByNameGlobal(body.name);
+        const existing = await definitionRepository.findByNameGlobal(body.name);
         if (existing) {
           return errorResponse(
             `Model with name '${body.name}' already exists`,
@@ -95,23 +95,23 @@ export function createModelsHandlers(inputRepository: InputRepository) {
         }
       }
 
-      const input = ModelInput.create({
+      const definition = Definition.create({
         name: body.name,
         version: body.version,
         tags: body.tags,
         attributes: body.attributes,
       });
 
-      await inputRepository.save(modelType, input);
+      await definitionRepository.save(modelType, definition);
 
       return jsonResponse(
         {
-          id: input.id,
-          name: input.name,
+          id: definition.id,
+          name: definition.name,
           type: { raw: modelType.raw, normalized: modelType.normalized },
-          version: input.version,
-          tags: input.tags,
-          attributes: input.attributes,
+          version: definition.version,
+          tags: definition.tags,
+          attributes: definition.attributes,
         },
         201,
       );
@@ -126,17 +126,17 @@ export function createModelsHandlers(inputRepository: InputRepository) {
 
     try {
       const modelType = ModelType.create(typeParam);
-      const id = createModelInputId(idParam);
+      const id = createDefinitionId(idParam);
 
-      const existing = await inputRepository.findById(modelType, id);
+      const existing = await definitionRepository.findById(modelType, id);
       if (!existing) {
-        return errorResponse("Model input not found", 404);
+        return errorResponse("Model definition not found", 404);
       }
 
       const body = await ctx.request.json();
 
       if (body.name && body.name !== existing.name) {
-        const existingWithName = await inputRepository.findByNameGlobal(
+        const existingWithName = await definitionRepository.findByNameGlobal(
           body.name,
         );
         if (existingWithName) {
@@ -147,7 +147,7 @@ export function createModelsHandlers(inputRepository: InputRepository) {
         }
       }
 
-      const updated = ModelInput.create({
+      const updated = Definition.create({
         id: existing.id,
         name: body.name ?? existing.name,
         version: body.version ?? existing.version,
@@ -155,7 +155,7 @@ export function createModelsHandlers(inputRepository: InputRepository) {
         attributes: body.attributes ?? existing.attributes,
       });
 
-      await inputRepository.save(modelType, updated);
+      await definitionRepository.save(modelType, updated);
 
       return jsonResponse({
         id: updated.id,
@@ -176,14 +176,14 @@ export function createModelsHandlers(inputRepository: InputRepository) {
 
     try {
       const modelType = ModelType.create(typeParam);
-      const id = createModelInputId(idParam);
+      const id = createDefinitionId(idParam);
 
-      const existing = await inputRepository.findById(modelType, id);
+      const existing = await definitionRepository.findById(modelType, id);
       if (!existing) {
-        return errorResponse("Model input not found", 404);
+        return errorResponse("Model definition not found", 404);
       }
 
-      await inputRepository.delete(modelType, id);
+      await definitionRepository.delete(modelType, id);
 
       return new Response(null, { status: 204 });
     } catch (error) {
@@ -197,25 +197,25 @@ export function createModelsHandlers(inputRepository: InputRepository) {
 
     try {
       // Try by name first (most common case in workflows)
-      const byName = await inputRepository.findByNameGlobal(idParam);
+      const byName = await definitionRepository.findByNameGlobal(idParam);
       if (byName) {
         return jsonResponse({
-          id: byName.input.id,
+          id: byName.definition.id,
           type: byName.type.normalized,
-          name: byName.input.name,
+          name: byName.definition.name,
         });
       }
 
       // Fall back to searching by ID
-      const byId = await findInputByIdGlobal(
-        inputRepository as YamlInputRepository,
+      const byId = await findDefinitionByIdGlobal(
+        definitionRepository as YamlDefinitionRepository,
         idParam,
       );
       if (byId) {
         return jsonResponse({
-          id: byId.input.id,
+          id: byId.definition.id,
           type: byId.type.normalized,
-          name: byId.input.name,
+          name: byId.definition.name,
         });
       }
 

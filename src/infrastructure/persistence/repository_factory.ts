@@ -13,7 +13,7 @@
  *
  * ## When to Use Direct Repository Instantiation
  *
- * Use direct instantiation (e.g., `new YamlInputRepository(repoDir)`) when:
+ * Use direct instantiation (e.g., `new YamlDefinitionRepository(repoDir)`) when:
  * - **Read-only operations** (search, get, validate, describe)
  * - You don't need index updates (faster, less overhead)
  * - You're in a context where the index service isn't needed
@@ -23,22 +23,17 @@
  * ```typescript
  * // Mutation operation - use createRepositoryContext
  * const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
- * await ctx.inputRepo.save(type, model); // Will update /models/ index
+ * await ctx.definitionRepo.save(type, model); // Will update /models/ index
  *
  * // Read-only operation - direct instantiation is fine
- * const inputRepo = new YamlInputRepository(repoDir);
- * const model = await inputRepo.findById(type, id); // No index needed
+ * const definitionRepo = new YamlDefinitionRepository(repoDir);
+ * const model = await definitionRepo.findById(type, id); // No index needed
  * ```
  */
 
-import { YamlInputRepository } from "./yaml_input_repository.ts";
 import { YamlWorkflowRepository } from "./yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
-import { YamlResourceRepository } from "./yaml_resource_repository.ts";
-import { YamlDataRepository } from "./yaml_data_repository.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
-import { StreamingLogRepository } from "./streaming_log_repository.ts";
-import { FileSystemFileRepository } from "./fs_file_repository.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
@@ -49,9 +44,6 @@ import type {
   DefinitionCreated,
   DefinitionDeleted,
   DefinitionUpdated,
-  ModelCreated,
-  ModelDeleted,
-  ModelUpdated,
   VaultCreated,
   VaultDeleted,
   VaultSecretUpdated,
@@ -173,83 +165,6 @@ export function createVaultConfigRepository(
 }
 
 // =============================================================================
-// Legacy Repository Factory Functions (Deprecated)
-// =============================================================================
-
-/**
- * Creates a YamlInputRepository for storing model inputs.
- *
- * @deprecated Use createDefinitionRepository() instead. Model inputs have been
- * replaced by Definitions in the new architecture.
- *
- * @param repoDir - The repository directory path
- * @param eventBus - Optional event bus for emitting domain events
- * @returns A new YamlInputRepository instance
- */
-export function createInputRepository(
-  repoDir: string,
-  eventBus?: EventBus,
-): YamlInputRepository {
-  return new YamlInputRepository(repoDir, eventBus);
-}
-
-/**
- * Creates a YamlResourceRepository for storing model resources.
- *
- * @deprecated Resources are now stored as unified Data with type=resource tag.
- * Use createUnifiedDataRepository() instead.
- *
- * @param repoDir - The repository directory path
- * @returns A new YamlResourceRepository instance
- */
-export function createResourceRepository(
-  repoDir: string,
-): YamlResourceRepository {
-  return new YamlResourceRepository(repoDir);
-}
-
-/**
- * Creates a YamlDataRepository for storing model data artifacts.
- *
- * @deprecated Use createUnifiedDataRepository() instead. The unified data
- * repository provides versioning, ownership validation, and garbage collection.
- *
- * @param repoDir - The repository directory path
- * @returns A new YamlDataRepository instance
- */
-export function createDataRepository(repoDir: string): YamlDataRepository {
-  return new YamlDataRepository(repoDir);
-}
-
-/**
- * Creates a StreamingLogRepository for storing streaming logs.
- *
- * @deprecated Logs are now stored as unified Data with type=log tag.
- * Use createUnifiedDataRepository() with streaming=true instead.
- *
- * @param repoDir - The repository directory path
- * @returns A new StreamingLogRepository instance
- */
-export function createLogRepository(repoDir: string): StreamingLogRepository {
-  return new StreamingLogRepository(repoDir);
-}
-
-/**
- * Creates a FileSystemFileRepository for storing files.
- *
- * @deprecated Files are now stored as unified Data with type=file tag.
- * Use createUnifiedDataRepository() instead.
- *
- * @param repoDir - The repository directory path
- * @returns A new FileSystemFileRepository instance
- */
-export function createFileRepository(
-  repoDir: string,
-): FileSystemFileRepository {
-  return new FileSystemFileRepository(repoDir);
-}
-
-// =============================================================================
 // Repository Context
 // =============================================================================
 
@@ -268,7 +183,6 @@ export interface RepositoryContext {
   eventBus: EventBus;
   indexService: RepoIndexService;
 
-  // New architecture repositories
   definitionRepo: YamlDefinitionRepository;
   evaluatedDefinitionRepo: YamlEvaluatedDefinitionRepository;
   unifiedDataRepo: FileSystemUnifiedDataRepository;
@@ -276,31 +190,6 @@ export interface RepositoryContext {
   workflowRepo: YamlWorkflowRepository;
   workflowRunRepo: YamlWorkflowRunRepository;
   vaultConfigRepo: YamlVaultConfigRepository;
-
-  /**
-   * @deprecated Use definitionRepo instead. Kept for migration compatibility.
-   */
-  inputRepo: YamlInputRepository;
-
-  /**
-   * @deprecated Use unifiedDataRepo with type=resource tag instead.
-   */
-  resourceRepo: YamlResourceRepository;
-
-  /**
-   * @deprecated Use unifiedDataRepo instead.
-   */
-  dataRepo: YamlDataRepository;
-
-  /**
-   * @deprecated Use unifiedDataRepo with streaming=true and type=log tag instead.
-   */
-  logRepo: StreamingLogRepository;
-
-  /**
-   * @deprecated Use unifiedDataRepo with type=file tag instead.
-   */
-  fileRepo: FileSystemFileRepository;
 }
 
 /**
@@ -318,10 +207,6 @@ export function createRepositoryContext(
   const eventBus = new EventBus();
 
   // Create repositories with event bus
-  const inputRepo = new YamlInputRepository(
-    repoDir,
-    enableIndexing ? eventBus : undefined,
-  );
   const definitionRepo = new YamlDefinitionRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
@@ -340,15 +225,9 @@ export function createRepositoryContext(
     repoDir,
   );
 
-  // Unified data repository (new architecture)
+  // Unified data repository
   const unifiedDataRepo = new FileSystemUnifiedDataRepository(repoDir);
   const outputRepo = new YamlOutputRepository(repoDir);
-
-  // Legacy repositories (deprecated, kept for migration)
-  const resourceRepo = new YamlResourceRepository(repoDir);
-  const dataRepo = new YamlDataRepository(repoDir);
-  const logRepo = new StreamingLogRepository(repoDir);
-  const fileRepo = new FileSystemFileRepository(repoDir);
 
   // Vault config repository with event bus
   const vaultConfigRepo = new YamlVaultConfigRepository(
@@ -356,12 +235,11 @@ export function createRepositoryContext(
     enableIndexing ? eventBus : undefined,
   );
 
-  // Create index service with new repositories
+  // Create index service
   const indexService = new SymlinkRepoIndexService({
     repoDir,
-    inputRepo, // Legacy support
-    definitionRepo, // New definition repository
-    unifiedDataRepo, // New unified data repository
+    definitionRepo,
+    unifiedDataRepo,
     workflowRepo,
     workflowRunRepo,
     vaultConfigRepo,
@@ -369,21 +247,7 @@ export function createRepositoryContext(
 
   // Subscribe index service to events
   if (enableIndexing) {
-    // Legacy model events (from InputRepository)
-    eventBus.subscribe<ModelCreated>(
-      "ModelCreated",
-      (event) => indexService.handleModelCreated(event),
-    );
-    eventBus.subscribe<ModelUpdated>(
-      "ModelUpdated",
-      (event) => indexService.handleModelUpdated(event),
-    );
-    eventBus.subscribe<ModelDeleted>(
-      "ModelDeleted",
-      (event) => indexService.handleModelDeleted(event),
-    );
-
-    // Definition events (from DefinitionRepository) - map to model events
+    // Definition events
     eventBus.subscribe<DefinitionCreated>(
       "DefinitionCreated",
       (event) =>
@@ -463,8 +327,6 @@ export function createRepositoryContext(
   return {
     eventBus,
     indexService,
-
-    // New architecture repositories
     definitionRepo,
     evaluatedDefinitionRepo,
     unifiedDataRepo,
@@ -472,12 +334,5 @@ export function createRepositoryContext(
     workflowRepo,
     workflowRunRepo,
     vaultConfigRepo,
-
-    // Legacy repositories (deprecated)
-    inputRepo,
-    resourceRepo,
-    dataRepo,
-    logRepo,
-    fileRepo,
   };
 }

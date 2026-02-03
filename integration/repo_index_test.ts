@@ -11,7 +11,6 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { existsSync } from "@std/fs";
 import { ensureDir } from "@std/fs";
-import { ModelInput } from "../src/domain/models/model_input.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -33,14 +32,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 async function setupRepoDir(dir: string): Promise<void> {
   const subdirs = [
     // Legacy .data paths
-    ".data/inputs",
-    ".data/resources",
-    ".data/data",
-    ".data/outputs",
     ".data/workflows",
     ".data/workflow-runs",
-    ".data/logs",
-    ".data/files",
     // New .swamp paths
     ".swamp/definitions",
     ".swamp/data",
@@ -55,10 +48,10 @@ async function setupRepoDir(dir: string): Promise<void> {
 }
 
 // ============================================================================
-// Model Indexing Tests
+// Model Indexing Tests (Definition-based)
 // ============================================================================
 
-Deno.test("Integration: model create via repository context creates index symlink", async () => {
+Deno.test("Integration: definition create via repository context creates index symlink", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
@@ -66,9 +59,14 @@ Deno.test("Integration: model create via repository context creates index symlin
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
     const type = ModelType.create("swamp/echo");
 
-    // Create and save a model
-    const input = ModelInput.create({ name: "auto-indexed-model" });
-    await ctx.inputRepo.save(type, input);
+    // Create and save a definition
+    const definition = Definition.create({
+      name: "auto-indexed-model",
+      version: 1,
+      tags: {},
+      attributes: { message: "hello" },
+    });
+    await ctx.definitionRepo.save(type, definition);
 
     // Verify the index directory was created automatically
     const modelDir = join(repoDir, "models", "auto-indexed-model");
@@ -78,16 +76,16 @@ Deno.test("Integration: model create via repository context creates index symlin
       "Model index directory should exist",
     );
 
-    // Verify the input.yaml symlink exists
-    const inputSymlink = join(modelDir, "input.yaml");
+    // Verify the definition.yaml symlink exists
+    const definitionSymlink = join(modelDir, "definition.yaml");
     assertEquals(
-      existsSync(inputSymlink),
+      existsSync(definitionSymlink),
       true,
-      "input.yaml symlink should exist",
+      "definition.yaml symlink should exist",
     );
 
     // Verify we can read through the symlink
-    const content = await Deno.readTextFile(inputSymlink);
+    const content = await Deno.readTextFile(definitionSymlink);
     assertEquals(
       content.includes("auto-indexed-model"),
       true,
@@ -96,23 +94,28 @@ Deno.test("Integration: model create via repository context creates index symlin
   });
 });
 
-Deno.test("Integration: model delete via repository context removes index symlink", async () => {
+Deno.test("Integration: definition delete via repository context removes index symlink", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
     const type = ModelType.create("swamp/echo");
 
-    // Create a model
-    const input = ModelInput.create({ name: "delete-indexed-model" });
-    await ctx.inputRepo.save(type, input);
+    // Create a definition
+    const definition = Definition.create({
+      name: "delete-indexed-model",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await ctx.definitionRepo.save(type, definition);
 
     // Verify index exists
     const modelDir = join(repoDir, "models", "delete-indexed-model");
     assertEquals(existsSync(modelDir), true, "Index should exist after create");
 
-    // Delete the model
-    await ctx.inputRepo.delete(type, input.id);
+    // Delete the definition
+    await ctx.definitionRepo.delete(type, definition.id);
 
     // Verify index was removed
     assertEquals(
@@ -123,38 +126,53 @@ Deno.test("Integration: model delete via repository context removes index symlin
   });
 });
 
-Deno.test("Integration: multiple models create separate index directories", async () => {
+Deno.test("Integration: multiple definitions create separate index directories", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
     const type = ModelType.create("swamp/echo");
 
-    // Create multiple models
-    const model1 = ModelInput.create({ name: "model-alpha" });
-    const model2 = ModelInput.create({ name: "model-beta" });
-    const model3 = ModelInput.create({ name: "model-gamma" });
+    // Create multiple definitions
+    const def1 = Definition.create({
+      name: "model-alpha",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    const def2 = Definition.create({
+      name: "model-beta",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    const def3 = Definition.create({
+      name: "model-gamma",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
 
-    await ctx.inputRepo.save(type, model1);
-    await ctx.inputRepo.save(type, model2);
-    await ctx.inputRepo.save(type, model3);
+    await ctx.definitionRepo.save(type, def1);
+    await ctx.definitionRepo.save(type, def2);
+    await ctx.definitionRepo.save(type, def3);
 
     // Verify all index directories exist
     assertEquals(existsSync(join(repoDir, "models", "model-alpha")), true);
     assertEquals(existsSync(join(repoDir, "models", "model-beta")), true);
     assertEquals(existsSync(join(repoDir, "models", "model-gamma")), true);
 
-    // Each should have its own input.yaml symlink
+    // Each should have its own definition.yaml symlink
     assertEquals(
-      existsSync(join(repoDir, "models", "model-alpha", "input.yaml")),
+      existsSync(join(repoDir, "models", "model-alpha", "definition.yaml")),
       true,
     );
     assertEquals(
-      existsSync(join(repoDir, "models", "model-beta", "input.yaml")),
+      existsSync(join(repoDir, "models", "model-beta", "definition.yaml")),
       true,
     );
     assertEquals(
-      existsSync(join(repoDir, "models", "model-gamma", "input.yaml")),
+      existsSync(join(repoDir, "models", "model-gamma", "definition.yaml")),
       true,
     );
   });
@@ -247,21 +265,31 @@ Deno.test("Integration: workflow run creates run index with latest symlink", asy
 // Repo Index Rebuild Tests
 // ============================================================================
 
-Deno.test("Integration: repo index rebuild indexes existing models", async () => {
+Deno.test("Integration: repo index rebuild indexes existing definitions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
-    // Create models WITHOUT indexing enabled
+    // Create definitions WITHOUT indexing enabled
     const ctxNoIndex = createRepositoryContext({
       repoDir,
       enableIndexing: false,
     });
     const type = ModelType.create("swamp/echo");
 
-    const model1 = ModelInput.create({ name: "rebuild-model-1" });
-    const model2 = ModelInput.create({ name: "rebuild-model-2" });
-    await ctxNoIndex.inputRepo.save(type, model1);
-    await ctxNoIndex.inputRepo.save(type, model2);
+    const def1 = Definition.create({
+      name: "rebuild-model-1",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    const def2 = Definition.create({
+      name: "rebuild-model-2",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await ctxNoIndex.definitionRepo.save(type, def1);
+    await ctxNoIndex.definitionRepo.save(type, def2);
 
     // Verify no index directories exist yet
     assertEquals(existsSync(join(repoDir, "models", "rebuild-model-1")), false);
@@ -270,7 +298,7 @@ Deno.test("Integration: repo index rebuild indexes existing models", async () =>
     // Now rebuild the index
     const result = await ctxNoIndex.indexService.rebuildAll();
 
-    assertEquals(result.modelsIndexed, 2, "Should index 2 models");
+    assertEquals(result.modelsIndexed, 2, "Should index 2 definitions");
 
     // Verify index directories now exist
     assertEquals(existsSync(join(repoDir, "models", "rebuild-model-1")), true);
@@ -282,12 +310,17 @@ Deno.test("Integration: repo index rebuild removes stale indexes", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
-    // Create a model with indexing
+    // Create a definition with indexing
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
     const type = ModelType.create("swamp/echo");
 
-    const model = ModelInput.create({ name: "existing-model" });
-    await ctx.inputRepo.save(type, model);
+    const definition = Definition.create({
+      name: "existing-model",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await ctx.definitionRepo.save(type, definition);
 
     // Manually create a stale index directory (simulates a deleted model)
     const staleDir = join(repoDir, "models", "stale-deleted-model");
@@ -325,8 +358,8 @@ Deno.test("Integration: repo index verify detects broken symlinks", async () => 
     const modelDir = join(repoDir, "models", "broken-model");
     await ensureDir(modelDir);
     await Deno.symlink(
-      "../.data/inputs/nonexistent/file.yaml",
-      join(modelDir, "input.yaml"),
+      "../.swamp/definitions/nonexistent/file.yaml",
+      join(modelDir, "definition.yaml"),
     );
 
     // Verify should detect the broken link
@@ -346,9 +379,9 @@ Deno.test("Integration: repo index prune removes broken symlinks", async () => {
     // Create a model index directory with a broken symlink
     const modelDir = join(repoDir, "models", "prune-test-model");
     await ensureDir(modelDir);
-    const brokenLink = join(modelDir, "input.yaml");
+    const brokenLink = join(modelDir, "definition.yaml");
     await Deno.symlink(
-      "../.data/inputs/nonexistent/file.yaml",
+      "../.swamp/definitions/nonexistent/file.yaml",
       brokenLink,
     );
 
@@ -391,11 +424,16 @@ Deno.test("CLI: repo index rebuilds index", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
-    // Create a model without indexing
+    // Create a definition without indexing
     const ctx = createRepositoryContext({ repoDir, enableIndexing: false });
     const type = ModelType.create("swamp/echo");
-    const model = ModelInput.create({ name: "cli-rebuild-test" });
-    await ctx.inputRepo.save(type, model);
+    const definition = Definition.create({
+      name: "cli-rebuild-test",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await ctx.definitionRepo.save(type, definition);
 
     // Verify no index exists
     assertEquals(
@@ -428,11 +466,16 @@ Deno.test("CLI: repo index --verify checks integrity", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
-    // Create a model with valid index
+    // Create a definition with valid index
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
     const type = ModelType.create("swamp/echo");
-    const model = ModelInput.create({ name: "verify-test" });
-    await ctx.inputRepo.save(type, model);
+    const definition = Definition.create({
+      name: "verify-test",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await ctx.definitionRepo.save(type, definition);
 
     // Run verify
     const result = await runCliCommand(
@@ -460,8 +503,8 @@ Deno.test("CLI: repo index --verify fails on broken symlinks", async () => {
     const modelDir = join(repoDir, "models", "broken-verify-test");
     await ensureDir(modelDir);
     await Deno.symlink(
-      "../.data/inputs/nonexistent/file.yaml",
-      join(modelDir, "input.yaml"),
+      "../.swamp/definitions/nonexistent/file.yaml",
+      join(modelDir, "definition.yaml"),
     );
 
     // Run verify
@@ -486,9 +529,9 @@ Deno.test("CLI: repo index --prune removes broken symlinks", async () => {
     // Create a broken symlink
     const modelDir = join(repoDir, "models", "prune-cli-test");
     await ensureDir(modelDir);
-    const brokenLink = join(modelDir, "input.yaml");
+    const brokenLink = join(modelDir, "definition.yaml");
     await Deno.symlink(
-      "../.data/inputs/nonexistent/file.yaml",
+      "../.swamp/definitions/nonexistent/file.yaml",
       brokenLink,
     );
 

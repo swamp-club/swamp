@@ -10,7 +10,7 @@ import {
 } from "../../presentation/output/model_output_get_output.tsx";
 import type { OutputMode } from "../../presentation/output/output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -26,20 +26,16 @@ type AnyOptions = any;
  */
 async function toModelOutputSearchItems(
   results: { output: ModelOutput; type: ModelType; method: string }[],
-  inputRepo: YamlInputRepository,
+  definitionRepo: YamlDefinitionRepository,
 ): Promise<ModelOutputSearchItem[]> {
   const items: ModelOutputSearchItem[] = [];
 
   for (const { output, type } of results) {
-    // Try to get model name using definitionId (which may be a modelInputId during migration)
+    // Try to get model name using definitionId
     let modelName: string | undefined;
-    const input = await inputRepo.findById(
-      type,
-      output
-        .definitionId as unknown as import("../../domain/models/model_input.ts").ModelInputId,
-    );
-    if (input) {
-      modelName = input.name;
+    const definition = await definitionRepo.findById(type, output.definitionId);
+    if (definition) {
+      modelName = definition.name;
     }
 
     items.push({
@@ -92,7 +88,7 @@ async function displayModelOutputGet(
   repoDir: string,
   outputMode: OutputMode,
 ): Promise<void> {
-  const inputRepo = new YamlInputRepository(repoDir);
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
   const outputRepo = new YamlOutputRepository(repoDir);
 
   // Look up the full output
@@ -105,15 +101,11 @@ async function displayModelOutputGet(
 
   const { output, type } = result;
 
-  // Try to get model name using definitionId (which may be a modelInputId during migration)
+  // Try to get model name using definitionId
   let modelName: string | undefined;
-  const input = await inputRepo.findById(
-    type,
-    output
-      .definitionId as unknown as import("../../domain/models/model_input.ts").ModelInputId,
-  );
-  if (input) {
-    modelName = input.name;
+  const definition = await definitionRepo.findById(type, output.definitionId);
+  if (definition) {
+    modelName = definition.name;
   }
 
   const data: ModelOutputGetData = {
@@ -145,12 +137,15 @@ export const modelOutputSearchCommand = new Command()
     ctx.logger.debug`Searching outputs with query: ${query ?? "(none)"}`;
 
     const repoDir = options.repoDir ?? ".";
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const outputRepo = new YamlOutputRepository(repoDir);
 
     // Get all outputs from repository
     const allResults = await outputRepo.findAllGlobal();
-    const allOutputs = await toModelOutputSearchItems(allResults, inputRepo);
+    const allOutputs = await toModelOutputSearchItems(
+      allResults,
+      definitionRepo,
+    );
 
     if (ctx.outputMode === "json") {
       // Non-interactive: filter and output JSON

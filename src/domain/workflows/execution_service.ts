@@ -16,8 +16,6 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import { modelRegistry } from "../models/model.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
@@ -441,13 +439,9 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Create ModelResolver for vault expression handling
-    // Use legacy repos for ModelResolver compatibility during migration
-    const inputRepo = new YamlInputRepository(repoDir);
-    const resourceRepo = new YamlResourceRepository(repoDir);
     const definitionRepoForResolver = new YamlDefinitionRepository(repoDir);
-    const modelResolver = new ModelResolver(inputRepo, resourceRepo, {
+    const modelResolver = new ModelResolver(definitionRepoForResolver, {
       repoDir,
-      definitionRepo: definitionRepoForResolver,
     });
 
     // Evaluate each expression
@@ -534,12 +528,8 @@ export class WorkflowExecutionService {
   ) {
     this.executor = executor ?? new DefaultStepExecutor();
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
-    // Use legacy repos for ModelResolver compatibility during migration
-    const inputRepo = new YamlInputRepository(repoDir);
-    const resourceRepo = new YamlResourceRepository(repoDir);
-    this.modelResolver = new ModelResolver(inputRepo, resourceRepo, {
+    this.modelResolver = new ModelResolver(this.definitionRepo, {
       repoDir,
-      definitionRepo: this.definitionRepo,
     });
   }
 

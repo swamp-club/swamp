@@ -4,15 +4,10 @@
 
 import type { RouteContext } from "../router.ts";
 import { errorResponse, jsonResponse } from "../router.ts";
-import type {
-  DataRepository,
-  InputRepository,
-  LogRepository,
-  OutputRepository,
-} from "../../../../src/domain/models/repositories.ts";
-import type { ModelInputId } from "../../../../src/domain/models/model_input.ts";
-import { createModelDataId } from "../../../../src/domain/models/model_data.ts";
-import { createModelLogId } from "../../../../src/domain/models/model_log.ts";
+import type { OutputRepository } from "../../../../src/domain/models/repositories.ts";
+import type { DefinitionRepository } from "../../../../src/domain/definitions/repositories.ts";
+import type { UnifiedDataRepository } from "../../../../src/infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionId } from "../../../../src/domain/definitions/definition.ts";
 import {
   isPartialId,
   matchByPartialId,
@@ -20,9 +15,8 @@ import {
 
 export function createOutputsHandlers(
   outputRepository: OutputRepository,
-  inputRepository: InputRepository,
-  dataRepository: DataRepository,
-  logRepository: LogRepository,
+  definitionRepository: DefinitionRepository,
+  dataRepository: UnifiedDataRepository,
 ) {
   async function listOutputs(_ctx: RouteContext): Promise<Response> {
     const allOutputs = await outputRepository.findAllGlobal();
@@ -31,13 +25,12 @@ export function createOutputsHandlers(
     const outputsWithNames = await Promise.all(
       allOutputs.map(async ({ output, type }) => {
         let modelName: string | undefined;
-        // definitionId was previously modelInputId - cast for compatibility
-        const input = await inputRepository.findById(
+        const definition = await definitionRepository.findById(
           type,
-          output.definitionId as unknown as ModelInputId,
+          output.definitionId as DefinitionId,
         );
-        if (input) {
-          modelName = input.name;
+        if (definition) {
+          modelName = definition.name;
         }
 
         return {
@@ -95,14 +88,13 @@ export function createOutputsHandlers(
     const { output, type } = matchResult.match;
 
     // Get model name
-    // definitionId was previously modelInputId - cast for compatibility
     let modelName: string | undefined;
-    const input = await inputRepository.findById(
+    const definition = await definitionRepository.findById(
       type,
-      output.definitionId as unknown as ModelInputId,
+      output.definitionId as DefinitionId,
     );
-    if (input) {
-      modelName = input.name;
+    if (definition) {
+      modelName = definition.name;
     }
 
     return jsonResponse({
@@ -155,35 +147,47 @@ export function createOutputsHandlers(
 
     const { output, type } = matchResult.match;
 
-    // Get data ID from artifacts (find first data artifact with type "data")
+    // Get data from artifacts (find first data artifact with type "data")
     const dataArtifact = output.artifacts.dataArtifacts.find(
       (a) => a.tags.type === "data",
     );
-    const dataId = dataArtifact?.dataId;
-    if (!dataId) {
+    if (!dataArtifact) {
       return errorResponse(
         `Output ${output.id} has no data artifact. Status: ${output.status}, Method: ${output.methodName}`,
         404,
       );
     }
 
-    // Fetch the data artifact
-    const data = await dataRepository.findById(type, createModelDataId(dataId));
-    if (!data) {
+    // Fetch the data using unified data repository
+    const content = await dataRepository.getContent(
+      type,
+      output.definitionId,
+      dataArtifact.name,
+    );
+
+    if (!content) {
       return errorResponse(
-        `Data artifact ${dataId} not found for output ${output.id}`,
+        `Data artifact ${dataArtifact.name} not found for output ${output.id}`,
         404,
       );
     }
 
-    // Get the attributes to display
-    let displayData: unknown = data.attributes;
+    // Parse the content as JSON
+    const text = new TextDecoder().decode(content);
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // If not JSON, return as string
+      data = { content: text };
+    }
 
     // If a specific field is requested, extract it
+    let displayData: unknown = data;
     if (fieldParam) {
-      const fieldValue = data.attributes[fieldParam];
+      const fieldValue = data[fieldParam];
       if (fieldValue === undefined) {
-        const availableFields = Object.keys(data.attributes).join(", ");
+        const availableFields = Object.keys(data).join(", ");
         return errorResponse(
           `Field "${fieldParam}" not found in data artifact. Available fields: ${
             availableFields || "(none)"
@@ -197,7 +201,7 @@ export function createOutputsHandlers(
     return jsonResponse({
       outputId: output.id,
       methodName: output.methodName,
-      dataId,
+      dataName: dataArtifact.name,
       field: fieldParam ?? null,
       data: displayData,
     });
@@ -244,27 +248,30 @@ export function createOutputsHandlers(
 
     const { output, type } = matchResult.match;
 
-    // Get log IDs from artifacts (find all artifacts with type "log")
+    // Get log artifacts (find all artifacts with type "log")
     const logArtifacts = output.artifacts.dataArtifacts.filter(
       (a) => a.tags.type === "log",
     );
-    const logIds = logArtifacts.map((a) => a.dataId);
-    if (logIds.length === 0) {
+    if (logArtifacts.length === 0) {
       return errorResponse(
         `Output ${output.id} has no log artifacts. Status: ${output.status}, Method: ${output.methodName}`,
         404,
       );
     }
 
-    // Fetch and collect all log entries
+    // Fetch and collect all log entries using unified data repository
     const allEntries: string[] = [];
 
-    for (const logId of logIds) {
-      const log = await logRepository.findById(type, createModelLogId(logId));
-      if (log) {
-        for (const entry of log.entries) {
-          allEntries.push(entry.message);
-        }
+    for (const artifact of logArtifacts) {
+      const content = await dataRepository.getContent(
+        type,
+        output.definitionId,
+        artifact.name,
+      );
+      if (content) {
+        const text = new TextDecoder().decode(content);
+        const lines = text.split("\n").filter((line) => line.length > 0);
+        allEntries.push(...lines);
       }
     }
 
@@ -276,7 +283,7 @@ export function createOutputsHandlers(
     return jsonResponse({
       outputId: output.id,
       methodName: output.methodName,
-      logIds,
+      logArtifacts: logArtifacts.map((a) => a.name),
       lines: entriesToShow,
       totalLines: allEntries.length,
       showingLines: entriesToShow.length,
