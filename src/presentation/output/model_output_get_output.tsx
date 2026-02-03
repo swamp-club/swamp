@@ -7,7 +7,7 @@ import type { OutputMode } from "./output.tsx";
  * Data structure for provenance information.
  */
 export interface ProvenanceData {
-  inputHash: string;
+  definitionHash: string;
   modelVersion: number;
   triggeredBy: string;
   workflowId?: string;
@@ -16,13 +16,20 @@ export interface ProvenanceData {
 }
 
 /**
+ * Data structure for a data artifact reference.
+ */
+export interface DataArtifactRefData {
+  dataId: string;
+  name: string;
+  version: number;
+  tags: Record<string, string>;
+}
+
+/**
  * Data structure for artifacts information.
  */
 export interface ArtifactsData {
-  resourceId?: string;
-  dataId?: string;
-  fileId?: string;
-  logId?: string;
+  dataArtifacts: DataArtifactRefData[];
 }
 
 /**
@@ -38,7 +45,7 @@ export interface ErrorData {
  */
 export interface ModelOutputGetData {
   id: string;
-  modelInputId: string;
+  definitionId: string;
   modelName?: string;
   type: string;
   methodName: string;
@@ -158,19 +165,19 @@ export function ModelOutputGetDisplay(
 ): React.ReactElement {
   const { data } = props;
   const hasArtifacts = data.artifacts &&
-    Object.values(data.artifacts).some((v) => v !== undefined);
+    data.artifacts.dataArtifacts.length > 0;
 
   return (
     <Box flexDirection="column">
       {/* Header */}
       <Text color="green" bold>
-        # Output: {data.methodName} on {data.modelName ?? data.modelInputId}
+        # Output: {data.methodName} on {data.modelName ?? data.definitionId}
       </Text>
 
       {/* Basic Info */}
       <Section title="Output Info">
         <KeyValue label="ID" value={data.id} />
-        <KeyValue label="Model Input ID" value={data.modelInputId} />
+        <KeyValue label="Definition ID" value={data.definitionId} />
         {data.modelName && (
           <KeyValue label="Model Name" value={data.modelName} />
         )}
@@ -204,8 +211,8 @@ export function ModelOutputGetDisplay(
           value={String(data.provenance.modelVersion)}
         />
         <KeyValue
-          label="Input Hash"
-          value={data.provenance.inputHash.slice(0, 16) + "..."}
+          label="Definition Hash"
+          value={data.provenance.definitionHash.slice(0, 16) + "..."}
         />
         {data.provenance.workflowId && (
           <KeyValue label="Workflow ID" value={data.provenance.workflowId} />
@@ -224,18 +231,17 @@ export function ModelOutputGetDisplay(
       {/* Artifacts */}
       {hasArtifacts && (
         <Section title="Artifacts">
-          {data.artifacts?.resourceId && (
-            <KeyValue label="Resource ID" value={data.artifacts.resourceId} />
-          )}
-          {data.artifacts?.dataId && (
-            <KeyValue label="Data ID" value={data.artifacts.dataId} />
-          )}
-          {data.artifacts?.fileId && (
-            <KeyValue label="File ID" value={data.artifacts.fileId} />
-          )}
-          {data.artifacts?.logId && (
-            <KeyValue label="Log ID" value={data.artifacts.logId} />
-          )}
+          {data.artifacts?.dataArtifacts.map((artifact, index) => (
+            <Box key={index} flexDirection="column" marginBottom={1}>
+              <KeyValue label="Data ID" value={artifact.dataId} />
+              <KeyValue label="Name" value={artifact.name} />
+              <KeyValue label="Version" value={String(artifact.version)} />
+              <KeyValue
+                label="Type"
+                value={artifact.tags.type ?? "unknown"}
+              />
+            </Box>
+          ))}
         </Section>
       )}
 

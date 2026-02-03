@@ -9,7 +9,7 @@ import { Fzf, type FzfResultItem } from "fzf";
  */
 export interface ModelOutputSearchItem {
   id: string;
-  modelInputId: string;
+  definitionId: string;
   modelName?: string;
   type: string;
   methodName: string;
@@ -134,7 +134,7 @@ export function ModelOutputSearchUI(
       new Fzf(outputs, {
         selector: (item) =>
           `${
-            item.modelName ?? item.modelInputId
+            item.modelName ?? item.definitionId
           } ${item.type} ${item.methodName} ${item.status} ${item.id}`,
       }),
     [outputs],
@@ -257,7 +257,7 @@ function ModelOutputSearchResultItem(
     <Box>
       <Text color={isSelected ? "green" : undefined} bold={isSelected}>
         {isSelected ? "> " : "  "}
-        {item.modelName ?? item.modelInputId.slice(0, 8)}
+        {item.modelName ?? item.definitionId.slice(0, 8)}
       </Text>
       <Text dimColor></Text>
       <Text color="cyan">{item.methodName}</Text>

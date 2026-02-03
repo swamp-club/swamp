@@ -47,17 +47,19 @@ export const modelOutputGetCommand = new Command()
       if (matchResult.status === "found") {
         const { output, type } = matchResult.match;
 
-        // Try to get model name
+        // Try to get model name using definitionId
         let modelName: string | undefined;
         for (const modelType of modelRegistry.types()) {
-          const outputs = await outputRepo.findByModelInput(
+          const outputs = await outputRepo.findByDefinition(
             modelType,
-            output.modelInputId,
+            output.definitionId,
           );
           if (outputs.length > 0) {
+            // During migration, definitionId may be a modelInputId
             const input = await inputRepo.findById(
               modelType,
-              output.modelInputId,
+              output
+                .definitionId as unknown as import("../../domain/models/model_input.ts").ModelInputId,
             );
             if (input) {
               modelName = input.name;
@@ -68,7 +70,7 @@ export const modelOutputGetCommand = new Command()
 
         outputData = {
           id: output.id,
-          modelInputId: output.modelInputId,
+          definitionId: output.definitionId,
           modelName,
           type: type.normalized,
           methodName: output.methodName,
@@ -99,9 +101,11 @@ export const modelOutputGetCommand = new Command()
           );
         }
 
-        const latestOutput = await outputRepo.findLatestByModelInput(
+        // During migration, definitionId is used as modelInputId
+        const latestOutput = await outputRepo.findLatestByDefinition(
           inputResult.type,
-          inputResult.input.id,
+          inputResult.input
+            .id as unknown as import("../../domain/definitions/definition.ts").DefinitionId,
         );
         if (!latestOutput) {
           throw new UserError(
@@ -111,7 +115,7 @@ export const modelOutputGetCommand = new Command()
 
         outputData = {
           id: latestOutput.id,
-          modelInputId: latestOutput.modelInputId,
+          definitionId: latestOutput.definitionId,
           modelName: inputResult.input.name,
           type: inputResult.type.normalized,
           methodName: latestOutput.methodName,
@@ -133,9 +137,11 @@ export const modelOutputGetCommand = new Command()
         throw new UserError(`Model not found: ${outputIdOrModelName}`);
       }
 
-      const latestOutput = await outputRepo.findLatestByModelInput(
+      // During migration, definitionId is used as modelInputId
+      const latestOutput = await outputRepo.findLatestByDefinition(
         inputResult.type,
-        inputResult.input.id,
+        inputResult.input
+          .id as unknown as import("../../domain/definitions/definition.ts").DefinitionId,
       );
       if (!latestOutput) {
         throw new UserError(
@@ -145,7 +151,7 @@ export const modelOutputGetCommand = new Command()
 
       outputData = {
         id: latestOutput.id,
-        modelInputId: latestOutput.modelInputId,
+        definitionId: latestOutput.definitionId,
         modelName: inputResult.input.name,
         type: inputResult.type.normalized,
         methodName: latestOutput.methodName,

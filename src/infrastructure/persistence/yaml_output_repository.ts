@@ -3,7 +3,7 @@ import { join } from "@std/path";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
-import type { ModelInputId } from "../../domain/models/model_input.ts";
+import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import {
   createModelOutputId,
@@ -17,7 +17,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
  * YAML-based implementation of OutputRepository.
  *
  * Stores outputs as YAML files in the directory structure:
- * {repoDir}/.data/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml
+ * {repoDir}/.swamp/outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml
  */
 export class YamlOutputRepository implements OutputRepository {
   constructor(private readonly repoDir: string) {}
@@ -49,19 +49,19 @@ export class YamlOutputRepository implements OutputRepository {
     return null;
   }
 
-  async findByModelInput(
+  async findByDefinition(
     type: ModelType,
-    inputId: ModelInputId,
+    definitionId: DefinitionId,
   ): Promise<ModelOutput[]> {
     const all = await this.findAll(type);
-    return all.filter((output) => output.modelInputId === inputId);
+    return all.filter((output) => output.definitionId === definitionId);
   }
 
-  async findLatestByModelInput(
+  async findLatestByDefinition(
     type: ModelType,
-    inputId: ModelInputId,
+    definitionId: DefinitionId,
   ): Promise<ModelOutput | null> {
-    const outputs = await this.findByModelInput(type, inputId);
+    const outputs = await this.findByDefinition(type, definitionId);
     if (outputs.length === 0) {
       return null;
     }
@@ -155,7 +155,7 @@ export class YamlOutputRepository implements OutputRepository {
             await Deno.remove(path);
 
             // Clean up empty parent directories
-            const outputsDir = join(this.repoDir, ".data", "outputs");
+            const outputsDir = join(this.repoDir, ".swamp", "outputs");
             await cleanupEmptyParentDirs(path, outputsDir);
             return;
           }
@@ -174,12 +174,12 @@ export class YamlOutputRepository implements OutputRepository {
 
   getPath(type: ModelType, method: string, output: ModelOutput): string {
     const timestamp = output.startedAt.toISOString().replace(/[:.]/g, "-");
-    const filename = `${output.modelInputId}-${timestamp}.yaml`;
+    const filename = `${output.definitionId}-${timestamp}.yaml`;
     return join(this.getMethodDir(type, method), filename);
   }
 
   private getOutputsDir(): string {
-    return join(this.repoDir, ".data", "outputs");
+    return join(this.repoDir, ".swamp", "outputs");
   }
 
   private getTypeDir(type: ModelType): string {

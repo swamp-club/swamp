@@ -5,6 +5,7 @@ import type { ModelData, ModelDataId } from "./model_data.ts";
 import type { ModelFile, ModelFileId } from "./model_file.ts";
 import type { LogEntry, ModelLog, ModelLogId } from "./model_log.ts";
 import type { ModelOutput, ModelOutputId } from "./model_output.ts";
+import type { DefinitionId } from "../definitions/definition.ts";
 
 /**
  * Repository interface for persisting and retrieving ModelInputs.
@@ -399,27 +400,27 @@ export interface OutputRepository {
   ): Promise<ModelOutput | null>;
 
   /**
-   * Finds all outputs for a given model input.
+   * Finds all outputs for a given definition.
    *
    * @param type - The model type
-   * @param inputId - The model input ID
+   * @param definitionId - The definition ID
    * @returns Array of outputs
    */
-  findByModelInput(
+  findByDefinition(
     type: ModelType,
-    inputId: ModelInputId,
+    definitionId: DefinitionId,
   ): Promise<ModelOutput[]>;
 
   /**
-   * Finds the latest output for a given model input.
+   * Finds the latest output for a given definition.
    *
    * @param type - The model type
-   * @param inputId - The model input ID
+   * @param definitionId - The definition ID
    * @returns The latest output if found, or null
    */
-  findLatestByModelInput(
+  findLatestByDefinition(
     type: ModelType,
-    inputId: ModelInputId,
+    definitionId: DefinitionId,
   ): Promise<ModelOutput | null>;
 
   /**

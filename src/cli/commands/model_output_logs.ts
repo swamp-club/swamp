@@ -54,9 +54,12 @@ export const modelOutputLogsCommand = new Command()
 
     const { output, type } = result.match;
 
-    // Get log IDs from artifacts
-    const logIds = output.artifacts?.logIds;
-    if (!logIds || logIds.length === 0) {
+    // Get log IDs from artifacts (find all artifacts with type "log")
+    const logArtifacts = output.artifacts.dataArtifacts.filter(
+      (a) => a.tags.type === "log",
+    );
+    const logIds = logArtifacts.map((a) => a.dataId);
+    if (logIds.length === 0) {
       throw new UserError(
         `Output ${output.id} has no log artifacts. ` +
           `Status: ${output.status}, Method: ${output.methodName}`,

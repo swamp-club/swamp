@@ -289,9 +289,11 @@ export class ModelResolver {
     if (input.fileId && this.fileRepo && this.outputRepo) {
       const fileId = createModelFileId(input.fileId);
       // Find the output that created this file to get the method name
-      const latestOutput = await this.outputRepo.findLatestByModelInput(
+      // During migration, use input.id as definitionId
+      const latestOutput = await this.outputRepo.findLatestByDefinition(
         type,
-        input.id,
+        input
+          .id as unknown as import("../definitions/definition.ts").DefinitionId,
       );
       const methodName = latestOutput?.methodName;
 
@@ -340,9 +342,11 @@ export class ModelResolver {
 
     // Load latest output if available
     if (this.outputRepo) {
-      const latestOutput = await this.outputRepo.findLatestByModelInput(
+      // During migration, use input.id as definitionId
+      const latestOutput = await this.outputRepo.findLatestByDefinition(
         type,
-        input.id,
+        input
+          .id as unknown as import("../definitions/definition.ts").DefinitionId,
       );
       if (latestOutput) {
         data.execution = {

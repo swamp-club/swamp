@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ModelInputId } from "./model_input.ts";
+import type { DefinitionId } from "../definitions/definition.ts";
 
 /**
  * Branded type for ModelOutput IDs.
@@ -47,7 +47,7 @@ export type ExecutionError = z.infer<typeof ExecutionErrorSchema>;
  * Zod schema for execution provenance.
  */
 export const ExecutionProvenanceSchema = z.object({
-  inputHash: z.string(),
+  definitionHash: z.string(),
   modelVersion: z.number().int().positive(),
   triggeredBy: z.enum(TriggerTypes),
   workflowId: z.string().optional(),
@@ -61,13 +61,30 @@ export const ExecutionProvenanceSchema = z.object({
 export type ExecutionProvenance = z.infer<typeof ExecutionProvenanceSchema>;
 
 /**
+ * Represents a reference to a Data artifact.
+ */
+export interface DataArtifactRef {
+  dataId: string;
+  name: string;
+  version: number;
+  tags: Record<string, string>;
+}
+
+/**
+ * Zod schema for a data artifact reference.
+ */
+export const DataArtifactRefSchema = z.object({
+  dataId: z.string().uuid(),
+  name: z.string().min(1),
+  version: z.number().int().positive(),
+  tags: z.record(z.string(), z.string()),
+});
+
+/**
  * Zod schema for artifacts produced by the execution.
  */
 export const ArtifactsProducedSchema = z.object({
-  resourceId: z.string().uuid().optional(),
-  dataId: z.string().uuid().optional(),
-  fileId: z.string().uuid().optional(),
-  logIds: z.array(z.string().uuid()).optional(),
+  dataArtifacts: z.array(DataArtifactRefSchema).default([]),
 });
 
 /**
@@ -80,7 +97,7 @@ export type ArtifactsProduced = z.infer<typeof ArtifactsProducedSchema>;
  */
 export const ModelOutputSchema = z.object({
   id: z.string().uuid(),
-  modelInputId: z.string().uuid(),
+  definitionId: z.string().uuid(),
   methodName: z.string().min(1),
   status: z.enum(ExecutionStatuses),
   startedAt: z.string().datetime(),
@@ -102,7 +119,7 @@ export type ModelOutputData = z.infer<typeof ModelOutputSchema>;
  */
 export interface CreateModelOutputProps {
   id?: string;
-  modelInputId: ModelInputId;
+  definitionId: DefinitionId;
   methodName: string;
   status?: ExecutionStatus;
   startedAt?: Date;
@@ -122,7 +139,7 @@ export interface CreateModelOutputProps {
 export class ModelOutput {
   private constructor(
     readonly id: ModelOutputId,
-    readonly modelInputId: ModelInputId,
+    readonly definitionId: DefinitionId,
     readonly methodName: string,
     private _status: ExecutionStatus,
     readonly startedAt: Date,
@@ -131,7 +148,7 @@ export class ModelOutput {
     private _error: ExecutionError | undefined,
     private _retryCount: number,
     readonly provenance: ExecutionProvenance,
-    private _artifacts: ArtifactsProduced | undefined,
+    private _artifacts: ArtifactsProduced,
   ) {}
 
   /**
@@ -146,7 +163,7 @@ export class ModelOutput {
 
     const validated = ModelOutputSchema.parse({
       id,
-      modelInputId: props.modelInputId,
+      definitionId: props.definitionId,
       methodName: props.methodName,
       status: props.status ?? "pending",
       startedAt: startedAt.toISOString(),
@@ -155,12 +172,12 @@ export class ModelOutput {
       error: props.error,
       retryCount: props.retryCount ?? 0,
       provenance: props.provenance,
-      artifacts: props.artifacts,
+      artifacts: props.artifacts ?? { dataArtifacts: [] },
     });
 
     return new ModelOutput(
       createModelOutputId(validated.id),
-      validated.modelInputId as ModelInputId,
+      validated.definitionId as DefinitionId,
       validated.methodName,
       validated.status,
       new Date(validated.startedAt),
@@ -169,7 +186,7 @@ export class ModelOutput {
       validated.error,
       validated.retryCount,
       validated.provenance,
-      validated.artifacts,
+      validated.artifacts ?? { dataArtifacts: [] },
     );
   }
 
@@ -183,7 +200,7 @@ export class ModelOutput {
     const validated = ModelOutputSchema.parse(data);
     return new ModelOutput(
       createModelOutputId(validated.id),
-      validated.modelInputId as ModelInputId,
+      validated.definitionId as DefinitionId,
       validated.methodName,
       validated.status,
       new Date(validated.startedAt),
@@ -192,7 +209,7 @@ export class ModelOutput {
       validated.error,
       validated.retryCount,
       validated.provenance,
-      validated.artifacts,
+      validated.artifacts ?? { dataArtifacts: [] },
     );
   }
 
@@ -234,8 +251,10 @@ export class ModelOutput {
   /**
    * Gets the artifacts produced by this execution.
    */
-  get artifacts(): ArtifactsProduced | undefined {
-    return this._artifacts ? { ...this._artifacts } : undefined;
+  get artifacts(): ArtifactsProduced {
+    return {
+      dataArtifacts: [...this._artifacts.dataArtifacts],
+    };
   }
 
   /**
@@ -294,41 +313,14 @@ export class ModelOutput {
   }
 
   /**
-   * Sets the artifacts produced by this execution.
+   * Adds a data artifact reference to this execution.
+   *
+   * @param artifact - The data artifact reference to add
    */
-  setArtifacts(artifacts: ArtifactsProduced): void {
-    this._artifacts = { ...artifacts };
-  }
-
-  /**
-   * Sets a specific artifact ID.
-   */
-  setResourceId(resourceId: string): void {
-    if (!this._artifacts) {
-      this._artifacts = {};
-    }
-    this._artifacts.resourceId = resourceId;
-  }
-
-  setDataId(dataId: string): void {
-    if (!this._artifacts) {
-      this._artifacts = {};
-    }
-    this._artifacts.dataId = dataId;
-  }
-
-  setFileId(fileId: string): void {
-    if (!this._artifacts) {
-      this._artifacts = {};
-    }
-    this._artifacts.fileId = fileId;
-  }
-
-  setLogIds(logIds: string[]): void {
-    if (!this._artifacts) {
-      this._artifacts = {};
-    }
-    this._artifacts.logIds = logIds;
+  addDataArtifact(artifact: DataArtifactRef): void {
+    // Validate the artifact
+    DataArtifactRefSchema.parse(artifact);
+    this._artifacts.dataArtifacts.push({ ...artifact });
   }
 
   /**
@@ -344,12 +336,15 @@ export class ModelOutput {
   toData(): ModelOutputData {
     const data: ModelOutputData = {
       id: this.id,
-      modelInputId: this.modelInputId,
+      definitionId: this.definitionId,
       methodName: this.methodName,
       status: this._status,
       startedAt: this.startedAt.toISOString(),
       retryCount: this._retryCount,
       provenance: { ...this.provenance },
+      artifacts: {
+        dataArtifacts: this._artifacts.dataArtifacts.map((a) => ({ ...a })),
+      },
     };
 
     if (this._completedAt) {
@@ -361,21 +356,18 @@ export class ModelOutput {
     if (this._error) {
       data.error = { ...this._error };
     }
-    if (this._artifacts) {
-      data.artifacts = { ...this._artifacts };
-    }
 
     return data;
   }
 }
 
 /**
- * Computes a hash of the input attributes for provenance tracking.
+ * Computes a hash of the definition attributes for provenance tracking.
  *
  * @param attributes - The attributes to hash
  * @returns The hex-encoded SHA-256 hash
  */
-export async function computeInputHash(
+export async function computeDefinitionHash(
   attributes: Record<string, unknown>,
 ): Promise<string> {
   const json = JSON.stringify(attributes, Object.keys(attributes).sort());
