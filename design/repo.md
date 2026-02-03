@@ -20,21 +20,21 @@ The compiled swamp binary should include everything it needs to initialize a
 repository, including the skill files, so that they can be written out by the
 cli.
 
-## Data directory
+## Internal storage directory (.swamp/)
 
 Swamp repos store information from the various infrastructure repositories (in
-the domain driven design sense) in the 'data' directory. This is the internal
+the domain driven design sense) in the `.swamp/` directory. This is the internal
 format for swamp data.
 
-Both agents and humans are free to explore the data directory, but it is laid
-out in a way that is useful for swamps internal software architecture.
+Both agents and humans are free to explore the `.swamp/` directory, but it is
+laid out in a way that is useful for swamp's internal software architecture.
 
 ## Logical view
 
-The swamp repo represents a logical view into the data directory that is useful
-for humans and agents. It is constructed by making symlinks into information in
-the data directory, laid out in ways that make sense for exploration of the
-information.
+The swamp repo represents a logical view into the `.swamp/` directory that is
+useful for humans and agents. It is constructed by making symlinks into
+information in the `.swamp/` directory, laid out in ways that make sense for
+exploration of the information.
 
 For example, a person might want to explore the outputs of a given method run on
 a model both from the perspective of that model and from the perspective of the
@@ -93,8 +93,8 @@ Aggregate repositories emit domain events when data changes:
 
 **Model Events:**
 
-- `ModelCreated` - A new model input was created
-- `ModelUpdated` - A model input or resource was modified
+- `ModelCreated` - A new model definition was created
+- `ModelUpdated` - A model definition or data was modified
 - `ModelDeleted` - A model was deleted
 
 **Workflow Events:**
@@ -113,7 +113,7 @@ Aggregate repositories emit domain events when data changes:
 
 When an aggregate repository emits an event:
 
-1. The repository persists the aggregate to the data directory
+1. The repository persists the aggregate to the `.swamp/` directory
 2. The repository emits the appropriate domain event
 3. The RepoIndexService receives the event
 4. The RepoIndexService updates the relevant logical views (symlinks)
@@ -126,24 +126,28 @@ The RepoIndexService maintains two primary logical views:
 
 ```
 /models/{model-name}/
-  input.yaml → /.data/inputs/{type}/{id}.yaml
-  resource.yaml → /.data/resources/{type}/{id}.yaml
-  data.yaml → /.data/data/{type}/{id}.yaml
-  logs/ → /.data/logs/{type}/{id}/
-  files/ → /.data/files/{type}/{id}/
+  definition.yaml → /.swamp/definitions/{type}/{id}.yaml
+  type/
+    logs/         → /.swamp/data/{type}/{id}/ (filtered by type=log data tag)
+    files/        → /.swamp/data/{type}/{id}/ (filtered by type=file data tag)
+    resources/    → /.swamp/data/{type}/{id}/ (filtered by type=resource data tag)
+  {tag-key}/{tag-value}/ → data organized by tag key/value pairs
   outputs/
-    {method}/ → /.data/outputs/{type}/{method}/{id}-{timestamp}.yaml
+    {method}/     → /.swamp/outputs/{type}/{method}/{id}-*.yaml
 ```
+
+See [./models.md] for detailed data structure including versioning, metadata,
+and data tags.
 
 **Workflow View (`/workflows/`):**
 
 ```
 /workflows/{workflow-name}/
-  workflow.yaml → /.data/workflows/{id}.yaml
+  workflow.yaml → /.swamp/workflows/{id}.yaml
   runs/
     latest/ -> (points to latest timestamp)
     {timestamp}/
-      run.yaml → /.data/workflow-runs/{workflow-id}/{run-id}.yaml
+      run.yaml → /.swamp/workflow-runs/{workflow-id}/{run-id}.yaml
       steps/
         {step-name}/
           output.yaml → symlink to step output
@@ -155,4 +159,4 @@ The RepoIndexService maintains two primary logical views:
 - Model logical views use the model's unique `name` as the directory name
 - Workflow logical views use the workflow's unique `name` as the directory name
 - Run directories use a shortened run ID or timestamp-based identifier
-- All symlinks point to absolute paths within the data directory
+- All symlinks point to absolute paths within the `.swamp/` directory
