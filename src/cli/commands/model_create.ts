@@ -5,7 +5,7 @@ import {
 } from "../../presentation/output/model_create_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { ModelInput } from "../../domain/models/model_input.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
 import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { modelValidateCommand } from "./model_validate.ts";
@@ -21,13 +21,13 @@ import { modelOutputCommand } from "./model_output.ts";
 type AnyOptions = any;
 
 export const modelCreateCommand = new Command()
-  .description("Create a new model input")
+  .description("Create a new model definition")
   .arguments("<type:model_type> <name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, typeArg: string, name: string) {
     const ctx = createContext(options as GlobalOptions, "model-create");
-    ctx.logger.debug`Creating model input: type=${typeArg}, name=${name}`;
+    ctx.logger.debug`Creating model definition: type=${typeArg}, name=${name}`;
 
     // Validate the model type
     const modelType = ModelType.create(typeArg);
@@ -47,27 +47,27 @@ export const modelCreateCommand = new Command()
     // Create the repository context (with indexing enabled)
     const repoDir = options.repoDir ?? ".";
     const repoContext = createRepositoryContext({ repoDir });
-    const inputRepo = repoContext.inputRepo;
+    const definitionRepo = repoContext.definitionRepo;
 
     // Check if name already exists (globally unique across all types)
-    const existing = await inputRepo.findByNameGlobal(name);
+    const existing = await definitionRepo.findByNameGlobal(name);
     if (existing) {
       throw new Error(
-        `Model input with name '${name}' already exists (type: '${existing.type.normalized}')`,
+        `Model definition with name '${name}' already exists (type: '${existing.type.normalized}')`,
       );
     }
 
-    // Create and save the input
-    const input = ModelInput.create({ name });
-    await inputRepo.save(modelType, input);
+    // Create and save the definition
+    const definition = Definition.create({ name });
+    await definitionRepo.save(modelType, definition);
 
-    ctx.logger.debug`Created input with ID: ${input.id}`;
+    ctx.logger.debug`Created definition with ID: ${definition.id}`;
 
     const data: ModelCreateData = {
-      id: input.id,
+      id: definition.id,
       type: modelType.normalized,
-      name: input.name,
-      path: inputRepo.getPath(modelType, input.id),
+      name: definition.name,
+      path: definitionRepo.getPath(modelType, definition.id),
     };
 
     renderModelCreate(data, ctx.outputMode);

@@ -1,11 +1,9 @@
 import type { z } from "zod";
 import type { ModelDefinition } from "./model.ts";
 import { modelRegistry } from "./model.ts";
-import type { ModelInput } from "./model_input.ts";
-import { ModelInputSchema } from "./model_input.ts";
-import type { ModelResource } from "./model_resource.ts";
-import { ModelResourceSchema } from "./model_resource.ts";
-import type { InputRepository } from "./repositories.ts";
+import type { Definition } from "../definitions/definition.ts";
+import { DefinitionSchema } from "../definitions/definition.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { extractExpressions } from "../expressions/expression_parser.ts";
 import {
   extractEnvReferences,
@@ -156,21 +154,19 @@ function formatZodError(error: z.ZodError): string {
  */
 export interface ModelValidationService {
   /**
-   * Validates a model input and optionally its resource against the model definition.
+   * Validates a definition against the model definition.
    *
    * Runs all validations in parallel.
    *
-   * @param input - The model input to validate
-   * @param definition - The model definition containing schemas
-   * @param resource - The model resource if one exists, or null
-   * @param inputRepo - Optional input repository for resolving model references in expressions
+   * @param definition - The definition to validate
+   * @param modelDef - The model definition containing schemas
+   * @param definitionRepo - Optional definition repository for resolving model references in expressions
    * @returns Array of validation results
    */
   validateModel(
-    input: ModelInput,
-    definition: ModelDefinition,
-    resource: ModelResource | null,
-    inputRepo?: InputRepository,
+    definition: Definition,
+    modelDef: ModelDefinition,
+    definitionRepo?: DefinitionRepository,
   ): Promise<ValidationResult[]>;
 }
 
@@ -193,27 +189,19 @@ export interface ExpressionPathError {
  */
 export class DefaultModelValidationService implements ModelValidationService {
   validateModel(
-    input: ModelInput,
-    definition: ModelDefinition,
-    resource: ModelResource | null,
-    inputRepo?: InputRepository,
+    definition: Definition,
+    modelDef: ModelDefinition,
+    definitionRepo?: DefinitionRepository,
   ): Promise<ValidationResult[]> {
     const validations: Promise<ValidationResult>[] = [
-      this.validateInputSchema(input),
-      this.validateInputAttributes(input, definition),
+      this.validateDefinitionSchema(definition),
+      this.validateDefinitionAttributes(definition, modelDef),
     ];
 
-    if (resource) {
+    // Add expression path validation if definitionRepo is provided
+    if (definitionRepo) {
       validations.push(
-        this.validateResourceSchema(resource),
-        this.validateResourceAttributes(resource, definition),
-      );
-    }
-
-    // Add expression path validation if inputRepo is provided
-    if (inputRepo) {
-      validations.push(
-        this.validateExpressionPaths(input, definition, inputRepo),
+        this.validateExpressionPaths(definition, modelDef, definitionRepo),
       );
     }
 
@@ -233,70 +221,43 @@ export class DefaultModelValidationService implements ModelValidationService {
     );
   }
 
-  private validateInputSchema(input: ModelInput): Promise<ValidationResult> {
+  private validateDefinitionSchema(
+    definition: Definition,
+  ): Promise<ValidationResult> {
     return this.validateWithSchema(
-      "Input schema",
-      ModelInputSchema,
-      input.toData(),
+      "Definition schema",
+      DefinitionSchema,
+      definition.toData(),
     );
   }
 
-  private validateInputAttributes(
-    input: ModelInput,
-    definition: ModelDefinition,
+  private validateDefinitionAttributes(
+    definition: Definition,
+    modelDef: ModelDefinition,
   ): Promise<ValidationResult> {
     return this.validateWithSchema(
-      "Input attributes",
-      definition.inputAttributesSchema,
-      input.attributes,
-    );
-  }
-
-  private validateResourceSchema(
-    resource: ModelResource,
-  ): Promise<ValidationResult> {
-    return this.validateWithSchema(
-      "Resource schema",
-      ModelResourceSchema,
-      resource.toData(),
-    );
-  }
-
-  private validateResourceAttributes(
-    resource: ModelResource,
-    definition: ModelDefinition,
-  ): Promise<ValidationResult> {
-    if (!definition.resourceAttributesSchema) {
-      return Promise.resolve(
-        ValidationResult.fail(
-          "Resource attributes",
-          "Model definition has no resource attributes schema but a resource was provided",
-        ),
-      );
-    }
-    return this.validateWithSchema(
-      "Resource attributes",
-      definition.resourceAttributesSchema,
-      resource.attributes,
+      "Definition attributes",
+      modelDef.inputAttributesSchema,
+      definition.attributes,
     );
   }
 
   /**
-   * Validates expression paths in the model input attributes.
+   * Validates expression paths in the definition attributes.
    *
-   * Extracts all expressions from input attributes, resolves model references,
+   * Extracts all expressions from definition attributes, resolves model references,
    * and validates that the paths exist in the referenced schemas.
    * Also detects malformed expressions that don't match the proper ${{...}} syntax.
    */
   private async validateExpressionPaths(
-    input: ModelInput,
-    definition: ModelDefinition,
-    inputRepo: InputRepository,
+    definition: Definition,
+    modelDef: ModelDefinition,
+    definitionRepo: DefinitionRepository,
   ): Promise<ValidationResult> {
     const errors: ExpressionPathError[] = [];
 
     // First, check for malformed expressions
-    const malformedErrors = findMalformedExpressions(input.attributes).map(
+    const malformedErrors = findMalformedExpressions(definition.attributes).map(
       (m) => ({
         expression: m.raw,
         error: `${m.issue} at "${m.path}"`,
@@ -305,14 +266,16 @@ export class DefaultModelValidationService implements ModelValidationService {
     );
     errors.push(...malformedErrors);
 
-    // Extract and validate all expressions from input attributes
-    for (const exprLocation of extractExpressions(input.attributes)) {
+    // Extract and validate all expressions from definition attributes
+    for (const exprLocation of extractExpressions(definition.attributes)) {
       const { celExpression, raw, path } = exprLocation;
 
       // Validate model references
       const pathRefs = extractPathReferences(celExpression);
       const modelErrors = await Promise.all(
-        pathRefs.map((ref) => this.validateModelPathReference(ref, inputRepo)),
+        pathRefs.map((ref) =>
+          this.validateModelPathReference(ref, definitionRepo)
+        ),
       );
       errors.push(
         ...modelErrors.filter((e): e is ExpressionPathError => e !== null),
@@ -321,7 +284,7 @@ export class DefaultModelValidationService implements ModelValidationService {
       // Validate self references
       const selfRefs = extractSelfReferences(celExpression);
       const selfErrors = selfRefs
-        .map((ref) => this.validateSelfPathReference(ref, definition))
+        .map((ref) => this.validateSelfPathReference(ref, modelDef))
         .filter((e): e is ExpressionPathError => e !== null);
       errors.push(...selfErrors);
 
@@ -409,7 +372,7 @@ export class DefaultModelValidationService implements ModelValidationService {
   }
 
   /**
-   * Validates a model path reference (e.g., model.my-vpc.resource.attributes.VpcId).
+   * Validates a model path reference (e.g., model.my-vpc.data.attributes.VpcId).
    */
   private async validateModelPathReference(
     ref: {
@@ -418,10 +381,10 @@ export class DefaultModelValidationService implements ModelValidationService {
       path: string[];
       rawExpression: string;
     },
-    inputRepo: InputRepository,
+    definitionRepo: DefinitionRepository,
   ): Promise<ExpressionPathError | null> {
     // Look up the referenced model
-    const result = await inputRepo.findByNameGlobal(ref.modelRef);
+    const result = await definitionRepo.findByNameGlobal(ref.modelRef);
     if (!result) {
       return {
         expression: ref.rawExpression,
@@ -446,14 +409,14 @@ export class DefaultModelValidationService implements ModelValidationService {
 
     // Validate the path structure
     if (ref.path.length === 0) {
-      // Just "input" or "resource" without a path is valid
+      // Just "input" or "data" without a path is valid
       return null;
     }
 
-    // For new artifact types (data, file, log, execution), validation is less strict
+    // For data artifacts, validation is less strict
     // as they may have dynamic attributes or fixed properties
     if (ref.type === "data") {
-      // data artifacts have .attributes like resource
+      // data artifacts have .attributes like the old resource
       if (
         firstSegment !== "attributes" && firstSegment !== "id" &&
         firstSegment !== "version" && firstSegment !== "createdAt"
@@ -520,7 +483,7 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // For input and resource, validate attributes path
+    // For input (definition) type, validate attributes path
     if (firstSegment !== "attributes") {
       // For now, we only support .attributes paths
       // Other valid paths like .id could be added later
@@ -540,19 +503,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    let schema;
-    if (ref.type === "input") {
-      schema = targetDefinition.inputAttributesSchema;
-    } else if (ref.type === "resource") {
-      schema = targetDefinition.resourceAttributesSchema;
-    } else if (ref.type === "data") {
-      schema = targetDefinition.dataAttributesSchema;
-    }
-
-    // If no schema is available for this artifact type, skip validation
-    if (!schema) {
-      return null;
-    }
+    // Validate against the input attributes schema
+    const schema = targetDefinition.inputAttributesSchema;
 
     // Validate the path against the schema
     const validationResult = validateSchemaPath(schema, pathToValidate);

@@ -6,15 +6,13 @@ import {
   type ValidationItemData,
 } from "../../presentation/output/model_validate_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import {
   DefaultModelValidationService,
   type ValidationResult,
 } from "../../domain/models/validation_service.ts";
-import { findByIdOrName } from "../../domain/models/model_lookup.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 
 /**
  * Converts ValidationResult array to ValidationItemData array for presentation.
@@ -34,50 +32,44 @@ type AnyOptions = any;
 
 export const modelValidateCommand = new Command()
   .name("validate")
-  .description("Validate a model input against its schema")
+  .description("Validate a model definition against its schema")
   .arguments("[model_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(
     async function (options: AnyOptions, modelIdOrName?: string) {
       const ctx = createContext(options as GlobalOptions, "model-validate");
       const repoDir = options.repoDir ?? ".";
-      const inputRepo = new YamlInputRepository(repoDir);
-      const resourceRepo = new YamlResourceRepository(repoDir);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
       const validationService = new DefaultModelValidationService();
 
       // If no argument provided, validate all models
       if (!modelIdOrName) {
         ctx.logger.debug`Validating all models`;
-        const allInputs = await inputRepo.findAllGlobal();
+        const allDefinitions = await definitionRepo.findAllGlobal();
 
-        if (allInputs.length === 0) {
+        if (allDefinitions.length === 0) {
           throw new Error("No models found");
         }
 
         const results: ModelValidateData[] = [];
-        for (const { input, type } of allInputs) {
-          const definition = modelRegistry.get(type);
-          if (!definition) {
+        for (const { definition, type } of allDefinitions) {
+          const modelDef = modelRegistry.get(type);
+          if (!modelDef) {
             continue;
           }
 
-          const resource = await resourceRepo.findById(
-            type,
-            inputIdToResourceId(input.id),
-          );
           const validationResults = await validationService.validateModel(
-            input,
             definition,
-            resource,
-            inputRepo,
+            modelDef,
+            definitionRepo,
           );
 
           const validations = toValidationItemData(validationResults);
           const allPassed = validationResults.every((r) => r.passed);
 
           results.push({
-            modelId: input.id,
-            modelName: input.name,
+            modelId: definition.id,
+            modelName: definition.name,
             type: type.normalized,
             validations,
             passed: allPassed,
@@ -98,44 +90,39 @@ export const modelValidateCommand = new Command()
       // Single model validation (existing behavior)
       ctx.logger.debug`Validating model: ${modelIdOrName}`;
 
-      // Look up the model input
+      // Look up the model definition
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-      const result = await findByIdOrName(inputRepo, modelIdOrName);
+      const result = await findDefinitionByIdOrName(
+        definitionRepo,
+        modelIdOrName,
+      );
       if (!result) {
         throw new Error(`Model not found: ${modelIdOrName}`);
       }
-      const { input, type: modelType } = result;
+      const { definition, type: modelType } = result;
 
       ctx.logger
-        .debug`Found model: id=${input.id}, type=${modelType.normalized}`;
+        .debug`Found model: id=${definition.id}, type=${modelType.normalized}`;
 
       // Get the model definition
-      const definition = modelRegistry.get(modelType);
-      if (!definition) {
+      const modelDef = modelRegistry.get(modelType);
+      if (!modelDef) {
         throw new Error(`Unknown model type: ${modelType.normalized}`);
       }
 
-      // Load the resource if it exists
-      const resource = await resourceRepo.findById(
-        modelType,
-        inputIdToResourceId(input.id),
-      );
-      ctx.logger.debug`Resource exists: ${resource !== null}`;
-
       // Run validations
       const results = await validationService.validateModel(
-        input,
         definition,
-        resource,
-        inputRepo,
+        modelDef,
+        definitionRepo,
       );
 
       const validations = toValidationItemData(results);
       const allPassed = results.every((r) => r.passed);
 
       const data: ModelValidateData = {
-        modelId: input.id,
-        modelName: input.name,
+        modelId: definition.id,
+        modelName: definition.name,
         type: modelType.normalized,
         validations,
         passed: allPassed,

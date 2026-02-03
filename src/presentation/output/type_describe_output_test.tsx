@@ -23,18 +23,11 @@ const testData: TypeDescribeData = {
     },
     required: ["message"],
   },
-  resourceAttributesSchema: {
-    type: "object",
-    properties: {
-      message: { type: "string" },
-      timestamp: { type: "string", format: "date-time" },
-    },
-    required: ["message", "timestamp"],
-  },
   methods: [
     {
       name: "write",
-      description: "Write the input message to a resource with a timestamp",
+      description:
+        "Write the definition message to a data artifact with a timestamp",
       inputAttributesSchema: {
         type: "object",
         properties: {
@@ -77,7 +70,6 @@ Deno.test({
     const output = lastFrame() ?? "";
 
     assertStringIncludes(output, "Input Attributes Schema");
-    assertStringIncludes(output, "Resource Attributes Schema");
   },
 });
 
@@ -92,7 +84,7 @@ Deno.test({
     assertStringIncludes(output, "write");
     assertStringIncludes(
       output,
-      "Write the input message to a resource with a timestamp",
+      "Write the definition message to a data artifact with a timestamp",
     );
   },
 });

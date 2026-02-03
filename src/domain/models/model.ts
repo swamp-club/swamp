@@ -1,18 +1,11 @@
 import type { z } from "zod";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import { ModelType } from "./model_type.ts";
-import type { ModelInput } from "./model_input.ts";
-import type { ModelResource } from "./model_resource.ts";
-import type { ModelData } from "./model_data.ts";
-import type { ModelFile } from "./model_file.ts";
-import type { ModelLog } from "./model_log.ts";
-import type {
-  DataRepository,
-  FileRepository,
-  LogRepository,
-  OutputRepository,
-  ResourceRepository,
-} from "./repositories.ts";
+import type { Definition } from "../definitions/definition.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import type { DataMetadata } from "../data/mod.ts";
+import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { OutputRepository } from "./repositories.ts";
 
 /**
  * Callbacks for streaming output from method execution.
@@ -34,9 +27,19 @@ export interface MethodStreamingCallbacks {
  */
 export interface MethodContext {
   /**
-   * The base directory for the repository (where inputs/resources are stored).
+   * The base directory for the repository (where data is stored).
    */
   repoDir: string;
+
+  /**
+   * The model type for this execution.
+   */
+  modelType: ModelType;
+
+  /**
+   * The model ID (definition ID) for this execution.
+   */
+  modelId: string;
 
   /**
    * Optional factory for CloudControl clients (for testing).
@@ -44,27 +47,17 @@ export interface MethodContext {
   cloudControlClientFactory?: () => CloudControlClient;
 
   /**
-   * Optional resource repository for accessing persisted resources.
+   * Repository for unified data storage.
    */
-  resourceRepository?: ResourceRepository;
+  dataRepository: UnifiedDataRepository;
 
   /**
-   * Optional data repository for accessing persisted data artifacts.
+   * Repository for definitions.
    */
-  dataRepository?: DataRepository;
+  definitionRepository: DefinitionRepository;
 
   /**
-   * Optional file repository for accessing persisted file artifacts.
-   */
-  fileRepository?: FileRepository;
-
-  /**
-   * Optional log repository for accessing persisted log artifacts.
-   */
-  logRepository?: LogRepository;
-
-  /**
-   * Optional output repository for tracking execution history.
+   * Repository for tracking execution history.
    */
   outputRepository?: OutputRepository;
 
@@ -72,6 +65,29 @@ export interface MethodContext {
    * Optional callbacks for streaming stdout/stderr output.
    */
   streaming?: MethodStreamingCallbacks;
+}
+
+/**
+ * Data output from a method execution.
+ */
+export interface DataOutput {
+  /**
+   * Name of the data artifact.
+   */
+  name: string;
+
+  /**
+   * Content of the data artifact.
+   */
+  content: Uint8Array;
+
+  /**
+   * Metadata for the data artifact.
+   */
+  metadata: Omit<
+    DataMetadata,
+    "id" | "name" | "version" | "createdAt" | "size" | "checksum"
+  >;
 }
 
 /**
@@ -96,8 +112,9 @@ export interface FollowUpAction {
   /**
    * Condition that must be met to continue with follow-up actions.
    * If this returns false, the workflow stops.
+   * Receives the data outputs from the previous method execution.
    */
-  continueCondition?: (resource: ModelResource) => boolean;
+  continueCondition?: (dataOutputs: DataOutput[]) => boolean;
 }
 
 /**
@@ -105,53 +122,15 @@ export interface FollowUpAction {
  */
 export interface MethodResult {
   /**
-   * The resource created by the method (optional with new artifact types).
+   * Data outputs produced by the method.
+   * Each output will be stored as a versioned Data artifact.
    */
-  resource?: ModelResource;
-
-  /**
-   * Structured data output produced by the method.
-   */
-  data?: ModelData;
-
-  /**
-   * File output produced by the method.
-   */
-  file?: {
-    metadata: ModelFile;
-    content: Uint8Array;
-  };
-
-  /**
-   * Log outputs produced by the method.
-   */
-  logs?: ModelLog[];
+  dataOutputs?: DataOutput[];
 
   /**
    * Optional follow-up actions to execute.
    */
   followUpActions?: FollowUpAction[];
-
-  /**
-   * If true, the resource should be deleted instead of saved.
-   * Used for operations like delete that complete by removing the resource.
-   */
-  deleteResource?: boolean;
-
-  /**
-   * If true, the data artifact should be deleted.
-   */
-  deleteData?: boolean;
-
-  /**
-   * If true, the file artifact should be deleted.
-   */
-  deleteFile?: boolean;
-
-  /**
-   * If true, the log artifacts should be deleted.
-   */
-  deleteLogs?: boolean;
 }
 
 /**
@@ -166,19 +145,22 @@ export interface MethodDefinition<
   description: string;
 
   /**
-   * Zod schema for validating the input attributes required by this method.
-   * The method will only execute if the input's attributes match this schema.
+   * Zod schema for validating the definition attributes required by this method.
+   * The method will only execute if the definition's attributes match this schema.
    */
   inputAttributesSchema: TInputAttrs;
 
   /**
-   * Executes the method with the given input and context.
+   * Executes the method with the given definition and context.
    *
-   * @param input - The model input
+   * @param definition - The definition containing attributes
    * @param context - Execution context
-   * @returns The method result containing the created resource
+   * @returns The method result
    */
-  execute(input: ModelInput, context: MethodContext): Promise<MethodResult>;
+  execute(
+    definition: Definition,
+    context: MethodContext,
+  ): Promise<MethodResult>;
 }
 
 /**
@@ -187,17 +169,11 @@ export interface MethodDefinition<
  * A model defines:
  * - Its type identifier
  * - Current version
- * - Schema for input attributes
- * - Schema for resource attributes (optional, for persistent resources)
- * - Schema for data attributes (optional, for ephemeral data)
+ * - Schema for validating definition attributes
  * - Available methods
- *
- * At least one of resourceAttributesSchema or dataAttributesSchema should be provided.
  */
 export interface ModelDefinition<
   TInputAttrs extends z.ZodTypeAny = z.ZodTypeAny,
-  TResourceAttrs extends z.ZodTypeAny = z.ZodTypeAny,
-  TDataAttrs extends z.ZodTypeAny = z.ZodTypeAny,
 > {
   /**
    * The model type.
@@ -210,19 +186,9 @@ export interface ModelDefinition<
   version: number;
 
   /**
-   * Zod schema for validating input attributes.
+   * Zod schema for validating definition attributes.
    */
   inputAttributesSchema: TInputAttrs;
-
-  /**
-   * Zod schema for validating resource attributes (persistent, git-tracked).
-   */
-  resourceAttributesSchema?: TResourceAttrs;
-
-  /**
-   * Zod schema for validating data attributes (ephemeral, not git-tracked).
-   */
-  dataAttributesSchema?: TDataAttrs;
 
   /**
    * Available methods on this model.
@@ -295,11 +261,9 @@ export const modelRegistry = new ModelRegistry();
  */
 export function defineModel<
   TInputAttrs extends z.ZodTypeAny,
-  TResourceAttrs extends z.ZodTypeAny = z.ZodTypeAny,
-  TDataAttrs extends z.ZodTypeAny = z.ZodTypeAny,
 >(
-  definition: ModelDefinition<TInputAttrs, TResourceAttrs, TDataAttrs>,
-): ModelDefinition<TInputAttrs, TResourceAttrs, TDataAttrs> {
+  definition: ModelDefinition<TInputAttrs>,
+): ModelDefinition<TInputAttrs> {
   if (!modelRegistry.has(definition.type)) {
     modelRegistry.register(definition);
   }

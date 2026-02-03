@@ -1,10 +1,9 @@
 import { z } from "zod";
 import { resolve } from "@std/path";
 import { ModelType } from "./model_type.ts";
-import { ModelResource } from "./model_resource.ts";
-import { ModelData } from "./model_data.ts";
-import type { ModelInput } from "./model_input.ts";
+import type { Definition } from "../definitions/definition.ts";
 import {
+  type DataOutput,
   type MethodContext,
   type MethodDefinition,
   type MethodResult,
@@ -16,22 +15,26 @@ import {
  * Plain object result returned by user methods before conversion.
  */
 interface UserMethodResult {
-  resource?: {
-    id: string;
-    attributes: Record<string, unknown>;
-  };
-  data?: {
-    id: string;
-    attributes: Record<string, unknown>;
-  };
+  dataOutputs?: Array<{
+    name: string;
+    content: Uint8Array | string;
+    metadata?: {
+      contentType?: string;
+      lifetime?: string;
+      garbageCollection?: number;
+      streaming?: boolean;
+      tags?: Record<string, string>;
+    };
+  }>;
   [key: string]: unknown;
 }
 
 /**
  * User method execute function type.
+ * User models receive Definition.
  */
 type UserExecuteFn = (
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ) => Promise<UserMethodResult>;
 
@@ -48,7 +51,6 @@ const UserMethodSchema = z.object({
 
 /**
  * Schema for validating user model exports.
- * At least one of resourceAttributesSchema or dataAttributesSchema should be provided.
  */
 const UserModelSchema = z.object({
   type: z.string(),
@@ -56,20 +58,8 @@ const UserModelSchema = z.object({
   inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
   ),
-  resourceAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
-    val instanceof z.ZodType
-  ).optional(),
-  dataAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
-    val instanceof z.ZodType
-  ).optional(),
   methods: z.record(z.string(), UserMethodSchema),
-}).refine(
-  (data) => data.resourceAttributesSchema || data.dataAttributesSchema,
-  {
-    message:
-      "Model must have at least one of resourceAttributesSchema or dataAttributesSchema",
-  },
-);
+});
 
 /**
  * Result of loading user models from a directory.
@@ -157,36 +147,39 @@ export class UserModelLoader {
         description: method.description,
         inputAttributesSchema: method.inputAttributesSchema ??
           userModel.inputAttributesSchema,
-        execute: async (input, context): Promise<MethodResult> => {
-          const userResult = await method.execute(input, context);
+        execute: async (definition, context): Promise<MethodResult> => {
+          const userResult = await method.execute(definition, context);
 
-          // Convert plain resource object to ModelResource if present
-          let resource: ModelResource | undefined;
-          if (userResult.resource) {
-            if (userResult.resource instanceof ModelResource) {
-              resource = userResult.resource;
-            } else {
-              resource = ModelResource.create({
-                id: userResult.resource.id,
-                attributes: userResult.resource.attributes,
+          // Convert user data outputs to proper DataOutput format
+          const dataOutputs: DataOutput[] = [];
+          if (userResult.dataOutputs) {
+            const definitionHash = await definition.computeHash();
+            for (const output of userResult.dataOutputs) {
+              const content = typeof output.content === "string"
+                ? new TextEncoder().encode(output.content)
+                : output.content;
+
+              dataOutputs.push({
+                name: output.name,
+                content,
+                metadata: {
+                  contentType: output.metadata?.contentType ??
+                    "application/octet-stream",
+                  lifetime: output.metadata?.lifetime ?? "infinite",
+                  garbageCollection: output.metadata?.garbageCollection ?? 10,
+                  streaming: output.metadata?.streaming ?? false,
+                  tags: output.metadata?.tags ?? { type: "data" },
+                  ownerDefinition: {
+                    definitionHash,
+                    ownerType: "model-method",
+                    ownerRef: name,
+                  },
+                },
               });
             }
           }
 
-          // Convert plain data object to ModelData if present
-          let data: ModelData | undefined;
-          if (userResult.data) {
-            if (userResult.data instanceof ModelData) {
-              data = userResult.data;
-            } else {
-              data = ModelData.create({
-                id: userResult.data.id,
-                attributes: userResult.data.attributes,
-              });
-            }
-          }
-
-          return { resource, data };
+          return { dataOutputs };
         },
       };
     }
@@ -195,8 +188,6 @@ export class UserModelLoader {
       type: modelType,
       version: userModel.version,
       inputAttributesSchema: userModel.inputAttributesSchema,
-      resourceAttributesSchema: userModel.resourceAttributesSchema,
-      dataAttributesSchema: userModel.dataAttributesSchema,
       methods,
     };
   }

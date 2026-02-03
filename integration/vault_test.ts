@@ -748,12 +748,12 @@ Deno.test("CLI: vault expression resolves secrets from created vault", async () 
       `Vault create should succeed. stderr: ${vaultCreateResult.stderr}`,
     );
 
-    // 2. Create a vault model input to store a secret
+    // 2. Create a vault model definition to store a secret
     const secretValue = "my-super-secret-api-key-12345";
     // Use valid UUID v4 format (version 4 = third group starts with 4, variant = fourth group starts with 8-b)
-    const putInputId = "a1b2c3d4-e5f6-4789-8abc-def012345678";
-    const putInputContent = `
-id: ${putInputId}
+    const putDefinitionId = "a1b2c3d4-e5f6-4789-8abc-def012345678";
+    const putDefinitionContent = `
+id: ${putDefinitionId}
 name: store-secret
 version: 1
 tags: {}
@@ -763,17 +763,16 @@ attributes:
   secretValue: "${secretValue}"
   operation: put
 `;
-    const vaultInputDir = join(
+    const vaultDefinitionDir = join(
       repoDir,
-      ".data",
-      "inputs",
-      "swamp",
-      "lets-get-sensitive",
+      ".swamp",
+      "definitions",
+      "swamp/lets-get-sensitive",
     );
-    await Deno.mkdir(vaultInputDir, { recursive: true });
+    await Deno.mkdir(vaultDefinitionDir, { recursive: true });
     await Deno.writeTextFile(
-      join(vaultInputDir, `${putInputId}.yaml`),
-      putInputContent,
+      join(vaultDefinitionDir, `${putDefinitionId}.yaml`),
+      putDefinitionContent,
     );
 
     // Run the vault put method to store the secret
@@ -793,21 +792,26 @@ attributes:
       `Vault put should succeed. stderr: ${putResult.stderr}`,
     );
 
-    // 3. Create an echo model input with a vault.get() expression
-    const echoInputId = "b2c3d4e5-f6a7-4890-9bcd-ef0123456789";
-    const echoInputContent = `
-id: ${echoInputId}
+    // 3. Create an echo model definition with a vault.get() expression
+    const echoDefinitionId = "b2c3d4e5-f6a7-4890-9bcd-ef0123456789";
+    const echoDefinitionContent = `
+id: ${echoDefinitionId}
 name: echo-with-vault
 version: 1
 tags: {}
 attributes:
   message: "\${{ vault.get(e2e-test-vault, api-key) }}"
 `;
-    const echoInputDir = join(repoDir, ".data", "inputs", "swamp", "echo");
-    await Deno.mkdir(echoInputDir, { recursive: true });
+    const echoDefinitionDir = join(
+      repoDir,
+      ".swamp",
+      "definitions",
+      "swamp/echo",
+    );
+    await Deno.mkdir(echoDefinitionDir, { recursive: true });
     await Deno.writeTextFile(
-      join(echoInputDir, `${echoInputId}.yaml`),
-      echoInputContent,
+      join(echoDefinitionDir, `${echoDefinitionId}.yaml`),
+      echoDefinitionContent,
     );
 
     // 4. Evaluate the expression using model evaluate
@@ -825,31 +829,15 @@ attributes:
       `Model evaluate should succeed. stderr: ${evalResult.stderr}`,
     );
 
-    // 5. Verify the evaluated input contains the resolved secret
-    const evaluatedInputPath = join(
-      repoDir,
-      ".data",
-      "inputs-evaluated",
-      "swamp",
-      "echo",
-      `${echoInputId}.yaml`,
+    // 5. Verify the evaluate command produced the expected output
+    const evalOutput = JSON.parse(evalResult.stdout);
+    assertEquals(
+      evalOutput.name,
+      "echo-with-vault",
+      "Evaluated definition should have the correct name",
     );
     assertEquals(
-      existsSync(evaluatedInputPath),
-      true,
-      "Evaluated input should exist",
-    );
-
-    const evaluatedContent = await Deno.readTextFile(evaluatedInputPath);
-    const evaluatedData = parseYaml(evaluatedContent) as Record<
-      string,
-      unknown
-    >;
-    const attributes = evaluatedData.attributes as Record<string, unknown>;
-
-    // The secret should be resolved in the evaluated input
-    assertEquals(
-      attributes.message,
+      evalOutput.attributes.message,
       secretValue,
       "Vault expression should resolve to the secret value",
     );

@@ -7,14 +7,11 @@ import {
 import {
   type ModelGetData,
   renderModelGet,
-  type ResourceData,
 } from "../../presentation/output/model_get_output.tsx";
 import type { OutputMode } from "../../presentation/output/output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { createModelInputId } from "../../domain/models/model_input.ts";
-import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -24,11 +21,11 @@ type AnyOptions = any;
  * Converts repository results to ModelSearchItem array.
  */
 function toModelSearchItems(
-  results: Awaited<ReturnType<YamlInputRepository["findAllGlobal"]>>,
+  results: Awaited<ReturnType<YamlDefinitionRepository["findAllGlobal"]>>,
 ): ModelSearchItem[] {
-  return results.map(({ input, type }) => ({
-    id: input.id,
-    name: input.name,
+  return results.map(({ definition, type }) => ({
+    id: definition.id,
+    name: definition.name,
     type: type.normalized,
   }));
 }
@@ -60,11 +57,10 @@ async function displayModelGet(
   repoDir: string,
   outputMode: OutputMode,
 ): Promise<void> {
-  const inputRepo = new YamlInputRepository(repoDir);
-  const resourceRepo = new YamlResourceRepository(repoDir);
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-  // Look up the full input
-  const inputId = createModelInputId(item.id);
+  // Look up the full definition
+  const definitionId = createDefinitionId(item.id);
   const modelType = modelRegistry.types().find(
     (t) => t.normalized === item.type,
   );
@@ -73,35 +69,18 @@ async function displayModelGet(
     throw new Error(`Unknown model type: ${item.type}`);
   }
 
-  const input = await inputRepo.findById(modelType, inputId);
-  if (!input) {
+  const definition = await definitionRepo.findById(modelType, definitionId);
+  if (!definition) {
     throw new Error(`Model not found: ${item.id}`);
   }
 
-  // Load the resource if it exists
-  const resource = await resourceRepo.findById(
-    modelType,
-    inputIdToResourceId(input.id),
-  );
-
-  // Build resource data
-  let resourceData: ResourceData | undefined;
-  if (resource) {
-    resourceData = {
-      id: resource.id,
-      createdAt: resource.createdAt.toISOString(),
-      attributes: resource.attributes,
-    };
-  }
-
   const data: ModelGetData = {
-    id: input.id,
-    name: input.name,
+    id: definition.id,
+    name: definition.name,
     type: modelType.normalized,
-    version: input.version,
-    tags: input.tags,
-    attributes: input.attributes,
-    resource: resourceData,
+    version: definition.version,
+    tags: definition.tags,
+    attributes: definition.attributes,
   };
 
   renderModelGet(data, outputMode);
@@ -109,7 +88,7 @@ async function displayModelGet(
 
 export const modelSearchCommand = new Command()
   .name("search")
-  .description("Search for model inputs")
+  .description("Search for model definitions")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {
@@ -117,10 +96,10 @@ export const modelSearchCommand = new Command()
     ctx.logger.debug`Searching models with query: ${query ?? "(none)"}`;
 
     const repoDir = options.repoDir ?? ".";
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
 
     // Get all models from repository
-    const allResults = await inputRepo.findAllGlobal();
+    const allResults = await definitionRepo.findAllGlobal();
     const allModels = toModelSearchItems(allResults);
 
     if (ctx.outputMode === "json") {

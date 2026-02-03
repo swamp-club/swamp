@@ -1,10 +1,83 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { ModelInput } from "../model_input.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../../definitions/definition.ts";
 import {
   VAULT_MODEL_TYPE,
   VaultInputAttributesSchema,
   vaultModel,
 } from "./vault_model.ts";
+import type { MethodContext } from "../model.ts";
+import type { UnifiedDataRepository } from "../../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../../definitions/repositories.ts";
+import { generateDataId } from "../../data/data_id.ts";
+
+/**
+ * Creates a mock UnifiedDataRepository for testing.
+ */
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+/**
+ * Creates a mock DefinitionRepository for testing.
+ */
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+/**
+ * Creates a test MethodContext with mocked repositories.
+ */
+function createTestContext(repoDir: string): MethodContext {
+  return {
+    repoDir,
+    modelType: VAULT_MODEL_TYPE,
+    modelId: crypto.randomUUID(),
+    dataRepository: createMockDataRepo(),
+    definitionRepository: createMockDefinitionRepo(),
+  };
+}
+
+/**
+ * Helper to get attributes from a DataOutput.
+ */
+function getDataOutputAttributes(
+  dataOutputs: { content: Uint8Array }[] | undefined,
+  index = 0,
+): Record<string, unknown> | undefined {
+  if (!dataOutputs || dataOutputs.length <= index) {
+    return undefined;
+  }
+  const content = new TextDecoder().decode(dataOutputs[index].content);
+  return JSON.parse(content);
+}
 
 Deno.test("VAULT_MODEL_TYPE has correct normalized type", () => {
   assertEquals(VAULT_MODEL_TYPE.normalized, "swamp/lets-get-sensitive");
@@ -65,9 +138,8 @@ createdAt: "2024-01-01T00:00:00.000Z"
 Deno.test("Vault Model - Get Operation", async () => {
   await withTestRepo(async (repoDir) => {
     // First store a secret
-    const putInput = ModelInput.create({
+    const putDefinition = Definition.create({
       name: "test-vault-put-setup",
-      version: 1,
       attributes: {
         vaultName: "test-vault",
         secretKey: "test-secret-key",
@@ -76,12 +148,12 @@ Deno.test("Vault Model - Get Operation", async () => {
       },
     });
 
-    await vaultModel.methods.put.execute(putInput, { repoDir });
+    const context = createTestContext(repoDir);
+    await vaultModel.methods.put.execute(putDefinition, context);
 
     // Now test getting the secret
-    const getInput = ModelInput.create({
+    const getDefinition = Definition.create({
       name: "test-vault-get",
-      version: 1,
       attributes: {
         vaultName: "test-vault",
         secretKey: "test-secret-key",
@@ -89,27 +161,22 @@ Deno.test("Vault Model - Get Operation", async () => {
       },
     });
 
-    const result = await vaultModel.methods.get.execute(getInput, { repoDir });
+    const result = await vaultModel.methods.get.execute(getDefinition, context);
 
-    assertEquals(result.data !== undefined, true);
-    if (result.data) {
-      assertEquals(result.data.attributes.vaultName, "test-vault");
-      assertEquals(result.data.attributes.secretKey, "test-secret-key");
-      assertEquals(result.data.attributes.operation, "get");
-      assertEquals(result.data.attributes.success, true);
-      assertEquals(
-        result.data.attributes.secretLength,
-        "test-secret-value".length,
-      );
-    }
+    const attrs = getDataOutputAttributes(result.dataOutputs);
+    assertEquals(attrs !== undefined, true);
+    assertEquals(attrs?.vaultName, "test-vault");
+    assertEquals(attrs?.secretKey, "test-secret-key");
+    assertEquals(attrs?.operation, "get");
+    assertEquals(attrs?.success, true);
+    assertEquals(attrs?.secretLength, "test-secret-value".length);
   });
 });
 
 Deno.test("Vault Model - Put Operation", async () => {
   await withTestRepo(async (repoDir) => {
-    const input = ModelInput.create({
+    const definition = Definition.create({
       name: "test-vault-put",
-      version: 1,
       attributes: {
         vaultName: "test-vault",
         secretKey: "test-secret-key",
@@ -118,23 +185,22 @@ Deno.test("Vault Model - Put Operation", async () => {
       },
     });
 
-    const result = await vaultModel.methods.put.execute(input, { repoDir });
+    const context = createTestContext(repoDir);
+    const result = await vaultModel.methods.put.execute(definition, context);
 
-    assertEquals(result.data !== undefined, true);
-    if (result.data) {
-      assertEquals(result.data.attributes.vaultName, "test-vault");
-      assertEquals(result.data.attributes.secretKey, "test-secret-key");
-      assertEquals(result.data.attributes.operation, "put");
-      assertEquals(result.data.attributes.success, true);
-      assertEquals(result.data.attributes.storedKey, "test-secret-key");
-    }
+    const attrs = getDataOutputAttributes(result.dataOutputs);
+    assertEquals(attrs !== undefined, true);
+    assertEquals(attrs?.vaultName, "test-vault");
+    assertEquals(attrs?.secretKey, "test-secret-key");
+    assertEquals(attrs?.operation, "put");
+    assertEquals(attrs?.success, true);
+    assertEquals(attrs?.storedKey, "test-secret-key");
   });
 });
 
 Deno.test("Vault Model - Get with wrong operation fails", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-vault-wrong-op",
-    version: 1,
     attributes: {
       vaultName: "aws",
       secretKey: "test-secret-key",
@@ -142,12 +208,10 @@ Deno.test("Vault Model - Get with wrong operation fails", async () => {
     },
   });
 
-  const context = {
-    repoDir: "/tmp/test",
-  };
+  const context = createTestContext("/tmp/test");
 
   try {
-    await vaultModel.methods.get.execute(input, context);
+    await vaultModel.methods.get.execute(definition, context);
     assertEquals(true, false, "Expected error for wrong operation");
   } catch (error) {
     assertStringIncludes(
@@ -158,9 +222,8 @@ Deno.test("Vault Model - Get with wrong operation fails", async () => {
 });
 
 Deno.test("Vault Model - Put without secretValue fails", async () => {
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-vault-no-value",
-    version: 1,
     attributes: {
       vaultName: "aws",
       secretKey: "test-secret-key",
@@ -169,12 +232,10 @@ Deno.test("Vault Model - Put without secretValue fails", async () => {
     },
   });
 
-  const context = {
-    repoDir: "/tmp/test",
-  };
+  const context = createTestContext("/tmp/test");
 
   try {
-    await vaultModel.methods.put.execute(input, context);
+    await vaultModel.methods.put.execute(definition, context);
     assertEquals(true, false, "Expected error for missing secretValue");
   } catch (error) {
     assertStringIncludes(

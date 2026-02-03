@@ -199,7 +199,7 @@ export class ModelResolver {
       env: buildEnvContext(),
     };
 
-    // Load all inputs
+    // Load all inputs (legacy support)
     const allInputs = await this.inputRepo.findAllGlobal();
 
     for (const { input, type } of allInputs) {
@@ -209,6 +209,46 @@ export class ModelResolver {
       context.model[input.name] = modelData;
       // Also index by UUID for direct ID references
       context.model[input.id] = modelData;
+    }
+
+    // Also load definitions that don't have corresponding inputs
+    // This supports the new Definition-based workflow
+    if (this.definitionRepo) {
+      const allDefinitions = await this.definitionRepo.findAllGlobal();
+
+      for (const { definition, type: _defType } of allDefinitions) {
+        // Skip if already loaded from inputs
+        if (context.model[definition.name]) {
+          continue;
+        }
+
+        // Build model data from definition (use definition attributes as input attributes)
+        const modelData: ModelData = {
+          input: {
+            id: definition.id,
+            name: definition.name,
+            version: definition.version,
+            tags: definition.tags,
+            attributes: definition.attributes,
+          },
+          definition: {
+            id: definition.id,
+            name: definition.name,
+            version: definition.version,
+            tags: definition.tags,
+            attributes: definition.attributes,
+            inputs: definition.inputs,
+          },
+        };
+
+        // Load data artifact if available (from unified data repository)
+        // Note: We can't load from the old data repo here since definitions use DataOutput
+
+        // Index by name
+        context.model[definition.name] = modelData;
+        // Also index by UUID for direct ID references
+        context.model[definition.id] = modelData;
+      }
     }
 
     // Build self context if provided

@@ -5,11 +5,8 @@ import {
   renderModelDeleteCancelled,
 } from "../../presentation/output/model_delete_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { inputIdToResourceId } from "../../domain/models/model_resource.ts";
-import { inputIdToDataId } from "../../domain/models/model_data.ts";
 import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import { YamlEvaluatedInputRepository } from "../../infrastructure/persistence/yaml_evaluated_input_repository.ts";
-import { findByIdOrName } from "../../domain/models/model_lookup.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 
@@ -78,7 +75,7 @@ export const modelDeleteCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(
     "-f, --force",
-    "Skip confirmation and allow deletion when resource exists",
+    "Skip confirmation and allow deletion when data artifacts exist",
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName: string) {
@@ -87,79 +84,66 @@ export const modelDeleteCommand = new Command()
 
     const repoDir = options.repoDir ?? ".";
     const repoContext = createRepositoryContext({ repoDir });
-    const inputRepo = repoContext.inputRepo;
-    const resourceRepo = repoContext.resourceRepo;
+    const definitionRepo = repoContext.definitionRepo;
+    const unifiedDataRepo = repoContext.unifiedDataRepo;
     const outputRepo = repoContext.outputRepo;
-    const dataRepo = repoContext.dataRepo;
     const workflowRepo = repoContext.workflowRepo;
 
-    // Look up the model input
+    // Look up the model definition
     ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-    const result = await findByIdOrName(inputRepo, modelIdOrName);
+    const result = await findDefinitionByIdOrName(
+      definitionRepo,
+      modelIdOrName,
+    );
     if (!result) {
       throw new UserError(`Model not found: ${modelIdOrName}`);
     }
-    const { input, type: modelType } = result;
+    const { definition, type: modelType } = result;
 
-    ctx.logger.debug`Found model: id=${input.id}, type=${modelType.normalized}`;
+    ctx.logger
+      .debug`Found model: id=${definition.id}, type=${modelType.normalized}`;
 
     // Check if model is referenced in any workflow
     const allWorkflows = await workflowRepo.findAll();
     const referencingWorkflows = findWorkflowsReferencingModel(
       allWorkflows,
-      input.id,
-      input.name,
+      definition.id,
+      definition.name,
     );
 
     if (referencingWorkflows.length > 0) {
       const workflowNames = referencingWorkflows.map((w) => w.name).join(", ");
       throw new UserError(
-        `Model '${input.name}' is referenced by workflow(s): ${workflowNames}. ` +
+        `Model '${definition.name}' is referenced by workflow(s): ${workflowNames}. ` +
           `Remove the model from these workflows before deleting.`,
       );
     }
 
-    // Check for associated resource (resource ID equals input ID)
-    const resource = await resourceRepo.findById(
+    // Find data artifacts for this model
+    const dataArtifacts = await unifiedDataRepo.findAllForModel(
       modelType,
-      inputIdToResourceId(input.id),
+      definition.id,
     );
-    ctx.logger.debug`Resource exists: ${resource !== null}`;
+    ctx.logger
+      .debug`Found ${dataArtifacts.length} data artifacts for this model`;
 
-    // If resource exists and no --force flag, block deletion
-    if (resource && !options.force) {
+    // If data artifacts exist and no --force flag, block deletion
+    if (dataArtifacts.length > 0 && !options.force) {
       throw new UserError(
-        `Model '${input.name}' has an associated resource. ` +
-          `Delete the resource first, or use --force to delete both.`,
+        `Model '${definition.name}' has ${dataArtifacts.length} associated data artifact(s). ` +
+          `Delete the data first, or use --force to delete all.`,
       );
     }
 
     // Get paths before deletion
-    const inputPath = inputRepo.getPath(modelType, input.id);
-    const resourcePath = resource
-      ? resourceRepo.getPath(modelType, resource.id)
-      : undefined;
+    const definitionPath = definitionRepo.getPath(modelType, definition.id);
 
-    // Find outputs related to this model (use input.id as definitionId during migration)
+    // Find outputs related to this model
     const outputs = await outputRepo.findByDefinition(
       modelType,
-      input
-        .id as unknown as import("../../domain/definitions/definition.ts").DefinitionId,
+      definition.id,
     );
     ctx.logger.debug`Found ${outputs.length} outputs to delete`;
-
-    // Check for evaluated input
-    const evaluatedInputRepo = new YamlEvaluatedInputRepository(repoDir);
-    const evaluatedInput = await evaluatedInputRepo.findById(
-      modelType,
-      input.id,
-    );
-    ctx.logger.debug`Evaluated input exists: ${evaluatedInput !== null}`;
-
-    // Check for data artifact (data uses the same ID as the input)
-    const dataId = inputIdToDataId(input.id);
-    const dataArtifact = await dataRepo.findById(modelType, dataId);
-    ctx.logger.debug`Data artifact exists: ${dataArtifact !== null}`;
 
     // In interactive mode without --force, prompt for confirmation
     if (ctx.outputMode === "interactive" && !options.force) {
@@ -167,21 +151,15 @@ export const modelDeleteCommand = new Command()
       if (outputs.length > 0) {
         deleteDetails += ` ${outputs.length} output(s),`;
       }
-      if (evaluatedInput) {
-        deleteDetails += " evaluated input,";
-      }
-      if (dataArtifact) {
-        deleteDetails += " data artifact,";
-      }
-      if (resource) {
-        deleteDetails += " resource,";
+      if (dataArtifacts.length > 0) {
+        deleteDetails += ` ${dataArtifacts.length} data artifact(s),`;
       }
       if (deleteDetails) {
         deleteDetails = ` This will also delete:${deleteDetails.slice(0, -1)}.`;
       }
 
       const confirmed = await promptConfirmation(
-        `Delete model '${input.name}' (${input.id})?${deleteDetails}`,
+        `Delete model '${definition.name}' (${definition.id})?${deleteDetails}`,
       );
       if (!confirmed) {
         renderModelDeleteCancelled(ctx.outputMode);
@@ -197,41 +175,27 @@ export const modelDeleteCommand = new Command()
       outputsDeleted++;
     }
 
-    // Delete data artifact if it exists
+    // Delete data artifacts
     let dataDeleted = false;
-    if (dataArtifact) {
-      ctx.logger.debug`Deleting data artifact: ${dataId}`;
-      await dataRepo.delete(modelType, dataId);
+    for (const data of dataArtifacts) {
+      ctx.logger.debug`Deleting data artifact: ${data.name}`;
+      await unifiedDataRepo.delete(modelType, definition.id, data.name);
       dataDeleted = true;
     }
 
-    // Delete evaluated input if it exists
-    let evaluatedInputDeleted = false;
-    if (evaluatedInput) {
-      ctx.logger.debug`Deleting evaluated input: ${input.id}`;
-      await evaluatedInputRepo.delete(modelType, input.id);
-      evaluatedInputDeleted = true;
-    }
-
-    // Delete resource if it exists
-    if (resource) {
-      ctx.logger.debug`Deleting resource: ${resource.id}`;
-      await resourceRepo.delete(modelType, resource.id);
-    }
-
-    // Delete input (this emits ModelDeleted event which cleans up logical views)
-    ctx.logger.debug`Deleting input: ${input.id}`;
-    await inputRepo.delete(modelType, input.id);
+    // Delete definition (this emits DefinitionDeleted event which cleans up logical views)
+    ctx.logger.debug`Deleting definition: ${definition.id}`;
+    await definitionRepo.delete(modelType, definition.id);
 
     const data: ModelDeleteData = {
-      id: input.id,
-      name: input.name,
+      id: definition.id,
+      name: definition.name,
       type: modelType.normalized,
-      inputPath,
-      resourcePath,
-      resourceDeleted: resource !== null,
+      inputPath: definitionPath,
+      resourcePath: undefined,
+      resourceDeleted: false,
       outputsDeleted,
-      evaluatedInputDeleted,
+      evaluatedInputDeleted: false,
       dataDeleted,
     };
 

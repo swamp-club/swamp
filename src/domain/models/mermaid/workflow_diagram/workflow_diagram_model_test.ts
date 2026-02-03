@@ -1,10 +1,93 @@
 import { assertEquals } from "@std/assert";
-import { ModelInput } from "../../model_input.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../../../definitions/definition.ts";
 import {
   MERMAID_WORKFLOW_MODEL_TYPE,
   type MermaidWorkflowInputAttributes,
   mermaidWorkflowModel,
 } from "./workflow_diagram_model.ts";
+import type { MethodContext } from "../../model.ts";
+import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../../../definitions/repositories.ts";
+import { generateDataId } from "../../../data/data_id.ts";
+
+/**
+ * Creates a mock UnifiedDataRepository for testing.
+ */
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+/**
+ * Creates a mock DefinitionRepository for testing.
+ */
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+/**
+ * Creates a test MethodContext with mocked repositories.
+ */
+function createTestContext(): MethodContext {
+  return {
+    repoDir: "/tmp",
+    modelType: MERMAID_WORKFLOW_MODEL_TYPE,
+    modelId: crypto.randomUUID(),
+    dataRepository: createMockDataRepo(),
+    definitionRepository: createMockDefinitionRepo(),
+  };
+}
+
+/**
+ * Helper to get attributes from a DataOutput by name.
+ */
+function getDataOutputAttributes(
+  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
+  name: string,
+): Record<string, unknown> | undefined {
+  const dataOutput = dataOutputs?.find((d) => d.name.includes(name));
+  if (!dataOutput) return undefined;
+  const content = new TextDecoder().decode(dataOutput.content);
+  return JSON.parse(content);
+}
+
+/**
+ * Helper to get diagram content as string.
+ */
+function getDiagramContent(
+  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
+): string {
+  const diagramOutput = dataOutputs?.find((d) => d.name.endsWith("-diagram"));
+  if (!diagramOutput) return "";
+  return new TextDecoder().decode(diagramOutput.content);
+}
 
 Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple workflow", async () => {
   const workflowExecution = {
@@ -64,28 +147,29 @@ Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple wor
     },
   };
 
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "test-diagram",
     attributes: inputAttributes,
   });
 
+  const context = createTestContext();
   const result = await mermaidWorkflowModel.methods.generate.execute(
-    input,
-    { repoDir: "/tmp" },
+    definition,
+    context,
   );
 
-  assertEquals(result.resource !== undefined, true);
-  assertEquals(result.file !== undefined, true);
+  assertEquals(result.dataOutputs !== undefined, true);
+  assertEquals(result.dataOutputs!.length >= 1, true);
 
-  // Verify resource attributes
-  const resource = result.resource!;
-  assertEquals(resource.attributes.workflowName, "test-workflow");
-  assertEquals(resource.attributes.jobCount, 2);
-  assertEquals(resource.attributes.stepCount, 2);
-  assertEquals(resource.attributes.workflowStatus, "succeeded");
+  // Verify metadata attributes
+  const attrs = getDataOutputAttributes(result.dataOutputs, "metadata");
+  assertEquals(attrs?.workflowName, "test-workflow");
+  assertEquals(attrs?.jobCount, 2);
+  assertEquals(attrs?.stepCount, 2);
+  assertEquals(attrs?.workflowStatus, "succeeded");
 
-  // Verify file content contains Mermaid syntax
-  const diagramContent = new TextDecoder().decode(result.file!.content);
+  // Verify diagram content contains Mermaid syntax
+  const diagramContent = getDiagramContent(result.dataOutputs);
   assertEquals(diagramContent.includes("graph TD"), true);
   assertEquals(diagramContent.includes("Workflow: test-workflow"), true);
   assertEquals(diagramContent.includes("Job: build"), true);
@@ -127,18 +211,19 @@ Deno.test("mermaidWorkflowModel: generate creates simple diagram without steps",
     },
   };
 
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "simple-diagram",
     attributes: inputAttributes,
   });
 
+  const context = createTestContext();
   const result = await mermaidWorkflowModel.methods.generate.execute(
-    input,
-    { repoDir: "/tmp" },
+    definition,
+    context,
   );
 
-  // Verify file content is simpler without steps
-  const diagramContent = new TextDecoder().decode(result.file!.content);
+  // Verify diagram content is simpler without steps
+  const diagramContent = getDiagramContent(result.dataOutputs);
   assertEquals(diagramContent.includes("graph TD"), true);
   assertEquals(diagramContent.includes("Job: deploy"), true);
   assertEquals(diagramContent.includes("Status: failed"), true);
@@ -232,17 +317,18 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
     },
   };
 
-  const input = ModelInput.create({
+  const definition = Definition.create({
     name: "complex-diagram",
     attributes: inputAttributes,
   });
 
+  const context = createTestContext();
   const result = await mermaidWorkflowModel.methods.generate.execute(
-    input,
-    { repoDir: "/tmp" },
+    definition,
+    context,
   );
 
-  const diagramContent = new TextDecoder().decode(result.file!.content);
+  const diagramContent = getDiagramContent(result.dataOutputs);
 
   // Verify all jobs are present
   assertEquals(diagramContent.includes("Job: setup"), true);

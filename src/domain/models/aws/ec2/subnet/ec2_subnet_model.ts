@@ -233,15 +233,13 @@ export const EC2_SUBNET_MODEL_TYPE = ModelType.create("AWS::EC2::Subnet");
  * EC2 Subnet model implementation using AWS CloudControl base class.
  */
 class EC2SubnetModel extends AWSCloudControlModel<
-  typeof EC2SubnetInputAttributesSchema,
-  typeof EC2SubnetResourceAttributesSchema
+  typeof EC2SubnetInputAttributesSchema
 > {
   constructor() {
     super({
       typeName: "AWS::EC2::Subnet",
       modelType: EC2_SUBNET_MODEL_TYPE,
       inputAttributesSchema: EC2SubnetInputAttributesSchema,
-      resourceAttributesSchema: EC2SubnetResourceAttributesSchema,
       extractResourceIdentifier: (attributes) => {
         return (attributes.SubnetId as string | undefined) ||
           (attributes.ResourceIdentifier as string | undefined);
@@ -278,6 +276,5 @@ const ec2SubnetModelInstance = new EC2SubnetModel();
  * Self-registers with the global model registry when this module is imported.
  */
 export const ec2SubnetModel: ModelDefinition<
-  typeof EC2SubnetInputAttributesSchema,
-  typeof EC2SubnetResourceAttributesSchema
+  typeof EC2SubnetInputAttributesSchema
 > = ec2SubnetModelInstance.defineAndRegister();

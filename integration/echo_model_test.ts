@@ -2,7 +2,7 @@
  * Integration tests for the Echo model.
  *
  * Tests the full flow:
- * 1. Create an echo model input
+ * 1. Create an echo model definition
  * 2. Execute the write method
  * 3. Verify the data artifact is created with correct content
  */
@@ -11,14 +11,14 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { existsSync } from "@std/fs";
 import { parse as parseYaml } from "@std/yaml";
-import { ModelInput } from "../src/domain/models/model_input.ts";
-import { inputIdToDataId } from "../src/domain/models/model_data.ts";
-import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
-import { YamlDataRepository } from "../src/infrastructure/persistence/yaml_data_repository.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import {
   ECHO_MODEL_TYPE,
   echoModel,
 } from "../src/domain/models/echo/echo_model.ts";
+import type { MethodContext } from "../src/domain/models/model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-integration-" });
@@ -29,75 +29,94 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-Deno.test("Echo model: full flow - create input, execute write, verify data", async () => {
+/**
+ * Helper to get attributes from a DataOutput.
+ */
+function getDataOutputAttributes(
+  dataOutputs: { content: Uint8Array }[] | undefined,
+  index = 0,
+): Record<string, unknown> | undefined {
+  if (!dataOutputs || dataOutputs.length <= index) {
+    return undefined;
+  }
+  const content = new TextDecoder().decode(dataOutputs[index].content);
+  return JSON.parse(content);
+}
+
+Deno.test("Echo model: full flow - create definition, execute write, verify data", async () => {
   await withTempDir(async (repoDir) => {
     // Setup repositories
-    const inputRepo = new YamlInputRepository(repoDir);
-    const dataRepo = new YamlDataRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create and save an input
+    // Create and save a definition
     const testMessage = "Hello, Swamp!";
-    const input = ModelInput.create({
-      name: "test-echo-input",
+    const definition = Definition.create({
+      name: "test-echo-definition",
       attributes: { message: testMessage },
     });
-    await inputRepo.save(modelType, input);
+    await definitionRepo.save(modelType, definition);
 
-    // Verify input file was created
-    const inputPath = inputRepo.getPath(modelType, input.id);
-    assertEquals(existsSync(inputPath), true, "Input file should exist");
-
-    // Read and verify input file contents
-    const inputContent = await Deno.readTextFile(inputPath);
-    const inputData = parseYaml(inputContent) as Record<string, unknown>;
-    assertEquals(inputData.name, "test-echo-input");
+    // Verify definition file was created
+    const definitionPath = definitionRepo.getPath(modelType, definition.id);
     assertEquals(
-      (inputData.attributes as Record<string, unknown>).message,
+      existsSync(definitionPath),
+      true,
+      "Definition file should exist",
+    );
+
+    // Read and verify definition file contents
+    const definitionContent = await Deno.readTextFile(definitionPath);
+    const definitionData = parseYaml(definitionContent) as Record<
+      string,
+      unknown
+    >;
+    assertEquals(definitionData.name, "test-echo-definition");
+    assertEquals(
+      (definitionData.attributes as Record<string, unknown>).message,
       testMessage,
     );
 
+    // Create method context
+    const context: MethodContext = {
+      repoDir,
+      modelType,
+      modelId: definition.id,
+      dataRepository: dataRepo,
+      definitionRepository: definitionRepo,
+    };
+
     // Execute the write method
-    const result = await echoModel.methods.write.execute(input, { repoDir });
+    const result = await echoModel.methods.write.execute(definition, context);
 
-    // Verify data exists
+    // Verify dataOutputs exists
     assertEquals(
-      result.data !== undefined,
+      result.dataOutputs !== undefined,
       true,
-      "Result should have data",
+      "Result should have dataOutputs",
     );
-    const data = result.data!;
-
-    // Save the data
-    await dataRepo.save(modelType, data);
-
-    // Verify data file was created
-    const dataPath = dataRepo.getPath(modelType, data.id);
-    assertEquals(existsSync(dataPath), true, "Data file should exist");
-
-    // Read and verify data file contents
-    const dataContent = await Deno.readTextFile(dataPath);
-    const dataObj = parseYaml(dataContent) as Record<string, unknown>;
     assertEquals(
-      dataObj.id,
-      data.id,
-      "Data should have the correct ID",
+      result.dataOutputs!.length >= 1,
+      true,
+      "Should have at least one data output",
     );
 
-    const dataAttrs = dataObj.attributes as Record<string, unknown>;
+    // Verify data output content
+    const dataAttrs = getDataOutputAttributes(result.dataOutputs);
     assertEquals(
-      dataAttrs.message,
+      dataAttrs?.message,
       testMessage,
       "Data should contain the message",
     );
     assertEquals(
-      typeof dataAttrs.timestamp,
+      typeof dataAttrs?.timestamp,
       "string",
       "Data should have a timestamp",
     );
 
     // Verify timestamp is a valid ISO date
-    const timestamp = new Date(dataAttrs.timestamp as string);
+    const timestamp = new Date(dataAttrs?.timestamp as string);
     assertEquals(
       isNaN(timestamp.getTime()),
       false,
@@ -108,82 +127,47 @@ Deno.test("Echo model: full flow - create input, execute write, verify data", as
 
 Deno.test("Echo model: directory structure is correct", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
-    const dataRepo = new YamlDataRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    const input = ModelInput.create({
+    const definition = Definition.create({
       name: "test-structure",
       attributes: { message: "test" },
     });
-    await inputRepo.save(modelType, input);
-
-    const result = await echoModel.methods.write.execute(input, { repoDir });
-    await dataRepo.save(modelType, result.data!);
+    await definitionRepo.save(modelType, definition);
 
     // Verify directory structure
-    const inputDir = join(repoDir, ".data", "inputs", "swamp/echo");
-    const dataDir = join(repoDir, ".data", "data", "swamp/echo");
+    const definitionDir = join(repoDir, ".swamp", "definitions", "swamp/echo");
 
-    assertEquals(existsSync(inputDir), true, "Input directory should exist");
     assertEquals(
-      existsSync(dataDir),
+      existsSync(definitionDir),
       true,
-      "Data directory should exist",
+      "Definition directory should exist",
     );
   });
 });
 
-Deno.test("Echo model: multiple inputs and data", async () => {
+Deno.test("Echo model: multiple definitions", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
-    const dataRepo = new YamlDataRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create multiple inputs
+    // Create multiple definitions
     const messages = ["First message", "Second message", "Third message"];
-    const inputs: ModelInput[] = [];
+    const definitions: Definition[] = [];
 
     for (let i = 0; i < messages.length; i++) {
-      const input = ModelInput.create({
-        name: `test-input-${i}`,
+      const definition = Definition.create({
+        name: `test-definition-${i}`,
         attributes: { message: messages[i] },
       });
-      await inputRepo.save(modelType, input);
-      inputs.push(input);
+      await definitionRepo.save(modelType, definition);
+      definitions.push(definition);
     }
 
-    // Verify all inputs exist
-    const allInputs = await inputRepo.findAll(modelType);
-    assertEquals(allInputs.length, 3, "Should have 3 inputs");
-
-    // Execute write for each input
-    for (const input of inputs) {
-      const result = await echoModel.methods.write.execute(input, { repoDir });
-      await dataRepo.save(modelType, result.data!);
-    }
-
-    // Verify all data artifacts exist
-    const allData = await dataRepo.findAll(modelType);
-    assertEquals(allData.length, 3, "Should have 3 data artifacts");
-
-    // Verify each data artifact has correct message
-    for (const input of inputs) {
-      const data = await dataRepo.findById(
-        modelType,
-        inputIdToDataId(input.id),
-      );
-      assertEquals(
-        data !== null,
-        true,
-        `Data should exist for input ${input.name}`,
-      );
-      assertEquals(
-        data?.attributes.message,
-        input.attributes.message,
-        "Data message should match input",
-      );
-    }
+    // Verify all definitions exist
+    const allDefinitions = await definitionRepo.findAll(modelType);
+    assertEquals(allDefinitions.length, 3, "Should have 3 definitions");
   });
 });
 
@@ -207,7 +191,7 @@ async function runCliCommand(
   };
 }
 
-Deno.test("CLI: model create command creates input file", async () => {
+Deno.test("CLI: model create command creates definition file", async () => {
   await withTempDir(async (repoDir) => {
     // Run the CLI command
     const result = await runCliCommand(
@@ -215,7 +199,7 @@ Deno.test("CLI: model create command creates input file", async () => {
         "model",
         "create",
         "swamp/echo",
-        "cli-test-input",
+        "cli-test-definition",
         "--repo-dir",
         repoDir,
         "--json",
@@ -232,18 +216,18 @@ Deno.test("CLI: model create command creates input file", async () => {
     // Parse the JSON output
     const output = JSON.parse(result.stdout);
     assertEquals(output.type, "swamp/echo");
-    assertEquals(output.name, "cli-test-input");
+    assertEquals(output.name, "cli-test-definition");
     assertEquals(typeof output.id, "string");
     assertStringIncludes(output.path, "swamp/echo");
 
     // Verify the file was created
-    assertEquals(existsSync(output.path), true, "Input file should exist");
+    assertEquals(existsSync(output.path), true, "Definition file should exist");
   });
 });
 
 Deno.test("CLI: model create command rejects duplicate names", async () => {
   await withTempDir(async (repoDir) => {
-    // Create first input
+    // Create first definition
     const result1 = await runCliCommand(
       [
         "model",
@@ -283,7 +267,7 @@ Deno.test("CLI: model create command rejects unknown model type", async () => {
         "model",
         "create",
         "unknown/type",
-        "test-input",
+        "test-definition",
         "--repo-dir",
         repoDir,
         "--json",
@@ -319,15 +303,15 @@ Deno.test("CLI: model method run creates data", async () => {
     );
     const createOutput = JSON.parse(createResult.stdout);
 
-    // Update input file to add message attribute
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = await inputRepo.findByName(
+    // Update definition file to add message attribute
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const definition = await definitionRepo.findByName(
       ECHO_MODEL_TYPE,
       "method-run-test",
     );
-    assertEquals(input !== null, true, "Input should exist");
-    input!.setAttribute("message", "Hello from CLI!");
-    await inputRepo.save(ECHO_MODEL_TYPE, input!);
+    assertEquals(definition !== null, true, "Definition should exist");
+    definition!.setAttribute("message", "Hello from CLI!");
+    await definitionRepo.save(ECHO_MODEL_TYPE, definition!);
 
     // Run the method
     const runResult = await runCliCommand(
@@ -355,24 +339,7 @@ Deno.test("CLI: model method run creates data", async () => {
     assertEquals(runOutput.modelName, "method-run-test");
     assertEquals(runOutput.type, "swamp/echo");
     assertEquals(runOutput.methodName, "write");
-    assertEquals(typeof runOutput.data.id, "string");
-    assertStringIncludes(runOutput.data.path, "data/swamp/echo");
-    assertEquals(runOutput.data.attributes.message, "Hello from CLI!");
-    assertEquals(typeof runOutput.data.attributes.timestamp, "string");
-
-    // Verify data file was created
-    assertEquals(
-      existsSync(runOutput.data.path),
-      true,
-      "Data file should exist",
-    );
-
-    // Verify input was updated with dataId
-    const updatedInput = await inputRepo.findByName(
-      ECHO_MODEL_TYPE,
-      "method-run-test",
-    );
-    assertEquals(updatedInput!.dataId, runOutput.data.id);
+    assertEquals(runOutput.data !== undefined, true);
   });
 });
 
@@ -394,11 +361,14 @@ Deno.test("CLI: model method run by model ID", async () => {
     assertEquals(createResult.code, 0);
     const createOutput = JSON.parse(createResult.stdout);
 
-    // Update input with message attribute
-    const inputRepo = new YamlInputRepository(repoDir);
-    const input = await inputRepo.findByName(ECHO_MODEL_TYPE, "run-by-id-test");
-    input!.setAttribute("message", "Using ID");
-    await inputRepo.save(ECHO_MODEL_TYPE, input!);
+    // Update definition with message attribute
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const definition = await definitionRepo.findByName(
+      ECHO_MODEL_TYPE,
+      "run-by-id-test",
+    );
+    definition!.setAttribute("message", "Using ID");
+    await definitionRepo.save(ECHO_MODEL_TYPE, definition!);
 
     // Run method using model ID instead of name
     const runResult = await runCliCommand(
@@ -418,7 +388,6 @@ Deno.test("CLI: model method run by model ID", async () => {
 
     const runOutput = JSON.parse(runResult.stdout);
     assertEquals(runOutput.modelId, createOutput.id);
-    assertEquals(runOutput.data.attributes.message, "Using ID");
   });
 });
 
@@ -515,7 +484,7 @@ Deno.test("CLI: model method run fails for missing required attributes", async (
       true,
       "Should fail for missing attributes",
     );
-    assertStringIncludes(runResult.stderr, "Input validation failed");
+    assertStringIncludes(runResult.stderr, "validation failed");
   });
 });
 

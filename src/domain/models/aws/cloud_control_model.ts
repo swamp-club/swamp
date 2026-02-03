@@ -8,18 +8,14 @@ import {
 } from "@aws-sdk/client-cloudcontrol";
 import type { ModelType } from "../model_type.ts";
 import {
-  createModelResourceId,
-  inputIdToResourceId,
-  ModelResource,
-} from "../model_resource.ts";
-import {
+  type DataOutput,
   defineModel,
   type FollowUpAction,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
 } from "../model.ts";
-import type { ModelInput } from "../model_input.ts";
+import type { Definition } from "../../definitions/definition.ts";
 
 /**
  * Creates an AWS CloudControl API client.
@@ -49,7 +45,6 @@ export function isResourceNotFoundError(error: unknown): boolean {
  */
 export interface CloudControlModelConfig<
   TInputAttrs extends z.ZodTypeAny,
-  TResourceAttrs extends z.ZodTypeAny,
 > {
   /**
    * The AWS CloudFormation type name (e.g., "AWS::EC2::Instance").
@@ -67,12 +62,7 @@ export interface CloudControlModelConfig<
   inputAttributesSchema: TInputAttrs;
 
   /**
-   * Zod schema for validating resource attributes.
-   */
-  resourceAttributesSchema: TResourceAttrs;
-
-  /**
-   * Extracts the AWS resource identifier from existing resource attributes.
+   * Extracts the AWS resource identifier from existing data attributes.
    * Default implementation looks for common identifier fields.
    */
   extractResourceIdentifier?: (
@@ -80,7 +70,7 @@ export interface CloudControlModelConfig<
   ) => string | undefined;
 
   /**
-   * Maps the raw AWS properties to resource attributes.
+   * Maps the raw AWS properties to data attributes.
    * Default implementation returns a standard set of properties.
    */
   mapResourceProperties?: (
@@ -96,14 +86,10 @@ export interface CloudControlModelConfig<
  */
 export abstract class AWSCloudControlModel<
   TInputAttrs extends z.ZodTypeAny,
-  TResourceAttrs extends z.ZodTypeAny,
 > {
-  protected readonly config: CloudControlModelConfig<
-    TInputAttrs,
-    TResourceAttrs
-  >;
+  protected readonly config: CloudControlModelConfig<TInputAttrs>;
 
-  constructor(config: CloudControlModelConfig<TInputAttrs, TResourceAttrs>) {
+  constructor(config: CloudControlModelConfig<TInputAttrs>) {
     this.config = config;
   }
 
@@ -162,17 +148,65 @@ export abstract class AWSCloudControlModel<
   /**
    * Creates a "resource deleted" result.
    */
-  protected createDeletedResult(inputId: string): MethodResult {
-    const resource = ModelResource.create({
-      id: inputId,
-      attributes: {
-        OperationStatus: "SUCCESS",
-        StatusMessage:
-          `${this.typeName} has been deleted or does not exist in AWS`,
-        DeletionCompleted: true,
+  protected async createDeletedResult(
+    definition: Definition,
+    methodName: string,
+  ): Promise<MethodResult> {
+    const attributes = {
+      OperationStatus: "SUCCESS",
+      StatusMessage:
+        `${this.typeName} has been deleted or does not exist in AWS`,
+      DeletionCompleted: true,
+    };
+
+    const definitionHash = await definition.computeHash();
+
+    return {
+      dataOutputs: [{
+        name: `${definition.name}-data`,
+        content: new TextEncoder().encode(JSON.stringify(attributes)),
+        metadata: {
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "data" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: methodName,
+          },
+        },
+      }],
+    };
+  }
+
+  /**
+   * Creates a DataOutput from attributes.
+   */
+  protected async createDataOutput(
+    definition: Definition,
+    methodName: string,
+    attributes: Record<string, unknown>,
+  ): Promise<DataOutput> {
+    const definitionHash = await definition.computeHash();
+
+    return {
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(attributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: methodName,
+        },
       },
-    });
-    return { resource, deleteResource: true };
+    };
   }
 
   /**
@@ -181,10 +215,12 @@ export abstract class AWSCloudControlModel<
    * Provisions a new resource using AWS CloudControl API.
    */
   async executeCreate(
-    input: ModelInput,
+    definition: Definition,
     context: MethodContext,
   ): Promise<MethodResult> {
-    const attrs = this.config.inputAttributesSchema.parse(input.attributes);
+    const attrs = this.config.inputAttributesSchema.parse(
+      definition.attributes,
+    );
     const client = this.createClient(context);
 
     const command = new CreateResourceCommand({
@@ -202,29 +238,35 @@ export abstract class AWSCloudControlModel<
 
     const requestToken = response.ProgressEvent.RequestToken;
 
-    const resource = ModelResource.create({
-      id: input.id,
-      attributes: {
-        RequestToken: requestToken,
-        OperationStatus: response.ProgressEvent.OperationStatus ||
-          "IN_PROGRESS",
-        StatusMessage:
-          `${this.typeName} creation initiated via CloudControl API`,
-        TypeName: this.typeName,
-        EventTime: response.ProgressEvent.EventTime?.toISOString(),
-        ResourceIdentifier: response.ProgressEvent.Identifier,
-      },
-    });
+    const attributes = {
+      RequestToken: requestToken,
+      OperationStatus: response.ProgressEvent.OperationStatus ||
+        "IN_PROGRESS",
+      StatusMessage: `${this.typeName} creation initiated via CloudControl API`,
+      TypeName: this.typeName,
+      EventTime: response.ProgressEvent.EventTime?.toISOString(),
+      ResourceIdentifier: response.ProgressEvent.Identifier,
+    };
+
+    const dataOutput = await this.createDataOutput(
+      definition,
+      "create",
+      attributes,
+    );
 
     const followUpActions: FollowUpAction[] = [
       {
         methodName: "sync",
         delayMs: 5000,
         maxRetries: 3,
+        continueCondition: (dataOutputs: DataOutput[]) => {
+          // Continue if we have data outputs
+          return dataOutputs.length > 0;
+        },
       },
     ];
 
-    return { resource, followUpActions };
+    return { dataOutputs: [dataOutput], followUpActions };
   }
 
   /**
@@ -233,36 +275,40 @@ export abstract class AWSCloudControlModel<
    * Terminates/deletes a resource using AWS CloudControl API.
    */
   async executeDelete(
-    input: ModelInput,
+    definition: Definition,
     context: MethodContext,
   ): Promise<MethodResult> {
-    if (!context.resourceRepository) {
-      throw new Error(
-        "Cannot delete: resourceRepository not provided in context",
+    // Get existing data to find the AWS resource identifier
+    const dataName = `${definition.name}-data`;
+    const existingData = await context.dataRepository.findByName(
+      context.modelType,
+      context.modelId,
+      dataName,
+    );
+
+    let awsResourceId: string | undefined;
+
+    if (existingData) {
+      const content = await context.dataRepository.getContent(
+        context.modelType,
+        context.modelId,
+        dataName,
       );
+      if (content) {
+        try {
+          const existingAttributes = JSON.parse(
+            new TextDecoder().decode(content),
+          );
+          awsResourceId = this.extractResourceIdentifier(existingAttributes);
+        } catch {
+          // Ignore parse errors
+        }
+      }
     }
-
-    // Look up resource by input ID (convention: resource ID equals input ID)
-    const resourceId = inputIdToResourceId(input.id);
-    const existingResource = await context.resourceRepository.findById(
-      this.modelType,
-      resourceId,
-    );
-
-    if (!existingResource) {
-      // No resource exists - nothing to delete
-      return this.createDeletedResult(input.id);
-    }
-
-    // Extract AWS resource identifier from resource attributes
-    const awsResourceId = this.extractResourceIdentifier(
-      existingResource.attributes,
-    );
 
     if (!awsResourceId) {
-      throw new Error(
-        "Cannot delete: unable to extract AWS resource identifier from resource attributes",
-      );
+      // No resource exists - nothing to delete
+      return this.createDeletedResult(definition, "delete");
     }
 
     const client = this.createClient(context);
@@ -283,42 +329,39 @@ export abstract class AWSCloudControlModel<
 
       const requestToken = response.ProgressEvent.RequestToken;
 
-      const resource = ModelResource.create({
-        id: input.id,
-        attributes: {
-          RequestToken: requestToken,
-          OperationStatus: response.ProgressEvent.OperationStatus ||
-            "IN_PROGRESS",
-          StatusMessage:
-            `${this.typeName} deletion initiated via CloudControl API`,
-          TypeName: this.typeName,
-          ResourceIdentifier: awsResourceId,
-          EventTime: response.ProgressEvent.EventTime?.toISOString(),
-          DeletionInitiated: true,
-        },
-      });
+      const attributes = {
+        RequestToken: requestToken,
+        OperationStatus: response.ProgressEvent.OperationStatus ||
+          "IN_PROGRESS",
+        StatusMessage:
+          `${this.typeName} deletion initiated via CloudControl API`,
+        TypeName: this.typeName,
+        ResourceIdentifier: awsResourceId,
+        EventTime: response.ProgressEvent.EventTime?.toISOString(),
+        DeletionInitiated: true,
+      };
+
+      const dataOutput = await this.createDataOutput(
+        definition,
+        "delete",
+        attributes,
+      );
 
       const followUpActions: FollowUpAction[] = [
         {
           methodName: "sync",
           delayMs: 5000,
           maxRetries: 3,
+          continueCondition: (dataOutputs: DataOutput[]) => {
+            return dataOutputs.length > 0;
+          },
         },
       ];
 
-      return { resource, followUpActions };
+      return { dataOutputs: [dataOutput], followUpActions };
     } catch (error: unknown) {
       if (isResourceNotFoundError(error)) {
-        const resource = ModelResource.create({
-          id: input.id,
-          attributes: {
-            OperationStatus: "SUCCESS",
-            StatusMessage:
-              `${this.typeName} already deleted or does not exist in AWS`,
-            DeletionCompleted: true,
-          },
-        });
-        return { resource, deleteResource: true };
+        return this.createDeletedResult(definition, "delete");
       }
       throw error;
     }
@@ -330,43 +373,57 @@ export abstract class AWSCloudControlModel<
    * Gets the full resource details after CloudControl operation completes.
    */
   async executeSync(
-    input: ModelInput,
+    definition: Definition,
     context: MethodContext,
   ): Promise<MethodResult> {
-    let requestToken = input.attributes.RequestToken as string | undefined;
-    let resourceIdentifier = input.attributes.ResourceIdentifier as
+    let requestToken = definition.attributes.RequestToken as string | undefined;
+    let resourceIdentifier = definition.attributes.ResourceIdentifier as
       | string
       | undefined;
+    let isDeletionContext = definition.attributes.DeletionInitiated as
+      | boolean
+      | undefined;
 
+    // Try to get existing data for this definition
     if (!requestToken) {
-      if (!context.resourceRepository) {
-        const attrKeys = Object.keys(input.attributes);
-        throw new Error(
-          `${this.typeName} sync failed: no RequestToken in input attributes (found: ${
-            attrKeys.join(", ") || "none"
-          }) and no resourceRepository provided`,
-        );
-      }
-      const existingResource = await context.resourceRepository.findById(
-        this.modelType,
-        createModelResourceId(input.id),
+      const dataName = `${definition.name}-data`;
+      const existingData = await context.dataRepository.findByName(
+        context.modelType,
+        context.modelId,
+        dataName,
       );
 
-      if (existingResource) {
-        requestToken = existingResource.attributes.RequestToken as
-          | string
-          | undefined;
-        resourceIdentifier = resourceIdentifier ||
-          this.extractResourceIdentifier(existingResource.attributes);
+      if (existingData) {
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          dataName,
+        );
+        if (content) {
+          try {
+            const existingAttributes = JSON.parse(
+              new TextDecoder().decode(content),
+            );
+            requestToken = existingAttributes.RequestToken;
+            resourceIdentifier = resourceIdentifier ||
+              this.extractResourceIdentifier(existingAttributes);
+            isDeletionContext = isDeletionContext ||
+              existingAttributes.DeletionInitiated;
+          } catch {
+            // Ignore parse errors
+          }
+        }
       }
     }
 
     if (!requestToken) {
-      const attrKeys = Object.keys(input.attributes);
-      const attrSample = JSON.stringify(input.attributes).slice(0, 200);
+      const attrKeys = Object.keys(definition.attributes);
+      const attrSample = JSON.stringify(definition.attributes).slice(0, 200);
       throw new Error(
-        `${this.typeName} sync failed: no RequestToken found for input '${input.name}' (id: ${input.id}). ` +
-          `Input attributes [${attrKeys.join(", ") || "none"}]: ${attrSample}`,
+        `${this.typeName} sync failed: no RequestToken found for definition '${definition.name}' (id: ${definition.id}). ` +
+          `Definition attributes [${
+            attrKeys.join(", ") || "none"
+          }]: ${attrSample}`,
       );
     }
 
@@ -381,7 +438,7 @@ export abstract class AWSCloudControlModel<
       statusResponse = await client.send(statusCommand);
     } catch (error: unknown) {
       if (isResourceNotFoundError(error)) {
-        return this.createDeletedResult(input.id);
+        return this.createDeletedResult(definition, "sync");
       }
       throw error;
     }
@@ -390,29 +447,35 @@ export abstract class AWSCloudControlModel<
     const statusMessage = statusResponse.ProgressEvent?.StatusMessage || "";
 
     if (currentStatus === "IN_PROGRESS") {
-      const resource = ModelResource.create({
-        id: input.id,
-        attributes: {
-          RequestToken: requestToken,
-          OperationStatus: currentStatus,
-          StatusMessage: statusMessage,
-          TypeName: this.typeName,
-          ResourceIdentifier: statusResponse.ProgressEvent?.Identifier ||
-            resourceIdentifier,
-          EventTime: statusResponse.ProgressEvent?.EventTime?.toISOString(),
-          DeletionInitiated: input.attributes.DeletionInitiated || undefined,
-        },
-      });
+      const attributes = {
+        RequestToken: requestToken,
+        OperationStatus: currentStatus,
+        StatusMessage: statusMessage,
+        TypeName: this.typeName,
+        ResourceIdentifier: statusResponse.ProgressEvent?.Identifier ||
+          resourceIdentifier,
+        EventTime: statusResponse.ProgressEvent?.EventTime?.toISOString(),
+        DeletionInitiated: isDeletionContext || undefined,
+      };
+
+      const dataOutput = await this.createDataOutput(
+        definition,
+        "sync",
+        attributes,
+      );
 
       const followUpActions: FollowUpAction[] = [
         {
           methodName: "sync",
           delayMs: 10000,
           maxRetries: 30,
+          continueCondition: (dataOutputs: DataOutput[]) => {
+            return dataOutputs.length > 0;
+          },
         },
       ];
 
-      return { resource, followUpActions };
+      return { dataOutputs: [dataOutput], followUpActions };
     }
 
     if (currentStatus === "FAILED") {
@@ -420,26 +483,15 @@ export abstract class AWSCloudControlModel<
         statusMessage.includes("was not found") ||
         statusMessage.includes("does not exist")
       ) {
-        return this.createDeletedResult(input.id);
+        return this.createDeletedResult(definition, "sync");
       }
       throw new Error(
         `CloudControl operation failed: ${statusMessage || "Unknown error"}`,
       );
     }
 
-    const isDeletionContext = input.attributes.DeletionInitiated ||
-      (input.attributes.StatusMessage as string)?.includes("deletion");
-
     if (isDeletionContext) {
-      const resource = ModelResource.create({
-        id: input.id,
-        attributes: {
-          OperationStatus: "SUCCESS",
-          StatusMessage: `${this.typeName} successfully deleted`,
-          DeletionCompleted: true,
-        },
-      });
-      return { resource, deleteResource: true };
+      return this.createDeletedResult(definition, "sync");
     }
 
     if (!resourceIdentifier) {
@@ -467,20 +519,23 @@ export abstract class AWSCloudControlModel<
       const rawProperties = JSON.parse(response.ResourceDescription.Properties);
       const mappedProperties = this.mapResourceProperties(rawProperties);
 
-      const resource = ModelResource.create({
-        id: input.id,
-        attributes: {
-          RequestToken: requestToken,
-          OperationStatus: "SUCCESS",
-          ...mappedProperties,
-          RawProperties: rawProperties,
-        },
-      });
+      const attributes = {
+        RequestToken: requestToken,
+        OperationStatus: "SUCCESS",
+        ...mappedProperties,
+        RawProperties: rawProperties,
+      };
 
-      return { resource };
+      const dataOutput = await this.createDataOutput(
+        definition,
+        "sync",
+        attributes,
+      );
+
+      return { dataOutputs: [dataOutput] };
     } catch (error: unknown) {
       if (isResourceNotFoundError(error)) {
-        return this.createDeletedResult(input.id);
+        return this.createDeletedResult(definition, "sync");
       }
       throw error;
     }
@@ -492,7 +547,7 @@ export abstract class AWSCloudControlModel<
    *
    * Call this at module level to self-register the model when imported.
    */
-  defineAndRegister(): ModelDefinition<TInputAttrs, TResourceAttrs> {
+  defineAndRegister(): ModelDefinition<TInputAttrs> {
     return defineModel(this.createModelDefinition());
   }
 
@@ -500,7 +555,7 @@ export abstract class AWSCloudControlModel<
    * Creates a ModelDefinition for this CloudControl model.
    * This provides the standard create, delete, and sync methods.
    */
-  createModelDefinition(): ModelDefinition<TInputAttrs, TResourceAttrs> {
+  createModelDefinition(): ModelDefinition<TInputAttrs> {
     const syncInputSchema = z.object({
       RequestToken: z.string().optional(),
       OperationStatus: z.string().optional(),
@@ -516,24 +571,26 @@ export abstract class AWSCloudControlModel<
       type: this.modelType,
       version: 1,
       inputAttributesSchema: this.config.inputAttributesSchema,
-      resourceAttributesSchema: this.config.resourceAttributesSchema,
       methods: {
         create: {
           description:
             `Create a new ${this.typeName} using AWS CloudControl API`,
           inputAttributesSchema: this.config.inputAttributesSchema,
-          execute: (input, context) => this.executeCreate(input, context),
+          execute: (definition, context) =>
+            this.executeCreate(definition, context),
         },
         delete: {
           description: `Delete a ${this.typeName} using AWS CloudControl API`,
           inputAttributesSchema: this.config.inputAttributesSchema,
-          execute: (input, context) => this.executeDelete(input, context),
+          execute: (definition, context) =>
+            this.executeDelete(definition, context),
         },
         sync: {
           description:
             `Get full ${this.typeName} details after CloudControl operation completes`,
           inputAttributesSchema: syncInputSchema,
-          execute: (input, context) => this.executeSync(input, context),
+          execute: (definition, context) =>
+            this.executeSync(definition, context),
         },
       },
     };

@@ -1,13 +1,12 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
-import { ModelData } from "../../model_data.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
 } from "../../model.ts";
-import type { ModelInput } from "../../model_input.ts";
+import type { Definition } from "../../../definitions/definition.ts";
 
 /**
  * Schema for AWS CLI model input attributes.
@@ -113,10 +112,10 @@ function parseCommand(command: string): string[] {
  * Runs an AWS CLI command and captures the output as data attributes.
  */
 async function executeRun(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = AwsCliInputAttributesSchema.parse(input.attributes);
+  const attrs = AwsCliInputAttributesSchema.parse(definition.attributes);
 
   // Build environment with optional overrides
   const env: Record<string, string> = { ...Deno.env.toObject() };
@@ -171,19 +170,34 @@ async function executeRun(
       }
     }
 
-    // Create the data artifact with command output
-    const data = ModelData.create({
-      id: input.id,
-      attributes: {
-        output: stdout.trim(),
-        json,
-        exitCode: result.code,
-        executedAt: new Date().toISOString(),
-        durationMs,
-      },
-    });
+    const dataAttributes = {
+      output: stdout.trim(),
+      json,
+      exitCode: result.code,
+      executedAt: new Date().toISOString(),
+      durationMs,
+    };
 
-    return { data };
+    const definitionHash = await definition.computeHash();
+
+    return {
+      dataOutputs: [{
+        name: `${definition.name}-data`,
+        content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+        metadata: {
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "data" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "run",
+          },
+        },
+      }],
+    };
   } finally {
     clearTimeout(timeoutId);
   }
@@ -202,14 +216,11 @@ async function executeRun(
  * Self-registers with the global model registry when this module is imported.
  */
 export const awsCliModel: ModelDefinition<
-  typeof AwsCliInputAttributesSchema,
-  never,
-  typeof AwsCliDataAttributesSchema
+  typeof AwsCliInputAttributesSchema
 > = defineModel({
   type: AWS_CLI_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: AwsCliInputAttributesSchema,
-  dataAttributesSchema: AwsCliDataAttributesSchema,
   methods: {
     run: {
       description:

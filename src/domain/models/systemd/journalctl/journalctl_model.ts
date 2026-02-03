@@ -1,13 +1,12 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
-import { ModelLog } from "../../model_log.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
 } from "../../model.ts";
-import type { ModelInput } from "../../model_input.ts";
+import type { Definition } from "../../../definitions/definition.ts";
 
 /**
  * Schema for journalctl model input attributes.
@@ -103,15 +102,15 @@ export function buildJournalctlArgs(
  * Uses streaming to handle arbitrarily large outputs without buffer overflow.
  */
 async function readLogs(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  // Validate input attributes
-  const attrs = JournalctlInputAttributesSchema.parse(input.attributes);
+  // Validate definition attributes
+  const attrs = JournalctlInputAttributesSchema.parse(definition.attributes);
 
   const args = buildJournalctlArgs(attrs);
 
-  const log = ModelLog.create({});
+  const logLines: string[] = [];
 
   const command = new Deno.Command("journalctl", {
     args,
@@ -139,7 +138,7 @@ async function readLogs(
         const line = buffer.slice(0, newlineIndex);
         buffer = buffer.slice(newlineIndex + 1);
         if (line.length > 0) {
-          log.log(line);
+          logLines.push(line);
         }
       }
     }
@@ -149,7 +148,7 @@ async function readLogs(
 
   // Handle remaining buffer (final line without trailing newline)
   if (buffer.length > 0) {
-    log.log(buffer);
+    logLines.push(buffer);
   }
 
   const status = await child.status;
@@ -171,7 +170,26 @@ async function readLogs(
     throw new Error(`journalctl failed: ${stderr}`);
   }
 
-  return { logs: [log] };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-logs`,
+      content: new TextEncoder().encode(logLines.join("\n")),
+      metadata: {
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: true,
+        tags: { type: "log" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "read",
+        },
+      },
+    }],
+  };
 }
 
 /**
@@ -184,17 +202,15 @@ async function readLogs(
  * Self-registers with the global model registry when this module is imported.
  */
 export const journalctlModel: ModelDefinition<
-  typeof JournalctlInputAttributesSchema,
-  typeof JournalctlResourceAttributesSchema
+  typeof JournalctlInputAttributesSchema
 > = defineModel({
   type: JOURNALCTL_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: JournalctlInputAttributesSchema,
-  resourceAttributesSchema: JournalctlResourceAttributesSchema,
   methods: {
     read: {
       description:
-        "Read system logs via journalctl with optional filters. Returns logs only, no resources.",
+        "Read system logs via journalctl with optional filters. Returns logs only.",
       inputAttributesSchema: JournalctlInputAttributesSchema,
       execute: readLogs,
     },

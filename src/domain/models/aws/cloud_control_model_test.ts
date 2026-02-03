@@ -9,23 +9,14 @@ const TestInputSchema = z.object({
   Name: z.string(),
 });
 
-// Test resource schema
-const TestResourceSchema = z.object({
-  ResourceId: z.string(),
-  Name: z.string(),
-});
-
 // Concrete implementation for testing
-class TestCloudControlModel extends AWSCloudControlModel<
-  typeof TestInputSchema,
-  typeof TestResourceSchema
-> {
+class TestCloudControlModel
+  extends AWSCloudControlModel<typeof TestInputSchema> {
   constructor(typeName: string) {
     super({
       typeName,
       modelType: ModelType.create(typeName),
       inputAttributesSchema: TestInputSchema,
-      resourceAttributesSchema: TestResourceSchema,
       extractResourceIdentifier: (attrs) => attrs.ResourceId as string,
     });
   }
@@ -58,7 +49,6 @@ Deno.test("AWSCloudControlModel.defineAndRegister returns valid ModelDefinition"
   assertEquals(typeof definition.methods.delete, "object");
   assertEquals(typeof definition.methods.sync, "object");
   assertEquals(definition.inputAttributesSchema, TestInputSchema);
-  assertEquals(definition.resourceAttributesSchema, TestResourceSchema);
 });
 
 Deno.test("AWSCloudControlModel.defineAndRegister is idempotent", () => {

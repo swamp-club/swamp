@@ -3,10 +3,8 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { ModelInput } from "../src/domain/models/model_input.ts";
-import { ModelData } from "../src/domain/models/model_data.ts";
-import { YamlInputRepository } from "../src/infrastructure/persistence/yaml_input_repository.ts";
-import { YamlDataRepository } from "../src/infrastructure/persistence/yaml_data_repository.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -37,24 +35,24 @@ async function runCliCommand(
   };
 }
 
-Deno.test("CLI: model validate passes for valid echo model input", async () => {
+Deno.test("CLI: model validate passes for valid echo model definition", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create a valid echo model input
-    const input = ModelInput.create({
-      name: "valid-echo-input",
+    // Create a valid echo model definition
+    const definition = Definition.create({
+      name: "valid-echo-definition",
       attributes: { message: "Hello, world!" },
     });
-    await inputRepo.save(modelType, input);
+    await definitionRepo.save(modelType, definition);
 
     // Run the validate command
     const result = await runCliCommand(
       [
         "model",
         "validate",
-        "valid-echo-input",
+        "valid-echo-definition",
         "--repo-dir",
         repoDir,
         "--json",
@@ -70,10 +68,10 @@ Deno.test("CLI: model validate passes for valid echo model input", async () => {
 
     // Parse and verify JSON output
     const output = JSON.parse(result.stdout);
-    assertEquals(output.modelName, "valid-echo-input");
+    assertEquals(output.modelName, "valid-echo-definition");
     assertEquals(output.type, "swamp/echo");
     assertEquals(output.passed, true);
-    assertEquals(output.validations.length, 3); // Input schema + Input attributes + Expression paths
+    assertEquals(output.validations.length, 3); // Definition schema + Definition attributes + Expression paths
     assertEquals(
       output.validations.every((v: { passed: boolean }) => v.passed),
       true,
@@ -81,29 +79,17 @@ Deno.test("CLI: model validate passes for valid echo model input", async () => {
   });
 });
 
-Deno.test("CLI: model validate passes for valid echo model with data", async () => {
+Deno.test("CLI: model validate passes for valid echo model definition", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
-    const dataRepo = new YamlDataRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create a valid echo model input
-    const input = ModelInput.create({
+    // Create a valid echo model definition
+    const definition = Definition.create({
       name: "echo-with-data",
       attributes: { message: "Hello, world!" },
     });
-    await inputRepo.save(modelType, input);
-
-    // Create a valid data artifact (note: data artifacts aren't validated by default,
-    // this is just to verify they don't cause validation errors)
-    const data = ModelData.create({
-      id: input.id,
-      attributes: {
-        message: "Hello, world!",
-        timestamp: new Date().toISOString(),
-      },
-    });
-    await dataRepo.save(modelType, data);
+    await definitionRepo.save(modelType, definition);
 
     // Run the validate command
     const result = await runCliCommand(
@@ -127,30 +113,29 @@ Deno.test("CLI: model validate passes for valid echo model with data", async () 
     // Parse and verify JSON output
     const output = JSON.parse(result.stdout);
     assertEquals(output.passed, true);
-    // Echo model only validates: Input schema, Input attributes, Expression paths
-    // (no resource validation since echo uses data artifacts which aren't validated)
+    // Echo model validates: Definition schema, Definition attributes, Expression paths
     assertEquals(output.validations.length, 3);
   });
 });
 
-Deno.test("CLI: model validate fails for invalid input attributes", async () => {
+Deno.test("CLI: model validate fails for invalid definition attributes", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create an echo model input with invalid attributes (missing message)
-    const input = ModelInput.create({
-      name: "invalid-echo-input",
+    // Create an echo model definition with invalid attributes (missing message)
+    const definition = Definition.create({
+      name: "invalid-echo-definition",
       attributes: { wrongField: "oops" },
     });
-    await inputRepo.save(modelType, input);
+    await definitionRepo.save(modelType, definition);
 
     // Run the validate command
     const result = await runCliCommand(
       [
         "model",
         "validate",
-        "invalid-echo-input",
+        "invalid-echo-definition",
         "--repo-dir",
         repoDir,
         "--json",
@@ -172,7 +157,7 @@ Deno.test("CLI: model validate fails for invalid input attributes", async () => 
     const failedValidation = output.validations.find(
       (v: { passed: boolean }) => !v.passed,
     );
-    assertEquals(failedValidation.name, "Input attributes");
+    assertEquals(failedValidation.name, "Definition attributes");
     assertEquals(typeof failedValidation.error, "string");
   });
 });
@@ -183,22 +168,22 @@ Deno.test("CLI: model validate fails for invalid input attributes", async () => 
 
 Deno.test("CLI: model validate can look up by UUID", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create a valid echo model input
-    const input = ModelInput.create({
+    // Create a valid echo model definition
+    const definition = Definition.create({
       name: "uuid-lookup-test",
       attributes: { message: "Hello" },
     });
-    await inputRepo.save(modelType, input);
+    await definitionRepo.save(modelType, definition);
 
     // Run the validate command using the UUID
     const result = await runCliCommand(
       [
         "model",
         "validate",
-        input.id,
+        definition.id,
         "--repo-dir",
         repoDir,
         "--json",
@@ -214,7 +199,7 @@ Deno.test("CLI: model validate can look up by UUID", async () => {
 
     // Verify it found the right model
     const output = JSON.parse(result.stdout);
-    assertEquals(output.modelId, input.id);
+    assertEquals(output.modelId, definition.id);
     assertEquals(output.modelName, "uuid-lookup-test");
   });
 });
@@ -245,15 +230,15 @@ Deno.test("CLI: model validate errors for non-existent model", async () => {
 
 Deno.test("CLI: model validate auto-detects non-TTY and uses JSON output", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create a valid echo model input
-    const input = ModelInput.create({
+    // Create a valid echo model definition
+    const definition = Definition.create({
       name: "interactive-test",
       attributes: { message: "Hello" },
     });
-    await inputRepo.save(modelType, input);
+    await definitionRepo.save(modelType, definition);
 
     // Run without --json - should auto-detect non-TTY and use JSON output
     const result = await runCliCommand(
@@ -285,20 +270,20 @@ Deno.test("CLI: model validate auto-detects non-TTY and uses JSON output", async
 
 Deno.test("CLI: model validate with no args validates all models", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create multiple valid echo model inputs
-    const input1 = ModelInput.create({
+    // Create multiple valid echo model definitions
+    const definition1 = Definition.create({
       name: "all-test-1",
       attributes: { message: "Hello 1" },
     });
-    const input2 = ModelInput.create({
+    const definition2 = Definition.create({
       name: "all-test-2",
       attributes: { message: "Hello 2" },
     });
-    await inputRepo.save(modelType, input1);
-    await inputRepo.save(modelType, input2);
+    await definitionRepo.save(modelType, definition1);
+    await definitionRepo.save(modelType, definition2);
 
     // Run the validate command without specifying a model
     const result = await runCliCommand(
@@ -336,20 +321,20 @@ Deno.test("CLI: model validate with no args validates all models", async () => {
 
 Deno.test("CLI: model validate with no args exits 1 when any model fails", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
     // Create one valid and one invalid model
-    const validInput = ModelInput.create({
+    const validDefinition = Definition.create({
       name: "valid-model",
       attributes: { message: "Hello" },
     });
-    const invalidInput = ModelInput.create({
+    const invalidDefinition = Definition.create({
       name: "invalid-model",
       attributes: { wrongField: "oops" },
     });
-    await inputRepo.save(modelType, validInput);
-    await inputRepo.save(modelType, invalidInput);
+    await definitionRepo.save(modelType, validDefinition);
+    await definitionRepo.save(modelType, invalidDefinition);
 
     // Run the validate command without specifying a model
     const result = await runCliCommand(
@@ -403,20 +388,20 @@ Deno.test("CLI: model validate with no args errors when no models found", async 
 
 Deno.test("CLI: model validate with no args auto-detects non-TTY and uses JSON output", async () => {
   await withTempDir(async (repoDir) => {
-    const inputRepo = new YamlInputRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create multiple valid echo model inputs
-    const input1 = ModelInput.create({
+    // Create multiple valid echo model definitions
+    const definition1 = Definition.create({
       name: "interactive-all-1",
       attributes: { message: "Hello 1" },
     });
-    const input2 = ModelInput.create({
+    const definition2 = Definition.create({
       name: "interactive-all-2",
       attributes: { message: "Hello 2" },
     });
-    await inputRepo.save(modelType, input1);
-    await inputRepo.save(modelType, input2);
+    await definitionRepo.save(modelType, definition1);
+    await definitionRepo.save(modelType, definition2);
 
     // Run without --json - should auto-detect non-TTY and use JSON output
     const result = await runCliCommand(

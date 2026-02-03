@@ -1,13 +1,16 @@
 import type { z } from "zod";
 import type {
+  DataOutput,
   FollowUpAction,
   MethodContext,
   MethodDefinition,
   MethodResult,
   ModelDefinition,
 } from "./model.ts";
-import { ModelInput } from "./model_input.ts";
-import type { ModelResource } from "./model_resource.ts";
+import type { Definition } from "../definitions/definition.ts";
+import { Data } from "../data/mod.ts";
+import type { DataArtifactRef } from "./model_output.ts";
+import { ModelOutput } from "./model_output.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -37,16 +40,16 @@ function formatZodError(error: z.ZodError): string {
  */
 export interface MethodExecutionService {
   /**
-   * Executes a model method with the given input and context.
+   * Executes a model method with the given definition and context.
    *
-   * @param input - The model input containing attributes
+   * @param definition - The definition containing attributes
    * @param method - The method definition to execute
    * @param context - Execution context
-   * @returns The method result containing the created resource
-   * @throws Error if input validation fails
+   * @returns The method result
+   * @throws Error if definition validation fails
    */
   execute(
-    input: ModelInput,
+    definition: Definition,
     method: MethodDefinition,
     context: MethodContext,
   ): Promise<MethodResult>;
@@ -54,14 +57,14 @@ export interface MethodExecutionService {
   /**
    * Executes a method with follow-up actions (workflow execution).
    *
-   * @param input - The model input containing attributes
+   * @param definition - The definition containing attributes
    * @param modelDef - The complete model definition (for accessing other methods)
    * @param methodName - Name of the method to execute
    * @param context - Execution context
    * @returns The final method result after all follow-up actions
    */
   executeWorkflow(
-    input: ModelInput,
+    definition: Definition,
     modelDef: ModelDefinition,
     methodName: string,
     context: MethodContext,
@@ -71,31 +74,33 @@ export interface MethodExecutionService {
 /**
  * Default implementation of the method execution service.
  *
- * Validates input attributes against the method's schema before execution.
+ * Validates definition attributes against the method's schema before execution.
  */
 export class DefaultMethodExecutionService implements MethodExecutionService {
   execute(
-    input: ModelInput,
+    definition: Definition,
     method: MethodDefinition,
     context: MethodContext,
   ): Promise<MethodResult> {
-    // Validate input attributes against method's schema
+    // Validate definition attributes against method's schema
     const validationResult = method.inputAttributesSchema.safeParse(
-      input.attributes,
+      definition.attributes,
     );
 
     if (!validationResult.success) {
       throw new Error(
-        `Input validation failed: ${formatZodError(validationResult.error)}`,
+        `Definition validation failed: ${
+          formatZodError(validationResult.error)
+        }`,
       );
     }
 
     // Execute the method
-    return method.execute(input, context);
+    return method.execute(definition, context);
   }
 
   async executeWorkflow(
-    input: ModelInput,
+    definition: Definition,
     modelDef: ModelDefinition,
     methodName: string,
     context: MethodContext,
@@ -106,36 +111,117 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }
 
     // Execute the initial method
-    const result = await this.execute(input, method, context);
-    let currentResource = result.resource;
+    const result = await this.execute(definition, method, context);
+    let currentDataOutputs = result.dataOutputs ?? [];
 
-    // Process follow-up actions (requires resource)
-    if (result.followUpActions && currentResource) {
+    // Store data outputs
+    const storedArtifacts: DataArtifactRef[] = [];
+    if (currentDataOutputs.length > 0) {
+      const definitionHash = await definition.computeHash();
+      for (const output of currentDataOutputs) {
+        const artifact = await this.storeDataOutput(
+          output,
+          definitionHash,
+          methodName,
+          context,
+        );
+        storedArtifacts.push(artifact);
+      }
+    }
+
+    // Create ModelOutput if output repository is available
+    if (context.outputRepository) {
+      const definitionHash = await definition.computeHash();
+      const output = ModelOutput.create({
+        definitionId: definition.id,
+        methodName,
+        status: "running",
+        provenance: {
+          definitionHash,
+          modelVersion: modelDef.version,
+          triggeredBy: "manual",
+        },
+        artifacts: { dataArtifacts: storedArtifacts },
+      });
+      output.markSucceeded();
+      await context.outputRepository.save(modelDef.type, methodName, output);
+    }
+
+    // Process follow-up actions
+    if (result.followUpActions && currentDataOutputs.length > 0) {
       const finalResult = await this.processFollowUpActions(
-        input,
+        definition,
         modelDef,
         context,
         result.followUpActions,
-        currentResource,
+        currentDataOutputs,
         0,
       );
-      currentResource = finalResult.resource;
+      currentDataOutputs = finalResult.dataOutputs;
     }
 
     return {
       ...result,
-      resource: currentResource,
+      dataOutputs: currentDataOutputs,
     };
   }
 
+  /**
+   * Stores a data output and returns a reference to the stored artifact.
+   */
+  private async storeDataOutput(
+    output: DataOutput,
+    definitionHash: string,
+    methodName: string,
+    context: MethodContext,
+  ): Promise<DataArtifactRef> {
+    // Get next version for this data
+    const dataId = context.dataRepository.nextId();
+
+    // Create the Data entity
+    const data = Data.create({
+      id: dataId,
+      name: output.name,
+      version: 1, // Will be updated by save()
+      contentType: output.metadata.contentType,
+      lifetime: output.metadata.lifetime,
+      garbageCollection: output.metadata.garbageCollection,
+      streaming: output.metadata.streaming ?? false,
+      tags: output.metadata.tags,
+      ownerDefinition: {
+        ...output.metadata.ownerDefinition,
+        definitionHash,
+        ownerRef: methodName,
+      },
+    });
+
+    // Save the data with content
+    const saveResult = await context.dataRepository.save(
+      context.modelType,
+      context.modelId,
+      data,
+      output.content,
+    );
+
+    return {
+      dataId: data.id,
+      name: data.name,
+      version: saveResult.version,
+      tags: data.tags,
+    };
+  }
+
+  /**
+   * Process follow-up actions using the data outputs pattern.
+   */
   private async processFollowUpActions(
-    input: ModelInput,
+    definition: Definition,
     modelDef: ModelDefinition,
     context: MethodContext,
     followUpActions: FollowUpAction[],
-    currentResource: ModelResource,
+    currentDataOutputs: DataOutput[],
     depth: number = 0,
-  ): Promise<{ resource: ModelResource }> {
+  ): Promise<{ dataOutputs: DataOutput[] }> {
     if (depth >= DEFAULT_MAX_FOLLOW_UP_DEPTH) {
       throw new Error(
         `Maximum follow-up action depth (${DEFAULT_MAX_FOLLOW_UP_DEPTH}) exceeded. ` +
@@ -154,20 +240,12 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
 
         // Check continue condition
-        if (
-          action.continueCondition && !action.continueCondition(currentResource)
-        ) {
-          break;
+        if (action.continueCondition) {
+          const conditionResult = action.continueCondition(currentDataOutputs);
+          if (!conditionResult) {
+            break;
+          }
         }
-
-        // Create new input with updated attributes from the current resource
-        const followUpInput = ModelInput.create({
-          id: input.id, // Use same input ID
-          name: input.name,
-          version: input.version,
-          tags: input.tags,
-          attributes: currentResource.attributes, // Use resource attributes as input
-        });
 
         try {
           const followUpMethod = modelDef.methods[action.methodName];
@@ -177,31 +255,29 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             );
           }
 
+          // Execute with the same definition
           const result = await this.execute(
-            followUpInput,
+            definition,
             followUpMethod,
             context,
           );
 
-          // Follow-up actions require resources to continue
-          if (!result.resource) {
-            throw new Error(
-              `Follow-up method '${action.methodName}' must return a resource`,
-            );
+          // Update current data outputs
+          if (result.dataOutputs && result.dataOutputs.length > 0) {
+            currentDataOutputs = result.dataOutputs;
           }
-          currentResource = result.resource;
 
           // If this follow-up method has its own follow-up actions, process them recursively
           if (result.followUpActions && result.followUpActions.length > 0) {
             const recursiveResult = await this.processFollowUpActions(
-              followUpInput,
+              definition,
               modelDef,
               context,
               result.followUpActions,
-              currentResource,
+              currentDataOutputs,
               depth + 1,
             );
-            currentResource = recursiveResult.resource;
+            currentDataOutputs = recursiveResult.dataOutputs;
           }
 
           break; // Success, exit retry loop
@@ -216,7 +292,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       }
     }
 
-    return { resource: currentResource };
+    return { dataOutputs: currentDataOutputs };
   }
 
   private delay(ms: number): Promise<void> {

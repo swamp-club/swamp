@@ -5,18 +5,11 @@ import {
   renderModelMethodRun,
 } from "../../presentation/output/model_method_run_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { findByIdOrName } from "../../domain/models/model_lookup.ts";
-import {
-  computeDefinitionHash,
-  ModelOutput,
-} from "../../domain/models/model_output.ts";
-import type { DefinitionId } from "../../domain/definitions/definition.ts";
-import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
-import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { ModelOutput } from "../../domain/models/model_output.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
-import { YamlDataRepository } from "../../infrastructure/persistence/yaml_data_repository.ts";
-import { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
-import { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 
@@ -40,38 +33,38 @@ export const modelMethodRunCommand = new Command()
     ) {
       const ctx = createContext(options as GlobalOptions, "model-method-run");
       const repoDir = options.repoDir ?? ".";
-      const inputRepo = new YamlInputRepository(repoDir);
-      const resourceRepo = new YamlResourceRepository(repoDir);
-      const dataRepo = new YamlDataRepository(repoDir);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const unifiedDataRepo = new FileSystemUnifiedDataRepository(repoDir);
       const outputRepo = new YamlOutputRepository(repoDir);
-      const logRepo = new StreamingLogRepository(repoDir);
-      const fileRepo = new FileSystemFileRepository(repoDir);
       const executionService = new DefaultMethodExecutionService();
 
       ctx.logger
         .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
 
-      // Look up the model input
+      // Look up the model definition
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-      const result = await findByIdOrName(inputRepo, modelIdOrName);
+      const result = await findDefinitionByIdOrName(
+        definitionRepo,
+        modelIdOrName,
+      );
       if (!result) {
         throw new Error(`Model not found: ${modelIdOrName}`);
       }
-      const { input, type: modelType } = result;
+      const { definition, type: modelType } = result;
 
       ctx.logger
-        .debug`Found model: id=${input.id}, type=${modelType.normalized}`;
+        .debug`Found model: id=${definition.id}, type=${modelType.normalized}`;
 
-      // Get the model definition
-      const definition = modelRegistry.get(modelType);
-      if (!definition) {
+      // Get the model definition from registry
+      const modelDef = modelRegistry.get(modelType);
+      if (!modelDef) {
         throw new Error(`Unknown model type: ${modelType.normalized}`);
       }
 
       // Validate method exists on the model
-      const method = definition.methods[methodName];
+      const method = modelDef.methods[methodName];
       if (!method) {
-        const availableMethods = Object.keys(definition.methods).join(", ");
+        const availableMethods = Object.keys(modelDef.methods).join(", ");
         throw new Error(
           `Unknown method '${methodName}' for type '${modelType.normalized}'. Available methods: ${
             availableMethods || "none"
@@ -82,14 +75,13 @@ export const modelMethodRunCommand = new Command()
       ctx.logger.debug`Executing method '${methodName}'`;
 
       // Create ModelOutput for tracking
-      // Use input.id as definitionId (for backwards compatibility during migration)
-      const definitionHash = await computeDefinitionHash(input.attributes);
+      const definitionHash = await definition.computeHash();
       const output = ModelOutput.create({
-        definitionId: input.id as unknown as DefinitionId,
+        definitionId: definition.id,
         methodName,
         provenance: {
           definitionHash,
-          modelVersion: input.version,
+          modelVersion: definition.version,
           triggeredBy: "manual",
         },
       });
@@ -99,159 +91,82 @@ export const modelMethodRunCommand = new Command()
       await outputRepo.save(modelType, methodName, output);
 
       // Track artifacts for output
-      let resourceArtifact: ArtifactInfo | undefined;
-      let dataArtifact: ArtifactInfo | undefined;
-      let fileArtifact: ArtifactInfo | undefined;
-      const logArtifacts: ArtifactInfo[] = [];
+      const dataArtifacts: ArtifactInfo[] = [];
 
       try {
         // Execute the method (use workflow execution to handle follow-up actions)
-        const result = await executionService.executeWorkflow(
-          input,
+        const execResult = await executionService.executeWorkflow(
           definition,
+          modelDef,
           methodName,
           {
             repoDir,
-            resourceRepository: resourceRepo,
-            logRepository: logRepo,
-            fileRepository: fileRepo,
+            modelType,
+            modelId: definition.id,
+            dataRepository: unifiedDataRepo,
+            definitionRepository: definitionRepo,
           },
         );
 
         ctx.logger.debug`Method executed`;
 
-        // Handle resource persistence based on operation type
-        if (result.resource) {
-          ctx.logger.debug`Resource created: ${result.resource.id}`;
-          if (result.deleteResource) {
-            // Delete the resource file
-            await resourceRepo.delete(modelType, result.resource.id);
-            ctx.logger.debug`Resource deleted: ${result.resource.id}`;
-          } else {
-            // Save the resource
-            await resourceRepo.save(modelType, result.resource);
-            const resourcePath = resourceRepo.getPath(
+        // Handle data output persistence
+        if (execResult.dataOutputs && execResult.dataOutputs.length > 0) {
+          for (const dataOutput of execResult.dataOutputs) {
+            ctx.logger.debug`Saving data output: ${dataOutput.name}`;
+
+            // Create Data entity from DataOutput
+            const { Data } = await import("../../domain/data/mod.ts");
+            const data = Data.create({
+              name: dataOutput.name,
+              contentType: dataOutput.metadata.contentType,
+              lifetime: dataOutput.metadata.lifetime,
+              garbageCollection: dataOutput.metadata.garbageCollection,
+              streaming: dataOutput.metadata.streaming,
+              tags: dataOutput.metadata.tags,
+              ownerDefinition: dataOutput.metadata.ownerDefinition,
+            });
+
+            // Save the data
+            const saveResult = await unifiedDataRepo.save(
               modelType,
-              result.resource.id,
+              definition.id,
+              data,
+              dataOutput.content,
             );
-            ctx.logger.debug`Resource saved to: ${resourcePath}`;
+
+            const dataPath = unifiedDataRepo.getPath(
+              modelType,
+              definition.id,
+              dataOutput.name,
+              saveResult.version,
+            );
+            ctx.logger.debug`Data saved to: ${dataPath}`;
 
             // Track artifact in output
             output.addDataArtifact({
-              dataId: result.resource.id,
-              name: `${input.name}-resource`,
-              version: result.resource.version,
-              tags: { type: "resource" },
-            });
-            resourceArtifact = {
-              id: result.resource.id,
-              path: resourcePath,
-              attributes: result.resource.attributes,
-            };
-          }
-        }
-
-        // Handle data artifact persistence
-        if (result.data) {
-          ctx.logger.debug`Data created: ${result.data.id}`;
-          if (result.deleteData) {
-            await dataRepo.delete(modelType, result.data.id);
-            ctx.logger.debug`Data deleted: ${result.data.id}`;
-          } else {
-            await dataRepo.save(modelType, result.data);
-            const dataPath = dataRepo.getPath(modelType, result.data.id);
-            ctx.logger.debug`Data saved to: ${dataPath}`;
-            output.addDataArtifact({
-              dataId: result.data.id,
-              name: `${input.name}-data`,
-              version: result.data.version,
-              tags: { type: "data" },
+              dataId: data.id,
+              name: dataOutput.name,
+              version: saveResult.version,
+              tags: dataOutput.metadata.tags,
             });
 
-            // Track artifact for output
-            dataArtifact = {
-              id: result.data.id,
+            // Parse content if JSON for display purposes
+            let attributes: Record<string, unknown> | undefined;
+            if (dataOutput.metadata.contentType === "application/json") {
+              try {
+                const text = new TextDecoder().decode(dataOutput.content);
+                attributes = JSON.parse(text) as Record<string, unknown>;
+              } catch {
+                // Not valid JSON, skip attributes
+              }
+            }
+
+            dataArtifacts.push({
+              id: data.id,
               path: dataPath,
-              attributes: result.data.attributes,
-            };
-          }
-
-          // Update input's dataId based on operation type
-          if (result.deleteData) {
-            if (input.dataId) {
-              input.setDataId(undefined);
-              await inputRepo.save(modelType, input);
-              ctx.logger.debug`Input dataId cleared after deletion`;
-            }
-          } else {
-            if (!input.dataId) {
-              input.setDataId(result.data.id);
-              await inputRepo.save(modelType, input);
-              ctx.logger.debug`Input updated with dataId: ${result.data.id}`;
-            } else {
-              ctx.logger.debug`Input already has dataId: ${input.dataId}`;
-            }
-          }
-        }
-
-        // Handle log persistence
-        if (result.logs && result.logs.length > 0) {
-          if (result.deleteLogs) {
-            for (const log of result.logs) {
-              await logRepo.delete(modelType, log.id);
-              ctx.logger.debug`Log deleted: ${log.id}`;
-            }
-          } else {
-            for (const log of result.logs) {
-              await logRepo.save(modelType, log);
-              const logPath = logRepo.getPath(modelType, log.id);
-              ctx.logger.debug`Log saved to: ${logPath}`;
-              output.addDataArtifact({
-                dataId: log.id,
-                name: `${input.name}-log`,
-                version: 1,
-                tags: { type: "log" },
-              });
-              logArtifacts.push({ id: log.id, path: logPath });
-            }
-          }
-        }
-
-        // Handle file artifact persistence
-        if (result.file) {
-          if (result.deleteFile) {
-            await fileRepo.delete(
-              modelType,
-              input.id,
-              methodName,
-              result.file.metadata,
-            );
-            ctx.logger.debug`File deleted: ${result.file.metadata.id}`;
-          } else {
-            await fileRepo.save(
-              modelType,
-              input.id,
-              methodName,
-              result.file.metadata,
-              result.file.content,
-            );
-            const filePath = fileRepo.getPath(
-              modelType,
-              input.id,
-              methodName,
-              result.file.metadata.id,
-            );
-            ctx.logger.debug`File saved to: ${filePath}`;
-            output.addDataArtifact({
-              dataId: result.file.metadata.id,
-              name: result.file.metadata.filename,
-              version: 1,
-              tags: { type: "file" },
+              attributes,
             });
-            fileArtifact = {
-              id: result.file.metadata.id,
-              path: filePath,
-            };
           }
         }
 
@@ -272,31 +187,23 @@ export const modelMethodRunCommand = new Command()
       // Render output based on output mode
       if (ctx.outputMode === "stream") {
         // Stream mode: print simple colored success message
-        // Note: standalone model method runs don't support real-time streaming
-        // (streaming is only available in workflow context)
         const GREEN = "\x1b[32m";
         const RESET = "\x1b[0m";
-        const prefix = `${GREEN}[${input.name}/${methodName}]${RESET}`;
+        const prefix = `${GREEN}[${definition.name}/${methodName}]${RESET}`;
         console.log(`${prefix} Method completed successfully`);
-        if (resourceArtifact) {
-          console.log(`${prefix} Resource: ${resourceArtifact.path}`);
-        }
-        if (dataArtifact) {
-          console.log(`${prefix} Data: ${dataArtifact.path}`);
-        }
-        if (fileArtifact) {
-          console.log(`${prefix} File: ${fileArtifact.path}`);
+        for (const artifact of dataArtifacts) {
+          console.log(`${prefix} Data: ${artifact.path}`);
         }
       } else {
         const data: ModelMethodRunData = {
-          modelId: input.id,
-          modelName: input.name,
+          modelId: definition.id,
+          modelName: definition.name,
           type: modelType.normalized,
           methodName,
-          resource: resourceArtifact,
-          data: dataArtifact,
-          file: fileArtifact,
-          logs: logArtifacts.length > 0 ? logArtifacts : undefined,
+          // Use first data artifact as primary data for backward compat
+          data: dataArtifacts.length > 0 ? dataArtifacts[0] : undefined,
+          // Additional data artifacts could be shown as logs (legacy output field)
+          logs: dataArtifacts.length > 1 ? dataArtifacts.slice(1) : undefined,
         };
 
         renderModelMethodRun(data, ctx.outputMode);

@@ -13,7 +13,7 @@ export interface ModelEditData {
   status: "opened";
   name: string;
   type: string;
-  editType: "input" | "resource";
+  editType: "input" | "resource" | "definition";
 }
 
 /**
@@ -37,7 +37,7 @@ interface ModelEditDisplayProps {
   editor: string;
   name: string;
   type: string;
-  editType: "input" | "resource";
+  editType: "input" | "resource" | "definition";
 }
 
 /**
@@ -46,7 +46,11 @@ interface ModelEditDisplayProps {
 export function ModelEditDisplay(
   props: ModelEditDisplayProps,
 ): React.ReactElement {
-  const fileTypeLabel = props.editType === "resource" ? "resource" : "input";
+  const fileTypeLabel = props.editType === "resource"
+    ? "resource"
+    : props.editType === "definition"
+    ? "definition"
+    : "input";
   return (
     <Box flexDirection="column">
       <Text color="green">Opening {fileTypeLabel} file in {props.editor}:</Text>

@@ -8,53 +8,47 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
-import { YamlEvaluatedInputRepository } from "../../infrastructure/persistence/yaml_evaluated_input_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import { findByIdOrName } from "../../domain/models/model_lookup.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
 export const modelEvaluateCommand = new Command()
   .name("evaluate")
-  .description("Evaluate expressions in model inputs")
+  .description("Evaluate expressions in model definitions")
   .arguments("[model_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .option("--all", "Evaluate all model inputs")
+  .option("--all", "Evaluate all model definitions")
   .action(
     async function (options: AnyOptions, modelIdOrName?: string) {
       const ctx = createContext(options as GlobalOptions, "model-evaluate");
       const repoDir = options.repoDir ?? ".";
       const inputRepo = new YamlInputRepository(repoDir);
       const resourceRepo = new YamlResourceRepository(repoDir);
-      const evaluatedRepo = new YamlEvaluatedInputRepository(repoDir);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
       const evaluationService = new ExpressionEvaluationService(
         inputRepo,
         resourceRepo,
         repoDir,
+        { definitionRepo },
       );
 
-      // If --all flag or no argument, evaluate all inputs
+      // If --all flag or no argument, evaluate all definitions
       if (options.all || !modelIdOrName) {
-        ctx.logger.debug`Evaluating all model inputs`;
+        ctx.logger.debug`Evaluating all model definitions`;
 
-        const results = await evaluationService.evaluateAllInputs();
+        const results = await evaluationService.evaluateAllDefinitions();
         const items: ModelEvaluateItemData[] = [];
 
         for (const result of results) {
-          // Save evaluated input
-          await evaluatedRepo.save(result.type, result.input);
-          const outputPath = evaluatedRepo.getPath(
-            result.type,
-            result.input.id,
-          );
-
           items.push({
-            id: result.input.id,
-            name: result.input.name,
+            id: result.definition.id,
+            name: result.definition.name,
             type: result.type.normalized,
             hadExpressions: result.hadExpressions,
-            outputPath: result.hadExpressions ? outputPath : undefined,
+            outputPath: undefined, // Definitions don't use evaluated repo
           });
         }
 
@@ -72,29 +66,34 @@ export const modelEvaluateCommand = new Command()
       // Single model evaluation
       ctx.logger.debug`Evaluating model: ${modelIdOrName}`;
 
-      // Look up the model input
+      // Look up the model definition
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-      const lookupResult = await findByIdOrName(inputRepo, modelIdOrName);
+      const lookupResult = await findDefinitionByIdOrName(
+        definitionRepo,
+        modelIdOrName,
+      );
       if (!lookupResult) {
         throw new Error(`Model not found: ${modelIdOrName}`);
       }
 
-      const { input, type } = lookupResult;
-      ctx.logger.debug`Found model: id=${input.id}, type=${type.normalized}`;
+      const { definition, type } = lookupResult;
+      ctx.logger
+        .debug`Found model: id=${definition.id}, type=${type.normalized}`;
 
-      // Evaluate the input
-      const result = await evaluationService.evaluateInput(input, type);
-
-      // Save evaluated input
-      await evaluatedRepo.save(type, result.input);
-      const outputPath = evaluatedRepo.getPath(type, result.input.id);
+      // Evaluate the definition
+      const result = await evaluationService.evaluateDefinition(
+        definition,
+        type,
+      );
 
       const item: ModelEvaluateItemData = {
-        id: result.input.id,
-        name: result.input.name,
+        id: result.definition.id,
+        name: result.definition.name,
         type: type.normalized,
         hadExpressions: result.hadExpressions,
-        outputPath: result.hadExpressions ? outputPath : undefined,
+        outputPath: undefined, // Definitions don't use evaluated repo
+        // Include evaluated attributes for JSON output
+        attributes: result.definition.attributes,
       };
 
       renderModelEvaluateSingle(item, ctx.outputMode);
