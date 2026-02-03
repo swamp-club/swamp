@@ -1,0 +1,29 @@
+id: 59c39097-2fd2-4fb4-874f-b3052b5f60b2
+name: parallel-steps
+jobs:
+  - name: job1
+    steps:
+      - name: step-a
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+      - name: step-b
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+      - name: step-c
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn: []
+    weight: 0
+version: 1

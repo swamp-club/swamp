@@ -1,0 +1,16 @@
+id: 95b99fae-be09-47e8-b062-68ab622cfba3
+name: simple-workflow
+jobs:
+  - name: job1
+    steps:
+      - name: step1
+        task:
+          type: shell
+          command: echo
+          args:
+            - hello
+        dependsOn: []
+        weight: 0
+    dependsOn: []
+    weight: 0
+version: 1

@@ -1,0 +1,60 @@
+id: 193ac18e-1867-4ab3-8d6d-4729a6cc31d4
+name: diamond-deps
+jobs:
+  - name: job-a
+    steps:
+      - name: step1
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn: []
+    weight: 0
+  - name: job-b
+    steps:
+      - name: step1
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn: []
+    weight: 0
+  - name: job-c
+    steps:
+      - name: step1
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn:
+      - job: job-a
+        condition:
+          type: succeeded
+          ref: job-a
+    weight: 0
+  - name: job-d
+    steps:
+      - name: step1
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn:
+      - job: job-a
+        condition:
+          type: succeeded
+          ref: job-a
+      - job: job-b
+        condition:
+          type: succeeded
+          ref: job-b
+    weight: 0
+version: 1

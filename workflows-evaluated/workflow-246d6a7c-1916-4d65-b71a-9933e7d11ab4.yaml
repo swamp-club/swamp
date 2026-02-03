@@ -1,0 +1,30 @@
+id: 246d6a7c-1916-4d65-b71a-9933e7d11ab4
+name: on-failure
+jobs:
+  - name: build
+    steps:
+      - name: compile
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn: []
+    weight: 0
+  - name: notify
+    steps:
+      - name: alert
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn:
+      - job: build
+        condition:
+          type: failed
+          ref: build
+    weight: 0
+version: 1

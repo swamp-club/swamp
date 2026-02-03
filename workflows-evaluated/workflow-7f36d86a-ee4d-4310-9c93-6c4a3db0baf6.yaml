@@ -1,0 +1,30 @@
+id: 7f36d86a-ee4d-4310-9c93-6c4a3db0baf6
+name: conditional
+jobs:
+  - name: build
+    steps:
+      - name: compile
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn: []
+    weight: 0
+  - name: test
+    steps:
+      - name: unit
+        task:
+          type: shell
+          command: echo
+          args: []
+        dependsOn: []
+        weight: 0
+    dependsOn:
+      - job: build
+        condition:
+          type: succeeded
+          ref: build
+    weight: 0
+version: 1
