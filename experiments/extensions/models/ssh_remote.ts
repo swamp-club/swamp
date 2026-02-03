@@ -1,14 +1,12 @@
 import { z } from "zod";
 import { ModelType } from "../../../src/domain/models/model_type.ts";
-import { ModelData } from "../../../src/domain/models/model_data.ts";
-import { ModelLog } from "../../../src/domain/models/model_log.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
 } from "../../../src/domain/models/model.ts";
-import type { ModelInput } from "../../../src/domain/models/model_input.ts";
+import type { Definition } from "../../../src/domain/definitions/definition.ts";
 
 /**
  * Schema for SSH remote model input attributes.
@@ -34,28 +32,6 @@ export type SshRemoteInputAttributes = z.infer<
 >;
 
 /**
- * Schema for SSH remote model data attributes.
- */
-export const SshRemoteDataAttributesSchema = z.object({
-  exitCode: z.number().int().describe("Exit code of the command"),
-  stdout: z.string().describe("Standard output from the command"),
-  stderr: z.string().describe("Standard error from the command"),
-  executedAt: z.string().datetime().describe(
-    "Timestamp when execution completed",
-  ),
-  durationMs: z.number().int().nonnegative().describe(
-    "Execution duration in milliseconds",
-  ),
-});
-
-/**
- * Type for SSH remote model data attributes.
- */
-export type SshRemoteDataAttributes = z.infer<
-  typeof SshRemoteDataAttributesSchema
->;
-
-/**
  * The SSH remote model type identifier.
  */
 export const SSH_REMOTE_MODEL_TYPE = ModelType.create("keeb/ssh-remote");
@@ -77,10 +53,10 @@ function expandHomePath(path: string): string {
  * Executes a command on a remote host via SSH.
  */
 async function executeCommand(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = SshRemoteInputAttributesSchema.parse(input.attributes);
+  const attrs = SshRemoteInputAttributesSchema.parse(definition.attributes);
 
   const startTime = Date.now();
   let stdout = "";
@@ -150,30 +126,65 @@ async function executeCommand(
   const endTime = Date.now();
   const durationMs = endTime - startTime;
 
-  // Create log artifact for command output
-  const outputLog = ModelLog.create({ id: input.id });
-  outputLog.log(`[ssh ${attrs.user}@${attrs.host}:${attrs.port}]`);
-  outputLog.log(`[command] ${attrs.command}`);
-  if (stdout) {
-    outputLog.log(`[stdout]\n${stdout}`);
-  }
-  if (stderr) {
-    outputLog.log(`[stderr]\n${stderr}`);
-  }
+  const definitionHash = await definition.computeHash();
 
   // Create the data artifact with structured metadata
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      exitCode,
-      stdout,
-      stderr,
-      executedAt: new Date().toISOString(),
-      durationMs,
-    },
-  });
+  const dataAttributes = {
+    exitCode,
+    stdout,
+    stderr,
+    executedAt: new Date().toISOString(),
+    durationMs,
+  };
 
-  return { data, logs: [outputLog] };
+  // Create log output content
+  const logParts: string[] = [];
+  logParts.push(`[ssh ${attrs.user}@${attrs.host}:${attrs.port}]`);
+  logParts.push(`[command] ${attrs.command}`);
+  if (stdout) {
+    logParts.push(`[stdout]\n${stdout}`);
+  }
+  if (stderr) {
+    logParts.push(`[stderr]\n${stderr}`);
+  }
+  const logContent = logParts.join("\n");
+
+  return {
+    dataOutputs: [
+      {
+        name: `${definition.name}-result`,
+        content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+        metadata: {
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: false,
+          tags: { type: "data" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "execute",
+          },
+        },
+      },
+      {
+        name: `${definition.name}-output`,
+        content: new TextEncoder().encode(logContent),
+        metadata: {
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: true,
+          tags: { type: "log" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "execute",
+          },
+        },
+      },
+    ],
+  };
 }
 
 /**
@@ -185,14 +196,11 @@ async function executeCommand(
  * Self-registers with the global model registry when this module is imported.
  */
 export const sshRemoteModel: ModelDefinition<
-  typeof SshRemoteInputAttributesSchema,
-  never,
-  typeof SshRemoteDataAttributesSchema
+  typeof SshRemoteInputAttributesSchema
 > = defineModel({
   type: SSH_REMOTE_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: SshRemoteInputAttributesSchema,
-  dataAttributesSchema: SshRemoteDataAttributesSchema,
   methods: {
     execute: {
       description:

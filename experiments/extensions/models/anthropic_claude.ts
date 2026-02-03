@@ -1,12 +1,11 @@
 import { z } from "zod";
 import { ModelType } from "../../../src/domain/models/model_type.ts";
-import { ModelData } from "../../../src/domain/models/model_data.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
 } from "../../../src/domain/models/model.ts";
-import type { ModelInput } from "../../../src/domain/models/model_input.ts";
+import type { Definition } from "../../../src/domain/definitions/definition.ts";
 
 /**
  * Schema for Anthropic Claude model input attributes.
@@ -23,22 +22,6 @@ const InputAttributesSchema = z.object({
 });
 
 type InputAttributes = z.infer<typeof InputAttributesSchema>;
-
-/**
- * Schema for Anthropic Claude model data attributes.
- */
-const DataAttributesSchema = z.object({
-  /** The generated response text */
-  response: z.string(),
-  /** Number of input tokens used */
-  inputTokens: z.number().int().nonnegative(),
-  /** Number of output tokens generated */
-  outputTokens: z.number().int().nonnegative(),
-  /** Model used for generation */
-  model: z.string(),
-  /** Timestamp when generation completed */
-  generatedAt: z.string().datetime(),
-});
 
 interface ContentBlock {
   type: string;
@@ -104,10 +87,10 @@ async function callClaude(attrs: InputAttributes): Promise<ClaudeResponse> {
  * Execute the generate method.
  */
 async function executeGenerate(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
   const result = await callClaude(attrs);
 
   // Extract text from content blocks
@@ -116,18 +99,34 @@ async function executeGenerate(
     .map((block: ContentBlock) => block.text ?? "")
     .join("");
 
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      response: responseText,
-      inputTokens: result.usage.input_tokens,
-      outputTokens: result.usage.output_tokens,
-      model: result.model,
-      generatedAt: new Date().toISOString(),
-    },
-  });
+  const dataAttributes = {
+    response: responseText,
+    inputTokens: result.usage.input_tokens,
+    outputTokens: result.usage.output_tokens,
+    model: result.model,
+    generatedAt: new Date().toISOString(),
+  };
 
-  return { data };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "generate",
+        },
+      },
+    }],
+  };
 }
 
 /**
@@ -141,7 +140,6 @@ export const anthropicClaudeModel = defineModel({
   type: ModelType.create("anthropic/claude"),
   version: 1,
   inputAttributesSchema: InputAttributesSchema,
-  dataAttributesSchema: DataAttributesSchema,
   methods: {
     generate: {
       description: "Generate a response using Claude",

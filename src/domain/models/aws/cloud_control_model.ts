@@ -170,7 +170,7 @@ export abstract class AWSCloudControlModel<
           lifetime: "infinite",
           garbageCollection: 10,
           streaming: false,
-          tags: { type: "data" },
+          tags: { type: "resource" },
           ownerDefinition: {
             definitionHash,
             ownerType: "model-method",
@@ -199,7 +199,7 @@ export abstract class AWSCloudControlModel<
         lifetime: "infinite",
         garbageCollection: 10,
         streaming: false,
-        tags: { type: "data" },
+        tags: { type: "resource" },
         ownerDefinition: {
           definitionHash,
           ownerType: "model-method",

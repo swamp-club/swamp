@@ -2,16 +2,11 @@ import { z } from "zod";
 import { parse as parseYaml } from "@std/yaml";
 import { ModelType } from "../../../src/domain/models/model_type.ts";
 import {
-  createModelResourceId,
-  ModelResource,
-} from "../../../src/domain/models/model_resource.ts";
-import { ModelData } from "../../../src/domain/models/model_data.ts";
-import {
   defineModel,
   type MethodContext,
   type MethodResult,
 } from "../../../src/domain/models/model.ts";
-import type { ModelInput } from "../../../src/domain/models/model_input.ts";
+import type { Definition } from "../../../src/domain/definitions/definition.ts";
 
 /**
  * Schema for DigitalOcean App model input attributes.
@@ -70,26 +65,6 @@ const GetJobLogsInputSchema = z.object({
   tail: z.number().positive().optional(),
 });
 
-/**
- * Schema for DigitalOcean App model resource attributes.
- */
-const ResourceAttributesSchema = z.object({
-  /** App ID */
-  id: z.string().uuid(),
-  /** Default ingress URL */
-  defaultIngress: z.string().nullable(),
-  /** Active deployment ID */
-  activeDeploymentId: z.string().nullable(),
-  /** App creation timestamp */
-  createdAt: z.string().datetime(),
-  /** Last update timestamp */
-  updatedAt: z.string().datetime(),
-  /** App name */
-  name: z.string(),
-  /** Region */
-  region: z.string().nullable(),
-});
-
 interface AppResponse {
   id: string;
   default_ingress?: string;
@@ -118,32 +93,39 @@ function parseYamlSpec(spec: string): AppSpec {
 }
 
 /**
- * Gets the DigitalOcean app ID from the stored resource.
+ * Gets the DigitalOcean app ID from the stored data.
  */
-async function getAppIdFromResource(
-  input: ModelInput,
+async function getAppIdFromData(
+  definition: Definition,
   context: MethodContext,
 ): Promise<string> {
-  if (!context.resourceRepository) {
-    throw new Error(
-      "Cannot operate: resourceRepository not provided in context",
-    );
-  }
-
-  const resource = await context.resourceRepository.findById(
-    ModelType.create("digitalocean/app"),
-    createModelResourceId(input.id),
+  const dataName = `${definition.name}-data`;
+  const existingData = await context.dataRepository.findByName(
+    context.modelType,
+    context.modelId,
+    dataName,
   );
 
-  if (!resource) {
+  if (!existingData) {
     throw new Error(
-      `Resource not found for input ID: ${input.id}. Run 'create' first.`,
+      `Data not found for definition: ${definition.name}. Run 'create' first.`,
     );
   }
 
-  const appId = resource.attributes.id as string;
+  const content = await context.dataRepository.getContent(
+    context.modelType,
+    context.modelId,
+    dataName,
+  );
+
+  if (!content) {
+    throw new Error("Data content not found");
+  }
+
+  const attributes = JSON.parse(new TextDecoder().decode(content));
+  const appId = attributes.id as string;
   if (!appId) {
-    throw new Error("Resource missing 'id' attribute (DO app ID)");
+    throw new Error("Data missing 'id' attribute (DO app ID)");
   }
 
   return appId;
@@ -323,11 +305,11 @@ interface JobInvocationsResponse {
  * Note: Uses direct API call due to doctl bug returning null.
  */
 async function executeListJobInvocations(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = ListJobInvocationsInputSchema.parse(input.attributes);
-  const appId = await getAppIdFromResource(input, context);
+  const attrs = ListJobInvocationsInputSchema.parse(definition.attributes);
+  const appId = await getAppIdFromData(definition, context);
 
   // Build query params
   const params = new URLSearchParams();
@@ -346,47 +328,8 @@ async function executeListJobInvocations(
   const response = JSON.parse(output) as JobInvocationsResponse;
   const invocations = response.job_invocations ?? [];
 
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      invocations: invocations.map((inv) => ({
-        id: inv.id,
-        jobName: inv.job_name,
-        deploymentId: inv.deployment_id,
-        phase: inv.phase,
-        triggerType: inv.trigger.type,
-        createdAt: inv.created_at,
-        startedAt: inv.started_at,
-        completedAt: inv.completed_at,
-        errorCode: inv.progress?.steps?.[0]?.reason?.code,
-        errorMessage: inv.progress?.steps?.[0]?.reason?.message,
-      })),
-      fetchedAt: new Date().toISOString(),
-    },
-  });
-
-  return { data };
-}
-
-/**
- * Execute the getJobInvocation method.
- * Note: Uses direct API call due to doctl bug.
- */
-async function executeGetJobInvocation(
-  input: ModelInput,
-  context: MethodContext,
-): Promise<MethodResult> {
-  const attrs = GetJobInvocationInputSchema.parse(input.attributes);
-  const appId = await getAppIdFromResource(input, context);
-
-  const endpoint = `/apps/${appId}/job-invocations/${attrs.invocationId}`;
-  const output = await callDoApi(endpoint);
-  const response = JSON.parse(output) as { job_invocation: JobInvocationApi };
-  const inv = response.job_invocation;
-
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
+  const dataAttributes = {
+    invocations: invocations.map((inv) => ({
       id: inv.id,
       jobName: inv.job_name,
       deploymentId: inv.deployment_id,
@@ -397,22 +340,93 @@ async function executeGetJobInvocation(
       completedAt: inv.completed_at,
       errorCode: inv.progress?.steps?.[0]?.reason?.code,
       errorMessage: inv.progress?.steps?.[0]?.reason?.message,
-      fetchedAt: new Date().toISOString(),
-    },
-  });
+    })),
+    fetchedAt: new Date().toISOString(),
+  };
 
-  return { data };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-invocations`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "listJobInvocations",
+        },
+      },
+    }],
+  };
+}
+
+/**
+ * Execute the getJobInvocation method.
+ * Note: Uses direct API call due to doctl bug.
+ */
+async function executeGetJobInvocation(
+  definition: Definition,
+  context: MethodContext,
+): Promise<MethodResult> {
+  const attrs = GetJobInvocationInputSchema.parse(definition.attributes);
+  const appId = await getAppIdFromData(definition, context);
+
+  const endpoint = `/apps/${appId}/job-invocations/${attrs.invocationId}`;
+  const output = await callDoApi(endpoint);
+  const response = JSON.parse(output) as { job_invocation: JobInvocationApi };
+  const inv = response.job_invocation;
+
+  const dataAttributes = {
+    id: inv.id,
+    jobName: inv.job_name,
+    deploymentId: inv.deployment_id,
+    phase: inv.phase,
+    triggerType: inv.trigger.type,
+    createdAt: inv.created_at,
+    startedAt: inv.started_at,
+    completedAt: inv.completed_at,
+    errorCode: inv.progress?.steps?.[0]?.reason?.code,
+    errorMessage: inv.progress?.steps?.[0]?.reason?.message,
+    fetchedAt: new Date().toISOString(),
+  };
+
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-invocation`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "getJobInvocation",
+        },
+      },
+    }],
+  };
 }
 
 /**
  * Execute the getJobLogs method.
  */
 async function executeGetJobLogs(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = GetJobLogsInputSchema.parse(input.attributes);
-  const appId = await getAppIdFromResource(input, context);
+  const attrs = GetJobLogsInputSchema.parse(definition.attributes);
+  const appId = await getAppIdFromData(definition, context);
 
   const args = [
     "apps",
@@ -431,18 +445,34 @@ async function executeGetJobLogs(
 
   const logs = await runDoctlText(args);
 
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      logs,
-      invocationId: attrs.invocationId,
-      componentName: attrs.componentName,
-      logType: attrs.logType,
-      fetchedAt: new Date().toISOString(),
-    },
-  });
+  const dataAttributes = {
+    logs,
+    invocationId: attrs.invocationId,
+    componentName: attrs.componentName,
+    logType: attrs.logType,
+    fetchedAt: new Date().toISOString(),
+  };
 
-  return { data };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-logs`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: true,
+        tags: { type: "log" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "getJobLogs",
+        },
+      },
+    }],
+  };
 }
 
 /**
@@ -452,10 +482,10 @@ async function executeGetJobLogs(
  * We need to fetch the actual app by name after creation.
  */
 async function executeCreate(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
 
   // Create returns a deployment, not an app - we ignore the output
   await withTempSpec(attrs.spec, async (specPath: string) => {
@@ -466,12 +496,26 @@ async function executeCreate(
   const specObj = parseYamlSpec(attrs.spec);
   const app = await getAppByName(specObj.name);
 
-  const resource = ModelResource.create({
-    id: input.id,
-    attributes: parseAppResponse(app),
-  });
+  const definitionHash = await definition.computeHash();
 
-  return { resource };
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(parseAppResponse(app))),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "create",
+        },
+      },
+    }],
+  };
 }
 
 /**
@@ -481,11 +525,11 @@ async function executeCreate(
  * We fetch fresh app state using `doctl apps get` after update.
  */
 async function executeUpdate(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = UpdateInputSchema.parse(input.attributes);
-  const appId = await getAppIdFromResource(input, context);
+  const attrs = UpdateInputSchema.parse(definition.attributes);
+  const appId = await getAppIdFromData(definition, context);
 
   // Update the app - ignore the inconsistent response
   await withTempSpec(attrs.spec, async (specPath: string) => {
@@ -500,11 +544,25 @@ async function executeUpdate(
     throw new Error(`App '${appId}' not found after update`);
   }
 
+  const definitionHash = await definition.computeHash();
+
   return {
-    resource: ModelResource.create({
-      id: input.id,
-      attributes: parseAppResponse(app),
-    }),
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(parseAppResponse(app))),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "update",
+        },
+      },
+    }],
   };
 }
 
@@ -512,22 +570,48 @@ async function executeUpdate(
  * Execute the delete method.
  */
 async function executeDelete(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const appId = await getAppIdFromResource(input, context);
+  const appId = await getAppIdFromData(definition, context);
   await runDoctl(["apps", "delete", appId, "--force"]);
-  return { deleteResource: true };
+
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify({
+          deleted: true,
+          deletedAt: new Date().toISOString(),
+          appId,
+        }),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "delete",
+        },
+      },
+    }],
+  };
 }
 
 /**
  * Execute the sync method.
  */
 async function executeSync(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const appId = await getAppIdFromResource(input, context);
+  const appId = await getAppIdFromData(definition, context);
 
   // doctl apps get returns an array
   const output = await runDoctl(["apps", "get", appId]);
@@ -537,11 +621,25 @@ async function executeSync(
     throw new Error(`App '${appId}' not found`);
   }
 
+  const definitionHash = await definition.computeHash();
+
   return {
-    resource: ModelResource.create({
-      id: input.id,
-      attributes: parseAppResponse(app),
-    }),
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(parseAppResponse(app))),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "sync",
+        },
+      },
+    }],
   };
 }
 
@@ -555,7 +653,6 @@ export const digitaloceanAppModel = defineModel({
   type: ModelType.create("digitalocean/app"),
   version: 1,
   inputAttributesSchema: InputAttributesSchema,
-  resourceAttributesSchema: ResourceAttributesSchema,
   methods: {
     create: {
       description: "Create a new DigitalOcean App Platform application",

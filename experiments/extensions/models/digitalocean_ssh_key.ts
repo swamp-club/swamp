@@ -1,15 +1,11 @@
 import { z } from "zod";
 import { ModelType } from "../../../src/domain/models/model_type.ts";
 import {
-  createModelResourceId,
-  ModelResource,
-} from "../../../src/domain/models/model_resource.ts";
-import {
   defineModel,
   type MethodContext,
   type MethodResult,
 } from "../../../src/domain/models/model.ts";
-import type { ModelInput } from "../../../src/domain/models/model_input.ts";
+import type { Definition } from "../../../src/domain/definitions/definition.ts";
 
 /**
  * Schema for DigitalOcean SSH Key model input attributes.
@@ -34,20 +30,6 @@ const UpdateInputSchema = z.object({
  */
 const EmptyInputSchema = z.object({});
 
-/**
- * Schema for DigitalOcean SSH Key model resource attributes.
- */
-const ResourceAttributesSchema = z.object({
-  /** SSH key ID */
-  id: z.number(),
-  /** SSH key name */
-  name: z.string(),
-  /** SSH key fingerprint */
-  fingerprint: z.string(),
-  /** SSH public key content */
-  publicKey: z.string(),
-});
-
 interface SshKeyResponse {
   id: number;
   name: string;
@@ -56,32 +38,39 @@ interface SshKeyResponse {
 }
 
 /**
- * Gets the DigitalOcean SSH key ID from the stored resource.
+ * Gets the DigitalOcean SSH key ID from the stored data.
  */
-async function getKeyIdFromResource(
-  input: ModelInput,
+async function getKeyIdFromData(
+  definition: Definition,
   context: MethodContext,
 ): Promise<number> {
-  if (!context.resourceRepository) {
-    throw new Error(
-      "Cannot operate: resourceRepository not provided in context",
-    );
-  }
-
-  const resource = await context.resourceRepository.findById(
-    ModelType.create("digitalocean/ssh-key"),
-    createModelResourceId(input.id),
+  const dataName = `${definition.name}-data`;
+  const existingData = await context.dataRepository.findByName(
+    context.modelType,
+    context.modelId,
+    dataName,
   );
 
-  if (!resource) {
+  if (!existingData) {
     throw new Error(
-      `Resource not found for input ID: ${input.id}. Run 'create' first.`,
+      `Data not found for definition: ${definition.name}. Run 'create' first.`,
     );
   }
 
-  const keyId = resource.attributes.id as number;
+  const content = await context.dataRepository.getContent(
+    context.modelType,
+    context.modelId,
+    dataName,
+  );
+
+  if (!content) {
+    throw new Error("Data content not found");
+  }
+
+  const attributes = JSON.parse(new TextDecoder().decode(content));
+  const keyId = attributes.id as number;
   if (!keyId) {
-    throw new Error("Resource missing 'id' attribute (DO SSH key ID)");
+    throw new Error("Data missing 'id' attribute (DO SSH key ID)");
   }
 
   return keyId;
@@ -125,10 +114,10 @@ function parseSshKeyResponse(key: SshKeyResponse) {
  * Execute the create method.
  */
 async function executeCreate(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
 
   const output = await runDoctl([
     "compute",
@@ -145,23 +134,39 @@ async function executeCreate(
     throw new Error("SSH key not found in create response");
   }
 
-  const resource = ModelResource.create({
-    id: input.id,
-    attributes: parseSshKeyResponse(key),
-  });
+  const definitionHash = await definition.computeHash();
 
-  return { resource };
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify(parseSshKeyResponse(key)),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "create",
+        },
+      },
+    }],
+  };
 }
 
 /**
  * Execute the update method.
  */
 async function executeUpdate(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = UpdateInputSchema.parse(input.attributes);
-  const keyId = await getKeyIdFromResource(input, context);
+  const attrs = UpdateInputSchema.parse(definition.attributes);
+  const keyId = await getKeyIdFromData(definition, context);
 
   const output = await runDoctl([
     "compute",
@@ -178,11 +183,27 @@ async function executeUpdate(
     throw new Error(`SSH key '${keyId}' not found after update`);
   }
 
+  const definitionHash = await definition.computeHash();
+
   return {
-    resource: ModelResource.create({
-      id: input.id,
-      attributes: parseSshKeyResponse(key),
-    }),
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify(parseSshKeyResponse(key)),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "update",
+        },
+      },
+    }],
   };
 }
 
@@ -190,22 +211,48 @@ async function executeUpdate(
  * Execute the delete method.
  */
 async function executeDelete(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const keyId = await getKeyIdFromResource(input, context);
+  const keyId = await getKeyIdFromData(definition, context);
   await runDoctl(["compute", "ssh-key", "delete", keyId.toString(), "--force"]);
-  return { deleteResource: true };
+
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify({
+          deleted: true,
+          deletedAt: new Date().toISOString(),
+          keyId,
+        }),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "delete",
+        },
+      },
+    }],
+  };
 }
 
 /**
  * Execute the sync method.
  */
 async function executeSync(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const keyId = await getKeyIdFromResource(input, context);
+  const keyId = await getKeyIdFromData(definition, context);
 
   const output = await runDoctl([
     "compute",
@@ -219,11 +266,27 @@ async function executeSync(
     throw new Error(`SSH key '${keyId}' not found`);
   }
 
+  const definitionHash = await definition.computeHash();
+
   return {
-    resource: ModelResource.create({
-      id: input.id,
-      attributes: parseSshKeyResponse(key),
-    }),
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify(parseSshKeyResponse(key)),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "sync",
+        },
+      },
+    }],
   };
 }
 
@@ -237,7 +300,6 @@ export const digitaloceanSshKeyModel = defineModel({
   type: ModelType.create("digitalocean/ssh-key"),
   version: 1,
   inputAttributesSchema: InputAttributesSchema,
-  resourceAttributesSchema: ResourceAttributesSchema,
   methods: {
     create: {
       description: "Create a new SSH key on DigitalOcean",

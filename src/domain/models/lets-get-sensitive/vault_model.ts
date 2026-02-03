@@ -169,7 +169,7 @@ async function executeGet(
             contentType: "text/plain",
             lifetime: "infinite",
             garbageCollection: 10,
-            streaming: false,
+            streaming: true,
             tags: { type: "log" },
             ownerDefinition: {
               definitionHash,
@@ -266,7 +266,7 @@ async function executePut(
             contentType: "text/plain",
             lifetime: "infinite",
             garbageCollection: 10,
-            streaming: false,
+            streaming: true,
             tags: { type: "log" },
             ownerDefinition: {
               definitionHash,

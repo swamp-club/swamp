@@ -61,11 +61,11 @@ async function executeWrite(
 
   return {
     dataOutputs: [{
-      name: `${definition.name}-data`,
+      name: `${definition.name}-message`,
       content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
       metadata: {
         contentType: "application/json",
-        lifetime: "infinite",
+        lifetime: "ephemeral",
         garbageCollection: 10,
         streaming: false,
         tags: { type: "data" },

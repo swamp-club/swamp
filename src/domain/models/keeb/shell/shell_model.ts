@@ -235,7 +235,7 @@ async function executeCommand(
           contentType: "text/plain",
           lifetime: "infinite",
           garbageCollection: 10,
-          streaming: false,
+          streaming: true,
           tags: { type: "log" },
           ownerDefinition: {
             definitionHash,

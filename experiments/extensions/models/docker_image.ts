@@ -1,12 +1,11 @@
 import { z } from "zod";
 import { ModelType } from "../../../src/domain/models/model_type.ts";
-import { ModelData } from "../../../src/domain/models/model_data.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
 } from "../../../src/domain/models/model.ts";
-import type { ModelInput } from "../../../src/domain/models/model_input.ts";
+import type { Definition } from "../../../src/domain/definitions/definition.ts";
 
 /**
  * Schema for Docker image model input attributes.
@@ -23,20 +22,6 @@ const InputAttributesSchema = z.object({
 });
 
 type InputAttributes = z.infer<typeof InputAttributesSchema>;
-
-/**
- * Schema for Docker image model data attributes.
- */
-const DataAttributesSchema = z.object({
-  /** Full image reference (repository:tag) */
-  imageRef: z.string(),
-  /** Whether the operation succeeded */
-  success: z.boolean(),
-  /** Operation performed */
-  operation: z.enum(["build", "push", "build-push"]),
-  /** Timestamp when operation completed */
-  completedAt: z.string().datetime(),
-});
 
 /**
  * Runs a docker command.
@@ -82,70 +67,118 @@ async function pushImage(attrs: InputAttributes): Promise<void> {
  * Execute the build method.
  */
 async function executeBuild(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
   await buildImage(attrs);
 
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      imageRef: `${attrs.repository}:${attrs.tag}`,
-      success: true,
-      operation: "build",
-      completedAt: new Date().toISOString(),
-    },
-  });
+  const dataAttributes = {
+    imageRef: `${attrs.repository}:${attrs.tag}`,
+    success: true,
+    operation: "build",
+    completedAt: new Date().toISOString(),
+  };
 
-  return { data };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "build",
+        },
+      },
+    }],
+  };
 }
 
 /**
  * Execute the push method.
  */
 async function executePush(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
   await pushImage(attrs);
 
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      imageRef: `${attrs.repository}:${attrs.tag}`,
-      success: true,
-      operation: "push",
-      completedAt: new Date().toISOString(),
-    },
-  });
+  const dataAttributes = {
+    imageRef: `${attrs.repository}:${attrs.tag}`,
+    success: true,
+    operation: "push",
+    completedAt: new Date().toISOString(),
+  };
 
-  return { data };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "push",
+        },
+      },
+    }],
+  };
 }
 
 /**
  * Execute the build-push method.
  */
 async function executeBuildPush(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
   await buildImage(attrs);
   await pushImage(attrs);
 
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      imageRef: `${attrs.repository}:${attrs.tag}`,
-      success: true,
-      operation: "build-push",
-      completedAt: new Date().toISOString(),
-    },
-  });
+  const dataAttributes = {
+    imageRef: `${attrs.repository}:${attrs.tag}`,
+    success: true,
+    operation: "build-push",
+    completedAt: new Date().toISOString(),
+  };
 
-  return { data };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "build-push",
+        },
+      },
+    }],
+  };
 }
 
 /**
@@ -159,7 +192,6 @@ export const dockerImageModel = defineModel({
   type: ModelType.create("docker/image"),
   version: 1,
   inputAttributesSchema: InputAttributesSchema,
-  dataAttributesSchema: DataAttributesSchema,
   methods: {
     build: {
       description: "Build a Docker image locally",

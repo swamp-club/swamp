@@ -1,15 +1,11 @@
 import { z } from "zod";
 import { ModelType } from "../../../src/domain/models/model_type.ts";
 import {
-  createModelResourceId,
-  ModelResource,
-} from "../../../src/domain/models/model_resource.ts";
-import {
   defineModel,
   type MethodContext,
   type MethodResult,
 } from "../../../src/domain/models/model.ts";
-import type { ModelInput } from "../../../src/domain/models/model_input.ts";
+import type { Definition } from "../../../src/domain/definitions/definition.ts";
 
 /**
  * Schema for DigitalOcean Droplet model input attributes.
@@ -40,38 +36,6 @@ const InputAttributesSchema = z.object({
  */
 const EmptyInputSchema = z.object({});
 
-/**
- * Schema for DigitalOcean Droplet model resource attributes.
- */
-const ResourceAttributesSchema = z.object({
-  /** Droplet ID */
-  id: z.number(),
-  /** Droplet name */
-  name: z.string(),
-  /** Status (e.g., "new", "active", "off") */
-  status: z.string(),
-  /** Memory in MB */
-  memory: z.number(),
-  /** Number of vCPUs */
-  vcpus: z.number(),
-  /** Disk size in GB */
-  disk: z.number(),
-  /** Region slug */
-  region: z.string(),
-  /** Image slug or name */
-  image: z.string(),
-  /** Size slug */
-  sizeSlug: z.string(),
-  /** Public IPv4 address */
-  publicIpv4: z.string().nullable(),
-  /** Private IPv4 address */
-  privateIpv4: z.string().nullable(),
-  /** Creation timestamp */
-  createdAt: z.string(),
-  /** VPC UUID */
-  vpcUuid: z.string().nullable(),
-});
-
 interface NetworkInfo {
   ip_address: string;
   type: "public" | "private";
@@ -95,32 +59,39 @@ interface DropletResponse {
 }
 
 /**
- * Gets the DigitalOcean Droplet ID from the stored resource.
+ * Gets the DigitalOcean Droplet ID from the stored data.
  */
-async function getDropletIdFromResource(
-  input: ModelInput,
+async function getDropletIdFromData(
+  definition: Definition,
   context: MethodContext,
 ): Promise<number> {
-  if (!context.resourceRepository) {
-    throw new Error(
-      "Cannot operate: resourceRepository not provided in context",
-    );
-  }
-
-  const resource = await context.resourceRepository.findById(
-    ModelType.create("digitalocean/droplet"),
-    createModelResourceId(input.id),
+  const dataName = `${definition.name}-data`;
+  const existingData = await context.dataRepository.findByName(
+    context.modelType,
+    context.modelId,
+    dataName,
   );
 
-  if (!resource) {
+  if (!existingData) {
     throw new Error(
-      `Resource not found for input ID: ${input.id}. Run 'create' first.`,
+      `Data not found for definition: ${definition.name}. Run 'create' first.`,
     );
   }
 
-  const dropletId = resource.attributes.id as number;
+  const content = await context.dataRepository.getContent(
+    context.modelType,
+    context.modelId,
+    dataName,
+  );
+
+  if (!content) {
+    throw new Error("Data content not found");
+  }
+
+  const attributes = JSON.parse(new TextDecoder().decode(content));
+  const dropletId = attributes.id as number;
   if (!dropletId) {
-    throw new Error("Resource missing 'id' attribute (DO Droplet ID)");
+    throw new Error("Data missing 'id' attribute (DO Droplet ID)");
   }
 
   return dropletId;
@@ -175,10 +146,10 @@ function parseDropletResponse(droplet: DropletResponse) {
  * Execute the create method.
  */
 async function executeCreate(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
 
   const args = [
     "compute",
@@ -222,22 +193,38 @@ async function executeCreate(
     throw new Error("Droplet not found in create response");
   }
 
-  const resource = ModelResource.create({
-    id: input.id,
-    attributes: parseDropletResponse(droplet),
-  });
+  const definitionHash = await definition.computeHash();
 
-  return { resource };
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify(parseDropletResponse(droplet)),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "create",
+        },
+      },
+    }],
+  };
 }
 
 /**
  * Execute the delete method.
  */
 async function executeDelete(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const dropletId = await getDropletIdFromResource(input, context);
+  const dropletId = await getDropletIdFromData(definition, context);
   await runDoctl([
     "compute",
     "droplet",
@@ -245,17 +232,43 @@ async function executeDelete(
     dropletId.toString(),
     "--force",
   ]);
-  return { deleteResource: true };
+
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify({
+          deleted: true,
+          deletedAt: new Date().toISOString(),
+          dropletId,
+        }),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "delete",
+        },
+      },
+    }],
+  };
 }
 
 /**
  * Execute the sync method.
  */
 async function executeSync(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const dropletId = await getDropletIdFromResource(input, context);
+  const dropletId = await getDropletIdFromData(definition, context);
 
   const output = await runDoctl([
     "compute",
@@ -269,11 +282,27 @@ async function executeSync(
     throw new Error(`Droplet '${dropletId}' not found`);
   }
 
+  const definitionHash = await definition.computeHash();
+
   return {
-    resource: ModelResource.create({
-      id: input.id,
-      attributes: parseDropletResponse(droplet),
-    }),
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify(parseDropletResponse(droplet)),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "sync",
+        },
+      },
+    }],
   };
 }
 
@@ -282,10 +311,10 @@ async function executeSync(
  */
 async function executeAction(
   action: "power-on" | "power-off" | "reboot",
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const dropletId = await getDropletIdFromResource(input, context);
+  const dropletId = await getDropletIdFromData(definition, context);
 
   await runDoctl([
     "compute",
@@ -307,11 +336,27 @@ async function executeAction(
     throw new Error(`Droplet '${dropletId}' not found after ${action}`);
   }
 
+  const definitionHash = await definition.computeHash();
+
   return {
-    resource: ModelResource.create({
-      id: input.id,
-      attributes: parseDropletResponse(droplet),
-    }),
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(
+        JSON.stringify(parseDropletResponse(droplet)),
+      ),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "resource" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: action,
+        },
+      },
+    }],
   };
 }
 
@@ -319,30 +364,30 @@ async function executeAction(
  * Execute the power-on method.
  */
 function executePowerOn(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  return executeAction("power-on", input, context);
+  return executeAction("power-on", definition, context);
 }
 
 /**
  * Execute the power-off method.
  */
 function executePowerOff(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  return executeAction("power-off", input, context);
+  return executeAction("power-off", definition, context);
 }
 
 /**
  * Execute the reboot method.
  */
 function executeReboot(
-  input: ModelInput,
+  definition: Definition,
   context: MethodContext,
 ): Promise<MethodResult> {
-  return executeAction("reboot", input, context);
+  return executeAction("reboot", definition, context);
 }
 
 /**
@@ -355,7 +400,6 @@ export const digitaloceanDropletModel = defineModel({
   type: ModelType.create("digitalocean/droplet"),
   version: 1,
   inputAttributesSchema: InputAttributesSchema,
-  resourceAttributesSchema: ResourceAttributesSchema,
   methods: {
     create: {
       description: "Create a new DigitalOcean Droplet",

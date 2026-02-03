@@ -1,12 +1,11 @@
 import { z } from "zod";
 import { ModelType } from "../../../src/domain/models/model_type.ts";
-import { ModelData } from "../../../src/domain/models/model_data.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
 } from "../../../src/domain/models/model.ts";
-import type { ModelInput } from "../../../src/domain/models/model_input.ts";
+import type { Definition } from "../../../src/domain/definitions/definition.ts";
 
 /**
  * Schema for Discord webhook model input attributes.
@@ -23,18 +22,6 @@ const InputAttributesSchema = z.object({
 });
 
 type InputAttributes = z.infer<typeof InputAttributesSchema>;
-
-/**
- * Schema for Discord webhook model data attributes.
- */
-const DataAttributesSchema = z.object({
-  /** Whether the message was sent successfully */
-  success: z.boolean(),
-  /** Timestamp when the message was sent */
-  sentAt: z.string().datetime(),
-  /** Content that was sent (may be truncated if over limit) */
-  contentLength: z.number().int().nonnegative(),
-});
 
 /**
  * Sends a message via Discord webhook.
@@ -84,22 +71,38 @@ async function sendWebhookMessage(attrs: InputAttributes): Promise<void> {
  * Execute the send method.
  */
 async function executeSend(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
   await sendWebhookMessage(attrs);
 
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      success: true,
-      sentAt: new Date().toISOString(),
-      contentLength: attrs.content.length,
-    },
-  });
+  const dataAttributes = {
+    success: true,
+    sentAt: new Date().toISOString(),
+    contentLength: attrs.content.length,
+  };
 
-  return { data };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "send",
+        },
+      },
+    }],
+  };
 }
 
 /**
@@ -113,7 +116,6 @@ export const discordWebhookModel = defineModel({
   type: ModelType.create("discord/webhook"),
   version: 1,
   inputAttributesSchema: InputAttributesSchema,
-  dataAttributesSchema: DataAttributesSchema,
   methods: {
     send: {
       description: "Send a message to Discord via webhook",

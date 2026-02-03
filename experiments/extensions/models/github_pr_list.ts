@@ -1,12 +1,11 @@
 import { z } from "zod";
 import { ModelType } from "../../../src/domain/models/model_type.ts";
-import { ModelData } from "../../../src/domain/models/model_data.ts";
 import {
   defineModel,
   type MethodContext,
   type MethodResult,
 } from "../../../src/domain/models/model.ts";
-import type { ModelInput } from "../../../src/domain/models/model_input.ts";
+import type { Definition } from "../../../src/domain/definitions/definition.ts";
 
 /**
  * Schema for GitHub PR list model input attributes.
@@ -25,28 +24,6 @@ const InputAttributesSchema = z.object({
 });
 
 type InputAttributes = z.infer<typeof InputAttributesSchema>;
-
-/**
- * Schema for a single PR in the output.
- */
-const PullRequestSchema = z.object({
-  number: z.number().int(),
-  title: z.string(),
-  url: z.string().url(),
-  mergedAt: z.string().datetime().nullable(),
-  author: z.string(),
-  body: z.string().nullable(),
-});
-
-/**
- * Schema for GitHub PR list model data attributes.
- */
-const DataAttributesSchema = z.object({
-  pullRequests: z.array(PullRequestSchema),
-  fetchedAt: z.string().datetime(),
-  owner: z.string(),
-  repo: z.string(),
-});
 
 interface GitHubPR {
   number: number;
@@ -125,10 +102,10 @@ async function fetchPullRequests(attrs: InputAttributes): Promise<GitHubPR[]> {
  * Execute the list method.
  */
 async function executeList(
-  input: ModelInput,
+  definition: Definition,
   _context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = InputAttributesSchema.parse(input.attributes);
+  const attrs = InputAttributesSchema.parse(definition.attributes);
   const prs = await fetchPullRequests(attrs);
 
   const pullRequests = prs.map((pr) => ({
@@ -140,17 +117,33 @@ async function executeList(
     body: pr.body,
   }));
 
-  const data = ModelData.create({
-    id: input.id,
-    attributes: {
-      pullRequests,
-      fetchedAt: new Date().toISOString(),
-      owner: attrs.owner,
-      repo: attrs.repo,
-    },
-  });
+  const dataAttributes = {
+    pullRequests,
+    fetchedAt: new Date().toISOString(),
+    owner: attrs.owner,
+    repo: attrs.repo,
+  };
 
-  return { data };
+  const definitionHash = await definition.computeHash();
+
+  return {
+    dataOutputs: [{
+      name: `${definition.name}-data`,
+      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: { type: "data" },
+        ownerDefinition: {
+          definitionHash,
+          ownerType: "model-method",
+          ownerRef: "list",
+        },
+      },
+    }],
+  };
 }
 
 /**
@@ -163,7 +156,6 @@ export const githubPrListModel = defineModel({
   type: ModelType.create("github/pr-list"),
   version: 1,
   inputAttributesSchema: InputAttributesSchema,
-  dataAttributesSchema: DataAttributesSchema,
   methods: {
     list: {
       description: "List pull requests from a GitHub repository",
