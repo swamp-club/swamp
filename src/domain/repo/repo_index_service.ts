@@ -55,13 +55,14 @@ export interface RebuildResult {
  *
  * Model View (`/models/{model-name}/`):
  * ```
- * input.yaml      → ../.data/inputs/{type}/{id}.yaml
- * resource.yaml   → ../.data/resources/{type}/{id}.yaml
- * data.yaml       → ../.data/data/{type}/{id}.yaml
- * logs/           → ../.data/logs/{type}/{id}/
- * files/          → ../.data/files/{type}/{id}/
+ * definition.yaml → /.swamp/definitions/{type}/{id}.yaml
+ * type/
+ *   logs/         → symlinks to data with type=log tag
+ *   files/        → symlinks to data with type=file tag
+ *   resources/    → symlinks to data with type=resource tag
+ * {tag-key}/{tag-value}/ → data organized by custom tag key/value pairs
  * outputs/
- *   {method}/     → ../.data/outputs/{type}/{method}/
+ *   {method}/     → /.swamp/outputs/{type}/{method}/
  * ```
  *
  * Workflow View (`/workflows/{workflow-name}/`):

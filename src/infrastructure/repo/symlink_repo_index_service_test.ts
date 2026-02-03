@@ -3,9 +3,11 @@ import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { SymlinkRepoIndexService } from "./symlink_repo_index_service.ts";
 import { YamlInputRepository } from "../persistence/yaml_input_repository.ts";
+import { YamlDefinitionRepository } from "../persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRepository } from "../persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../persistence/yaml_workflow_run_repository.ts";
 import { ModelInput } from "../../domain/models/model_input.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -27,8 +29,9 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 async function setupRepoDir(dir: string): Promise<void> {
-  // Create standard data directory structure
+  // Create standard data directory structure (both legacy and new)
   const subdirs = [
+    // Legacy .data paths
     ".data/inputs",
     ".data/resources",
     ".data/data",
@@ -37,6 +40,11 @@ async function setupRepoDir(dir: string): Promise<void> {
     ".data/workflow-runs",
     ".data/logs",
     ".data/files",
+    // New .swamp paths
+    ".swamp/definitions",
+    ".swamp/data",
+    ".swamp/outputs",
+    // Logical view directories
     "models",
     "workflows",
   ];
@@ -47,6 +55,7 @@ async function setupRepoDir(dir: string): Promise<void> {
 
 function createIndexService(dir: string) {
   const inputRepo = new YamlInputRepository(dir);
+  const definitionRepo = new YamlDefinitionRepository(dir);
   const workflowRepo = new YamlWorkflowRepository(dir);
   const workflowRunRepo = new YamlWorkflowRunRepository(dir);
 
@@ -54,10 +63,12 @@ function createIndexService(dir: string) {
     indexService: new SymlinkRepoIndexService({
       repoDir: dir,
       inputRepo,
+      definitionRepo,
       workflowRepo,
       workflowRunRepo,
     }),
     inputRepo,
+    definitionRepo,
     workflowRepo,
     workflowRunRepo,
   };
@@ -81,7 +92,7 @@ Deno.test("SymlinkRepoIndexService.handleModelCreated creates model directory", 
   });
 });
 
-Deno.test("SymlinkRepoIndexService.handleModelCreated creates input.yaml symlink", async () => {
+Deno.test("SymlinkRepoIndexService.handleModelCreated creates input.yaml symlink (legacy)", async () => {
   await withTempDir(async (dir) => {
     await setupRepoDir(dir);
     const { indexService, inputRepo } = createIndexService(dir);
@@ -92,7 +103,7 @@ Deno.test("SymlinkRepoIndexService.handleModelCreated creates input.yaml symlink
     const event = createModelCreated(type.normalized, input.id, input.name);
     await indexService.handleModelCreated(event);
 
-    // Check that input.yaml symlink exists and points to correct file
+    // Check that input.yaml symlink exists and points to correct file (legacy path)
     const symlinkPath = join(dir, "models", "my-model", "input.yaml");
     const linkInfo = await Deno.lstat(symlinkPath);
     assertEquals(linkInfo.isSymlink, true);
@@ -100,6 +111,42 @@ Deno.test("SymlinkRepoIndexService.handleModelCreated creates input.yaml symlink
     // Read through symlink should work
     const content = await Deno.readTextFile(symlinkPath);
     assertEquals(content.includes("my-model"), true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.handleModelCreated creates definition.yaml symlink (new path)", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, definitionRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+    const definition = Definition.create({
+      name: "my-definition-model",
+      version: 1,
+      tags: {},
+      attributes: { message: "hello" },
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await indexService.handleModelCreated(event);
+
+    // Check that definition.yaml symlink exists and points to correct file
+    const symlinkPath = join(
+      dir,
+      "models",
+      "my-definition-model",
+      "definition.yaml",
+    );
+    const linkInfo = await Deno.lstat(symlinkPath);
+    assertEquals(linkInfo.isSymlink, true);
+
+    // Read through symlink should work
+    const content = await Deno.readTextFile(symlinkPath);
+    assertEquals(content.includes("my-definition-model"), true);
   });
 });
 
@@ -145,13 +192,13 @@ Deno.test("SymlinkRepoIndexService.handleModelDeleted removes model directory", 
   });
 });
 
-Deno.test("SymlinkRepoIndexService.rebuildAll indexes all models", async () => {
+Deno.test("SymlinkRepoIndexService.rebuildAll indexes all models (legacy)", async () => {
   await withTempDir(async (dir) => {
     await setupRepoDir(dir);
     const { indexService, inputRepo } = createIndexService(dir);
     const type = ModelType.create("swamp/echo");
 
-    // Create multiple models
+    // Create multiple models using legacy input repo
     const model1 = ModelInput.create({ name: "model-one" });
     const model2 = ModelInput.create({ name: "model-two" });
     await inputRepo.save(type, model1);
@@ -169,6 +216,51 @@ Deno.test("SymlinkRepoIndexService.rebuildAll indexes all models", async () => {
     const stat2 = await Deno.stat(dir2);
     assertEquals(stat1.isDirectory, true);
     assertEquals(stat2.isDirectory, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.rebuildAll indexes all definitions", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, definitionRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    // Create multiple definitions
+    const def1 = Definition.create({
+      name: "def-one",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    const def2 = Definition.create({
+      name: "def-two",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await definitionRepo.save(type, def1);
+    await definitionRepo.save(type, def2);
+
+    // Rebuild all
+    const result = await indexService.rebuildAll();
+
+    assertEquals(result.modelsIndexed, 2);
+
+    // Verify both model directories exist
+    const dir1 = join(dir, "models", "def-one");
+    const dir2 = join(dir, "models", "def-two");
+    const stat1 = await Deno.stat(dir1);
+    const stat2 = await Deno.stat(dir2);
+    assertEquals(stat1.isDirectory, true);
+    assertEquals(stat2.isDirectory, true);
+
+    // Verify definition.yaml symlinks exist
+    const symlink1 = join(dir1, "definition.yaml");
+    const symlink2 = join(dir2, "definition.yaml");
+    const linkInfo1 = await Deno.lstat(symlink1);
+    const linkInfo2 = await Deno.lstat(symlink2);
+    assertEquals(linkInfo1.isSymlink, true);
+    assertEquals(linkInfo2.isSymlink, true);
   });
 });
 

@@ -39,10 +39,15 @@ import { YamlDataRepository } from "./yaml_data_repository.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import { StreamingLogRepository } from "./streaming_log_repository.ts";
 import { FileSystemFileRepository } from "./fs_file_repository.ts";
+import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
+import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import { SymlinkRepoIndexService } from "../repo/symlink_repo_index_service.ts";
 import type { RepoIndexService } from "../../domain/repo/repo_index_service.ts";
 import type {
+  DefinitionCreated,
+  DefinitionDeleted,
+  DefinitionUpdated,
   ModelCreated,
   ModelDeleted,
   ModelUpdated,
@@ -74,6 +79,8 @@ export interface RepositoryContext {
   eventBus: EventBus;
   indexService: RepoIndexService;
   inputRepo: YamlInputRepository;
+  definitionRepo: YamlDefinitionRepository;
+  unifiedDataRepo: FileSystemUnifiedDataRepository;
   workflowRepo: YamlWorkflowRepository;
   workflowRunRepo: YamlWorkflowRunRepository;
   resourceRepo: YamlResourceRepository;
@@ -103,6 +110,10 @@ export function createRepositoryContext(
     repoDir,
     enableIndexing ? eventBus : undefined,
   );
+  const definitionRepo = new YamlDefinitionRepository(
+    repoDir,
+    enableIndexing ? eventBus : undefined,
+  );
   const workflowRepo = new YamlWorkflowRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
@@ -115,6 +126,7 @@ export function createRepositoryContext(
   // These repositories don't emit events (yet)
   const resourceRepo = new YamlResourceRepository(repoDir);
   const dataRepo = new YamlDataRepository(repoDir);
+  const unifiedDataRepo = new FileSystemUnifiedDataRepository(repoDir);
   const outputRepo = new YamlOutputRepository(repoDir);
   const logRepo = new StreamingLogRepository(repoDir);
   const fileRepo = new FileSystemFileRepository(repoDir);
@@ -125,10 +137,12 @@ export function createRepositoryContext(
     enableIndexing ? eventBus : undefined,
   );
 
-  // Create index service
+  // Create index service with new repositories
   const indexService = new SymlinkRepoIndexService({
     repoDir,
-    inputRepo,
+    inputRepo, // Legacy support
+    definitionRepo, // New definition repository
+    unifiedDataRepo, // New unified data repository
     workflowRepo,
     workflowRunRepo,
     vaultConfigRepo,
@@ -136,6 +150,7 @@ export function createRepositoryContext(
 
   // Subscribe index service to events
   if (enableIndexing) {
+    // Legacy model events (from InputRepository)
     eventBus.subscribe<ModelCreated>(
       "ModelCreated",
       (event) => indexService.handleModelCreated(event),
@@ -148,6 +163,42 @@ export function createRepositoryContext(
       "ModelDeleted",
       (event) => indexService.handleModelDeleted(event),
     );
+
+    // Definition events (from DefinitionRepository) - map to model events
+    eventBus.subscribe<DefinitionCreated>(
+      "DefinitionCreated",
+      (event) =>
+        indexService.handleModelCreated({
+          type: "ModelCreated",
+          timestamp: event.timestamp,
+          modelType: event.modelType,
+          modelInputId: event.definitionId,
+          modelName: event.definitionName,
+        }),
+    );
+    eventBus.subscribe<DefinitionUpdated>(
+      "DefinitionUpdated",
+      (event) =>
+        indexService.handleModelUpdated({
+          type: "ModelUpdated",
+          timestamp: event.timestamp,
+          modelType: event.modelType,
+          modelInputId: event.definitionId,
+          modelName: event.definitionName,
+        }),
+    );
+    eventBus.subscribe<DefinitionDeleted>(
+      "DefinitionDeleted",
+      (event) =>
+        indexService.handleModelDeleted({
+          type: "ModelDeleted",
+          timestamp: event.timestamp,
+          modelType: event.modelType,
+          modelInputId: event.definitionId,
+          modelName: event.definitionName,
+        }),
+    );
+
     eventBus.subscribe<WorkflowCreated>(
       "WorkflowCreated",
       (event) => indexService.handleWorkflowCreated(event),
@@ -194,6 +245,8 @@ export function createRepositoryContext(
     eventBus,
     indexService,
     inputRepo,
+    definitionRepo,
+    unifiedDataRepo,
     workflowRepo,
     workflowRunRepo,
     resourceRepo,

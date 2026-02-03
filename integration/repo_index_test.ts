@@ -13,6 +13,7 @@ import { existsSync } from "@std/fs";
 import { ensureDir } from "@std/fs";
 import { ModelInput } from "../src/domain/models/model_input.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -31,6 +32,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function setupRepoDir(dir: string): Promise<void> {
   const subdirs = [
+    // Legacy .data paths
     ".data/inputs",
     ".data/resources",
     ".data/data",
@@ -39,6 +41,11 @@ async function setupRepoDir(dir: string): Promise<void> {
     ".data/workflow-runs",
     ".data/logs",
     ".data/files",
+    // New .swamp paths
+    ".swamp/definitions",
+    ".swamp/data",
+    ".swamp/outputs",
+    // Logical view directories
     "models",
     "workflows",
   ];
@@ -502,5 +509,218 @@ Deno.test("CLI: repo index --prune removes broken symlinks", async () => {
 
     // Verify broken link was removed
     assertEquals(existsSync(brokenLink), false);
+  });
+});
+
+// ============================================================================
+// Definition-Based Model Indexing Tests (Issue #119)
+// ============================================================================
+
+Deno.test("Integration: definition create via repository context creates definition.yaml symlink", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+
+    // Create repository context with indexing enabled
+    const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
+    const type = ModelType.create("swamp/echo");
+
+    // Create and save a definition
+    const definition = Definition.create({
+      name: "definition-indexed-model",
+      version: 1,
+      tags: { env: "test" },
+      attributes: { message: "hello" },
+    });
+    await ctx.definitionRepo.save(type, definition);
+
+    // Verify the index directory was created automatically
+    const modelDir = join(repoDir, "models", "definition-indexed-model");
+    assertEquals(
+      existsSync(modelDir),
+      true,
+      "Model index directory should exist",
+    );
+
+    // Verify the definition.yaml symlink exists (new format)
+    const definitionSymlink = join(modelDir, "definition.yaml");
+    assertEquals(
+      existsSync(definitionSymlink),
+      true,
+      "definition.yaml symlink should exist",
+    );
+
+    // Verify we can read through the symlink
+    const content = await Deno.readTextFile(definitionSymlink);
+    assertEquals(
+      content.includes("definition-indexed-model"),
+      true,
+      "Should be able to read definition name through symlink",
+    );
+    assertEquals(
+      content.includes("message"),
+      true,
+      "Should be able to read attributes through symlink",
+    );
+  });
+});
+
+Deno.test("Integration: definition update via repository context updates logical view", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+
+    const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
+    const type = ModelType.create("swamp/echo");
+
+    // Create initial definition
+    const definition = Definition.create({
+      name: "update-test-model",
+      version: 1,
+      tags: {},
+      attributes: { value: "original" },
+    });
+    await ctx.definitionRepo.save(type, definition);
+
+    // Verify initial symlink exists and has original value
+    const definitionSymlink = join(
+      repoDir,
+      "models",
+      "update-test-model",
+      "definition.yaml",
+    );
+    let content = await Deno.readTextFile(definitionSymlink);
+    assertEquals(
+      content.includes("original"),
+      true,
+      "Initial content should have original value",
+    );
+
+    // Update the definition
+    const updatedDefinition = Definition.create({
+      id: definition.id,
+      name: "update-test-model",
+      version: 2,
+      tags: {},
+      attributes: { value: "updated" },
+    });
+    await ctx.definitionRepo.save(type, updatedDefinition);
+
+    // Verify symlink still exists and has updated value
+    assertEquals(
+      existsSync(definitionSymlink),
+      true,
+      "definition.yaml symlink should still exist after update",
+    );
+    content = await Deno.readTextFile(definitionSymlink);
+    assertEquals(
+      content.includes("updated"),
+      true,
+      "Updated content should have new value",
+    );
+  });
+});
+
+Deno.test("Integration: definition delete via repository context removes logical view", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+
+    const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
+    const type = ModelType.create("swamp/echo");
+
+    // Create a definition
+    const definition = Definition.create({
+      name: "delete-definition-model",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await ctx.definitionRepo.save(type, definition);
+
+    // Verify index exists
+    const modelDir = join(repoDir, "models", "delete-definition-model");
+    assertEquals(existsSync(modelDir), true, "Index should exist after create");
+
+    // Delete the definition
+    await ctx.definitionRepo.delete(type, definition.id);
+
+    // Verify index was removed
+    assertEquals(
+      existsSync(modelDir),
+      false,
+      "Index should be removed after delete",
+    );
+  });
+});
+
+Deno.test("Integration: repo index rebuild indexes definitions with type/ directory", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+
+    // Create definitions WITHOUT indexing enabled
+    const ctxNoIndex = createRepositoryContext({
+      repoDir,
+      enableIndexing: false,
+    });
+    const type = ModelType.create("swamp/echo");
+
+    const def1 = Definition.create({
+      name: "rebuild-def-1",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    const def2 = Definition.create({
+      name: "rebuild-def-2",
+      version: 1,
+      tags: {},
+      attributes: {},
+    });
+    await ctxNoIndex.definitionRepo.save(type, def1);
+    await ctxNoIndex.definitionRepo.save(type, def2);
+
+    // Verify no index directories exist yet
+    assertEquals(
+      existsSync(join(repoDir, "models", "rebuild-def-1")),
+      false,
+      "Index should not exist before rebuild",
+    );
+    assertEquals(
+      existsSync(join(repoDir, "models", "rebuild-def-2")),
+      false,
+      "Index should not exist before rebuild",
+    );
+
+    // Now rebuild the index
+    const result = await ctxNoIndex.indexService.rebuildAll();
+
+    assertEquals(result.modelsIndexed, 2, "Should index 2 definitions");
+
+    // Verify index directories now exist with definition.yaml symlinks
+    const dir1 = join(repoDir, "models", "rebuild-def-1");
+    const dir2 = join(repoDir, "models", "rebuild-def-2");
+    assertEquals(existsSync(dir1), true, "First model dir should exist");
+    assertEquals(existsSync(dir2), true, "Second model dir should exist");
+
+    assertEquals(
+      existsSync(join(dir1, "definition.yaml")),
+      true,
+      "First definition.yaml symlink should exist",
+    );
+    assertEquals(
+      existsSync(join(dir2, "definition.yaml")),
+      true,
+      "Second definition.yaml symlink should exist",
+    );
+
+    // Verify type/ directory exists for tag-based organization
+    assertEquals(
+      existsSync(join(dir1, "type")),
+      true,
+      "type/ directory should exist for tag-based data",
+    );
+    assertEquals(
+      existsSync(join(dir2, "type")),
+      true,
+      "type/ directory should exist for tag-based data",
+    );
   });
 });
