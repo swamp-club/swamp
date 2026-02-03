@@ -5,12 +5,14 @@ import type { ModelFile } from "../models/model_file.ts";
 import type { ModelLog } from "../models/model_log.ts";
 import type { ModelOutput } from "../models/model_output.ts";
 import type { ModelType } from "../models/model_type.ts";
+import type { Definition, InputsSchema } from "../definitions/definition.ts";
 import type { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import type { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import type { YamlDataRepository } from "../../infrastructure/persistence/yaml_data_repository.ts";
 import type { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
 import type { StreamingLogRepository } from "../../infrastructure/persistence/streaming_log_repository.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { inputIdToResourceId } from "../models/model_resource.ts";
 import { createModelDataId } from "../models/model_data.ts";
 import { createModelFileId } from "../models/model_file.ts";
@@ -35,6 +37,14 @@ export interface ModelData {
     version: number;
     tags: Record<string, string>;
     attributes: Record<string, unknown>;
+  };
+  definition?: {
+    id: string;
+    name: string;
+    version: number;
+    tags: Record<string, string>;
+    attributes: Record<string, unknown>;
+    inputs?: InputsSchema;
   };
   resource?: {
     id: string;
@@ -91,6 +101,8 @@ export interface ExpressionContext {
     tags: Record<string, string>;
     attributes: Record<string, unknown>;
   };
+  /** Input values provided when instantiating a definition */
+  inputs?: Record<string, unknown>;
   /** Workflow context (for workflow evaluation) */
   workflow?: Record<string, unknown>;
   /** Vault operations for secure secret access */
@@ -111,6 +123,7 @@ export interface ModelResolverRepositories {
   fileRepo?: FileSystemFileRepository;
   logRepo?: StreamingLogRepository;
   outputRepo?: YamlOutputRepository;
+  definitionRepo?: YamlDefinitionRepository;
   /** Optional vault service for dependency injection (useful for testing) */
   vaultService?: VaultService;
   /** Repository directory for lazy loading vault configurations */
@@ -125,6 +138,7 @@ export class ModelResolver {
   private readonly fileRepo?: FileSystemFileRepository;
   private readonly logRepo?: StreamingLogRepository;
   private readonly outputRepo?: YamlOutputRepository;
+  private readonly definitionRepo?: YamlDefinitionRepository;
   private vaultService?: VaultService;
   private readonly repoDir?: string;
   private vaultServiceInitialized = false;
@@ -138,6 +152,7 @@ export class ModelResolver {
     this.fileRepo = repos?.fileRepo;
     this.logRepo = repos?.logRepo;
     this.outputRepo = repos?.outputRepo;
+    this.definitionRepo = repos?.definitionRepo;
     this.repoDir = repos?.repoDir;
     // If a vault service was provided, use it directly
     if (repos?.vaultService) {
@@ -226,6 +241,21 @@ export class ModelResolver {
         attributes: input.attributes,
       },
     };
+
+    // Load definition if available (by name match)
+    if (this.definitionRepo) {
+      const definition = await this.definitionRepo.findByName(type, input.name);
+      if (definition) {
+        data.definition = {
+          id: definition.id,
+          name: definition.name,
+          version: definition.version,
+          tags: definition.tags,
+          attributes: definition.attributes,
+          inputs: definition.inputs,
+        };
+      }
+    }
 
     // Load resource if available (resource ID equals input ID by convention)
     const resourceId = inputIdToResourceId(input.id);
@@ -495,6 +525,31 @@ export class ModelResolver {
         completedAt: output.completedAt?.toISOString(),
         durationMs: output.durationMs,
         error: output.error,
+      };
+    }
+  }
+
+  /**
+   * Updates the context with fresh definition data for a specific model.
+   *
+   * @param context - The context to update
+   * @param modelRef - The model name or UUID
+   * @param definition - The definition data
+   */
+  updateDefinitionInContext(
+    context: ExpressionContext,
+    modelRef: string,
+    definition: Definition,
+  ): void {
+    const modelData = context.model[modelRef];
+    if (modelData) {
+      modelData.definition = {
+        id: definition.id,
+        name: definition.name,
+        version: definition.version,
+        tags: definition.tags,
+        attributes: definition.attributes,
+        inputs: definition.inputs,
       };
     }
   }

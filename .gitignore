@@ -12,6 +12,7 @@ resources/
 .data/outputs/
 .data/workflow-runs/
 .data/inputs-evaluated/
+.swamp/definitions-evaluated/
 .data/workflows-evaluated/
 .data/logs/
 .data/files/

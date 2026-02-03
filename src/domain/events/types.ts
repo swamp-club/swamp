@@ -48,6 +48,40 @@ export interface ModelDeleted extends DomainEvent {
 }
 
 // ============================================================================
+// Definition Events
+// ============================================================================
+
+/**
+ * Emitted when a new definition is created.
+ */
+export interface DefinitionCreated extends DomainEvent {
+  readonly type: "DefinitionCreated";
+  readonly modelType: string;
+  readonly definitionId: string;
+  readonly definitionName: string;
+}
+
+/**
+ * Emitted when a definition is updated.
+ */
+export interface DefinitionUpdated extends DomainEvent {
+  readonly type: "DefinitionUpdated";
+  readonly modelType: string;
+  readonly definitionId: string;
+  readonly definitionName: string;
+}
+
+/**
+ * Emitted when a definition is deleted.
+ */
+export interface DefinitionDeleted extends DomainEvent {
+  readonly type: "DefinitionDeleted";
+  readonly modelType: string;
+  readonly definitionId: string;
+  readonly definitionName: string;
+}
+
+// ============================================================================
 // Workflow Events
 // ============================================================================
 
@@ -123,6 +157,9 @@ export type RepositoryEvent =
   | ModelCreated
   | ModelUpdated
   | ModelDeleted
+  | DefinitionCreated
+  | DefinitionUpdated
+  | DefinitionDeleted
   | WorkflowCreated
   | WorkflowUpdated
   | WorkflowDeleted
@@ -190,6 +227,57 @@ export function createModelDeleted(
     modelType,
     modelInputId,
     modelName,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Creates a DefinitionCreated event.
+ */
+export function createDefinitionCreated(
+  modelType: string,
+  definitionId: string,
+  definitionName: string,
+): DefinitionCreated {
+  return {
+    type: "DefinitionCreated",
+    modelType,
+    definitionId,
+    definitionName,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Creates a DefinitionUpdated event.
+ */
+export function createDefinitionUpdated(
+  modelType: string,
+  definitionId: string,
+  definitionName: string,
+): DefinitionUpdated {
+  return {
+    type: "DefinitionUpdated",
+    modelType,
+    definitionId,
+    definitionName,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Creates a DefinitionDeleted event.
+ */
+export function createDefinitionDeleted(
+  modelType: string,
+  definitionId: string,
+  definitionName: string,
+): DefinitionDeleted {
+  return {
+    type: "DefinitionDeleted",
+    modelType,
+    definitionId,
+    definitionName,
     timestamp: new Date(),
   };
 }
