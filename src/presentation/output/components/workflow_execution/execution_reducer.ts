@@ -1,5 +1,6 @@
 import type { WorkflowData } from "../../../../domain/workflows/workflow.ts";
 import type { WorkflowRunData } from "../../workflow_run_output.tsx";
+import type { LogStreamTarget } from "./LogStreamService.ts";
 
 /**
  * Active panel for focus management.
@@ -30,6 +31,8 @@ export interface WorkflowExecutionViewState {
   // UI-only state
   selectedJobIndex: number;
   showYamlOverlay: boolean;
+  showLogOverlay: boolean;
+  logStreamTarget: LogStreamTarget | null;
 
   // Panel focus and scrolling
   activePanel: ActivePanel;
@@ -51,6 +54,8 @@ export type ExecutionAction =
   | { type: "SELECT_PREV_JOB" }
   | { type: "TOGGLE_YAML_OVERLAY" }
   | { type: "CLOSE_YAML_OVERLAY" }
+  | { type: "SHOW_LOG_STREAM"; target: LogStreamTarget }
+  | { type: "CLOSE_LOG_STREAM" }
   | { type: "SWITCH_PANEL" }
   | { type: "SCROLL_JOBS"; direction: "up" | "down" }
   | { type: "SCROLL_STEPS"; direction: "up" | "down" }
@@ -73,6 +78,8 @@ export function createInitialState(
     implicitDependencies: new Map(),
     selectedJobIndex: 0,
     showYamlOverlay: false,
+    showLogOverlay: false,
+    logStreamTarget: null,
     activePanel: "jobs",
     jobsScrollOffset: 0,
     stepsScrollOffset: 0,
@@ -158,6 +165,20 @@ export function executionReducer(
       return {
         ...state,
         showYamlOverlay: false,
+      };
+
+    case "SHOW_LOG_STREAM":
+      return {
+        ...state,
+        showLogOverlay: true,
+        logStreamTarget: action.target,
+      };
+
+    case "CLOSE_LOG_STREAM":
+      return {
+        ...state,
+        showLogOverlay: false,
+        logStreamTarget: null,
       };
 
     case "SWITCH_PANEL":
