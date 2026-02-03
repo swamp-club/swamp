@@ -37,7 +37,8 @@ export function HotkeyBar(
     : "↑/↓: Select Step";
 
   const actionHint = activePanel === "steps" ? "Enter: View Logs" : "";
-  const hints = ["Tab: Switch Panel", navHint, actionHint, "l: View YAML"].filter(Boolean);
+  const hints = ["Tab: Switch Panel", navHint, actionHint, "l: View YAML"]
+    .filter(Boolean);
 
   if (isComplete) {
     return (

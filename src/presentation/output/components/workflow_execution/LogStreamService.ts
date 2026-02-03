@@ -1,6 +1,10 @@
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
-import type { WorkflowRunData, JobRunData, StepRunData } from "../../../../domain/workflows/workflow_run.ts";
+import type {
+  JobRunData,
+  StepRunData,
+  WorkflowRunData,
+} from "../../../../domain/workflows/workflow_run.ts";
 
 /**
  * Step output structure from workflow runs
@@ -61,9 +65,14 @@ export class LogStreamService {
    */
   async getLogs(target: LogStreamTarget): Promise<LogEntry[]> {
     const entries: LogEntry[] = [];
-    
+
     if (target.type === "step" && target.stepName) {
-      const stepLogs = await this.getStepLogsFromWorkflowRun(target.jobName, target.stepName, target.workflowRunId, target.stepStatus);
+      const stepLogs = await this.getStepLogsFromWorkflowRun(
+        target.jobName,
+        target.stepName,
+        target.workflowRunId,
+        target.stepStatus,
+      );
       entries.push(...stepLogs);
     }
 
@@ -75,72 +84,81 @@ export class LogStreamService {
    * For completed steps, returns all logs immediately.
    * For pending/running steps, polls for updates until completion.
    */
-  async* streamLogs(target: LogStreamTarget): AsyncIterableIterator<LogEntry> {
+  async *streamLogs(target: LogStreamTarget): AsyncIterableIterator<LogEntry> {
     try {
       let lastLogCount = 0;
       let lastStepStatus = target.stepStatus;
       let isComplete = false;
       let pollCount = 0;
       const maxPolls = 120; // Poll for up to 2 minutes (120 * 1 second)
-      
+
       while (!isComplete && pollCount < maxPolls) {
         // Create a new target with updated status for polling
         const currentTarget = { ...target };
-        
+
         // Get current step status by re-reading the workflow run file
         if (target.stepName && target.workflowRunId) {
-          const currentStepInfo = await this.getCurrentStepInfo(target.jobName, target.stepName, target.workflowRunId);
+          const currentStepInfo = await this.getCurrentStepInfo(
+            target.jobName,
+            target.stepName,
+            target.workflowRunId,
+          );
           if (currentStepInfo) {
             currentTarget.stepStatus = currentStepInfo.status;
           }
         }
-        
+
         // Get current logs with updated target
         let logs: LogEntry[] = [];
         if (currentTarget.stepName && currentTarget.workflowRunId) {
           logs = await this.getStepLogsFromWorkflowRun(
-            currentTarget.jobName, 
-            currentTarget.stepName, 
-            currentTarget.workflowRunId, 
-            currentTarget.stepStatus
+            currentTarget.jobName,
+            currentTarget.stepName,
+            currentTarget.workflowRunId,
+            currentTarget.stepStatus,
           );
         }
-        
+
         // Yield only new logs (ones we haven't seen before)
         for (let i = lastLogCount; i < logs.length; i++) {
           yield logs[i];
-          await new Promise(resolve => setTimeout(resolve, 50));
+          await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        
+
         lastLogCount = logs.length;
-        
+
         // Check if step status changed
         if (lastStepStatus !== currentTarget.stepStatus) {
           yield {
-            message: `[INFO] Step status changed: ${lastStepStatus} → ${currentTarget.stepStatus}`,
+            message:
+              `[INFO] Step status changed: ${lastStepStatus} → ${currentTarget.stepStatus}`,
             timestamp: new Date(),
           };
           lastStepStatus = currentTarget.stepStatus;
         }
-        
+
         // Check if we should continue polling
-        if (currentTarget.stepStatus === "pending" || currentTarget.stepStatus === "running") {
+        if (
+          currentTarget.stepStatus === "pending" ||
+          currentTarget.stepStatus === "running"
+        ) {
           // Wait before next poll
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Poll every 2 seconds
+          await new Promise((resolve) => setTimeout(resolve, 2000)); // Poll every 2 seconds
           pollCount++;
         } else {
           // Step is completed, succeeded, failed, or skipped - no need to poll
           isComplete = true;
         }
       }
-      
+
       if (pollCount >= maxPolls) {
         yield {
-          message: `[INFO] Stopped polling for updates after ${maxPolls * 2} seconds`,
+          message: `[INFO] Stopped polling for updates after ${
+            maxPolls * 2
+          } seconds`,
           timestamp: new Date(),
         };
       }
-      
     } catch (error) {
       yield {
         message: `[ERROR] Streaming error: ${error}`,
@@ -148,24 +166,27 @@ export class LogStreamService {
       };
     }
   }
-  
 
   /**
    * Gets current step information (status) by re-reading the workflow run file.
    */
-  private async getCurrentStepInfo(jobName: string, stepName: string, workflowRunId: string): Promise<{ status: string } | null> {
+  private async getCurrentStepInfo(
+    jobName: string,
+    stepName: string,
+    workflowRunId: string,
+  ): Promise<{ status: string } | null> {
     try {
       // Find the workflow run file
       const baseRunsDir = join(this.repoDir, ".data", "workflow-runs");
       let runFile: string | null = null;
-      
+
       // Search through all workflow template directories
       for await (const workflowEntry of Deno.readDir(baseRunsDir)) {
         if (workflowEntry.isDirectory) {
           const workflowDir = join(baseRunsDir, workflowEntry.name);
           const targetFileName = `workflow-run-${workflowRunId}.yaml`;
           const potentialFilePath = join(workflowDir, targetFileName);
-          
+
           try {
             await Deno.stat(potentialFilePath);
             runFile = potentialFilePath;
@@ -175,22 +196,24 @@ export class LogStreamService {
           }
         }
       }
-      
+
       if (!runFile) {
         return null;
       }
-      
+
       // Read and parse the workflow run file
       const runFileContent = await Deno.readTextFile(runFile);
       const workflowRun = parseYaml(runFileContent) as WorkflowRunData;
-      
+
       // Find the specific job and step
-      const job = workflowRun.jobs?.find((j: JobRunData) => j.jobName === jobName);
+      const job = workflowRun.jobs?.find((j: JobRunData) =>
+        j.jobName === jobName
+      );
       if (!job) return null;
-      
+
       const step = job.steps?.find((s: StepRunData) => s.stepName === stepName);
       if (!step) return null;
-      
+
       return { status: step.status };
     } catch {
       return null;
@@ -209,9 +232,14 @@ export class LogStreamService {
   /**
    * Gets logs for a specific step by reading from workflow run files.
    */
-  private async getStepLogsFromWorkflowRun(jobName: string, stepName: string, workflowRunId: string, stepStatus?: string): Promise<LogEntry[]> {
+  private async getStepLogsFromWorkflowRun(
+    jobName: string,
+    stepName: string,
+    workflowRunId: string,
+    stepStatus?: string,
+  ): Promise<LogEntry[]> {
     const entries: LogEntry[] = [];
-    
+
     // Only show logs for steps that have started execution
     if (stepStatus === "pending") {
       entries.push({
@@ -224,7 +252,7 @@ export class LogStreamService {
       });
       return entries;
     }
-    
+
     if (stepStatus === "skipped") {
       entries.push({
         message: `[INFO] Step ${jobName}/${stepName} was skipped`,
@@ -232,13 +260,13 @@ export class LogStreamService {
       });
       return entries;
     }
-    
+
     try {
       // Find the workflow run file by searching all workflow directories
       // File structure: .data/workflow-runs/{workflowTemplateId}/workflow-run-{runInstanceId}.yaml
       const baseRunsDir = join(this.repoDir, ".data", "workflow-runs");
       let runFile: string | null = null;
-      
+
       try {
         // Search through all workflow template directories
         for await (const workflowEntry of Deno.readDir(baseRunsDir)) {
@@ -246,7 +274,7 @@ export class LogStreamService {
             const workflowDir = join(baseRunsDir, workflowEntry.name);
             const targetFileName = `workflow-run-${workflowRunId}.yaml`;
             const potentialFilePath = join(workflowDir, targetFileName);
-            
+
             try {
               // Check if this workflow run file exists
               await Deno.stat(potentialFilePath);
@@ -260,26 +288,30 @@ export class LogStreamService {
         }
       } catch (error) {
         entries.push({
-          message: `[ERROR] Could not search workflow runs directories: ${error}`,
+          message:
+            `[ERROR] Could not search workflow runs directories: ${error}`,
           timestamp: new Date(),
         });
         return entries;
       }
-      
+
       if (!runFile) {
         entries.push({
-          message: `[INFO] No workflow run data found for run ID: ${workflowRunId}`,
+          message:
+            `[INFO] No workflow run data found for run ID: ${workflowRunId}`,
           timestamp: new Date(),
         });
         return entries;
       }
-      
+
       // Read and parse the workflow run file
       const runFileContent = await Deno.readTextFile(runFile);
       const workflowRun = parseYaml(runFileContent) as WorkflowRunData;
-      
+
       // Find the specific job and step
-      const job = workflowRun.jobs?.find((j: JobRunData) => j.jobName === jobName);
+      const job = workflowRun.jobs?.find((j: JobRunData) =>
+        j.jobName === jobName
+      );
       if (!job) {
         entries.push({
           message: `[ERROR] Job ${jobName} not found in workflow run`,
@@ -287,7 +319,7 @@ export class LogStreamService {
         });
         return entries;
       }
-      
+
       const step = job.steps?.find((s: StepRunData) => s.stepName === stepName);
       if (!step) {
         entries.push({
@@ -296,26 +328,28 @@ export class LogStreamService {
         });
         return entries;
       }
-      
+
       // Add step execution info
       entries.push({
         message: `[LOG] Streaming logs for step: ${jobName}/${stepName}`,
         timestamp: new Date(),
       });
-      
+
       if (step.startedAt) {
         entries.push({
           message: `[INFO] Step started at: ${step.startedAt}`,
           timestamp: new Date(step.startedAt),
         });
       }
-      
+
       // Type guard for step output
       const stepOutput = step.output as StepOutput | undefined;
-      
+
       // Add actual stdout logs if available
       if (stepOutput?.stdout) {
-        const stdoutLines = stepOutput.stdout.split('\n').filter((line: string) => line.trim());
+        const stdoutLines = stepOutput.stdout.split("\n").filter((
+          line: string,
+        ) => line.trim());
         for (const line of stdoutLines) {
           entries.push({
             message: line,
@@ -323,10 +357,12 @@ export class LogStreamService {
           });
         }
       }
-      
+
       // Add stderr logs if available
       if (stepOutput?.stderr) {
-        const stderrLines = stepOutput.stderr.split('\n').filter((line: string) => line.trim());
+        const stderrLines = stepOutput.stderr.split("\n").filter((
+          line: string,
+        ) => line.trim());
         for (const line of stderrLines) {
           entries.push({
             message: `[STDERR] ${line}`,
@@ -334,23 +370,22 @@ export class LogStreamService {
           });
         }
       }
-      
+
       if (step.completedAt) {
         entries.push({
-          message: `[INFO] Step completed at: ${step.completedAt} (exit code: ${stepOutput?.exitCode ?? 'unknown'})`,
+          message: `[INFO] Step completed at: ${step.completedAt} (exit code: ${
+            stepOutput?.exitCode ?? "unknown"
+          })`,
           timestamp: new Date(step.completedAt),
         });
       }
-      
     } catch (error) {
       entries.push({
         message: `[ERROR] Failed to load logs: ${error}`,
         timestamp: new Date(),
       });
     }
-    
+
     return entries;
   }
-
-
 }

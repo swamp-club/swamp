@@ -2,7 +2,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { useTerminalSize } from "../../hooks/mod.ts";
-import type { LogEntry, LogStreamService, LogStreamTarget } from "./LogStreamService.ts";
+import type {
+  LogEntry,
+  LogStreamService,
+  LogStreamTarget,
+} from "./LogStreamService.ts";
 
 interface LogStreamOverlayProps {
   target: LogStreamTarget;
@@ -62,8 +66,8 @@ export function LogStreamOverlay(
         const stream = logService.streamLogs(target);
         for await (const logEntry of stream) {
           if (!streamActive) break;
-          
-          setLogs(prevLogs => [...prevLogs, logEntry]);
+
+          setLogs((prevLogs) => [...prevLogs, logEntry]);
         }
       } catch (err) {
         if (streamActive) {
@@ -97,12 +101,12 @@ export function LogStreamOverlay(
 
       if (key.upArrow) {
         setAutoScroll(false);
-        setScrollOffset(prev => Math.max(0, prev - 1));
+        setScrollOffset((prev) => Math.max(0, prev - 1));
         return;
       }
 
       if (key.downArrow) {
-        setScrollOffset(prev => {
+        setScrollOffset((prev) => {
           const newOffset = Math.min(maxOffset, prev + 1);
           // Re-enable auto-scroll if we're at the bottom
           if (newOffset === maxOffset) {
@@ -115,12 +119,12 @@ export function LogStreamOverlay(
 
       if (key.pageUp) {
         setAutoScroll(false);
-        setScrollOffset(prev => Math.max(0, prev - contentHeight));
+        setScrollOffset((prev) => Math.max(0, prev - contentHeight));
         return;
       }
 
       if (key.pageDown) {
-        setScrollOffset(prev => {
+        setScrollOffset((prev) => {
           const newOffset = Math.min(maxOffset, prev + contentHeight);
           if (newOffset === maxOffset) {
             setAutoScroll(true);
@@ -152,7 +156,7 @@ export function LogStreamOverlay(
   const visibleLogs = logs.slice(scrollOffset, scrollOffset + contentHeight);
 
   // Format target name for display
-  const targetName = target.type === "step" 
+  const targetName = target.type === "step"
     ? `${target.jobName}/${target.stepName}`
     : target.jobName;
 
@@ -170,10 +174,13 @@ export function LogStreamOverlay(
         <Box flexGrow={1} />
         {logs.length > 0 && (
           <Text dimColor>
-            [{Math.min(scrollOffset + 1, logs.length)}-{Math.min(scrollOffset + contentHeight, logs.length)}/{logs.length}]
+            [{Math.min(scrollOffset + 1, logs.length)}-{Math.min(
+              scrollOffset + contentHeight,
+              logs.length,
+            )}/{logs.length}]
           </Text>
         )}
-        {autoScroll && <Text color="yellow"> [AUTO]</Text>}
+        {autoScroll && <Text color="yellow">[AUTO]</Text>}
       </Box>
 
       {/* Content */}
@@ -201,20 +208,28 @@ export function LogStreamOverlay(
           </Box>
         )}
 
-        {!isLoading && !error && logs.length > 0 && visibleLogs.map((entry, index) => (
-          <Box key={scrollOffset + index} flexShrink={0}>
-            <Text>
-              {entry.timestamp 
-                ? `[${entry.timestamp.toISOString().slice(11, 23)}] ${entry.message}`
-                : entry.message
-              }
-            </Text>
-          </Box>
-        ))}
+        {!isLoading && !error && logs.length > 0 &&
+          visibleLogs.map((entry, index) => (
+            <Box key={scrollOffset + index} flexShrink={0}>
+              <Text>
+                {entry.timestamp
+                  ? `[${
+                    entry.timestamp.toISOString().slice(11, 23)
+                  }] ${entry.message}`
+                  : entry.message}
+              </Text>
+            </Box>
+          ))}
       </Box>
 
       {/* Footer with controls */}
-      <Box flexShrink={0} paddingX={1} borderTop borderStyle="single" borderColor="gray">
+      <Box
+        flexShrink={0}
+        paddingX={1}
+        borderTop
+        borderStyle="single"
+        borderColor="gray"
+      >
         <Text dimColor>
           ↑/↓: Scroll | PgUp/PgDn: Page | q/Esc: Close
         </Text>

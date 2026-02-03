@@ -60,7 +60,7 @@ function JobItem(
       {/* deno-fmt-ignore */}
       <Text> </Text>
       <Text bold={isSelected}>{job.name}</Text>
-      {hasLogs && <Text color="blue"> 📋</Text>}
+      {hasLogs && <Text color="blue">📋</Text>}
       {depsDisplay && <Text dimColor>{` ${depsDisplay}`}</Text>}
       <Text dimColor>
         {job.status === "running"
@@ -92,8 +92,14 @@ interface JobsPanelProps {
  * Displays the list of jobs with selection indicator.
  */
 export function JobsPanel(
-  { jobs, selectedIndex, isFocused, pendingDependencies, logAvailability, availableHeight }:
-    JobsPanelProps,
+  {
+    jobs,
+    selectedIndex,
+    isFocused,
+    pendingDependencies,
+    logAvailability,
+    availableHeight,
+  }: JobsPanelProps,
 ): React.ReactElement {
   const borderColor = isFocused ? "cyan" : "gray";
   const titleColor = isFocused ? "cyan" : undefined;

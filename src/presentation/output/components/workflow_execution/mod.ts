@@ -7,8 +7,8 @@ export { HotkeyBar } from "./HotkeyBar.tsx";
 export { YamlOverlay } from "./YamlOverlay.tsx";
 export { LogStreamOverlay } from "./LogStreamOverlay.tsx";
 export {
-  LogStreamService,
   type LogEntry,
+  LogStreamService,
   type LogStreamTarget,
 } from "./LogStreamService.ts";
 export {

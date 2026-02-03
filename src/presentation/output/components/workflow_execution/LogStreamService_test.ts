@@ -18,11 +18,11 @@ async function createWorkflowRunFile(
 ): Promise<void> {
   const runDir = join(repoDir, ".data", "workflow-runs", workflowId);
   await Deno.mkdir(runDir, { recursive: true });
-  
+
   const fileName = `workflow-run-${runId}.yaml`;
   const filePath = join(runDir, fileName);
   const yamlContent = stringifyYaml(runData);
-  
+
   await Deno.writeTextFile(filePath, yamlContent);
 }
 
@@ -37,7 +37,7 @@ async function cleanup(tempDir: string): Promise<void> {
 Deno.test("LogStreamService - hasLogs returns false for non-existent logs", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const target: LogStreamTarget = {
       type: "step",
@@ -45,7 +45,7 @@ Deno.test("LogStreamService - hasLogs returns false for non-existent logs", asyn
       stepName: "test-step",
       workflowRunId: "test-run-id",
     };
-    
+
     const hasLogs = await service.hasLogs(target);
     assertEquals(hasLogs, false);
   } finally {
@@ -56,11 +56,11 @@ Deno.test("LogStreamService - hasLogs returns false for non-existent logs", asyn
 Deno.test("LogStreamService - getLogs for pending step", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const workflowId = "workflow-123";
     const runId = "run-456";
-    
+
     const runData: WorkflowRunData = {
       id: runId,
       workflowId: workflowId,
@@ -75,9 +75,9 @@ Deno.test("LogStreamService - getLogs for pending step", async () => {
         }],
       }],
     };
-    
+
     await createWorkflowRunFile(tempDir, workflowId, runId, runData);
-    
+
     const target: LogStreamTarget = {
       type: "step",
       jobName: "test-job",
@@ -85,7 +85,7 @@ Deno.test("LogStreamService - getLogs for pending step", async () => {
       workflowRunId: runId,
       stepStatus: "pending",
     };
-    
+
     const logs = await service.getLogs(target);
     assertEquals(logs.length, 2);
     assertStringIncludes(logs[0].message, "has not started yet");
@@ -98,11 +98,11 @@ Deno.test("LogStreamService - getLogs for pending step", async () => {
 Deno.test("LogStreamService - getLogs for completed step with output", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const workflowId = "workflow-123";
     const runId = "run-456";
-    
+
     const runData: WorkflowRunData = {
       id: runId,
       workflowId: workflowId,
@@ -123,9 +123,9 @@ Deno.test("LogStreamService - getLogs for completed step with output", async () 
         }],
       }],
     };
-    
+
     await createWorkflowRunFile(tempDir, workflowId, runId, runData);
-    
+
     const target: LogStreamTarget = {
       type: "step",
       jobName: "test-job",
@@ -133,9 +133,9 @@ Deno.test("LogStreamService - getLogs for completed step with output", async () 
       workflowRunId: runId,
       stepStatus: "succeeded",
     };
-    
+
     const logs = await service.getLogs(target);
-    
+
     // Should have: streaming message, started at, stdout lines, completed at
     assertEquals(logs.length >= 4, true);
     assertStringIncludes(logs[0].message, "Streaming logs for step");
@@ -151,11 +151,11 @@ Deno.test("LogStreamService - getLogs for completed step with output", async () 
 Deno.test("LogStreamService - getLogs for step with stderr", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const workflowId = "workflow-123";
     const runId = "run-456";
-    
+
     const runData: WorkflowRunData = {
       id: runId,
       workflowId: workflowId,
@@ -177,9 +177,9 @@ Deno.test("LogStreamService - getLogs for step with stderr", async () => {
         }],
       }],
     };
-    
+
     await createWorkflowRunFile(tempDir, workflowId, runId, runData);
-    
+
     const target: LogStreamTarget = {
       type: "step",
       jobName: "test-job",
@@ -187,11 +187,11 @@ Deno.test("LogStreamService - getLogs for step with stderr", async () => {
       workflowRunId: runId,
       stepStatus: "failed",
     };
-    
+
     const logs = await service.getLogs(target);
-    
+
     // Find stderr entries
-    const stderrLogs = logs.filter(log => log.message.includes("[STDERR]"));
+    const stderrLogs = logs.filter((log) => log.message.includes("[STDERR]"));
     assertEquals(stderrLogs.length, 2);
     assertStringIncludes(stderrLogs[0].message, "[STDERR] Error occurred");
     assertStringIncludes(stderrLogs[1].message, "[STDERR] Failed to execute");
@@ -203,11 +203,11 @@ Deno.test("LogStreamService - getLogs for step with stderr", async () => {
 Deno.test("LogStreamService - getLogs for skipped step", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const workflowId = "workflow-123";
     const runId = "run-456";
-    
+
     const runData: WorkflowRunData = {
       id: runId,
       workflowId: workflowId,
@@ -222,9 +222,9 @@ Deno.test("LogStreamService - getLogs for skipped step", async () => {
         }],
       }],
     };
-    
+
     await createWorkflowRunFile(tempDir, workflowId, runId, runData);
-    
+
     const target: LogStreamTarget = {
       type: "step",
       jobName: "test-job",
@@ -232,7 +232,7 @@ Deno.test("LogStreamService - getLogs for skipped step", async () => {
       workflowRunId: runId,
       stepStatus: "skipped",
     };
-    
+
     const logs = await service.getLogs(target);
     assertEquals(logs.length, 1);
     assertStringIncludes(logs[0].message, "was skipped");
@@ -244,12 +244,12 @@ Deno.test("LogStreamService - getLogs for skipped step", async () => {
 Deno.test("LogStreamService - getLogs handles missing workflow run file", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     // Create the base workflow-runs directory but no actual run files
     const runDir = join(tempDir, ".data", "workflow-runs");
     await Deno.mkdir(runDir, { recursive: true });
-    
+
     const target: LogStreamTarget = {
       type: "step",
       jobName: "test-job",
@@ -257,7 +257,7 @@ Deno.test("LogStreamService - getLogs handles missing workflow run file", async 
       workflowRunId: "non-existent-run",
       stepStatus: "running", // Use running so it tries to find the file
     };
-    
+
     const logs = await service.getLogs(target);
     assertEquals(logs.length >= 1, true);
     assertStringIncludes(logs[0].message, "No workflow run data found");
@@ -269,11 +269,11 @@ Deno.test("LogStreamService - getLogs handles missing workflow run file", async 
 Deno.test("LogStreamService - getLogs handles missing job", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const workflowId = "workflow-123";
     const runId = "run-456";
-    
+
     const runData: WorkflowRunData = {
       id: runId,
       workflowId: workflowId,
@@ -285,9 +285,9 @@ Deno.test("LogStreamService - getLogs handles missing job", async () => {
         steps: [],
       }],
     };
-    
+
     await createWorkflowRunFile(tempDir, workflowId, runId, runData);
-    
+
     const target: LogStreamTarget = {
       type: "step",
       jobName: "missing-job",
@@ -295,7 +295,7 @@ Deno.test("LogStreamService - getLogs handles missing job", async () => {
       workflowRunId: runId,
       stepStatus: "running", // Use running so it tries to find the job
     };
-    
+
     const logs = await service.getLogs(target);
     assertEquals(logs.length >= 1, true);
     assertStringIncludes(logs[0].message, "Job missing-job not found");
@@ -307,11 +307,11 @@ Deno.test("LogStreamService - getLogs handles missing job", async () => {
 Deno.test("LogStreamService - getLogs handles missing step", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const workflowId = "workflow-123";
     const runId = "run-456";
-    
+
     const runData: WorkflowRunData = {
       id: runId,
       workflowId: workflowId,
@@ -326,9 +326,9 @@ Deno.test("LogStreamService - getLogs handles missing step", async () => {
         }],
       }],
     };
-    
+
     await createWorkflowRunFile(tempDir, workflowId, runId, runData);
-    
+
     const target: LogStreamTarget = {
       type: "step",
       jobName: "test-job",
@@ -336,7 +336,7 @@ Deno.test("LogStreamService - getLogs handles missing step", async () => {
       workflowRunId: runId,
       stepStatus: "running", // Use running so it tries to find the step
     };
-    
+
     const logs = await service.getLogs(target);
     assertEquals(logs.length >= 1, true);
     assertStringIncludes(logs[0].message, "Step missing-step not found");
@@ -348,11 +348,11 @@ Deno.test("LogStreamService - getLogs handles missing step", async () => {
 Deno.test("LogStreamService - streamLogs for completed step", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const workflowId = "workflow-123";
     const runId = "run-456";
-    
+
     const runData: WorkflowRunData = {
       id: runId,
       workflowId: workflowId,
@@ -373,9 +373,9 @@ Deno.test("LogStreamService - streamLogs for completed step", async () => {
         }],
       }],
     };
-    
+
     await createWorkflowRunFile(tempDir, workflowId, runId, runData);
-    
+
     const target: LogStreamTarget = {
       type: "step",
       jobName: "test-job",
@@ -383,12 +383,12 @@ Deno.test("LogStreamService - streamLogs for completed step", async () => {
       workflowRunId: runId,
       stepStatus: "succeeded",
     };
-    
+
     const logs = [];
     for await (const log of service.streamLogs(target)) {
       logs.push(log);
     }
-    
+
     // Should have all logs from the completed step
     assertEquals(logs.length >= 5, true); // streaming, started, 3 stdout lines, completed
     assertStringIncludes(logs[0].message, "Streaming logs for step");
@@ -403,11 +403,11 @@ Deno.test("LogStreamService - streamLogs for completed step", async () => {
 Deno.test("LogStreamService - getCurrentStepInfo", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     const workflowId = "workflow-123";
     const runId = "run-456";
-    
+
     const runData: WorkflowRunData = {
       id: runId,
       workflowId: workflowId,
@@ -422,13 +422,19 @@ Deno.test("LogStreamService - getCurrentStepInfo", async () => {
         }],
       }],
     };
-    
+
     await createWorkflowRunFile(tempDir, workflowId, runId, runData);
-    
+
     // Use reflection to access private method for testing
-    const stepInfo = await (service as any).getCurrentStepInfo("test-job", "test-step", runId);
-    
-    assertEquals(stepInfo.status, "running");
+    const stepInfo = await (service as unknown as {
+      getCurrentStepInfo: (
+        jobName: string,
+        stepName: string,
+        runId: string,
+      ) => Promise<{ status: string } | null>;
+    }).getCurrentStepInfo("test-job", "test-step", runId);
+
+    assertEquals(stepInfo?.status, "running");
   } finally {
     await cleanup(tempDir);
   }
@@ -437,11 +443,17 @@ Deno.test("LogStreamService - getCurrentStepInfo", async () => {
 Deno.test("LogStreamService - getCurrentStepInfo returns null for missing data", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
-  
+
   try {
     // Use reflection to access private method for testing
-    const stepInfo = await (service as any).getCurrentStepInfo("missing-job", "missing-step", "missing-run");
-    
+    const stepInfo = await (service as unknown as {
+      getCurrentStepInfo: (
+        jobName: string,
+        stepName: string,
+        runId: string,
+      ) => Promise<{ status: string } | null>;
+    }).getCurrentStepInfo("missing-job", "missing-step", "missing-run");
+
     assertEquals(stepInfo, null);
   } finally {
     await cleanup(tempDir);

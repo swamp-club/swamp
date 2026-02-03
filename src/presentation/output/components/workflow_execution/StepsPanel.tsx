@@ -62,7 +62,7 @@ function StepItem(
         {/* deno-fmt-ignore */}
         <Text> </Text>
         <Text bold={isSelected}>{step.name}</Text>
-        {hasLogs && <Text color="blue"> 📋</Text>}
+        {hasLogs && <Text color="blue">📋</Text>}
         {depsDisplay && <Text dimColor>{` ${depsDisplay}`}</Text>}
         {showDuration && step.duration !== undefined && (
           <Text dimColor>{` (${formatDuration(step.duration)})`}</Text>
