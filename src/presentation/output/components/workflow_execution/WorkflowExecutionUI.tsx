@@ -1,4 +1,3 @@
-// deno-lint-ignore-file verbatim-module-syntax
 import React, { useCallback, useEffect, useReducer } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import { WorkflowHeader } from "./WorkflowHeader.tsx";
@@ -6,6 +5,8 @@ import { JobsPanel } from "./JobsPanel.tsx";
 import { StepsPanel } from "./StepsPanel.tsx";
 import { HotkeyBar } from "./HotkeyBar.tsx";
 import { YamlOverlay } from "./YamlOverlay.tsx";
+import { LogStreamOverlay } from "./LogStreamOverlay.tsx";
+import { LogStreamService } from "./LogStreamService.ts";
 import {
   createInitialState,
   type ExecutionAction,
@@ -76,6 +77,9 @@ export function WorkflowExecutionUI(
     createInitialState(workflow, workflowYaml),
   );
 
+  // Create log service instance
+  const [logService] = React.useState(() => new LogStreamService());
+
   // Register dispatch with parent for event handling
   useEffect(() => {
     registerDispatch(dispatch);
@@ -114,6 +118,40 @@ export function WorkflowExecutionUI(
         return;
       }
 
+      // Enter key opens log stream for selected item
+      if (key.return) {
+        const jobs = state.workflowRun?.jobs ?? workflow.jobs.map((job) => ({
+          name: job.name,
+          status: "pending" as const,
+          steps: job.steps.map((step) => ({
+            name: step.name,
+            status: "pending" as const,
+          })),
+        }));
+
+        const selectedJob = jobs[state.selectedJobIndex];
+        const workflowRunId = state.workflowRun?.id ?? "unknown";
+
+        if (state.activePanel === "steps") {
+          // Open logs for the selected step
+          const selectedStep = selectedJob.steps[state.selectedStepIndex];
+          if (selectedStep) {
+            dispatch({
+              type: "SHOW_LOG_STREAM",
+              target: {
+                type: "step",
+                jobName: selectedJob.name,
+                stepName: selectedStep.name,
+                workflowRunId,
+                stepStatus: selectedStep.status,
+              },
+            });
+          }
+        }
+        // Note: Job-level log streaming removed - users should view individual step logs
+        return;
+      }
+
       // Toggle YAML overlay
       if (input === "l") {
         dispatch({ type: "TOGGLE_YAML_OVERLAY" });
@@ -126,8 +164,20 @@ export function WorkflowExecutionUI(
         return;
       }
     },
-    { isActive: !state.showYamlOverlay },
+    { isActive: !state.showYamlOverlay && !state.showLogOverlay },
   );
+
+  // If showing log overlay, render it fullscreen
+  if (state.showLogOverlay && state.logStreamTarget) {
+    return (
+      <LogStreamOverlay
+        target={state.logStreamTarget}
+        logService={logService}
+        onClose={() => dispatch({ type: "CLOSE_LOG_STREAM" })}
+        isActive={state.showLogOverlay}
+      />
+    );
+  }
 
   // If showing YAML overlay, render it fullscreen
   if (state.showYamlOverlay) {
@@ -241,6 +291,7 @@ export function WorkflowExecutionUI(
         selectedIndex={state.selectedJobIndex}
         isFocused={state.activePanel === "jobs"}
         pendingDependencies={jobPendingDeps}
+        logAvailability={new Map()} // TODO: Implement actual log availability checking
         availableHeight={panelHeight}
       />
 
@@ -252,6 +303,7 @@ export function WorkflowExecutionUI(
           isFocused={state.activePanel === "steps"}
           selectedIndex={state.selectedStepIndex}
           pendingDependencies={stepPendingDeps}
+          logAvailability={new Map()} // TODO: Implement actual log availability checking
           availableHeight={panelHeight}
         />
       )}
@@ -260,6 +312,7 @@ export function WorkflowExecutionUI(
       <HotkeyBar
         isComplete={state.isComplete}
         showYamlOverlay={state.showYamlOverlay}
+        showLogOverlay={state.showLogOverlay}
         activePanel={state.activePanel}
       />
     </Box>

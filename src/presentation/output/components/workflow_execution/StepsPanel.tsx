@@ -43,10 +43,11 @@ interface StepItemProps {
   step: StepRunData;
   isSelected: boolean;
   pendingDeps: PendingDep[];
+  hasLogs?: boolean;
 }
 
 function StepItem(
-  { step, isSelected, pendingDeps }: StepItemProps,
+  { step, isSelected, pendingDeps, hasLogs }: StepItemProps,
 ): React.ReactElement {
   const showDuration = step.status === "succeeded" || step.status === "failed";
   const depsDisplay = formatDependencies(pendingDeps);
@@ -61,6 +62,7 @@ function StepItem(
         {/* deno-fmt-ignore */}
         <Text> </Text>
         <Text bold={isSelected}>{step.name}</Text>
+        {hasLogs && <Text color="blue">📋</Text>}
         {depsDisplay && <Text dimColor>{` ${depsDisplay}`}</Text>}
         {showDuration && step.duration !== undefined && (
           <Text dimColor>{` (${formatDuration(step.duration)})`}</Text>
@@ -83,6 +85,7 @@ interface StepsPanelProps {
   isFocused: boolean;
   selectedIndex: number;
   pendingDependencies: Map<string, PendingDep[]>;
+  logAvailability?: Map<string, boolean>;
   availableHeight?: number;
 }
 
@@ -96,6 +99,7 @@ export function StepsPanel(
     isFocused,
     selectedIndex,
     pendingDependencies,
+    logAvailability,
     availableHeight,
   }: StepsPanelProps,
 ): React.ReactElement {
@@ -135,6 +139,7 @@ export function StepsPanel(
           step={step}
           isSelected={start + i === selectedIndex}
           pendingDeps={pendingDependencies.get(step.name) ?? []}
+          hasLogs={logAvailability?.get(step.name) ?? false}
         />
       ))}
       {steps.length === 0 && <Text dimColor>No steps</Text>}

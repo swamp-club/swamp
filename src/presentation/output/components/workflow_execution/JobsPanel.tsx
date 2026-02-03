@@ -43,10 +43,11 @@ interface JobItemProps {
   job: JobRunData;
   isSelected: boolean;
   pendingDeps: PendingDep[];
+  hasLogs?: boolean;
 }
 
 function JobItem(
-  { job, isSelected, pendingDeps }: JobItemProps,
+  { job, isSelected, pendingDeps, hasLogs }: JobItemProps,
 ): React.ReactElement {
   const depsDisplay = formatDependencies(pendingDeps);
 
@@ -59,6 +60,7 @@ function JobItem(
       {/* deno-fmt-ignore */}
       <Text> </Text>
       <Text bold={isSelected}>{job.name}</Text>
+      {hasLogs && <Text color="blue">📋</Text>}
       {depsDisplay && <Text dimColor>{` ${depsDisplay}`}</Text>}
       <Text dimColor>
         {job.status === "running"
@@ -82,6 +84,7 @@ interface JobsPanelProps {
   selectedIndex: number;
   isFocused: boolean;
   pendingDependencies: Map<string, PendingDep[]>;
+  logAvailability?: Map<string, boolean>;
   availableHeight?: number;
 }
 
@@ -89,8 +92,14 @@ interface JobsPanelProps {
  * Displays the list of jobs with selection indicator.
  */
 export function JobsPanel(
-  { jobs, selectedIndex, isFocused, pendingDependencies, availableHeight }:
-    JobsPanelProps,
+  {
+    jobs,
+    selectedIndex,
+    isFocused,
+    pendingDependencies,
+    logAvailability,
+    availableHeight,
+  }: JobsPanelProps,
 ): React.ReactElement {
   const borderColor = isFocused ? "cyan" : "gray";
   const titleColor = isFocused ? "cyan" : undefined;
@@ -128,6 +137,7 @@ export function JobsPanel(
           job={job}
           isSelected={start + i === selectedIndex}
           pendingDeps={pendingDependencies.get(job.name) ?? []}
+          hasLogs={logAvailability?.get(job.name) ?? false}
         />
       ))}
       {jobs.length === 0 && <Text dimColor>No jobs</Text>}
