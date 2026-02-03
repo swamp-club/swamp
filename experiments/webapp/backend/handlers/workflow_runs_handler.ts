@@ -124,7 +124,7 @@ export function createWorkflowRunsHandlers(
     // Map outputs with their model type info
     const outputs = runOutputs.map(({ output, type }) => ({
       id: output.id,
-      modelInputId: output.modelInputId,
+      definitionId: output.definitionId,
       type: type.normalized,
       methodName: output.methodName,
       status: output.status,

@@ -140,8 +140,12 @@ export const modelDeleteCommand = new Command()
       ? resourceRepo.getPath(modelType, resource.id)
       : undefined;
 
-    // Find outputs related to this model
-    const outputs = await outputRepo.findByModelInput(modelType, input.id);
+    // Find outputs related to this model (use input.id as definitionId during migration)
+    const outputs = await outputRepo.findByDefinition(
+      modelType,
+      input
+        .id as unknown as import("../../domain/definitions/definition.ts").DefinitionId,
+    );
     ctx.logger.debug`Found ${outputs.length} outputs to delete`;
 
     // Check for evaluated input
