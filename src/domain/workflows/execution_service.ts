@@ -25,7 +25,8 @@ import { DefaultMethodExecutionService } from "../models/method_execution_servic
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import { ModelInput } from "../models/model_input.ts";
 import { findByIdOrName } from "../models/model_lookup.ts";
-import { computeInputHash, ModelOutput } from "../models/model_output.ts";
+import { computeDefinitionHash, ModelOutput } from "../models/model_output.ts";
+import type { DefinitionId } from "../definitions/definition.ts";
 import {
   extractExpressions,
   replaceExpressions,
@@ -296,12 +297,15 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Create ModelOutput for tracking
-    const inputHash = await computeInputHash(evaluatedInput.attributes);
+    // Use originalInput.id as definitionId (for backwards compatibility during migration)
+    const definitionHash = await computeDefinitionHash(
+      evaluatedInput.attributes,
+    );
     const output = ModelOutput.create({
-      modelInputId: originalInput.id,
+      definitionId: originalInput.id as unknown as DefinitionId,
       methodName: task.methodName,
       provenance: {
-        inputHash,
+        definitionHash,
         modelVersion: originalInput.version,
         triggeredBy: "workflow",
         workflowId: ctx.workflowId,
@@ -371,7 +375,12 @@ export class DefaultStepExecutor implements StepExecutor {
           resourceAttributes = result.resource.attributes;
 
           // Track artifact in output
-          output.setResourceId(result.resource.id);
+          output.addDataArtifact({
+            dataId: result.resource.id,
+            name: `${originalInput.name}-resource`,
+            version: result.resource.version,
+            tags: { type: "resource" },
+          });
         }
       }
 
@@ -381,7 +390,12 @@ export class DefaultStepExecutor implements StepExecutor {
           await dataRepo.delete(modelType, result.data.id);
         } else {
           await dataRepo.save(modelType, result.data);
-          output.setDataId(result.data.id);
+          output.addDataArtifact({
+            dataId: result.data.id,
+            name: `${originalInput.name}-data`,
+            version: result.data.version,
+            tags: { type: "data" },
+          });
         }
 
         // Update ORIGINAL input's dataId (preserves expressions)
@@ -420,7 +434,12 @@ export class DefaultStepExecutor implements StepExecutor {
             result.file.metadata,
             result.file.content,
           );
-          output.setFileId(result.file.metadata.id);
+          output.addDataArtifact({
+            dataId: result.file.metadata.id,
+            name: result.file.metadata.filename,
+            version: 1,
+            tags: { type: "file" },
+          });
         }
       }
 
@@ -431,12 +450,15 @@ export class DefaultStepExecutor implements StepExecutor {
             await logRepo.delete(modelType, log.id);
           }
         } else {
-          const logIds: string[] = [];
           for (const log of result.logs) {
             await logRepo.save(modelType, log);
-            logIds.push(log.id);
+            output.addDataArtifact({
+              dataId: log.id,
+              name: `${originalInput.name}-log`,
+              version: 1,
+              tags: { type: "log" },
+            });
           }
-          output.setLogIds(logIds);
         }
       }
 

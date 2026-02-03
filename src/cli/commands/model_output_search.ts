@@ -31,16 +31,20 @@ async function toModelOutputSearchItems(
   const items: ModelOutputSearchItem[] = [];
 
   for (const { output, type } of results) {
-    // Try to get model name
+    // Try to get model name using definitionId (which may be a modelInputId during migration)
     let modelName: string | undefined;
-    const input = await inputRepo.findById(type, output.modelInputId);
+    const input = await inputRepo.findById(
+      type,
+      output
+        .definitionId as unknown as import("../../domain/models/model_input.ts").ModelInputId,
+    );
     if (input) {
       modelName = input.name;
     }
 
     items.push({
       id: output.id,
-      modelInputId: output.modelInputId,
+      definitionId: output.definitionId,
       modelName,
       type: type.normalized,
       methodName: output.methodName,
@@ -76,7 +80,7 @@ export function filterOutputs(
       o.methodName.toLowerCase().includes(lowerQuery) ||
       o.status.toLowerCase().includes(lowerQuery) ||
       o.id.toLowerCase().includes(lowerQuery) ||
-      o.modelInputId.toLowerCase().includes(lowerQuery),
+      o.definitionId.toLowerCase().includes(lowerQuery),
   );
 }
 
@@ -101,16 +105,20 @@ async function displayModelOutputGet(
 
   const { output, type } = result;
 
-  // Try to get model name
+  // Try to get model name using definitionId (which may be a modelInputId during migration)
   let modelName: string | undefined;
-  const input = await inputRepo.findById(type, output.modelInputId);
+  const input = await inputRepo.findById(
+    type,
+    output
+      .definitionId as unknown as import("../../domain/models/model_input.ts").ModelInputId,
+  );
   if (input) {
     modelName = input.name;
   }
 
   const data: ModelOutputGetData = {
     id: output.id,
-    modelInputId: output.modelInputId,
+    definitionId: output.definitionId,
     modelName,
     type: type.normalized,
     methodName: output.methodName,

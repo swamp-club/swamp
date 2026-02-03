@@ -7,9 +7,10 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { findByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
-  computeInputHash,
+  computeDefinitionHash,
   ModelOutput,
 } from "../../domain/models/model_output.ts";
+import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { YamlInputRepository } from "../../infrastructure/persistence/yaml_input_repository.ts";
 import { YamlResourceRepository } from "../../infrastructure/persistence/yaml_resource_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
@@ -81,12 +82,13 @@ export const modelMethodRunCommand = new Command()
       ctx.logger.debug`Executing method '${methodName}'`;
 
       // Create ModelOutput for tracking
-      const inputHash = await computeInputHash(input.attributes);
+      // Use input.id as definitionId (for backwards compatibility during migration)
+      const definitionHash = await computeDefinitionHash(input.attributes);
       const output = ModelOutput.create({
-        modelInputId: input.id,
+        definitionId: input.id as unknown as DefinitionId,
         methodName,
         provenance: {
-          inputHash,
+          definitionHash,
           modelVersion: input.version,
           triggeredBy: "manual",
         },
@@ -135,7 +137,12 @@ export const modelMethodRunCommand = new Command()
             ctx.logger.debug`Resource saved to: ${resourcePath}`;
 
             // Track artifact in output
-            output.setResourceId(result.resource.id);
+            output.addDataArtifact({
+              dataId: result.resource.id,
+              name: `${input.name}-resource`,
+              version: result.resource.version,
+              tags: { type: "resource" },
+            });
             resourceArtifact = {
               id: result.resource.id,
               path: resourcePath,
@@ -154,7 +161,12 @@ export const modelMethodRunCommand = new Command()
             await dataRepo.save(modelType, result.data);
             const dataPath = dataRepo.getPath(modelType, result.data.id);
             ctx.logger.debug`Data saved to: ${dataPath}`;
-            output.setDataId(result.data.id);
+            output.addDataArtifact({
+              dataId: result.data.id,
+              name: `${input.name}-data`,
+              version: result.data.version,
+              tags: { type: "data" },
+            });
 
             // Track artifact for output
             dataArtifact = {
@@ -190,15 +202,18 @@ export const modelMethodRunCommand = new Command()
               ctx.logger.debug`Log deleted: ${log.id}`;
             }
           } else {
-            const logIds: string[] = [];
             for (const log of result.logs) {
               await logRepo.save(modelType, log);
               const logPath = logRepo.getPath(modelType, log.id);
               ctx.logger.debug`Log saved to: ${logPath}`;
-              logIds.push(log.id);
+              output.addDataArtifact({
+                dataId: log.id,
+                name: `${input.name}-log`,
+                version: 1,
+                tags: { type: "log" },
+              });
               logArtifacts.push({ id: log.id, path: logPath });
             }
-            output.setLogIds(logIds);
           }
         }
 
@@ -227,7 +242,12 @@ export const modelMethodRunCommand = new Command()
               result.file.metadata.id,
             );
             ctx.logger.debug`File saved to: ${filePath}`;
-            output.setFileId(result.file.metadata.id);
+            output.addDataArtifact({
+              dataId: result.file.metadata.id,
+              name: result.file.metadata.filename,
+              version: 1,
+              tags: { type: "file" },
+            });
             fileArtifact = {
               id: result.file.metadata.id,
               path: filePath,

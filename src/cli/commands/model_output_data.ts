@@ -54,8 +54,11 @@ export const modelOutputDataCommand = new Command()
 
     const { output, type } = result.match;
 
-    // Get data ID from artifacts
-    const dataId = output.artifacts?.dataId;
+    // Get data ID from artifacts (find first data artifact with type "data")
+    const dataArtifact = output.artifacts.dataArtifacts.find(
+      (a) => a.tags.type === "data",
+    );
+    const dataId = dataArtifact?.dataId;
     if (!dataId) {
       throw new UserError(
         `Output ${output.id} has no data artifact. ` +

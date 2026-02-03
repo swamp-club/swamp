@@ -10,6 +10,7 @@ import type {
   LogRepository,
   OutputRepository,
 } from "../../../../src/domain/models/repositories.ts";
+import type { ModelInputId } from "../../../../src/domain/models/model_input.ts";
 import { createModelDataId } from "../../../../src/domain/models/model_data.ts";
 import { createModelLogId } from "../../../../src/domain/models/model_log.ts";
 import {
@@ -30,14 +31,18 @@ export function createOutputsHandlers(
     const outputsWithNames = await Promise.all(
       allOutputs.map(async ({ output, type }) => {
         let modelName: string | undefined;
-        const input = await inputRepository.findById(type, output.modelInputId);
+        // definitionId was previously modelInputId - cast for compatibility
+        const input = await inputRepository.findById(
+          type,
+          output.definitionId as unknown as ModelInputId,
+        );
         if (input) {
           modelName = input.name;
         }
 
         return {
           id: output.id,
-          modelInputId: output.modelInputId,
+          definitionId: output.definitionId,
           modelName,
           type: type.normalized,
           methodName: output.methodName,
@@ -90,15 +95,19 @@ export function createOutputsHandlers(
     const { output, type } = matchResult.match;
 
     // Get model name
+    // definitionId was previously modelInputId - cast for compatibility
     let modelName: string | undefined;
-    const input = await inputRepository.findById(type, output.modelInputId);
+    const input = await inputRepository.findById(
+      type,
+      output.definitionId as unknown as ModelInputId,
+    );
     if (input) {
       modelName = input.name;
     }
 
     return jsonResponse({
       id: output.id,
-      modelInputId: output.modelInputId,
+      definitionId: output.definitionId,
       modelName,
       type: type.normalized,
       methodName: output.methodName,
@@ -146,8 +155,11 @@ export function createOutputsHandlers(
 
     const { output, type } = matchResult.match;
 
-    // Get data ID from artifacts
-    const dataId = output.artifacts?.dataId;
+    // Get data ID from artifacts (find first data artifact with type "data")
+    const dataArtifact = output.artifacts.dataArtifacts.find(
+      (a) => a.tags.type === "data",
+    );
+    const dataId = dataArtifact?.dataId;
     if (!dataId) {
       return errorResponse(
         `Output ${output.id} has no data artifact. Status: ${output.status}, Method: ${output.methodName}`,
@@ -232,9 +244,12 @@ export function createOutputsHandlers(
 
     const { output, type } = matchResult.match;
 
-    // Get log IDs from artifacts
-    const logIds = output.artifacts?.logIds;
-    if (!logIds || logIds.length === 0) {
+    // Get log IDs from artifacts (find all artifacts with type "log")
+    const logArtifacts = output.artifacts.dataArtifacts.filter(
+      (a) => a.tags.type === "log",
+    );
+    const logIds = logArtifacts.map((a) => a.dataId);
+    if (logIds.length === 0) {
       return errorResponse(
         `Output ${output.id} has no log artifacts. Status: ${output.status}, Method: ${output.methodName}`,
         404,
