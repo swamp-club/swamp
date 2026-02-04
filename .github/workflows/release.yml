@@ -1,7 +1,8 @@
 name: Release
 
 on:
-  push:
+  pull_request:
+    types: [closed]
     branches: [main]
   workflow_dispatch:
 
@@ -12,10 +13,14 @@ jobs:
   release:
     name: Build and Release
     runs-on: ubuntu-latest
+    # Only run on merged PRs (not closed without merge) or manual trigger
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Deno
         uses: denoland/setup-deno@v2
