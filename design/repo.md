@@ -126,14 +126,14 @@ The RepoIndexService maintains two primary logical views:
 
 ```
 /models/{model-name}/
-  definition.yaml → /.swamp/definitions/{type}/{id}.yaml
+  definition.yaml              → /.swamp/definitions/{type}/{id}.yaml
   type/
-    logs/         → /.swamp/data/{type}/{id}/ (filtered by type=log data tag)
-    files/        → /.swamp/data/{type}/{id}/ (filtered by type=file data tag)
-    resources/    → /.swamp/data/{type}/{id}/ (filtered by type=resource data tag)
-  {tag-key}/{tag-value}/ → data organized by tag key/value pairs
+    logs/                      → symlinks to data with type=log tag
+    files/                     → symlinks to data with type=file tag
+    resources/                 → symlinks to data with type=resource tag
+  {tag-key}/{tag-value}/       → data organized by custom tag key/value pairs
   outputs/
-    {method}/     → /.swamp/outputs/{type}/{method}/{id}-*.yaml
+    {method}/                  → /.swamp/outputs/{type}/{method}/
 ```
 
 See [./models.md] for detailed data structure including versioning, metadata,
@@ -143,15 +143,15 @@ and data tags.
 
 ```
 /workflows/{workflow-name}/
-  workflow.yaml → /.swamp/workflows/{id}.yaml
+  workflow.yaml              → /.swamp/workflows/workflow-{id}.yaml
   runs/
-    latest/ -> (points to latest timestamp)
+    latest/                  → {latest-timestamp}/
     {timestamp}/
-      run.yaml → /.swamp/workflow-runs/{workflow-id}/{run-id}.yaml
+      run.yaml               → /.swamp/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
       steps/
         {step-name}/
-          output.yaml → symlink to step output
-          model/ → symlink to model logical view (for model method steps)
+          output.yaml        → symlink to step output
+          model/             → ../models/{model-name}/ (for model method steps)
 ```
 
 ### Symlink Naming Conventions

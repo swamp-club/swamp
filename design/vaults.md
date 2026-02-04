@@ -66,13 +66,16 @@ All vault implementations must implement the `VaultProvider` interface:
 ```typescript
 interface VaultProvider {
   // Retrieve a secret value by key
-  get(key: string): Promise<string>;
+  get(secretKey: string): Promise<string>;
 
   // Store a secret value with the given key
-  put(key: string, value: string): Promise<void>;
+  put(secretKey: string, secretValue: string): Promise<void>;
 
-  // Validate the vault configuration
-  validateConfig(): Promise<boolean>;
+  // List all secret keys in the vault (returns key names only, not values)
+  list(): Promise<string[]>;
+
+  // Get the name/type of this vault provider
+  getName(): string;
 }
 ```
 
@@ -403,13 +406,13 @@ If no vault is specified interactively, shows a search interface.
 Editor selection: Uses $EDITOR if set, otherwise falls back to: vscode, zed,
 nvim, vim, nano, emacs.
 
-### vault <vault_name> put KEY=VALUE
+### vault put <vault_name> KEY=VALUE
 
-We should allow a user to be able to store a secret in the vault using the CLI.
-This will error if there's no vault for that name. It should prompt a user if
-they want to overwrite an existing secret if it exists.
+Stores a secret in the vault using the CLI. This will error if there's no vault
+for that name. It prompts the user if they want to overwrite an existing secret
+if it exists.
 
-### vault <vault_name> secret-list
+### vault list-keys <vault_name>
 
-This should list all of the secret names in the vault. It should NOT return any
-values that go with them.
+Lists all secret key names in the vault. This does NOT return any values, only
+the key names.

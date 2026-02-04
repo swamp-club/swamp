@@ -138,13 +138,13 @@ Data has metadata, which consists of:
   have type=log tag.
 
 The raw data will be written to
-`.swamp/data/{normalized-type}/{model id}/{data id}/{data version}/raw`.
+`.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/raw`.
 
 The metadata will be written to
-`.swamp/data/{normalized-type}/{model id}/{data id}/{data version}/metadata.yaml`.
+`.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/metadata.yaml`.
 
-There will be a symlink to the latest version as
-`.swamp/data/{normalized-type}/{model id}/{data id}/latest/metadata.yaml`.
+There will be a symlink to the latest version at
+`.swamp/data/{normalized-type}/{model-id}/{data-name}/latest/`.
 
 ### Logs
 
@@ -166,7 +166,7 @@ Each method invocation produces an output record, which gets tracked in the
 git). The output record should track the state of the method execution, and the
 list of artifacts produced by the method. It should track state as the method
 executes. It should be structured as
-`/.swamp/outputs/{normalized-type}/{method}/{model-id}-{timestamp}.yaml`.
+`/.swamp/outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml`.
 
 ## Logical Views
 
@@ -177,10 +177,10 @@ provides human/agent-friendly exploration of models by name.
 
 ```
 /models/{model-name}/
-  definition.yaml      → symlink to /.swamp/definitions/{type}/{id}.yaml
-  {data tag key}/{data tag value/           → symlink to /.swamp/data for the data as tagged
+  definition.yaml                → symlink to /.swamp/definitions/{type}/{id}.yaml
+  {data-tag-key}/{data-tag-value}/  → symlink to /.swamp/data for the data as tagged
   outputs/
-    {method}/     → symlinks to /.swamp/outputs/{type}/{method}/{id}-*.yaml
+    {method}/                    → symlinks to /.swamp/outputs/{type}/{method}/{id}-*.yaml
 ```
 
 This structure allows exploring all artifacts for a model in one place, using

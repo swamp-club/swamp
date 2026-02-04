@@ -96,8 +96,56 @@ When accessing model data, the "latest" version is implied by default:
 message: ${{ model.foo.data.attributes.message }} # accesses latest version
 ```
 
-Data is immutable and versioned. To access older versions, use CEL functions
-(see [./models.md] for detailed versioning information).
+Data is immutable and versioned. To access specific versions or list available
+versions, use the following CEL functions:
+
+### data.latest(modelName, dataName)
+
+Returns the latest version of a data artifact for a model:
+
+```yaml
+attributes:
+  result: ${{ data.latest('my-model', 'output').attributes.value }}
+```
+
+This is equivalent to using the implicit `model.X.data.Y` syntax.
+
+### data.version(modelName, dataName, version)
+
+Returns a specific version of a data artifact:
+
+```yaml
+attributes:
+  # Get version 1 specifically
+  oldResult: ${{ data.version('my-model', 'output', 1).attributes.value }}
+  # Get version 3
+  result: ${{ data.version('my-model', 'output', 3).attributes.value }}
+```
+
+### data.listVersions(modelName, dataName)
+
+Returns an array of available version numbers for a data artifact, sorted in
+descending order (newest first):
+
+```yaml
+attributes:
+  # Get all available versions
+  versions: ${{ data.listVersions('my-model', 'output') }}
+  # Use with size() to count versions
+  versionCount: ${{ size(data.listVersions('my-model', 'output')) }}
+```
+
+### Combined Example
+
+```yaml
+attributes:
+  # Get latest result
+  current: ${{ data.latest('processor', 'result').attributes.value }}
+  # Get the first result ever produced
+  original: ${{ data.version('processor', 'result', 1).attributes.value }}
+  # Check how many versions exist
+  historySize: ${{ size(data.listVersions('processor', 'result')) }}
+```
 
 ## Sensitive Data
 
