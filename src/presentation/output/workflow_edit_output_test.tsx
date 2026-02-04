@@ -64,3 +64,49 @@ Deno.test("renderWorkflowEdit with json mode outputs valid JSON", () => {
     console.log = originalLog;
   }
 });
+
+Deno.test({
+  name:
+    "WorkflowEditDisplay shows 'Updated workflow' message for updated status",
+  ...inkTestOptions,
+  fn: () => {
+    const updatedData: WorkflowEditData = {
+      path: "workflows/workflow-550e8400-e29b-41d4-a716-446655440000.yaml",
+      status: "updated",
+      name: "test-workflow",
+      id: "550e8400-e29b-41d4-a716-446655440000",
+    };
+    const { lastFrame } = render(<WorkflowEditDisplay {...updatedData} />);
+    const output = lastFrame() ?? "";
+
+    assertStringIncludes(output, "Updated workflow from stdin");
+  },
+});
+
+Deno.test(
+  "renderWorkflowEdit with json mode outputs valid JSON for updated status",
+  () => {
+    const updatedData: WorkflowEditData = {
+      path: "workflows/workflow-550e8400-e29b-41d4-a716-446655440000.yaml",
+      status: "updated",
+      name: "test-workflow",
+      id: "550e8400-e29b-41d4-a716-446655440000",
+    };
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+
+    try {
+      renderWorkflowEdit(updatedData, "json");
+      assertEquals(logs.length, 1);
+      const parsed = JSON.parse(logs[0]);
+      assertEquals(parsed.path, updatedData.path);
+      assertEquals(parsed.status, "updated");
+      assertEquals(parsed.name, updatedData.name);
+      assertEquals(parsed.id, updatedData.id);
+      assertEquals(parsed.editor, undefined);
+    } finally {
+      console.log = originalLog;
+    }
+  },
+);

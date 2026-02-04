@@ -130,14 +130,41 @@ attributes:
 
 ## Edit a Model
 
-Open model input file in your editor.
+Open model input file in your editor, or update via stdin in non-interactive
+mode.
 
 ```bash
+# Interactive: opens in editor
 swamp model edit my-echo
 swamp model edit my-echo --resource  # Edit resource file instead
+
+# Non-interactive: update from stdin
+cat updated-model.yaml | swamp model edit my-echo --json
+
+# With here-doc (agent-friendly)
+swamp model edit my-echo --json <<EOF
+id: existing-uuid
+name: my-echo
+version: 1
+attributes:
+  message: "Updated message"
+EOF
 ```
 
-Without arguments, shows a search interface to select a model.
+Without arguments in interactive mode, shows a search interface to select a
+model.
+
+**Output shape (when updating via stdin):**
+
+```json
+{
+  "path": ".swamp/definitions/swamp/echo/abc-123.yaml",
+  "status": "updated",
+  "name": "my-echo",
+  "type": "swamp/echo",
+  "editType": "definition"
+}
+```
 
 ## Delete a Model
 

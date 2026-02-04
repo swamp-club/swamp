@@ -116,13 +116,44 @@ jobs:
 
 ## Edit a Workflow
 
-Open workflow file in your editor.
+Open workflow file in your editor, or update via stdin in non-interactive mode.
 
 ```bash
+# Interactive: opens in editor
 swamp workflow edit my-workflow
+
+# Non-interactive: update from stdin
+cat updated-workflow.yaml | swamp workflow edit my-workflow --json
+
+# With here-doc (agent-friendly)
+swamp workflow edit my-workflow --json <<EOF
+id: existing-uuid
+name: my-workflow
+version: 1
+jobs:
+  - name: updated-job
+    steps:
+      - name: step1
+        task:
+          type: shell
+          command: echo
+          args: ["updated"]
+EOF
 ```
 
-Without arguments, shows a search interface to select a workflow.
+Without arguments in interactive mode, shows a search interface to select a
+workflow.
+
+**Output shape (when updating via stdin):**
+
+```json
+{
+  "path": ".swamp/workflows/workflow-abc-123.yaml",
+  "status": "updated",
+  "name": "my-workflow",
+  "id": "abc-123"
+}
+```
 
 ## Delete a Workflow
 

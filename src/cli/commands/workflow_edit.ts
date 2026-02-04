@@ -1,4 +1,5 @@
 import { Command } from "@cliffy/command";
+import { parse as parseYaml } from "@std/yaml";
 import {
   renderWorkflowEdit,
   type WorkflowEditData,
@@ -13,10 +14,14 @@ import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
-import type { Workflow } from "../../domain/workflows/workflow.ts";
+import {
+  Workflow,
+  type WorkflowData,
+} from "../../domain/workflows/workflow.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 
 /**
  * UUID v4 regex pattern for detecting if an argument is a UUID.
@@ -118,6 +123,36 @@ export const workflowEditCommand = new Command()
 
     // Get the file path
     const filePath = repo.getPath(workflow.id);
+
+    // Check for stdin content (non-interactive update mode)
+    const stdinContent = await readStdin();
+
+    if (stdinContent !== null) {
+      ctx.logger.debug`Reading workflow content from stdin`;
+
+      // Parse YAML content from stdin
+      const yamlData = parseYaml(stdinContent) as WorkflowData;
+
+      // Preserve the original ID to ensure we update the same workflow
+      yamlData.id = workflow.id;
+
+      // Validate and create domain object
+      const updatedWorkflow = Workflow.fromData(yamlData);
+
+      // Save via repository (emits events for indexing)
+      await repo.save(updatedWorkflow);
+
+      const data: WorkflowEditData = {
+        path: filePath,
+        status: "updated",
+        name: updatedWorkflow.name,
+        id: updatedWorkflow.id,
+      };
+
+      renderWorkflowEdit(data, ctx.outputMode);
+      ctx.logger.debug("Workflow updated from stdin");
+      return;
+    }
 
     ctx.logger.debug`Opening file: ${filePath}`;
 

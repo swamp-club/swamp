@@ -9,8 +9,8 @@ import type { OutputMode } from "./output.tsx";
  */
 export interface WorkflowEditData {
   path: string;
-  editor: string;
-  status: "opened";
+  editor?: string;
+  status: "opened" | "updated";
   name: string;
   id: string;
 }
@@ -36,7 +36,8 @@ function renderInteractiveWorkflowEdit(data: WorkflowEditData): void {
 
 interface WorkflowEditDisplayProps {
   path: string;
-  editor: string;
+  editor?: string;
+  status: "opened" | "updated";
   name: string;
   id: string;
 }
@@ -47,9 +48,13 @@ interface WorkflowEditDisplayProps {
 export function WorkflowEditDisplay(
   props: WorkflowEditDisplayProps,
 ): React.ReactElement {
+  const header = props.status === "updated"
+    ? "Updated workflow from stdin:"
+    : `Opening workflow in ${props.editor}:`;
+
   return (
     <Box flexDirection="column">
-      <Text color="green">Opening workflow in {props.editor}:</Text>
+      <Text color="green">{header}</Text>
       <Box marginLeft={2} flexDirection="column">
         <Text>
           <Text color="cyan">Name:</Text>

@@ -1,4 +1,5 @@
 import { Command } from "@cliffy/command";
+import { parse as parseYaml } from "@std/yaml";
 import {
   type ModelEditData,
   renderModelEdit,
@@ -9,12 +10,16 @@ import {
   renderModelSearch,
 } from "../../presentation/output/model_search_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import type { Definition } from "../../domain/definitions/definition.ts";
+import {
+  Definition,
+  type DefinitionData,
+} from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
+import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -108,6 +113,37 @@ export const modelEditCommand = new Command()
 
     // Get the file path
     const filePath = definitionRepo.getPath(modelType, definition.id);
+
+    // Check for stdin content (non-interactive update mode)
+    const stdinContent = await readStdin();
+
+    if (stdinContent !== null) {
+      ctx.logger.debug`Reading model content from stdin`;
+
+      // Parse YAML content from stdin
+      const yamlData = parseYaml(stdinContent) as DefinitionData;
+
+      // Preserve the original ID to ensure we update the same model
+      yamlData.id = definition.id;
+
+      // Validate and create domain object
+      const updatedDefinition = Definition.fromData(yamlData);
+
+      // Save via repository (emits events for indexing)
+      await definitionRepo.save(modelType, updatedDefinition);
+
+      const data: ModelEditData = {
+        path: filePath,
+        status: "updated",
+        name: updatedDefinition.name,
+        type: modelType.normalized,
+        editType: "definition",
+      };
+
+      renderModelEdit(data, ctx.outputMode);
+      ctx.logger.debug("Model updated from stdin");
+      return;
+    }
 
     ctx.logger.debug`Opening file: ${filePath}`;
 

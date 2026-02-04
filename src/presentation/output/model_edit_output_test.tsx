@@ -87,3 +87,51 @@ Deno.test("renderModelEdit with json mode outputs valid JSON", () => {
     console.log = originalLog;
   }
 });
+
+Deno.test({
+  name: "ModelEditDisplay shows 'Updated' message for updated status",
+  ...inkTestOptions,
+  fn: () => {
+    const updatedData: ModelEditData = {
+      path: "inputs/swamp/echo/550e8400-e29b-41d4-a716-446655440000.yaml",
+      status: "updated",
+      name: "test-echo",
+      type: "swamp/echo",
+      editType: "definition",
+    };
+    const { lastFrame } = render(<ModelEditDisplay {...updatedData} />);
+    const output = lastFrame() ?? "";
+
+    assertStringIncludes(output, "Updated definition from stdin");
+  },
+});
+
+Deno.test(
+  "renderModelEdit with json mode outputs valid JSON for updated status",
+  () => {
+    const updatedData: ModelEditData = {
+      path: "inputs/swamp/echo/550e8400-e29b-41d4-a716-446655440000.yaml",
+      status: "updated",
+      name: "test-echo",
+      type: "swamp/echo",
+      editType: "definition",
+    };
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+
+    try {
+      renderModelEdit(updatedData, "json");
+      assertEquals(logs.length, 1);
+      const parsed = JSON.parse(logs[0]);
+      assertEquals(parsed.path, updatedData.path);
+      assertEquals(parsed.status, "updated");
+      assertEquals(parsed.name, updatedData.name);
+      assertEquals(parsed.type, updatedData.type);
+      assertEquals(parsed.editType, updatedData.editType);
+      assertEquals(parsed.editor, undefined);
+    } finally {
+      console.log = originalLog;
+    }
+  },
+);

@@ -9,8 +9,8 @@ import type { OutputMode } from "./output.tsx";
  */
 export interface ModelEditData {
   path: string;
-  editor: string;
-  status: "opened";
+  editor?: string;
+  status: "opened" | "updated";
   name: string;
   type: string;
   editType: "input" | "resource" | "definition";
@@ -34,7 +34,8 @@ function renderInteractiveModelEdit(data: ModelEditData): void {
 
 interface ModelEditDisplayProps {
   path: string;
-  editor: string;
+  editor?: string;
+  status: "opened" | "updated";
   name: string;
   type: string;
   editType: "input" | "resource" | "definition";
@@ -51,9 +52,14 @@ export function ModelEditDisplay(
     : props.editType === "definition"
     ? "definition"
     : "input";
+
+  const header = props.status === "updated"
+    ? `Updated ${fileTypeLabel} from stdin:`
+    : `Opening ${fileTypeLabel} file in ${props.editor}:`;
+
   return (
     <Box flexDirection="column">
-      <Text color="green">Opening {fileTypeLabel} file in {props.editor}:</Text>
+      <Text color="green">{header}</Text>
       <Box marginLeft={2} flexDirection="column">
         <Text>
           <Text color="cyan">Name:</Text>
