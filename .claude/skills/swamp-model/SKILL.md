@@ -220,6 +220,46 @@ Model inputs support CEL expressions using `${{ <expression> }}` syntax.
 - **Arithmetic:** `self.attributes.count * 2`
 - **Conditionals:** `self.attributes.enabled ? "yes" : "no"`
 
+### Data Versioning Functions
+
+Access specific versions of model data using the `data` namespace:
+
+| Function                                     | Description                            |
+| -------------------------------------------- | -------------------------------------- |
+| `data.version(modelName, dataName, version)` | Get specific version of data           |
+| `data.latest(modelName, dataName)`           | Get latest version of data             |
+| `data.listVersions(modelName, dataName)`     | Get array of available version numbers |
+| `data.findByTag(tagKey, tagValue)`           | Find all data matching a tag           |
+
+**DataRecord structure** returned by these functions:
+
+```json
+{
+  "id": "uuid",
+  "name": "data-name",
+  "version": 3,
+  "createdAt": "2025-01-15T10:30:00Z",
+  "attributes": {/* data content */},
+  "tags": { "type": "resource" }
+}
+```
+
+**Example usage:**
+
+```yaml
+# Get specific version
+oldValue: ${{ data.version("my-model", "state", 2).attributes.value }}
+
+# Get latest (same as model.my-model.data)
+current: ${{ data.latest("my-model", "output").attributes.result }}
+
+# List versions for conditional logic
+hasHistory: ${{ size(data.listVersions("my-model", "state")) > 1 }}
+
+# Find by tag
+allLogs: ${{ data.findByTag("type", "log") }}
+```
+
 ### Example with Expressions
 
 ```yaml
@@ -385,6 +425,30 @@ swamp model output data output-789 --json
 5. **Validate** the model: `swamp model validate my-message --json`
 6. **Run** the method: `swamp model method run my-message write --json`
 7. **View** the output: `swamp model output get my-message --json`
+
+## Data Ownership
+
+Data artifacts are owned by the model (definition) that created them. This
+prevents accidental overwrites from other models.
+
+### Ownership Rules
+
+- Data can only be written by the model that originally created it
+- Ownership is verified through `definitionHash` comparison
+- Owner information includes:
+  - **type**: `model-method`, `workflow-step`, or `manual`
+  - **ref**: Reference to the creating entity
+  - **workflow/run IDs**: Set when created during workflow execution
+
+### Ownership Validation
+
+When a model method writes data, swamp validates:
+
+1. If data doesn't exist → create with current model as owner
+2. If data exists → verify `ownerDefinition.definitionHash` matches
+3. If hash mismatch → write fails with ownership error
+
+This ensures data integrity when multiple models reference the same data names.
 
 ## When to Use Other Skills
 

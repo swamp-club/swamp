@@ -25,25 +25,34 @@ startup.
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({ message: z.string() });
-const DataSchema = z.object({ result: z.string(), timestamp: z.string() });
 
 export const model = {
   type: "myorg/my-model",
   version: 1,
   inputAttributesSchema: InputSchema,
-  dataAttributesSchema: DataSchema, // Use resourceAttributesSchema for persistent output
   methods: {
     run: {
-      description: "Process the input",
-      execute: async (input, _context) => ({
-        data: {
-          id: input.id,
-          attributes: {
-            result: input.attributes.message.toUpperCase(),
-            timestamp: new Date().toISOString(),
-          },
-        },
-      }),
+      description: "Process the input message",
+      execute: async (definition, _context) => {
+        const result = {
+          message: definition.attributes.message.toUpperCase(),
+          timestamp: new Date().toISOString(),
+        };
+
+        return {
+          dataOutputs: [
+            {
+              name: "result",
+              content: JSON.stringify(result),
+              metadata: {
+                contentType: "application/json",
+                lifetime: "infinite",
+                tags: { type: "data" },
+              },
+            },
+          ],
+        };
+      },
     },
   },
 };
@@ -51,39 +60,72 @@ export const model = {
 
 ## Model Structure
 
-| Field                      | Required | Description                            |
-| -------------------------- | -------- | -------------------------------------- |
-| `type`                     | Yes      | Unique identifier (`namespace/name`)   |
-| `version`                  | Yes      | Schema version number                  |
-| `inputAttributesSchema`    | Yes      | Zod schema for input validation        |
-| `dataAttributesSchema`     | Pick one | For ephemeral output (not git-tracked) |
-| `resourceAttributesSchema` | Pick one | For persistent output (git-tracked)    |
-| `methods`                  | Yes      | Object of method definitions           |
-
-### Output Schema Choice
-
-- **`dataAttributesSchema`**: Use for ephemeral data that doesn't need to be
-  tracked in git (logs, temporary results, intermediate state)
-- **`resourceAttributesSchema`**: Use for persistent data that represents
-  external resources or should be version controlled (AWS resources, configs)
+| Field                   | Required | Description                          |
+| ----------------------- | -------- | ------------------------------------ |
+| `type`                  | Yes      | Unique identifier (`namespace/name`) |
+| `version`               | Yes      | Schema version number                |
+| `inputAttributesSchema` | Yes      | Zod schema for input validation      |
+| `methods`               | Yes      | Object of method definitions         |
 
 ## Execute Function
 
+The execute function receives the definition and context, returns data outputs:
+
 ```typescript
-execute: (async (input, context) => {
-  // input.id        - UUID
-  // input.name      - User-provided name
-  // input.attributes - Validated input data
-  // context.repoDir - Repository root path
+execute: (async (definition, context) => {
+  // definition.id         - UUID
+  // definition.name       - User-provided name
+  // definition.attributes - Validated input data
+  // context.repoDir       - Repository root path
+  // context.dataRepository - For advanced data operations
 
   return {
-    data: { // Or 'resource' for resourceAttributesSchema
-      id: input.id,
-      attributes: {/* output fields */},
-    },
+    dataOutputs: [
+      {
+        name: "output-name",
+        content: "string or Uint8Array",
+        metadata: {
+          contentType: "application/json",
+          lifetime: "infinite",
+          tags: { type: "data" },
+        },
+      },
+    ],
   };
 });
 ```
+
+## Data Output Structure
+
+Each data output in the `dataOutputs` array has:
+
+| Field                  | Required | Description                                  |
+| ---------------------- | -------- | -------------------------------------------- |
+| `name`                 | Yes      | Unique name for this data artifact           |
+| `content`              | Yes      | Data as `string` or `Uint8Array`             |
+| `metadata.contentType` | No       | MIME type (default: `application/json`)      |
+| `metadata.lifetime`    | No       | How long data persists (default: `infinite`) |
+| `metadata.tags`        | No       | Key-value pairs for categorization           |
+| `metadata.streaming`   | No       | True for line-oriented log data              |
+
+### Lifetime Values
+
+| Value       | Behavior                                     |
+| ----------- | -------------------------------------------- |
+| `ephemeral` | Deleted after method/workflow completes      |
+| `job`       | Persists while creating job runs             |
+| `workflow`  | Persists while creating workflow runs        |
+| Duration    | Expires after time (e.g., `1h`, `7d`, `1mo`) |
+| `infinite`  | Never expires (default)                      |
+
+### Standard Tags
+
+| Tag                | Use for                          |
+| ------------------ | -------------------------------- |
+| `type: "data"`     | General model data (default)     |
+| `type: "log"`      | Execution logs (streaming, text) |
+| `type: "file"`     | File artifacts                   |
+| `type: "resource"` | External resource state          |
 
 ## Model Discovery
 
@@ -102,36 +144,15 @@ Repository models take precedence, allowing you to override built-in types.
 4. **No type annotations**: Avoid TypeScript types in execute parameters
 5. **File naming**: Use snake_case (`my_model.ts`), test files excluded
 
-## Advanced: Method Input Schema
+## Data Ownership
 
-Methods can define their own input schema for runtime parameters:
+Data artifacts are tracked with ownership information. This prevents other
+models from accidentally overwriting data.
 
-```typescript
-methods: {
-  deploy: {
-    description: "Deploy with environment-specific config",
-    inputAttributesSchema: z.object({
-      environment: z.enum(["dev", "staging", "prod"]),
-      dryRun: z.boolean().optional(),
-    }),
-    execute: async (input, context, methodInput) => {
-      const env = methodInput?.environment ?? "dev";
-      // ...
-    },
-  },
-},
-```
-
-## Advanced: Context Usage
-
-The context provides access to repository information:
-
-```typescript
-execute: (async (input, context) => {
-  const configPath = `${context.repoDir}/config.yaml`;
-  // Read config, access other files, etc.
-});
-```
+- Each model "owns" the data it creates
+- Multiple models can read the same data via CEL expressions
+- Only the creating model can update its own data
+- Use unique data names to avoid conflicts
 
 ## Examples
 
@@ -145,34 +166,86 @@ const InputSchema = z.object({
   args: z.array(z.string()).optional(),
 });
 
-const DataSchema = z.object({
-  stdout: z.string(),
-  stderr: z.string(),
-  exitCode: z.number(),
-});
-
 export const model = {
   type: "myorg/shell",
   version: 1,
   inputAttributesSchema: InputSchema,
-  dataAttributesSchema: DataSchema,
   methods: {
     run: {
       description: "Execute shell command",
-      execute: async (input, _context) => {
-        const cmd = new Deno.Command(input.attributes.command, {
-          args: input.attributes.args ?? [],
+      execute: async (definition, _context) => {
+        const cmd = new Deno.Command(definition.attributes.command, {
+          args: definition.attributes.args ?? [],
         });
         const output = await cmd.output();
+
         return {
-          data: {
-            id: input.id,
-            attributes: {
-              stdout: new TextDecoder().decode(output.stdout),
-              stderr: new TextDecoder().decode(output.stderr),
-              exitCode: output.code,
+          dataOutputs: [
+            {
+              name: "output",
+              content: JSON.stringify({
+                stdout: new TextDecoder().decode(output.stdout),
+                stderr: new TextDecoder().decode(output.stderr),
+                exitCode: output.code,
+              }),
+              metadata: {
+                contentType: "application/json",
+                lifetime: "infinite",
+                tags: { type: "data" },
+              },
             },
-          },
+          ],
+        };
+      },
+    },
+  },
+};
+```
+
+### Model with Multiple Outputs
+
+```typescript
+import { z } from "npm:zod@4";
+
+const InputSchema = z.object({ query: z.string() });
+
+export const model = {
+  type: "myorg/search",
+  version: 1,
+  inputAttributesSchema: InputSchema,
+  methods: {
+    search: {
+      description: "Search and store results with log",
+      execute: async (definition, _context) => {
+        const results = ["result1", "result2"];
+
+        return {
+          dataOutputs: [
+            // Primary result data
+            {
+              name: "results",
+              content: JSON.stringify({ results }),
+              metadata: {
+                contentType: "application/json",
+                lifetime: "infinite",
+                tags: { type: "data" },
+              },
+            },
+            // Execution log
+            {
+              name: "search-log",
+              content: JSON.stringify({
+                query: definition.attributes.query,
+                timestamp: new Date().toISOString(),
+                resultCount: results.length,
+              }),
+              metadata: {
+                contentType: "application/json",
+                lifetime: "7d",
+                tags: { type: "log" },
+              },
+            },
+          ],
         };
       },
     },
@@ -190,40 +263,76 @@ const InputSchema = z.object({
   apiKey: z.string(), // Use vault expression: ${{ vault.get(my-vault, API_KEY) }}
 });
 
-const ResourceSchema = z.object({
-  resourceId: z.string(),
-  status: z.string(),
-  createdAt: z.string(),
-});
-
 export const model = {
   type: "myorg/api-resource",
   version: 1,
   inputAttributesSchema: InputSchema,
-  resourceAttributesSchema: ResourceSchema,
   methods: {
     create: {
       description: "Create resource via API",
-      execute: async (input, _context) => {
-        const response = await fetch(input.attributes.endpoint, {
+      execute: async (definition, _context) => {
+        const response = await fetch(definition.attributes.endpoint, {
           method: "POST",
-          headers: { Authorization: `Bearer ${input.attributes.apiKey}` },
+          headers: {
+            Authorization: `Bearer ${definition.attributes.apiKey}`,
+          },
         });
         const data = await response.json();
+
         return {
-          resource: {
-            id: input.id,
-            attributes: {
-              resourceId: data.id,
-              status: data.status,
-              createdAt: new Date().toISOString(),
+          dataOutputs: [
+            {
+              name: "resource",
+              content: JSON.stringify({
+                resourceId: data.id,
+                status: data.status,
+                createdAt: new Date().toISOString(),
+              }),
+              metadata: {
+                contentType: "application/json",
+                lifetime: "infinite",
+                tags: { type: "resource" },
+              },
             },
-          },
+          ],
         };
       },
     },
   },
 };
+```
+
+### Method with Input Schema
+
+Methods can define their own input schema for runtime parameters:
+
+```typescript
+methods: {
+  deploy: {
+    description: "Deploy with environment-specific config",
+    inputAttributesSchema: z.object({
+      environment: z.enum(["dev", "staging", "prod"]),
+      dryRun: z.boolean().optional(),
+    }),
+    execute: async (definition, context, methodInput) => {
+      const env = methodInput?.environment ?? "dev";
+      // Use env for deployment logic...
+
+      return {
+        dataOutputs: [
+          {
+            name: "deployment",
+            content: JSON.stringify({ environment: env, status: "deployed" }),
+            metadata: {
+              contentType: "application/json",
+              tags: { type: "resource" },
+            },
+          },
+        ],
+      };
+    },
+  },
+},
 ```
 
 ## Verify
@@ -247,8 +356,6 @@ swamp type describe myorg/my-model    # Check schema
 
 ## References
 
-- **Complete examples**: See [references/examples.md](references/examples.md)
-- **Troubleshooting**: See
-  [references/troubleshooting.md](references/troubleshooting.md)
-- **Model design**: See [design/models.md](design/models.md) for data structures
-  and lifecycle concepts
+- **Built-in example**: See `src/domain/models/echo/echo_model.ts` for reference
+- **Model loader**: See `src/domain/models/user_model_loader.ts` for API details
+- **Model design**: See [design/models.md](design/models.md) for concepts
