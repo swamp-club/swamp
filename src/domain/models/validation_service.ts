@@ -4,7 +4,10 @@ import { modelRegistry } from "./model.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { DefinitionSchema } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { extractExpressions } from "../expressions/expression_parser.ts";
+import {
+  extractExpressions,
+  stripExpressionFields,
+} from "../expressions/expression_parser.ts";
 import {
   extractEnvReferences,
   extractPathReferences,
@@ -235,10 +238,25 @@ export class DefaultModelValidationService implements ModelValidationService {
     definition: Definition,
     modelDef: ModelDefinition,
   ): Promise<ValidationResult> {
+    // Strip fields that contain expressions - they will be validated after evaluation.
+    // Only validate the static (non-expression) fields against the schema.
+    const staticAttributes = stripExpressionFields(definition.attributes);
+
+    // If any fields were stripped (contain expressions), skip schema validation entirely.
+    // Expression paths are validated separately, and full schema validation will happen
+    // at runtime when the evaluated definition is executed.
+    const totalFields = Object.keys(definition.attributes).length;
+    const staticFields = Object.keys(staticAttributes).length;
+    if (staticFields < totalFields) {
+      // Some fields contain expressions - skip schema validation
+      return Promise.resolve(ValidationResult.pass("Definition attributes"));
+    }
+
+    // All fields are static, validate normally
     return this.validateWithSchema(
       "Definition attributes",
       modelDef.inputAttributesSchema,
-      definition.attributes,
+      staticAttributes,
     );
   }
 

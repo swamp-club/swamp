@@ -34,6 +34,43 @@ export function containsExpression(value: string): boolean {
 }
 
 /**
+ * Checks if a value is or contains an expression.
+ * Works recursively for arrays and objects.
+ */
+export function valueContainsExpression(value: unknown): boolean {
+  if (typeof value === "string") {
+    return containsExpression(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => valueContainsExpression(item));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).some((v) => valueContainsExpression(v));
+  }
+  return false;
+}
+
+/**
+ * Strips fields that contain expressions from an object.
+ * Used for schema validation where we want to validate static values
+ * but skip expression-containing fields (which will be validated after evaluation).
+ *
+ * @param data - The data structure to process
+ * @returns A new object with expression-containing fields removed
+ */
+export function stripExpressionFields<T extends Record<string, unknown>>(
+  data: T,
+): Partial<T> {
+  const result: Partial<T> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (!valueContainsExpression(value)) {
+      result[key as keyof T] = value as T[keyof T];
+    }
+  }
+  return result;
+}
+
+/**
  * Extracts all expression locations from a nested data structure.
  *
  * @param data - The data structure to search (object, array, or primitive)

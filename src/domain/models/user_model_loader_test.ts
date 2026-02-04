@@ -399,3 +399,140 @@ export const model = {
     },
   );
 });
+
+Deno.test("UserModelLoader converts resource return format to dataOutputs", async () => {
+  const typeId = `test/resource-format-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+const InputSchema = z.object({
+  testInput: z.string(),
+});
+
+export const model = {
+  type: "${typeId}",
+  version: 1,
+  inputAttributesSchema: InputSchema,
+  methods: {
+    execute: {
+      description: "Test method that returns resource format",
+      execute: async (definition, _context) => {
+        return {
+          resource: {
+            id: definition.id,
+            attributes: {
+              testOutput: "Processed: " + definition.attributes.testInput,
+              executedAt: "2024-01-01T00:00:00Z",
+            },
+          },
+        };
+      },
+    },
+  },
+};
+`;
+
+  await withTempModels({ "resource_format.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+
+    const definition = Definition.create({
+      name: "test-resource",
+      attributes: { testInput: "Hello World" },
+    });
+
+    const context = createTestContext(modelDef!.type);
+    const methodResult = await modelDef!.methods.execute.execute(
+      definition,
+      context,
+    );
+
+    // Verify resource was converted to dataOutputs
+    assertEquals(methodResult.dataOutputs !== undefined, true);
+    assertEquals(methodResult.dataOutputs!.length, 1);
+
+    const dataOutput = methodResult.dataOutputs![0];
+    assertEquals(dataOutput.name, "resource");
+    assertEquals(dataOutput.metadata.contentType, "application/json");
+    assertEquals(dataOutput.metadata.tags.type, "resource");
+
+    // Verify the content contains the resource attributes
+    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
+    assertEquals(content.testOutput, "Processed: Hello World");
+    assertEquals(content.executedAt, "2024-01-01T00:00:00Z");
+  });
+});
+
+Deno.test("UserModelLoader converts data return format to dataOutputs", async () => {
+  const typeId = `test/data-format-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+const InputSchema = z.object({
+  query: z.string(),
+});
+
+export const model = {
+  type: "${typeId}",
+  version: 1,
+  inputAttributesSchema: InputSchema,
+  methods: {
+    fetch: {
+      description: "Test method that returns data format",
+      execute: async (definition, _context) => {
+        return {
+          data: {
+            attributes: {
+              result: "Query result for: " + definition.attributes.query,
+              count: 42,
+            },
+            name: "query-result",
+            tags: { source: "test" },
+          },
+        };
+      },
+    },
+  },
+};
+`;
+
+  await withTempModels({ "data_format.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+
+    const definition = Definition.create({
+      name: "test-data",
+      attributes: { query: "SELECT *" },
+    });
+
+    const context = createTestContext(modelDef!.type);
+    const methodResult = await modelDef!.methods.fetch.execute(
+      definition,
+      context,
+    );
+
+    // Verify data was converted to dataOutputs
+    assertEquals(methodResult.dataOutputs !== undefined, true);
+    assertEquals(methodResult.dataOutputs!.length, 1);
+
+    const dataOutput = methodResult.dataOutputs![0];
+    assertEquals(dataOutput.name, "query-result");
+    assertEquals(dataOutput.metadata.contentType, "application/json");
+    assertEquals(dataOutput.metadata.tags.source, "test");
+
+    // Verify the content contains the data attributes
+    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
+    assertEquals(content.result, "Query result for: SELECT *");
+    assertEquals(content.count, 42);
+  });
+});
