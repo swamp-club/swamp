@@ -4,7 +4,7 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
 import { typeCommand } from "./commands/type_describe.ts";
-import { repoCommand } from "./commands/repo_init.ts";
+import { repoCommand, repoInitCommand } from "./commands/repo_init.ts";
 import { workflowCommand } from "./commands/workflow.ts";
 import { completionCommand } from "./commands/completion.ts";
 import { vaultCommand } from "./commands/vault.ts";
@@ -107,6 +107,7 @@ export async function runCli(args: string[]): Promise<void> {
     .command("version", versionCommand)
     .command("model", modelCommand)
     .command("type", typeCommand)
+    .command("init", repoInitCommand)
     .command("repo", repoCommand)
     .command("workflow", workflowCommand)
     .command("vault", vaultCommand)
