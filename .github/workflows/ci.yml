@@ -102,7 +102,10 @@ jobs:
     needs: [test, claude-review]
     runs-on: ubuntu-latest
     # Only auto-merge PRs from the same repo (not forks) for security
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Skip auto-merge if PR has the 'hold' label
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'hold')
 
     steps:
       - name: Checkout code

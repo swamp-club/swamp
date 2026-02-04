@@ -29,6 +29,8 @@ Use `deno run` to get a complete list of custom tasks.
 ## Source Control & Pull Requests
 
 - Use the `github-pr` skill to create commit messages and pull requests.
+- PRs are auto-merged after passing CI and Claude review. To prevent auto-merge,
+  add the `hold` label to the PR.
 - After completing work (finishing tasks, merging PRs), run `deno run compile`
   to recompile swamp.
 
