@@ -22,28 +22,64 @@ deno run dev
 swamp version
 ```
 
+## Architecture Overview
+
+Swamp uses a model-driven architecture with the following key concepts:
+
+- **Models**: Define automation tasks with typed inputs and methods
+- **Definitions**: YAML configurations that instantiate models
+- **Workflows**: Orchestrate model executions with dependencies and triggers
+- **Data**: Versioned, immutable artifacts produced by model methods
+- **Vaults**: Secure storage for sensitive data (secrets, credentials)
+- **Expressions**: CEL expressions for dynamic values and cross-model references
+
+All data is stored in the `.swamp/` directory:
+
+```
+.swamp/
+├── definitions/       # Model definitions by type
+├── definitions-evaluated/  # Evaluated definitions (with expressions resolved)
+├── workflows/         # Workflow definitions
+├── workflows-evaluated/    # Evaluated workflows
+├── workflow-runs/     # Execution history
+├── data/              # Versioned data artifacts
+├── outputs/           # Method execution outputs
+├── vault/             # Vault configurations
+├── secrets/           # Encrypted secrets (local vaults)
+└── logs/              # Execution logs
+```
+
+Logical views (`/models/`, `/workflows/`, `/vaults/`) provide symlinks for
+human-friendly exploration of the repository.
+
 ### Example: Echo Model Workflow
 
 The `swamp/echo` model demonstrates the basic model lifecycle.
 
 ```bash
-# 1. Create a new echo model input
+# 1. Initialize a swamp repository (if not already done)
+swamp repo init
+
+# 2. Create a new echo model definition
 swamp model create swamp/echo my-echo
 
-# 2. Edit the input file to add the required 'message' attribute
-#    The file is created at: inputs/swamp/echo/<id>.yaml
+# 3. Edit the definition file to add the required 'message' attribute
+#    The file is created at: .swamp/definitions/swamp/echo/<id>.yaml
 #    Add under attributes:
 #      message: "Hello, world!"
 
-# 3. Validate the model input
+# 4. Validate the model definition
 swamp model validate my-echo
 
-# 4. Execute the write method to generate a resource
+# 5. Execute the write method to generate data
 swamp model method run my-echo write
+
+# 6. View the output
+swamp model output search my-echo
 ```
 
-Model inputs are stored in `inputs/swamp/echo/` and resources are written to
-`resources/swamp/echo/`.
+Model definitions are stored in `.swamp/definitions/swamp/echo/` and data
+artifacts are written to `.swamp/data/swamp/echo/`.
 
 ## Shell Completions
 
