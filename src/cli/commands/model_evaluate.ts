@@ -7,6 +7,7 @@ import {
 } from "../../presentation/output/model_evaluate_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 
@@ -24,9 +25,11 @@ export const modelEvaluateCommand = new Command()
       const ctx = createContext(options as GlobalOptions, "model-evaluate");
       const repoDir = options.repoDir ?? ".";
       const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
       const evaluationService = new ExpressionEvaluationService(
         definitionRepo,
         repoDir,
+        { dataRepo },
       );
 
       // If --all flag or no argument, evaluate all definitions

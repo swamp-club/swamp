@@ -356,3 +356,56 @@ Deno.test("CelEvaluator evaluates env in string concatenation", () => {
   );
   assertEquals(result, "prod-main");
 });
+
+// Tests for data versioning (Issue #128)
+
+Deno.test("CelEvaluator handles model.foo.data.bar.attributes.x pattern", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    model: {
+      "my-vpc": {
+        input: {
+          id: "input-123",
+          name: "my-vpc",
+          version: 1,
+          tags: {},
+          attributes: {},
+        },
+        data: {
+          "vpc-info": {
+            id: "data-123",
+            name: "vpc-info",
+            version: 2,
+            createdAt: "2024-01-01T00:00:00Z",
+            attributes: {
+              vpcId: "vpc-abc123",
+              cidrBlock: "10.0.0.0/16",
+            },
+            tags: { type: "resource" },
+          },
+        },
+      },
+    },
+  };
+
+  // Access data by name using bracket notation (required for hyphenated names)
+  assertEquals(
+    evaluator.evaluate(
+      'model["my-vpc"].data["vpc-info"].attributes.vpcId',
+      context,
+    ),
+    "vpc-abc123",
+  );
+  assertEquals(
+    evaluator.evaluate(
+      'model["my-vpc"].data["vpc-info"].version',
+      context,
+    ),
+    2,
+  );
+});
+
+// Note: The data namespace functions (data.version(), data.latest(), etc.) are
+// tested in the integration tests (integration/data_expression_test.ts) because
+// cel-js doesn't support function call syntax directly in expressions. The functions
+// work through the expression evaluation service which pre-processes expressions.
