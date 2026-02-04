@@ -34,23 +34,14 @@ export const model = {
     run: {
       description: "Process the input message",
       execute: async (definition, _context) => {
-        const result = {
-          message: definition.attributes.message.toUpperCase(),
-          timestamp: new Date().toISOString(),
-        };
-
         return {
-          dataOutputs: [
-            {
-              name: "result",
-              content: JSON.stringify(result),
-              metadata: {
-                contentType: "application/json",
-                lifetime: "infinite",
-                tags: { type: "data" },
-              },
+          data: {
+            attributes: {
+              message: definition.attributes.message.toUpperCase(),
+              timestamp: new Date().toISOString(),
             },
-          ],
+            name: "result",
+          },
         };
       },
     },
@@ -69,7 +60,11 @@ export const model = {
 
 ## Execute Function
 
-The execute function receives the definition and context, returns data outputs:
+The execute function receives the definition and context, and returns data
+outputs. There are three return formats: the preferred simpler formats
+(`resource` and `data`) and the explicit `dataOutputs` array.
+
+### Preferred: Simple Return Formats
 
 ```typescript
 execute: (async (definition, context) => {
@@ -79,6 +74,49 @@ execute: (async (definition, context) => {
   // context.repoDir       - Repository root path
   // context.dataRepository - For advanced data operations
 
+  // For external resources (APIs, cloud services, etc.)
+  return {
+    resource: {
+      attributes: {
+        id: "resource-123",
+        status: "created",
+        endpoint: "https://api.example.com/resource/123",
+      },
+    },
+  };
+
+  // OR for general data output
+  return {
+    data: {
+      attributes: {
+        result: "processed value",
+        timestamp: new Date().toISOString(),
+      },
+      name: "result", // optional, defaults to "data"
+      tags: { category: "output" }, // optional custom tags
+    },
+  };
+});
+```
+
+| Format     | Use Case                                 | Default Name | Default Tags       |
+| ---------- | ---------------------------------------- | ------------ | ------------------ |
+| `resource` | External resource state (APIs, services) | `"resource"` | `type: "resource"` |
+| `data`     | General data output                      | `"data"`     | `type: "data"`     |
+
+Both formats automatically:
+
+- Serialize `attributes` as JSON with `application/json` content type
+- Set lifetime to `"infinite"`
+- Track ownership for data integrity
+
+### Explicit: dataOutputs Array
+
+For advanced use cases requiring multiple outputs, custom content types, or
+streaming:
+
+```typescript
+execute: (async (definition, context) => {
   return {
     dataOutputs: [
       {
@@ -180,21 +218,14 @@ export const model = {
         const output = await cmd.output();
 
         return {
-          dataOutputs: [
-            {
-              name: "output",
-              content: JSON.stringify({
-                stdout: new TextDecoder().decode(output.stdout),
-                stderr: new TextDecoder().decode(output.stderr),
-                exitCode: output.code,
-              }),
-              metadata: {
-                contentType: "application/json",
-                lifetime: "infinite",
-                tags: { type: "data" },
-              },
+          data: {
+            attributes: {
+              stdout: new TextDecoder().decode(output.stdout),
+              stderr: new TextDecoder().decode(output.stderr),
+              exitCode: output.code,
             },
-          ],
+            name: "output",
+          },
         };
       },
     },
@@ -280,21 +311,13 @@ export const model = {
         const data = await response.json();
 
         return {
-          dataOutputs: [
-            {
-              name: "resource",
-              content: JSON.stringify({
-                resourceId: data.id,
-                status: data.status,
-                createdAt: new Date().toISOString(),
-              }),
-              metadata: {
-                contentType: "application/json",
-                lifetime: "infinite",
-                tags: { type: "resource" },
-              },
+          resource: {
+            attributes: {
+              resourceId: data.id,
+              status: data.status,
+              createdAt: new Date().toISOString(),
             },
-          ],
+          },
         };
       },
     },
@@ -319,16 +342,12 @@ methods: {
       // Use env for deployment logic...
 
       return {
-        dataOutputs: [
-          {
-            name: "deployment",
-            content: JSON.stringify({ environment: env, status: "deployed" }),
-            metadata: {
-              contentType: "application/json",
-              tags: { type: "resource" },
-            },
+        resource: {
+          attributes: {
+            environment: env,
+            status: "deployed",
           },
-        ],
+        },
       };
     },
   },

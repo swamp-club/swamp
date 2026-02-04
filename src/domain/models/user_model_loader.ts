@@ -15,6 +15,9 @@ import {
  * Plain object result returned by user methods before conversion.
  */
 interface UserMethodResult {
+  /**
+   * Direct data outputs with explicit content and metadata.
+   */
   dataOutputs?: Array<{
     name: string;
     content: Uint8Array | string;
@@ -26,6 +29,23 @@ interface UserMethodResult {
       tags?: Record<string, string>;
     };
   }>;
+  /**
+   * Resource output - a simpler format that gets converted to dataOutputs.
+   * The resource attributes are serialized as JSON and tagged with type=resource.
+   */
+  resource?: {
+    id?: string;
+    attributes: Record<string, unknown>;
+  };
+  /**
+   * Data output - a simpler format that gets converted to dataOutputs.
+   * The data attributes are serialized as JSON.
+   */
+  data?: {
+    attributes: Record<string, unknown>;
+    name?: string;
+    tags?: Record<string, string>;
+  };
   [key: string]: unknown;
 }
 
@@ -149,11 +169,55 @@ export class UserModelLoader {
           userModel.inputAttributesSchema,
         execute: async (definition, context): Promise<MethodResult> => {
           const userResult = await method.execute(definition, context);
+          const definitionHash = await definition.computeHash();
 
           // Convert user data outputs to proper DataOutput format
           const dataOutputs: DataOutput[] = [];
+
+          // Handle resource output (simpler format)
+          if (userResult.resource && userResult.resource.attributes) {
+            const resourceJson = JSON.stringify(userResult.resource.attributes);
+            dataOutputs.push({
+              name: "resource",
+              content: new TextEncoder().encode(resourceJson),
+              metadata: {
+                contentType: "application/json",
+                lifetime: "infinite",
+                garbageCollection: 10,
+                streaming: false,
+                tags: { type: "resource" },
+                ownerDefinition: {
+                  definitionHash,
+                  ownerType: "model-method",
+                  ownerRef: name,
+                },
+              },
+            });
+          }
+
+          // Handle data output (simpler format)
+          if (userResult.data && userResult.data.attributes) {
+            const dataJson = JSON.stringify(userResult.data.attributes);
+            dataOutputs.push({
+              name: userResult.data.name ?? "data",
+              content: new TextEncoder().encode(dataJson),
+              metadata: {
+                contentType: "application/json",
+                lifetime: "infinite",
+                garbageCollection: 10,
+                streaming: false,
+                tags: userResult.data.tags ?? { type: "data" },
+                ownerDefinition: {
+                  definitionHash,
+                  ownerType: "model-method",
+                  ownerRef: name,
+                },
+              },
+            });
+          }
+
+          // Handle explicit dataOutputs
           if (userResult.dataOutputs) {
-            const definitionHash = await definition.computeHash();
             for (const output of userResult.dataOutputs) {
               const content = typeof output.content === "string"
                 ? new TextEncoder().encode(output.content)

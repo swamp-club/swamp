@@ -159,6 +159,77 @@ Files will have a data tag of 'type=file'.
 
 Files that represent external resource data will be tagged with 'type=resource'.
 
+## Method Return Formats
+
+Methods return data through three formats. The simpler `resource` and `data`
+formats are preferred for most use cases.
+
+### Preferred: Simple Return Formats
+
+**Resource format** - Use for external resource state (APIs, cloud services):
+
+```typescript
+return {
+  resource: {
+    attributes: {
+      id: "resource-123",
+      status: "created",
+    },
+  },
+};
+```
+
+**Data format** - Use for general data output:
+
+```typescript
+return {
+  data: {
+    attributes: {
+      result: "processed value",
+    },
+    name: "result", // optional, defaults to "data"
+    tags: { category: "output" }, // optional custom tags
+  },
+};
+```
+
+Both formats automatically:
+
+- Serialize `attributes` as JSON
+- Set content type to `application/json`
+- Set lifetime to `infinite`
+- Track ownership via definition hash
+
+### Explicit: dataOutputs Array
+
+Use `dataOutputs` for advanced cases: multiple outputs, custom content types,
+streaming, or custom lifetimes.
+
+```typescript
+return {
+  dataOutputs: [
+    {
+      name: "output-name",
+      content: "string or Uint8Array",
+      metadata: {
+        contentType: "application/json",
+        lifetime: "7d",
+        streaming: true,
+        tags: { type: "log" },
+      },
+    },
+  ],
+};
+```
+
+### When to Use Each Format
+
+| Format        | Use Case                                           |
+| ------------- | -------------------------------------------------- |
+| `resource`    | External resource state (APIs, cloud, deployments) |
+| `data`        | General data output, computation results           |
+| `dataOutputs` | Multiple outputs, custom metadata, streaming       |
+
 ## Output
 
 Each method invocation produces an output record, which gets tracked in the
