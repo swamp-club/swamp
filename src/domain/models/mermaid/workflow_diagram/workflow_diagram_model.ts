@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import { computeChecksum } from "../../checksum.ts";
 import {
+  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -317,6 +318,7 @@ async function executeGenerate(
     dataOutputs: [
       {
         name: `${definition.name}-metadata`,
+        specType: DataSpecType.create("metadata"),
         content: new TextEncoder().encode(JSON.stringify(metadataAttributes)),
         metadata: {
           contentType: "application/json",
@@ -333,6 +335,7 @@ async function executeGenerate(
       },
       {
         name: `${definition.name}-diagram`,
+        specType: DataSpecType.create("file"),
         content,
         metadata: {
           contentType: "text/plain",
@@ -365,6 +368,24 @@ export const mermaidWorkflowModel: ModelDefinition<
   type: MERMAID_WORKFLOW_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: MermaidWorkflowInputAttributesSchema,
+  dataOutputSpecs: {
+    "metadata": {
+      specType: DataSpecType.create("metadata"),
+      description: "Workflow diagram metadata (job count, step count, status)",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+    "file": {
+      specType: DataSpecType.create("file"),
+      description: "Mermaid diagram file content",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "file" },
+    },
+  },
   methods: {
     generate: {
       description: "Generate a Mermaid diagram from workflow execution data",

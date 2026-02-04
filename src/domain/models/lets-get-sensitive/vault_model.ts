@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
+  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -156,6 +157,7 @@ async function executeGet(
       dataOutputs: [
         {
           name: `${definition.name}-result`,
+          specType: DataSpecType.create("result"),
           content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
           metadata: {
             contentType: "application/json",
@@ -172,6 +174,7 @@ async function executeGet(
         },
         {
           name: `${definition.name}-audit-log`,
+          specType: DataSpecType.create("log"),
           content: new TextEncoder().encode(logLines.join("\n")),
           metadata: {
             contentType: "text/plain",
@@ -253,6 +256,7 @@ async function executePut(
       dataOutputs: [
         {
           name: `${definition.name}-result`,
+          specType: DataSpecType.create("result"),
           content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
           metadata: {
             contentType: "application/json",
@@ -269,6 +273,7 @@ async function executePut(
         },
         {
           name: `${definition.name}-audit-log`,
+          specType: DataSpecType.create("log"),
           content: new TextEncoder().encode(logLines.join("\n")),
           metadata: {
             contentType: "text/plain",
@@ -314,6 +319,24 @@ export const vaultModel: ModelDefinition<
   type: VAULT_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: VaultInputAttributesSchema,
+  dataOutputSpecs: {
+    "result": {
+      specType: DataSpecType.create("result"),
+      description: "Vault operation result (success/failure, metadata)",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+    "log": {
+      specType: DataSpecType.create("log"),
+      description: "Vault operation audit log",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "log" },
+    },
+  },
   methods: {
     get: {
       description: "Retrieve a secret value from the specified vault",

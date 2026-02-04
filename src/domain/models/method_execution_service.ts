@@ -11,6 +11,7 @@ import type { Definition } from "../definitions/definition.ts";
 import { Data } from "../data/mod.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
+import { DataOutputValidationService } from "./data_output_validation_service.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -77,7 +78,10 @@ export interface MethodExecutionService {
  * Validates definition attributes against the method's schema before execution.
  */
 export class DefaultMethodExecutionService implements MethodExecutionService {
-  execute(
+  private readonly dataOutputValidationService =
+    new DataOutputValidationService();
+
+  async execute(
     definition: Definition,
     method: MethodDefinition,
     context: MethodContext,
@@ -96,7 +100,40 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }
 
     // Execute the method
-    return method.execute(definition, context);
+    const result = await method.execute(definition, context);
+
+    // Validate and enhance data outputs if model definition is provided
+    if (result.dataOutputs && context.modelDefinition) {
+      const specs = context.modelDefinition.dataOutputSpecs;
+
+      // Find the method name (for better error messages)
+      const methodName = Object.entries(context.modelDefinition.methods)
+        .find(([_, m]) => m === method)?.[0] ?? "unknown";
+
+      // Validate spec type references
+      const validation = this.dataOutputValidationService.validate(
+        result.dataOutputs,
+        specs,
+        methodName,
+      );
+
+      if (!validation.valid) {
+        throw new Error(
+          `Data output validation failed: ${validation.errors.join("; ")}`,
+        );
+      }
+
+      // Apply defaults from specs (no overrides at this level)
+      result.dataOutputs = result.dataOutputs.map((output) => {
+        const spec = specs[output.specType.value];
+        return this.dataOutputValidationService.applyDefaultsAndOverrides(
+          output,
+          spec,
+        );
+      });
+    }
+
+    return result;
   }
 
   async executeWorkflow(

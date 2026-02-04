@@ -1,6 +1,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
 import {
+  DataSpecType,
   defineModel,
   type MethodContext,
   type ModelDefinition,
@@ -85,6 +86,7 @@ function createTestModel(typeString: string): ModelDefinition {
     type,
     version: 1,
     inputAttributesSchema: z.object({ message: z.string() }),
+    dataOutputSpecs: {},
     methods: {
       write: {
         description: "Write message to data",
@@ -100,6 +102,7 @@ function createTestModel(typeString: string): ModelDefinition {
             dataOutputs: [
               {
                 name: `${definition.name}-data`,
+                specType: DataSpecType.create("data"),
                 content,
                 metadata: {
                   contentType: "application/json",

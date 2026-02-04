@@ -11,6 +11,15 @@ export interface MethodDescribeData {
   name: string;
   description: string;
   inputAttributesSchema: object;
+  dataOutputSpecs?: Array<{
+    specType: string;
+    description?: string;
+    contentType?: string;
+    lifetime?: string;
+    garbageCollection?: number | string;
+    streaming?: boolean;
+    tags?: Record<string, string>;
+  }>;
 }
 
 /**
@@ -79,6 +88,42 @@ function SchemaSection({
 }
 
 /**
+ * Component to display data output specs.
+ */
+function DataOutputSpecsDisplay({
+  specs,
+}: {
+  specs: MethodDescribeData["dataOutputSpecs"];
+}): React.ReactElement | null {
+  if (!specs || specs.length === 0) return null;
+
+  return (
+    <Box marginTop={1} marginLeft={2} flexDirection="column">
+      <Text color="cyan">Data Output Specs:</Text>
+      {specs.map((spec) => (
+        <Box key={spec.specType} marginLeft={2} flexDirection="column">
+          <Text>
+            • <Text color="magenta">{spec.specType}</Text>
+          </Text>
+          {spec.description && (
+            <Box marginLeft={2}>
+              <Text dimColor>{spec.description}</Text>
+            </Box>
+          )}
+          <Box marginLeft={2}>
+            <Text dimColor>
+              {spec.contentType ?? "application/json"} |{" "}
+              {spec.lifetime ?? "infinite"} | GC: {spec.garbageCollection ?? 10}
+              {spec.streaming && " | streaming"}
+            </Text>
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+/**
  * Component to display a single method.
  */
 function MethodDisplay({
@@ -98,6 +143,7 @@ function MethodDisplay({
         <Text color="cyan">Input Schema:</Text>
         <Text dimColor>{formatSchema(method.inputAttributesSchema)}</Text>
       </Box>
+      <DataOutputSpecsDisplay specs={method.dataOutputSpecs} />
     </Box>
   );
 }

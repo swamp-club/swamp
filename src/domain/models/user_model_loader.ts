@@ -4,6 +4,7 @@ import { ModelType } from "./model_type.ts";
 import type { Definition } from "../definitions/definition.ts";
 import {
   type DataOutput,
+  DataSpecType,
   type MethodContext,
   type MethodDefinition,
   type MethodResult,
@@ -20,6 +21,7 @@ interface UserMethodResult {
    */
   dataOutputs?: Array<{
     name: string;
+    specType?: string;
     content: Uint8Array | string;
     metadata?: {
       contentType?: string;
@@ -179,6 +181,7 @@ export class UserModelLoader {
             const resourceJson = JSON.stringify(userResult.resource.attributes);
             dataOutputs.push({
               name: "resource",
+              specType: DataSpecType.create("resource"),
               content: new TextEncoder().encode(resourceJson),
               metadata: {
                 contentType: "application/json",
@@ -200,6 +203,7 @@ export class UserModelLoader {
             const dataJson = JSON.stringify(userResult.data.attributes);
             dataOutputs.push({
               name: userResult.data.name ?? "data",
+              specType: DataSpecType.create("data"),
               content: new TextEncoder().encode(dataJson),
               metadata: {
                 contentType: "application/json",
@@ -225,6 +229,7 @@ export class UserModelLoader {
 
               dataOutputs.push({
                 name: output.name,
+                specType: DataSpecType.create(output.specType ?? "data"),
                 content,
                 metadata: {
                   contentType: output.metadata?.contentType ??
@@ -252,6 +257,7 @@ export class UserModelLoader {
       type: modelType,
       version: userModel.version,
       inputAttributesSchema: userModel.inputAttributesSchema,
+      dataOutputSpecs: {},
       methods,
     };
   }

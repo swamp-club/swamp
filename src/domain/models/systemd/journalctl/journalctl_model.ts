@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import {
+  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -173,22 +174,25 @@ async function readLogs(
   const definitionHash = await definition.computeHash();
 
   return {
-    dataOutputs: [{
-      name: `${definition.name}-logs`,
-      content: new TextEncoder().encode(logLines.join("\n")),
-      metadata: {
-        contentType: "text/plain",
-        lifetime: "infinite",
-        garbageCollection: 10,
-        streaming: true,
-        tags: { type: "log" },
-        ownerDefinition: {
-          definitionHash,
-          ownerType: "model-method",
-          ownerRef: "read",
+    dataOutputs: [
+      {
+        name: `${definition.name}-logs`,
+        specType: DataSpecType.create("log"),
+        content: new TextEncoder().encode(logLines.join("\n")),
+        metadata: {
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          streaming: true,
+          tags: { type: "log" },
+          ownerDefinition: {
+            definitionHash,
+            ownerType: "model-method",
+            ownerRef: "read",
+          },
         },
       },
-    }],
+    ],
   };
 }
 
@@ -207,6 +211,16 @@ export const journalctlModel: ModelDefinition<
   type: JOURNALCTL_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: JournalctlInputAttributesSchema,
+  dataOutputSpecs: {
+    "log": {
+      specType: DataSpecType.create("log"),
+      description: "System journal logs",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "log" },
+    },
+  },
   methods: {
     read: {
       description:

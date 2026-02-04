@@ -8,6 +8,7 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
+  type DataOutputSpecification,
   type MethodDefinition,
   modelRegistry,
 } from "../../domain/models/model.ts";
@@ -30,11 +31,25 @@ function zodToJsonSchema(schema: z.ZodTypeAny): object {
 function toMethodDescribeData(
   name: string,
   method: MethodDefinition,
+  dataOutputSpecs?: Record<string, DataOutputSpecification>,
 ): MethodDescribeData {
   return {
     name,
     description: method.description,
     inputAttributesSchema: zodToJsonSchema(method.inputAttributesSchema),
+    dataOutputSpecs: dataOutputSpecs
+      ? Object.values(dataOutputSpecs).map(
+        (spec) => ({
+          specType: spec.specType.value,
+          description: spec.description,
+          contentType: spec.contentType,
+          lifetime: spec.lifetime,
+          garbageCollection: spec.garbageCollection,
+          streaming: spec.streaming,
+          tags: spec.tags,
+        }),
+      )
+      : undefined,
   };
 }
 
@@ -70,7 +85,8 @@ function typeDescribeAction(options: AnyOptions, typeArg: string): void {
   // Build method descriptions
   const methods: MethodDescribeData[] = Object.entries(definition.methods)
     .map(
-      ([name, method]) => toMethodDescribeData(name, method),
+      ([name, method]) =>
+        toMethodDescribeData(name, method, definition.dataOutputSpecs),
     );
 
   // Build the output data

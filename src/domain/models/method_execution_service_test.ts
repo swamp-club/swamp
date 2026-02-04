@@ -1,13 +1,14 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
 import { echoModel } from "./echo/echo_model.ts";
-import type {
-  DataOutput,
-  MethodContext,
-  MethodResult,
-  ModelDefinition,
+import {
+  type DataOutput,
+  DataSpecType,
+  type MethodContext,
+  type MethodResult,
+  type ModelDefinition,
 } from "./model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -90,7 +91,7 @@ Deno.test("execute with valid definition returns method result", async () => {
   assertEquals(typeof content.timestamp, "string");
 });
 
-Deno.test("execute with missing required attribute throws error", () => {
+Deno.test("execute with missing required attribute throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
@@ -98,19 +99,14 @@ Deno.test("execute with missing required attribute throws error", () => {
   });
 
   const context = createTestContext();
-  assertThrows(
-    () =>
-      service.execute(
-        definition,
-        echoModel.methods.write,
-        context,
-      ),
+  await assertRejects(
+    () => service.execute(definition, echoModel.methods.write, context),
     Error,
     "Definition validation failed",
   );
 });
 
-Deno.test("execute with invalid attribute type throws error", () => {
+Deno.test("execute with invalid attribute type throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
@@ -118,19 +114,14 @@ Deno.test("execute with invalid attribute type throws error", () => {
   });
 
   const context = createTestContext();
-  assertThrows(
-    () =>
-      service.execute(
-        definition,
-        echoModel.methods.write,
-        context,
-      ),
+  await assertRejects(
+    () => service.execute(definition, echoModel.methods.write, context),
     Error,
     "Definition validation failed",
   );
 });
 
-Deno.test("execute with empty message throws error", () => {
+Deno.test("execute with empty message throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
@@ -138,19 +129,14 @@ Deno.test("execute with empty message throws error", () => {
   });
 
   const context = createTestContext();
-  assertThrows(
-    () =>
-      service.execute(
-        definition,
-        echoModel.methods.write,
-        context,
-      ),
+  await assertRejects(
+    () => service.execute(definition, echoModel.methods.write, context),
     Error,
     "Definition validation failed",
   );
 });
 
-Deno.test("execute error message includes Zod details", () => {
+Deno.test("execute error message includes Zod details", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
@@ -159,11 +145,7 @@ Deno.test("execute error message includes Zod details", () => {
 
   const context = createTestContext();
   try {
-    service.execute(
-      definition,
-      echoModel.methods.write,
-      context,
-    );
+    await service.execute(definition, echoModel.methods.write, context);
     throw new Error("Expected error to be thrown");
   } catch (error) {
     const message = (error as Error).message;
@@ -184,6 +166,7 @@ function createTestDataOutput(
 ): DataOutput {
   return {
     name,
+    specType: DataSpecType.create("data"),
     content: new TextEncoder().encode(JSON.stringify(attributes)),
     metadata: {
       contentType: "application/json",
@@ -223,6 +206,7 @@ function createTestModel(options: {
     type: ModelType.create("test/workflow"),
     version: 1,
     inputAttributesSchema: schema,
+    dataOutputSpecs: {},
     methods: {
       start: {
         description: "Start method for testing",
@@ -262,28 +246,31 @@ function getDataOutputAttributes(
   return JSON.parse(content);
 }
 
-Deno.test("executeWorkflow - basic execution without follow-up actions", async () => {
-  const service = new DefaultMethodExecutionService();
-  const model = createTestModel({});
+Deno.test(
+  "executeWorkflow - basic execution without follow-up actions",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+    const model = createTestModel({});
 
-  const definition = Definition.create({
-    name: "test-definition",
-    attributes: { value: "test" },
-  });
+    const definition = Definition.create({
+      name: "test-definition",
+      attributes: { value: "test" },
+    });
 
-  const context = createTestContext({
-    modelType: model.type,
-  });
-  const result = await service.executeWorkflow(
-    definition,
-    model,
-    "start",
-    context,
-  );
+    const context = createTestContext({
+      modelType: model.type,
+    });
+    const result = await service.executeWorkflow(
+      definition,
+      model,
+      "start",
+      context,
+    );
 
-  const attrs = getDataOutputAttributes(result);
-  assertEquals(attrs?.value, "started");
-});
+    const attrs = getDataOutputAttributes(result);
+    assertEquals(attrs?.value, "started");
+  },
+);
 
 Deno.test("executeWorkflow - throws error for unknown method", async () => {
   const service = new DefaultMethodExecutionService();
@@ -299,13 +286,7 @@ Deno.test("executeWorkflow - throws error for unknown method", async () => {
   });
 
   await assertRejects(
-    () =>
-      service.executeWorkflow(
-        definition,
-        model,
-        "nonexistent",
-        context,
-      ),
+    () => service.executeWorkflow(definition, model, "nonexistent", context),
     Error,
     "Method 'nonexistent' not found in model",
   );
@@ -470,13 +451,7 @@ Deno.test("executeWorkflow - fails after exhausting maxRetries", async () => {
   });
 
   await assertRejects(
-    () =>
-      service.executeWorkflow(
-        definition,
-        model,
-        "start",
-        context,
-      ),
+    () => service.executeWorkflow(definition, model, "start", context),
     Error,
     "Follow-up action 'followUp' failed after 1 retries",
   );
@@ -497,6 +472,7 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
     type: ModelType.create("test/recursive"),
     version: 1,
     inputAttributesSchema: schema,
+    dataOutputSpecs: {},
     methods: {
       start: {
         description: "Start method",
@@ -567,6 +543,7 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
     type: ModelType.create("test/infinite"),
     version: 1,
     inputAttributesSchema: schema,
+    dataOutputSpecs: {},
     methods: {
       start: {
         description: "Start infinite loop",
@@ -592,109 +569,107 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
   });
 
   await assertRejects(
-    () =>
-      service.executeWorkflow(
-        definition,
-        model,
-        "start",
-        context,
-      ),
+    () => service.executeWorkflow(definition, model, "start", context),
     Error,
     "Maximum follow-up action depth (100) exceeded",
   );
 });
 
-Deno.test("executeWorkflow - follow-up receives same definition and can use continueCondition", async () => {
-  const service = new DefaultMethodExecutionService();
-  let receivedDefinitionName = "";
-  let previousDataOutputsInCondition: DataOutput[] | undefined = undefined;
+Deno.test(
+  "executeWorkflow - follow-up receives same definition and can use continueCondition",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+    let receivedDefinitionName = "";
+    let previousDataOutputsInCondition: DataOutput[] | undefined = undefined;
 
-  // This test demonstrates that:
-  // - Follow-up methods receive the same definition
-  // - continueCondition receives the dataOutputs from the previous method
-  const schema = z.object({
-    RequestToken: z.string().optional(),
-    OperationStatus: z.string().optional(),
-    OriginalValue: z.string().optional(),
-  });
+    // This test demonstrates that:
+    // - Follow-up methods receive the same definition
+    // - continueCondition receives the dataOutputs from the previous method
+    const schema = z.object({
+      RequestToken: z.string().optional(),
+      OperationStatus: z.string().optional(),
+      OriginalValue: z.string().optional(),
+    });
 
-  const model: ModelDefinition = {
-    type: ModelType.create("test/token-passing"),
-    version: 1,
-    inputAttributesSchema: schema,
-    methods: {
-      create: {
-        description: "Create method that returns RequestToken in data output",
-        inputAttributesSchema: schema,
-        execute: (_definition) => {
-          return Promise.resolve({
-            dataOutputs: [
-              createTestDataOutput("data", {
-                RequestToken: "test-request-token-123",
-                OperationStatus: "IN_PROGRESS",
-              }),
-            ],
-            followUpActions: [
-              {
-                methodName: "sync",
-                continueCondition: (dataOutputs: DataOutput[]) => {
-                  previousDataOutputsInCondition = dataOutputs;
-                  return true;
+    const model: ModelDefinition = {
+      type: ModelType.create("test/token-passing"),
+      version: 1,
+      inputAttributesSchema: schema,
+      dataOutputSpecs: {},
+      methods: {
+        create: {
+          description: "Create method that returns RequestToken in data output",
+          inputAttributesSchema: schema,
+          execute: (_definition) => {
+            return Promise.resolve({
+              dataOutputs: [
+                createTestDataOutput("data", {
+                  RequestToken: "test-request-token-123",
+                  OperationStatus: "IN_PROGRESS",
+                }),
+              ],
+              followUpActions: [
+                {
+                  methodName: "sync",
+                  continueCondition: (dataOutputs: DataOutput[]) => {
+                    previousDataOutputsInCondition = dataOutputs;
+                    return true;
+                  },
                 },
-              },
-            ],
-          });
+              ],
+            });
+          },
+        },
+        sync: {
+          description: "Sync method that uses definition",
+          inputAttributesSchema: schema,
+          execute: (definition) => {
+            // Capture the definition name to verify it's the same definition
+            receivedDefinitionName = definition.name;
+
+            return Promise.resolve({
+              dataOutputs: [
+                createTestDataOutput("data", {
+                  RequestToken: "test-request-token-123",
+                  OperationStatus: "SUCCESS",
+                }),
+              ],
+            });
+          },
         },
       },
-      sync: {
-        description: "Sync method that uses definition",
-        inputAttributesSchema: schema,
-        execute: (definition) => {
-          // Capture the definition name to verify it's the same definition
-          receivedDefinitionName = definition.name;
+    };
 
-          return Promise.resolve({
-            dataOutputs: [
-              createTestDataOutput("data", {
-                RequestToken: "test-request-token-123",
-                OperationStatus: "SUCCESS",
-              }),
-            ],
-          });
-        },
-      },
-    },
-  };
+    const definition = Definition.create({
+      name: "test-definition",
+      attributes: { OriginalValue: "from-yaml" },
+    });
 
-  const definition = Definition.create({
-    name: "test-definition",
-    attributes: { OriginalValue: "from-yaml" },
-  });
+    const context = createTestContext({
+      modelType: model.type,
+    });
+    const result = await service.executeWorkflow(
+      definition,
+      model,
+      "create",
+      context,
+    );
 
-  const context = createTestContext({
-    modelType: model.type,
-  });
-  const result = await service.executeWorkflow(
-    definition,
-    model,
-    "create",
-    context,
-  );
+    // Verify sync received the same definition
+    assertEquals(receivedDefinitionName, "test-definition");
 
-  // Verify sync received the same definition
-  assertEquals(receivedDefinitionName, "test-definition");
+    // Verify continueCondition received the data outputs from create
+    assertEquals(previousDataOutputsInCondition !== undefined, true);
+    const conditionDataOutputs = previousDataOutputsInCondition!;
+    assertEquals(conditionDataOutputs.length, 1);
+    const conditionAttrs = JSON.parse(
+      new TextDecoder().decode(conditionDataOutputs[0].content),
+    );
+    assertEquals(conditionAttrs.RequestToken, "test-request-token-123");
+    assertEquals(conditionAttrs.OperationStatus, "IN_PROGRESS");
 
-  // Verify continueCondition received the data outputs from create
-  assertEquals(previousDataOutputsInCondition !== undefined, true);
-  const conditionDataOutputs = previousDataOutputsInCondition!;
-  assertEquals(conditionDataOutputs.length, 1);
-  const conditionAttrs = JSON.parse(
-    new TextDecoder().decode(conditionDataOutputs[0].content),
-  );
-  assertEquals(conditionAttrs.RequestToken, "test-request-token-123");
-  assertEquals(conditionAttrs.OperationStatus, "IN_PROGRESS");
-
-  // Verify final result
-  const finalAttrs = getDataOutputAttributes(result);
-  assertEquals(finalAttrs?.OperationStatus, "SUCCESS");
-});
+    // Verify final result
+    const finalAttrs = getDataOutputAttributes(result);
+    assertEquals(finalAttrs?.OperationStatus, "SUCCESS");
+  },
+);
