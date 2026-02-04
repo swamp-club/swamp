@@ -32,6 +32,9 @@ import {
   ModelResolver,
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import {
+  DataOutputValidationService,
+} from "../models/data_output_validation_service.ts";
 
 /**
  * Context for step execution.
@@ -49,6 +52,8 @@ export interface StepExecutionContext {
   progress?: ExecutionProgressCallback;
   /** Current workflow run for progress callbacks */
   workflowRun?: WorkflowRun;
+  /** The step being executed (for accessing data output overrides) */
+  step?: Step;
 }
 
 /**
@@ -348,8 +353,22 @@ export class DefaultStepExecutor implements StepExecutor {
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
           streaming,
+          modelDefinition: modelDef,
         },
       );
+
+      // Apply workflow step overrides (on top of definition overrides)
+      if (ctx.step?.dataOutputOverrides && result.dataOutputs) {
+        const validationService = new DataOutputValidationService();
+        result.dataOutputs = result.dataOutputs.map((output) => {
+          const spec = modelDef.dataOutputSpecs[output.specType.value];
+          return validationService.applyDefaultsAndOverrides(
+            output,
+            spec,
+            Array.from(ctx.step!.dataOutputOverrides),
+          );
+        });
+      }
 
       // Handle data output persistence
       const savedArtifacts: Array<{
@@ -863,6 +882,7 @@ export class WorkflowExecutionService {
         expressionContext,
         progress,
         workflowRun: run,
+        step, // Include step for accessing data output overrides
       };
 
       const output = await this.executor.execute(step, ctx);

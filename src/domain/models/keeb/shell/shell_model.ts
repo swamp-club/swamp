@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import {
+  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -218,6 +219,7 @@ async function executeCommand(
     dataOutputs: [
       {
         name: `${definition.name}-result`,
+        specType: DataSpecType.create("result"),
         content: new TextEncoder().encode(JSON.stringify(resultAttributes)),
         metadata: {
           contentType: "application/json",
@@ -234,6 +236,7 @@ async function executeCommand(
       },
       {
         name: `${definition.name}-output`,
+        specType: DataSpecType.create("log"),
         content: new TextEncoder().encode(outputLogContent),
         metadata: {
           contentType: "text/plain",
@@ -266,6 +269,25 @@ export const shellModel: ModelDefinition<
   type: SHELL_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: ShellInputAttributesSchema,
+  dataOutputSpecs: {
+    "result": {
+      specType: DataSpecType.create("result"),
+      description:
+        "Shell command execution result (exit code, timing, command)",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+    "log": {
+      specType: DataSpecType.create("log"),
+      description: "Shell command output (stdout and stderr)",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "log" },
+    },
+  },
   methods: {
     execute: {
       description:

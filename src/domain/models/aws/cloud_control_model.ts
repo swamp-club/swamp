@@ -9,6 +9,7 @@ import {
 import type { ModelType } from "../model_type.ts";
 import {
   type DataOutput,
+  DataSpecType,
   defineModel,
   type FollowUpAction,
   type MethodContext,
@@ -162,22 +163,25 @@ export abstract class AWSCloudControlModel<
     const definitionHash = await definition.computeHash();
 
     return {
-      dataOutputs: [{
-        name: `${definition.name}-data`,
-        content: new TextEncoder().encode(JSON.stringify(attributes)),
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "resource" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: methodName,
+      dataOutputs: [
+        {
+          name: `${definition.name}-data`,
+          specType: DataSpecType.create("resource"),
+          content: new TextEncoder().encode(JSON.stringify(attributes)),
+          metadata: {
+            contentType: "application/json",
+            lifetime: "infinite",
+            garbageCollection: 10,
+            streaming: false,
+            tags: { type: "resource" },
+            ownerDefinition: {
+              definitionHash,
+              ownerType: "model-method",
+              ownerRef: methodName,
+            },
           },
         },
-      }],
+      ],
     };
   }
 
@@ -193,6 +197,7 @@ export abstract class AWSCloudControlModel<
 
     return {
       name: `${definition.name}-data`,
+      specType: DataSpecType.create("resource"),
       content: new TextEncoder().encode(JSON.stringify(attributes)),
       metadata: {
         contentType: "application/json",
@@ -571,6 +576,16 @@ export abstract class AWSCloudControlModel<
       type: this.modelType,
       version: 1,
       inputAttributesSchema: this.config.inputAttributesSchema,
+      dataOutputSpecs: {
+        "resource": {
+          specType: DataSpecType.create("resource"),
+          description: `AWS ${this.typeName} resource data`,
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "resource" },
+        },
+      },
       methods: {
         create: {
           description:

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
+  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -62,6 +63,7 @@ async function executeWrite(
   return {
     dataOutputs: [{
       name: `${definition.name}-message`,
+      specType: DataSpecType.create("message"),
       content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
       metadata: {
         contentType: "application/json",
@@ -93,6 +95,16 @@ export const echoModel: ModelDefinition<
   type: ECHO_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: EchoInputAttributesSchema,
+  dataOutputSpecs: {
+    "message": {
+      specType: DataSpecType.create("message"),
+      description: "Echo message with timestamp",
+      contentType: "application/json",
+      lifetime: "ephemeral",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description:

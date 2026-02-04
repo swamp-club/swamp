@@ -5,6 +5,9 @@ import {
   TriggerConditionSchema,
 } from "./trigger_condition.ts";
 import { StepTask, StepTaskSchema } from "./step_task.ts";
+import { DataOutputOverrideSchema } from "../models/data_output_override.ts";
+import type { DataOutputOverride } from "../models/data_output_override.ts";
+import { DataSpecType } from "../models/model.ts";
 
 /**
  * Schema for step dependency with condition.
@@ -28,6 +31,7 @@ export const StepSchema = z.object({
   task: StepTaskSchema,
   dependsOn: z.array(StepDependencySchema).default([]),
   weight: z.number().default(0),
+  dataOutputOverrides: z.array(DataOutputOverrideSchema).optional(),
 });
 
 /**
@@ -52,6 +56,7 @@ export interface CreateStepProps {
   task: StepTask;
   dependsOn?: StepDependency[];
   weight?: number;
+  dataOutputOverrides?: DataOutputOverride[];
 }
 
 /**
@@ -63,6 +68,7 @@ export interface CreateStepProps {
  * - A task to execute (model method or shell command)
  * - Dependencies on other steps with trigger conditions
  * - A weight for deterministic topological sorting
+ * - Optional data output overrides
  */
 export class Step {
   private constructor(
@@ -71,6 +77,7 @@ export class Step {
     private _task: StepTask,
     private _dependsOn: StepDependency[],
     readonly weight: number,
+    private _dataOutputOverrides: DataOutputOverride[],
   ) {}
 
   /**
@@ -86,6 +93,7 @@ export class Step {
         condition: d.condition.toData(),
       })),
       weight: props.weight ?? 0,
+      dataOutputOverrides: props.dataOutputOverrides,
     });
 
     return Step.fromData(data);
@@ -102,12 +110,22 @@ export class Step {
       condition: TriggerCondition.fromData(d.condition),
     }));
 
+    // Convert string specType to DataSpecType
+    const dataOutputOverrides: DataOutputOverride[] =
+      (validated.dataOutputOverrides ?? []).map((override) => ({
+        specType: DataSpecType.create(override.specType),
+        lifetime: override.lifetime,
+        garbageCollection: override.garbageCollection,
+        tags: override.tags,
+      }));
+
     return new Step(
       validated.name,
       validated.description,
       task,
       dependsOn,
       validated.weight,
+      dataOutputOverrides,
     );
   }
 
@@ -123,6 +141,13 @@ export class Step {
    */
   get dependsOn(): ReadonlyArray<StepDependency> {
     return this._dependsOn;
+  }
+
+  /**
+   * Returns the data output overrides for this step.
+   */
+  get dataOutputOverrides(): ReadonlyArray<DataOutputOverride> {
+    return this._dataOutputOverrides;
   }
 
   /**
@@ -145,6 +170,14 @@ export class Step {
         condition: d.condition.toData() as TriggerConditionData,
       })),
       weight: this.weight,
+      dataOutputOverrides: this._dataOutputOverrides.length > 0
+        ? this._dataOutputOverrides.map((override) => ({
+          specType: override.specType.toString(),
+          lifetime: override.lifetime,
+          garbageCollection: override.garbageCollection,
+          tags: override.tags,
+        }))
+        : undefined,
     };
   }
 }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import {
+  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -181,22 +182,25 @@ async function executeRun(
     const definitionHash = await definition.computeHash();
 
     return {
-      dataOutputs: [{
-        name: `${definition.name}-data`,
-        content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "data" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "run",
+      dataOutputs: [
+        {
+          name: `${definition.name}-data`,
+          specType: DataSpecType.create("data"),
+          content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
+          metadata: {
+            contentType: "application/json",
+            lifetime: "infinite",
+            garbageCollection: 10,
+            streaming: false,
+            tags: { type: "data" },
+            ownerDefinition: {
+              definitionHash,
+              ownerType: "model-method",
+              ownerRef: "run",
+            },
           },
         },
-      }],
+      ],
     };
   } finally {
     clearTimeout(timeoutId);
@@ -221,6 +225,16 @@ export const awsCliModel: ModelDefinition<
   type: AWS_CLI_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: AwsCliInputAttributesSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: DataSpecType.create("data"),
+      description: "AWS CLI command output with execution metadata",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description:

@@ -89,7 +89,9 @@ function getDataOutputAttributes(
     return undefined;
   }
   const content = new TextDecoder().decode(dataOutputs[index].content);
-  return JSON.parse(content);
+  const parsed = JSON.parse(content);
+  // CloudControl resources wrap in {attributes: {...}}
+  return parsed.attributes ?? parsed;
 }
 
 Deno.test("EC2VpcModel - model type", () => {

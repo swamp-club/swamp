@@ -80,7 +80,9 @@ function getDataOutputAttributes(
   const dataOutput = dataOutputs?.find((d) => d.name.includes(name));
   if (!dataOutput) return undefined;
   const content = new TextDecoder().decode(dataOutput.content);
-  return JSON.parse(content);
+  const parsed = JSON.parse(content);
+  // Handle wrapped attributes format
+  return parsed.attributes ?? parsed;
 }
 
 /**

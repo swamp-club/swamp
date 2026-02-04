@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import { computeChecksum } from "../../checksum.ts";
 import {
+  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -177,6 +178,7 @@ async function executeDownload(
     dataOutputs: [
       {
         name: `${definition.name}-metadata`,
+        specType: DataSpecType.create("metadata"),
         content: new TextEncoder().encode(JSON.stringify(metadataAttributes)),
         metadata: {
           contentType: "application/json",
@@ -193,6 +195,7 @@ async function executeDownload(
       },
       {
         name: `${definition.name}-file`,
+        specType: DataSpecType.create("file"),
         content,
         metadata: {
           contentType,
@@ -225,6 +228,24 @@ export const curlModel: ModelDefinition<
   type: CURL_MODEL_TYPE,
   version: 1,
   inputAttributesSchema: CurlInputAttributesSchema,
+  dataOutputSpecs: {
+    "metadata": {
+      specType: DataSpecType.create("metadata"),
+      description: "Download metadata (URL, status, timing, checksum)",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+    "file": {
+      specType: DataSpecType.create("file"),
+      description: "Downloaded file content",
+      contentType: "application/octet-stream",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "file" },
+    },
+  },
   methods: {
     download: {
       description:

@@ -3,11 +3,12 @@ import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
 import { echoModel } from "./echo/echo_model.ts";
-import type {
-  DataOutput,
-  MethodContext,
-  MethodResult,
-  ModelDefinition,
+import {
+  type DataOutput,
+  DataSpecType,
+  type MethodContext,
+  type MethodResult,
+  type ModelDefinition,
 } from "./model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -90,7 +91,7 @@ Deno.test("execute with valid definition returns method result", async () => {
   assertEquals(typeof content.timestamp, "string");
 });
 
-Deno.test("execute with missing required attribute throws error", () => {
+Deno.test("execute with missing required attribute throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
@@ -98,7 +99,7 @@ Deno.test("execute with missing required attribute throws error", () => {
   });
 
   const context = createTestContext();
-  assertThrows(
+  await assertRejects(
     () =>
       service.execute(
         definition,
@@ -110,7 +111,7 @@ Deno.test("execute with missing required attribute throws error", () => {
   );
 });
 
-Deno.test("execute with invalid attribute type throws error", () => {
+Deno.test("execute with invalid attribute type throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
@@ -118,7 +119,7 @@ Deno.test("execute with invalid attribute type throws error", () => {
   });
 
   const context = createTestContext();
-  assertThrows(
+  await assertRejects(
     () =>
       service.execute(
         definition,
@@ -130,7 +131,7 @@ Deno.test("execute with invalid attribute type throws error", () => {
   );
 });
 
-Deno.test("execute with empty message throws error", () => {
+Deno.test("execute with empty message throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
@@ -138,7 +139,7 @@ Deno.test("execute with empty message throws error", () => {
   });
 
   const context = createTestContext();
-  assertThrows(
+  await assertRejects(
     () =>
       service.execute(
         definition,
@@ -150,7 +151,7 @@ Deno.test("execute with empty message throws error", () => {
   );
 });
 
-Deno.test("execute error message includes Zod details", () => {
+Deno.test("execute error message includes Zod details", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
@@ -159,7 +160,7 @@ Deno.test("execute error message includes Zod details", () => {
 
   const context = createTestContext();
   try {
-    service.execute(
+    await service.execute(
       definition,
       echoModel.methods.write,
       context,
@@ -184,6 +185,7 @@ function createTestDataOutput(
 ): DataOutput {
   return {
     name,
+    specType: DataSpecType.create("data"),
     content: new TextEncoder().encode(JSON.stringify(attributes)),
     metadata: {
       contentType: "application/json",
@@ -223,6 +225,7 @@ function createTestModel(options: {
     type: ModelType.create("test/workflow"),
     version: 1,
     inputAttributesSchema: schema,
+    dataOutputSpecs: {},
     methods: {
       start: {
         description: "Start method for testing",
@@ -497,6 +500,7 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
     type: ModelType.create("test/recursive"),
     version: 1,
     inputAttributesSchema: schema,
+    dataOutputSpecs: {},
     methods: {
       start: {
         description: "Start method",
@@ -567,6 +571,7 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
     type: ModelType.create("test/infinite"),
     version: 1,
     inputAttributesSchema: schema,
+    dataOutputSpecs: {},
     methods: {
       start: {
         description: "Start infinite loop",
@@ -622,6 +627,7 @@ Deno.test("executeWorkflow - follow-up receives same definition and can use cont
     type: ModelType.create("test/token-passing"),
     version: 1,
     inputAttributesSchema: schema,
+    dataOutputSpecs: {},
     methods: {
       create: {
         description: "Create method that returns RequestToken in data output",

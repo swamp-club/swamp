@@ -1,9 +1,15 @@
-import type { z } from "zod";
+import { z } from "zod";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import { ModelType } from "./model_type.ts";
 import type { Definition } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import type { DataMetadata } from "../data/mod.ts";
+import {
+  type DataMetadata,
+  type GarbageCollectionPolicy,
+  GarbageCollectionSchema,
+  type Lifetime,
+  LifetimeSchema,
+} from "../data/mod.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { OutputRepository } from "./repositories.ts";
 
@@ -21,6 +27,70 @@ export interface MethodStreamingCallbacks {
    */
   onStderr?: (line: string) => void;
 }
+
+/**
+ * Data spec type - identifies a category of data output.
+ * Value object - equality by value.
+ */
+export class DataSpecType {
+  private constructor(readonly value: string) {
+    if (!value || value.trim().length === 0) {
+      throw new Error("Data spec type cannot be empty");
+    }
+  }
+
+  static create(value: string): DataSpecType {
+    return new DataSpecType(value.trim());
+  }
+
+  equals(other: DataSpecType): boolean {
+    return this.value === other.value;
+  }
+
+  toString(): string {
+    return this.value;
+  }
+}
+
+/**
+ * Specification for a data output spec type.
+ * Value object - immutable.
+ */
+export interface DataOutputSpecification {
+  /** The spec type identifier */
+  specType: DataSpecType;
+
+  /** Human-readable description */
+  description?: string;
+
+  /** Default content type */
+  contentType?: string;
+
+  /** Default lifetime policy */
+  lifetime?: Lifetime;
+
+  /** Default garbage collection policy */
+  garbageCollection?: GarbageCollectionPolicy;
+
+  /** Whether this supports streaming */
+  streaming?: boolean;
+
+  /** Default tags */
+  tags?: Record<string, string>;
+}
+
+/**
+ * Zod schema for data output specification.
+ */
+export const DataOutputSpecificationSchema = z.object({
+  specType: z.string().min(1),
+  description: z.string().optional(),
+  contentType: z.string().optional(),
+  lifetime: LifetimeSchema.optional(),
+  garbageCollection: GarbageCollectionSchema.optional(),
+  streaming: z.boolean().optional(),
+  tags: z.record(z.string(), z.string()).optional(),
+});
 
 /**
  * Context provided to method execution.
@@ -65,6 +135,11 @@ export interface MethodContext {
    * Optional callbacks for streaming stdout/stderr output.
    */
   streaming?: MethodStreamingCallbacks;
+
+  /**
+   * The model definition for validation and defaults.
+   */
+  modelDefinition?: ModelDefinition;
 }
 
 /**
@@ -72,9 +147,14 @@ export interface MethodContext {
  */
 export interface DataOutput {
   /**
-   * Name of the data artifact.
+   * Unique name for this data instance.
    */
   name: string;
+
+  /**
+   * Reference to the declared spec type.
+   */
+  specType: DataSpecType;
 
   /**
    * Content of the data artifact.
@@ -82,7 +162,7 @@ export interface DataOutput {
   content: Uint8Array;
 
   /**
-   * Metadata for the data artifact.
+   * Metadata for the data artifact (can override spec defaults).
    */
   metadata: Omit<
     DataMetadata,
@@ -170,6 +250,7 @@ export interface MethodDefinition<
  * - Its type identifier
  * - Current version
  * - Schema for validating definition attributes
+ * - Data output specifications
  * - Available methods
  */
 export interface ModelDefinition<
@@ -189,6 +270,13 @@ export interface ModelDefinition<
    * Zod schema for validating definition attributes.
    */
   inputAttributesSchema: TInputAttrs;
+
+  /**
+   * Data output specifications - declares what spec types this model produces.
+   * Keys are spec type values, values are full specifications.
+   * REQUIRED for all models.
+   */
+  dataOutputSpecs: Record<string, DataOutputSpecification>;
 
   /**
    * Available methods on this model.

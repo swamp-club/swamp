@@ -78,7 +78,9 @@ function getDataOutputAttributes(
     return undefined;
   }
   const content = new TextDecoder().decode(dataOutputs[index].content);
-  return JSON.parse(content);
+  const parsed = JSON.parse(content);
+  // Handle wrapped attributes format
+  return parsed.attributes ?? parsed;
 }
 
 Deno.test("ECHO_MODEL_TYPE has correct normalized type", () => {
