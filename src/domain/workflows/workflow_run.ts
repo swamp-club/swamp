@@ -5,6 +5,8 @@ import type {
   TriggerEvaluationContext,
 } from "./trigger_condition.ts";
 import type { Workflow } from "./workflow.ts";
+import { DataArtifactRefSchema } from "../models/model_output.ts";
+import type { DataArtifactRef } from "../models/model_output.ts";
 
 /**
  * Zod schema for step run.
@@ -16,6 +18,7 @@ export const StepRunSchema = z.object({
   completedAt: z.string().datetime().optional(),
   error: z.string().optional(),
   output: z.unknown().optional(),
+  dataArtifacts: z.array(DataArtifactRefSchema).optional(),
 });
 
 /**
@@ -68,6 +71,7 @@ export class StepRun {
     private _completedAt: Date | undefined,
     private _error: string | undefined,
     private _output: unknown,
+    private _dataArtifacts: DataArtifactRef[] = [],
   ) {}
 
   /**
@@ -81,6 +85,7 @@ export class StepRun {
       undefined,
       undefined,
       undefined,
+      [],
     );
   }
 
@@ -96,6 +101,7 @@ export class StepRun {
       validated.completedAt ? new Date(validated.completedAt) : undefined,
       validated.error,
       validated.output,
+      validated.dataArtifacts ?? [],
     );
   }
 
@@ -117,6 +123,20 @@ export class StepRun {
 
   get output(): unknown {
     return this._output;
+  }
+
+  /**
+   * Gets the data artifacts produced by this step.
+   */
+  get dataArtifacts(): ReadonlyArray<DataArtifactRef> {
+    return this._dataArtifacts;
+  }
+
+  /**
+   * Adds a data artifact reference to this step.
+   */
+  addDataArtifact(artifact: DataArtifactRef): void {
+    this._dataArtifacts.push({ ...artifact });
   }
 
   /**
@@ -157,7 +177,7 @@ export class StepRun {
    * Converts to plain data for persistence.
    */
   toData(): StepRunData {
-    return {
+    const data: StepRunData = {
       stepName: this.stepName,
       status: this._status,
       startedAt: this._startedAt?.toISOString(),
@@ -165,6 +185,10 @@ export class StepRun {
       error: this._error,
       output: this._output,
     };
+    if (this._dataArtifacts.length > 0) {
+      data.dataArtifacts = this._dataArtifacts.map((a) => ({ ...a }));
+    }
+    return data;
   }
 }
 

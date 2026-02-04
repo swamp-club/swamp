@@ -352,17 +352,32 @@ export class DefaultStepExecutor implements StepExecutor {
       );
 
       // Handle data output persistence
+      const savedArtifacts: Array<{
+        dataId: string;
+        name: string;
+        version: number;
+        tags: Record<string, string>;
+      }> = [];
       if (result.dataOutputs && result.dataOutputs.length > 0) {
         for (const dataOutput of result.dataOutputs) {
-          // Create Data entity from DataOutput
+          // Create Data entity from DataOutput with workflow-specific tags
           const { Data } = await import("../data/mod.ts");
+
+          // Merge workflow-specific tags with model output tags
+          const workflowTags: Record<string, string> = {
+            ...dataOutput.metadata.tags,
+            type: "step-output",
+            workflow: ctx.workflowName,
+            step: ctx.stepName,
+          };
+
           const data = Data.create({
             name: dataOutput.name,
             contentType: dataOutput.metadata.contentType,
             lifetime: dataOutput.metadata.lifetime,
             garbageCollection: dataOutput.metadata.garbageCollection,
             streaming: dataOutput.metadata.streaming,
-            tags: dataOutput.metadata.tags,
+            tags: workflowTags,
             ownerDefinition: dataOutput.metadata.ownerDefinition,
           });
 
@@ -374,13 +389,15 @@ export class DefaultStepExecutor implements StepExecutor {
             dataOutput.content,
           );
 
-          // Track artifact in output
-          output.addDataArtifact({
+          // Track artifact in output and for returning to step run
+          const artifactRef = {
             dataId: data.id,
             name: dataOutput.name,
             version: saveResult.version,
-            tags: dataOutput.metadata.tags,
-          });
+            tags: workflowTags,
+          };
+          output.addDataArtifact(artifactRef);
+          savedArtifacts.push(artifactRef);
 
           // Use first JSON data output for context refresh
           if (
@@ -412,6 +429,7 @@ export class DefaultStepExecutor implements StepExecutor {
         dataId: dataId ?? "",
         dataName: dataName ?? "output",
         dataAttributes,
+        dataArtifacts: savedArtifacts,
       };
     } catch (error) {
       // Mark output as failed and save
@@ -826,7 +844,20 @@ export class WorkflowExecutionService {
           dataId?: string;
           dataName?: string;
           dataAttributes?: Record<string, unknown>;
+          dataArtifacts?: Array<{
+            dataId: string;
+            name: string;
+            version: number;
+            tags: Record<string, string>;
+          }>;
         };
+
+        // Track data artifacts in step run
+        if (taskOutput.dataArtifacts) {
+          for (const artifact of taskOutput.dataArtifacts) {
+            stepRun.addDataArtifact(artifact);
+          }
+        }
         if (taskOutput.model) {
           // Create model entry if it doesn't exist
           if (!expressionContext.model[taskOutput.model]) {

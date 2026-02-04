@@ -14,6 +14,16 @@ export interface StepArtifactsData {
   dataAttributes?: Record<string, unknown>;
 }
 
+/**
+ * Reference to a Data artifact produced by a step.
+ */
+export interface DataArtifactRefData {
+  dataId: string;
+  name: string;
+  version: number;
+  tags: Record<string, string>;
+}
+
 export interface StepRunData {
   name: string;
   status: "pending" | "running" | "succeeded" | "failed" | "skipped";
@@ -25,6 +35,8 @@ export interface StepRunData {
   outputId?: string;
   /** Step artifacts included when --verbose is set */
   artifacts?: StepArtifactsData;
+  /** Data artifacts produced by this step */
+  dataArtifacts?: DataArtifactRefData[];
 }
 
 export interface JobRunData {

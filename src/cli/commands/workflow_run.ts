@@ -116,6 +116,16 @@ function toRunData(
             }
           }
 
+          // Include data artifacts if present
+          if (step.dataArtifacts && step.dataArtifacts.length > 0) {
+            stepData.dataArtifacts = step.dataArtifacts.map((a) => ({
+              dataId: a.dataId,
+              name: a.name,
+              version: a.version,
+              tags: a.tags,
+            }));
+          }
+
           return stepData;
         }),
         duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,

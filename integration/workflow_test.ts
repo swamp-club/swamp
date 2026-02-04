@@ -1520,3 +1520,170 @@ Deno.test("CLI: workflow run resolves vault expressions in model inputs", async 
     assertEquals(output.jobs[0].steps[0].status, "succeeded");
   });
 });
+
+// Data artifact tracking tests
+
+Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model input
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const input = Definition.create({
+      name: "data-tag-test-model",
+      attributes: {
+        message: "test message for data tags",
+      },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+
+    // Create a workflow that runs the model
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "data-tag-workflow",
+      jobs: [
+        Job.create({
+          name: "data-job",
+          steps: [
+            Step.create({
+              name: "write-data",
+              task: StepTask.modelMethod("data-tag-test-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "data-tag-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Workflow run should succeed. stderr: ${result.stderr}, stdout: ${result.stdout}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+    assertEquals(output.jobs[0].steps[0].status, "succeeded");
+
+    // Verify the step run has data artifacts with correct tags
+    const stepOutput = output.jobs[0].steps[0];
+    assertEquals(
+      stepOutput.dataArtifacts !== undefined,
+      true,
+      "Step output should have dataArtifacts",
+    );
+    assertEquals(
+      stepOutput.dataArtifacts.length > 0,
+      true,
+      "Should have at least one data artifact",
+    );
+
+    // Verify tags on the data artifact
+    const artifact = stepOutput.dataArtifacts[0];
+    assertEquals(
+      artifact.tags.type,
+      "step-output",
+      "Tag type should be step-output",
+    );
+    assertEquals(
+      artifact.tags.workflow,
+      "data-tag-workflow",
+      "Tag workflow should match workflow name",
+    );
+    assertEquals(
+      artifact.tags.step,
+      "write-data",
+      "Tag step should match step name",
+    );
+  });
+});
+
+Deno.test("CLI: workflow run persists data artifacts in workflow run record", async () => {
+  await withTempDir(async (repoDir) => {
+    // Create a model input
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const input = Definition.create({
+      name: "persist-test-model",
+      attributes: {
+        message: "test message for persistence",
+      },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+
+    // Create a workflow
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "persist-workflow",
+      jobs: [
+        Job.create({
+          name: "persist-job",
+          steps: [
+            Step.create({
+              name: "write-persist",
+              task: StepTask.modelMethod("persist-test-model", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Run the workflow
+    const runResult = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "persist-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      runResult.code,
+      0,
+      `Workflow run should succeed. stderr: ${runResult.stderr}`,
+    );
+
+    const runOutput = JSON.parse(runResult.stdout);
+    assertEquals(runOutput.status, "succeeded", "Workflow should succeed");
+
+    // Verify data artifacts are in the run output
+    const stepData = runOutput.jobs[0].steps[0];
+    assertEquals(
+      stepData.dataArtifacts !== undefined && stepData.dataArtifacts.length > 0,
+      true,
+      "Step should have data artifacts",
+    );
+
+    // Verify tags are correct
+    assertEquals(
+      stepData.dataArtifacts[0].tags.type,
+      "step-output",
+      "Tag type should be step-output",
+    );
+    assertEquals(
+      stepData.dataArtifacts[0].tags.workflow,
+      "persist-workflow",
+      "Tag workflow should match",
+    );
+    assertEquals(
+      stepData.dataArtifacts[0].tags.step,
+      "write-persist",
+      "Tag step should match",
+    );
+  });
+});
