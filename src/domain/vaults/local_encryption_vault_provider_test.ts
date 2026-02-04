@@ -33,7 +33,7 @@ NhAAAAAwEAAQAAAQEA7V3jKJJHtN4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N
  * This matches the path computed by LocalEncryptionVaultProvider.
  */
 function secretsDir(baseDir: string, vaultName: string): string {
-  return join(baseDir, ".data", "secrets", "local_encryption", vaultName);
+  return join(baseDir, ".swamp", "secrets", "local_encryption", vaultName);
 }
 
 Deno.test("LocalEncryptionVaultProvider - uses computed secrets path", async (t) => {
@@ -45,7 +45,7 @@ Deno.test("LocalEncryptionVaultProvider - uses computed secrets path", async (t)
         base_dir: "/tmp/test-repo",
       });
       assertEquals(vault.getName(), "test-vault");
-      // The vault should compute its path as /tmp/test-repo/.data/secrets/local_encryption/test-vault
+      // The vault should compute its path as /tmp/test-repo/.swamp/secrets/local_encryption/test-vault
     },
   );
 

@@ -142,8 +142,8 @@ Deno.test("CLI: workflow create creates logical view symlink", async () => {
     const symlinkTarget = await Deno.readLink(symlinkPath);
     assertStringIncludes(
       symlinkTarget,
-      `.data/workflows/workflow-${workflowId}.yaml`,
-      "Symlink should point to .data/workflows/workflow-{id}.yaml",
+      `.swamp/workflows/workflow-${workflowId}.yaml`,
+      "Symlink should point to .swamp/workflows/workflow-{id}.yaml",
     );
 
     // Verify the runs directory was also created

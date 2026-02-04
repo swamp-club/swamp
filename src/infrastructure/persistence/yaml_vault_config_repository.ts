@@ -17,7 +17,7 @@ import {
  * YAML-based repository for vault configurations.
  *
  * Stores vault configs as YAML files in the directory structure:
- * {repoDir}/.data/vault/{vault-type}/{id}.yaml
+ * {repoDir}/.swamp/vault/{vault-type}/{id}.yaml
  */
 export class YamlVaultConfigRepository {
   private readonly eventBus: EventBus | null;
@@ -206,7 +206,7 @@ export class YamlVaultConfigRepository {
    * Gets the base vault directory.
    */
   private getVaultDir(): string {
-    return join(this.repoDir, ".data", "vault");
+    return join(this.repoDir, ".swamp", "vault");
   }
 
   /**

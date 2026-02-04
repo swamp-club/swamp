@@ -81,7 +81,7 @@ export function VaultCreateDisplay(
       </Box>
       <Box marginTop={1}>
         <Text dimColor>
-          Edit .data/vault/{props.type}/{props.id}.yaml to customize the vault
+          Edit .swamp/vault/{props.type}/{props.id}.yaml to customize the vault
           configuration.
         </Text>
       </Box>

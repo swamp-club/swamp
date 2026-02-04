@@ -31,10 +31,9 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function setupRepoDir(dir: string): Promise<void> {
   const subdirs = [
-    // Legacy .data paths
-    ".data/workflows",
-    ".data/workflow-runs",
-    // New .swamp paths
+    // .swamp paths
+    ".swamp/workflows",
+    ".swamp/workflow-runs",
     ".swamp/definitions",
     ".swamp/data",
     ".swamp/outputs",

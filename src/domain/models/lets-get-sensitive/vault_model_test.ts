@@ -115,8 +115,8 @@ async function withTestRepo<T>(
 ): Promise<T> {
   const tempDir = await Deno.makeTempDir();
   try {
-    // Create a test vault configuration in .data/vault/
-    const vaultDir = `${tempDir}/.data/vault/local_encryption`;
+    // Create a test vault configuration in .swamp/vault/
+    const vaultDir = `${tempDir}/.swamp/vault/local_encryption`;
     await Deno.mkdir(vaultDir, { recursive: true });
     await Deno.writeTextFile(
       `${vaultDir}/test-vault-id.yaml`,

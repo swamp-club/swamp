@@ -10,7 +10,7 @@ import {
 /**
  * Repository for storing evaluated workflows.
  *
- * Writes to {repoDir}/.data/workflows-evaluated/workflow-{uuid}.yaml
+ * Writes to {repoDir}/.swamp/workflows-evaluated/workflow-{uuid}.yaml
  * This directory contains workflows with all expressions resolved.
  */
 export class YamlEvaluatedWorkflowRepository {
@@ -98,6 +98,6 @@ export class YamlEvaluatedWorkflowRepository {
   }
 
   private getWorkflowsDir(): string {
-    return join(this.repoDir, ".data", "workflows-evaluated");
+    return join(this.repoDir, ".swamp", "workflows-evaluated");
   }
 }

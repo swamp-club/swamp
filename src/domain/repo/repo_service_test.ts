@@ -100,6 +100,10 @@ Deno.test("RepoService.init creates data directory structure", async () => {
       ".swamp/workflow-runs",
       ".swamp/inputs-evaluated",
       ".swamp/workflows-evaluated",
+      ".swamp/definitions",
+      ".swamp/definitions-evaluated",
+      ".swamp/vault",
+      ".swamp/secrets",
       ".swamp/logs",
       ".swamp/files",
     ];

@@ -16,7 +16,7 @@ async function createWorkflowRunFile(
   runId: string,
   runData: WorkflowRunData,
 ): Promise<void> {
-  const runDir = join(repoDir, ".data", "workflow-runs", workflowId);
+  const runDir = join(repoDir, ".swamp", "workflow-runs", workflowId);
   await Deno.mkdir(runDir, { recursive: true });
 
   const fileName = `workflow-run-${runId}.yaml`;
@@ -247,7 +247,7 @@ Deno.test("LogStreamService - getLogs handles missing workflow run file", async 
 
   try {
     // Create the base workflow-runs directory but no actual run files
-    const runDir = join(tempDir, ".data", "workflow-runs");
+    const runDir = join(tempDir, ".swamp", "workflow-runs");
     await Deno.mkdir(runDir, { recursive: true });
 
     const target: LogStreamTarget = {

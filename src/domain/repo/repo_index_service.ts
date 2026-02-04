@@ -67,11 +67,11 @@ export interface RebuildResult {
  *
  * Workflow View (`/workflows/{workflow-name}/`):
  * ```
- * workflow.yaml   → ../.data/workflows/workflow-{id}.yaml
+ * workflow.yaml   → ../.swamp/workflows/workflow-{id}.yaml
  * runs/
  *   latest/       → {latest-timestamp}/
  *   {timestamp}/
- *     run.yaml    → ../.data/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
+ *     run.yaml    → ../.swamp/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
  *     steps/
  *       {step-name}/
  *         output.yaml → symlink to step output
@@ -80,7 +80,7 @@ export interface RebuildResult {
  *
  * Vault View (`/vaults/{vault-name}/`):
  * ```
- * vault.yaml      → ../.data/vault/{vault-type}/{id}.yaml
+ * vault.yaml      → ../.swamp/vault/{vault-type}/{id}.yaml
  * ```
  */
 export interface RepoIndexService {
@@ -200,7 +200,7 @@ export interface RepoIndexService {
    * Rebuilds all logical views from scratch.
    *
    * Deletes existing /models/ and /workflows/ directories
-   * and recreates them from the /.data/ directory.
+   * and recreates them from the /.swamp/ directory.
    *
    * @returns Rebuild result with counts
    */

@@ -21,7 +21,7 @@ import {
  * YAML-based implementation of WorkflowRepository.
  *
  * Stores workflows as YAML files in the directory structure:
- * {repoDir}/.data/workflows/workflow-{uuid}.yaml
+ * {repoDir}/.swamp/workflows/workflow-{uuid}.yaml
  */
 export class YamlWorkflowRepository implements WorkflowRepository {
   constructor(
@@ -147,6 +147,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   private getWorkflowsDir(): string {
-    return join(this.repoDir, ".data", "workflows");
+    return join(this.repoDir, ".swamp", "workflows");
   }
 }

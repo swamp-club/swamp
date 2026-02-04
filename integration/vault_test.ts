@@ -82,7 +82,7 @@ Deno.test("CLI: vault create command creates vault config file", async () => {
     assertEquals(output.config.region, "us-east-1");
 
     // Find the created vault file
-    const vaultDir = join(repoDir, ".data", "vault", "aws");
+    const vaultDir = join(repoDir, ".swamp", "vault", "aws");
     assertEquals(existsSync(vaultDir), true, "Vault directory should exist");
 
     // Read the vault config file
@@ -133,7 +133,7 @@ Deno.test("CLI: vault create command creates local_encryption vault", async () =
     assertEquals(output.config.auto_generate, true);
 
     // Verify file location
-    const vaultDir = join(repoDir, ".data", "vault", "local_encryption");
+    const vaultDir = join(repoDir, ".swamp", "vault", "local_encryption");
     assertEquals(existsSync(vaultDir), true, "Vault directory should exist");
   });
 });
@@ -318,7 +318,7 @@ Deno.test("CLI: vault create creates logical view symlink", async () => {
     );
 
     // Verify the logical view directory structure exists
-    // /vaults/{vault-name}/vault.yaml -> /.data/vault/{vault-type}/{id}.yaml
+    // /vaults/{vault-name}/vault.yaml -> /.swamp/vault/{vault-type}/{id}.yaml
     const logicalViewDir = join(repoDir, "vaults", "my-indexed-vault");
     assertEquals(
       existsSync(logicalViewDir),
@@ -496,7 +496,7 @@ Deno.test("CLI: vault get shows vault details by name", async () => {
     assertEquals(typeof output.createdAt, "string");
     assertEquals(typeof output.config, "object");
     assertEquals(output.config.region, "us-east-1");
-    assertStringIncludes(output.storagePath, ".data/vault/aws/");
+    assertStringIncludes(output.storagePath, ".swamp/vault/aws/");
   });
 });
 
@@ -676,9 +676,9 @@ Deno.test("CLI: vault edit with --type narrows search", async () => {
 // Vault config loading tests (regression tests for vault storage location)
 // ============================================================================
 
-Deno.test("CLI: vault configs are loaded from .data/vault/ directory", async () => {
+Deno.test("CLI: vault configs are loaded from .swamp/vault/ directory", async () => {
   await withTempDir(async (repoDir) => {
-    // Create a vault using the CLI (stores in .data/vault/)
+    // Create a vault using the CLI (stores in .swamp/vault/)
     const createResult = await runCliCommand([
       "vault",
       "create",
@@ -695,8 +695,8 @@ Deno.test("CLI: vault configs are loaded from .data/vault/ directory", async () 
       `Vault create should succeed. stderr: ${createResult.stderr}`,
     );
 
-    // Verify the vault config file exists in .data/vault/local_encryption/
-    const vaultDir = join(repoDir, ".data", "vault", "local_encryption");
+    // Verify the vault config file exists in .swamp/vault/local_encryption/
+    const vaultDir = join(repoDir, ".swamp", "vault", "local_encryption");
     assertEquals(existsSync(vaultDir), true, "Vault directory should exist");
 
     // Verify we can retrieve the vault via vault get (which uses the repository)
@@ -720,8 +720,8 @@ Deno.test("CLI: vault configs are loaded from .data/vault/ directory", async () 
     assertEquals(output.type, "local_encryption");
     assertStringIncludes(
       output.storagePath,
-      ".data/vault/local_encryption/",
-      "Storage path should be in .data/vault/",
+      ".swamp/vault/local_encryption/",
+      "Storage path should be in .swamp/vault/",
     );
   });
 });
@@ -892,7 +892,7 @@ Deno.test("CLI: vault put stores secret in vault", async () => {
     // Verify the secret file was created
     const secretPath = join(
       repoDir,
-      ".data",
+      ".swamp",
       "secrets",
       "local_encryption",
       "put-test-vault",
@@ -935,7 +935,7 @@ Deno.test("CLI: vault put handles values with equals signs", async () => {
     // but we can verify the file exists
     const secretPath = join(
       repoDir,
-      ".data",
+      ".swamp",
       "secrets",
       "local_encryption",
       "equals-test-vault",

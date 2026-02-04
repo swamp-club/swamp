@@ -58,7 +58,7 @@ export const VAULT_MODEL_TYPE = ModelType.create("swamp/lets-get-sensitive");
 
 /**
  * Creates and configures the vault service with the current repository context.
- * Loads vault configurations from .data/vault/{type}/{id}.yaml files.
+ * Loads vault configurations from .swamp/vault/{type}/{id}.yaml files.
  */
 async function createVaultService(
   context: MethodContext,

@@ -63,7 +63,7 @@ export const vaultGetCommand = new Command()
       type: config.type,
       config: config.config,
       createdAt: config.createdAt.toISOString(),
-      storagePath: `.data/vault/${config.type}/${config.id}.yaml`,
+      storagePath: `.swamp/vault/${config.type}/${config.id}.yaml`,
     };
 
     renderVaultGet(data, ctx.outputMode);

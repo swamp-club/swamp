@@ -23,7 +23,7 @@ type AnyOptions = any;
  * Gets the file path for a vault configuration.
  */
 function getVaultPath(repoDir: string, config: VaultConfig): string {
-  return join(repoDir, ".data", "vault", config.type, `${config.id}.yaml`);
+  return join(repoDir, ".swamp", "vault", config.type, `${config.id}.yaml`);
 }
 
 export const vaultEditCommand = new Command()

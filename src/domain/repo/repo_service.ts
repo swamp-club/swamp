@@ -216,6 +216,10 @@ Use \`swamp --help\` to see available commands.
       "workflow-runs",
       "inputs-evaluated",
       "workflows-evaluated",
+      "definitions",
+      "definitions-evaluated",
+      "vault",
+      "secrets",
       "logs",
       "files",
     ];

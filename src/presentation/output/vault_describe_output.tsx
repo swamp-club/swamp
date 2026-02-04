@@ -79,7 +79,7 @@ function VaultDescribeUI(props: VaultDescribeUIProps): React.ReactElement {
       {/* Storage path */}
       <Box marginTop={1}>
         <Text bold>Storage:</Text>
-        <Text dimColor>.data/vault/{config.type}/{config.id}.yaml</Text>
+        <Text dimColor>.swamp/vault/{config.type}/{config.id}.yaml</Text>
       </Box>
 
       {/* Configuration */}

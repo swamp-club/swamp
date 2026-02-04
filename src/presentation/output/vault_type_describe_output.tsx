@@ -6,10 +6,10 @@ import type { VaultTypeSearchItem } from "./vault_type_search_output.tsx";
 
 /**
  * Configuration example for each vault type.
- * Shows the YAML structure stored in .data/vault/{type}/{id}.yaml
+ * Shows the YAML structure stored in .swamp/vault/{type}/{id}.yaml
  */
 const CONFIG_EXAMPLES: Record<string, string> = {
-  aws: `# .data/vault/aws/{id}.yaml
+  aws: `# .swamp/vault/aws/{id}.yaml
 id: "uuid-here"
 name: "my-aws-vault"
 type: "aws"
@@ -17,7 +17,7 @@ config:
   region: "us-east-1"      # Required: AWS region
   # profile: "production"  # Optional: AWS profile name
 createdAt: "2024-01-01T00:00:00.000Z"`,
-  local_encryption: `# .data/vault/local_encryption/{id}.yaml
+  local_encryption: `# .swamp/vault/local_encryption/{id}.yaml
 id: "uuid-here"
 name: "my-local-vault"
 type: "local_encryption"
@@ -48,7 +48,7 @@ function renderJsonVaultTypeDescribe(data: VaultTypeSearchItem): void {
   const output = {
     ...data,
     configExample: CONFIG_EXAMPLES[data.type] ?? "",
-    storagePath: `.data/vault/${data.type}/{id}.yaml`,
+    storagePath: `.swamp/vault/${data.type}/{id}.yaml`,
   };
   console.log(JSON.stringify(output, null, 2));
 }
@@ -92,7 +92,7 @@ function VaultTypeDescribeUI(
       {/* Storage path */}
       <Box>
         <Text bold>Storage:</Text>
-        <Text dimColor>.data/vault/{data.type}/</Text>
+        <Text dimColor>.swamp/vault/{data.type}/</Text>
         <Text dimColor>{"<id>"}.yaml</Text>
       </Box>
 

@@ -19,7 +19,7 @@ export class VaultService {
    * This is the preferred way to create a VaultService that should have access to
    * all configured vaults.
    *
-   * Vaults are loaded from .data/vault/ directory (created via `swamp vault create`).
+   * Vaults are loaded from .swamp/vault/ directory (created via `swamp vault create`).
    * Note: Vaults are NOT configured in .swamp.yaml - use the CLI to create vaults.
    *
    * @param repoDir - The repository directory containing vault configurations

@@ -564,7 +564,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Symlink to workflow.yaml
     const workflowTarget = join(
       this.repoDir,
-      ".data",
+      ".swamp",
       "workflows",
       `workflow-${workflowId}.yaml`,
     );
@@ -610,7 +610,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Symlink to run.yaml
     const runTarget = join(
       this.repoDir,
-      ".data",
+      ".swamp",
       "workflow-runs",
       workflowId,
       `workflow-run-${runId}.yaml`,
@@ -641,8 +641,8 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   /**
    * Creates or updates the index for a vault.
    * Structure:
-   *   /vaults/{vault-name}/vault.yaml -> /.data/vault/{vault-type}/{id}.yaml
-   *   /vaults/{vault-name}/secrets/{key} -> /.data/secrets/{vault-type}/{vault-name}/{key}.enc (local vaults only)
+   *   /vaults/{vault-name}/vault.yaml -> /.swamp/vault/{vault-type}/{id}.yaml
+   *   /vaults/{vault-name}/secrets/{key} -> /.swamp/secrets/{vault-type}/{vault-name}/{key}.enc (local vaults only)
    */
   private async indexVault(
     vaultId: string,
@@ -655,7 +655,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     // Symlink to vault.yaml
     const vaultTarget = join(
       this.repoDir,
-      ".data",
+      ".swamp",
       "vault",
       vaultType,
       `${vaultId}.yaml`,
@@ -666,7 +666,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     if (vaultType === "local_encryption") {
       const actualSecretsDir = join(
         this.repoDir,
-        ".data",
+        ".swamp",
         "secrets",
         vaultType,
         vaultName,

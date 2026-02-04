@@ -36,7 +36,7 @@ export interface LogEntry {
 
 /**
  * Service for streaming logs from workflow step executions.
- * Reads log files from the .data/logs/ directory structure.
+ * Reads log files from the .swamp/logs/ directory structure.
  */
 export class LogStreamService {
   private repoDir: string;
@@ -177,7 +177,7 @@ export class LogStreamService {
   ): Promise<{ status: string } | null> {
     try {
       // Find the workflow run file
-      const baseRunsDir = join(this.repoDir, ".data", "workflow-runs");
+      const baseRunsDir = join(this.repoDir, ".swamp", "workflow-runs");
       let runFile: string | null = null;
 
       // Search through all workflow template directories
@@ -224,9 +224,9 @@ export class LogStreamService {
    * Gets the base log path for a target.
    */
   private getLogPath(_target: LogStreamTarget): string {
-    // Logs are stored in .data/logs/{type}/{id}/
+    // Logs are stored in .swamp/logs/{type}/{id}/
     // For workflow steps, we need to map to model outputs
-    return join(this.repoDir, ".data", "logs");
+    return join(this.repoDir, ".swamp", "logs");
   }
 
   /**
@@ -263,8 +263,8 @@ export class LogStreamService {
 
     try {
       // Find the workflow run file by searching all workflow directories
-      // File structure: .data/workflow-runs/{workflowTemplateId}/workflow-run-{runInstanceId}.yaml
-      const baseRunsDir = join(this.repoDir, ".data", "workflow-runs");
+      // File structure: .swamp/workflow-runs/{workflowTemplateId}/workflow-run-{runInstanceId}.yaml
+      const baseRunsDir = join(this.repoDir, ".swamp", "workflow-runs");
       let runFile: string | null = null;
 
       try {

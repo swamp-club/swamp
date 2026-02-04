@@ -45,9 +45,9 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     this.name = name;
     this.config = config;
     // Compute secrets directory from base_dir + vault name
-    // Path: {base_dir}/.data/secrets/local_encryption/{vault_name}
+    // Path: {base_dir}/.swamp/secrets/local_encryption/{vault_name}
     const baseDir = config.base_dir ?? Deno.cwd();
-    this.vaultDir = join(baseDir, ".data", "secrets", "local_encryption", name);
+    this.vaultDir = join(baseDir, ".swamp", "secrets", "local_encryption", name);
   }
 
   async get(secretKey: string): Promise<string> {
