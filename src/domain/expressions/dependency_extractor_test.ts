@@ -1,8 +1,11 @@
 import { assertEquals } from "@std/assert";
 import {
+  extractArtifactDependencies,
+  extractDataFunctionDependencies,
   extractDependencies,
   extractModelRefs,
   extractResourceDependencies,
+  hasDataFunctionDependency,
   hasResourceDependency,
   hasSelfReference,
 } from "./dependency_extractor.ts";
@@ -101,4 +104,91 @@ Deno.test("hasSelfReference returns true for self expressions", () => {
 Deno.test("hasSelfReference returns false without self", () => {
   assertEquals(hasSelfReference("model.foo.input.x"), false);
   assertEquals(hasSelfReference("myself.name"), false); // 'self' must be word boundary
+});
+
+// Tests for data function dependency extraction
+
+Deno.test("extractModelRefs includes model refs from data.version calls", () => {
+  const expr = "data.version('my-model', 'result', 1).attributes.value";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("my-model"), true);
+});
+
+Deno.test("extractModelRefs includes model refs from data.latest calls", () => {
+  const expr = "data.latest('my-model', 'output').attributes.id";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("my-model"), true);
+});
+
+Deno.test("extractModelRefs includes model refs from data.listVersions calls", () => {
+  const expr = "data.listVersions('my-model', 'log')";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("my-model"), true);
+});
+
+Deno.test("extractModelRefs includes both model.X and data function refs", () => {
+  const expr =
+    "model.source.input.x + data.version('target', 'result', 1).value";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 2);
+  assertEquals(refs.includes("source"), true);
+  assertEquals(refs.includes("target"), true);
+});
+
+Deno.test("extractArtifactDependencies includes data function calls", () => {
+  const expr = "data.latest('my-model', 'output').attributes.id";
+  const deps = extractArtifactDependencies(expr);
+  assertEquals(deps.length, 1);
+  assertEquals(deps[0].modelRef, "my-model");
+  assertEquals(deps[0].type, "data");
+});
+
+Deno.test("extractArtifactDependencies combines model.X.data and data functions", () => {
+  const expr =
+    "model.a.data.result.value + data.version('b', 'output', 1).value";
+  const deps = extractArtifactDependencies(expr);
+  assertEquals(deps.length, 2);
+  assertEquals(deps.some((d) => d.modelRef === "a" && d.type === "data"), true);
+  assertEquals(deps.some((d) => d.modelRef === "b" && d.type === "data"), true);
+});
+
+Deno.test("extractDataFunctionDependencies returns model refs from data functions", () => {
+  const expr =
+    "data.version('model-a', 'data', 1) + data.latest('model-b', 'output')";
+  const refs = extractDataFunctionDependencies(expr);
+  assertEquals(refs.length, 2);
+  assertEquals(refs.includes("model-a"), true);
+  assertEquals(refs.includes("model-b"), true);
+});
+
+Deno.test("extractDataFunctionDependencies returns empty for no data functions", () => {
+  const expr = "model.foo.input.x + self.name";
+  const refs = extractDataFunctionDependencies(expr);
+  assertEquals(refs.length, 0);
+});
+
+Deno.test("hasDataFunctionDependency returns true for data.version", () => {
+  assertEquals(
+    hasDataFunctionDependency("data.version('model', 'data', 1)"),
+    true,
+  );
+});
+
+Deno.test("hasDataFunctionDependency returns true for data.latest", () => {
+  assertEquals(hasDataFunctionDependency("data.latest('model', 'data')"), true);
+});
+
+Deno.test("hasDataFunctionDependency returns true for data.listVersions", () => {
+  assertEquals(
+    hasDataFunctionDependency("data.listVersions('model', 'data')"),
+    true,
+  );
+});
+
+Deno.test("hasDataFunctionDependency returns false for other expressions", () => {
+  assertEquals(hasDataFunctionDependency("model.foo.data.bar"), false);
+  assertEquals(hasDataFunctionDependency("self.name"), false);
 });

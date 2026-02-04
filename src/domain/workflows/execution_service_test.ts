@@ -956,13 +956,23 @@ Deno.test("updates data context between workflow steps", async () => {
     // Verify step2 saw the data context updated from step1
     const step2Context = executor.capturedContexts.get("step2");
     const authModelData = step2Context?.["auth-model"] as {
-      data?: { id: string; attributes: Record<string, unknown> };
+      data?: Record<
+        string,
+        { id: string; name: string; attributes: Record<string, unknown> }
+      >;
     };
 
     // The data should be available in the context when step2 runs
-    assertEquals(authModelData?.data?.id, "auth-data-123");
-    assertEquals(authModelData?.data?.attributes?.token, "secret-token");
-    assertEquals(authModelData?.data?.attributes?.expiresAt, "2024-01-01");
+    // Data is now a map of data-name -> DataRecord, with default name "output"
+    assertEquals(authModelData?.data?.["output"]?.id, "auth-data-123");
+    assertEquals(
+      authModelData?.data?.["output"]?.attributes?.token,
+      "secret-token",
+    );
+    assertEquals(
+      authModelData?.data?.["output"]?.attributes?.expiresAt,
+      "2024-01-01",
+    );
   });
 });
 
@@ -1027,17 +1037,20 @@ Deno.test("updates both resource and data context when step produces both", asyn
     const step2Context = executor.capturedContexts.get("step2");
     const syncModelData = step2Context?.["sync-model"] as {
       resource?: { id: string; attributes: Record<string, unknown> };
-      data?: { id: string; attributes: Record<string, unknown> };
+      data?: Record<
+        string,
+        { id: string; name: string; attributes: Record<string, unknown> }
+      >;
     };
 
     // Resource should be in context
     assertEquals(syncModelData?.resource?.id, "resource-123");
     assertEquals(syncModelData?.resource?.attributes?.status, "synced");
 
-    // Data should also be in context
-    assertEquals(syncModelData?.data?.id, "data-456");
+    // Data should also be in context (now a map with default name "output")
+    assertEquals(syncModelData?.data?.["output"]?.id, "data-456");
     assertEquals(
-      syncModelData?.data?.attributes?.lastSyncTime,
+      syncModelData?.data?.["output"]?.attributes?.lastSyncTime,
       "2024-01-01T00:00:00Z",
     );
   });

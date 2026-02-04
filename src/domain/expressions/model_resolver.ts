@@ -3,6 +3,7 @@ import type { ModelType } from "../models/model_type.ts";
 import type { Definition, InputsSchema } from "../definitions/definition.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 
@@ -11,6 +12,19 @@ import { VaultService } from "../vaults/vault_service.ts";
  */
 export function buildEnvContext(): Record<string, string> {
   return { ...Deno.env.toObject() };
+}
+
+/**
+ * Record returned by data functions in CEL expressions.
+ * Represents a single version of a named data item.
+ */
+export interface DataRecord {
+  id: string;
+  name: string;
+  version: number;
+  createdAt: string;
+  attributes: Record<string, unknown>;
+  tags: Record<string, string>;
 }
 
 /**
@@ -38,12 +52,8 @@ export interface ModelData {
     createdAt: string;
     attributes: Record<string, unknown>;
   };
-  data?: {
-    id: string;
-    version: number;
-    createdAt: string;
-    attributes: Record<string, unknown>;
-  };
+  /** Map of data-name -> latest DataRecord for this model */
+  data?: Record<string, DataRecord>;
   file?: {
     id: string;
     version: number;
@@ -74,6 +84,48 @@ export interface ModelData {
 }
 
 /**
+ * Namespace for data versioning functions in CEL expressions.
+ */
+export interface DataNamespace {
+  /**
+   * Get a specific version of data.
+   * @param modelName - The model name
+   * @param dataName - The data name
+   * @param version - The version number
+   * @returns The DataRecord or null if not found
+   */
+  version(
+    modelName: string,
+    dataName: string,
+    version: number,
+  ): DataRecord | null;
+
+  /**
+   * Get the latest version of data.
+   * @param modelName - The model name
+   * @param dataName - The data name
+   * @returns The DataRecord or null if not found
+   */
+  latest(modelName: string, dataName: string): DataRecord | null;
+
+  /**
+   * List all version numbers for a data item.
+   * @param modelName - The model name
+   * @param dataName - The data name
+   * @returns Array of version numbers in ascending order
+   */
+  listVersions(modelName: string, dataName: string): number[];
+
+  /**
+   * Find all data records with a specific tag.
+   * @param tagKey - The tag key to search
+   * @param tagValue - The tag value to match
+   * @returns Array of matching DataRecords
+   */
+  findByTag(tagKey: string, tagValue: string): DataRecord[];
+}
+
+/**
  * Context for evaluating CEL expressions.
  */
 export interface ExpressionContext {
@@ -97,6 +149,8 @@ export interface ExpressionContext {
   };
   /** Environment variables */
   env: Record<string, string>;
+  /** Data namespace for versioned data access */
+  data?: DataNamespace;
   /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }
@@ -110,6 +164,101 @@ export interface ModelResolverRepositories {
   vaultService?: VaultService;
   /** Repository directory for lazy loading vault configurations */
   repoDir?: string;
+  /** Optional data repository for loading versioned data */
+  dataRepo?: UnifiedDataRepository;
+}
+
+/**
+ * Cache for pre-loaded data to enable synchronous CEL function evaluation.
+ *
+ * The cache indexes data by:
+ * - (modelName, dataName, version) for direct lookups
+ * - (tagKey, tagValue) for tag-based queries
+ */
+export class DataCache {
+  // (modelName) -> (dataName) -> (version) -> DataRecord
+  private byModelData: Map<string, Map<string, Map<number, DataRecord>>> =
+    new Map();
+
+  // (tagKey:tagValue) -> DataRecord[]
+  private byTag: Map<string, DataRecord[]> = new Map();
+
+  /**
+   * Adds a data record to the cache.
+   */
+  addData(
+    modelName: string,
+    dataName: string,
+    version: number,
+    record: DataRecord,
+  ): void {
+    // Add to model/data/version index
+    if (!this.byModelData.has(modelName)) {
+      this.byModelData.set(modelName, new Map());
+    }
+    const dataMap = this.byModelData.get(modelName)!;
+    if (!dataMap.has(dataName)) {
+      dataMap.set(dataName, new Map());
+    }
+    dataMap.get(dataName)!.set(version, record);
+
+    // Add to tag index
+    for (const [key, value] of Object.entries(record.tags)) {
+      const tagKey = `${key}:${value}`;
+      if (!this.byTag.has(tagKey)) {
+        this.byTag.set(tagKey, []);
+      }
+      this.byTag.get(tagKey)!.push(record);
+    }
+  }
+
+  /**
+   * Gets a specific version of data.
+   */
+  getVersion(
+    modelName: string,
+    dataName: string,
+    version: number,
+  ): DataRecord | null {
+    return (
+      this.byModelData.get(modelName)?.get(dataName)?.get(version) ?? null
+    );
+  }
+
+  /**
+   * Gets the latest version of data.
+   */
+  getLatest(modelName: string, dataName: string): DataRecord | null {
+    const versions = this.listVersions(modelName, dataName);
+    if (versions.length === 0) return null;
+    const latestVersion = Math.max(...versions);
+    return this.getVersion(modelName, dataName, latestVersion);
+  }
+
+  /**
+   * Lists all version numbers for a data item in ascending order.
+   */
+  listVersions(modelName: string, dataName: string): number[] {
+    const versionMap = this.byModelData.get(modelName)?.get(dataName);
+    if (!versionMap) return [];
+    return Array.from(versionMap.keys()).sort((a, b) => a - b);
+  }
+
+  /**
+   * Finds all data records with a specific tag.
+   */
+  findByTag(tagKey: string, tagValue: string): DataRecord[] {
+    return this.byTag.get(`${tagKey}:${tagValue}`) ?? [];
+  }
+
+  /**
+   * Gets all data names for a model.
+   */
+  getDataNames(modelName: string): string[] {
+    const dataMap = this.byModelData.get(modelName);
+    if (!dataMap) return [];
+    return Array.from(dataMap.keys());
+  }
 }
 
 /**
@@ -119,6 +268,7 @@ export class ModelResolver {
   private readonly outputRepo?: YamlOutputRepository;
   private vaultService?: VaultService;
   private readonly repoDir?: string;
+  private readonly dataRepo?: UnifiedDataRepository;
   private vaultServiceInitialized = false;
 
   constructor(
@@ -127,6 +277,7 @@ export class ModelResolver {
   ) {
     this.outputRepo = repos?.outputRepo;
     this.repoDir = repos?.repoDir;
+    this.dataRepo = repos?.dataRepo;
     // If a vault service was provided, use it directly
     if (repos?.vaultService) {
       this.vaultService = repos.vaultService;
@@ -157,25 +308,40 @@ export class ModelResolver {
   }
 
   /**
+   * Type resolver function that maps model IDs to their types.
+   */
+  private typeResolver?: (modelId: string) => ModelType | undefined;
+
+  /**
    * Builds a complete expression context from all available models.
    *
    * @param selfDefinition - The definition currently being evaluated (for self reference)
    * @param selfType - The model type of the self definition
+   * @param typeResolver - Optional function to resolve model IDs to their types for data loading
    * @returns The expression context
    */
   async buildContext(
     selfDefinition?: Definition,
     selfType?: ModelType,
+    typeResolver?: (modelId: string) => ModelType | undefined,
   ): Promise<ExpressionContext> {
     const context: ExpressionContext = {
       model: {},
       env: buildEnvContext(),
     };
 
-    // Load all definitions
-    const allDefinitions = await this.definitionRepo.findAllGlobal();
+    // Store type resolver for data loading
+    this.typeResolver = typeResolver;
 
-    for (const { definition, type: _defType } of allDefinitions) {
+    // Load all definitions and build a map of ID -> type
+    const allDefinitions = await this.definitionRepo.findAllGlobal();
+    const idToType = new Map<string, ModelType>();
+    const idToName = new Map<string, string>();
+
+    for (const { definition, type: defType } of allDefinitions) {
+      idToType.set(definition.id, defType);
+      idToName.set(definition.id, definition.name);
+
       // Build model data from definition
       const modelData: ModelData = {
         input: {
@@ -200,6 +366,107 @@ export class ModelResolver {
       // Also index by UUID for direct ID references
       context.model[definition.id] = modelData;
     }
+
+    // Build data cache if dataRepo is available
+    const dataCache = new DataCache();
+    if (this.dataRepo) {
+      for (const { definition, type: defType } of allDefinitions) {
+        const modelType = typeResolver?.(definition.id) ?? defType;
+        const modelName = definition.name;
+
+        // Load all data for this model
+        const allData = await this.dataRepo.findAllForModel(
+          modelType,
+          definition.id,
+        );
+
+        for (const data of allData) {
+          // Get all versions for this data item
+          const versions = await this.dataRepo.listVersions(
+            modelType,
+            definition.id,
+            data.name,
+          );
+
+          for (const version of versions) {
+            const versionData = await this.dataRepo.findByName(
+              modelType,
+              definition.id,
+              data.name,
+              version,
+            );
+
+            if (versionData) {
+              // Parse attributes from content if JSON
+              let attributes: Record<string, unknown> = {};
+              if (versionData.contentType === "application/json") {
+                const content = await this.dataRepo.getContent(
+                  modelType,
+                  definition.id,
+                  data.name,
+                  version,
+                );
+                if (content) {
+                  try {
+                    attributes = JSON.parse(
+                      new TextDecoder().decode(content),
+                    ) as Record<string, unknown>;
+                  } catch {
+                    // Not valid JSON, use empty attributes
+                  }
+                }
+              }
+
+              const record: DataRecord = {
+                id: versionData.id,
+                name: versionData.name,
+                version: versionData.version,
+                createdAt: versionData.createdAt.toISOString(),
+                attributes,
+                tags: { ...versionData.tags },
+              };
+
+              dataCache.addData(modelName, data.name, version, record);
+            }
+          }
+        }
+
+        // Populate model.data with latest versions
+        const modelData = context.model[modelName];
+        if (modelData) {
+          const dataNames = dataCache.getDataNames(modelName);
+          if (dataNames.length > 0) {
+            modelData.data = {};
+            for (const dataName of dataNames) {
+              const latestRecord = dataCache.getLatest(modelName, dataName);
+              if (latestRecord) {
+                modelData.data[dataName] = latestRecord;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Create data namespace with functions that query the cache
+    context.data = {
+      version: (
+        modelName: string,
+        dataName: string,
+        version: number,
+      ): DataRecord | null => {
+        return dataCache.getVersion(modelName, dataName, version);
+      },
+      latest: (modelName: string, dataName: string): DataRecord | null => {
+        return dataCache.getLatest(modelName, dataName);
+      },
+      listVersions: (modelName: string, dataName: string): number[] => {
+        return dataCache.listVersions(modelName, dataName);
+      },
+      findByTag: (tagKey: string, tagValue: string): DataRecord[] => {
+        return dataCache.findByTag(tagKey, tagValue);
+      },
+    };
 
     // Build self context if provided
     if (selfDefinition && selfType) {

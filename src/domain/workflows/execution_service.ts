@@ -308,6 +308,7 @@ export class DefaultStepExecutor implements StepExecutor {
     // Track data outputs for context refresh
     let dataAttributes: Record<string, unknown> = {};
     let dataId: string | undefined;
+    let dataName: string | undefined;
 
     try {
       // Build streaming callbacks if progress callbacks are available
@@ -381,11 +382,12 @@ export class DefaultStepExecutor implements StepExecutor {
             tags: dataOutput.metadata.tags,
           });
 
-          // Use first data output for context refresh
+          // Use first JSON data output for context refresh
           if (
             !dataId && dataOutput.metadata.contentType === "application/json"
           ) {
             dataId = data.id;
+            dataName = dataOutput.name;
             try {
               const text = new TextDecoder().decode(dataOutput.content);
               dataAttributes = JSON.parse(text) as Record<string, unknown>;
@@ -408,6 +410,7 @@ export class DefaultStepExecutor implements StepExecutor {
         resourcePath: "", // Legacy field, now empty
         resourceAttributes: dataAttributes, // Use dataAttributes for backward compat
         dataId: dataId ?? "",
+        dataName: dataName ?? "output",
         dataAttributes,
       };
     } catch (error) {
@@ -519,6 +522,7 @@ export class WorkflowExecutionService {
   private readonly executor: StepExecutor;
   private readonly definitionRepo: YamlDefinitionRepository;
   private readonly modelResolver: ModelResolver;
+  private readonly dataRepo: FileSystemUnifiedDataRepository;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
@@ -528,8 +532,10 @@ export class WorkflowExecutionService {
   ) {
     this.executor = executor ?? new DefaultStepExecutor();
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
+    this.dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     this.modelResolver = new ModelResolver(this.definitionRepo, {
       repoDir,
+      dataRepo: this.dataRepo,
     });
   }
 
@@ -818,6 +824,7 @@ export class WorkflowExecutionService {
           resourceId?: string;
           resourceAttributes?: Record<string, unknown>;
           dataId?: string;
+          dataName?: string;
           dataAttributes?: Record<string, unknown>;
         };
         if (taskOutput.model) {
@@ -844,13 +851,19 @@ export class WorkflowExecutionService {
               attributes: taskOutput.resourceAttributes,
             };
           }
-          // Update data context if available
+          // Update data context if available (now uses Record<string, DataRecord>)
           if (taskOutput.dataId && taskOutput.dataAttributes) {
-            modelData.data = {
+            const dataName = taskOutput.dataName ?? "output";
+            if (!modelData.data) {
+              modelData.data = {};
+            }
+            modelData.data[dataName] = {
               id: taskOutput.dataId,
+              name: dataName,
               version: 1,
               createdAt: new Date().toISOString(),
               attributes: taskOutput.dataAttributes,
+              tags: {},
             };
           }
         }
