@@ -1,25 +1,12 @@
 ---
 name: swamp-vault
-description: Manage swamp vaults for secure secret storage. Use when creating vaults, storing secrets, retrieving secrets, listing vault keys, or working with vault expressions in workflows. Triggers on "vault", "secret", "credentials", "api key storage", "secure storage", or vault-related CLI commands.
+description: Manage swamp vaults for secure secret storage. Use when creating vaults, storing secrets, retrieving secrets, listing vault keys, or working with vault expressions in workflows. Triggers on "vault", "secret", "secrets", "credentials", "api key storage", "secure storage", "password", "token", "key management", "sensitive data", "encrypt", "aws secrets manager", "store secret", "put secret", "get secret", "credential storage", or vault-related CLI commands.
 ---
 
 # Swamp Vault Skill
 
 Manage secure secret storage through swamp vaults. All commands support `--json`
 for machine-readable output.
-
-## Repository Structure
-
-Vaults use the dual-layer architecture:
-
-- **Data directory (`/.data/vault/`)** - Internal storage by vault type
-- **Logical views (`/vaults/`)** - Human-friendly symlinked directories
-
-```
-/vaults/{vault-name}/
-  vault.yaml → ../.data/vault/{type}/{id}.yaml
-  secrets/ → ../.data/secrets/{type}/{vault-name}/ (local_encryption only)
-```
 
 ## Quick Reference
 
@@ -31,7 +18,21 @@ Vaults use the dual-layer architecture:
 | Get vault details | `swamp vault get <name_or_id> --json`      |
 | Edit vault config | `swamp vault edit <name_or_id>`            |
 | Store a secret    | `swamp vault put <vault> KEY=VALUE --json` |
+| Get a secret      | `swamp vault get <vault> <key> --json`     |
 | List secret keys  | `swamp vault list-keys <vault> --json`     |
+
+## Repository Structure
+
+Vaults use the dual-layer architecture:
+
+- **Data directory (`/.swamp/vault/`)** - Internal storage by vault type
+- **Logical views (`/vaults/`)** - Human-friendly symlinked directories
+
+```
+/vaults/{vault-name}/
+  vault.yaml → ../.swamp/vault/{type}/{id}.yaml
+  secrets/ → ../.swamp/secrets/{type}/{vault-name}/ (local_encryption only)
+```
 
 ## Vault Types
 
@@ -73,7 +74,7 @@ swamp vault create aws prod-secrets --json
   "id": "abc-123",
   "name": "dev-secrets",
   "type": "local_encryption",
-  "path": ".data/vault/local_encryption/abc-123.yaml"
+  "path": ".swamp/vault/local_encryption/abc-123.yaml"
 }
 ```
 
@@ -99,6 +100,27 @@ swamp vault put prod-secrets DB_PASSWORD=secret123 -f --json  # Skip confirmatio
   "status": "stored"
 }
 ```
+
+## Get a Secret
+
+Retrieve a specific secret value from a vault.
+
+```bash
+swamp vault get dev-secrets API_KEY --json
+```
+
+**Output shape:**
+
+```json
+{
+  "vault": "dev-secrets",
+  "key": "API_KEY",
+  "value": "sk-1234567890"
+}
+```
+
+**Note:** Use with caution. Secret values are sensitive and should not be logged
+or displayed unnecessarily.
 
 ## List Secret Keys
 
@@ -133,25 +155,20 @@ attributes:
 - Expressions are evaluated lazily at runtime
 - Failed lookups throw errors with helpful messages
 
-## Workflow Integration
+## Using Vaults in Workflows
 
-Use the `swamp/lets-get-sensitive` model for vault operations in workflows:
+For detailed workflow integration including the `swamp/lets-get-sensitive`
+model, see the **swamp-workflow** skill.
+
+**Quick syntax reference:**
 
 ```yaml
-# Store a secret via workflow
-- name: store-credentials
-  task:
-    type: model_method
-    modelIdOrName: store-creds
-    methodName: put
+# In workflow step attributes
+apiKey: ${{ vault.get(vault-name, secret-key) }}
 
-# Where store-creds model has:
-# type: swamp/lets-get-sensitive
-# attributes:
-#   vaultName: prod-secrets
-#   secretKey: api-token
-#   secretValue: ${{ model.generator.data.attributes.token }}
-#   operation: put
+# Environment-specific
+prodToken: ${{ vault.get(prod-secrets, auth-token) }}
+devToken: ${{ vault.get(dev-secrets, auth-token) }}
 ```
 
 ## Security Best Practices
@@ -160,6 +177,15 @@ Use the `swamp/lets-get-sensitive` model for vault operations in workflows:
 2. **Never hardcode**: Always use vault expressions for secrets
 3. **Audit access**: Monitor vault operations through logs
 4. **Key rotation**: Rotate secrets and encryption keys regularly
+
+## When to Use Other Skills
+
+| Need                     | Use Skill        |
+| ------------------------ | ---------------- |
+| Vault usage in workflows | `swamp-workflow` |
+| Create/run models        | `swamp-model`    |
+| Repository structure     | `swamp-repo`     |
+| Manage model data        | `swamp-data`     |
 
 ## References
 
