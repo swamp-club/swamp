@@ -2,20 +2,21 @@ import { z } from "zod";
 
 /**
  * Lifetime determines how long data should be retained.
- * - Duration strings: "1h", "5m", "10d", "2w" (hours, minutes, days, weeks)
+ * - Duration strings: "1h", "5m", "10d", "2w", "1mo", "10y" (hours, minutes, days, weeks, months, years)
  * - "ephemeral": Deleted when the process ends
  * - "infinite": Never automatically deleted
- * - "Job": Lives until the job completes
- * - "Workflow": Lives until the workflow completes
+ * - "job": Lives until the job completes
+ * - "workflow": Lives until the workflow completes
  */
 export const LifetimeSchema = z.union([
-  z.string().regex(/^\d+[hmdw]$/, {
-    message: "Duration must match pattern like '1h', '5m', '10d', '2w'",
+  z.string().regex(/^\d+(mo|y|h|m|d|w)$/, {
+    message:
+      "Duration must match pattern like '1h', '5m', '10d', '2w', '1mo', '10y'",
   }),
   z.literal("ephemeral"),
   z.literal("infinite"),
-  z.literal("Job"),
-  z.literal("Workflow"),
+  z.literal("job"),
+  z.literal("workflow"),
 ]);
 
 export type Lifetime = z.infer<typeof LifetimeSchema>;
@@ -27,8 +28,9 @@ export type Lifetime = z.infer<typeof LifetimeSchema>;
  */
 export const GarbageCollectionSchema = z.union([
   z.number().int().positive(),
-  z.string().regex(/^\d+[hmdw]$/, {
-    message: "Duration must match pattern like '1h', '5m', '10d', '2w'",
+  z.string().regex(/^\d+(mo|y|h|m|d|w)$/, {
+    message:
+      "Duration must match pattern like '1h', '5m', '10d', '2w', '1mo', '10y'",
   }),
 ]);
 

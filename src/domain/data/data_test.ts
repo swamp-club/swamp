@@ -182,22 +182,22 @@ Deno.test("Data.create validates special lifetime values", async () => {
   const dataJob = Data.create({
     name: "test-data",
     contentType: "text/plain",
-    lifetime: "Job",
+    lifetime: "job",
     garbageCollection: 5,
     tags: { type: "test" },
     ownerDefinition: owner,
   });
-  assertEquals(dataJob.lifetime, "Job");
+  assertEquals(dataJob.lifetime, "job");
 
   const dataWorkflow = Data.create({
     name: "test-data",
     contentType: "text/plain",
-    lifetime: "Workflow",
+    lifetime: "workflow",
     garbageCollection: 5,
     tags: { type: "test" },
     ownerDefinition: owner,
   });
-  assertEquals(dataWorkflow.lifetime, "Workflow");
+  assertEquals(dataWorkflow.lifetime, "workflow");
 });
 
 Deno.test("Data.create throws on invalid lifetime format", async () => {

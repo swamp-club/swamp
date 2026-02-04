@@ -27,6 +27,7 @@ function createMockDataRepo(): UnifiedDataRepository {
     stream: async function* () {},
     getContent: () => Promise.resolve(null),
     delete: () => Promise.resolve(),
+    removeLatestSymlink: () => Promise.resolve(),
     nextId: () => generateDataId(),
     getPath: () => "",
     getContentPath: () => "",

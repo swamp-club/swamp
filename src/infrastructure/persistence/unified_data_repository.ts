@@ -176,6 +176,20 @@ export interface UnifiedDataRepository {
   ): Promise<void>;
 
   /**
+   * Removes the latest symlink for expired data (soft delete).
+   * Version directories remain on disk but data becomes inaccessible.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param dataName - The data name
+   */
+  removeLatestSymlink(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<void>;
+
+  /**
    * Generates a new unique ID.
    */
   nextId(): DataId;
@@ -563,6 +577,28 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
+  /**
+   * Removes the latest symlink for expired data (soft delete).
+   * Version directories remain on disk but data becomes inaccessible.
+   */
+  async removeLatestSymlink(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<void> {
+    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    const latestSymlink = join(dataNameDir, "latest");
+
+    try {
+      await Deno.remove(latestSymlink);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+      // Symlink already missing is OK
+    }
+  }
+
   nextId(): DataId {
     return generateDataId();
   }
@@ -749,7 +785,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   private parseDuration(duration: string): number {
-    const match = duration.match(/^(\d+)([hmdw])$/);
+    const match = duration.match(/^(\d+)(mo|y|h|m|d|w)$/);
     if (!match) {
       throw new Error(`Invalid duration format: ${duration}`);
     }
@@ -758,6 +794,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const unit = match[2];
 
     switch (unit) {
+      case "mo":
+        return value * 30 * 24 * 60 * 60 * 1000;
+      case "y":
+        return value * 365 * 24 * 60 * 60 * 1000;
       case "h":
         return value * 60 * 60 * 1000;
       case "m":
