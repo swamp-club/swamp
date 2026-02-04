@@ -36,6 +36,7 @@ function createMockDataRepo(
         )
       : () => Promise.resolve(null),
     delete: () => Promise.resolve(),
+    removeLatestSymlink: () => Promise.resolve(),
     nextId: () => generateDataId(),
     getPath: () => "",
     getContentPath: () => "",
