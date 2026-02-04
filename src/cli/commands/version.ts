@@ -5,24 +5,18 @@ import {
 } from "../../presentation/output/output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 
-export const VERSION = "0.1.0";
-
-export const FROG_HAIKU = `Old pond, still water—
-A frog leaps in with a splash,
-Silence returns slow.`;
+// This gets replaced by the compile script during release builds
+export const VERSION = "0.0.0-dev";
 
 export function getVersionData(): VersionData {
-  return {
-    version: VERSION,
-    haiku: FROG_HAIKU,
-  };
+  return { version: VERSION };
 }
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
 export const versionCommand = new Command()
-  .description("Display the version of swamp and a frog haiku")
+  .description("Display the version of swamp")
   .action(function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, "version");
     ctx.logger.debug("Executing version command");

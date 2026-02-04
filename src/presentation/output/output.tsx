@@ -7,7 +7,6 @@ export type OutputMode = "interactive" | "json" | "stream";
 
 export interface VersionData {
   version: string;
-  haiku: string;
 }
 
 export function renderVersion(data: VersionData, mode: OutputMode): void {
@@ -19,8 +18,6 @@ export function renderVersion(data: VersionData, mode: OutputMode): void {
 }
 
 function renderInteractiveVersion(data: VersionData): void {
-  const { lastFrame } = render(
-    <VersionDisplay version={data.version} haiku={data.haiku} />,
-  );
+  const { lastFrame } = render(<VersionDisplay version={data.version} />);
   console.log(lastFrame());
 }

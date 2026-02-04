@@ -37,19 +37,19 @@ Deno.test("CLI with --help shows help", async () => {
 
 Deno.test("CLI with --version shows version", async () => {
   const { stdout } = await runCliCommand(["--version"]);
-  assertStringIncludes(stdout, "0.1.0");
+  assertStringIncludes(stdout, "0.0.0-dev");
 });
 
 Deno.test("CLI version command works (auto-detects non-TTY for JSON)", async () => {
   const { stdout } = await runCliCommand(["version"]);
   // In non-TTY environment, output is auto-detected as JSON
   const parsed = JSON.parse(stdout);
-  assertStringIncludes(parsed.version, "0.1.0");
+  assertStringIncludes(parsed.version, "0.0.0-dev");
 });
 
 Deno.test("CLI version command with --json outputs JSON", async () => {
   const { stdout } = await runCliCommand(["--json", "version"]);
-  // Should be valid JSON with version and haiku fields
+  // Should be valid JSON with version field
   const parsed = JSON.parse(stdout);
-  assertStringIncludes(parsed.version, "0.1.0");
+  assertStringIncludes(parsed.version, "0.0.0-dev");
 });

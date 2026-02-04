@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Generate version
+        id: version
+        run: |
+          # Format: YYYYMMDD.HHMMSS.0-sha.COMMITSHA (matches SI convention)
+          VERSION=$(date -u +%Y%m%d.%H%M%S).0-sha.$(git rev-parse --short=8 HEAD)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Linux x86_64
+          deno run -A scripts/compile.ts \
+            --version "$VERSION" \
+            --target x86_64-unknown-linux-gnu \
+            --output dist/swamp-linux-x86_64
+
+          # Linux aarch64
+          deno run -A scripts/compile.ts \
+            --version "$VERSION" \
+            --target aarch64-unknown-linux-gnu \
+            --output dist/swamp-linux-aarch64
+
+          # macOS x86_64
+          deno run -A scripts/compile.ts \
+            --version "$VERSION" \
+            --target x86_64-apple-darwin \
+            --output dist/swamp-darwin-x86_64
+
+          # macOS aarch64 (Apple Silicon)
+          deno run -A scripts/compile.ts \
+            --version "$VERSION" \
+            --target aarch64-apple-darwin \
+            --output dist/swamp-darwin-aarch64
+
+          # Windows x86_64
+          deno run -A scripts/compile.ts \
+            --version "$VERSION" \
+            --target x86_64-pc-windows-msvc \
+            --output dist/swamp-windows-x86_64.exe
+
+      - name: Create checksums
+        working-directory: dist
+        run: |
+          sha256sum swamp-* > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: swamp ${{ steps.version.outputs.version }}
+          body: |
+            ## swamp ${{ steps.version.outputs.version }}
+
+            ### Installation
+
+            **macOS (Apple Silicon):**
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/swamp-darwin-aarch64 -o swamp
+            chmod +x swamp && sudo mv swamp /usr/local/bin/
+            ```
+
+            **macOS (Intel):**
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/swamp-darwin-x86_64 -o swamp
+            chmod +x swamp && sudo mv swamp /usr/local/bin/
+            ```
+
+            **Linux (x86_64):**
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/swamp-linux-x86_64 -o swamp
+            chmod +x swamp && sudo mv swamp /usr/local/bin/
+            ```
+
+            **Linux (aarch64):**
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/swamp-linux-aarch64 -o swamp
+            chmod +x swamp && sudo mv swamp /usr/local/bin/
+            ```
+          files: |
+            dist/swamp-linux-x86_64
+            dist/swamp-linux-aarch64
+            dist/swamp-darwin-x86_64
+            dist/swamp-darwin-aarch64
+            dist/swamp-windows-x86_64.exe
+            dist/checksums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
