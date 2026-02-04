@@ -62,6 +62,8 @@ After completing work, run these checks:
 - Use `ink-testing-library` for testing Ink components
 - Test private functions indirectly through public APIs
 - Run tests with `deno task test`
+- Refactorings that change shared constants, paths, or cross-component contracts
+  must include integration tests to verify components still work together
 
 ## Experiments
 
