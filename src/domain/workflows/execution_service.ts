@@ -669,49 +669,81 @@ export class WorkflowExecutionService {
     jobRun.start();
     progress?.onJobStart?.(run, jobName);
 
-    // Build step nodes with implicit dependencies from expressions
-    const { nodes: stepNodes } = await this.buildStepNodesWithImplicitDeps(
-      job,
-      workflow,
+    // Create throttled save for incremental log persistence
+    const [throttledSave, cleanupThrottledSave] = this.createThrottledSave(
+      workflow.id,
+      run,
     );
 
-    const sortedSteps = this.sortService.sort(stepNodes);
+    // Wrap progress callbacks to persist logs incrementally
+    const streamingCallbacks: ExecutionProgressCallback = {
+      ...progress,
+      onStepStdout: (run, jobName, stepName, line) => {
+        // Call original callback if provided
+        progress?.onStepStdout?.(run, jobName, stepName, line);
+        // Append log line to step run and trigger save
+        const stepRun = run.getJob(jobName)?.getStep(stepName);
+        stepRun?.appendStdout(line);
+        throttledSave();
+      },
+      onStepStderr: (run, jobName, stepName, line) => {
+        // Call original callback if provided
+        progress?.onStepStderr?.(run, jobName, stepName, line);
+        // Append log line to step run and trigger save
+        const stepRun = run.getJob(jobName)?.getStep(stepName);
+        stepRun?.appendStderr(line);
+        throttledSave();
+      },
+    };
 
-    // Execute steps level by level
-    let jobFailed = false;
-    for (const level of sortedSteps.levels) {
-      if (jobFailed) break;
-
-      // Execute steps in parallel within each level
-      const stepResults = await Promise.allSettled(
-        level.map((stepName) =>
-          this.executeStep(
-            workflow,
-            run,
-            job,
-            jobRun,
-            stepName,
-            expressionContext,
-            progress,
-          )
-        ),
+    try {
+      // Build step nodes with implicit dependencies from expressions
+      const { nodes: stepNodes } = await this.buildStepNodesWithImplicitDeps(
+        job,
+        workflow,
       );
 
-      // Check for failures
-      for (const result of stepResults) {
-        if (result.status === "rejected") {
-          jobFailed = true;
+      const sortedSteps = this.sortService.sort(stepNodes);
+
+      // Execute steps level by level
+      let jobFailed = false;
+      for (const level of sortedSteps.levels) {
+        if (jobFailed) break;
+
+        // Execute steps in parallel within each level
+        const stepResults = await Promise.allSettled(
+          level.map((stepName) =>
+            this.executeStep(
+              workflow,
+              run,
+              job,
+              jobRun,
+              stepName,
+              expressionContext,
+              streamingCallbacks,
+            )
+          ),
+        );
+
+        // Check for failures
+        for (const result of stepResults) {
+          if (result.status === "rejected") {
+            jobFailed = true;
+          }
         }
       }
-    }
 
-    // Complete job
-    if (jobFailed) {
-      jobRun.fail();
-    } else {
-      jobRun.succeed();
+      // Complete job
+      if (jobFailed) {
+        jobRun.fail();
+      } else {
+        jobRun.succeed();
+      }
+      progress?.onJobComplete?.(run, jobName);
+    } finally {
+      // Clean up any pending timers
+      cleanupThrottledSave();
     }
-    progress?.onJobComplete?.(run, jobName);
   }
 
   /**
@@ -959,6 +991,47 @@ export class WorkflowExecutionService {
     run: WorkflowRun,
   ): Promise<void> {
     await this.runRepo.save(workflowId, run);
+  }
+
+  /**
+   * Creates a throttled save function that batches saves to avoid excessive I/O.
+   * Saves at most once every 100ms.
+   * Returns a tuple of [saveFunction, cleanupFunction].
+   */
+  private createThrottledSave(
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+  ): [() => void, () => void] {
+    let timer: number | null = null;
+    let pendingSave = false;
+
+    const save = () => {
+      pendingSave = true;
+      if (timer !== null) return;
+
+      timer = setTimeout(() => {
+        if (pendingSave) {
+          // Fire and forget - don't await to avoid blocking
+          this.saveRun(workflowId, run).catch((error) => {
+            console.error(
+              "Failed to save workflow run during streaming:",
+              error,
+            );
+          });
+          pendingSave = false;
+        }
+        timer = null;
+      }, 100);
+    };
+
+    const cleanup = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    return [save, cleanup];
   }
 
   /**
