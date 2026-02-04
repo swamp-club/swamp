@@ -4,12 +4,12 @@ import {
   type WorkflowGetData,
 } from "../../presentation/output/workflow_get_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 
 /**
@@ -38,8 +38,11 @@ export const workflowGetCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "workflow-get");
     ctx.logger.debug`Getting workflow: ${workflowIdOrName}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const repo = new YamlWorkflowRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const repo = repoContext.workflowRepo;
 
     // Look up the workflow
     let workflow: Workflow | null = null;

@@ -8,7 +8,7 @@ import {
   type RepoIndexVerifyData,
 } from "../../presentation/output/repo_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -20,15 +20,18 @@ export const repoIndexCommand = new Command()
   .option("--prune", "Remove broken symlinks without rebuilding")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, "repo-index");
-    const repoDir = options.repoDir ?? ".";
+
+    // Validate repo initialization (with indexing disabled for manual operations)
+    const { repoDir, repoContext } = await requireInitializedRepo(
+      {
+        repoDir: options.repoDir ?? ".",
+        outputMode: ctx.outputMode,
+      },
+      { enableIndexing: false },
+    );
 
     ctx.logger.debug`Managing repository index at: ${repoDir}`;
 
-    // Create repository context (indexing disabled for manual operations)
-    const repoContext = createRepositoryContext({
-      repoDir,
-      enableIndexing: false,
-    });
     const indexService = repoContext.indexService;
 
     if (options.verify) {

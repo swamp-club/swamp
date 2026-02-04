@@ -6,12 +6,12 @@ import {
   type WorkflowValidateData,
 } from "../../presentation/output/workflow_validate_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import {
   DefaultWorkflowValidationService,
   type WorkflowValidationResult,
@@ -53,8 +53,11 @@ export const workflowValidateCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, workflowIdOrName?: string) {
     const ctx = createContext(options as GlobalOptions, "workflow-validate");
-    const repoDir = options.repoDir ?? ".";
-    const repo = new YamlWorkflowRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const repo = repoContext.workflowRepo;
     const validationService = new DefaultWorkflowValidationService();
 
     // If no argument provided, validate all workflows

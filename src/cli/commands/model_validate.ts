@@ -6,7 +6,7 @@ import {
   type ValidationItemData,
 } from "../../presentation/output/model_validate_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import {
   DefaultModelValidationService,
@@ -38,8 +38,11 @@ export const modelValidateCommand = new Command()
   .action(
     async function (options: AnyOptions, modelIdOrName?: string) {
       const ctx = createContext(options as GlobalOptions, "model-validate");
-      const repoDir = options.repoDir ?? ".";
-      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const { repoContext } = await requireInitializedRepo({
+        repoDir: options.repoDir ?? ".",
+        outputMode: ctx.outputMode,
+      });
+      const definitionRepo = repoContext.definitionRepo;
       const validationService = new DefaultModelValidationService();
 
       // If no argument provided, validate all models

@@ -6,8 +6,7 @@ import {
   type WorkflowRunData,
 } from "../../presentation/output/workflow_run_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -63,9 +62,12 @@ export const workflowHistoryGetCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "workflow-history-get");
     ctx.logger.debug`Getting latest run for workflow: ${workflowIdOrName}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const workflowRepo = new YamlWorkflowRepository(repoDir);
-    const runRepo = new YamlWorkflowRunRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const workflowRepo = repoContext.workflowRepo;
+    const runRepo = repoContext.workflowRunRepo;
 
     // Look up the workflow first
     const workflow = await workflowRepo.findByName(workflowIdOrName) ??

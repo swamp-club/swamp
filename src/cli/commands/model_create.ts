@@ -4,9 +4,9 @@ import {
   renderModelCreate,
 } from "../../presentation/output/model_create_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
-import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
@@ -44,9 +44,11 @@ export const modelCreateCommand = new Command()
       );
     }
 
-    // Create the repository context (with indexing enabled)
-    const repoDir = options.repoDir ?? ".";
-    const repoContext = createRepositoryContext({ repoDir });
+    // Validate repo initialization and create context
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
     const definitionRepo = repoContext.definitionRepo;
 
     // Check if name already exists (globally unique across all types)

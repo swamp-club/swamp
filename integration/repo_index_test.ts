@@ -11,6 +11,7 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { existsSync } from "@std/fs";
 import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
@@ -37,6 +38,7 @@ async function setupRepoDir(dir: string): Promise<void> {
     ".swamp/definitions",
     ".swamp/data",
     ".swamp/outputs",
+    ".swamp/logs",
     // Logical view directories
     "models",
     "workflows",
@@ -44,6 +46,16 @@ async function setupRepoDir(dir: string): Promise<void> {
   for (const subdir of subdirs) {
     await ensureDir(join(dir, subdir));
   }
+
+  // Create the .swamp.yaml marker file for CLI commands
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(dir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 // ============================================================================

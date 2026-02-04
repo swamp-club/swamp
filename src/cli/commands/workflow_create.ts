@@ -4,11 +4,11 @@ import {
   type WorkflowCreateData,
 } from "../../presentation/output/workflow_create_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
-import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -21,8 +21,10 @@ export const workflowCreateCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "workflow-create");
     ctx.logger.debug`Creating workflow: name=${name}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const repoContext = createRepositoryContext({ repoDir });
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
     const repo = repoContext.workflowRepo;
 
     // Check if name already exists

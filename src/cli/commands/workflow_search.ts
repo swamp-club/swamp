@@ -9,8 +9,9 @@ import {
   type WorkflowGetData,
 } from "../../presentation/output/workflow_get_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import type { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -90,8 +91,11 @@ export const workflowSearchCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "workflow-search");
     ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const repo = new YamlWorkflowRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const repo = repoContext.workflowRepo;
 
     const allWorkflows = await repo.findAll();
     const searchItems = allWorkflows.map(toSearchItem);

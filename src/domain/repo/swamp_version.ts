@@ -1,3 +1,5 @@
+import { UserError } from "../errors.ts";
+
 /**
  * SwampVersion is a value object representing a semantic version string.
  *
@@ -20,13 +22,16 @@ export class SwampVersion {
   static create(version: string): SwampVersion {
     const trimmed = version.trim();
     if (trimmed.length === 0) {
-      throw new Error("Version cannot be empty");
+      throw new UserError("Version cannot be empty");
     }
 
-    const match = trimmed.match(/^(\d+)\.(\d+)\.(\d+)$/);
+    // Match calver format: YYYYMMDD.HHMMSS.patch with optional suffix
+    // Also matches dev format: 0.0.0-dev
+    // Examples: "20260204.202125.0", "20260204.202125.0-sha.abc123", "0.0.0-dev"
+    const match = trimmed.match(/^(\d+)\.(\d+)\.(\d+)(?:-[\w.]+)?$/);
     if (!match) {
-      throw new Error(
-        `Invalid version format: ${version}. Expected format: major.minor.patch (e.g., "1.0.0")`,
+      throw new UserError(
+        `Invalid version format: ${version}. Expected format: YYYYMMDD.HHMMSS.patch (e.g., "20260101.120000.0")`,
       );
     }
 

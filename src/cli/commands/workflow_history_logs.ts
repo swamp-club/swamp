@@ -1,7 +1,6 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -60,8 +59,12 @@ export const workflowHistoryLogsCommand = new Command()
     );
     ctx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const runRepo = new YamlWorkflowRunRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const runRepo = repoContext.workflowRunRepo;
+    const workflowRepo = repoContext.workflowRepo;
 
     let run: WorkflowRun | undefined;
 
@@ -86,7 +89,6 @@ export const workflowHistoryLogsCommand = new Command()
 
     // If not found as run ID, try as workflow name and get latest run
     if (!run) {
-      const workflowRepo = new YamlWorkflowRepository(repoDir);
       const workflow = await workflowRepo.findByName(runIdOrWorkflow) ??
         await workflowRepo.findById(createWorkflowId(runIdOrWorkflow));
 

@@ -5,10 +5,9 @@ import {
   type VaultPutData,
 } from "../../presentation/output/vault_put_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { createVaultSecretUpdated } from "../../domain/events/types.ts";
 
 /**
@@ -85,7 +84,10 @@ export const vaultPutCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "vault-put");
     ctx.logger.debug`Storing secret in vault: ${vaultName}`;
 
-    const repoDir = options.repoDir ?? ".";
+    const { repoDir, repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
 
     // Parse KEY=VALUE argument
     const parsed = parseKeyValue(keyValue);
@@ -99,7 +101,7 @@ export const vaultPutCommand = new Command()
     ctx.logger.debug`Parsed key: ${key}`;
 
     // Verify vault exists
-    const repo = new YamlVaultConfigRepository(repoDir);
+    const repo = repoContext.vaultConfigRepo;
     const vaultConfig = await repo.findByName(vaultName);
     if (!vaultConfig) {
       // List available vaults for helpful error message
@@ -141,7 +143,6 @@ export const vaultPutCommand = new Command()
     ctx.logger.debug`Secret stored successfully`;
 
     // Emit event to update the logical view symlinks
-    const repoContext = createRepositoryContext({ repoDir });
     const event = createVaultSecretUpdated(
       vaultConfig.id,
       vaultConfig.type,

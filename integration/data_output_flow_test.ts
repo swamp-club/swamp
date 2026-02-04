@@ -12,6 +12,9 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
@@ -23,6 +26,32 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+}
+
+/**
+ * Initializes a test repository with the required marker file and directory structure.
+ */
+async function initializeTestRepo(repoDir: string): Promise<void> {
+  // Create the .swamp directory structure
+  const subdirs = [
+    ".swamp/definitions",
+    ".swamp/outputs",
+    ".swamp/data",
+    ".swamp/logs",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(repoDir, subdir));
+  }
+
+  // Create the .swamp.yaml marker file
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 async function runCliCommand(
@@ -50,6 +79,9 @@ async function runCliCommand(
 
 Deno.test("Integration: full flow - create definition, run method, verify output and data", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // 1. Create a model definition
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
@@ -180,6 +212,9 @@ Deno.test("Integration: full flow - create definition, run method, verify output
 
 Deno.test("Integration: data commands work with model data artifacts", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // 1. Create and run a model to produce data
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
@@ -309,6 +344,9 @@ Deno.test("Integration: data commands work with model data artifacts", async () 
 
 Deno.test("Integration: output search with partial ID matching", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // Create and run a model
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
@@ -378,6 +416,9 @@ Deno.test("Integration: output search with partial ID matching", async () => {
 
 Deno.test("Integration: output data with field extraction", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // Create and run a model
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
@@ -451,6 +492,9 @@ Deno.test("Integration: output data with field extraction", async () => {
 
 Deno.test("Integration: multiple method runs create separate outputs", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // Create a model
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
@@ -525,6 +569,9 @@ Deno.test("Integration: multiple method runs create separate outputs", async () 
 
 Deno.test("Integration: data versioning across multiple runs", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // Create a model
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     let definition = Definition.create({
@@ -687,6 +734,9 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
 
 Deno.test("Integration: output get fails for non-existent output", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     const result = await runCliCommand(
       [
         "model",
@@ -711,6 +761,9 @@ Deno.test("Integration: output get fails for non-existent output", async () => {
 
 Deno.test("Integration: data get fails for non-existent model", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     const result = await runCliCommand(
       [
         "data",
@@ -730,6 +783,9 @@ Deno.test("Integration: data get fails for non-existent model", async () => {
 
 Deno.test("Integration: output data fails for non-existent field", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // Create and run a model
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({

@@ -10,7 +10,7 @@ import {
   type VaultSearchItem,
 } from "../../presentation/output/vault_search_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
@@ -36,9 +36,12 @@ export const vaultEditCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "vault-edit");
     ctx.logger.debug`Editing vault: ${vaultNameOrId ?? "(interactive)"}`;
 
-    const repoDir = options.repoDir ?? ".";
+    const { repoDir, repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
     const vaultType = options.type as string | undefined;
-    const repo = new YamlVaultConfigRepository(repoDir);
+    const repo = repoContext.vaultConfigRepo;
     const editorService = new EditorService();
 
     let config: VaultConfig | null = null;

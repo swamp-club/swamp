@@ -11,6 +11,7 @@
 import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
@@ -28,6 +29,30 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "definitions"));
   await ensureDir(join(dir, ".swamp", "data"));
+}
+
+/**
+ * Initializes a test repository with marker file for CLI commands.
+ */
+async function initializeTestRepo(repoDir: string): Promise<void> {
+  const subdirs = [
+    ".swamp/definitions",
+    ".swamp/outputs",
+    ".swamp/data",
+    ".swamp/logs",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(repoDir, subdir));
+  }
+
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 async function runCliCommand(
@@ -477,6 +502,9 @@ Deno.test("Definition Lifecycle: CEL expression with arithmetic", async () => {
 
 Deno.test("CLI: model method run creates Data with correct metadata", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // Create a model definition using repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("swamp/echo");
@@ -525,6 +553,9 @@ Deno.test("CLI: model method run creates Data with correct metadata", async () =
 
 Deno.test("CLI: model method run creates versioned Data on subsequent calls", async () => {
   await withTempDir(async (repoDir) => {
+    // Initialize the test repo with marker file
+    await initializeTestRepo(repoDir);
+
     // Create a model definition using repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ModelType.create("swamp/echo");

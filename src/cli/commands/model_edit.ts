@@ -10,12 +10,13 @@ import {
   renderModelSearch,
 } from "../../presentation/output/model_search_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import {
   Definition,
   type DefinitionData,
 } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -47,8 +48,11 @@ export const modelEditCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "model-edit");
     ctx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const definitionRepo = repoContext.definitionRepo;
     const editorService = new EditorService();
 
     // Look up the model definition

@@ -10,6 +10,7 @@
 import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir, existsSync } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
@@ -29,6 +30,21 @@ async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "definitions"));
   await ensureDir(join(dir, ".swamp", "vault"));
   await ensureDir(join(dir, ".swamp", "secrets"));
+  await ensureDir(join(dir, ".swamp", "data"));
+  await ensureDir(join(dir, ".swamp", "outputs"));
+  await ensureDir(join(dir, ".swamp", "logs"));
+  await ensureDir(join(dir, ".swamp", "workflows"));
+  await ensureDir(join(dir, ".swamp", "workflow-runs"));
+
+  // Create the .swamp.yaml marker file for CLI commands
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(dir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 async function runCliCommand(

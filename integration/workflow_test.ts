@@ -3,6 +3,9 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -20,6 +23,31 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+}
+
+async function initializeTestRepo(repoDir: string): Promise<void> {
+  const subdirs = [
+    ".swamp/definitions",
+    ".swamp/outputs",
+    ".swamp/data",
+    ".swamp/logs",
+    ".swamp/workflows",
+    ".swamp/workflow-runs",
+    ".swamp/vault",
+    ".swamp/secrets",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(repoDir, subdir));
+  }
+
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 async function runCliCommand(
@@ -79,6 +107,7 @@ function createTestWorkflow(name: string): Workflow {
 
 Deno.test("CLI: workflow create creates new workflow file", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand(
       [
         "workflow",
@@ -108,6 +137,7 @@ Deno.test("CLI: workflow create creates new workflow file", async () => {
 
 Deno.test("CLI: workflow create creates logical view symlink", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand(
       [
         "workflow",
@@ -160,6 +190,7 @@ Deno.test("CLI: workflow create creates logical view symlink", async () => {
 
 Deno.test("CLI: workflow create rejects duplicate names", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create first workflow
     await runCliCommand(
       ["workflow", "create", "duplicate-name", "--repo-dir", repoDir],
@@ -181,6 +212,7 @@ Deno.test("CLI: workflow create rejects duplicate names", async () => {
 
 Deno.test("CLI: workflow get shows workflow details", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = createTestWorkflow("get-test");
     await repo.save(workflow);
@@ -215,6 +247,7 @@ Deno.test("CLI: workflow get shows workflow details", async () => {
 
 Deno.test("CLI: workflow get can look up by UUID", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = createTestWorkflow("uuid-lookup-test");
     await repo.save(workflow);
@@ -245,6 +278,7 @@ Deno.test("CLI: workflow get can look up by UUID", async () => {
 
 Deno.test("CLI: workflow get errors for non-existent workflow", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand(
       [
         "workflow",
@@ -266,6 +300,7 @@ Deno.test("CLI: workflow get errors for non-existent workflow", async () => {
 
 Deno.test("CLI: workflow validate passes for valid workflow", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = createTestWorkflow("valid-workflow");
     await repo.save(workflow);
@@ -300,6 +335,7 @@ Deno.test("CLI: workflow validate passes for valid workflow", async () => {
 
 Deno.test("CLI: workflow validate with no args validates all workflows", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow1 = createTestWorkflow("workflow-1");
     const workflow2 = createTestWorkflow("workflow-2");
@@ -333,6 +369,7 @@ Deno.test("CLI: workflow validate with no args validates all workflows", async (
 
 Deno.test("CLI: workflow validate errors when no workflows found", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand(
       [
         "workflow",
@@ -353,6 +390,7 @@ Deno.test("CLI: workflow validate errors when no workflows found", async () => {
 
 Deno.test("CLI: workflow search returns all workflows in JSON mode", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow1 = createTestWorkflow("search-1");
     const workflow2 = createTestWorkflow("search-2");
@@ -387,6 +425,7 @@ Deno.test("CLI: workflow search returns all workflows in JSON mode", async () =>
 
 Deno.test("CLI: workflow search filters by query with multiple matches in JSON mode", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow1 = createTestWorkflow("deploy-staging");
     const workflow2 = createTestWorkflow("deploy-production");
@@ -423,6 +462,7 @@ Deno.test("CLI: workflow search filters by query with multiple matches in JSON m
 
 Deno.test("CLI: workflow search with single match returns full details in JSON mode", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow1 = createTestWorkflow("alpha-workflow");
     const workflow2 = createTestWorkflow("beta-workflow");
@@ -461,6 +501,7 @@ Deno.test("CLI: workflow search with single match returns full details in JSON m
 
 Deno.test("CLI: workflow run executes simple workflow", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = Workflow.create({
       name: "simple-run",
@@ -507,6 +548,7 @@ Deno.test("CLI: workflow run executes simple workflow", async () => {
 
 Deno.test("CLI: workflow run executes workflow with dependencies", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = createTestWorkflow("dep-run");
     await repo.save(workflow);
@@ -538,6 +580,7 @@ Deno.test("CLI: workflow run executes workflow with dependencies", async () => {
 
 Deno.test("CLI: workflow run fails when step fails", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = Workflow.create({
       name: "failing-workflow",
@@ -582,6 +625,7 @@ Deno.test("CLI: workflow run fails when step fails", async () => {
 
 Deno.test("CLI: workflow run skips job when condition not met", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = Workflow.create({
       name: "conditional-skip",
@@ -634,6 +678,7 @@ Deno.test("CLI: workflow run skips job when condition not met", async () => {
 
 Deno.test("CLI: workflow run errors for non-existent workflow", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand(
       [
         "workflow",
@@ -672,6 +717,7 @@ Deno.test("CLI: workflow shows help", async () => {
 
 Deno.test("CLI: workflow run fails when model has invalid expression syntax", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model input with invalid expression (missing model. prefix)
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
@@ -727,6 +773,7 @@ Deno.test("CLI: workflow run fails when model has invalid expression syntax", as
 
 Deno.test("CLI: workflow run fails when model has malformed expression", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model input with malformed expression (missing $ prefix)
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
@@ -782,6 +829,7 @@ Deno.test("CLI: workflow run fails when model has malformed expression", async (
 
 Deno.test("CLI: workflow run succeeds with valid model expressions", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create two model inputs - one will reference the other
     const definitionRepo = new YamlDefinitionRepository(repoDir);
 
@@ -858,6 +906,7 @@ Deno.test("CLI: workflow run succeeds with valid model expressions", async () =>
 
 Deno.test("CLI: workflow run succeeds with self reference expressions", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model that references its own name
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
@@ -915,6 +964,7 @@ Deno.test("CLI: workflow run succeeds with self reference expressions", async ()
 
 Deno.test("CLI: model delete blocked when referenced by workflow, succeeds after workflow deleted", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Step 1: Create a model using CLI
     const createModelResult = await runCliCommand(
       [
@@ -1036,6 +1086,7 @@ Deno.test("CLI: model delete blocked when referenced by workflow, succeeds after
 
 Deno.test("CLI: model delete blocked when referenced by workflow using model ID", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
@@ -1093,6 +1144,7 @@ Deno.test("CLI: model delete blocked when referenced by workflow using model ID"
 
 Deno.test("CLI: model delete succeeds when not referenced by any workflow", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model
     const createModelResult = await runCliCommand(
       [
@@ -1154,6 +1206,7 @@ Deno.test("CLI: model delete succeeds when not referenced by any workflow", asyn
 
 Deno.test("CLI: model delete cleans up empty type directories", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model using CLI
     const createResult = await runCliCommand(
       [
@@ -1233,6 +1286,7 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
 
 Deno.test("CLI: workflow delete command removes workflow and all runs", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a workflow
     const workflowRepo = new YamlWorkflowRepository(repoDir);
     const workflow = Workflow.create({
@@ -1312,6 +1366,7 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
 
 Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model with an env variable expression
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
@@ -1369,6 +1424,7 @@ Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
 
 Deno.test("CLI: workflow run evaluates inline env expression with surrounding text", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model with an inline env expression (not the entire value)
     const definitionRepo = new YamlDefinitionRepository(repoDir);
 
@@ -1428,6 +1484,7 @@ Deno.test("CLI: workflow run evaluates inline env expression with surrounding te
 
 Deno.test("CLI: workflow run resolves vault expressions in model inputs", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // 1. Create a local_encryption vault via CLI
     const vaultCreateResult = await runCliCommand(
       [
@@ -1525,6 +1582,7 @@ Deno.test("CLI: workflow run resolves vault expressions in model inputs", async 
 
 Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model input
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
@@ -1611,6 +1669,7 @@ Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
 
 Deno.test("CLI: workflow run persists data artifacts in workflow run record", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model input
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({

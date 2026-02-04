@@ -4,13 +4,13 @@ import {
   type VaultCreateData,
 } from "../../presentation/output/vault_create_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { getVaultType } from "../../domain/vaults/vault_types.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createVaultConfigId,
   VaultConfig,
 } from "../../domain/vaults/vault_config.ts";
-import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -75,7 +75,10 @@ export const vaultCreateCommand = new Command()
       vaultNameArg?: string,
     ) {
       const ctx = createContext(options as GlobalOptions, "vault-create");
-      const repoDir = options.repoDir ?? ".";
+      const { repoDir, repoContext } = await requireInitializedRepo({
+        repoDir: options.repoDir ?? ".",
+        outputMode: ctx.outputMode,
+      });
 
       // Get vault name - prompt if not provided
       let vaultName = vaultNameArg;
@@ -109,8 +112,6 @@ export const vaultCreateCommand = new Command()
         );
       }
 
-      // Create repository context for event-driven indexing
-      const repoContext = createRepositoryContext({ repoDir });
       const repo = repoContext.vaultConfigRepo;
 
       const existingVault = await repo.findByName(vaultName);

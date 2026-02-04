@@ -3,6 +3,9 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -20,6 +23,29 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+}
+
+async function initializeTestRepo(repoDir: string): Promise<void> {
+  const subdirs = [
+    ".swamp/definitions",
+    ".swamp/outputs",
+    ".swamp/data",
+    ".swamp/logs",
+    ".swamp/workflows",
+    ".swamp/workflow-runs",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(repoDir, subdir));
+  }
+
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 async function runCliCommand(
@@ -43,6 +69,8 @@ async function runCliCommand(
 
 Deno.test("CLI: keeb/shell model executes simple shell commands", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
     // Create a shell model that echoes a message
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
@@ -83,6 +111,8 @@ Deno.test("CLI: keeb/shell model executes simple shell commands", async () => {
 
 Deno.test("CLI: keeb/shell model handles failing commands", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
     // Create a shell model that runs a failing command
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
@@ -123,6 +153,8 @@ Deno.test("CLI: keeb/shell model handles failing commands", async () => {
 
 Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
     const definitionRepo = new YamlDefinitionRepository(repoDir);
 
     // Create first model that creates a file
@@ -212,6 +244,8 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
 
 Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
     const definitionRepo = new YamlDefinitionRepository(repoDir);
 
     // Create source model
@@ -291,6 +325,8 @@ Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
 
 Deno.test("CLI: keeb/shell model with self-reference expressions", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
     const definitionRepo = new YamlDefinitionRepository(repoDir);
 
     // Create model that references its own name

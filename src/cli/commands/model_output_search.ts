@@ -10,8 +10,9 @@ import {
 } from "../../presentation/output/model_output_get_output.tsx";
 import type { OutputMode } from "../../presentation/output/output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 
@@ -85,12 +86,10 @@ export function filterOutputs(
  */
 async function displayModelOutputGet(
   item: ModelOutputSearchItem,
-  repoDir: string,
+  definitionRepo: YamlDefinitionRepository,
+  outputRepo: YamlOutputRepository,
   outputMode: OutputMode,
 ): Promise<void> {
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const outputRepo = new YamlOutputRepository(repoDir);
-
   // Look up the full output
   const allOutputs = await outputRepo.findAllGlobal();
   const result = allOutputs.find((r) => r.output.id === item.id);
@@ -136,9 +135,12 @@ export const modelOutputSearchCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "model-output-search");
     ctx.logger.debug`Searching outputs with query: ${query ?? "(none)"}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const outputRepo = new YamlOutputRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const definitionRepo = repoContext.definitionRepo;
+    const outputRepo = repoContext.outputRepo;
 
     // Get all outputs from repository
     const allResults = await outputRepo.findAllGlobal();
@@ -167,7 +169,12 @@ export const modelOutputSearchCommand = new Command()
       if (selected) {
         ctx.logger.debug`Selected output: ${selected.id}`;
         // Display the full output details
-        await displayModelOutputGet(selected, repoDir, ctx.outputMode);
+        await displayModelOutputGet(
+          selected,
+          definitionRepo,
+          outputRepo,
+          ctx.outputMode,
+        );
       } else {
         ctx.logger.debug`Search cancelled`;
       }

@@ -3,6 +3,9 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
@@ -14,6 +17,27 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+}
+
+async function initializeTestRepo(repoDir: string): Promise<void> {
+  const subdirs = [
+    ".swamp/definitions",
+    ".swamp/outputs",
+    ".swamp/data",
+    ".swamp/logs",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(repoDir, subdir));
+  }
+
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 async function runCliCommand(
@@ -37,6 +61,7 @@ async function runCliCommand(
 
 Deno.test("CLI: model validate passes for valid echo model definition", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
@@ -81,6 +106,7 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
 
 Deno.test("CLI: model validate passes for valid echo model definition", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
@@ -120,6 +146,7 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
 
 Deno.test("CLI: model validate fails for invalid definition attributes", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
@@ -168,6 +195,7 @@ Deno.test("CLI: model validate fails for invalid definition attributes", async (
 
 Deno.test("CLI: model validate can look up by UUID", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
@@ -206,6 +234,8 @@ Deno.test("CLI: model validate can look up by UUID", async () => {
 
 Deno.test("CLI: model validate errors for non-existent model", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
     // Run the validate command for a model that doesn't exist
     const result = await runCliCommand(
       [
@@ -230,6 +260,7 @@ Deno.test("CLI: model validate errors for non-existent model", async () => {
 
 Deno.test("CLI: model validate auto-detects non-TTY and uses JSON output", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
@@ -270,6 +301,7 @@ Deno.test("CLI: model validate auto-detects non-TTY and uses JSON output", async
 
 Deno.test("CLI: model validate with no args validates all models", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
@@ -321,6 +353,7 @@ Deno.test("CLI: model validate with no args validates all models", async () => {
 
 Deno.test("CLI: model validate with no args exits 1 when any model fails", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
@@ -365,6 +398,8 @@ Deno.test("CLI: model validate with no args exits 1 when any model fails", async
 
 Deno.test("CLI: model validate with no args errors when no models found", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
     // Run the validate command on an empty repo
     const result = await runCliCommand(
       [
@@ -388,6 +423,7 @@ Deno.test("CLI: model validate with no args errors when no models found", async 
 
 Deno.test("CLI: model validate with no args auto-detects non-TTY and uses JSON output", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 

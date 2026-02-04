@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { SwampVersion } from "./swamp_version.ts";
+import { UserError } from "../errors.ts";
 
 Deno.test("SwampVersion.create parses valid version", () => {
   const version = SwampVersion.create("1.2.3");
@@ -29,7 +30,7 @@ Deno.test("SwampVersion.create trims whitespace", () => {
 Deno.test("SwampVersion.create throws on empty string", () => {
   assertThrows(
     () => SwampVersion.create(""),
-    Error,
+    UserError,
     "Version cannot be empty",
   );
 });
@@ -37,7 +38,7 @@ Deno.test("SwampVersion.create throws on empty string", () => {
 Deno.test("SwampVersion.create throws on invalid format - no dots", () => {
   assertThrows(
     () => SwampVersion.create("100"),
-    Error,
+    UserError,
     "Invalid version format",
   );
 });
@@ -45,7 +46,7 @@ Deno.test("SwampVersion.create throws on invalid format - no dots", () => {
 Deno.test("SwampVersion.create throws on invalid format - two parts", () => {
   assertThrows(
     () => SwampVersion.create("1.0"),
-    Error,
+    UserError,
     "Invalid version format",
   );
 });
@@ -53,15 +54,38 @@ Deno.test("SwampVersion.create throws on invalid format - two parts", () => {
 Deno.test("SwampVersion.create throws on invalid format - four parts", () => {
   assertThrows(
     () => SwampVersion.create("1.0.0.0"),
-    Error,
+    UserError,
     "Invalid version format",
   );
 });
 
-Deno.test("SwampVersion.create throws on invalid format - letters", () => {
+Deno.test("SwampVersion.create accepts pre-release suffix", () => {
+  // Pre-release suffixes like -beta, -dev are now allowed
+  const v = SwampVersion.create("1.0.0-beta");
+  assertEquals(v.major, 1);
+  assertEquals(v.minor, 0);
+  assertEquals(v.patch, 0);
+});
+
+Deno.test("SwampVersion.create accepts calver format with sha suffix", () => {
+  // Calver format: YYYYMMDD.HHMMSS.patch-sha.commit
+  const v = SwampVersion.create("20260204.165928.0-sha.06db816c");
+  assertEquals(v.major, 20260204);
+  assertEquals(v.minor, 165928);
+  assertEquals(v.patch, 0);
+});
+
+Deno.test("SwampVersion.create accepts dev version", () => {
+  const v = SwampVersion.create("0.0.0-dev");
+  assertEquals(v.major, 0);
+  assertEquals(v.minor, 0);
+  assertEquals(v.patch, 0);
+});
+
+Deno.test("SwampVersion.create throws on invalid format - letters only", () => {
   assertThrows(
-    () => SwampVersion.create("1.0.0-beta"),
-    Error,
+    () => SwampVersion.create("abc"),
+    UserError,
     "Invalid version format",
   );
 });

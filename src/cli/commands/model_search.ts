@@ -10,8 +10,9 @@ import {
 } from "../../presentation/output/model_get_output.tsx";
 import type { OutputMode } from "../../presentation/output/output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -54,11 +55,9 @@ export function filterModels(
  */
 async function displayModelGet(
   item: ModelSearchItem,
-  repoDir: string,
+  definitionRepo: YamlDefinitionRepository,
   outputMode: OutputMode,
 ): Promise<void> {
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
-
   // Look up the full definition
   const definitionId = createDefinitionId(item.id);
   const modelType = modelRegistry.types().find(
@@ -95,8 +94,11 @@ export const modelSearchCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "model-search");
     ctx.logger.debug`Searching models with query: ${query ?? "(none)"}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const definitionRepo = repoContext.definitionRepo;
 
     // Get all models from repository
     const allResults = await definitionRepo.findAllGlobal();
@@ -108,7 +110,11 @@ export const modelSearchCommand = new Command()
 
       // If query matches exactly one model, show full details (same as interactive selection)
       if (query && filteredModels.length === 1) {
-        await displayModelGet(filteredModels[0], repoDir, ctx.outputMode);
+        await displayModelGet(
+          filteredModels[0],
+          definitionRepo,
+          ctx.outputMode,
+        );
       } else {
         const data: ModelSearchData = {
           query: query ?? "",
@@ -128,7 +134,7 @@ export const modelSearchCommand = new Command()
       if (selected) {
         ctx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
         // Display the full model details
-        await displayModelGet(selected, repoDir, ctx.outputMode);
+        await displayModelGet(selected, definitionRepo, ctx.outputMode);
       } else {
         ctx.logger.debug`Search cancelled`;
       }

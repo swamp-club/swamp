@@ -4,7 +4,7 @@ import {
   type VaultGetData,
 } from "../../presentation/output/vault_get_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -20,9 +20,12 @@ export const vaultGetCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "vault-get");
     ctx.logger.debug`Getting vault: ${vaultNameOrId}`;
 
-    const repoDir = options.repoDir ?? ".";
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
     const vaultType = options.type as string | undefined;
-    const repo = new YamlVaultConfigRepository(repoDir);
+    const repo = repoContext.vaultConfigRepo;
 
     // Look up the vault
     ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;

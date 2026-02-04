@@ -5,8 +5,7 @@ import {
   renderDataVersions,
 } from "../../presentation/output/data_versions_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -29,9 +28,12 @@ export const dataVersionsCommand = new Command()
       ctx.logger
         .debug`Listing versions: model=${modelIdOrName}, name=${dataName}`;
 
-      const repoDir = options.repoDir ?? ".";
-      const definitionRepo = new YamlDefinitionRepository(repoDir);
-      const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+      const { repoContext } = await requireInitializedRepo({
+        repoDir: options.repoDir ?? ".",
+        outputMode: ctx.outputMode,
+      });
+      const definitionRepo = repoContext.definitionRepo;
+      const dataRepo = repoContext.unifiedDataRepo;
 
       // Look up the model definition
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;

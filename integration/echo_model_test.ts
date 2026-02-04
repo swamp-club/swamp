@@ -9,8 +9,8 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { existsSync } from "@std/fs";
-import { parse as parseYaml } from "@std/yaml";
+import { ensureDir, existsSync } from "@std/fs";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
@@ -27,6 +27,27 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+}
+
+async function initializeTestRepo(repoDir: string): Promise<void> {
+  const subdirs = [
+    ".swamp/definitions",
+    ".swamp/outputs",
+    ".swamp/data",
+    ".swamp/logs",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(repoDir, subdir));
+  }
+
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 /**
@@ -193,6 +214,7 @@ async function runCliCommand(
 
 Deno.test("CLI: model create command creates definition file", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Run the CLI command
     const result = await runCliCommand(
       [
@@ -227,6 +249,7 @@ Deno.test("CLI: model create command creates definition file", async () => {
 
 Deno.test("CLI: model create command rejects duplicate names", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create first definition
     const result1 = await runCliCommand(
       [
@@ -262,6 +285,7 @@ Deno.test("CLI: model create command rejects duplicate names", async () => {
 
 Deno.test("CLI: model create command rejects unknown model type", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand(
       [
         "model",
@@ -283,6 +307,7 @@ Deno.test("CLI: model create command rejects unknown model type", async () => {
 
 Deno.test("CLI: model method run creates data", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // First create a model
     const createResult = await runCliCommand(
       [
@@ -345,6 +370,7 @@ Deno.test("CLI: model method run creates data", async () => {
 
 Deno.test("CLI: model method run by model ID", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model and set up its attributes
     const createResult = await runCliCommand(
       [
@@ -393,6 +419,7 @@ Deno.test("CLI: model method run by model ID", async () => {
 
 Deno.test("CLI: model method run fails for unknown model", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand(
       [
         "model",
@@ -413,6 +440,7 @@ Deno.test("CLI: model method run fails for unknown model", async () => {
 
 Deno.test("CLI: model method run fails for unknown method", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model
     const createResult = await runCliCommand(
       [
@@ -450,6 +478,7 @@ Deno.test("CLI: model method run fails for unknown method", async () => {
 
 Deno.test("CLI: model method run fails for missing required attributes", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a model without setting the required 'message' attribute
     const createResult = await runCliCommand(
       [
@@ -492,6 +521,7 @@ Deno.test("CLI: model method run fails for missing required attributes", async (
 
 Deno.test("CLI: model search returns all models in JSON mode", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create two models
     await runCliCommand(
       [
@@ -537,6 +567,7 @@ Deno.test("CLI: model search returns all models in JSON mode", async () => {
 
 Deno.test("CLI: model search with multiple matches returns list in JSON mode", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create models with similar names
     await runCliCommand(
       [
@@ -579,6 +610,7 @@ Deno.test("CLI: model search with multiple matches returns list in JSON mode", a
 
 Deno.test("CLI: model search with single match returns full details in JSON mode", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create two models with different names
     const createResult = await runCliCommand(
       [

@@ -1,8 +1,6 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   isPartialId,
@@ -34,10 +32,13 @@ export const modelOutputDataCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "model-output-data");
     ctx.logger.debug`Getting data for output: ${outputIdArg}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const outputRepo = new YamlOutputRepository(repoDir);
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const outputRepo = repoContext.outputRepo;
+    const definitionRepo = repoContext.definitionRepo;
+    const dataRepo = repoContext.unifiedDataRepo;
 
     // Find the output using partial ID matching
     const allOutputs = await outputRepo.findAllGlobal();

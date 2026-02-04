@@ -13,8 +13,8 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { existsSync } from "@std/fs";
-import { parse as parseYaml } from "@std/yaml";
+import { ensureDir, existsSync } from "@std/fs";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-vault-integration-" });
@@ -23,6 +23,31 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+}
+
+async function initializeTestRepo(repoDir: string): Promise<void> {
+  const subdirs = [
+    ".swamp/definitions",
+    ".swamp/outputs",
+    ".swamp/data",
+    ".swamp/logs",
+    ".swamp/vault",
+    ".swamp/secrets",
+    ".swamp/workflows",
+    ".swamp/workflow-runs",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(repoDir, subdir));
+  }
+
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 /**
@@ -58,6 +83,7 @@ async function runCliCommand(
 
 Deno.test("CLI: vault create command creates vault config file", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "create",
@@ -110,6 +136,7 @@ Deno.test("CLI: vault create command creates vault config file", async () => {
 
 Deno.test("CLI: vault create command creates local_encryption vault", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "create",
@@ -140,6 +167,7 @@ Deno.test("CLI: vault create command creates local_encryption vault", async () =
 
 Deno.test("CLI: vault create command rejects duplicate vault names", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create first vault
     const result1 = await runCliCommand([
       "vault",
@@ -172,6 +200,7 @@ Deno.test("CLI: vault create command rejects duplicate vault names", async () =>
 
 Deno.test("CLI: vault create command rejects duplicate names across types", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create vault with aws type
     const result1 = await runCliCommand([
       "vault",
@@ -208,6 +237,7 @@ Deno.test("CLI: vault create command rejects duplicate names across types", asyn
 
 Deno.test("CLI: vault create command rejects unknown vault type", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "create",
@@ -228,6 +258,7 @@ Deno.test("CLI: vault create command rejects unknown vault type", async () => {
 
 Deno.test("CLI: vault create command rejects invalid vault names", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Name starting with number
     const result1 = await runCliCommand([
       "vault",
@@ -301,6 +332,7 @@ Deno.test("CLI: vault type search filters by query", async () => {
 
 Deno.test("CLI: vault create creates logical view symlink", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "create",
@@ -351,6 +383,7 @@ Deno.test("CLI: vault create creates logical view symlink", async () => {
 
 Deno.test("CLI: vault search returns empty results for empty repository", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "search",
@@ -374,6 +407,7 @@ Deno.test("CLI: vault search returns empty results for empty repository", async 
 
 Deno.test("CLI: vault search returns all vaults in repository", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create two vaults
     await runCliCommand([
       "vault",
@@ -419,6 +453,7 @@ Deno.test("CLI: vault search returns all vaults in repository", async () => {
 
 Deno.test("CLI: vault search filters by query", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create two vaults
     await runCliCommand([
       "vault",
@@ -463,6 +498,7 @@ Deno.test("CLI: vault search filters by query", async () => {
 
 Deno.test("CLI: vault get shows vault details by name", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",
@@ -502,6 +538,7 @@ Deno.test("CLI: vault get shows vault details by name", async () => {
 
 Deno.test("CLI: vault get shows vault details by ID", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault and get its ID
     const createResult = await runCliCommand([
       "vault",
@@ -538,6 +575,7 @@ Deno.test("CLI: vault get shows vault details by ID", async () => {
 
 Deno.test("CLI: vault get fails for non-existent vault", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "get",
@@ -556,6 +594,7 @@ Deno.test("CLI: vault get fails for non-existent vault", async () => {
 
 Deno.test("CLI: vault get with --type narrows search", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",
@@ -604,6 +643,7 @@ Deno.test("CLI: vault get with --type narrows search", async () => {
 
 Deno.test("CLI: vault edit requires vault name in non-interactive mode", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "edit",
@@ -625,6 +665,7 @@ Deno.test("CLI: vault edit requires vault name in non-interactive mode", async (
 
 Deno.test("CLI: vault edit fails for non-existent vault", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "edit",
@@ -643,6 +684,7 @@ Deno.test("CLI: vault edit fails for non-existent vault", async () => {
 
 Deno.test("CLI: vault edit with --type narrows search", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",
@@ -678,6 +720,7 @@ Deno.test("CLI: vault edit with --type narrows search", async () => {
 
 Deno.test("CLI: vault configs are loaded from .swamp/vault/ directory", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault using the CLI (stores in .swamp/vault/)
     const createResult = await runCliCommand([
       "vault",
@@ -732,6 +775,7 @@ Deno.test("CLI: vault configs are loaded from .swamp/vault/ directory", async ()
 
 Deno.test("CLI: vault expression resolves secrets from created vault", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // 1. Create a local_encryption vault via CLI
     const vaultCreateResult = await runCliCommand([
       "vault",
@@ -850,6 +894,7 @@ attributes:
 
 Deno.test("CLI: vault put stores secret in vault", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a local_encryption vault
     const createResult = await runCliCommand([
       "vault",
@@ -904,6 +949,7 @@ Deno.test("CLI: vault put stores secret in vault", async () => {
 
 Deno.test("CLI: vault put handles values with equals signs", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",
@@ -947,6 +993,7 @@ Deno.test("CLI: vault put handles values with equals signs", async () => {
 
 Deno.test("CLI: vault put fails for non-existent vault", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "put",
@@ -966,6 +1013,7 @@ Deno.test("CLI: vault put fails for non-existent vault", async () => {
 
 Deno.test("CLI: vault put fails for invalid KEY=VALUE format", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",
@@ -997,6 +1045,7 @@ Deno.test("CLI: vault put fails for invalid KEY=VALUE format", async () => {
 
 Deno.test("CLI: vault put --force skips overwrite confirmation", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",
@@ -1045,6 +1094,7 @@ Deno.test("CLI: vault put --force skips overwrite confirmation", async () => {
 
 Deno.test("CLI: vault put allows empty value", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",
@@ -1080,6 +1130,7 @@ Deno.test("CLI: vault put allows empty value", async () => {
 
 Deno.test("CLI: vault list-keys returns empty list for vault with no secrets", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a local_encryption vault
     await runCliCommand([
       "vault",
@@ -1117,6 +1168,7 @@ Deno.test("CLI: vault list-keys returns empty list for vault with no secrets", a
 
 Deno.test("CLI: vault list-keys returns stored secret keys", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",
@@ -1184,6 +1236,7 @@ Deno.test("CLI: vault list-keys returns stored secret keys", async () => {
 
 Deno.test("CLI: vault list-keys fails for non-existent vault", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     const result = await runCliCommand([
       "vault",
       "list-keys",
@@ -1202,6 +1255,7 @@ Deno.test("CLI: vault list-keys fails for non-existent vault", async () => {
 
 Deno.test("CLI: vault list-keys returns keys in sorted order", async () => {
   await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
     // Create a vault
     await runCliCommand([
       "vault",

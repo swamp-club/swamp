@@ -5,12 +5,12 @@ import {
   type WorkflowDeleteData,
 } from "../../presentation/output/workflow_delete_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -61,8 +61,10 @@ export const workflowDeleteCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "workflow-delete");
     ctx.logger.debug`Deleting workflow: ${workflowIdOrName}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const repoContext = createRepositoryContext({ repoDir });
+    const { repoDir, repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
     const workflowRepo = repoContext.workflowRepo;
     const workflowRunRepo = repoContext.workflowRunRepo;
 

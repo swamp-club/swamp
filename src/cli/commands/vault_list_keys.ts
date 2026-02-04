@@ -4,8 +4,8 @@ import {
   type VaultListKeysData,
 } from "../../presentation/output/vault_list_keys_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -20,10 +20,13 @@ export const vaultListKeysCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "vault-list-keys");
     ctx.logger.debug`Listing secret keys in vault: ${vaultName}`;
 
-    const repoDir = options.repoDir ?? ".";
+    const { repoDir, repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
 
     // Verify vault exists
-    const repo = new YamlVaultConfigRepository(repoDir);
+    const repo = repoContext.vaultConfigRepo;
     const vaultConfig = await repo.findByName(vaultName);
     if (!vaultConfig) {
       // List available vaults for helpful error message

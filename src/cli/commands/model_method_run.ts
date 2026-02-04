@@ -5,11 +5,9 @@ import {
   renderModelMethodRun,
 } from "../../presentation/output/model_method_run_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
-import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 
@@ -32,10 +30,13 @@ export const modelMethodRunCommand = new Command()
       methodName: string,
     ) {
       const ctx = createContext(options as GlobalOptions, "model-method-run");
-      const repoDir = options.repoDir ?? ".";
-      const definitionRepo = new YamlDefinitionRepository(repoDir);
-      const unifiedDataRepo = new FileSystemUnifiedDataRepository(repoDir);
-      const outputRepo = new YamlOutputRepository(repoDir);
+      const { repoDir, repoContext } = await requireInitializedRepo({
+        repoDir: options.repoDir ?? ".",
+        outputMode: ctx.outputMode,
+      });
+      const definitionRepo = repoContext.definitionRepo;
+      const unifiedDataRepo = repoContext.unifiedDataRepo;
+      const outputRepo = repoContext.outputRepo;
       const executionService = new DefaultMethodExecutionService();
 
       ctx.logger

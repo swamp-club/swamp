@@ -5,7 +5,7 @@ import {
   renderModelDeleteCancelled,
 } from "../../presentation/output/model_delete_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
@@ -82,8 +82,10 @@ export const modelDeleteCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "model-delete");
     ctx.logger.debug`Deleting model: ${modelIdOrName}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const repoContext = createRepositoryContext({ repoDir });
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
     const definitionRepo = repoContext.definitionRepo;
     const unifiedDataRepo = repoContext.unifiedDataRepo;
     const outputRepo = repoContext.outputRepo;

@@ -4,8 +4,7 @@ import {
   renderModelOutputGet,
 } from "../../presentation/output/model_output_get_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -29,9 +28,12 @@ export const modelOutputGetCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "model-output-get");
     ctx.logger.debug`Getting output: ${outputIdOrModelName}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const outputRepo = new YamlOutputRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const definitionRepo = repoContext.definitionRepo;
+    const outputRepo = repoContext.outputRepo;
 
     let outputData: ModelOutputGetData;
 

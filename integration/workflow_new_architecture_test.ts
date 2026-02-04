@@ -11,6 +11,7 @@
 import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -37,7 +38,19 @@ async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "workflows"));
   await ensureDir(join(dir, ".swamp", "workflow-runs"));
   await ensureDir(join(dir, ".swamp", "data"));
+  await ensureDir(join(dir, ".swamp", "outputs"));
+  await ensureDir(join(dir, ".swamp", "logs"));
   await ensureDir(join(dir, "workflows"));
+
+  // Create the .swamp.yaml marker file for CLI commands
+  const markerData = {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+  };
+  await Deno.writeTextFile(
+    join(dir, ".swamp.yaml"),
+    stringifyYaml(markerData as Record<string, unknown>),
+  );
 }
 
 async function runCliCommand(

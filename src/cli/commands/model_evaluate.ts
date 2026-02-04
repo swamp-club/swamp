@@ -6,8 +6,7 @@ import {
   renderModelEvaluateSingle,
 } from "../../presentation/output/model_evaluate_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 
@@ -23,9 +22,12 @@ export const modelEvaluateCommand = new Command()
   .action(
     async function (options: AnyOptions, modelIdOrName?: string) {
       const ctx = createContext(options as GlobalOptions, "model-evaluate");
-      const repoDir = options.repoDir ?? ".";
-      const definitionRepo = new YamlDefinitionRepository(repoDir);
-      const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+      const { repoDir, repoContext } = await requireInitializedRepo({
+        repoDir: options.repoDir ?? ".",
+        outputMode: ctx.outputMode,
+      });
+      const definitionRepo = repoContext.definitionRepo;
+      const dataRepo = repoContext.unifiedDataRepo;
       const evaluationService = new ExpressionEvaluationService(
         definitionRepo,
         repoDir,

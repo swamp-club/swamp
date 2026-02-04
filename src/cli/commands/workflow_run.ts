@@ -9,8 +9,7 @@ import {
 } from "../../presentation/output/workflow_run_output.tsx";
 import { renderWorkflowExecution } from "../../presentation/output/workflow_execution_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import {
   type ExecutionProgressCallback,
   type ImplicitDependencyMap,
@@ -146,9 +145,12 @@ export const workflowRunCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "workflow-run");
     ctx.logger.debug`Running workflow: ${workflowIdOrName}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const workflowRepo = new YamlWorkflowRepository(repoDir);
-    const runRepo = new YamlWorkflowRunRepository(repoDir);
+    const { repoDir, repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const workflowRepo = repoContext.workflowRepo;
+    const runRepo = repoContext.workflowRunRepo;
 
     const executionService = new WorkflowExecutionService(
       workflowRepo,

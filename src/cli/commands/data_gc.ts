@@ -5,7 +5,7 @@ import {
   renderDataGCPreview,
 } from "../../presentation/output/data_gc_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { createRepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 
 /**
@@ -39,8 +39,10 @@ export const dataGcCommand = new Command()
   .option("-f, --force", "Skip confirmation prompt")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, "data-gc");
-    const repoDir = options.repoDir ?? ".";
-    const repoContext = createRepositoryContext({ repoDir });
+    const { repoDir, repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
 
     const service = new DefaultDataLifecycleService(
       repoContext.unifiedDataRepo,

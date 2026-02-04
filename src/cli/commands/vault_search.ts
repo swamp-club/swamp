@@ -9,7 +9,8 @@ import {
   renderVaultDescribe,
 } from "../../presentation/output/vault_describe_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
+import type { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -18,8 +19,9 @@ type AnyOptions = any;
 /**
  * Gets all vaults from the repository as VaultSearchItem array.
  */
-async function getAllVaults(repoDir: string): Promise<VaultSearchItem[]> {
-  const repo = new YamlVaultConfigRepository(repoDir);
+async function getAllVaults(
+  repo: YamlVaultConfigRepository,
+): Promise<VaultSearchItem[]> {
   const configs = await repo.findAll();
   return configs.map(toVaultSearchItem);
 }
@@ -47,10 +49,9 @@ function filterVaults(
  * Gets the full vault config for displaying details.
  */
 async function getVaultConfig(
-  repoDir: string,
+  repo: YamlVaultConfigRepository,
   name: string,
 ): Promise<VaultConfig | null> {
-  const repo = new YamlVaultConfigRepository(repoDir);
   return await repo.findByName(name);
 }
 
@@ -59,11 +60,11 @@ async function getVaultConfig(
  */
 async function displayVaultDescribe(
   item: VaultSearchItem,
+  repo: YamlVaultConfigRepository,
   options: AnyOptions,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, "vault-search");
-  const repoDir = options.repoDir ?? ".";
-  const config = await getVaultConfig(repoDir, item.name);
+  const config = await getVaultConfig(repo, item.name);
 
   if (config) {
     renderVaultDescribe(config, ctx.outputMode);
@@ -79,8 +80,12 @@ export const vaultSearchCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "vault-search");
     ctx.logger.debug`Searching vaults with query: ${query ?? "(none)"}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const allVaults = await getAllVaults(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const repo = repoContext.vaultConfigRepo;
+    const allVaults = await getAllVaults(repo);
 
     if (ctx.outputMode === "json") {
       // Non-interactive: filter and output JSON
@@ -102,7 +107,7 @@ export const vaultSearchCommand = new Command()
       if (selected) {
         ctx.logger.debug`Selected vault: ${selected.name}`;
         // Display the vault details
-        await displayVaultDescribe(selected, options);
+        await displayVaultDescribe(selected, repo, options);
       } else {
         ctx.logger.debug`Search cancelled`;
       }

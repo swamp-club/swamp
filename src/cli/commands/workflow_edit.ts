@@ -10,6 +10,7 @@ import {
   type WorkflowSearchItem,
 } from "../../presentation/output/workflow_search_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import {
   createWorkflowId,
   type WorkflowId,
@@ -18,7 +19,6 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
@@ -61,8 +61,11 @@ export const workflowEditCommand = new Command()
     const ctx = createContext(options as GlobalOptions, "workflow-edit");
     ctx.logger.debug`Editing workflow: ${workflowIdOrName ?? "(interactive)"}`;
 
-    const repoDir = options.repoDir ?? ".";
-    const repo = new YamlWorkflowRepository(repoDir);
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const repo = repoContext.workflowRepo;
     const editorService = new EditorService();
 
     // Look up the workflow
