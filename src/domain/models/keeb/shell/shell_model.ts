@@ -43,6 +43,8 @@ export const ShellDataAttributesSchema = z.object({
   durationMs: z.number().int().nonnegative().optional().describe(
     "Execution duration in milliseconds",
   ),
+  stdout: z.string().optional().describe("Standard output from the command"),
+  stderr: z.string().optional().describe("Standard error from the command"),
 });
 
 /**
@@ -198,6 +200,8 @@ async function executeCommand(
     executedAt: new Date().toISOString(),
     command: attrs.run,
     durationMs,
+    stdout,
+    stderr,
   };
 
   // Create output log content
