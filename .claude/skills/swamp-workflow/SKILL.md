@@ -187,7 +187,14 @@ swamp workflow run my-workflow --json
       "name": "main",
       "status": "succeeded",
       "steps": [
-        { "name": "example", "status": "succeeded", "duration": 2 }
+        {
+          "name": "example",
+          "status": "succeeded",
+          "duration": 2,
+          "dataArtifacts": [
+            { "dataId": "data-789", "name": "output", "version": 1 }
+          ]
+        }
       ],
       "duration": 2
     }
@@ -267,6 +274,33 @@ swamp workflow history logs run-456 build.compile --json  # Specific step logs
   "logs": "Building application...\nCompilation complete.",
   "exitCode": 0
 }
+```
+
+## Data Artifact Tracking
+
+Workflow steps track all Data artifacts produced during execution. Each step run
+includes a `dataArtifacts` array with references to created data.
+
+### Automatic Tagging
+
+Data created during workflow execution receives automatic tags:
+
+| Tag        | Value               | Description                      |
+| ---------- | ------------------- | -------------------------------- |
+| `type`     | `step-output`       | Identifies workflow-created data |
+| `workflow` | `{workflow-name}`   | Source workflow name             |
+| `step`     | `{job-name}.{step}` | Full step path                   |
+
+### Querying Workflow Data
+
+Use CEL expressions to find data from workflows:
+
+```yaml
+# Find all data from a specific workflow
+workflowOutputs: ${{ data.findByTag("workflow", "my-deploy") }}
+
+# Find data from a specific step
+stepData: ${{ data.findByTag("step", "build.compile") }}
 ```
 
 ## Expressions in Workflows

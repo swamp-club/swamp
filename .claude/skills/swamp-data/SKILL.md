@@ -204,14 +204,103 @@ Use CEL expressions to access model data in workflows and model inputs:
 value: ${{ model.my-model.data.attributes.result }}
 
 # Access specific version
-value: ${{ data.version(my-model, output, 2).attributes.result }}
+value: ${{ data.version("my-model", "output", 2).attributes.result }}
+```
+
+### Data Namespace Functions
+
+| Function                                     | Description                            |
+| -------------------------------------------- | -------------------------------------- |
+| `data.version(modelName, dataName, version)` | Get specific version of data           |
+| `data.latest(modelName, dataName)`           | Get latest version of data             |
+| `data.listVersions(modelName, dataName)`     | Get array of available version numbers |
+| `data.findByTag(tagKey, tagValue)`           | Find all data matching a tag           |
+
+**DataRecord structure** returned by these functions:
+
+```json
+{
+  "id": "uuid",
+  "name": "data-name",
+  "version": 3,
+  "createdAt": "2025-01-15T10:30:00Z",
+  "attributes": {/* data content */},
+  "tags": { "type": "resource" }
+}
+```
+
+**Example usage:**
+
+```yaml
+# Get specific version
+oldValue: ${{ data.version("my-model", "state", 2).attributes.value }}
+
+# Get latest (same as model.my-model.data)
+current: ${{ data.latest("my-model", "output").attributes.result }}
+
+# List versions for conditional logic
+hasHistory: ${{ size(data.listVersions("my-model", "state")) > 1 }}
+
+# Find all logs across models
+allLogs: ${{ data.findByTag("type", "log") }}
+
+# Find data from a specific workflow
+workflowData: ${{ data.findByTag("workflow", "my-workflow") }}
 ```
 
 **Key rules:**
 
 - `model.<name>.data` always refers to the latest version
 - Use `data.version()` function for specific versions
+- Use `data.findByTag()` to query across models
 - Data expressions create implicit step dependencies in workflows
+
+## Data Ownership
+
+Data artifacts are owned by the model (definition) that created them. This
+ensures data integrity and prevents accidental overwrites.
+
+### Owner Definition
+
+Each data item tracks its owner through the `ownerDefinition` field:
+
+| Field            | Description                                  |
+| ---------------- | -------------------------------------------- |
+| `type`           | `model-method`, `workflow-step`, or `manual` |
+| `ref`            | Reference to the creating entity             |
+| `definitionHash` | Hash of the definition at creation time      |
+| `workflowId`     | Set when created during workflow execution   |
+| `workflowRunId`  | Specific run that created this data          |
+
+### Ownership Validation
+
+When a model method writes data:
+
+1. **New data**: Created with current model as owner
+2. **Existing data**: Validates `ownerDefinition.definitionHash` matches
+3. **Hash mismatch**: Write fails with ownership error
+
+This prevents scenarios where multiple models accidentally share data names.
+
+### Viewing Ownership
+
+Use `swamp data get` to see ownership information:
+
+```bash
+swamp data get my-model state --json
+```
+
+```json
+{
+  "name": "state",
+  "version": 3,
+  "ownerDefinition": {
+    "type": "model-method",
+    "ref": "my-model:create",
+    "definitionHash": "abc123..."
+  }
+}
+```
 
 ## Data Storage
 
