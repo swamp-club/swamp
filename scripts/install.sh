@@ -515,7 +515,7 @@ die() {
   exit 1
 }
 download() {
-  local _url _dst _code _orig_flags
+  local _url _dst _code _orig_flags _redirect_url
   _url="$1"
   _dst="$2"
   need_cmd sed
@@ -523,11 +523,19 @@ download() {
     info "Downloading $_url to $_dst (curl)"
     _orig_flags="$-"
     set +e
-    curl -sSfL "$_url" -o "$_dst"
+    
+    # Check for S3 redirect metadata first
+    _redirect_url="$(curl -sSI "$_url" | grep -i "x-amz-meta-x-amz-website-redirect-location" | cut -d' ' -f2- | tr -d '\r\n')"
+    if [ -n "$_redirect_url" ]; then
+      info "Following S3 redirect to $_redirect_url"
+      curl -sSfL "$_redirect_url" -o "$_dst"
+    else
+      curl -sSfL "$_url" -o "$_dst"
+    fi
     _code="$?"
     set "-$(echo "$_orig_flags" | sed s/s//g)"
     if [ $_code -eq 0 ]; then
-      unset _url _dst _code _orig_flags
+      unset _url _dst _code _orig_flags _redirect_url
       return 0
     else
       local _e
