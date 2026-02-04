@@ -8,15 +8,15 @@ workflows-evaluated/
 resources/
 
 # Generated/runtime data (ignored)
-.data/data/
-.data/outputs/
-.data/workflow-runs/
-.data/inputs-evaluated/
+.swamp/data/
+.swamp/outputs/
+.swamp/workflow-runs/
+.swamp/inputs-evaluated/
 .swamp/definitions-evaluated/
-.data/workflows-evaluated/
-.data/logs/
-.data/files/
-.data/secrets/
+.swamp/workflows-evaluated/
+.swamp/logs/
+.swamp/files/
+.swamp/secrets/
 
 test-repo/
 experiments/webapp/frontend/node_modules/
