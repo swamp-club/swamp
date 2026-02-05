@@ -17,6 +17,7 @@ resources/
 .swamp/logs/
 .swamp/files/
 .swamp/secrets/
+.swamp/telemetry/
 
 test-repo/
 experiments/webapp/frontend/node_modules/
