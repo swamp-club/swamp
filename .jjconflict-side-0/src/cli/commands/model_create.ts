@@ -1,0 +1,93 @@
+import { Command } from "@cliffy/command";
+import {
+  type ModelCreateData,
+  renderModelCreate,
+} from "../../presentation/output/model_create_output.tsx";
+import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { modelValidateCommand } from "./model_validate.ts";
+import { modelMethodCommand } from "./model_method_run.ts";
+import { modelSearchCommand } from "./model_search.ts";
+import { modelGetCommand } from "./model_get.ts";
+import { modelDeleteCommand } from "./model_delete.ts";
+import { modelEditCommand } from "./model_edit.ts";
+import { modelEvaluateCommand } from "./model_evaluate.ts";
+import { modelOutputCommand } from "./model_output.ts";
+
+// deno-lint-ignore no-explicit-any
+type AnyOptions = any;
+
+export const modelCreateCommand = new Command()
+  .description("Create a new model definition")
+  .arguments("<type:model_type> <name:string>")
+  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
+  .action(async function (options: AnyOptions, typeArg: string, name: string) {
+    const ctx = createContext(options as GlobalOptions, "model-create");
+    ctx.logger.debug`Creating model definition: type=${typeArg}, name=${name}`;
+
+    // Validate the model type
+    const modelType = ModelType.create(typeArg);
+    ctx.logger.debug`Normalized type: ${modelType.normalized}`;
+
+    // Check if model type is registered
+    if (!modelRegistry.has(modelType)) {
+      const availableTypes = modelRegistry.types().map((t) => t.normalized)
+        .join(", ");
+      throw new Error(
+        `Unknown model type: ${typeArg}. Available types: ${
+          availableTypes || "none"
+        }`,
+      );
+    }
+
+    // Validate repo initialization and create context
+    const { repoContext } = await requireInitializedRepo({
+      repoDir: options.repoDir ?? ".",
+      outputMode: ctx.outputMode,
+    });
+    const definitionRepo = repoContext.definitionRepo;
+
+    // Check if name already exists (globally unique across all types)
+    const existing = await definitionRepo.findByNameGlobal(name);
+    if (existing) {
+      throw new Error(
+        `Model definition with name '${name}' already exists (type: '${existing.type.normalized}')`,
+      );
+    }
+
+    // Create and save the definition
+    const definition = Definition.create({ name });
+    await definitionRepo.save(modelType, definition);
+
+    ctx.logger.debug`Created definition with ID: ${definition.id}`;
+
+    const data: ModelCreateData = {
+      id: definition.id,
+      type: modelType.normalized,
+      name: definition.name,
+      path: definitionRepo.getPath(modelType, definition.id),
+    };
+
+    renderModelCreate(data, ctx.outputMode);
+    ctx.logger.debug("Model create command completed");
+  });
+
+export const modelCommand = new Command()
+  .name("model")
+  .description("Manage models")
+  .action(function () {
+    this.showHelp();
+  })
+  .command("create", modelCreateCommand)
+  .command("delete", modelDeleteCommand)
+  .command("edit", modelEditCommand)
+  .command("evaluate", modelEvaluateCommand)
+  .command("get", modelGetCommand)
+  .command("search", modelSearchCommand)
+  .command("validate", modelValidateCommand)
+  .command("method", modelMethodCommand)
+  .command("output", modelOutputCommand);
