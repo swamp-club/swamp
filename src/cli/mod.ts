@@ -9,6 +9,7 @@ import { workflowCommand } from "./commands/workflow.ts";
 import { completionCommand } from "./commands/completion.ts";
 import { vaultCommand } from "./commands/vault.ts";
 import { dataCommand } from "./commands/data.ts";
+import { telemetryCommand } from "./commands/telemetry_stats.ts";
 import type { GlobalOptions } from "./context.ts";
 import {
   ModelNameType,
@@ -21,6 +22,12 @@ import {
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
+import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
+import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
+import {
+  extractCommandInfo,
+  isTelemetryDisabled,
+} from "./telemetry_integration.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -81,9 +88,47 @@ async function loadUserModels(): Promise<void> {
   }
 }
 
+/**
+ * Initialize telemetry service if in a swamp repository.
+ */
+async function initTelemetryService(): Promise<TelemetryService | null> {
+  try {
+    const cwd = Deno.cwd();
+    const markerRepo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(cwd);
+
+    const marker = await markerRepo.read(repoPath);
+    if (!marker) {
+      return null; // Not in a swamp repo
+    }
+
+    const repository = new JsonTelemetryRepository(cwd);
+    return new TelemetryService(repository, VERSION);
+  } catch {
+    // Not in a swamp repo or other error
+    return null;
+  }
+}
+
 export async function runCli(args: string[]): Promise<void> {
+  // Capture start time for telemetry
+  const startTime = new Date();
+
+  // Pre-parse check for telemetry disable flag
+  const telemetryDisabled = isTelemetryDisabled(args);
+
+  // Extract command info for telemetry (before parsing)
+  const commandInfo = extractCommandInfo(args);
+
+  // Initialize telemetry service (only if in a swamp repo)
+  let telemetryService: TelemetryService | null = null;
+  if (!telemetryDisabled) {
+    telemetryService = await initTelemetryService();
+  }
+
   // Load user models before setting up CLI
   await loadUserModels();
+
   const cli = new Command()
     .name("swamp")
     .version(VERSION)
@@ -96,6 +141,7 @@ export async function runCli(args: string[]): Promise<void> {
     .globalOption("--stream", "Stream logs in real-time during execution")
     .globalOption("-q, --quiet", "Suppress non-essential output")
     .globalOption("-v, --verbose", "Show detailed output")
+    .globalOption("--no-telemetry", "Disable telemetry for this invocation")
     .globalAction(async function (options: GlobalOptions) {
       await initializeLogging({
         debugLogs: options.debugLogs ?? false,
@@ -112,7 +158,23 @@ export async function runCli(args: string[]): Promise<void> {
     .command("workflow", workflowCommand)
     .command("vault", vaultCommand)
     .command("data", dataCommand)
+    .command("telemetry", telemetryCommand)
     .command("completions", completionCommand);
 
-  await cli.parse(args);
+  try {
+    await cli.parse(args);
+
+    // Record successful invocation
+    if (telemetryService) {
+      await telemetryService.recordSuccess(commandInfo, startTime);
+      // Trigger cleanup asynchronously (fire-and-forget)
+      telemetryService.cleanupOldTelemetry();
+    }
+  } catch (error) {
+    // Record error invocation before re-throwing
+    if (telemetryService && error instanceof Error) {
+      await telemetryService.recordError(commandInfo, startTime, error);
+    }
+    throw error;
+  }
 }
