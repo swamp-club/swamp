@@ -222,6 +222,7 @@ Use \`swamp --help\` to see available commands.
       "secrets",
       "logs",
       "files",
+      "telemetry",
     ];
 
     for (const subdir of subdirs) {
