@@ -16,7 +16,6 @@ export async function initializeTestRepo(repoDir: string): Promise<void> {
     ".swamp/definitions",
     ".swamp/outputs",
     ".swamp/data",
-    ".swamp/logs",
     ".swamp/workflows",
     ".swamp/workflow-runs",
     ".swamp/vault",

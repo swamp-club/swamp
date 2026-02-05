@@ -208,20 +208,16 @@ Use \`swamp --help\` to see available commands.
   ): Promise<void> {
     const dataDir = join(repoPath.value, ".swamp");
     const subdirs = [
-      "inputs",
-      "resources",
       "workflows",
       "data",
       "outputs",
       "workflow-runs",
-      "inputs-evaluated",
       "workflows-evaluated",
       "definitions",
       "definitions-evaluated",
       "vault",
       "secrets",
-      "logs",
-      "files",
+      "telemetry",
     ];
 
     for (const subdir of subdirs) {
