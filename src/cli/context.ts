@@ -10,6 +10,7 @@ export interface GlobalOptions {
   stream?: boolean;
   quiet?: boolean;
   verbose?: boolean;
+  noTelemetry?: boolean;
 }
 
 export interface CommandContext {
