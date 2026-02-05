@@ -14,7 +14,10 @@ import { requireInitializedRepo } from "../repo_context.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
-import { join } from "@std/path";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -23,7 +26,12 @@ type AnyOptions = any;
  * Gets the file path for a vault configuration.
  */
 function getVaultPath(repoDir: string, config: VaultConfig): string {
-  return join(repoDir, ".swamp", "vault", config.type, `${config.id}.yaml`);
+  return swampPath(
+    repoDir,
+    SWAMP_SUBDIRS.vault,
+    config.type,
+    `${config.id}.yaml`,
+  );
 }
 
 export const vaultEditCommand = new Command()

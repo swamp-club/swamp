@@ -1,6 +1,10 @@
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import type { RepoPath } from "./repo_path.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { SwampVersion } from "./swamp_version.ts";
 import {
   type RepoMarkerData,
@@ -206,27 +210,26 @@ Use \`swamp --help\` to see available commands.
   private async createDataDirectoryStructure(
     repoPath: RepoPath,
   ): Promise<void> {
-    const dataDir = join(repoPath.value, ".swamp");
     const subdirs = [
-      "inputs",
-      "resources",
-      "workflows",
-      "data",
-      "outputs",
-      "workflow-runs",
-      "inputs-evaluated",
-      "workflows-evaluated",
-      "definitions",
-      "definitions-evaluated",
-      "vault",
-      "secrets",
-      "logs",
-      "files",
-      "telemetry",
+      SWAMP_SUBDIRS.inputs,
+      SWAMP_SUBDIRS.resources,
+      SWAMP_SUBDIRS.workflows,
+      SWAMP_SUBDIRS.data,
+      SWAMP_SUBDIRS.outputs,
+      SWAMP_SUBDIRS.workflowRuns,
+      SWAMP_SUBDIRS.inputsEvaluated,
+      SWAMP_SUBDIRS.workflowsEvaluated,
+      SWAMP_SUBDIRS.definitions,
+      SWAMP_SUBDIRS.definitionsEvaluated,
+      SWAMP_SUBDIRS.vault,
+      SWAMP_SUBDIRS.secrets,
+      SWAMP_SUBDIRS.logs,
+      SWAMP_SUBDIRS.files,
+      SWAMP_SUBDIRS.telemetry,
     ];
 
     for (const subdir of subdirs) {
-      await ensureDir(join(dataDir, subdir));
+      await ensureDir(swampPath(repoPath.value, subdir));
     }
   }
 }

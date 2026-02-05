@@ -2,6 +2,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   createWorkflowRunId,
   type WorkflowId,
@@ -105,7 +106,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     { run: WorkflowRun; workflowId: WorkflowId }[]
   > {
     const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
-    const workflowRunsDir = join(this.repoDir, ".swamp", "workflow-runs");
+    const workflowRunsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
 
     try {
       for await (const entry of Deno.readDir(workflowRunsDir)) {
@@ -201,7 +202,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   private getRunsDir(workflowId: WorkflowId): string {
-    return join(this.repoDir, ".swamp", "workflow-runs", workflowId);
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns, workflowId);
   }
 
   async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {

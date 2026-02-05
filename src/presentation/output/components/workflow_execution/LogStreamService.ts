@@ -1,5 +1,9 @@
 import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../../../infrastructure/persistence/paths.ts";
 import type {
   JobRunData,
   StepRunData,
@@ -177,7 +181,7 @@ export class LogStreamService {
   ): Promise<{ status: string } | null> {
     try {
       // Find the workflow run file
-      const baseRunsDir = join(this.repoDir, ".swamp", "workflow-runs");
+      const baseRunsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
       let runFile: string | null = null;
 
       // Search through all workflow template directories
@@ -226,7 +230,7 @@ export class LogStreamService {
   private getLogPath(_target: LogStreamTarget): string {
     // Logs are stored in .swamp/logs/{type}/{id}/
     // For workflow steps, we need to map to model outputs
-    return join(this.repoDir, ".swamp", "logs");
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.logs);
   }
 
   /**
@@ -264,7 +268,7 @@ export class LogStreamService {
     try {
       // Find the workflow run file by searching all workflow directories
       // File structure: .swamp/workflow-runs/{workflowTemplateId}/workflow-run-{runInstanceId}.yaml
-      const baseRunsDir = join(this.repoDir, ".swamp", "workflow-runs");
+      const baseRunsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
       let runFile: string | null = null;
 
       try {

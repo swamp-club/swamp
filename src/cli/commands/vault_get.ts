@@ -6,6 +6,10 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  SWAMP_DATA_DIR,
+  SWAMP_SUBDIRS,
+} from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -66,7 +70,8 @@ export const vaultGetCommand = new Command()
       type: config.type,
       config: config.config,
       createdAt: config.createdAt.toISOString(),
-      storagePath: `.swamp/vault/${config.type}/${config.id}.yaml`,
+      storagePath:
+        `${SWAMP_DATA_DIR}/${SWAMP_SUBDIRS.vault}/${config.type}/${config.id}.yaml`,
     };
 
     renderVaultGet(data, ctx.outputMode);

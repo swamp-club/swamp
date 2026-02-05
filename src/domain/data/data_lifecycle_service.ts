@@ -1,6 +1,10 @@
 import { join } from "@std/path";
 import type { Data } from "./data.ts";
 import type { Lifetime } from "./data_metadata.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { WorkflowRunRepository } from "../workflows/repositories.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -157,7 +161,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
 
   async findExpiredData(): Promise<ExpiredDataInfo[]> {
     const expired: ExpiredDataInfo[] = [];
-    const dataDir = join(this.repoDir, ".swamp", "data");
+    const dataDir = swampPath(this.repoDir, SWAMP_SUBDIRS.data);
 
     try {
       // Scan model types
@@ -268,7 +272,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     // Now run version-based garbage collection on all models
     // This hard-deletes old versions based on garbageCollection policy
     if (!dryRun) {
-      const dataDir = join(this.repoDir, ".swamp", "data");
+      const dataDir = swampPath(this.repoDir, SWAMP_SUBDIRS.data);
       try {
         for await (const typeEntry of Deno.readDir(dataDir)) {
           if (!typeEntry.isDirectory) continue;

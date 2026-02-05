@@ -2,6 +2,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -155,7 +156,7 @@ export class YamlOutputRepository implements OutputRepository {
             await Deno.remove(path);
 
             // Clean up empty parent directories
-            const outputsDir = join(this.repoDir, ".swamp", "outputs");
+            const outputsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.outputs);
             await cleanupEmptyParentDirs(path, outputsDir);
             return;
           }
@@ -179,7 +180,7 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   private getOutputsDir(): string {
-    return join(this.repoDir, ".swamp", "outputs");
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.outputs);
   }
 
   private getTypeDir(type: ModelType): string {

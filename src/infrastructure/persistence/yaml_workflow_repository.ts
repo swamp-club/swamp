@@ -2,6 +2,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   createWorkflowId,
   type WorkflowId,
@@ -147,6 +148,6 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   private getWorkflowsDir(): string {
-    return join(this.repoDir, ".swamp", "workflows");
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflows);
   }
 }

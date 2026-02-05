@@ -3,6 +3,10 @@ import React from "react";
 import { Box, render, Text } from "ink";
 import type { OutputMode } from "./output.tsx";
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
+import {
+  SWAMP_DATA_DIR,
+  SWAMP_SUBDIRS,
+} from "../../infrastructure/persistence/paths.ts";
 
 /**
  * Renders vault description in either interactive or JSON mode.
@@ -79,7 +83,9 @@ function VaultDescribeUI(props: VaultDescribeUIProps): React.ReactElement {
       {/* Storage path */}
       <Box marginTop={1}>
         <Text bold>Storage:</Text>
-        <Text dimColor>.swamp/vault/{config.type}/{config.id}.yaml</Text>
+        <Text dimColor>
+          {SWAMP_DATA_DIR}/{SWAMP_SUBDIRS.vault}/{config.type}/{config.id}.yaml
+        </Text>
       </Box>
 
       {/* Configuration */}

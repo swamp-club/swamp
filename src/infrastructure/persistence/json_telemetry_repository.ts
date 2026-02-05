@@ -1,6 +1,7 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import type { TelemetryRepository } from "../../domain/telemetry/repositories.ts";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   TelemetryEntry,
   type TelemetryEntryData,
@@ -150,6 +151,6 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   }
 
   private getTelemetryDir(): string {
-    return join(this.repoDir, ".swamp", "telemetry");
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.telemetry);
   }
 }

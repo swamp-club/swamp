@@ -8,6 +8,11 @@
 import { ensureDir } from "@std/fs";
 import { join, relative } from "@std/path";
 import { getLogger } from "@logtape/logtape";
+import {
+  SWAMP_DATA_DIR,
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../persistence/paths.ts";
 import type {
   PruneResult,
   RebuildResult,
@@ -377,8 +382,8 @@ export class SymlinkRepoIndexService implements RepoIndexService {
 
     // Symlink to definition.yaml
     const definitionTarget = join(
-      ".swamp",
-      "definitions",
+      SWAMP_DATA_DIR,
+      SWAMP_SUBDIRS.definitions,
       type.toDirectoryPath(),
       `${modelInputId}.yaml`,
     );
@@ -403,10 +408,9 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     const outputsDir = join(modelDir, "outputs");
     await ensureDir(outputsDir);
 
-    const methodsDir = join(
+    const methodsDir = swampPath(
       this.repoDir,
-      ".swamp",
-      "outputs",
+      SWAMP_SUBDIRS.outputs,
       type.normalized,
     );
     if (await this.exists(methodsDir)) {
@@ -562,10 +566,9 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     await ensureDir(workflowDir);
 
     // Symlink to workflow.yaml
-    const workflowTarget = join(
+    const workflowTarget = swampPath(
       this.repoDir,
-      ".swamp",
-      "workflows",
+      SWAMP_SUBDIRS.workflows,
       `workflow-${workflowId}.yaml`,
     );
     await this.createSymlink(
@@ -608,10 +611,9 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     await ensureDir(runDir);
 
     // Symlink to run.yaml
-    const runTarget = join(
+    const runTarget = swampPath(
       this.repoDir,
-      ".swamp",
-      "workflow-runs",
+      SWAMP_SUBDIRS.workflowRuns,
       workflowId,
       `workflow-run-${runId}.yaml`,
     );
@@ -653,10 +655,9 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     await ensureDir(vaultDir);
 
     // Symlink to vault.yaml
-    const vaultTarget = join(
+    const vaultTarget = swampPath(
       this.repoDir,
-      ".swamp",
-      "vault",
+      SWAMP_SUBDIRS.vault,
       vaultType,
       `${vaultId}.yaml`,
     );
@@ -664,10 +665,9 @@ export class SymlinkRepoIndexService implements RepoIndexService {
 
     // For local_encryption vaults, create secrets directory with individual key symlinks
     if (vaultType === "local_encryption") {
-      const actualSecretsDir = join(
+      const actualSecretsDir = swampPath(
         this.repoDir,
-        ".swamp",
-        "secrets",
+        SWAMP_SUBDIRS.secrets,
         vaultType,
         vaultName,
       );

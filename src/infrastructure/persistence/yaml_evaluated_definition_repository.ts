@@ -3,6 +3,7 @@ import { join } from "@std/path";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   createDefinitionId,
   Definition,
@@ -98,10 +99,9 @@ export class YamlEvaluatedDefinitionRepository {
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
-    const definitionsDir = join(
+    const definitionsDir = swampPath(
       this.repoDir,
-      ".swamp",
-      "definitions-evaluated",
+      SWAMP_SUBDIRS.definitionsEvaluated,
     );
     return await this.searchDefinitionByName(definitionsDir, [], name);
   }
@@ -159,10 +159,9 @@ export class YamlEvaluatedDefinitionRepository {
   async findAllGlobal(): Promise<
     { definition: Definition; type: ModelType }[]
   > {
-    const definitionsDir = join(
+    const definitionsDir = swampPath(
       this.repoDir,
-      ".swamp",
-      "definitions-evaluated",
+      SWAMP_SUBDIRS.definitionsEvaluated,
     );
     const results: { definition: Definition; type: ModelType }[] = [];
     await this.collectAllDefinitions(definitionsDir, [], results);
@@ -238,10 +237,9 @@ export class YamlEvaluatedDefinitionRepository {
       await Deno.remove(path);
 
       // Clean up empty parent directories
-      const definitionsDir = join(
+      const definitionsDir = swampPath(
         this.repoDir,
-        ".swamp",
-        "definitions-evaluated",
+        SWAMP_SUBDIRS.definitionsEvaluated,
       );
       await cleanupEmptyParentDirs(path, definitionsDir);
     } catch (error) {
@@ -270,10 +268,9 @@ export class YamlEvaluatedDefinitionRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(
+    return swampPath(
       this.repoDir,
-      ".swamp",
-      "definitions-evaluated",
+      SWAMP_SUBDIRS.definitionsEvaluated,
       type.toDirectoryPath(),
     );
   }
@@ -283,10 +280,9 @@ export class YamlEvaluatedDefinitionRepository {
    * Used when needing to regenerate all evaluations.
    */
   async clearAll(): Promise<void> {
-    const definitionsDir = join(
+    const definitionsDir = swampPath(
       this.repoDir,
-      ".swamp",
-      "definitions-evaluated",
+      SWAMP_SUBDIRS.definitionsEvaluated,
     );
     try {
       await Deno.remove(definitionsDir, { recursive: true });

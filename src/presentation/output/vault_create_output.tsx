@@ -3,6 +3,10 @@ import React from "react";
 import { Box, Text } from "ink";
 import { render } from "ink-testing-library";
 import type { OutputMode } from "./output.tsx";
+import {
+  SWAMP_DATA_DIR,
+  SWAMP_SUBDIRS,
+} from "../../infrastructure/persistence/paths.ts";
 
 /**
  * Data for vault create output.
@@ -81,8 +85,9 @@ export function VaultCreateDisplay(
       </Box>
       <Box marginTop={1}>
         <Text dimColor>
-          Edit .swamp/vault/{props.type}/{props.id}.yaml to customize the vault
-          configuration.
+          Edit{" "}
+          {SWAMP_DATA_DIR}/{SWAMP_SUBDIRS.vault}/{props.type}/{props.id}.yaml to
+          customize the vault configuration.
         </Text>
       </Box>
     </Box>

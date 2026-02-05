@@ -1,6 +1,7 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   VaultConfig,
   type VaultConfigData,
@@ -206,7 +207,7 @@ export class YamlVaultConfigRepository {
    * Gets the base vault directory.
    */
   private getVaultDir(): string {
-    return join(this.repoDir, ".swamp", "vault");
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.vault);
   }
 
   /**

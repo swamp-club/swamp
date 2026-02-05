@@ -3,6 +3,10 @@ import React from "react";
 import { Box, render, Text } from "ink";
 import type { OutputMode } from "./output.tsx";
 import type { VaultTypeSearchItem } from "./vault_type_search_output.tsx";
+import {
+  SWAMP_DATA_DIR,
+  SWAMP_SUBDIRS,
+} from "../../infrastructure/persistence/paths.ts";
 
 /**
  * Configuration example for each vault type.
@@ -48,7 +52,8 @@ function renderJsonVaultTypeDescribe(data: VaultTypeSearchItem): void {
   const output = {
     ...data,
     configExample: CONFIG_EXAMPLES[data.type] ?? "",
-    storagePath: `.swamp/vault/${data.type}/{id}.yaml`,
+    storagePath:
+      `${SWAMP_DATA_DIR}/${SWAMP_SUBDIRS.vault}/${data.type}/{id}.yaml`,
   };
   console.log(JSON.stringify(output, null, 2));
 }
@@ -92,7 +97,9 @@ function VaultTypeDescribeUI(
       {/* Storage path */}
       <Box>
         <Text bold>Storage:</Text>
-        <Text dimColor>.swamp/vault/{data.type}/</Text>
+        <Text dimColor>
+          {SWAMP_DATA_DIR}/{SWAMP_SUBDIRS.vault}/{data.type}/
+        </Text>
         <Text dimColor>{"<id>"}.yaml</Text>
       </Box>
 

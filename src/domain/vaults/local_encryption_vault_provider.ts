@@ -1,5 +1,9 @@
 import { join } from "@std/path";
 import type { VaultProvider } from "./vault_provider.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 
 /**
  * Configuration options for local encryption vault.
@@ -47,10 +51,9 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     // Compute secrets directory from base_dir + vault name
     // Path: {base_dir}/.swamp/secrets/local_encryption/{vault_name}
     const baseDir = config.base_dir ?? Deno.cwd();
-    this.vaultDir = join(
+    this.vaultDir = swampPath(
       baseDir,
-      ".swamp",
-      "secrets",
+      SWAMP_SUBDIRS.secrets,
       "local_encryption",
       name,
     );

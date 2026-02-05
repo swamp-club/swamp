@@ -1,6 +1,7 @@
 import { ensureDir } from "@std/fs";
 import { join, relative } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   Data,
   type DataId,
@@ -690,7 +691,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   private getBaseDir(): string {
-    return join(this.repoDir, ".swamp", "data");
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.data);
   }
 
   private getTypeDir(type: ModelType): string {

@@ -2,6 +2,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
@@ -79,7 +80,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
-    const definitionsDir = join(this.repoDir, ".swamp", "definitions");
+    const definitionsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.definitions);
     return await this.searchDefinitionByName(definitionsDir, [], name);
   }
 
@@ -134,7 +135,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   async findAllGlobal(): Promise<
     { definition: Definition; type: ModelType }[]
   > {
-    const definitionsDir = join(this.repoDir, ".swamp", "definitions");
+    const definitionsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.definitions);
     const results: { definition: Definition; type: ModelType }[] = [];
     await this.collectAllDefinitions(definitionsDir, [], results);
     return results;
@@ -238,7 +239,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       await Deno.remove(path);
 
       // Clean up empty parent directories
-      const definitionsDir = join(this.repoDir, ".swamp", "definitions");
+      const definitionsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.definitions);
       await cleanupEmptyParentDirs(path, definitionsDir);
 
       // Emit event if we had a name
@@ -266,6 +267,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return join(this.repoDir, ".swamp", "definitions", type.toDirectoryPath());
+    return swampPath(
+      this.repoDir,
+      SWAMP_SUBDIRS.definitions,
+      type.toDirectoryPath(),
+    );
   }
 }

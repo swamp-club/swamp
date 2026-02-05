@@ -2,6 +2,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   Workflow,
   type WorkflowData,
@@ -98,6 +99,6 @@ export class YamlEvaluatedWorkflowRepository {
   }
 
   private getWorkflowsDir(): string {
-    return join(this.repoDir, ".swamp", "workflows-evaluated");
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowsEvaluated);
   }
 }

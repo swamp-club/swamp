@@ -1,9 +1,7 @@
-import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { SwampVersion } from "../../domain/repo/swamp_version.ts";
 import type { RepoPath } from "../../domain/repo/repo_path.ts";
-
-const MARKER_FILENAME = ".swamp.yaml";
+import { swampMarkerPath } from "./paths.ts";
 
 /**
  * Data structure for the .swamp.yaml marker file.
@@ -23,7 +21,7 @@ export class RepoMarkerRepository {
    * Gets the path to the marker file for a given repository.
    */
   getMarkerPath(repoPath: RepoPath): string {
-    return join(repoPath.value, MARKER_FILENAME);
+    return swampMarkerPath(repoPath.value);
   }
 
   /**
