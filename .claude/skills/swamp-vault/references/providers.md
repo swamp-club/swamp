@@ -12,7 +12,7 @@
 ### Storage Layout
 
 ```
-.data/secrets/{vault-type}/{vault-name}/
+.swamp/secrets/{vault-type}/{vault-name}/
 ├── .key                    # Auto-generated encryption key (mode 0600)
 └── {secret-key}.enc        # Encrypted secret files
 ```
@@ -20,7 +20,7 @@
 ### Configuration Options
 
 ```yaml
-# .data/vault/local_encryption/{id}.yaml
+# .swamp/vault/local_encryption/{id}.yaml
 id: abc-123
 name: dev-vault
 type: local_encryption
@@ -61,7 +61,7 @@ createdAt: 2025-02-01T...
 ### Configuration Options
 
 ```yaml
-# .data/vault/aws/{id}.yaml
+# .swamp/vault/aws/{id}.yaml
 id: def-456
 name: prod-vault
 type: aws

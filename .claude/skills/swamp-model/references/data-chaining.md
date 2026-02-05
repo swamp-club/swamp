@@ -18,9 +18,12 @@ output and access it via `data.attributes.json`.
 
 **Step 1: Create an aws/cli model to look up an AMI:**
 
-```yaml
-# .data/inputs/aws/cli/<uuid>.yaml
-id: 550e8400-e29b-41d4-a716-446655440002
+```bash
+# Create the model
+swamp model create aws/cli latest-ami --json
+
+# Configure the model with stdin
+swamp model edit latest-ami --json <<EOF
 name: latest-ami
 version: 1
 tags: {}
@@ -31,29 +34,37 @@ attributes:
     --query "sort_by(Images,&CreationDate)[-1]"
   region: us-east-1
   parseJson: true
+EOF
 ```
 
-**Step 2: Reference the CLI output in another model:**
+**Step 2: Create another model that references the CLI output:**
 
-```yaml
-# .data/inputs/myorg/ec2-instance/<uuid>.yaml
-id: 550e8400-e29b-41d4-a716-446655440003
+```bash
+# Create the EC2 instance model
+swamp model create myorg/ec2-instance my-instance --json
+
+# Configure with references to the aws/cli model's data output
+swamp model edit my-instance --json <<EOF
 name: my-instance
 version: 1
 tags: {}
 attributes:
   # Reference parsed JSON fields from the aws/cli model's data output
-  imageId: ${{ model.latest-ami.data.attributes.json.ImageId }}
+  imageId: \${{ model.latest-ami.data.attributes.json.ImageId }}
   instanceType: t3.micro
   tags:
-    Name: ${{ self.name }}
-    AmiName: ${{ model.latest-ami.data.attributes.json.Name }}
+    Name: \${{ self.name }}
+    AmiName: \${{ model.latest-ami.data.attributes.json.Name }}
+EOF
 ```
 
 ## Example: Security Group Lookup
 
-```yaml
-# Look up default VPC security group
+```bash
+# Create and configure the security group lookup model
+swamp model create aws/cli default-sg --json
+
+swamp model edit default-sg --json <<EOF
 name: default-sg
 attributes:
   command: >-
@@ -61,41 +72,58 @@ attributes:
     --filters "Name=group-name,Values=default"
     --query "SecurityGroups[0]"
   parseJson: true
+EOF
 ```
 
-```yaml
-# Reference in EC2 instance
+```bash
+# Create an EC2 instance that references the security group
+swamp model create myorg/ec2 my-server --json
+
+swamp model edit my-server --json <<EOF
 name: my-server
 attributes:
   securityGroupIds:
-    - ${{ model.default-sg.data.attributes.json.GroupId }}
+    - \${{ model.default-sg.data.attributes.json.GroupId }}
+EOF
 ```
 
 ## Example: Chaining Multiple Lookups
 
-```yaml
-# Step 1: Get VPC ID
+```bash
+# Step 1: Create VPC lookup model
+swamp model create aws/cli vpc-lookup --json
+
+swamp model edit vpc-lookup --json <<EOF
 name: vpc-lookup
 attributes:
   command: ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query "Vpcs[0]"
   parseJson: true
+EOF
 ```
 
-```yaml
-# Step 2: Get subnet in that VPC
+```bash
+# Step 2: Create subnet lookup that references the VPC
+swamp model create aws/cli subnet-lookup --json
+
+swamp model edit subnet-lookup --json <<EOF
 name: subnet-lookup
 attributes:
   command: >-
     ec2 describe-subnets
-    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.data.attributes.json.VpcId }}"
+    --filters "Name=vpc-id,Values=\${{ model.vpc-lookup.data.attributes.json.VpcId }}"
     --query "Subnets[0]"
   parseJson: true
+EOF
 ```
 
-```yaml
-# Step 3: Use both in instance creation
+```bash
+# Step 3: Create instance model that uses both lookups
+swamp model create myorg/ec2-instance my-instance --json
+
+swamp model edit my-instance --json <<EOF
 name: my-instance
 attributes:
-  subnetId: ${{ model.subnet-lookup.data.attributes.json.SubnetId }}
-  vpcId: ${{ model.vpc-lookup.data.attributes.json.VpcId }}
+  subnetId: \${{ model.subnet-lookup.data.attributes.json.SubnetId }}
+  vpcId: \${{ model.vpc-lookup.data.attributes.json.VpcId }}
+EOF
 ```

@@ -74,12 +74,12 @@
 
 2. Auto-generated key missing - The key should auto-regenerate, but check:
    ```bash
-   ls -la .data/secrets/local_encryption/{vault-name}/.key
+   ls -la .swamp/secrets/local_encryption/{vault-name}/.key
    ```
 
 3. Key file permissions too open - Fix permissions:
    ```bash
-   chmod 600 .data/secrets/local_encryption/{vault-name}/.key
+   chmod 600 .swamp/secrets/local_encryption/{vault-name}/.key
    ```
 
 ### Expression Evaluation Errors
