@@ -14,9 +14,9 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 Deno.test("cleanupEmptyParentDirs removes empty parent directories", async () => {
   await withTempDir(async (tempDir) => {
-    // Create nested directory structure: tempDir/data/inputs/aws/ec2/vpc
-    const inputsDir = join(tempDir, ".swamp", "inputs");
-    const vpcDir = join(inputsDir, "aws", "ec2", "vpc");
+    // Create nested directory structure: tempDir/.swamp/data/aws/ec2/vpc
+    const dataDir = join(tempDir, ".swamp", "data");
+    const vpcDir = join(dataDir, "aws", "ec2", "vpc");
     await ensureDir(vpcDir);
 
     // Create a file in vpc directory
@@ -27,24 +27,24 @@ Deno.test("cleanupEmptyParentDirs removes empty parent directories", async () =>
     await Deno.remove(filePath);
 
     // Clean up empty parent directories
-    await cleanupEmptyParentDirs(filePath, inputsDir);
+    await cleanupEmptyParentDirs(filePath, dataDir);
 
     // All nested directories should be removed
-    assertEquals(await exists(join(inputsDir, "aws", "ec2", "vpc")), false);
-    assertEquals(await exists(join(inputsDir, "aws", "ec2")), false);
-    assertEquals(await exists(join(inputsDir, "aws")), false);
+    assertEquals(await exists(join(dataDir, "aws", "ec2", "vpc")), false);
+    assertEquals(await exists(join(dataDir, "aws", "ec2")), false);
+    assertEquals(await exists(join(dataDir, "aws")), false);
 
-    // But inputs directory should still exist (it's the stop point)
-    assertEquals(await exists(inputsDir), true);
+    // But data directory should still exist (it's the stop point)
+    assertEquals(await exists(dataDir), true);
   });
 });
 
 Deno.test("cleanupEmptyParentDirs stops at non-empty directory", async () => {
   await withTempDir(async (tempDir) => {
     // Create nested directory structure
-    const inputsDir = join(tempDir, ".swamp", "inputs");
-    const vpcDir = join(inputsDir, "aws", "ec2", "vpc");
-    const subnetDir = join(inputsDir, "aws", "ec2", "subnet");
+    const dataDir = join(tempDir, ".swamp", "data");
+    const vpcDir = join(dataDir, "aws", "ec2", "vpc");
+    const subnetDir = join(dataDir, "aws", "ec2", "subnet");
     await ensureDir(vpcDir);
     await ensureDir(subnetDir);
 
@@ -60,16 +60,16 @@ Deno.test("cleanupEmptyParentDirs stops at non-empty directory", async () => {
     await Deno.remove(vpcFile);
 
     // Clean up empty parent directories
-    await cleanupEmptyParentDirs(vpcFile, inputsDir);
+    await cleanupEmptyParentDirs(vpcFile, dataDir);
 
     // vpc directory should be removed
     assertEquals(await exists(vpcDir), false);
 
     // ec2 directory should still exist (it has subnet subdir)
-    assertEquals(await exists(join(inputsDir, "aws", "ec2")), true);
+    assertEquals(await exists(join(dataDir, "aws", "ec2")), true);
 
     // aws directory should still exist
-    assertEquals(await exists(join(inputsDir, "aws")), true);
+    assertEquals(await exists(join(dataDir, "aws")), true);
 
     // subnet directory and file should still exist
     assertEquals(await exists(subnetDir), true);
@@ -79,26 +79,26 @@ Deno.test("cleanupEmptyParentDirs stops at non-empty directory", async () => {
 
 Deno.test("cleanupEmptyParentDirs handles already deleted directories", async () => {
   await withTempDir(async (tempDir) => {
-    const inputsDir = join(tempDir, ".swamp", "inputs");
-    await ensureDir(inputsDir);
+    const dataDir = join(tempDir, ".swamp", "data");
+    await ensureDir(dataDir);
 
     // Try to clean up a path that doesn't exist
-    const nonExistentFile = join(inputsDir, "aws", "ec2", "vpc", "test.yaml");
+    const nonExistentFile = join(dataDir, "aws", "ec2", "vpc", "test.yaml");
 
     // Should not throw
-    await cleanupEmptyParentDirs(nonExistentFile, inputsDir);
+    await cleanupEmptyParentDirs(nonExistentFile, dataDir);
 
-    // inputs directory should still exist
-    assertEquals(await exists(inputsDir), true);
+    // data directory should still exist
+    assertEquals(await exists(dataDir), true);
   });
 });
 
 Deno.test("cleanupEmptyParentDirs does not go above stop directory", async () => {
   await withTempDir(async (tempDir) => {
     // Create structure
-    const dataDir = join(tempDir, ".swamp");
-    const inputsDir = join(dataDir, "inputs");
-    const typeDir = join(inputsDir, "swamp", "echo");
+    const swampDir = join(tempDir, ".swamp");
+    const dataDir = join(swampDir, "data");
+    const typeDir = join(dataDir, "swamp", "echo");
     await ensureDir(typeDir);
 
     // Create and delete a file
@@ -106,15 +106,15 @@ Deno.test("cleanupEmptyParentDirs does not go above stop directory", async () =>
     await Deno.writeTextFile(filePath, "test: content");
     await Deno.remove(filePath);
 
-    // Clean up with inputs as stop directory
-    await cleanupEmptyParentDirs(filePath, inputsDir);
+    // Clean up with data as stop directory
+    await cleanupEmptyParentDirs(filePath, dataDir);
 
     // Nested dirs should be removed
     assertEquals(await exists(typeDir), false);
-    assertEquals(await exists(join(inputsDir, "swamp")), false);
+    assertEquals(await exists(join(dataDir, "swamp")), false);
 
-    // But inputs and data should still exist
-    assertEquals(await exists(inputsDir), true);
+    // But data and swamp should still exist
     assertEquals(await exists(dataDir), true);
+    assertEquals(await exists(swampDir), true);
   });
 });

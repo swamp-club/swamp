@@ -228,9 +228,8 @@ export class LogStreamService {
    * Gets the base log path for a target.
    */
   private getLogPath(_target: LogStreamTarget): string {
-    // Logs are stored in .swamp/logs/{type}/{id}/
-    // For workflow steps, we need to map to model outputs
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.logs);
+    // Logs are stored in workflow run files under .swamp/workflow-runs/
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
   }
 
   /**

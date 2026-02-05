@@ -92,20 +92,16 @@ Deno.test("RepoService.init creates data directory structure", async () => {
 
     // Check all data subdirectories exist
     const expectedDirs = [
-      ".swamp/inputs",
-      ".swamp/resources",
       ".swamp/workflows",
       ".swamp/data",
       ".swamp/outputs",
       ".swamp/workflow-runs",
-      ".swamp/inputs-evaluated",
       ".swamp/workflows-evaluated",
       ".swamp/definitions",
       ".swamp/definitions-evaluated",
       ".swamp/vault",
       ".swamp/secrets",
-      ".swamp/logs",
-      ".swamp/files",
+      ".swamp/telemetry",
     ];
 
     for (const dir of expectedDirs) {

@@ -211,20 +211,15 @@ Use \`swamp --help\` to see available commands.
     repoPath: RepoPath,
   ): Promise<void> {
     const subdirs = [
-      SWAMP_SUBDIRS.inputs,
-      SWAMP_SUBDIRS.resources,
       SWAMP_SUBDIRS.workflows,
       SWAMP_SUBDIRS.data,
       SWAMP_SUBDIRS.outputs,
       SWAMP_SUBDIRS.workflowRuns,
-      SWAMP_SUBDIRS.inputsEvaluated,
       SWAMP_SUBDIRS.workflowsEvaluated,
       SWAMP_SUBDIRS.definitions,
       SWAMP_SUBDIRS.definitionsEvaluated,
       SWAMP_SUBDIRS.vault,
       SWAMP_SUBDIRS.secrets,
-      SWAMP_SUBDIRS.logs,
-      SWAMP_SUBDIRS.files,
       SWAMP_SUBDIRS.telemetry,
     ];
 
