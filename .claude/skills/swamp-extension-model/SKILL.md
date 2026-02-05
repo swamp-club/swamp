@@ -8,6 +8,40 @@ description: Create user-defined TypeScript models for swamp. Use when users wan
 Create TypeScript models in `extensions/models/*.ts` that swamp loads at
 startup.
 
+## When to Create a Custom Model
+
+**Create an extension model when no built-in type exists for your use case.**
+
+If you search for a type with `swamp type search <query>` and get no results,
+you should create a custom model rather than assuming the functionality doesn't
+exist. Extension models let you:
+
+- Integrate with any API or service (AWS S3, Stripe, custom APIs, etc.)
+- Define any automation logic you need
+- Create reusable components for your workflows
+
+**Example decision flow:**
+
+```
+1. User wants to work with S3 buckets
+2. Run: swamp type search S3 → no results
+3. Solution: Create extensions/models/s3_bucket.ts with the S3 logic you need
+```
+
+**Important:** Do not default to generic CLI types (like `aws/cli`) for specific
+service integrations. If the user wants to manage S3 buckets, EC2 instances, or
+other resources, create a dedicated model for that service rather than wrapping
+CLI commands. Dedicated models provide:
+
+- Typed input validation with Zod schemas
+- Structured output data for use in workflows
+- Better error handling and resource tracking
+- Reusable automation components
+
+Extension models have the same capabilities as built-in models - they can make
+HTTP requests, run shell commands, interact with cloud APIs, and produce data
+outputs.
+
 ## Quick Reference
 
 | Task                | Command/Action                                         |
@@ -317,6 +351,74 @@ export const model = {
               status: data.status,
               createdAt: new Date().toISOString(),
             },
+          },
+        };
+      },
+    },
+  },
+};
+```
+
+### Cloud Service Model (e.g., AWS S3)
+
+When a built-in type doesn't exist, create your own:
+
+```typescript
+// extensions/models/s3_bucket.ts
+import { z } from "npm:zod@4";
+
+const InputSchema = z.object({
+  bucketName: z.string(),
+  region: z.string().default("us-east-1"),
+  accessKeyId: z.string(), // Use: ${{ vault.get(aws-vault, ACCESS_KEY_ID) }}
+  secretAccessKey: z.string(), // Use: ${{ vault.get(aws-vault, SECRET_ACCESS_KEY) }}
+});
+
+export const model = {
+  type: "myorg/s3-bucket",
+  version: 1,
+  inputAttributesSchema: InputSchema,
+  methods: {
+    create: {
+      description: "Create an S3 bucket",
+      execute: async (definition, _context) => {
+        const { bucketName, region, accessKeyId, secretAccessKey } =
+          definition.attributes;
+
+        // Use AWS SDK or direct API calls
+        const response = await fetch(
+          `https://s3.${region}.amazonaws.com/${bucketName}`,
+          {
+            method: "PUT",
+            headers: {
+              // Add AWS Signature V4 authentication
+              Authorization: `...`, // Implement AWS signing
+            },
+          },
+        );
+
+        return {
+          resource: {
+            attributes: {
+              bucketName,
+              region,
+              arn: `arn:aws:s3:::${bucketName}`,
+              createdAt: new Date().toISOString(),
+            },
+          },
+        };
+      },
+    },
+    list: {
+      description: "List objects in the bucket",
+      execute: async (definition, _context) => {
+        // Implement S3 ListObjects API call
+        return {
+          data: {
+            attributes: {
+              objects: [], // Populate from API response
+            },
+            name: "objects",
           },
         };
       },
