@@ -10,6 +10,7 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
+import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -73,9 +74,27 @@ export const modelMethodRunCommand = new Command()
         );
       }
 
+      // Evaluate expressions (including vault expressions) before execution
+      const evaluationService = new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+        { dataRepo: unifiedDataRepo },
+      );
+
+      let evaluatedDefinition = definition;
+      if (evaluationService.hasDefinitionExpressions(definition)) {
+        ctx.logger.debug`Evaluating expressions in model definition`;
+        const evalResult = await evaluationService.evaluateDefinition(
+          definition,
+          modelType,
+        );
+        evaluatedDefinition = evalResult.definition;
+        ctx.logger.debug`Expression evaluation complete`;
+      }
+
       ctx.logger.debug`Executing method '${methodName}'`;
 
-      // Create ModelOutput for tracking
+      // Create ModelOutput for tracking (use original definition for provenance)
       const definitionHash = await definition.computeHash();
       const output = ModelOutput.create({
         definitionId: definition.id,
@@ -96,14 +115,15 @@ export const modelMethodRunCommand = new Command()
 
       try {
         // Execute the method (use workflow execution to handle follow-up actions)
+        // Use evaluatedDefinition which has vault expressions resolved
         const execResult = await executionService.executeWorkflow(
-          definition,
+          evaluatedDefinition,
           modelDef,
           methodName,
           {
             repoDir,
             modelType,
-            modelId: definition.id,
+            modelId: evaluatedDefinition.id,
             dataRepository: unifiedDataRepo,
             definitionRepository: definitionRepo,
           },
