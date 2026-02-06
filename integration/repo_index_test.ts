@@ -764,17 +764,5 @@ Deno.test("Integration: repo index rebuild indexes definitions with type/ direct
       true,
       "Second definition.yaml symlink should exist",
     );
-
-    // Verify type/ directory exists for tag-based organization
-    assertEquals(
-      existsSync(join(dir1, "type")),
-      true,
-      "type/ directory should exist for tag-based data",
-    );
-    assertEquals(
-      existsSync(join(dir2, "type")),
-      true,
-      "type/ directory should exist for tag-based data",
-    );
   });
 });

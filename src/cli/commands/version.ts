@@ -6,7 +6,7 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 
 // This gets replaced by the compile script during release builds
-export const VERSION = "0.0.0-dev";
+export const VERSION = "20260206.200644.0-sha.8cdd96fc";
 
 export function getVersionData(): VersionData {
   return { version: VERSION };

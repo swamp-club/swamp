@@ -7,7 +7,7 @@ export interface CommandInvocation {
   readonly command: string;
   /** The subcommand (e.g., "create", "run") */
   readonly subcommand?: string;
-  /** Positional arguments - categorical values recorded, user-identifiable values redacted */
+  /** Redacted positional arguments - shows count but not values */
   readonly args: string[];
   /** Command-specific option keys (e.g., ["--repo-dir", "--json"]) */
   readonly optionKeys: string[];

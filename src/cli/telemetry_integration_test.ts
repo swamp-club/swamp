@@ -24,17 +24,12 @@ Deno.test("extractCommandInfo extracts command and subcommand", () => {
   assertEquals(info.globalOptions, []);
 });
 
-Deno.test("extractCommandInfo records categorical args for model create", () => {
-  const info = extractCommandInfo([
-    "model",
-    "create",
-    "prompt",
-    "my-model",
-  ]);
+Deno.test("extractCommandInfo extracts command with positional args", () => {
+  const info = extractCommandInfo(["model", "create", "my-model", "MyType"]);
 
   assertEquals(info.command, "model");
   assertEquals(info.subcommand, "create");
-  assertEquals(info.args, ["prompt", "<REDACTED>"]);
+  assertEquals(info.args, ["<REDACTED>", "<REDACTED>"]);
   assertEquals(info.optionKeys, []);
   assertEquals(info.globalOptions, []);
 });
@@ -57,7 +52,7 @@ Deno.test("extractCommandInfo extracts command-specific options", () => {
   const info = extractCommandInfo([
     "model",
     "create",
-    "prompt",
+    "my-model",
     "--repo-dir",
     "/path/to/repo",
     "--force",
@@ -65,7 +60,7 @@ Deno.test("extractCommandInfo extracts command-specific options", () => {
 
   assertEquals(info.command, "model");
   assertEquals(info.subcommand, "create");
-  assertEquals(info.args, ["prompt"]);
+  assertEquals(info.args, ["<REDACTED>"]);
   assertEquals(info.optionKeys, ["--repo-dir", "--force"]);
   assertEquals(info.globalOptions, []);
 });
@@ -130,64 +125,4 @@ Deno.test("isTelemetryDisabled returns true when flag present", () => {
 Deno.test("isTelemetryDisabled returns false when flag absent", () => {
   assertEquals(isTelemetryDisabled(["model", "search"]), false);
   assertEquals(isTelemetryDisabled(["--json", "model", "search"]), false);
-});
-
-Deno.test("extractCommandInfo records categorical args for model method", () => {
-  const info = extractCommandInfo([
-    "model",
-    "method",
-    "run",
-    "my-model",
-    "train",
-  ]);
-
-  assertEquals(info.command, "model");
-  assertEquals(info.subcommand, "method");
-  assertEquals(info.args, ["run", "<REDACTED>", "train"]);
-});
-
-Deno.test("extractCommandInfo redacts all args for commands without schema", () => {
-  const info = extractCommandInfo(["model", "get", "my-model"]);
-
-  assertEquals(info.command, "model");
-  assertEquals(info.subcommand, "get");
-  assertEquals(info.args, ["<REDACTED>"]);
-});
-
-Deno.test("extractCommandInfo redacts all args for unknown commands", () => {
-  const info = extractCommandInfo(["foo", "bar", "baz"]);
-
-  assertEquals(info.command, "foo");
-  assertEquals(info.subcommand, "bar");
-  assertEquals(info.args, ["<REDACTED>"]);
-});
-
-Deno.test("extractCommandInfo redacts args beyond schema length", () => {
-  const info = extractCommandInfo([
-    "model",
-    "create",
-    "prompt",
-    "my-model",
-    "extra",
-  ]);
-
-  assertEquals(info.command, "model");
-  assertEquals(info.subcommand, "create");
-  assertEquals(info.args, ["prompt", "<REDACTED>", "<REDACTED>"]);
-});
-
-Deno.test("extractCommandInfo records categorical arg for type describe", () => {
-  const info = extractCommandInfo(["type", "describe", "prompt"]);
-
-  assertEquals(info.command, "type");
-  assertEquals(info.subcommand, "describe");
-  assertEquals(info.args, ["prompt"]);
-});
-
-Deno.test("extractCommandInfo records categorical arg for vault create", () => {
-  const info = extractCommandInfo(["vault", "create", "aws", "my-vault"]);
-
-  assertEquals(info.command, "vault");
-  assertEquals(info.subcommand, "create");
-  assertEquals(info.args, ["aws", "<REDACTED>"]);
 });
