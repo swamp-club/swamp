@@ -4,7 +4,7 @@ import {
   type MethodDescribeData,
   renderTypeDescribe,
   type TypeDescribeData,
-} from "../../presentation/output/type_describe_output.tsx";
+} from "../../presentation/output/type_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
@@ -58,7 +58,7 @@ function toMethodDescribeData(
  * Shared between 'describe' and 'get' commands.
  */
 function typeDescribeAction(options: AnyOptions, typeArg: string): void {
-  const ctx = createContext(options as GlobalOptions, "type-describe");
+  const ctx = createContext(options as GlobalOptions, ["type", "describe"]);
   ctx.logger.debug`Describing type: ${typeArg}`;
 
   // Parse and validate the model type

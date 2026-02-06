@@ -4,7 +4,7 @@ import { createServer, HttpServer } from "./server.ts";
 import { initializeLogging } from "../../../src/infrastructure/logging/logger.ts";
 
 // Initialize logging for tests
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
 const testLogger = getLogger(["test"]);
 

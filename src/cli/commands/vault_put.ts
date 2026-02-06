@@ -3,7 +3,7 @@ import {
   renderVaultPut,
   renderVaultPutCancelled,
   type VaultPutData,
-} from "../../presentation/output/vault_put_output.tsx";
+} from "../../presentation/output/vault_put_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
@@ -81,7 +81,7 @@ export const vaultPutCommand = new Command()
     vaultName: string,
     keyValue: string,
   ) {
-    const ctx = createContext(options as GlobalOptions, "vault-put");
+    const ctx = createContext(options as GlobalOptions, ["vault", "put"]);
     ctx.logger.debug`Storing secret in vault: ${vaultName}`;
 
     const { repoDir, repoContext } = await requireInitializedRepo({
@@ -128,7 +128,7 @@ export const vaultPutCommand = new Command()
     ctx.logger.debug`Secret exists: ${exists}`;
 
     // Prompt for confirmation if overwriting in interactive mode
-    if (exists && ctx.outputMode === "interactive" && !options.force) {
+    if (exists && ctx.outputMode === "log" && !options.force) {
       const confirmed = await promptConfirmation(
         `Secret '${key}' already exists in vault '${vaultName}'. Overwrite?`,
       );

@@ -55,7 +55,7 @@ export const workflowHistoryLogsCommand = new Command()
   ) {
     const ctx = createContext(
       options as GlobalOptions,
-      "workflow-history-logs",
+      ["workflow", "history", "logs"],
     );
     ctx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
 

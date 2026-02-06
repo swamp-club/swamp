@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { renderVersion, type VersionData } from "./output.tsx";
+import { renderVersion, type VersionData } from "./output.ts";
 
 const testData: VersionData = {
   version: "1.0.0",

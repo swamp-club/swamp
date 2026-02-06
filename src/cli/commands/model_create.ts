@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   type ModelCreateData,
   renderModelCreate,
-} from "../../presentation/output/model_create_output.tsx";
+} from "../../presentation/output/model_create_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -26,7 +26,7 @@ export const modelCreateCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, typeArg: string, name: string) {
-    const ctx = createContext(options as GlobalOptions, "model-create");
+    const ctx = createContext(options as GlobalOptions, ["model", "create"]);
     ctx.logger.debug`Creating model definition: type=${typeArg}, name=${name}`;
 
     // Validate the model type

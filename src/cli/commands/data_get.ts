@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   type DataGetData,
   renderDataGet,
-} from "../../presentation/output/data_get_output.tsx";
+} from "../../presentation/output/data_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -24,7 +24,7 @@ export const dataGetCommand = new Command()
       modelIdOrName: string,
       dataName: string,
     ) {
-      const ctx = createContext(options as GlobalOptions, "data-get");
+      const ctx = createContext(options as GlobalOptions, ["data", "get"]);
       ctx.logger.debug`Getting data: model=${modelIdOrName}, name=${dataName}`;
 
       const { repoContext } = await requireInitializedRepo({

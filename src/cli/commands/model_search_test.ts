@@ -6,7 +6,7 @@ import type { ModelSearchItem } from "../../presentation/output/model_search_out
 import "../../domain/models/models.ts";
 
 // Initialize logging for tests
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
 Deno.test("modelSearchCommand module loads", async () => {
   const { modelSearchCommand } = await import("./model_search.ts");

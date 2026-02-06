@@ -4,7 +4,7 @@ import {
   renderRepoUpgrade,
   type RepoInitData,
   type RepoUpgradeData,
-} from "../../presentation/output/repo_output.tsx";
+} from "../../presentation/output/repo_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
@@ -20,7 +20,7 @@ export const repoInitCommand = new Command()
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
   .action(async function (options: AnyOptions, pathArg?: string) {
-    const ctx = createContext(options as GlobalOptions, "repo-init");
+    const ctx = createContext(options as GlobalOptions, ["repo", "init"]);
     ctx.logger.debug`Initializing repository at: ${pathArg ?? "."}`;
 
     const repoPath = RepoPath.create(pathArg ?? ".");
@@ -46,7 +46,7 @@ export const repoUpgradeCommand = new Command()
   .description("Upgrade an existing swamp repository")
   .arguments("[path:string]")
   .action(async function (options: AnyOptions, pathArg?: string) {
-    const ctx = createContext(options as GlobalOptions, "repo-upgrade");
+    const ctx = createContext(options as GlobalOptions, ["repo", "upgrade"]);
     ctx.logger.debug`Upgrading repository at: ${pathArg ?? "."}`;
 
     const repoPath = RepoPath.create(pathArg ?? ".");

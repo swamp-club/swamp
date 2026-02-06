@@ -7,7 +7,7 @@ import {
 import {
   renderWorkflowGet,
   type WorkflowGetData,
-} from "../../presentation/output/workflow_get_output.tsx";
+} from "../../presentation/output/workflow_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
@@ -55,7 +55,7 @@ async function displayWorkflowGet(
   repo: YamlWorkflowRepository,
   options: AnyOptions,
 ): Promise<void> {
-  const ctx = createContext(options as GlobalOptions, "workflow-search");
+  const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
   const workflow = await repo.findByName(item.name);
 
   if (!workflow) {
@@ -88,7 +88,7 @@ export const workflowSearchCommand = new Command()
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, "workflow-search");
+    const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
     ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepo({
