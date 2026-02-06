@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { getLogger } from "@logtape/logtape";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -18,6 +19,8 @@ import {
   createDefinitionDeleted,
   createDefinitionUpdated,
 } from "../../domain/events/types.ts";
+
+const logger = getLogger(["swamp", "definition-repo"]);
 
 /**
  * YAML-based implementation of DefinitionRepository.
@@ -58,9 +61,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       for await (const entry of Deno.readDir(dir)) {
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           const path = join(dir, entry.name);
-          const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as DefinitionData;
-          definitions.push(Definition.fromData(data));
+          try {
+            const content = await Deno.readTextFile(path);
+            const data = parseYaml(content) as DefinitionData;
+            definitions.push(Definition.fromData(data));
+          } catch (parseError) {
+            logger.warn`Skipping broken definition file ${path}: ${parseError}`;
+          }
         }
       }
     } catch (error) {
@@ -99,14 +106,19 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           // Found a YAML file, check if it matches the name
-          const content = await Deno.readTextFile(fullPath);
-          const data = parseYaml(content) as DefinitionData;
-          const definition = Definition.fromData(data);
+          try {
+            const content = await Deno.readTextFile(fullPath);
+            const data = parseYaml(content) as DefinitionData;
+            const definition = Definition.fromData(data);
 
-          if (definition.name === name) {
-            // Reconstruct the model type from the path segments
-            const typeStr = pathSegments.join("/");
-            return { definition, type: ModelType.create(typeStr) };
+            if (definition.name === name) {
+              // Reconstruct the model type from the path segments
+              const typeStr = pathSegments.join("/");
+              return { definition, type: ModelType.create(typeStr) };
+            }
+          } catch (parseError) {
+            logger
+              .warn`Skipping broken definition file ${fullPath}: ${parseError}`;
           }
         } else if (entry.isDirectory) {
           // Recursively search subdirectories
@@ -156,13 +168,18 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
         if (entry.isFile && entry.name.endsWith(".yaml")) {
           // Found a YAML file, add it to results
-          const content = await Deno.readTextFile(fullPath);
-          const data = parseYaml(content) as DefinitionData;
-          const definition = Definition.fromData(data);
+          try {
+            const content = await Deno.readTextFile(fullPath);
+            const data = parseYaml(content) as DefinitionData;
+            const definition = Definition.fromData(data);
 
-          // Reconstruct the model type from the path segments
-          const typeStr = pathSegments.join("/");
-          results.push({ definition, type: ModelType.create(typeStr) });
+            // Reconstruct the model type from the path segments
+            const typeStr = pathSegments.join("/");
+            results.push({ definition, type: ModelType.create(typeStr) });
+          } catch (parseError) {
+            logger
+              .warn`Skipping broken definition file ${fullPath}: ${parseError}`;
+          }
         } else if (entry.isDirectory) {
           // Recursively search subdirectories
           await this.collectAllDefinitions(
