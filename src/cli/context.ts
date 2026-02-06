@@ -11,6 +11,7 @@ export interface GlobalOptions {
   quiet?: boolean;
   verbose?: boolean;
   noTelemetry?: boolean;
+  showProperties?: boolean;
 }
 
 export interface CommandContext {
@@ -29,7 +30,7 @@ function getVerbosity(options: GlobalOptions): Verbosity {
  * Checks if stdin is a TTY (terminal).
  * Returns false if stdin is not a terminal (e.g., piped input).
  */
-function isStdinTty(): boolean {
+export function isStdinTty(): boolean {
   try {
     return Deno.stdin.isTerminal();
   } catch {
