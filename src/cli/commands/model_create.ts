@@ -60,7 +60,12 @@ export const modelCreateCommand = new Command()
     }
 
     // Create and save the definition
-    const definition = Definition.create({ name });
+    const modelDef = modelRegistry.get(modelType);
+    const definition = Definition.create({
+      name,
+      type: modelType.normalized,
+      typeVersion: modelDef?.version ?? 1,
+    });
     await definitionRepo.save(modelType, definition);
 
     ctx.logger.debug`Created definition with ID: ${definition.id}`;
