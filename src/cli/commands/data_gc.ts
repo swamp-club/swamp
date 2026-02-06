@@ -3,7 +3,7 @@ import {
   renderDataGC,
   renderDataGCCancelled,
   renderDataGCPreview,
-} from "../../presentation/output/data_gc_output.tsx";
+} from "../../presentation/output/data_gc_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
@@ -51,7 +51,7 @@ export const dataGcCommand = new Command()
     );
 
     // If interactive and no force, prompt for confirmation
-    if (ctx.outputMode === "interactive" && !options.force && !options.dryRun) {
+    if (ctx.outputMode === "log" && !options.force && !options.dryRun) {
       const preview = await service.findExpiredData();
       if (preview.length === 0) {
         console.log("No expired data found. Nothing to clean up.");

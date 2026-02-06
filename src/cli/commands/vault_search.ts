@@ -7,7 +7,7 @@ import {
 } from "../../presentation/output/vault_search_output.tsx";
 import {
   renderVaultDescribe,
-} from "../../presentation/output/vault_describe_output.tsx";
+} from "../../presentation/output/vault_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import type { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";

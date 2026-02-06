@@ -8,7 +8,7 @@ import {
 } from "../../domain/workflows/step.ts";
 import { StepTaskSchema } from "../../domain/workflows/step_task.ts";
 import { TriggerConditionSchema } from "../../domain/workflows/trigger_condition.ts";
-import { renderWorkflowSchema } from "../../presentation/output/workflow_schema_output.tsx";
+import { renderWorkflowSchema } from "../../presentation/output/workflow_schema_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 
 // deno-lint-ignore no-explicit-any

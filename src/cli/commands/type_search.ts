@@ -4,7 +4,7 @@ import {
   type TypeSearchData,
   type TypeSearchItem,
 } from "../../presentation/output/type_search_output.tsx";
-import { renderTypeDescribe } from "../../presentation/output/type_describe_output.tsx";
+import { renderTypeDescribe } from "../../presentation/output/type_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";

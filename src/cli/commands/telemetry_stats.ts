@@ -6,7 +6,7 @@ import { JsonTelemetryRepository } from "../../infrastructure/persistence/json_t
 import {
   renderNoTelemetry,
   renderTelemetryStats,
-} from "../../presentation/output/telemetry_stats_output.tsx";
+} from "../../presentation/output/telemetry_stats_output.ts";
 import { VERSION } from "./version.ts";
 
 export const telemetryStatsCommand = new Command()

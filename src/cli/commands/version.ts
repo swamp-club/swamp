@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderVersion,
   type VersionData,
-} from "../../presentation/output/output.tsx";
+} from "../../presentation/output/output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 
 // This gets replaced by the compile script during release builds

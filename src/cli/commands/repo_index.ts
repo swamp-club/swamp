@@ -6,7 +6,7 @@ import {
   type RepoIndexPruneData,
   type RepoIndexRebuildData,
   type RepoIndexVerifyData,
-} from "../../presentation/output/repo_output.tsx";
+} from "../../presentation/output/repo_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 

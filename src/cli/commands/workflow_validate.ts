@@ -4,7 +4,7 @@ import {
   renderWorkflowValidateAll,
   type ValidationItemData,
   type WorkflowValidateData,
-} from "../../presentation/output/workflow_validate_output.tsx";
+} from "../../presentation/output/workflow_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import {

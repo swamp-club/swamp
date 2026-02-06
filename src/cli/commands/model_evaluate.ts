@@ -4,7 +4,7 @@ import {
   type ModelEvaluateItemData,
   renderModelEvaluate,
   renderModelEvaluateSingle,
-} from "../../presentation/output/model_evaluate_output.tsx";
+} from "../../presentation/output/model_evaluate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";

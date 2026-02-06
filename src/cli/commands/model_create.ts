@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   type ModelCreateData,
   renderModelCreate,
-} from "../../presentation/output/model_create_output.tsx";
+} from "../../presentation/output/model_create_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";

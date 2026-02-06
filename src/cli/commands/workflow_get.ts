@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderWorkflowGet,
   type WorkflowGetData,
-} from "../../presentation/output/workflow_get_output.tsx";
+} from "../../presentation/output/workflow_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import {

@@ -4,7 +4,7 @@ import {
   renderModelValidate,
   renderModelValidateAll,
   type ValidationItemData,
-} from "../../presentation/output/model_validate_output.tsx";
+} from "../../presentation/output/model_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { modelRegistry } from "../../domain/models/model.ts";

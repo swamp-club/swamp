@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderVaultListKeys,
   type VaultListKeysData,
-} from "../../presentation/output/vault_list_keys_output.tsx";
+} from "../../presentation/output/vault_list_keys_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";

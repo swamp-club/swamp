@@ -7,7 +7,7 @@ import {
 } from "../../presentation/output/vault_type_search_output.tsx";
 import {
   renderVaultTypeDescribe,
-} from "../../presentation/output/vault_type_describe_output.tsx";
+} from "../../presentation/output/vault_type_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 

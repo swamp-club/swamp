@@ -1,6 +1,6 @@
 import { runCli } from "./src/cli/mod.ts";
 import { getOutputModeFromArgs } from "./src/cli/context.ts";
-import { renderError } from "./src/presentation/output/error_output.tsx";
+import { renderError } from "./src/presentation/output/error_output.ts";
 
 if (import.meta.main) {
   try {

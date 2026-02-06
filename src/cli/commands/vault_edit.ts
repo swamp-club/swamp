@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderVaultEdit,
   type VaultEditData,
-} from "../../presentation/output/vault_edit_output.tsx";
+} from "../../presentation/output/vault_edit_output.ts";
 import {
   renderVaultSearch,
   toVaultSearchItem,

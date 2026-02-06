@@ -4,7 +4,7 @@ import { parse as parseYaml } from "@std/yaml";
 import {
   renderWorkflowEdit,
   type WorkflowEditData,
-} from "../../presentation/output/workflow_edit_output.tsx";
+} from "../../presentation/output/workflow_edit_output.ts";
 import {
   renderWorkflowSearch,
   type WorkflowSearchData,

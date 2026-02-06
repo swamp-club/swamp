@@ -1,5 +1,5 @@
 import type { WorkflowData } from "../../../../domain/workflows/workflow.ts";
-import type { WorkflowRunData } from "../../workflow_run_output.tsx";
+import type { WorkflowRunData } from "../../workflow_run_output.ts";
 import type { LogStreamTarget } from "./LogStreamService.ts";
 
 /**

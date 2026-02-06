@@ -4,7 +4,7 @@ import {
   renderWorkflowRun,
   type StepRunData,
   type WorkflowRunData,
-} from "../../presentation/output/workflow_run_output.tsx";
+} from "../../presentation/output/workflow_run_output.ts";
 import {
   renderWorkflowHistorySearch,
   type WorkflowHistorySearchData,

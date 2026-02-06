@@ -4,7 +4,7 @@ import { parse as parseYaml } from "@std/yaml";
 import {
   type ModelEditData,
   renderModelEdit,
-} from "../../presentation/output/model_edit_output.tsx";
+} from "../../presentation/output/model_edit_output.ts";
 import {
   type ModelSearchData,
   type ModelSearchItem,

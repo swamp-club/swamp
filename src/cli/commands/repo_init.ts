@@ -4,7 +4,7 @@ import {
   renderRepoUpgrade,
   type RepoInitData,
   type RepoUpgradeData,
-} from "../../presentation/output/repo_output.tsx";
+} from "../../presentation/output/repo_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";

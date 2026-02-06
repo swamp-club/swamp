@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderVaultGet,
   type VaultGetData,
-} from "../../presentation/output/vault_get_output.tsx";
+} from "../../presentation/output/vault_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";

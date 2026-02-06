@@ -4,7 +4,7 @@ import {
   type MethodDescribeData,
   renderTypeDescribe,
   type TypeDescribeData,
-} from "../../presentation/output/type_describe_output.tsx";
+} from "../../presentation/output/type_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {

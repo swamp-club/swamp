@@ -3,7 +3,7 @@ import {
   type ModelDeleteData,
   renderModelDelete,
   renderModelDeleteCancelled,
-} from "../../presentation/output/model_delete_output.tsx";
+} from "../../presentation/output/model_delete_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -148,7 +148,7 @@ export const modelDeleteCommand = new Command()
     ctx.logger.debug`Found ${outputs.length} outputs to delete`;
 
     // In interactive mode without --force, prompt for confirmation
-    if (ctx.outputMode === "interactive" && !options.force) {
+    if (ctx.outputMode === "log" && !options.force) {
       let deleteDetails = "";
       if (outputs.length > 0) {
         deleteDetails += ` ${outputs.length} output(s),`;

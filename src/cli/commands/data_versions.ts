@@ -3,7 +3,7 @@ import {
   type DataVersionInfo,
   type DataVersionsData,
   renderDataVersions,
-} from "../../presentation/output/data_versions_output.tsx";
+} from "../../presentation/output/data_versions_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";

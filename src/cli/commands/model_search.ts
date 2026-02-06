@@ -7,8 +7,8 @@ import {
 import {
   type ModelGetData,
   renderModelGet,
-} from "../../presentation/output/model_get_output.tsx";
-import type { OutputMode } from "../../presentation/output/output.tsx";
+} from "../../presentation/output/model_get_output.ts";
+import type { OutputMode } from "../../presentation/output/output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
