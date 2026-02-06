@@ -2,7 +2,7 @@ import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Initialize logging for tests
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
 Deno.test("repoCommand module loads", async () => {
   const { repoCommand } = await import("./repo_init.ts");

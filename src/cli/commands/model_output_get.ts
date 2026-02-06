@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   type ModelOutputGetData,
   renderModelOutputGet,
-} from "../../presentation/output/model_output_get_output.tsx";
+} from "../../presentation/output/model_output_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -25,7 +25,11 @@ export const modelOutputGetCommand = new Command()
   .arguments("<output_id_or_model_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, outputIdOrModelName: string) {
-    const ctx = createContext(options as GlobalOptions, "model-output-get");
+    const ctx = createContext(options as GlobalOptions, [
+      "model",
+      "output",
+      "get",
+    ]);
     ctx.logger.debug`Getting output: ${outputIdOrModelName}`;
 
     const { repoContext } = await requireInitializedRepo({

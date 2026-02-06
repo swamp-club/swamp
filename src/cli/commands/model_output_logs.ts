@@ -17,7 +17,11 @@ export const modelOutputLogsCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--tail <n:number>", "Show only last N lines")
   .action(async function (options: AnyOptions, outputIdArg: string) {
-    const ctx = createContext(options as GlobalOptions, "model-output-logs");
+    const ctx = createContext(options as GlobalOptions, [
+      "model",
+      "output",
+      "logs",
+    ]);
     ctx.logger.debug`Getting logs for output: ${outputIdArg}`;
 
     const { repoContext } = await requireInitializedRepo({

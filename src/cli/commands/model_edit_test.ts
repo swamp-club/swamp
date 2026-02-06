@@ -7,7 +7,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import "../../domain/models/models.ts";
 
 // Initialize logging for tests
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
 Deno.test("modelEditCommand module loads", async () => {
   const { modelEditCommand } = await import("./model_edit.ts");

@@ -13,7 +13,7 @@ import {
   executionReducer,
 } from "./execution_reducer.ts";
 import type { WorkflowData } from "../../../../domain/workflows/workflow.ts";
-import type { JobRunData } from "../../workflow_run_output.tsx";
+import type { JobRunData } from "../../workflow_run_output.ts";
 import { useTerminalSize } from "../../hooks/mod.ts";
 
 /**

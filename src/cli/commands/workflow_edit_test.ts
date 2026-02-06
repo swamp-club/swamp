@@ -4,7 +4,7 @@ import { join } from "@std/path";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Initialize logging for tests
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
 Deno.test("workflowEditCommand module loads", async () => {
   const { workflowEditCommand } = await import("./workflow_edit.ts");

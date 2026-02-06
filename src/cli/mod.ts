@@ -1,5 +1,6 @@
 import { Command } from "@cliffy/command";
 import { isAbsolute, resolve } from "@std/path";
+import { parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
@@ -11,7 +12,7 @@ import { vaultCommand } from "./commands/vault.ts";
 import { dataCommand } from "./commands/data.ts";
 import { telemetryCommand } from "./commands/telemetry_stats.ts";
 import { updateCommand } from "./commands/update.ts";
-import type { GlobalOptions } from "./context.ts";
+import { type GlobalOptions, isStdinTty } from "./context.ts";
 import {
   ModelNameType,
   ModelTypeType,
@@ -144,15 +145,35 @@ export async function runCli(args: string[]): Promise<void> {
     .globalType("model_name", new ModelNameType())
     .globalType("model_type", new ModelTypeType())
     .globalType("workflow_name", new WorkflowNameType())
-    .globalOption("--debug-logs", "Enable debug logging to dev-logs directory")
     .globalOption("--json", "Output in JSON format (non-interactive)")
-    .globalOption("--stream", "Stream logs in real-time during execution")
+    .globalOption(
+      "--log-level <level:string>",
+      "Set log level (trace, debug, info, warning, error, fatal)",
+    )
     .globalOption("-q, --quiet", "Suppress non-essential output")
     .globalOption("-v, --verbose", "Show detailed output")
     .globalOption("--no-telemetry", "Disable telemetry for this invocation")
+    .globalOption(
+      "--show-properties",
+      "Show structured properties in log output",
+    )
     .globalAction(async function (options: GlobalOptions) {
+      const prettyOutput = isStdinTty();
+
+      // Derive log level: --quiet → error, --log-level → parsed, default → info
+      let logLevel: "trace" | "debug" | "info" | "warning" | "error" | "fatal" =
+        "info";
+      if (options.quiet) {
+        logLevel = "error";
+      } else if (options.logLevel) {
+        logLevel = parseLogLevel(options.logLevel);
+      }
+
       await initializeLogging({
-        debugLogs: options.debugLogs ?? false,
+        prettyOutput,
+        showProperties: options.showProperties ?? false,
+        logLevel,
+        jsonMode: options.json ?? false,
       });
     })
     .action(function () {
