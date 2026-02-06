@@ -157,6 +157,8 @@ Deno.test("Definition.toData returns correct structure", () => {
 
   const data = definition.toData();
   assertEquals(data, {
+    type: undefined,
+    typeVersion: undefined,
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-definition",
     version: 2,
@@ -297,4 +299,70 @@ Deno.test("Definition.computeHash returns different hash for different content",
   // Different content should produce different hashes
   // Note: IDs will be different, so hashes will definitely differ
   assertEquals(hash1 !== hash2, true);
+});
+
+Deno.test("Definition.create with type and typeVersion", () => {
+  const definition = Definition.create({
+    name: "test-definition",
+    type: "swamp/echo",
+    typeVersion: 1,
+  });
+  assertEquals(definition.type, "swamp/echo");
+  assertEquals(definition.typeVersion, 1);
+});
+
+Deno.test("Definition.create without type and typeVersion defaults to undefined", () => {
+  const definition = Definition.create({ name: "test-definition" });
+  assertEquals(definition.type, undefined);
+  assertEquals(definition.typeVersion, undefined);
+});
+
+Deno.test("Definition.toData includes type and typeVersion", () => {
+  const definition = Definition.create({
+    name: "test-definition",
+    type: "swamp/echo",
+    typeVersion: 2,
+  });
+  const data = definition.toData();
+  assertEquals(data.type, "swamp/echo");
+  assertEquals(data.typeVersion, 2);
+});
+
+Deno.test("Definition.fromData round-trips type and typeVersion", () => {
+  const definition = Definition.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-definition",
+    type: "aws/ec2/vpc",
+    typeVersion: 3,
+  });
+  const data = definition.toData();
+  const restored = Definition.fromData(data);
+  assertEquals(restored.type, "aws/ec2/vpc");
+  assertEquals(restored.typeVersion, 3);
+  assertEquals(restored.id, definition.id);
+  assertEquals(restored.name, definition.name);
+});
+
+Deno.test("Definition.computeHash is stable regardless of type/typeVersion", async () => {
+  const id = "550e8400-e29b-41d4-a716-446655440000";
+  const defWithout = Definition.create({
+    id,
+    name: "test-definition",
+    version: 1,
+    attributes: { message: "hello" },
+  });
+
+  const defWith = Definition.create({
+    id,
+    name: "test-definition",
+    version: 1,
+    attributes: { message: "hello" },
+    type: "swamp/echo",
+    typeVersion: 1,
+  });
+
+  const hash1 = await defWithout.computeHash();
+  const hash2 = await defWith.computeHash();
+
+  assertEquals(hash1, hash2);
 });

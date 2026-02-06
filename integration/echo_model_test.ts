@@ -93,6 +93,8 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
       string,
       unknown
     >;
+    assertEquals(definitionData.type, "swamp/echo");
+    assertEquals(definitionData.typeVersion, 1);
     assertEquals(definitionData.name, "test-echo-definition");
     assertEquals(
       (definitionData.attributes as Record<string, unknown>).message,

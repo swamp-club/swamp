@@ -88,6 +88,8 @@ export const InputsSchemaSchema: z.ZodType<InputsSchema | undefined> = z
  * Zod schema for the core properties of a Definition.
  */
 export const DefinitionSchema = z.object({
+  type: z.string().optional(),
+  typeVersion: z.number().int().positive().optional(),
   id: z.string().uuid(),
   name: z.string().min(1),
   version: z.number().int().positive(),
@@ -105,6 +107,8 @@ export type DefinitionData = z.infer<typeof DefinitionSchema>;
  * Properties required to create a new Definition.
  */
 export interface CreateDefinitionProps {
+  type?: string;
+  typeVersion?: number;
   id?: string;
   name: string;
   version?: number;
@@ -124,6 +128,8 @@ export interface CreateDefinitionProps {
  */
 export class Definition {
   private constructor(
+    readonly type: string | undefined,
+    readonly typeVersion: number | undefined,
     readonly id: DefinitionId,
     readonly name: string,
     readonly version: number,
@@ -143,6 +149,8 @@ export class Definition {
     const version = props.version ?? 1;
 
     const validated = DefinitionSchema.parse({
+      type: props.type,
+      typeVersion: props.typeVersion,
       id,
       name: props.name,
       version,
@@ -152,6 +160,8 @@ export class Definition {
     });
 
     return new Definition(
+      validated.type,
+      validated.typeVersion,
       createDefinitionId(validated.id),
       validated.name,
       validated.version,
@@ -170,6 +180,8 @@ export class Definition {
   static fromData(data: DefinitionData): Definition {
     const validated = DefinitionSchema.parse(data);
     return new Definition(
+      validated.type,
+      validated.typeVersion,
       createDefinitionId(validated.id),
       validated.name,
       validated.version,
@@ -240,6 +252,8 @@ export class Definition {
    */
   toData(): DefinitionData {
     return {
+      type: this.type,
+      typeVersion: this.typeVersion,
       id: this.id,
       name: this.name,
       version: this.version,
@@ -254,9 +268,12 @@ export class Definition {
    * This hash uniquely identifies the definition configuration.
    */
   async computeHash(): Promise<string> {
-    const data = this.toData();
+    const { type: _type, typeVersion: _tv, ...contentData } = this.toData();
     // Sort keys for consistent hashing
-    const sortedData = JSON.stringify(data, Object.keys(data).sort());
+    const sortedData = JSON.stringify(
+      contentData,
+      Object.keys(contentData).sort(),
+    );
     const encoder = new TextEncoder();
     const dataBuffer = encoder.encode(sortedData);
     const hashBuffer = await crypto.subtle.digest("SHA-256", dataBuffer);
