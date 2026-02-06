@@ -1,0 +1,40 @@
+import type { TelemetryEntry } from "./telemetry_entry.ts";
+
+/**
+ * Repository interface for persisting and retrieving TelemetryEntry entities.
+ */
+export interface TelemetryRepository {
+  /**
+   * Saves a telemetry entry.
+   * Returns a Promise that resolves when the write completes.
+   * Should never throw - errors are logged silently.
+   *
+   * @param entry - The telemetry entry to save
+   */
+  save(entry: TelemetryEntry): Promise<void>;
+
+  /**
+   * Finds all telemetry entries for a given date.
+   *
+   * @param date - The date to search for entries
+   * @returns Array of telemetry entries from that date
+   */
+  findByDate(date: Date): Promise<TelemetryEntry[]>;
+
+  /**
+   * Finds all telemetry entries within a date range.
+   *
+   * @param startDate - The start date (inclusive)
+   * @param endDate - The end date (inclusive)
+   * @returns Array of telemetry entries within the range
+   */
+  findByDateRange(startDate: Date, endDate: Date): Promise<TelemetryEntry[]>;
+
+  /**
+   * Deletes all telemetry entries older than the given date.
+   *
+   * @param date - Delete entries older than this date
+   * @returns The number of entries deleted
+   */
+  deleteOlderThan(date: Date): Promise<number>;
+}
