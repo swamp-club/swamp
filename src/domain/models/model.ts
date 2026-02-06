@@ -304,6 +304,45 @@ export class ModelRegistry {
   }
 
   /**
+   * Extends an existing model with additional methods.
+   * Creates a new merged ModelDefinition (immutable — doesn't mutate the existing object).
+   *
+   * @param type - The model type to extend (raw or normalized)
+   * @param methods - Additional methods to add
+   * @throws If the target type is not registered
+   * @throws If any method name conflicts with existing methods
+   */
+  extend(
+    type: string | ModelType,
+    methods: Record<string, MethodDefinition>,
+  ): void {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    const key = modelType.normalized;
+    const existing = this.models.get(key);
+
+    if (!existing) {
+      throw new Error(`Cannot extend unregistered model type: ${key}`);
+    }
+
+    // Check for method name conflicts
+    for (const methodName of Object.keys(methods)) {
+      if (existing.methods[methodName]) {
+        throw new Error(
+          `Method '${methodName}' already exists on model type '${key}'`,
+        );
+      }
+    }
+
+    // Create a new merged ModelDefinition (immutable)
+    const merged: ModelDefinition = {
+      ...existing,
+      methods: { ...existing.methods, ...methods },
+    };
+
+    this.models.set(key, merged);
+  }
+
+  /**
    * Gets a model definition by type.
    *
    * @param type - The model type (raw or normalized)

@@ -266,3 +266,131 @@ Deno.test("defineModel is idempotent when called with same model", () => {
   assertEquals(result1, model);
   assertEquals(result2, model);
 });
+
+// ModelRegistry.extend() tests
+
+Deno.test("ModelRegistry.extend adds methods to existing model", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/extend-test");
+  registry.register(model);
+
+  registry.extend("swamp/extend-test", {
+    read: {
+      description: "Read the data",
+      inputAttributesSchema: z.object({ message: z.string() }),
+      execute: () => Promise.resolve({ dataOutputs: [] }),
+    },
+  });
+
+  const extended = registry.get("swamp/extend-test");
+  assertEquals(extended !== undefined, true);
+  assertEquals("write" in extended!.methods, true);
+  assertEquals("read" in extended!.methods, true);
+});
+
+Deno.test("ModelRegistry.extend throws on unregistered type", () => {
+  const registry = new ModelRegistry();
+
+  assertThrows(
+    () =>
+      registry.extend("swamp/nonexistent", {
+        read: {
+          description: "Read",
+          inputAttributesSchema: z.object({}),
+          execute: () => Promise.resolve({ dataOutputs: [] }),
+        },
+      }),
+    Error,
+    "Cannot extend unregistered model type: swamp/nonexistent",
+  );
+});
+
+Deno.test("ModelRegistry.extend throws on method name conflict", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/conflict-test");
+  registry.register(model);
+
+  assertThrows(
+    () =>
+      registry.extend("swamp/conflict-test", {
+        write: {
+          description: "Duplicate write",
+          inputAttributesSchema: z.object({}),
+          execute: () => Promise.resolve({ dataOutputs: [] }),
+        },
+      }),
+    Error,
+    "Method 'write' already exists on model type 'swamp/conflict-test'",
+  );
+});
+
+Deno.test("ModelRegistry.extend preserves original methods and schema", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/preserve-test");
+  registry.register(model);
+
+  const originalSchema = model.inputAttributesSchema;
+
+  registry.extend("swamp/preserve-test", {
+    read: {
+      description: "Read the data",
+      inputAttributesSchema: z.object({}),
+      execute: () => Promise.resolve({ dataOutputs: [] }),
+    },
+  });
+
+  const extended = registry.get("swamp/preserve-test");
+  assertEquals(extended!.inputAttributesSchema, originalSchema);
+  assertEquals(extended!.version, 1);
+  assertEquals(extended!.methods.write.description, "Write message to data");
+});
+
+Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/callable-test");
+  registry.register(model);
+
+  registry.extend("swamp/callable-test", {
+    greet: {
+      description: "Greet",
+      inputAttributesSchema: z.object({ message: z.string() }),
+      execute: (definition: Definition, _context: MethodContext) => {
+        const content = new TextEncoder().encode(
+          JSON.stringify({
+            greeting: `Hello, ${definition.attributes.message}`,
+          }),
+        );
+        return Promise.resolve({
+          dataOutputs: [{
+            name: "greeting",
+            specType: DataSpecType.create("data"),
+            content,
+            metadata: {
+              contentType: "application/json",
+              lifetime: "infinite" as const,
+              garbageCollection: 10,
+              streaming: false,
+              tags: { type: "data" },
+              ownerDefinition: {
+                definitionHash: "test-hash",
+                ownerType: "model-method" as const,
+                ownerRef: "greet",
+              },
+            },
+          }],
+        });
+      },
+    },
+  });
+
+  const extended = registry.get("swamp/callable-test")!;
+  const definition = Definition.create({
+    name: "test",
+    attributes: { message: "world" },
+  });
+  const context = createTestContext(extended.type);
+
+  const result = await extended.methods.greet.execute(definition, context);
+  const attrs = getDataOutputAttributes(result.dataOutputs);
+  assertEquals(attrs?.greeting, "Hello, world");
+});

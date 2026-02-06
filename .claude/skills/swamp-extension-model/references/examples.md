@@ -245,3 +245,75 @@ attributes:
 This pattern enables dynamic configuration where one model generates values that
 are consumed by dependent models, with the workflow engine automatically
 resolving execution order based on expression dependencies.
+
+## Extending Existing Model Types
+
+### Single Method Extension
+
+```typescript
+// extensions/models/echo_audit.ts
+export const extension = {
+  type: "swamp/echo",
+  methods: [{
+    audit: {
+      description: "Audit the echo message",
+      execute: async (definition, _context) => ({
+        data: {
+          attributes: {
+            audited: true,
+            name: definition.name,
+            auditedAt: new Date().toISOString(),
+          },
+          name: "audit-result",
+        },
+      }),
+    },
+  }],
+};
+```
+
+### Multiple Methods in One Extension File
+
+```typescript
+// extensions/models/echo_extras.ts
+export const extension = {
+  type: "swamp/echo",
+  methods: [{
+    audit: {
+      description: "Audit the echo message",
+      execute: async (definition, _context) => ({
+        data: {
+          attributes: { audited: true, name: definition.name },
+          name: "audit-result",
+        },
+      }),
+    },
+    validate: {
+      description: "Validate the echo message format",
+      execute: async (definition, _context) => ({
+        data: {
+          attributes: {
+            valid: definition.attributes.message.length > 0,
+            length: definition.attributes.message.length,
+          },
+          name: "validation-result",
+        },
+      }),
+    },
+  }],
+};
+```
+
+### Nested Directory Organization
+
+Extension and model files can live in subdirectories for organization:
+
+```
+extensions/models/
+  aws/
+    s3_bucket.ts          # export const model (new type)
+    s3_audit.ts           # export const extension (extends aws s3)
+  monitoring/
+    health_check.ts       # export const model (new type)
+  echo_audit.ts           # export const extension (extends swamp/echo)
+```

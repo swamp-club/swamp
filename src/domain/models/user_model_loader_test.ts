@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { UserModelLoader } from "./user_model_loader.ts";
 import { modelRegistry } from "./model.ts";
 import { Definition } from "../definitions/definition.ts";
@@ -66,7 +66,8 @@ function createTestContext(modelType: ModelType): MethodContext {
   };
 }
 
-// Helper to create a temporary directory with model files
+// Helper to create a temporary directory with model files.
+// Supports nested paths like "aws/ec2_start.ts" — parent dirs are created as needed.
 async function withTempModels(
   models: Record<string, string>,
   fn: (dir: string) => Promise<void>,
@@ -74,7 +75,10 @@ async function withTempModels(
   const tempDir = await Deno.makeTempDir({ prefix: "swamp_test_models_" });
   try {
     for (const [filename, content] of Object.entries(models)) {
-      await Deno.writeTextFile(join(tempDir, filename), content);
+      const fullPath = join(tempDir, filename);
+      const dir = dirname(fullPath);
+      await Deno.mkdir(dir, { recursive: true });
+      await Deno.writeTextFile(fullPath, content);
     }
     await fn(tempDir);
   } finally {
@@ -135,7 +139,10 @@ export const notAModel = { foo: "bar" };
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
     assertEquals(result.failed[0].file, "no_export.ts");
-    assertEquals(result.failed[0].error, "No 'model' export found");
+    assertEquals(
+      result.failed[0].error,
+      "No 'model' or 'extension' export found",
+    );
   });
 });
 
@@ -535,4 +542,585 @@ export const model = {
     assertEquals(content.result, "Query result for: SELECT *");
     assertEquals(content.count, 42);
   });
+});
+
+// --- Recursive discovery tests ---
+
+Deno.test("UserModelLoader discovers nested files with correct relative paths", async () => {
+  const ts = Date.now();
+  const modelA = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/nested-a-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ a: z.string() }),
+  methods: {
+    run: {
+      description: "Run A",
+      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-a", content: JSON.stringify({ a: "a" }) }] }),
+    },
+  },
+};
+`;
+  const modelB = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/nested-b-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ b: z.string() }),
+  methods: {
+    run: {
+      description: "Run B",
+      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-b", content: JSON.stringify({ b: "b" }) }] }),
+    },
+  },
+};
+`;
+
+  await withTempModels(
+    { "aws/ec2_start.ts": modelA, "echo_audit.ts": modelB },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 2);
+      assertEquals(result.failed.length, 0);
+      // Sorted alphabetically: "aws/ec2_start.ts" < "echo_audit.ts"
+      assertEquals(result.loaded[0], join("aws", "ec2_start.ts"));
+      assertEquals(result.loaded[1], "echo_audit.ts");
+    },
+  );
+});
+
+Deno.test("UserModelLoader excludes _test.ts in subdirectories", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/subdir-notest-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ x: z.string() }),
+  methods: {
+    run: { description: "Run", execute: async () => ({ dataOutputs: [] }) },
+  },
+};
+`;
+  const testFile = `export const model = { type: "test/should-skip" };`;
+
+  await withTempModels(
+    { "sub/model.ts": modelCode, "sub/model_test.ts": testFile },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded[0], join("sub", "model.ts"));
+      assertEquals(result.failed.length, 0);
+    },
+  );
+});
+
+Deno.test("UserModelLoader handles deeply nested directories (3+ levels)", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/deep-nested-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ x: z.string() }),
+  methods: {
+    run: { description: "Run", execute: async () => ({ dataOutputs: [] }) },
+  },
+};
+`;
+
+  await withTempModels(
+    { "a/b/c/deep_model.ts": modelCode },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(
+        result.loaded[0],
+        join("a", "b", "c", "deep_model.ts"),
+      );
+    },
+  );
+});
+
+// --- Extension tests ---
+
+Deno.test("UserModelLoader loads extension with single method in array", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/ext-single-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    write: {
+      description: "Write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+export const extension = {
+  type: "test/ext-single-${ts}",
+  methods: [{
+    audit: {
+      description: "Audit the echo message",
+      execute: async (definition, _context) => ({
+        data: {
+          attributes: { audited: true, name: definition.name },
+          name: "audit-result",
+        },
+      }),
+    },
+  }],
+};
+`;
+
+  await withTempModels(
+    { "base_model.ts": modelCode, "ext_audit.ts": extCode },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.extended.length, 1);
+      assertEquals(result.extended[0], "ext_audit.ts");
+      assertEquals(result.failed.length, 0);
+
+      // Verify the method was added
+      const modelDef = modelRegistry.get(`test/ext-single-${ts}`);
+      assertEquals(modelDef !== undefined, true);
+      assertEquals("write" in modelDef!.methods, true);
+      assertEquals("audit" in modelDef!.methods, true);
+    },
+  );
+});
+
+Deno.test("UserModelLoader loads extension with multiple methods in array", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/ext-multi-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    write: {
+      description: "Write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+export const extension = {
+  type: "test/ext-multi-${ts}",
+  methods: [{
+    audit: {
+      description: "Audit",
+      execute: async () => ({ data: { attributes: { audited: true } } }),
+    },
+    verify: {
+      description: "Verify",
+      execute: async () => ({ data: { attributes: { verified: true } } }),
+    },
+  }],
+};
+`;
+
+  await withTempModels(
+    { "base.ts": modelCode, "ext.ts": extCode },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.extended.length, 1);
+
+      const modelDef = modelRegistry.get(`test/ext-multi-${ts}`);
+      assertEquals("write" in modelDef!.methods, true);
+      assertEquals("audit" in modelDef!.methods, true);
+      assertEquals("verify" in modelDef!.methods, true);
+    },
+  );
+});
+
+Deno.test("UserModelLoader extension targeting unregistered type fails gracefully", async () => {
+  const ts = Date.now();
+  const extCode = `
+export const extension = {
+  type: "test/nonexistent-${ts}",
+  methods: [{
+    audit: {
+      description: "Audit",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  }],
+};
+`;
+
+  await withTempModels({ "ext_bad.ts": extCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.extended.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "Cannot extend unregistered");
+  });
+});
+
+Deno.test("UserModelLoader extension with method name conflict fails gracefully", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/ext-conflict-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    write: {
+      description: "Write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+export const extension = {
+  type: "test/ext-conflict-${ts}",
+  methods: [{
+    write: {
+      description: "Duplicate write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  }],
+};
+`;
+
+  await withTempModels(
+    { "base.ts": modelCode, "ext_conflict.ts": extCode },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.extended.length, 0);
+      assertEquals(result.failed.length, 1);
+      assertStringIncludes(result.failed[0].error, "already exists");
+    },
+  );
+});
+
+Deno.test("UserModelLoader extension with duplicate method names within array fails", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/ext-dup-methods-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    write: {
+      description: "Write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+  // Two array elements with same method name
+  const extCode = `
+export const extension = {
+  type: "test/ext-dup-methods-${ts}",
+  methods: [
+    {
+      audit: {
+        description: "Audit v1",
+        execute: async () => ({ dataOutputs: [] }),
+      },
+    },
+    {
+      audit: {
+        description: "Audit v2",
+        execute: async () => ({ dataOutputs: [] }),
+      },
+    },
+  ],
+};
+`;
+
+  await withTempModels(
+    { "base.ts": modelCode, "ext_dup.ts": extCode },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.extended.length, 0);
+      assertEquals(result.failed.length, 1);
+      assertStringIncludes(
+        result.failed[0].error,
+        "Duplicate method name 'audit'",
+      );
+    },
+  );
+});
+
+Deno.test("UserModelLoader extension methods inherit target model's inputAttributesSchema", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/ext-inherit-schema-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    write: {
+      description: "Write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+export const extension = {
+  type: "test/ext-inherit-schema-${ts}",
+  methods: [{
+    audit: {
+      description: "Audit without own schema",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  }],
+};
+`;
+
+  await withTempModels(
+    { "base.ts": modelCode, "ext.ts": extCode },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.extended.length, 1);
+
+      const modelDef = modelRegistry.get(`test/ext-inherit-schema-${ts}`);
+      // Extension method should have inputAttributesSchema inherited from target model
+      assertEquals(
+        modelDef!.methods.audit.inputAttributesSchema !== undefined,
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("UserModelLoader extension of built-in swamp/echo type works", async () => {
+  // swamp/echo is registered via the models barrel import at the top
+  const extCode = `
+export const extension = {
+  type: "swamp/echo",
+  methods: [{
+    audit_ext_test_${Date.now()}: {
+      description: "Audit the echo",
+      execute: async (definition, _context) => ({
+        data: { attributes: { audited: true, name: definition.name } },
+      }),
+    },
+  }],
+};
+`;
+
+  await withTempModels({ "echo_ext.ts": extCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.extended.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    // The built-in swamp/echo should still have its original methods
+    const echoDef = modelRegistry.get("swamp/echo");
+    assertEquals(echoDef !== undefined, true);
+    assertEquals("write" in echoDef!.methods, true);
+  });
+});
+
+Deno.test("UserModelLoader multiple extensions targeting same type", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/multi-ext-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    write: {
+      description: "Write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+  const ext1 = `
+export const extension = {
+  type: "test/multi-ext-${ts}",
+  methods: [{
+    audit: {
+      description: "Audit",
+      execute: async () => ({ data: { attributes: { audited: true } } }),
+    },
+  }],
+};
+`;
+  const ext2 = `
+export const extension = {
+  type: "test/multi-ext-${ts}",
+  methods: [{
+    verify: {
+      description: "Verify",
+      execute: async () => ({ data: { attributes: { verified: true } } }),
+    },
+  }],
+};
+`;
+
+  await withTempModels(
+    { "base.ts": modelCode, "ext_audit.ts": ext1, "ext_verify.ts": ext2 },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.extended.length, 2);
+      assertEquals(result.failed.length, 0);
+
+      const modelDef = modelRegistry.get(`test/multi-ext-${ts}`);
+      assertEquals("write" in modelDef!.methods, true);
+      assertEquals("audit" in modelDef!.methods, true);
+      assertEquals("verify" in modelDef!.methods, true);
+    },
+  );
+});
+
+Deno.test("UserModelLoader two-pass ordering: user model registered before extension targets it", async () => {
+  const ts = Date.now();
+  // Extension file sorts before model file alphabetically,
+  // but two-pass loading should process models first
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/two-pass-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    write: {
+      description: "Write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+export const extension = {
+  type: "test/two-pass-${ts}",
+  methods: [{
+    audit: {
+      description: "Audit",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  }],
+};
+`;
+
+  // "aaa_ext.ts" sorts before "zzz_model.ts" to prove ordering doesn't matter
+  await withTempModels(
+    { "zzz_model.ts": modelCode, "aaa_ext.ts": extCode },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.extended.length, 1);
+      assertEquals(result.failed.length, 0);
+
+      const modelDef = modelRegistry.get(`test/two-pass-${ts}`);
+      assertEquals("write" in modelDef!.methods, true);
+      assertEquals("audit" in modelDef!.methods, true);
+    },
+  );
+});
+
+Deno.test("UserModelLoader extension method execute produces proper DataOutput", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "test/ext-execute-${ts}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    write: {
+      description: "Write",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+export const extension = {
+  type: "test/ext-execute-${ts}",
+  methods: [{
+    audit: {
+      description: "Audit",
+      execute: async (definition, _context) => ({
+        data: {
+          attributes: { audited: true, msg: definition.attributes.message },
+          name: "audit-result",
+        },
+      }),
+    },
+  }],
+};
+`;
+
+  await withTempModels(
+    { "base.ts": modelCode, "ext.ts": extCode },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      assertEquals(result.extended.length, 1);
+
+      const modelDef = modelRegistry.get(`test/ext-execute-${ts}`);
+      const definition = Definition.create({
+        name: "test-audit",
+        attributes: { message: "hello" },
+      });
+      const context = createTestContext(modelDef!.type);
+
+      const methodResult = await modelDef!.methods.audit.execute(
+        definition,
+        context,
+      );
+
+      assertEquals(methodResult.dataOutputs !== undefined, true);
+      assertEquals(methodResult.dataOutputs!.length, 1);
+
+      const dataOutput = methodResult.dataOutputs![0];
+      assertEquals(dataOutput.name, "audit-result");
+      assertEquals(dataOutput.metadata.contentType, "application/json");
+      assertEquals(dataOutput.metadata.ownerDefinition.ownerRef, "audit");
+
+      const content = JSON.parse(
+        new TextDecoder().decode(dataOutput.content),
+      );
+      assertEquals(content.audited, true);
+      assertEquals(content.msg, "hello");
+    },
+  );
 });

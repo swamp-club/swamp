@@ -74,6 +74,13 @@ async function loadUserModels(): Promise<void> {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(absoluteModelsDir);
 
+    // Log extension successes at debug level
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      for (const file of result.extended) {
+        console.debug(`Extended model type from ${file}`);
+      }
+    }
+
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
       console.error(

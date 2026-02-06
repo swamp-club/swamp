@@ -199,22 +199,70 @@ Each data output in the `dataOutputs` array has:
 | `type: "file"`     | File artifacts                   |
 | `type: "resource"` | External resource state          |
 
+## Extending Existing Model Types
+
+You can add new methods to existing model types (built-in or user-defined)
+without changing their schema. Use `export const extension` instead of
+`export const model`.
+
+### Extension Structure
+
+```typescript
+// extensions/models/echo_audit.ts
+export const extension = {
+  type: "swamp/echo", // target type to extend
+  methods: [{
+    audit: {
+      description: "Audit the echo message",
+      execute: async (definition, _context) => ({
+        data: {
+          attributes: { audited: true, name: definition.name },
+          name: "audit-result",
+        },
+      }),
+    },
+  }],
+};
+```
+
+| Field     | Required | Description                           |
+| --------- | -------- | ------------------------------------- |
+| `type`    | Yes      | Target model type to extend           |
+| `methods` | Yes      | Array of method record objects to add |
+
+### Extension Rules
+
+- Extensions **cannot** change the target model's Zod schema
+- Extensions **only** add new methods — no overriding existing methods
+- `methods` is always an array of `Record<string, MethodDef>` objects
+- One file can contain one method or many methods
+- Multiple extension files can target the same type
+- Extension methods without `inputAttributesSchema` inherit the target model's
+- Models are loaded first, then extensions (two-pass loading)
+
 ## Model Discovery
 
-Swamp discovers extension models in this order:
+Swamp discovers models and extensions recursively:
 
-1. **Repository extensions**: `{repo}/extensions/models/*.ts`
+1. **Repository extensions**: `{repo}/extensions/models/**/*.ts` (nested dirs
+   supported)
 2. **Built-in models**: Bundled with swamp binary
+
+Files are classified by export name: `export const model` defines new types,
+`export const extension` adds methods to existing types. Files can live in
+subdirectories for organization (e.g., `extensions/models/aws/s3_audit.ts`).
 
 Repository models take precedence, allowing you to override built-in types.
 
 ## Key Rules
 
-1. **Export**: Must use `export const model = { ... }`
+1. **Export**: Use `export const model = { ... }` for new types or
+   `export const extension = { ... }` for extending existing types
 2. **Import**: Only `import { z } from "npm:zod@4";` is needed
 3. **Type naming**: Use `namespace/name` format to avoid conflicts
 4. **No type annotations**: Avoid TypeScript types in execute parameters
 5. **File naming**: Use snake_case (`my_model.ts`), test files excluded
+6. **Nesting**: Files can live in subdirectories for organization
 
 ## Data Ownership
 
