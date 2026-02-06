@@ -11,6 +11,7 @@ import {
   type DefinitionData,
   type DefinitionId,
 } from "../../domain/definitions/definition.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import {
   createDefinitionCreated,
@@ -188,6 +189,10 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const isNew = !(await this.exists(path));
 
     const data = definition.toData();
+    // Ensure type metadata is always present in persisted YAML
+    data.type = type.normalized;
+    const modelDef = modelRegistry.get(type);
+    data.typeVersion = modelDef?.version ?? data.typeVersion ?? 1;
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);

@@ -1,4 +1,5 @@
 import { assertStringIncludes } from "@std/assert";
+import { VERSION } from "../src/cli/commands/version.ts";
 
 // Integration tests run the CLI as a subprocess to test end-to-end behavior
 
@@ -37,19 +38,19 @@ Deno.test("CLI with --help shows help", async () => {
 
 Deno.test("CLI with --version shows version", async () => {
   const { stdout } = await runCliCommand(["--version"]);
-  assertStringIncludes(stdout, "0.0.0-dev");
+  assertStringIncludes(stdout, VERSION);
 });
 
 Deno.test("CLI version command works (auto-detects non-TTY for JSON)", async () => {
   const { stdout } = await runCliCommand(["version"]);
   // In non-TTY environment, output is auto-detected as JSON
   const parsed = JSON.parse(stdout);
-  assertStringIncludes(parsed.version, "0.0.0-dev");
+  assertStringIncludes(parsed.version, VERSION);
 });
 
 Deno.test("CLI version command with --json outputs JSON", async () => {
   const { stdout } = await runCliCommand(["--json", "version"]);
   // Should be valid JSON with version field
   const parsed = JSON.parse(stdout);
-  assertStringIncludes(parsed.version, "0.0.0-dev");
+  assertStringIncludes(parsed.version, VERSION);
 });

@@ -10,6 +10,7 @@ import {
   type DefinitionData,
   type DefinitionId,
 } from "../../domain/definitions/definition.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 
 /**
  * YAML-based repository for evaluated definitions.
@@ -218,6 +219,10 @@ export class YamlEvaluatedDefinitionRepository {
     const path = this.getPath(type, definition.id);
 
     const data = definition.toData();
+    // Ensure type metadata is always present in persisted YAML
+    data.type = type.normalized;
+    const modelDef = modelRegistry.get(type);
+    data.typeVersion = modelDef?.version ?? data.typeVersion ?? 1;
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);

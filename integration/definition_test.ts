@@ -51,6 +51,8 @@ Deno.test("Definition: create and save definition with static attributes", async
     // Verify the content
     const content = await Deno.readTextFile(path);
     const data = parseYaml(content) as Record<string, unknown>;
+    assertEquals(data.type, "swamp/echo");
+    assertEquals(data.typeVersion, 1);
     assertEquals(data.name, "my-echo");
     assertEquals(data.version, 1);
     assertEquals((data.tags as Record<string, string>).env, "test");
