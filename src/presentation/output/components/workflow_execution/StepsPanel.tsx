@@ -2,7 +2,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { type RunStatus, StatusIcon } from "./StatusIcon.tsx";
-import type { StepRunData } from "../../workflow_run_output.tsx";
+import type { StepRunData } from "../../workflow_run_output.ts";
 import { calculateScrollWindow } from "../../hooks/mod.ts";
 import { formatDuration } from "../../utils/duration_formatter.ts";
 import type { PendingDep } from "./WorkflowExecutionUI.tsx";

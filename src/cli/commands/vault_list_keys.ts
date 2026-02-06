@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderVaultListKeys,
   type VaultListKeysData,
-} from "../../presentation/output/vault_list_keys_output.tsx";
+} from "../../presentation/output/vault_list_keys_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
@@ -17,7 +17,7 @@ export const vaultListKeysCommand = new Command()
   .arguments("<vault_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, vaultName: string) {
-    const ctx = createContext(options as GlobalOptions, "vault-list-keys");
+    const ctx = createContext(options as GlobalOptions, ["vault", "list-keys"]);
     ctx.logger.debug`Listing secret keys in vault: ${vaultName}`;
 
     const { repoDir, repoContext } = await requireInitializedRepo({

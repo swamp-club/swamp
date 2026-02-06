@@ -4,7 +4,7 @@ import {
   renderWorkflowValidateAll,
   type ValidationItemData,
   type WorkflowValidateData,
-} from "../../presentation/output/workflow_validate_output.tsx";
+} from "../../presentation/output/workflow_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import {
@@ -52,7 +52,10 @@ export const workflowValidateCommand = new Command()
   .arguments("[workflow_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, workflowIdOrName?: string) {
-    const ctx = createContext(options as GlobalOptions, "workflow-validate");
+    const ctx = createContext(options as GlobalOptions, [
+      "workflow",
+      "validate",
+    ]);
     const { repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,

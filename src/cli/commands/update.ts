@@ -4,7 +4,7 @@ import { VERSION } from "./version.ts";
 import { Platform } from "../../domain/update/platform.ts";
 import { UpdateService } from "../../domain/update/update_service.ts";
 import { HttpUpdateChecker } from "../../infrastructure/update/http_update_checker.ts";
-import { renderUpdateResult } from "../../presentation/output/update_output.tsx";
+import { renderUpdateResult } from "../../presentation/output/update_output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -13,7 +13,7 @@ export const updateCommand = new Command()
   .description("Update swamp to the latest version")
   .option("--check", "Check for updates without installing")
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, "update");
+    const ctx = createContext(options as GlobalOptions, ["update"]);
     ctx.logger.debug("Executing update command");
 
     const platform = Platform.detect();

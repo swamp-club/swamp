@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderVaultEdit,
   type VaultEditData,
-} from "../../presentation/output/vault_edit_output.tsx";
+} from "../../presentation/output/vault_edit_output.ts";
 import {
   renderVaultSearch,
   toVaultSearchItem,
@@ -41,7 +41,7 @@ export const vaultEditCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
   .action(async function (options: AnyOptions, vaultNameOrId?: string) {
-    const ctx = createContext(options as GlobalOptions, "vault-edit");
+    const ctx = createContext(options as GlobalOptions, ["vault", "edit"]);
     ctx.logger.debug`Editing vault: ${vaultNameOrId ?? "(interactive)"}`;
 
     const { repoDir, repoContext } = await requireInitializedRepo({

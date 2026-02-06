@@ -19,7 +19,7 @@ import {
   createWorkflowUpdated,
 } from "../../domain/events/types.ts";
 
-const logger = getLogger(["swamp", "workflow-repo"]);
+const logger = getLogger(["workflow-repo"]);
 
 /**
  * YAML-based implementation of WorkflowRepository.

@@ -4,7 +4,7 @@ import {
   renderWorkflowRun,
   type StepRunData,
   type WorkflowRunData,
-} from "../../presentation/output/workflow_run_output.tsx";
+} from "../../presentation/output/workflow_run_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -59,7 +59,11 @@ export const workflowHistoryGetCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
-    const ctx = createContext(options as GlobalOptions, "workflow-history-get");
+    const ctx = createContext(options as GlobalOptions, [
+      "workflow",
+      "history",
+      "get",
+    ]);
     ctx.logger.debug`Getting latest run for workflow: ${workflowIdOrName}`;
 
     const { repoContext } = await requireInitializedRepo({

@@ -2,7 +2,7 @@ import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Initialize logging for tests
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
 Deno.test("dataGcCommand - has correct name", async () => {
   const { dataGcCommand } = await import("./data_gc.ts");

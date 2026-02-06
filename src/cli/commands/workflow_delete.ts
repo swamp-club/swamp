@@ -3,7 +3,7 @@ import {
   renderWorkflowDelete,
   renderWorkflowDeleteCancelled,
   type WorkflowDeleteData,
-} from "../../presentation/output/workflow_delete_output.tsx";
+} from "../../presentation/output/workflow_delete_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import {
@@ -58,7 +58,7 @@ export const workflowDeleteCommand = new Command()
   .option("-f, --force", "Skip confirmation prompt")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
-    const ctx = createContext(options as GlobalOptions, "workflow-delete");
+    const ctx = createContext(options as GlobalOptions, ["workflow", "delete"]);
     ctx.logger.debug`Deleting workflow: ${workflowIdOrName}`;
 
     const { repoDir, repoContext } = await requireInitializedRepo({
@@ -94,7 +94,7 @@ export const workflowDeleteCommand = new Command()
     const runCount = runs.length;
 
     // In interactive mode without --force, prompt for confirmation
-    if (ctx.outputMode === "interactive" && !options.force) {
+    if (ctx.outputMode === "log" && !options.force) {
       const runWarning = runCount > 0
         ? ` This will also delete ${runCount} run${runCount === 1 ? "" : "s"}.`
         : "";

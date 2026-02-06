@@ -7,7 +7,7 @@ import {
 } from "../../presentation/output/vault_type_search_output.tsx";
 import {
   renderVaultTypeDescribe,
-} from "../../presentation/output/vault_type_describe_output.tsx";
+} from "../../presentation/output/vault_type_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 
@@ -47,7 +47,7 @@ function displayVaultTypeDescribe(
   item: VaultTypeSearchItem,
   options: AnyOptions,
 ): void {
-  const ctx = createContext(options as GlobalOptions, "vault-type-search");
+  const ctx = createContext(options as GlobalOptions, ["vault", "type-search"]);
   renderVaultTypeDescribe(item, ctx.outputMode);
 }
 
@@ -56,7 +56,10 @@ export const vaultTypeSearchCommand = new Command()
   .description("Search for vault types")
   .arguments("[query:string]")
   .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, "vault-type-search");
+    const ctx = createContext(options as GlobalOptions, [
+      "vault",
+      "type-search",
+    ]);
     ctx.logger.debug`Searching vault types with query: ${query ?? "(none)"}`;
 
     const allTypes = getAllVaultTypes();

@@ -258,7 +258,7 @@ Deno.test("CLI: model validate errors for non-existent model", async () => {
   });
 });
 
-Deno.test("CLI: model validate auto-detects non-TTY and uses JSON output", async () => {
+Deno.test("CLI: model validate with --json outputs JSON", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -271,7 +271,6 @@ Deno.test("CLI: model validate auto-detects non-TTY and uses JSON output", async
     });
     await definitionRepo.save(modelType, definition);
 
-    // Run without --json - should auto-detect non-TTY and use JSON output
     const result = await runCliCommand(
       [
         "model",
@@ -279,6 +278,7 @@ Deno.test("CLI: model validate auto-detects non-TTY and uses JSON output", async
         "interactive-test",
         "--repo-dir",
         repoDir,
+        "--json",
       ],
       Deno.cwd(),
     );
@@ -421,7 +421,7 @@ Deno.test("CLI: model validate with no args errors when no models found", async 
   });
 });
 
-Deno.test("CLI: model validate with no args auto-detects non-TTY and uses JSON output", async () => {
+Deno.test("CLI: model validate with no args and --json outputs JSON", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -439,13 +439,13 @@ Deno.test("CLI: model validate with no args auto-detects non-TTY and uses JSON o
     await definitionRepo.save(modelType, definition1);
     await definitionRepo.save(modelType, definition2);
 
-    // Run without --json - should auto-detect non-TTY and use JSON output
     const result = await runCliCommand(
       [
         "model",
         "validate",
         "--repo-dir",
         repoDir,
+        "--json",
       ],
       Deno.cwd(),
     );

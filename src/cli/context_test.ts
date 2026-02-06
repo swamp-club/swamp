@@ -7,15 +7,12 @@ import {
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 // Initialize logging once before tests run
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
-Deno.test("createContext auto-detects output mode based on TTY state", () => {
-  // When no explicit mode is set, auto-detection uses TTY state:
-  // TTY = interactive, non-TTY = json
+Deno.test("createContext returns log mode by default", () => {
   const options: GlobalOptions = {};
   const context = createContext(options);
-  const isTty = Deno.stdin.isTerminal();
-  assertEquals(context.outputMode, isTty ? "interactive" : "json");
+  assertEquals(context.outputMode, "log");
 });
 
 Deno.test("createContext returns json mode when json option is true", () => {
@@ -57,52 +54,19 @@ Deno.test("createContext returns a logger object", () => {
 
 Deno.test("createContext uses custom logger name when provided", () => {
   const options: GlobalOptions = {};
-  const context = createContext(options, "custom-logger");
+  const context = createContext(options, ["custom", "logger"]);
   // Logger is created - we can verify it exists and has expected methods
   assertEquals(typeof context.logger.debug, "function");
   assertEquals(typeof context.logger.error, "function");
 });
 
-Deno.test("getOutputModeFromArgs auto-detects based on TTY state", () => {
-  // When no explicit mode flag is passed, auto-detection uses TTY state:
-  // TTY = interactive, non-TTY = json
-  const isTty = Deno.stdin.isTerminal();
-  const expected = isTty ? "interactive" : "json";
-  assertEquals(getOutputModeFromArgs([]), expected);
-  assertEquals(getOutputModeFromArgs(["model", "create"]), expected);
+Deno.test("getOutputModeFromArgs returns log by default", () => {
+  assertEquals(getOutputModeFromArgs([]), "log");
+  assertEquals(getOutputModeFromArgs(["model", "create"]), "log");
 });
 
 Deno.test("getOutputModeFromArgs returns json when --json is present", () => {
   assertEquals(getOutputModeFromArgs(["--json"]), "json");
   assertEquals(getOutputModeFromArgs(["model", "create", "--json"]), "json");
   assertEquals(getOutputModeFromArgs(["--json", "model", "create"]), "json");
-});
-
-Deno.test("createContext returns stream mode when stream option is true", () => {
-  const options: GlobalOptions = { stream: true };
-  const context = createContext(options);
-  assertEquals(context.outputMode, "stream");
-});
-
-Deno.test("createContext prefers stream over json when both are true", () => {
-  const options: GlobalOptions = { stream: true, json: true };
-  const context = createContext(options);
-  assertEquals(context.outputMode, "stream");
-});
-
-Deno.test("getOutputModeFromArgs returns stream when --stream is present", () => {
-  assertEquals(getOutputModeFromArgs(["--stream"]), "stream");
-  assertEquals(
-    getOutputModeFromArgs(["workflow", "run", "--stream"]),
-    "stream",
-  );
-  assertEquals(
-    getOutputModeFromArgs(["--stream", "workflow", "run"]),
-    "stream",
-  );
-});
-
-Deno.test("getOutputModeFromArgs prefers stream over json when both are present", () => {
-  assertEquals(getOutputModeFromArgs(["--stream", "--json"]), "stream");
-  assertEquals(getOutputModeFromArgs(["--json", "--stream"]), "stream");
 });
