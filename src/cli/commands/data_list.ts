@@ -4,7 +4,7 @@ import {
   type DataListData,
   type DataListItem,
   renderDataList,
-} from "../../presentation/output/data_list_output.tsx";
+} from "../../presentation/output/data_list_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -24,7 +24,7 @@ export const dataListCommand = new Command()
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName: string) {
-    const ctx = createContext(options as GlobalOptions, "data-list");
+    const ctx = createContext(options as GlobalOptions, ["data", "list"]);
     ctx.logger.debug`Listing data for model: ${modelIdOrName}`;
 
     const { repoContext } = await requireInitializedRepo({

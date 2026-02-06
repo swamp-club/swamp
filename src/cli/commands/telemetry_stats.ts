@@ -6,7 +6,7 @@ import { JsonTelemetryRepository } from "../../infrastructure/persistence/json_t
 import {
   renderNoTelemetry,
   renderTelemetryStats,
-} from "../../presentation/output/telemetry_stats_output.tsx";
+} from "../../presentation/output/telemetry_stats_output.ts";
 import { VERSION } from "./version.ts";
 
 export const telemetryStatsCommand = new Command()
@@ -15,7 +15,7 @@ export const telemetryStatsCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--days <days:number>", "Number of days to analyze", { default: 2 })
   .action(async function (options) {
-    const ctx = createContext(options as GlobalOptions, "telemetry-stats");
+    const ctx = createContext(options as GlobalOptions, ["telemetry", "stats"]);
     ctx.logger.debug`Fetching telemetry stats`;
 
     const { repoDir } = await requireInitializedRepo({

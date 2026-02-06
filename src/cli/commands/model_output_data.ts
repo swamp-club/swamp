@@ -29,7 +29,11 @@ export const modelOutputDataCommand = new Command()
     "Data name to retrieve (if output has multiple artifacts)",
   )
   .action(async function (options: AnyOptions, outputIdArg: string) {
-    const ctx = createContext(options as GlobalOptions, "model-output-data");
+    const ctx = createContext(options as GlobalOptions, [
+      "model",
+      "output",
+      "data",
+    ]);
     ctx.logger.debug`Getting data for output: ${outputIdArg}`;
 
     const { repoContext } = await requireInitializedRepo({

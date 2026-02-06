@@ -6,7 +6,7 @@ import {
   type RepoIndexPruneData,
   type RepoIndexRebuildData,
   type RepoIndexVerifyData,
-} from "../../presentation/output/repo_output.tsx";
+} from "../../presentation/output/repo_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 
@@ -19,7 +19,7 @@ export const repoIndexCommand = new Command()
   .option("--verify", "Verify symlink integrity without rebuilding")
   .option("--prune", "Remove broken symlinks without rebuilding")
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, "repo-index");
+    const ctx = createContext(options as GlobalOptions, ["repo", "index"]);
 
     // Validate repo initialization (with indexing disabled for manual operations)
     const { repoDir, repoContext } = await requireInitializedRepo(

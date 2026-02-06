@@ -57,7 +57,7 @@ export const repoWebappCommand = new Command()
   .option("-p, --port <port:number>", "Port to serve on", { default: 8080 })
   .option("--host <host:string>", "Host to bind to", { default: "localhost" })
   .action(async function (options: AnyOptions, pathArg?: string) {
-    const ctx = createContext(options as GlobalOptions, "repo-webapp");
+    const ctx = createContext(options as GlobalOptions, ["repo", "webapp"]);
     ctx.logger.debug`Starting webapp server for: ${pathArg ?? "."}`;
 
     const repoPath = RepoPath.create(pathArg ?? ".");
