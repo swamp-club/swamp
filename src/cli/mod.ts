@@ -11,7 +11,7 @@ import { vaultCommand } from "./commands/vault.ts";
 import { dataCommand } from "./commands/data.ts";
 import { telemetryCommand } from "./commands/telemetry_stats.ts";
 import { updateCommand } from "./commands/update.ts";
-import type { GlobalOptions } from "./context.ts";
+import { type GlobalOptions, isStdinTty } from "./context.ts";
 import {
   ModelNameType,
   ModelTypeType,
@@ -150,9 +150,17 @@ export async function runCli(args: string[]): Promise<void> {
     .globalOption("-q, --quiet", "Suppress non-essential output")
     .globalOption("-v, --verbose", "Show detailed output")
     .globalOption("--no-telemetry", "Disable telemetry for this invocation")
+    .globalOption(
+      "--show-properties",
+      "Show structured properties in log output",
+    )
     .globalAction(async function (options: GlobalOptions) {
+      const isInteractiveOrStream = options.stream ||
+        (!options.json && isStdinTty());
       await initializeLogging({
         debugLogs: options.debugLogs ?? false,
+        prettyOutput: isInteractiveOrStream,
+        showProperties: options.showProperties ?? false,
       });
     })
     .action(function () {
