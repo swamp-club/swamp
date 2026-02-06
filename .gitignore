@@ -26,4 +26,5 @@ experiments/webapp/frontend/dist/
 experiments/webapp/frontend/tsconfig.tsbuildinfo
 .vault-*/
 .claude/settings.local.json
+CLAUDE.local.md
 .envrc
