@@ -13,15 +13,15 @@
 
 // Import all model files to trigger registration
 import "./echo/echo_model.ts";
-import "./aws/ec2/instance/ec2_instance_model.ts";
-import "./aws/ec2/subnet/ec2_subnet_model.ts";
-import "./aws/ec2/vpc/ec2_vpc_model.ts";
 import "./keeb/shell/shell_model.ts";
 import "./systemd/journalctl/journalctl_model.ts";
 import "./command/curl/curl_model.ts";
 import "./aws/cli/aws_cli_model.ts";
 import "./mermaid/workflow_diagram/workflow_diagram_model.ts";
 import "./lets-get-sensitive/vault_model.ts";
+
+// Import all of the AWS models - the models in this file are created by the clover pipeline
+import "./aws/aws_models.ts";
 
 // Re-export the registry for convenient access
 export { modelRegistry } from "./model.ts";
