@@ -47,7 +47,7 @@ import {
 import type { YamlVaultConfigRepository } from "../persistence/yaml_vault_config_repository.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 
-const logger = getLogger(["swamp", "repo-index"]);
+const logger = getLogger(["repo-index"]);
 
 /**
  * Index mode for symlink creation.

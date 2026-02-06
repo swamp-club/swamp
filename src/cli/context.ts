@@ -1,16 +1,17 @@
 import type { Logger } from "@logtape/logtape";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import type { OutputMode } from "../presentation/output/output.tsx";
+import type { OutputMode } from "../presentation/output/output.ts";
 
 export type Verbosity = "quiet" | "normal" | "verbose";
 
 export interface GlobalOptions {
-  debugLogs?: boolean;
   json?: boolean;
-  stream?: boolean;
+  logLevel?: string;
   quiet?: boolean;
   verbose?: boolean;
   noTelemetry?: boolean;
+  showProperties?: boolean;
+  color?: boolean;
 }
 
 export interface CommandContext {
@@ -29,7 +30,7 @@ function getVerbosity(options: GlobalOptions): Verbosity {
  * Checks if stdin is a TTY (terminal).
  * Returns false if stdin is not a terminal (e.g., piped input).
  */
-function isStdinTty(): boolean {
+export function isStdinTty(): boolean {
   try {
     return Deno.stdin.isTerminal();
   } catch {
@@ -39,35 +40,24 @@ function isStdinTty(): boolean {
 
 export function createContext(
   options: GlobalOptions,
-  loggerName: string = "cli",
+  loggerCategory: string[] = ["cli"],
 ): CommandContext {
-  // Auto-detect output mode: stream > json > interactive (TTY) > json (non-TTY)
-  const outputMode: OutputMode = options.stream
-    ? "stream"
-    : options.json
-    ? "json"
-    : isStdinTty()
-    ? "interactive"
-    : "json";
+  const outputMode: OutputMode = options.json ? "json" : "log";
 
   return {
     outputMode,
     verbosity: getVerbosity(options),
-    logger: getSwampLogger(loggerName),
+    logger: getSwampLogger(loggerCategory),
   };
 }
 
 /**
  * Determines the output mode from raw CLI arguments.
  * Used for error handling before the CLI has fully parsed options.
- * Falls back to JSON mode if stdin is not a TTY.
  */
 export function getOutputModeFromArgs(args: string[]): OutputMode {
-  if (args.includes("--stream")) {
-    return "stream";
-  }
   if (args.includes("--json")) {
     return "json";
   }
-  return isStdinTty() ? "interactive" : "json";
+  return "log";
 }

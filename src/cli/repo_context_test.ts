@@ -9,7 +9,7 @@ import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 
 // Initialize logging for tests
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
 /**
  * Helper to run tests with a temporary directory.
@@ -53,18 +53,20 @@ Deno.test("requireInitializedRepo - throws UserError in json mode for non-initia
   });
 });
 
-Deno.test("requireInitializedRepo - throws UserError in stream mode for non-initialized repo", async () => {
+Deno.test("requireInitializedRepo - throws UserError in log mode for non-initialized repo", async () => {
   await withTempDir(async (dir) => {
     const error = await assertRejects(
       () =>
         requireInitializedRepo({
           repoDir: dir,
-          outputMode: "stream",
+          outputMode: "log",
         }),
       UserError,
     );
 
     assertStringIncludes(error.message, "Not a swamp repository");
+    assertStringIncludes(error.message, "swamp repo init");
+    assertStringIncludes(error.message, "--repo-dir");
   });
 });
 
@@ -105,13 +107,13 @@ Deno.test("requireInitializedRepo - returns context for initialized repo (json m
   });
 });
 
-Deno.test("requireInitializedRepo - returns context for initialized repo (interactive mode)", async () => {
+Deno.test("requireInitializedRepo - returns context for initialized repo (log mode)", async () => {
   await withTempDir(async (dir) => {
     await initializeRepo(dir);
 
     const result = await requireInitializedRepo({
       repoDir: dir,
-      outputMode: "interactive",
+      outputMode: "log",
     });
 
     assertEquals(result.repoDir, dir);

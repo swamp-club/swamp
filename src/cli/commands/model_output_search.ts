@@ -7,8 +7,8 @@ import {
 import {
   type ModelOutputGetData,
   renderModelOutputGet,
-} from "../../presentation/output/model_output_get_output.tsx";
-import type { OutputMode } from "../../presentation/output/output.tsx";
+} from "../../presentation/output/model_output_get_output.ts";
+import type { OutputMode } from "../../presentation/output/output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -132,7 +132,11 @@ export const modelOutputSearchCommand = new Command()
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, "model-output-search");
+    const ctx = createContext(options as GlobalOptions, [
+      "model",
+      "output",
+      "search",
+    ]);
     ctx.logger.debug`Searching outputs with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepo({

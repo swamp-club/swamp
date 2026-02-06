@@ -4,7 +4,7 @@ import {
   type ModelEvaluateItemData,
   renderModelEvaluate,
   renderModelEvaluateSingle,
-} from "../../presentation/output/model_evaluate_output.tsx";
+} from "../../presentation/output/model_evaluate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
@@ -21,7 +21,10 @@ export const modelEvaluateCommand = new Command()
   .option("--all", "Evaluate all model definitions")
   .action(
     async function (options: AnyOptions, modelIdOrName?: string) {
-      const ctx = createContext(options as GlobalOptions, "model-evaluate");
+      const ctx = createContext(options as GlobalOptions, [
+        "model",
+        "evaluate",
+      ]);
       const { repoDir, repoContext } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,

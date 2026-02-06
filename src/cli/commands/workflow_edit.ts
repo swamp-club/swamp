@@ -4,7 +4,7 @@ import { parse as parseYaml } from "@std/yaml";
 import {
   renderWorkflowEdit,
   type WorkflowEditData,
-} from "../../presentation/output/workflow_edit_output.tsx";
+} from "../../presentation/output/workflow_edit_output.ts";
 import {
   renderWorkflowSearch,
   type WorkflowSearchData,
@@ -76,7 +76,7 @@ export const workflowEditCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName?: string) {
-    const ctx = createContext(options as GlobalOptions, "workflow-edit");
+    const ctx = createContext(options as GlobalOptions, ["workflow", "edit"]);
     ctx.logger.debug`Editing workflow: ${workflowIdOrName ?? "(interactive)"}`;
 
     const { repoContext } = await requireInitializedRepo({
