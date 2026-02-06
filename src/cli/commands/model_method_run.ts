@@ -3,7 +3,7 @@ import {
   type ArtifactInfo,
   type ModelMethodRunData,
   renderModelMethodRun,
-} from "../../presentation/output/model_method_run_output.tsx";
+} from "../../presentation/output/model_method_run_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -11,6 +11,7 @@ import { ModelOutput } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
+import { getRunLogger } from "../../infrastructure/logging/logger.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -30,7 +31,11 @@ export const modelMethodRunCommand = new Command()
       modelIdOrName: string,
       methodName: string,
     ) {
-      const ctx = createContext(options as GlobalOptions, "model-method-run");
+      const ctx = createContext(options as GlobalOptions, [
+        "model",
+        "method",
+        "run",
+      ]);
       const { repoDir, repoContext } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,
@@ -54,8 +59,13 @@ export const modelMethodRunCommand = new Command()
       }
       const { definition, type: modelType } = result;
 
-      ctx.logger
-        .debug`Found model: id=${definition.id}, type=${modelType.normalized}`;
+      // Create run logger for real-time output
+      const runLogger = getRunLogger(definition.name, methodName);
+
+      runLogger.info("Found model {name} ({type})", {
+        name: definition.name,
+        type: modelType.normalized,
+      });
 
       // Get the model definition from registry
       const modelDef = modelRegistry.get(modelType);
@@ -83,16 +93,15 @@ export const modelMethodRunCommand = new Command()
 
       let evaluatedDefinition = definition;
       if (evaluationService.hasDefinitionExpressions(definition)) {
-        ctx.logger.debug`Evaluating expressions in model definition`;
+        runLogger.info("Evaluating expressions");
         const evalResult = await evaluationService.evaluateDefinition(
           definition,
           modelType,
         );
         evaluatedDefinition = evalResult.definition;
-        ctx.logger.debug`Expression evaluation complete`;
       }
 
-      ctx.logger.debug`Executing method '${methodName}'`;
+      runLogger.info("Executing method {method}", { method: methodName });
 
       // Create ModelOutput for tracking (use original definition for provenance)
       const definitionHash = await definition.computeHash();
@@ -129,7 +138,7 @@ export const modelMethodRunCommand = new Command()
           },
         );
 
-        ctx.logger.debug`Method executed`;
+        runLogger.info("Method executed");
 
         // Handle data output persistence
         if (execResult.dataOutputs && execResult.dataOutputs.length > 0) {
@@ -162,7 +171,11 @@ export const modelMethodRunCommand = new Command()
               dataOutput.name,
               saveResult.version,
             );
-            ctx.logger.debug`Data saved to: ${dataPath}`;
+
+            runLogger.info("Data saved to {path}", {
+              path: dataPath,
+              name: dataOutput.name,
+            });
 
             // Track artifact in output
             output.addDataArtifact({
@@ -202,33 +215,39 @@ export const modelMethodRunCommand = new Command()
         const errorStack = error instanceof Error ? error.stack : undefined;
         output.markFailed({ message: errorMessage, stack: errorStack });
         await outputRepo.save(modelType, methodName, output);
+
+        runLogger.error("Method {method} failed: {error}", {
+          method: methodName,
+          model: definition.name,
+          error: errorMessage,
+        });
         throw error;
       }
 
-      // Render output based on output mode
-      if (ctx.outputMode === "stream") {
-        // Stream mode: print simple colored success message
-        const GREEN = "\x1b[32m";
-        const RESET = "\x1b[0m";
-        const prefix = `${GREEN}[${definition.name}/${methodName}]${RESET}`;
-        console.log(`${prefix} Method completed successfully`);
-        for (const artifact of dataArtifacts) {
-          console.log(`${prefix} Data: ${artifact.path}`);
-        }
-      } else {
+      // JSON mode: use existing render function
+      if (ctx.outputMode === "json") {
         const data: ModelMethodRunData = {
           modelId: definition.id,
           modelName: definition.name,
           type: modelType.normalized,
           methodName,
-          // Use first data artifact as primary data for backward compat
           data: dataArtifacts.length > 0 ? dataArtifacts[0] : undefined,
-          // Additional data artifacts could be shown as logs (legacy output field)
           logs: dataArtifacts.length > 1 ? dataArtifacts.slice(1) : undefined,
         };
 
         renderModelMethodRun(data, ctx.outputMode);
+      } else {
+        // Interactive/stream: summary as final log line
+        runLogger.with({ summary: true }).info(
+          "Method {method} completed on {model}",
+          {
+            method: methodName,
+            model: definition.name,
+            artifacts: dataArtifacts.length,
+          },
+        );
       }
+
       ctx.logger.debug("Method run command completed");
     },
   );

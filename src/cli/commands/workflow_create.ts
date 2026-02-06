@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderWorkflowCreate,
   type WorkflowCreateData,
-} from "../../presentation/output/workflow_create_output.tsx";
+} from "../../presentation/output/workflow_create_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -18,7 +18,7 @@ export const workflowCreateCommand = new Command()
   .arguments("<name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, name: string) {
-    const ctx = createContext(options as GlobalOptions, "workflow-create");
+    const ctx = createContext(options as GlobalOptions, ["workflow", "create"]);
     ctx.logger.debug`Creating workflow: name=${name}`;
 
     const { repoContext } = await requireInitializedRepo({

@@ -5,7 +5,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import "../../domain/models/models.ts";
 
 // Initialize logging for tests
-await initializeLogging({ debugLogs: false });
+await initializeLogging({});
 
 Deno.test("modelDeleteCommand module loads", async () => {
   const { modelDeleteCommand } = await import("./model_delete.ts");

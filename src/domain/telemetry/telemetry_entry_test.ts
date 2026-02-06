@@ -72,7 +72,7 @@ Deno.test("TelemetryEntry.toData serializes to data object", () => {
       subcommand: "run",
       args: ["<REDACTED>", "<REDACTED>"],
       optionKeys: ["--verbose"],
-      globalOptions: ["--debug-logs"],
+      globalOptions: ["--verbose"],
     },
     result: {
       status: "user_error",

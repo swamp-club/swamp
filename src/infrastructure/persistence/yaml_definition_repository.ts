@@ -20,7 +20,7 @@ import {
   createDefinitionUpdated,
 } from "../../domain/events/types.ts";
 
-const logger = getLogger(["swamp", "definition-repo"]);
+const logger = getLogger(["definition-repo"]);
 
 /**
  * YAML-based implementation of DefinitionRepository.

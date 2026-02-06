@@ -49,10 +49,10 @@ After completing work, run these checks:
 - Follows domain driven design principles. Use the `ddd` skill when designing or
   reviewing code.
 - Uses Cliffy for the command line
-- Uses Ink for interactive output
-- Uses LogTape for logging
-- Uses JSON for non-interactive output
-- Every command _must_ support both interactive and non-interactive output
+- Uses Ink for interactive terminal UIs (search, TUI dashboard)
+- Uses LogTape for logging and non-interactive output (`"log"` mode)
+- Uses JSON for structured output (`"json"` mode via `--json`)
+- Every command _must_ support both `"log"` and `"json"` output modes
 - You can read the files in `design/*.md` to understand elements of the design
 
 ## Testing
@@ -63,7 +63,9 @@ After completing work, run these checks:
   etc.)
 - Use `ink-testing-library` for testing Ink components
 - Test private functions indirectly through public APIs
-- Run tests with `deno task test`
+- Run all tests with `deno task test`
+- Run a single test file: `deno task test src/cli/repo_context_test.ts` (do not
+  use `--` before the file path)
 - Refactorings that change shared constants, paths, or cross-component contracts
   must include integration tests to verify components still work together
 

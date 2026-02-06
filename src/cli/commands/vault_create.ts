@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderVaultCreate,
   type VaultCreateData,
-} from "../../presentation/output/vault_create_output.tsx";
+} from "../../presentation/output/vault_create_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { getVaultType } from "../../domain/vaults/vault_types.ts";
@@ -74,7 +74,7 @@ export const vaultCreateCommand = new Command()
       vaultType: string,
       vaultNameArg?: string,
     ) {
-      const ctx = createContext(options as GlobalOptions, "vault-create");
+      const ctx = createContext(options as GlobalOptions, ["vault", "create"]);
       const { repoDir, repoContext } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,

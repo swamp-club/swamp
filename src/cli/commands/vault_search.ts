@@ -7,7 +7,7 @@ import {
 } from "../../presentation/output/vault_search_output.tsx";
 import {
   renderVaultDescribe,
-} from "../../presentation/output/vault_describe_output.tsx";
+} from "../../presentation/output/vault_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import type { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -63,7 +63,7 @@ async function displayVaultDescribe(
   repo: YamlVaultConfigRepository,
   options: AnyOptions,
 ): Promise<void> {
-  const ctx = createContext(options as GlobalOptions, "vault-search");
+  const ctx = createContext(options as GlobalOptions, ["vault", "search"]);
   const config = await getVaultConfig(repo, item.name);
 
   if (config) {
@@ -77,7 +77,7 @@ export const vaultSearchCommand = new Command()
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, "vault-search");
+    const ctx = createContext(options as GlobalOptions, ["vault", "search"]);
     ctx.logger.debug`Searching vaults with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepo({

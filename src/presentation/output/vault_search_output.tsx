@@ -1,7 +1,7 @@
 // deno-lint-ignore verbatim-module-syntax
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
-import type { OutputMode } from "./output.tsx";
+import type { OutputMode } from "./output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
 

@@ -4,7 +4,7 @@ import {
   renderWorkflowRun,
   type StepRunData,
   type WorkflowRunData,
-} from "../../presentation/output/workflow_run_output.tsx";
+} from "../../presentation/output/workflow_run_output.ts";
 import {
   renderWorkflowHistorySearch,
   type WorkflowHistorySearchData,
@@ -104,7 +104,7 @@ export const workflowHistorySearchCommand = new Command()
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(
       options as GlobalOptions,
-      "workflow-history-search",
+      ["workflow", "history", "search"],
     );
     ctx.logger.debug`Searching workflow history with query: ${
       query ?? "(none)"
