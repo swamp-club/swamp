@@ -4,7 +4,7 @@ import {
   type TypeSearchData,
   type TypeSearchItem,
 } from "../../presentation/output/type_search_output.tsx";
-import { renderTypeDescribe } from "../../presentation/output/type_describe_output.tsx";
+import { renderTypeDescribe } from "../../presentation/output/type_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -49,7 +49,7 @@ function filterTypes(types: TypeSearchItem[], query: string): TypeSearchItem[] {
  * Displays the type describe output for a selected type.
  */
 function displayTypeDescribe(item: TypeSearchItem, options: AnyOptions): void {
-  const ctx = createContext(options as GlobalOptions, "type-search");
+  const ctx = createContext(options as GlobalOptions, ["type", "search"]);
   const modelType = ModelType.create(item.normalized);
   const definition = modelRegistry.get(modelType);
 
@@ -86,7 +86,7 @@ export const typeSearchCommand = new Command()
   .description("Search for model types")
   .arguments("[query:string]")
   .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, "type-search");
+    const ctx = createContext(options as GlobalOptions, ["type", "search"]);
     ctx.logger.debug`Searching types with query: ${query ?? "(none)"}`;
 
     const allTypes = getAllTypes();

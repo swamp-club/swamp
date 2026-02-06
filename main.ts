@@ -1,12 +1,15 @@
 import { runCli } from "./src/cli/mod.ts";
-import { getOutputModeFromArgs } from "./src/cli/context.ts";
-import { renderError } from "./src/presentation/output/error_output.tsx";
+import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
+import { renderError } from "./src/presentation/output/error_output.ts";
 
 if (import.meta.main) {
   try {
     await runCli(Deno.args);
   } catch (error) {
-    renderError(error, getOutputModeFromArgs(Deno.args));
+    await initializeLogging({
+      jsonMode: Deno.args.includes("--json"),
+    });
+    renderError(error);
     Deno.exit(1);
   }
 }

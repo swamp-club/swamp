@@ -18,7 +18,6 @@ const ARG_SCHEMAS: Record<string, readonly ("categorical" | "redact")[]> = {
 
 /** Global options that are tracked separately */
 const GLOBAL_OPTIONS = new Set([
-  "--debug-logs",
   "--json",
   "--stream",
   "-q",
@@ -151,7 +150,6 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
  */
 function isKnownFlag(option: string): boolean {
   const flags = new Set([
-    "--debug-logs",
     "--json",
     "--stream",
     "-q",

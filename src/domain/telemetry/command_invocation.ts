@@ -11,7 +11,7 @@ export interface CommandInvocation {
   readonly args: string[];
   /** Command-specific option keys (e.g., ["--repo-dir", "--json"]) */
   readonly optionKeys: string[];
-  /** Global option keys (e.g., ["--debug-logs", "--verbose"]) */
+  /** Global option keys (e.g., ["--verbose", "--json"]) */
   readonly globalOptions: string[];
 }
 

@@ -4,7 +4,7 @@ import {
   renderModelValidate,
   renderModelValidateAll,
   type ValidationItemData,
-} from "../../presentation/output/model_validate_output.tsx";
+} from "../../presentation/output/model_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -37,7 +37,10 @@ export const modelValidateCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(
     async function (options: AnyOptions, modelIdOrName?: string) {
-      const ctx = createContext(options as GlobalOptions, "model-validate");
+      const ctx = createContext(options as GlobalOptions, [
+        "model",
+        "validate",
+      ]);
       const { repoContext } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,

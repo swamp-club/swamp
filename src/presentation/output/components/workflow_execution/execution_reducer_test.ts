@@ -5,7 +5,7 @@ import {
   executionReducer,
 } from "./execution_reducer.ts";
 import type { WorkflowData } from "../../../../domain/workflows/workflow.ts";
-import type { WorkflowRunData } from "../../workflow_run_output.tsx";
+import type { WorkflowRunData } from "../../workflow_run_output.ts";
 
 const mockWorkflow: WorkflowData = {
   id: "test-workflow-id",

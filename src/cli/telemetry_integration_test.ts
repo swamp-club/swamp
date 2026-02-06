@@ -42,14 +42,14 @@ Deno.test("extractCommandInfo records categorical args for model create", () => 
 Deno.test("extractCommandInfo extracts global options", () => {
   const info = extractCommandInfo([
     "--json",
-    "--debug-logs",
+    "--verbose",
     "model",
     "create",
   ]);
 
   assertEquals(info.command, "model");
   assertEquals(info.subcommand, "create");
-  assertEquals(info.globalOptions, ["--json", "--debug-logs"]);
+  assertEquals(info.globalOptions, ["--json", "--verbose"]);
   assertEquals(info.optionKeys, []);
 });
 

@@ -2,7 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderVaultGet,
   type VaultGetData,
-} from "../../presentation/output/vault_get_output.tsx";
+} from "../../presentation/output/vault_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -21,7 +21,7 @@ export const vaultGetCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
   .action(async function (options: AnyOptions, vaultNameOrId: string) {
-    const ctx = createContext(options as GlobalOptions, "vault-get");
+    const ctx = createContext(options as GlobalOptions, ["vault", "get"]);
     ctx.logger.debug`Getting vault: ${vaultNameOrId}`;
 
     const { repoContext } = await requireInitializedRepo({

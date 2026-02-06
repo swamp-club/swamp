@@ -4,7 +4,7 @@ import { parse as parseYaml } from "@std/yaml";
 import {
   type ModelEditData,
   renderModelEdit,
-} from "../../presentation/output/model_edit_output.tsx";
+} from "../../presentation/output/model_edit_output.ts";
 import {
   type ModelSearchData,
   type ModelSearchItem,
@@ -63,7 +63,7 @@ export const modelEditCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
-    const ctx = createContext(options as GlobalOptions, "model-edit");
+    const ctx = createContext(options as GlobalOptions, ["model", "edit"]);
     ctx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;
 
     const { repoContext } = await requireInitializedRepo({

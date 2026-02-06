@@ -2,7 +2,7 @@
 import process from "node:process";
 import React from "react";
 import { render } from "ink";
-import type { OutputMode } from "./output.tsx";
+import type { OutputMode } from "./output.ts";
 import type { WorkflowData } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type {
@@ -14,7 +14,7 @@ import {
   renderWorkflowRun,
   type StepRunData,
   type WorkflowRunData,
-} from "./workflow_run_output.tsx";
+} from "./workflow_run_output.ts";
 import {
   type ExecutionAction,
   WorkflowExecutionUI,
