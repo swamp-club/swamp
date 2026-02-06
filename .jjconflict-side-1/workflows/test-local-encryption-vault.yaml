@@ -1,0 +1,29 @@
+id: test-local-encryption-vault
+name: test-local-encryption-vault
+description: Test local encryption vault functionality by storing, retrieving, and echoing a secret
+version: 1
+
+jobs:
+  - name: vault-test-flow
+    description: Complete vault test flow - store secret, retrieve it, then echo the result
+    steps:
+      - name: store-secret
+        description: Store a test secret in the local encryption vault
+        task:
+          type: model_method
+          modelIdOrName: store-test-secret
+          methodName: put
+
+      - name: retrieve-secret
+        description: Retrieve the stored secret from vault
+        task:
+          type: model_method
+          modelIdOrName: get-test-secret
+          methodName: get
+
+      - name: echo-retrieved-value
+        description: Echo the retrieved secret to verify it worked
+        task:
+          type: model_method
+          modelIdOrName: echo-secret-result
+          methodName: write
