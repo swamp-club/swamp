@@ -1,5 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { getLogger } from "@logtape/logtape";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -17,6 +18,8 @@ import {
   createWorkflowDeleted,
   createWorkflowUpdated,
 } from "../../domain/events/types.ts";
+
+const logger = getLogger(["swamp", "workflow-repo"]);
 
 /**
  * YAML-based implementation of WorkflowRepository.
@@ -60,9 +63,13 @@ export class YamlWorkflowRepository implements WorkflowRepository {
           entry.name.endsWith(".yaml")
         ) {
           const path = join(dir, entry.name);
-          const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as WorkflowData;
-          workflows.push(Workflow.fromData(data));
+          try {
+            const content = await Deno.readTextFile(path);
+            const data = parseYaml(content) as WorkflowData;
+            workflows.push(Workflow.fromData(data));
+          } catch (parseError) {
+            logger.warn`Skipping broken workflow file ${path}: ${parseError}`;
+          }
         }
       }
     } catch (error) {

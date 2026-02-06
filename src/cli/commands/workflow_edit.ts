@@ -1,4 +1,5 @@
 import { Command } from "@cliffy/command";
+import { join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
   renderWorkflowEdit,
@@ -51,6 +52,23 @@ function toSearchItem(workflow: Workflow): WorkflowSearchItem {
   };
 }
 
+/**
+ * Resolves the symlink at workflows/{name}/workflow.yaml to find the actual
+ * file path. Returns null if the symlink doesn't exist.
+ */
+export async function resolveWorkflowSymlink(
+  repoDir: string,
+  name: string,
+): Promise<string | null> {
+  const symlinkPath = join(repoDir, "workflows", name, "workflow.yaml");
+  try {
+    const realPath = await Deno.realPath(symlinkPath);
+    return realPath;
+  } catch {
+    return null;
+  }
+}
+
 export const workflowEditCommand = new Command()
   .name("edit")
   .description("Edit a workflow file")
@@ -65,11 +83,13 @@ export const workflowEditCommand = new Command()
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });
+    const repoDir = options.repoDir ?? ".";
     const repo = repoContext.workflowRepo;
     const editorService = new EditorService();
 
     // Look up the workflow
     let workflow: Workflow | null = null;
+    let filePath: string | null = null;
 
     if (!workflowIdOrName) {
       // No argument provided - check if interactive mode
@@ -79,7 +99,7 @@ export const workflowEditCommand = new Command()
         );
       }
 
-      // Show search UI to select a workflow
+      // Show search UI to select a workflow (resilient findAll skips broken files)
       const allWorkflows = await repo.findAll();
 
       if (allWorkflows.length === 0) {
@@ -107,25 +127,51 @@ export const workflowEditCommand = new Command()
       if (!workflow) {
         throw new UserError(`Workflow not found: ${selected.id}`);
       }
+      filePath = repo.getPath(workflow.id);
     } else if (isUuid(workflowIdOrName)) {
       ctx.logger.debug`Looking up by ID: ${workflowIdOrName}`;
-      const id: WorkflowId = createWorkflowId(workflowIdOrName);
-      workflow = await repo.findById(id);
-      if (!workflow) {
+      try {
+        const id: WorkflowId = createWorkflowId(workflowIdOrName);
+        workflow = await repo.findById(id);
+      } catch (error) {
+        ctx.logger
+          .debug`Workflow lookup by ID failed, will try symlink fallback: ${error}`;
+      }
+
+      if (workflow) {
+        filePath = repo.getPath(workflow.id);
+      } else {
+        // ID-based lookup doesn't have a symlink fallback (symlinks are by name)
         throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
     } else {
       ctx.logger.debug`Looking up by name: ${workflowIdOrName}`;
-      workflow = await repo.findByName(workflowIdOrName);
-      if (!workflow) {
-        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+      try {
+        workflow = await repo.findByName(workflowIdOrName);
+      } catch (error) {
+        ctx.logger
+          .debug`Workflow lookup by name failed, will try symlink fallback: ${error}`;
+      }
+
+      if (workflow) {
+        filePath = repo.getPath(workflow.id);
+      } else {
+        // Try symlink fallback for name-based lookup
+        const resolvedPath = await resolveWorkflowSymlink(
+          repoDir,
+          workflowIdOrName,
+        );
+        if (resolvedPath) {
+          ctx.logger
+            .debug`Using symlink fallback for broken workflow: ${resolvedPath}`;
+          filePath = resolvedPath;
+        } else {
+          throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+        }
       }
     }
 
-    ctx.logger.debug`Found workflow: id=${workflow.id}, name=${workflow.name}`;
-
-    // Get the file path
-    const filePath = repo.getPath(workflow.id);
+    ctx.logger.debug`Using file path: ${filePath}`;
 
     // Check for stdin content (non-interactive update mode)
     const stdinContent = await readStdin();
@@ -133,27 +179,42 @@ export const workflowEditCommand = new Command()
     if (stdinContent !== null) {
       ctx.logger.debug`Reading workflow content from stdin`;
 
-      // Parse YAML content from stdin
-      const yamlData = parseYaml(stdinContent) as WorkflowData;
+      if (!workflow) {
+        throw new UserError(
+          "Cannot update workflow from stdin: the workflow's YAML is broken and must be fixed in an editor first",
+        );
+      }
 
-      // Preserve the original ID to ensure we update the same workflow
-      yamlData.id = workflow.id;
+      try {
+        // Parse YAML content from stdin
+        const yamlData = parseYaml(stdinContent) as WorkflowData;
 
-      // Validate and create domain object
-      const updatedWorkflow = Workflow.fromData(yamlData);
+        // Preserve the original ID to ensure we update the same workflow
+        yamlData.id = workflow.id;
 
-      // Save via repository (emits events for indexing)
-      await repo.save(updatedWorkflow);
+        // Validate and create domain object
+        const updatedWorkflow = Workflow.fromData(yamlData);
 
-      const data: WorkflowEditData = {
-        path: filePath,
-        status: "updated",
-        name: updatedWorkflow.name,
-        id: updatedWorkflow.id,
-      };
+        // Save via repository (emits events for indexing)
+        await repo.save(updatedWorkflow);
 
-      renderWorkflowEdit(data, ctx.outputMode);
-      ctx.logger.debug("Workflow updated from stdin");
+        const data: WorkflowEditData = {
+          path: filePath,
+          status: "updated",
+          name: updatedWorkflow.name,
+          id: updatedWorkflow.id,
+        };
+
+        renderWorkflowEdit(data, ctx.outputMode);
+        ctx.logger.debug("Workflow updated from stdin");
+      } catch (error) {
+        if (error instanceof UserError) throw error;
+        throw new UserError(
+          `Invalid workflow YAML from stdin: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
       return;
     }
 
@@ -166,8 +227,8 @@ export const workflowEditCommand = new Command()
       path: filePath,
       editor: result.editor,
       status: "opened",
-      name: workflow.name,
-      id: workflow.id,
+      name: workflow?.name ?? workflowIdOrName ?? "unknown",
+      id: workflow?.id ?? "unknown",
     };
 
     renderWorkflowEdit(data, ctx.outputMode);
