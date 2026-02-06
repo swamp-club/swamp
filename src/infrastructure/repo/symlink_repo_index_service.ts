@@ -362,11 +362,11 @@ export class SymlinkRepoIndexService implements RepoIndexService {
    * Creates the following structure:
    * /models/{model-name}/
    *   definition.yaml → /.swamp/definitions/{type}/{id}.yaml
-   *   type/
+   *   type/            (only when tag-based data exists)
    *     logs/     → symlinks to data with type=log tag
    *     files/    → symlinks to data with type=file tag
    *     resources/→ symlinks to data with type=resource tag
-   *   outputs/
+   *   outputs/         (only when method output directories exist)
    *     {method}/ → /.swamp/outputs/{type}/{method}/
    */
   private async indexModel(
@@ -395,25 +395,23 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       );
     }
 
-    // Create type/ subdirectory for tag-based data organization
-    const typeDir = join(modelDir, "type");
-    await ensureDir(typeDir);
-
     // Index tag-based data if unified data repository is available
+    // type/ directory is created on-demand by ensureDir in indexTagBasedData
     if (this.unifiedDataRepo) {
+      const typeDir = join(modelDir, "type");
       await this.indexTagBasedData(type, modelInputId, typeDir);
     }
 
     // Create outputs directory and symlink method directories
-    const outputsDir = join(modelDir, "outputs");
-    await ensureDir(outputsDir);
-
+    // outputs/ directory is only created when method output directories exist
     const methodsDir = swampPath(
       this.repoDir,
       SWAMP_SUBDIRS.outputs,
       type.normalized,
     );
     if (await this.exists(methodsDir)) {
+      const outputsDir = join(modelDir, "outputs");
+      await ensureDir(outputsDir);
       await this.indexOutputMethods(methodsDir, outputsDir);
     }
   }

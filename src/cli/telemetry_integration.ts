@@ -1,21 +1,5 @@
 import type { CommandInvocationData } from "../domain/telemetry/mod.ts";
 
-/**
- * Per-position sensitivity for positional arguments by command.
- * "categorical" = system-defined value, safe to record (e.g., model type, method name).
- * "redact" = user-identifiable value, must be redacted (e.g., name, path, query).
- * Commands not listed here default to all-redact. Positions beyond the schema length
- * also default to "redact".
- */
-const ARG_SCHEMAS: Record<string, readonly ("categorical" | "redact")[]> = {
-  "model create": ["categorical", "redact"], // type, name
-  "model method": ["categorical", "redact", "categorical"], // "run", name, method
-  "model output": ["categorical", "redact"], // sub-subcmd, id/query
-  "vault create": ["categorical", "redact"], // type, name
-  "type describe": ["categorical"], // type
-  "workflow history": ["categorical", "redact"], // sub-subcmd, name
-};
-
 /** Global options that are tracked separately */
 const GLOBAL_OPTIONS = new Set([
   "--debug-logs",
@@ -102,12 +86,6 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
   }
 
   // Process remaining args
-  const schemaKey = result.subcommand
-    ? `${result.command} ${result.subcommand}`
-    : result.command;
-  const argSchema = ARG_SCHEMAS[schemaKey];
-  let positionalIndex = 0;
-
   while (i < args.length) {
     const arg = args[i];
 
@@ -134,10 +112,8 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
         i++; // Skip the value
       }
     } else {
-      // Positional argument - record categorical values, redact user-identifiable ones
-      const sensitivity = argSchema?.[positionalIndex] ?? "redact";
-      result.args.push(sensitivity === "categorical" ? arg : "<REDACTED>");
-      positionalIndex++;
+      // Positional argument - record as redacted
+      result.args.push("<REDACTED>");
     }
 
     i++;
