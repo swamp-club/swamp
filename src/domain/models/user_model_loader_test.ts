@@ -1124,3 +1124,112 @@ export const extension = {
     },
   );
 });
+
+// --- Default dataOutputSpecs tests ---
+
+Deno.test("UserModelLoader provides default data and resource spec types", async () => {
+  const typeId = `test/default-specs-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "default_specs.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+
+    // Verify default "data" and "resource" spec types are present
+    assertEquals(Object.keys(modelDef!.dataOutputSpecs).length, 2);
+    assertEquals(modelDef!.dataOutputSpecs["data"] !== undefined, true);
+    assertEquals(modelDef!.dataOutputSpecs["resource"] !== undefined, true);
+    assertEquals(modelDef!.dataOutputSpecs["data"].specType.value, "data");
+    assertEquals(
+      modelDef!.dataOutputSpecs["resource"].specType.value,
+      "resource",
+    );
+    assertEquals(
+      modelDef!.dataOutputSpecs["data"].contentType,
+      "application/json",
+    );
+    assertEquals(
+      modelDef!.dataOutputSpecs["resource"].contentType,
+      "application/json",
+    );
+  });
+});
+
+Deno.test("UserModelLoader user-declared dataOutputSpecs override defaults", async () => {
+  const typeId = `test/custom-specs-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Custom data spec",
+      contentType: "text/plain",
+    },
+    "metrics": {
+      specType: "metrics",
+      description: "Metrics output",
+      contentType: "application/json",
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "custom_specs.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+
+    // User "data" spec overrides default, "resource" default preserved, "metrics" added
+    assertEquals(Object.keys(modelDef!.dataOutputSpecs).length, 3);
+    assertEquals(
+      modelDef!.dataOutputSpecs["data"].description,
+      "Custom data spec",
+    );
+    assertEquals(
+      modelDef!.dataOutputSpecs["data"].contentType,
+      "text/plain",
+    );
+    assertEquals(
+      modelDef!.dataOutputSpecs["resource"].specType.value,
+      "resource",
+    );
+    assertEquals(
+      modelDef!.dataOutputSpecs["metrics"].specType.value,
+      "metrics",
+    );
+  });
+});

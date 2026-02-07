@@ -1,10 +1,16 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { dirname, join } from "@std/path";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { DefaultMethodExecutionService } from "../src/domain/models/method_execution_service.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { UserModelLoader } from "../src/domain/models/user_model_loader.ts";
+import { generateDataId } from "../src/domain/data/data_id.ts";
+import { createDefinitionId } from "../src/domain/definitions/definition.ts";
+import type { UnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../src/domain/definitions/repositories.ts";
 // Import specific models to trigger registration (without AWS models that require env access)
 import "../src/domain/models/echo/echo_model.ts";
 import "../src/domain/models/command/curl/curl_model.ts";
@@ -350,5 +356,191 @@ Deno.test("Data output specs - validation detects duplicate instance names", asy
       errorMessage,
       "Duplicate data instance name 'duplicate'",
     );
+  });
+});
+
+// --- User model integration tests ---
+
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    removeLatestSymlink: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+async function withTempModels(
+  models: Record<string, string>,
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp_integ_models_" });
+  try {
+    for (const [filename, content] of Object.entries(models)) {
+      const fullPath = join(tempDir, filename);
+      const dir = dirname(fullPath);
+      await Deno.mkdir(dir, { recursive: true });
+      await Deno.writeTextFile(fullPath, content);
+    }
+    await fn(tempDir);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+}
+
+Deno.test("Data output specs - user model with data output passes validation", async () => {
+  const ts = Date.now();
+  const typeId = `test/integ-data-output-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: 1,
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    process: {
+      description: "Process and return data",
+      execute: async (definition, _context) => {
+        return {
+          data: {
+            attributes: {
+              processed: true,
+              message: definition.attributes.message,
+            },
+          },
+        };
+      },
+    },
+  },
+};
+`;
+
+  await withTempModels({ "data_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const loadResult = await loader.loadModels(dir);
+
+    assertEquals(loadResult.loaded.length, 1);
+    assertEquals(loadResult.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+
+    // Execute the method through the execution service (includes validation)
+    const executionService = new DefaultMethodExecutionService();
+    const definition = Definition.create({
+      name: "test-input",
+      attributes: { message: "Hello" },
+    });
+
+    const modelType = ModelType.create(typeId);
+
+    // This should NOT throw — the default "data" spec type covers the output
+    const result = await executionService.execute(
+      definition,
+      modelDef!.methods.process,
+      {
+        repoDir: "/tmp",
+        modelType,
+        modelId: definition.id,
+        dataRepository: createMockDataRepo(),
+        definitionRepository: createMockDefinitionRepo(),
+        modelDefinition: modelDef,
+      },
+    );
+
+    assertEquals(result.dataOutputs?.length, 1);
+    assertEquals(result.dataOutputs![0].specType.value, "data");
+    assertEquals(result.dataOutputs![0].name, "data");
+  });
+});
+
+Deno.test("Data output specs - user model with resource output passes validation", async () => {
+  const ts = Date.now();
+  const typeId = `test/integ-resource-output-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: 1,
+  inputAttributesSchema: z.object({ name: z.string() }),
+  methods: {
+    create: {
+      description: "Create a resource",
+      execute: async (definition, _context) => {
+        return {
+          resource: {
+            attributes: {
+              id: "res-123",
+              name: definition.attributes.name,
+            },
+          },
+        };
+      },
+    },
+  },
+};
+`;
+
+  await withTempModels({ "resource_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const loadResult = await loader.loadModels(dir);
+
+    assertEquals(loadResult.loaded.length, 1);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+
+    const executionService = new DefaultMethodExecutionService();
+    const definition = Definition.create({
+      name: "test-resource",
+      attributes: { name: "my-resource" },
+    });
+
+    const modelType = ModelType.create(typeId);
+
+    // This should NOT throw — the default "resource" spec type covers the output
+    const result = await executionService.execute(
+      definition,
+      modelDef!.methods.create,
+      {
+        repoDir: "/tmp",
+        modelType,
+        modelId: definition.id,
+        dataRepository: createMockDataRepo(),
+        definitionRepository: createMockDefinitionRepo(),
+        modelDefinition: modelDef,
+      },
+    );
+
+    assertEquals(result.dataOutputs?.length, 1);
+    assertEquals(result.dataOutputs![0].specType.value, "resource");
+    assertEquals(result.dataOutputs![0].name, "resource");
   });
 });

@@ -4,6 +4,8 @@ import { ModelType } from "./model_type.ts";
 import type { Definition } from "../definitions/definition.ts";
 import {
   type DataOutput,
+  type DataOutputSpecification,
+  DataOutputSpecificationSchema,
   DataSpecType,
   type MethodContext,
   type MethodDefinition,
@@ -80,6 +82,8 @@ const UserModelSchema = z.object({
   inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
   ),
+  dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema)
+    .optional(),
   methods: z.record(z.string(), UserMethodSchema),
 });
 
@@ -376,11 +380,41 @@ export class UserModelLoader {
       };
     }
 
+    const defaultSpecs: Record<string, DataOutputSpecification> = {
+      "data": {
+        specType: DataSpecType.create("data"),
+        description: "Data output",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
+      },
+      "resource": {
+        specType: DataSpecType.create("resource"),
+        description: "Resource output",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "resource" },
+      },
+    };
+
+    // User-declared specs need specType converted from string to DataSpecType
+    const userSpecs: Record<string, DataOutputSpecification> = {};
+    if (userModel.dataOutputSpecs) {
+      for (const [key, spec] of Object.entries(userModel.dataOutputSpecs)) {
+        userSpecs[key] = {
+          ...spec,
+          specType: DataSpecType.create(String(spec.specType)),
+        };
+      }
+    }
+
     return {
       type: modelType,
       version: userModel.version,
       inputAttributesSchema: userModel.inputAttributesSchema,
-      dataOutputSpecs: {},
+      dataOutputSpecs: { ...defaultSpecs, ...userSpecs },
       methods,
     };
   }
