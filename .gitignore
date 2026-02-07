@@ -28,3 +28,4 @@ experiments/webapp/frontend/tsconfig.tsbuildinfo
 .claude/settings.local.json
 CLAUDE.local.md
 .envrc
+/scripts/dist

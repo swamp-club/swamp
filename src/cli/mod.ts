@@ -10,6 +10,7 @@ import { completionCommand } from "./commands/completion.ts";
 import { vaultCommand } from "./commands/vault.ts";
 import { dataCommand } from "./commands/data.ts";
 import { telemetryCommand } from "./commands/telemetry_stats.ts";
+import { updateCommand } from "./commands/update.ts";
 import type { GlobalOptions } from "./context.ts";
 import {
   ModelNameType,
@@ -166,6 +167,7 @@ export async function runCli(args: string[]): Promise<void> {
     .command("vault", vaultCommand)
     .command("data", dataCommand)
     .command("telemetry", telemetryCommand)
+    .command("update", updateCommand)
     .command("completions", completionCommand);
 
   try {

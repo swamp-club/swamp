@@ -12,32 +12,6 @@ interface CompileOptions {
 
 const VERSION_FILE = "src/cli/commands/version.ts";
 
-async function getCalVer(): Promise<string> {
-  const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(now.getUTCDate()).padStart(2, "0");
-  const hours = String(now.getUTCHours()).padStart(2, "0");
-  const minutes = String(now.getUTCMinutes()).padStart(2, "0");
-  const seconds = String(now.getUTCSeconds()).padStart(2, "0");
-
-  // Get short commit hash
-  let commitHash = "0000000";
-  try {
-    const cmd = new Deno.Command("git", {
-      args: ["rev-parse", "--short=8", "HEAD"],
-      stdout: "piped",
-    });
-    const { stdout } = await cmd.output();
-    commitHash = new TextDecoder().decode(stdout).trim();
-  } catch {
-    // Ignore git errors
-  }
-
-  // Format: YYYYMMDD.HHMMSS.0-sha.COMMITSHA (matches SI convention)
-  return `${year}${month}${day}.${hours}${minutes}${seconds}.0-sha.${commitHash}`;
-}
-
 async function stampVersion(version: string): Promise<string> {
   const content = await Deno.readTextFile(VERSION_FILE);
   const original = content;
@@ -71,12 +45,17 @@ async function main() {
     version: args.version,
   };
 
-  // Determine version to use
-  const version = options.version || await getCalVer();
-  console.log(`Version: ${version}`);
-
-  // Stamp version into source file
-  const originalContent = await stampVersion(version);
+  // Only stamp version when explicitly provided (CI passes --version).
+  // Local dev builds keep the source-default VERSION (with empty sha).
+  let originalContent: string | null = null;
+  if (options.version) {
+    console.log(`Version: ${options.version}`);
+    originalContent = await stampVersion(options.version);
+  } else {
+    console.log(
+      "No --version provided; using source-default version (dev build)",
+    );
+  }
 
   try {
     const baseCommand = [
@@ -130,8 +109,10 @@ async function main() {
       Deno.exit(1);
     }
   } finally {
-    // Restore original version file
-    await Deno.writeTextFile(VERSION_FILE, originalContent);
+    // Restore original version file if we stamped it
+    if (originalContent !== null) {
+      await Deno.writeTextFile(VERSION_FILE, originalContent);
+    }
   }
 }
 
