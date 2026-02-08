@@ -372,33 +372,31 @@ Deno.test("CelEvaluator handles model.foo.data.bar.attributes.x pattern", () => 
           attributes: {},
         },
         data: {
-          "vpc-info": {
-            id: "data-123",
-            name: "vpc-info",
-            version: 2,
-            createdAt: "2024-01-01T00:00:00Z",
-            attributes: {
-              vpcId: "vpc-abc123",
-              cidrBlock: "10.0.0.0/16",
-            },
-            tags: { type: "resource" },
+          id: "data-123",
+          name: "vpc-info",
+          version: 2,
+          createdAt: "2024-01-01T00:00:00Z",
+          attributes: {
+            vpcId: "vpc-abc123",
+            cidrBlock: "10.0.0.0/16",
           },
+          tags: { type: "resource" },
         },
       },
     },
   };
 
-  // Access data by name using bracket notation (required for hyphenated names)
+  // Access data directly (single artifact is unwrapped)
   assertEquals(
     evaluator.evaluate(
-      'model["my-vpc"].data["vpc-info"].attributes.vpcId',
+      'model["my-vpc"].data.attributes.vpcId',
       context,
     ),
     "vpc-abc123",
   );
   assertEquals(
     evaluator.evaluate(
-      'model["my-vpc"].data["vpc-info"].version',
+      'model["my-vpc"].data.version',
       context,
     ),
     2,

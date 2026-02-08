@@ -529,10 +529,12 @@ Deno.test("Data Tagging: access tags via model.X.data.Y.tags", async () => {
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
     assertExists(modelData.data);
-    assertExists(modelData.data["vpc-state"]);
-    assertEquals(modelData.data["vpc-state"].tags.type, "resource");
-    assertEquals(modelData.data["vpc-state"].tags.provider, "aws");
-    assertEquals(modelData.data["vpc-state"].tags.region, "us-west-2");
+    const dataRecord = modelData.data as {
+      tags: Record<string, string>;
+    };
+    assertEquals(dataRecord.tags.type, "resource");
+    assertEquals(dataRecord.tags.provider, "aws");
+    assertEquals(dataRecord.tags.region, "us-west-2");
   });
 });
 
@@ -609,19 +611,23 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     });
     const context = await modelResolver.buildContext();
 
-    // Access all data from model
+    // Access all data from model (multi-artifact: data is a map)
     const modelData = context.model["multi-output-model"];
     assertExists(modelData);
     assertExists(modelData.data);
-    assertExists(modelData.data["stdout"]);
-    assertExists(modelData.data["stderr"]);
-    assertExists(modelData.data["exit-code"]);
-    assertExists(modelData.data["timing"]);
+    const dataMap = modelData.data as Record<
+      string,
+      { tags: Record<string, string> }
+    >;
+    assertExists(dataMap["stdout"]);
+    assertExists(dataMap["stderr"]);
+    assertExists(dataMap["exit-code"]);
+    assertExists(dataMap["timing"]);
 
     // Verify tags
-    assertEquals(modelData.data["stdout"].tags.stream, "stdout");
-    assertEquals(modelData.data["stderr"].tags.stream, "stderr");
-    assertEquals(modelData.data["timing"].tags.category, "performance");
+    assertEquals(dataMap["stdout"].tags.stream, "stdout");
+    assertEquals(dataMap["stderr"].tags.stream, "stderr");
+    assertEquals(dataMap["timing"].tags.category, "performance");
 
     // Query by tags
     assertExists(context.data);

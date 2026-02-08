@@ -218,16 +218,19 @@ Deno.test("CEL Data Access: access latest data via model.X.data.Y", async () => 
     });
     const context = await modelResolver.buildContext();
 
-    // Access latest data
+    // Access latest data (single artifact unwrapped)
     const modelData = context.model["data_source"];
     assertExists(modelData);
     assertExists(modelData.data);
-    assertExists(modelData.data["resource_state"]);
+    const dataRecord = modelData.data as {
+      version: number;
+      attributes: Record<string, unknown>;
+    };
 
     // Latest version should be 3
-    assertEquals(modelData.data["resource_state"].version, 3);
-    assertEquals(modelData.data["resource_state"].attributes.version, 3);
-    assertEquals(modelData.data["resource_state"].attributes.id, "id-3");
+    assertEquals(dataRecord.version, 3);
+    assertEquals(dataRecord.attributes.version, 3);
+    assertEquals(dataRecord.attributes.id, "id-3");
   });
 });
 
@@ -435,9 +438,9 @@ Deno.test("CEL Data Access: reference data from dependent model", async () => {
     const subnetModel = Definition.create({
       name: "my_subnet",
       attributes: {
-        // Reference VPC resource data
-        vpc_id_ref: "${{ model.my_vpc.data.resource.attributes.vpcId }}",
-        vpc_state_ref: "${{ model.my_vpc.data.resource.attributes.state }}",
+        // Reference VPC resource data (single artifact: data is unwrapped)
+        vpc_id_ref: "${{ model.my_vpc.data.attributes.vpcId }}",
+        vpc_state_ref: "${{ model.my_vpc.data.attributes.state }}",
       },
     });
     await definitionRepo.save(type, subnetModel);
@@ -515,10 +518,10 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
     const modelC = Definition.create({
       name: "model_c",
       attributes: {
-        from_a: "${{ model.model_a.data.result.attributes.computed }}",
-        from_b: "${{ model.model_b.data.result.attributes.computed }}",
+        from_a: "${{ model.model_a.data.attributes.computed }}",
+        from_b: "${{ model.model_b.data.attributes.computed }}",
         sum:
-          "${{ model.model_a.data.result.attributes.computed + model.model_b.data.result.attributes.computed }}",
+          "${{ model.model_a.data.attributes.computed + model.model_b.data.attributes.computed }}",
       },
     });
     await definitionRepo.save(type, modelC);
@@ -765,9 +768,13 @@ Deno.test("CEL Data Access: multiple data items from same model", async () => {
     assertExists(modelData);
     assertExists(modelData.data);
 
+    const dataMap = modelData.data as Record<
+      string,
+      { attributes: Record<string, unknown> }
+    >;
     for (const name of dataItems) {
-      assertExists(modelData.data[name]);
-      assertEquals(modelData.data[name].attributes.name, name);
+      assertExists(dataMap[name]);
+      assertEquals(dataMap[name].attributes.name, name);
     }
   });
 });

@@ -431,18 +431,23 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // For data artifacts, validation is less strict
-    // as they may have dynamic attributes or fixed properties
+    // For data artifacts, .data resolves directly to a DataRecord.
+    // path[0] must be a valid DataRecord property.
+    // Segments after "attributes" or "tags" are user-defined.
     if (ref.type === "data") {
-      // data artifacts have .attributes like the old resource
-      if (
-        firstSegment !== "attributes" && firstSegment !== "id" &&
-        firstSegment !== "version" && firstSegment !== "createdAt"
-      ) {
+      const validDataFields = [
+        "id",
+        "name",
+        "version",
+        "createdAt",
+        "attributes",
+        "tags",
+      ];
+      if (!validDataFields.includes(firstSegment)) {
         return {
           expression: ref.rawExpression,
           error: `Invalid path segment "${firstSegment}" for data artifact`,
-          suggestion: "Data artifacts have: id, version, createdAt, attributes",
+          suggestion: `Data artifacts have: ${validDataFields.join(", ")}`,
         };
       }
       return null;

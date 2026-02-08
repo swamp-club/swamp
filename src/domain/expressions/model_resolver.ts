@@ -52,8 +52,8 @@ export interface ModelData {
     createdAt: string;
     attributes: Record<string, unknown>;
   };
-  /** Map of data-name -> latest DataRecord for this model */
-  data?: Record<string, DataRecord>;
+  /** Latest DataRecord (single artifact) or map of data-name -> DataRecord (multiple) */
+  data?: Record<string, DataRecord> | DataRecord;
   file?: {
     id: string;
     version: number;
@@ -436,13 +436,16 @@ export class ModelResolver {
         if (modelData) {
           const dataNames = dataCache.getDataNames(modelName);
           if (dataNames.length > 0) {
-            modelData.data = {};
+            const dataMap: Record<string, DataRecord> = {};
             for (const dataName of dataNames) {
               const latestRecord = dataCache.getLatest(modelName, dataName);
               if (latestRecord) {
-                modelData.data[dataName] = latestRecord;
+                dataMap[dataName] = latestRecord;
               }
             }
+            const entries = Object.values(dataMap);
+            // Unwrap single artifact for direct DataRecord access
+            modelData.data = entries.length === 1 ? entries[0] : dataMap;
           }
         }
       }

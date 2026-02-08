@@ -462,7 +462,7 @@ Deno.test("validateModel detects simple identifier expression", async () => {
 
 // Data path reference tests
 
-Deno.test("validateModel with data path passes for valid path", async () => {
+Deno.test("validateModel with data path passes for valid DataRecord field", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
@@ -515,7 +515,7 @@ Deno.test("validateModel fails for missing .attributes segment", async () => {
   assertStringIncludes(exprResult?.error ?? "", "message");
 });
 
-Deno.test("validateModel fails for 'attribute' instead of 'attributes'", async () => {
+Deno.test("validateModel fails for 'attribute' instead of 'attributes' in direct DataRecord access", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
@@ -539,6 +539,79 @@ Deno.test("validateModel fails for 'attribute' instead of 'attributes'", async (
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
   assertStringIncludes(exprResult?.error ?? "", "attribute");
+});
+
+Deno.test("validateModel with data path passes for nested attributes in direct DataRecord access", async () => {
+  const service = new DefaultModelValidationService();
+  const targetDefinition = Definition.create({
+    name: "target-model",
+    attributes: { message: "hello" },
+  });
+  const definition = Definition.create({
+    name: "test-definition",
+    attributes: {
+      vpcId: "${{ model.target-model.data.attributes.vpcId }}",
+    },
+  });
+
+  const mockRepo = createMockDefinitionRepo([
+    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
+    { name: "test-definition", type: "swamp/echo", definition },
+  ]);
+
+  const results = await service.validateModel(definition, echoModel, mockRepo);
+
+  const exprResult = results.find((r) => r.name === "Expression paths");
+  assertEquals(exprResult?.passed, true);
+});
+
+Deno.test("validateModel with data path passes for scalar DataRecord field", async () => {
+  const service = new DefaultModelValidationService();
+  const targetDefinition = Definition.create({
+    name: "target-model",
+    attributes: { message: "hello" },
+  });
+  const definition = Definition.create({
+    name: "test-definition",
+    attributes: {
+      allData: "${{ model.target-model.data.id }}",
+    },
+  });
+
+  const mockRepo = createMockDefinitionRepo([
+    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
+    { name: "test-definition", type: "swamp/echo", definition },
+  ]);
+
+  const results = await service.validateModel(definition, echoModel, mockRepo);
+
+  const exprResult = results.find((r) => r.name === "Expression paths");
+  assertEquals(exprResult?.passed, true);
+});
+
+Deno.test("validateModel fails for invalid field in direct DataRecord access", async () => {
+  const service = new DefaultModelValidationService();
+  const targetDefinition = Definition.create({
+    name: "target-model",
+    attributes: { message: "hello" },
+  });
+  const definition = Definition.create({
+    name: "test-definition",
+    attributes: {
+      bad: "${{ model.target-model.data.badfield }}",
+    },
+  });
+
+  const mockRepo = createMockDefinitionRepo([
+    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
+    { name: "test-definition", type: "swamp/echo", definition },
+  ]);
+
+  const results = await service.validateModel(definition, echoModel, mockRepo);
+
+  const exprResult = results.find((r) => r.name === "Expression paths");
+  assertEquals(exprResult?.passed, false);
+  assertStringIncludes(exprResult?.error ?? "", "badfield");
 });
 
 // Mixed expression tests

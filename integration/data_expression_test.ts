@@ -102,18 +102,21 @@ Deno.test("Integration: model.X.data.Y accesses latest version of data", async (
     });
     const context = await modelResolver.buildContext();
 
-    // Verify model.my-vpc.data.vpc-info exists and has latest version
+    // Verify model.my-vpc.data exists and has latest version (single artifact unwrapped)
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
     assertExists(modelData.data);
-    assertExists(modelData.data["vpc-info"]);
-    assertEquals(modelData.data["vpc-info"].version, 2);
-    assertEquals(modelData.data["vpc-info"].attributes.vpcId, "vpc-222");
+    const dataRecord = modelData.data as {
+      version: number;
+      attributes: Record<string, unknown>;
+    };
+    assertEquals(dataRecord.version, 2);
+    assertEquals(dataRecord.attributes.vpcId, "vpc-222");
 
-    // Evaluate CEL expression
+    // Evaluate CEL expression (single artifact: data is unwrapped)
     const celEvaluator = new CelEvaluator();
     const result = celEvaluator.evaluate(
-      'model["my-vpc"].data["vpc-info"].attributes.vpcId',
+      'model["my-vpc"].data.attributes.vpcId',
       context,
     );
     assertEquals(result, "vpc-222");
@@ -533,13 +536,17 @@ Deno.test("Integration: model can have multiple named data items", async () => {
     });
     const context = await modelResolver.buildContext();
 
-    // All data items should be accessible
+    // All data items should be accessible (multi-artifact: data is a map)
     const modelData = context.model["my-command"];
     assertExists(modelData);
     assertExists(modelData.data);
-    assertExists(modelData.data["stdout"]);
-    assertExists(modelData.data["stderr"]);
-    assertExists(modelData.data["exit-code"]);
+    const dataMap = modelData.data as Record<
+      string,
+      { attributes: Record<string, unknown>; tags: Record<string, string> }
+    >;
+    assertExists(dataMap["stdout"]);
+    assertExists(dataMap["stderr"]);
+    assertExists(dataMap["exit-code"]);
 
     // Also via data functions
     assertExists(context.data);

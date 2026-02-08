@@ -28,6 +28,7 @@ import {
 } from "../expressions/expression_parser.ts";
 import { extractResourceDependencies } from "../expressions/dependency_extractor.ts";
 import {
+  type DataRecord,
   type ExpressionContext,
   ModelResolver,
 } from "../expressions/model_resolver.ts";
@@ -934,13 +935,10 @@ export class WorkflowExecutionService {
               attributes: taskOutput.resourceAttributes,
             };
           }
-          // Update data context if available (now uses Record<string, DataRecord>)
+          // Update data context if available
           if (taskOutput.dataId && taskOutput.dataAttributes) {
             const dataName = taskOutput.dataName ?? "output";
-            if (!modelData.data) {
-              modelData.data = {};
-            }
-            modelData.data[dataName] = {
+            const record: DataRecord = {
               id: taskOutput.dataId,
               name: dataName,
               version: 1,
@@ -948,6 +946,26 @@ export class WorkflowExecutionService {
               attributes: taskOutput.dataAttributes,
               tags: {},
             };
+
+            // Rebuild map from existing data (may be unwrapped or map)
+            let dataMap: Record<string, DataRecord> = {};
+            if (modelData.data) {
+              if (
+                "id" in modelData.data &&
+                typeof modelData.data.id === "string"
+              ) {
+                // Already unwrapped — re-wrap
+                const existing = modelData.data as DataRecord;
+                dataMap[existing.name] = existing;
+              } else {
+                dataMap = modelData.data as Record<string, DataRecord>;
+              }
+            }
+            dataMap[dataName] = record;
+
+            // Unwrap single artifact
+            const entries = Object.values(dataMap);
+            modelData.data = entries.length === 1 ? entries[0] : dataMap;
           }
         }
       }
