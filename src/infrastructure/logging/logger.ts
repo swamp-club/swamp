@@ -45,6 +45,10 @@ export async function initializeLogging(
           ["swamp", "model", "method", "run"],
           "rgb(52,211,153)" as const,
         ],
+        [
+          ["swamp", "workflow", "run"],
+          "rgb(96,165,250)" as const,
+        ],
       ]),
       levelStyle: "bold",
       wordWrap: true,
@@ -84,6 +88,12 @@ export async function initializeLogging(
       sinks: ["pretty"],
       parentSinks: "override",
     });
+    loggers.push({
+      category: ["swamp", "workflow", "run"],
+      lowestLevel: "info",
+      sinks: ["pretty"],
+      parentSinks: "override",
+    });
   }
 
   await configure({
@@ -114,4 +124,15 @@ export function getRunLogger(modelName: string, methodName: string) {
     modelName,
     methodName,
   ]);
+}
+
+export function getWorkflowRunLogger(
+  workflowName: string,
+  jobName?: string,
+  stepName?: string,
+) {
+  const category: string[] = ["swamp", "workflow", "run", workflowName];
+  if (jobName) category.push(jobName);
+  if (stepName) category.push(stepName);
+  return getLogger(category);
 }
