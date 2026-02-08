@@ -1,5 +1,10 @@
 import { assertEquals } from "@std/assert";
-import { getRunLogger, getSwampLogger, initializeLogging } from "./logger.ts";
+import {
+  getRunLogger,
+  getSwampLogger,
+  getWorkflowRunLogger,
+  initializeLogging,
+} from "./logger.ts";
 
 // Note: LogTape can only be configured once per process.
 // These tests are structured to work within that limitation.
@@ -78,4 +83,36 @@ Deno.test("initializeLogging accepts showProperties option", async () => {
     showProperties: true,
   });
   assertEquals(true, true);
+});
+
+Deno.test("getWorkflowRunLogger", async (t) => {
+  await t.step("returns a logger with workflow name only", () => {
+    const logger = getWorkflowRunLogger("deploy-stack");
+    assertEquals(typeof logger, "object");
+    assertEquals(typeof logger.info, "function");
+    assertEquals(typeof logger.error, "function");
+  });
+
+  await t.step("returns a logger with workflow and job name", () => {
+    const logger = getWorkflowRunLogger("deploy-stack", "provision");
+    assertEquals(typeof logger, "object");
+    assertEquals(typeof logger.info, "function");
+  });
+
+  await t.step("returns a logger with workflow, job, and step name", () => {
+    const logger = getWorkflowRunLogger(
+      "deploy-stack",
+      "provision",
+      "create-server",
+    );
+    assertEquals(typeof logger, "object");
+    assertEquals(typeof logger.info, "function");
+  });
+
+  await t.step("can create loggers for different workflows", () => {
+    const logger1 = getWorkflowRunLogger("workflow-a");
+    const logger2 = getWorkflowRunLogger("workflow-b", "job-1");
+    assertEquals(typeof logger1.info, "function");
+    assertEquals(typeof logger2.info, "function");
+  });
 });
