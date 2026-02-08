@@ -35,6 +35,10 @@ import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   DataOutputValidationService,
 } from "../models/data_output_validation_service.ts";
+import {
+  getRunLogger,
+  getWorkflowRunLogger,
+} from "../../infrastructure/logging/logger.ts";
 
 /**
  * Context for step execution.
@@ -54,6 +58,8 @@ export interface StepExecutionContext {
   workflowRun?: WorkflowRun;
   /** The step being executed (for accessing data output overrides) */
   step?: Step;
+  /** Whether step executors should log execution details via LogTape */
+  enableStepLogging?: boolean;
 }
 
 /**
@@ -113,8 +119,11 @@ export class DefaultStepExecutor implements StepExecutor {
 
     const command = new Deno.Command(task.command, commandOptions);
 
-    // Use streaming if progress callbacks are provided
-    if (ctx.progress?.onStepStdout || ctx.progress?.onStepStderr) {
+    // Use streaming if progress callbacks or step logging are enabled
+    if (
+      ctx.progress?.onStepStdout || ctx.progress?.onStepStderr ||
+      ctx.enableStepLogging
+    ) {
       return await this.executeShellStreaming(command, ctx);
     }
 
@@ -134,6 +143,10 @@ export class DefaultStepExecutor implements StepExecutor {
     command: Deno.Command,
     ctx: StepExecutionContext,
   ): Promise<unknown> {
+    const stepLogger = ctx.enableStepLogging
+      ? getWorkflowRunLogger(ctx.workflowName, ctx.jobName, ctx.stepName)
+      : undefined;
+
     const process = command.spawn();
 
     const stdoutLines: string[] = [];
@@ -144,6 +157,7 @@ export class DefaultStepExecutor implements StepExecutor {
       process.stdout,
       (line) => {
         stdoutLines.push(line);
+        stepLogger?.info(line);
         if (ctx.progress?.onStepStdout && ctx.workflowRun) {
           ctx.progress.onStepStdout(
             ctx.workflowRun,
@@ -159,6 +173,7 @@ export class DefaultStepExecutor implements StepExecutor {
       process.stderr,
       (line) => {
         stderrLines.push(line);
+        stepLogger?.warn(line);
         if (ctx.progress?.onStepStderr && ctx.workflowRun) {
           ctx.progress.onStepStderr(
             ctx.workflowRun,
@@ -239,6 +254,16 @@ export class DefaultStepExecutor implements StepExecutor {
     // Keep original definition (with expressions)
     const { definition: originalDefinition, type: modelType } = lookupResult;
 
+    // Log via model method run logger (same categories as standalone)
+    const runLogger = ctx.enableStepLogging
+      ? getRunLogger(originalDefinition.name, task.methodName)
+      : undefined;
+
+    runLogger?.info("Found model {name} ({type})", {
+      name: originalDefinition.name,
+      type: modelType.normalized,
+    });
+
     // Get the model definition from registry
     const modelDef = modelRegistry.get(modelType);
     if (!modelDef) {
@@ -264,6 +289,7 @@ export class DefaultStepExecutor implements StepExecutor {
     // Evaluate expressions for execution (after validation passes)
     let evaluatedDefinition = originalDefinition;
     if (ctx.expressionContext) {
+      runLogger?.info("Evaluating expressions");
       // Set self context for this specific model before evaluating
       ctx.expressionContext.self = {
         id: originalDefinition.id,
@@ -316,30 +342,40 @@ export class DefaultStepExecutor implements StepExecutor {
     let dataName: string | undefined;
 
     try {
-      // Build streaming callbacks if progress callbacks are available
-      const streaming =
-        (ctx.progress?.onStepStdout || ctx.progress?.onStepStderr)
-          ? {
-            onStdout: ctx.progress?.onStepStdout && ctx.workflowRun
-              ? (line: string) =>
-                ctx.progress!.onStepStdout!(
-                  ctx.workflowRun!,
-                  ctx.jobName,
-                  ctx.stepName,
-                  line,
-                )
-              : undefined,
-            onStderr: ctx.progress?.onStepStderr && ctx.workflowRun
-              ? (line: string) =>
-                ctx.progress!.onStepStderr!(
-                  ctx.workflowRun!,
-                  ctx.jobName,
-                  ctx.stepName,
-                  line,
-                )
-              : undefined,
-          }
-          : undefined;
+      runLogger?.info("Executing method {method}", {
+        method: task.methodName,
+      });
+
+      // Build streaming callbacks — log via runLogger when enabled,
+      // and always call progress callback for persistence
+      const hasProgressStreaming = ctx.progress?.onStepStdout ||
+        ctx.progress?.onStepStderr;
+      const streaming = (runLogger || hasProgressStreaming)
+        ? {
+          onStdout: (line: string) => {
+            runLogger?.info(line);
+            if (ctx.progress?.onStepStdout && ctx.workflowRun) {
+              ctx.progress.onStepStdout(
+                ctx.workflowRun,
+                ctx.jobName,
+                ctx.stepName,
+                line,
+              );
+            }
+          },
+          onStderr: (line: string) => {
+            runLogger?.warn(line);
+            if (ctx.progress?.onStepStderr && ctx.workflowRun) {
+              ctx.progress.onStepStderr(
+                ctx.workflowRun,
+                ctx.jobName,
+                ctx.stepName,
+                line,
+              );
+            }
+          },
+        }
+        : undefined;
 
       // Execute the method with EVALUATED definition
       const result = await executionService.executeWorkflow(
@@ -418,6 +454,16 @@ export class DefaultStepExecutor implements StepExecutor {
           output.addDataArtifact(artifactRef);
           savedArtifacts.push(artifactRef);
 
+          if (runLogger) {
+            const dataPath = unifiedDataRepo.getPath(
+              modelType,
+              evaluatedDefinition.id,
+              dataOutput.name,
+              saveResult.version,
+            );
+            runLogger.info("Data saved to {path}", { path: dataPath });
+          }
+
           // Use first JSON data output for context refresh
           if (
             !dataId && dataOutput.metadata.contentType === "application/json"
@@ -437,6 +483,11 @@ export class DefaultStepExecutor implements StepExecutor {
       // Mark output as succeeded and save
       output.markSucceeded();
       await outputRepo.save(modelType, task.methodName, output);
+
+      runLogger?.with({ summary: true }).info(
+        "Method {method} completed on {model}",
+        { method: task.methodName, model: originalDefinition.name },
+      );
 
       return {
         type: "model_method",
@@ -458,6 +509,13 @@ export class DefaultStepExecutor implements StepExecutor {
       const errorStack = error instanceof Error ? error.stack : undefined;
       output.markFailed({ message: errorMessage, stack: errorStack });
       await outputRepo.save(modelType, task.methodName, output);
+
+      runLogger?.error("Method {method} failed: {error}", {
+        method: task.methodName,
+        model: originalDefinition.name,
+        error: errorMessage,
+      });
+
       throw error;
     }
   }
@@ -586,6 +644,7 @@ export class WorkflowExecutionService {
   async execute(
     idOrName: string,
     progress?: ExecutionProgressCallback,
+    options?: { enableStepLogging?: boolean },
   ): Promise<WorkflowRun> {
     // Look up workflow
     const workflow = await this.lookupWorkflow(idOrName);
@@ -645,7 +704,14 @@ export class WorkflowExecutionService {
       // Execute jobs in parallel within each level
       await Promise.all(
         level.map((jobName) =>
-          this.executeJob(workflow, run, jobName, expressionContext, progress)
+          this.executeJob(
+            workflow,
+            run,
+            jobName,
+            expressionContext,
+            progress,
+            options?.enableStepLogging,
+          )
         ),
       );
       await this.saveRun(workflow.id, run);
@@ -665,6 +731,7 @@ export class WorkflowExecutionService {
     jobName: string,
     expressionContext: ExpressionContext,
     progress?: ExecutionProgressCallback,
+    enableStepLogging?: boolean,
   ): Promise<void> {
     const job = workflow.getJob(jobName);
     if (!job) {
@@ -740,6 +807,7 @@ export class WorkflowExecutionService {
               stepName,
               expressionContext,
               streamingCallbacks,
+              enableStepLogging,
             )
           ),
         );
@@ -848,6 +916,7 @@ export class WorkflowExecutionService {
     stepName: string,
     expressionContext: ExpressionContext,
     progress?: ExecutionProgressCallback,
+    enableStepLogging?: boolean,
   ): Promise<void> {
     const step = job.getStep(stepName);
     if (!step) {
@@ -883,6 +952,7 @@ export class WorkflowExecutionService {
         progress,
         workflowRun: run,
         step, // Include step for accessing data output overrides
+        enableStepLogging,
       };
 
       const output = await this.executor.execute(step, ctx);

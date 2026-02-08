@@ -1,14 +1,17 @@
 import {
   configure,
   getConsoleSink,
-  getFileSink,
   getLogger,
   type LogLevel,
 } from "@logtape/logtape";
+import { getFileSink } from "@logtape/file";
+import { getPrettyFormatter } from "@logtape/pretty";
 import { ensureDirSync } from "@std/fs";
 
 export interface LoggingOptions {
   debugLogs: boolean;
+  prettyOutput?: boolean;
+  showProperties?: boolean;
 }
 
 let isInitialized = false;
@@ -20,6 +23,7 @@ export async function initializeLogging(
   if (isInitialized) {
     return;
   }
+
   const sinks: Record<string, ReturnType<typeof getConsoleSink>> = {
     console: getConsoleSink(),
   };
@@ -28,7 +32,31 @@ export async function initializeLogging(
     category: string[];
     lowestLevel: LogLevel;
     sinks: string[];
+    parentSinks?: "inherit" | "override";
   }> = [];
+
+  if (options.prettyOutput) {
+    const prettyFormat = getPrettyFormatter({
+      timestamp: "time",
+      categorySeparator: ".",
+      categoryTruncate: false,
+      categoryColorMap: new Map([
+        [
+          ["swamp", "model", "method", "run"],
+          "rgb(52,211,153)" as const,
+        ],
+        [
+          ["swamp", "workflow", "run"],
+          "rgb(96,165,250)" as const,
+        ],
+      ]),
+      levelStyle: "bold",
+      wordWrap: true,
+      properties: options.showProperties ?? false,
+    });
+
+    sinks["pretty"] = getConsoleSink({ formatter: prettyFormat });
+  }
 
   if (options.debugLogs) {
     const logDir = "dev-logs";
@@ -52,6 +80,22 @@ export async function initializeLogging(
     });
   }
 
+  // Route run output to the pretty sink when available
+  if (options.prettyOutput) {
+    loggers.push({
+      category: ["swamp", "model", "method", "run"],
+      lowestLevel: "info",
+      sinks: ["pretty"],
+      parentSinks: "override",
+    });
+    loggers.push({
+      category: ["swamp", "workflow", "run"],
+      lowestLevel: "info",
+      sinks: ["pretty"],
+      parentSinks: "override",
+    });
+  }
+
   await configure({
     sinks,
     loggers: [
@@ -69,4 +113,26 @@ export async function initializeLogging(
 
 export function getSwampLogger(name: string) {
   return getLogger(["swamp", name]);
+}
+
+export function getRunLogger(modelName: string, methodName: string) {
+  return getLogger([
+    "swamp",
+    "model",
+    "method",
+    "run",
+    modelName,
+    methodName,
+  ]);
+}
+
+export function getWorkflowRunLogger(
+  workflowName: string,
+  jobName?: string,
+  stepName?: string,
+) {
+  const category: string[] = ["swamp", "workflow", "run", workflowName];
+  if (jobName) category.push(jobName);
+  if (stepName) category.push(stepName);
+  return getLogger(category);
 }
