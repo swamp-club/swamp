@@ -1,0 +1,268 @@
+import { assertEquals, assertThrows } from "@std/assert";
+import { z } from "zod";
+import {
+  DataSpecType,
+  defineModel,
+  type MethodContext,
+  type ModelDefinition,
+  ModelRegistry,
+} from "./model.ts";
+import { ModelType } from "./model_type.ts";
+import { createDefinitionId, Definition } from "../definitions/definition.ts";
+import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import { generateDataId } from "../data/data_id.ts";
+
+/**
+ * Creates a mock UnifiedDataRepository for testing.
+ */
+function createMockDataRepo(): UnifiedDataRepository {
+  return {
+    findByName: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve([]),
+    save: () => Promise.resolve({ version: 1 }),
+    append: () => Promise.resolve(),
+    stream: async function* () {},
+    getContent: () => Promise.resolve(null),
+    delete: () => Promise.resolve(),
+    removeLatestSymlink: () => Promise.resolve(),
+    nextId: () => generateDataId(),
+    getPath: () => "",
+    getContentPath: () => "",
+    collectGarbage: () =>
+      Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+  };
+}
+
+/**
+ * Creates a mock DefinitionRepository for testing.
+ */
+function createMockDefinitionRepo(): DefinitionRepository {
+  return {
+    findById: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findByName: () => Promise.resolve(null),
+    findByNameGlobal: () => Promise.resolve(null),
+    findAllGlobal: () => Promise.resolve([]),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => createDefinitionId(crypto.randomUUID()),
+    getPath: () => "",
+  };
+}
+
+/**
+ * Creates a test MethodContext with mocked repositories.
+ */
+function createTestContext(modelType: ModelType): MethodContext {
+  return {
+    repoDir: "/tmp",
+    modelType,
+    modelId: crypto.randomUUID(),
+    dataRepository: createMockDataRepo(),
+    definitionRepository: createMockDefinitionRepo(),
+  };
+}
+
+/**
+ * Helper to get attributes from a DataOutput.
+ */
+function getDataOutputAttributes(
+  dataOutputs: { content: Uint8Array }[] | undefined,
+  index = 0,
+): Record<string, unknown> | undefined {
+  if (!dataOutputs || dataOutputs.length <= index) {
+    return undefined;
+  }
+  const content = new TextDecoder().decode(dataOutputs[index].content);
+  return JSON.parse(content);
+}
+
+function createTestModel(typeString: string): ModelDefinition {
+  const type = ModelType.create(typeString);
+  return {
+    type,
+    version: 1,
+    inputAttributesSchema: z.object({ message: z.string() }),
+    dataOutputSpecs: {},
+    methods: {
+      write: {
+        description: "Write message to data",
+        inputAttributesSchema: z.object({ message: z.string() }),
+        execute: (definition: Definition, _context: MethodContext) => {
+          const content = new TextEncoder().encode(
+            JSON.stringify({
+              message: definition.attributes.message,
+              timestamp: new Date().toISOString(),
+            }),
+          );
+          return Promise.resolve({
+            dataOutputs: [
+              {
+                name: `${definition.name}-data`,
+                specType: DataSpecType.create("data"),
+                content,
+                metadata: {
+                  contentType: "application/json",
+                  lifetime: "infinite" as const,
+                  garbageCollection: 10,
+                  streaming: false,
+                  tags: { type: "data" },
+                  ownerDefinition: {
+                    definitionHash: "test-hash",
+                    ownerType: "model-method" as const,
+                    ownerRef: "write",
+                  },
+                },
+              },
+            ],
+          });
+        },
+      },
+    },
+  };
+}
+
+Deno.test("ModelRegistry.register adds model to registry", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/echo");
+
+  registry.register(model);
+  assertEquals(registry.has("swamp/echo"), true);
+});
+
+Deno.test("ModelRegistry.register throws on duplicate type", () => {
+  const registry = new ModelRegistry();
+  const model1 = createTestModel("swamp/echo");
+  const model2 = createTestModel("swamp/echo");
+
+  registry.register(model1);
+  assertThrows(
+    () => registry.register(model2),
+    Error,
+    "Model type already registered: swamp/echo",
+  );
+});
+
+Deno.test("ModelRegistry.get returns registered model", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/echo");
+  registry.register(model);
+
+  const retrieved = registry.get("swamp/echo");
+  assertEquals(retrieved?.type.normalized, "swamp/echo");
+  assertEquals(retrieved?.version, 1);
+});
+
+Deno.test("ModelRegistry.get accepts ModelType", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/echo");
+  registry.register(model);
+
+  const type = ModelType.create("swamp/echo");
+  const retrieved = registry.get(type);
+  assertEquals(retrieved?.type.normalized, "swamp/echo");
+});
+
+Deno.test("ModelRegistry.get returns undefined for unknown type", () => {
+  const registry = new ModelRegistry();
+  const retrieved = registry.get("unknown/type");
+  assertEquals(retrieved, undefined);
+});
+
+Deno.test("ModelRegistry.get normalizes type strings", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("AWS::EC2::VPC");
+  registry.register(model);
+
+  const retrieved = registry.get("aws/ec2/vpc");
+  assertEquals(retrieved?.type.raw, "AWS::EC2::VPC");
+});
+
+Deno.test("ModelRegistry.has returns true for registered types", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("swamp/echo");
+  registry.register(model);
+
+  assertEquals(registry.has("swamp/echo"), true);
+});
+
+Deno.test("ModelRegistry.has returns false for unregistered types", () => {
+  const registry = new ModelRegistry();
+  assertEquals(registry.has("swamp/echo"), false);
+});
+
+Deno.test("ModelRegistry.has normalizes type strings", () => {
+  const registry = new ModelRegistry();
+  const model = createTestModel("AWS::EC2::VPC");
+  registry.register(model);
+
+  assertEquals(registry.has("aws/ec2/vpc"), true);
+  assertEquals(registry.has("AWS::EC2::VPC"), true);
+});
+
+Deno.test("ModelRegistry.types returns all registered types", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/echo"));
+  registry.register(createTestModel("swamp/other"));
+
+  const types = registry.types();
+  assertEquals(types.length, 2);
+  assertEquals(types.map((t) => t.normalized).sort(), [
+    "swamp/echo",
+    "swamp/other",
+  ]);
+});
+
+Deno.test("ModelRegistry.types returns empty array when no models", () => {
+  const registry = new ModelRegistry();
+  assertEquals(registry.types(), []);
+});
+
+Deno.test("ModelDefinition method can execute", async () => {
+  const model = createTestModel("swamp/echo");
+  const definition = Definition.create({
+    name: "test",
+    attributes: { message: "hello world" },
+  });
+
+  const context = createTestContext(model.type);
+  const result = await model.methods.write.execute(definition, context);
+  const attrs = getDataOutputAttributes(result.dataOutputs);
+  assertEquals(attrs?.message, "hello world");
+  assertEquals(typeof attrs?.timestamp, "string");
+});
+
+// defineModel tests use unique type names to avoid conflicts with other tests
+// since they use the global registry
+
+Deno.test("defineModel registers model with global registry", async () => {
+  // Dynamic import to get a fresh reference to the global registry
+  const { modelRegistry } = await import("./model.ts");
+
+  const model = createTestModel("test/define-model-registers");
+  defineModel(model);
+
+  assertEquals(modelRegistry.has("test/define-model-registers"), true);
+});
+
+Deno.test("defineModel returns the same definition passed in", () => {
+  const model = createTestModel("test/define-model-returns");
+  const result = defineModel(model);
+
+  assertEquals(result, model);
+});
+
+Deno.test("defineModel is idempotent when called with same model", () => {
+  const model = createTestModel("test/define-model-idempotent");
+
+  // First call registers
+  const result1 = defineModel(model);
+  // Second call should not throw, just return the definition
+  const result2 = defineModel(model);
+
+  assertEquals(result1, model);
+  assertEquals(result2, model);
+});
