@@ -118,3 +118,11 @@ jobs:
             dist/checksums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger UAT
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.UAT_TRIGGER_TOKEN }}
+          repository: systeminit/swamp-uat
+          event-type: run-uat
+          client-payload: '{"version": "${{ steps.version.outputs.version }}"}'
