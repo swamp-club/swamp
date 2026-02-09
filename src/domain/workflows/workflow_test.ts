@@ -179,7 +179,7 @@ Deno.test("Workflow.fromData and toData roundtrip correctly", () => {
           }),
         ],
         dependsOn: [
-          { job: "build", condition: TriggerCondition.succeeded("build") },
+          { job: "build", condition: TriggerCondition.succeeded() },
         ],
       }),
     ],

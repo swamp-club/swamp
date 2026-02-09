@@ -7,10 +7,10 @@ const baseTriggerConditionSchema: z.ZodType<TriggerConditionData> = z.lazy(
   () =>
     z.discriminatedUnion("type", [
       z.object({ type: z.literal("always") }),
-      z.object({ type: z.literal("succeeded"), ref: z.string().min(1) }),
-      z.object({ type: z.literal("failed"), ref: z.string().min(1) }),
-      z.object({ type: z.literal("completed"), ref: z.string().min(1) }),
-      z.object({ type: z.literal("skipped"), ref: z.string().min(1) }),
+      z.object({ type: z.literal("succeeded") }),
+      z.object({ type: z.literal("failed") }),
+      z.object({ type: z.literal("completed") }),
+      z.object({ type: z.literal("skipped") }),
       z.object({
         type: z.literal("and"),
         conditions: z.array(baseTriggerConditionSchema).min(2),
@@ -31,13 +31,16 @@ const baseTriggerConditionSchema: z.ZodType<TriggerConditionData> = z.lazy(
  *
  * Supports:
  * - always: Always triggers
- * - succeeded(ref): Triggers if referenced step/job succeeded
- * - failed(ref): Triggers if referenced step/job failed
- * - completed(ref): Triggers if referenced step/job completed (success or failure)
- * - skipped(ref): Triggers if referenced step/job was skipped
+ * - succeeded: Triggers if the dependency succeeded
+ * - failed: Triggers if the dependency failed
+ * - completed: Triggers if the dependency completed (success or failure)
+ * - skipped: Triggers if the dependency was skipped
  * - and(...): Boolean AND of multiple conditions
  * - or(...): Boolean OR of multiple conditions
  * - not(...): Boolean NOT of a condition
+ *
+ * The ref (which step/job to check) is provided by the parent dependency
+ * object, not by the condition itself.
  */
 export const TriggerConditionSchema = baseTriggerConditionSchema;
 
@@ -46,10 +49,10 @@ export const TriggerConditionSchema = baseTriggerConditionSchema;
  */
 export type TriggerConditionData =
   | { type: "always" }
-  | { type: "succeeded"; ref: string }
-  | { type: "failed"; ref: string }
-  | { type: "completed"; ref: string }
-  | { type: "skipped"; ref: string }
+  | { type: "succeeded" }
+  | { type: "failed" }
+  | { type: "completed" }
+  | { type: "skipped" }
   | { type: "and"; conditions: TriggerConditionData[] }
   | { type: "or"; conditions: TriggerConditionData[] }
   | { type: "not"; condition: TriggerConditionData };
@@ -101,29 +104,29 @@ export class TriggerCondition {
   /**
    * Creates a "succeeded" trigger condition.
    */
-  static succeeded(ref: string): TriggerCondition {
-    return new TriggerCondition({ type: "succeeded", ref });
+  static succeeded(): TriggerCondition {
+    return new TriggerCondition({ type: "succeeded" });
   }
 
   /**
    * Creates a "failed" trigger condition.
    */
-  static failed(ref: string): TriggerCondition {
-    return new TriggerCondition({ type: "failed", ref });
+  static failed(): TriggerCondition {
+    return new TriggerCondition({ type: "failed" });
   }
 
   /**
    * Creates a "completed" trigger condition.
    */
-  static completed(ref: string): TriggerCondition {
-    return new TriggerCondition({ type: "completed", ref });
+  static completed(): TriggerCondition {
+    return new TriggerCondition({ type: "completed" });
   }
 
   /**
    * Creates a "skipped" trigger condition.
    */
-  static skipped(ref: string): TriggerCondition {
-    return new TriggerCondition({ type: "skipped", ref });
+  static skipped(): TriggerCondition {
+    return new TriggerCondition({ type: "skipped" });
   }
 
   /**
@@ -159,75 +162,51 @@ export class TriggerCondition {
   /**
    * Evaluates this trigger condition against the given context.
    *
+   * @param ctx - The evaluation context that provides step/job statuses
+   * @param ref - The step or job name whose status to check
    * @returns true if the condition is satisfied, false otherwise
    */
-  evaluate(ctx: TriggerEvaluationContext): boolean {
-    return this.evaluateData(this.data, ctx);
+  evaluate(ctx: TriggerEvaluationContext, ref: string): boolean {
+    return this.evaluateData(this.data, ctx, ref);
   }
 
   private evaluateData(
     data: TriggerConditionData,
     ctx: TriggerEvaluationContext,
+    ref: string,
   ): boolean {
     switch (data.type) {
       case "always":
         return true;
 
       case "succeeded": {
-        const status = ctx.getStatus(data.ref);
+        const status = ctx.getStatus(ref);
         return status === "succeeded";
       }
 
       case "failed": {
-        const status = ctx.getStatus(data.ref);
+        const status = ctx.getStatus(ref);
         return status === "failed";
       }
 
       case "completed": {
-        const status = ctx.getStatus(data.ref);
+        const status = ctx.getStatus(ref);
         return status === "succeeded" || status === "failed";
       }
 
       case "skipped": {
-        const status = ctx.getStatus(data.ref);
+        const status = ctx.getStatus(ref);
         return status === "skipped";
       }
 
       case "and":
-        return data.conditions.every((c) => this.evaluateData(c, ctx));
+        return data.conditions.every((c) => this.evaluateData(c, ctx, ref));
 
       case "or":
-        return data.conditions.some((c) => this.evaluateData(c, ctx));
+        return data.conditions.some((c) => this.evaluateData(c, ctx, ref));
 
       case "not":
-        return !this.evaluateData(data.condition, ctx);
-    }
-  }
-
-  /**
-   * Extracts all referenced step/job names from this condition.
-   */
-  getRefs(): string[] {
-    return this.getRefsFromData(this.data);
-  }
-
-  private getRefsFromData(data: TriggerConditionData): string[] {
-    switch (data.type) {
-      case "always":
-        return [];
-
-      case "succeeded":
-      case "failed":
-      case "completed":
-      case "skipped":
-        return [data.ref];
-
-      case "and":
-      case "or":
-        return data.conditions.flatMap((c) => this.getRefsFromData(c));
-
-      case "not":
-        return this.getRefsFromData(data.condition);
+        return !this.evaluateData(data.condition, ctx, ref);
     }
   }
 

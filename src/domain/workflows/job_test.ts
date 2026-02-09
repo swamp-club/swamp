@@ -33,7 +33,7 @@ Deno.test("Job.create creates job with all props", () => {
     description: "Deploys the application",
     steps: [step1, step2],
     dependsOn: [
-      { job: "build", condition: TriggerCondition.succeeded("build") },
+      { job: "build", condition: TriggerCondition.succeeded() },
     ],
     weight: 10,
   });
@@ -64,8 +64,8 @@ Deno.test("Job.getDependencyNames returns job names", () => {
     name: "final",
     steps: [step],
     dependsOn: [
-      { job: "job1", condition: TriggerCondition.succeeded("job1") },
-      { job: "job2", condition: TriggerCondition.completed("job2") },
+      { job: "job1", condition: TriggerCondition.succeeded() },
+      { job: "job2", condition: TriggerCondition.completed() },
     ],
   });
 
@@ -152,17 +152,17 @@ Deno.test("Job.fromData and toData roundtrip correctly", () => {
         name: "step2",
         task: StepTask.modelMethod("model", "run"),
         dependsOn: [
-          { step: "step1", condition: TriggerCondition.succeeded("step1") },
+          { step: "step1", condition: TriggerCondition.succeeded() },
         ],
       }),
     ],
     dependsOn: [
-      { job: "setup", condition: TriggerCondition.succeeded("setup") },
+      { job: "setup", condition: TriggerCondition.succeeded() },
       {
         job: "check",
         condition: TriggerCondition.or([
-          TriggerCondition.succeeded("check"),
-          TriggerCondition.skipped("check"),
+          TriggerCondition.succeeded(),
+          TriggerCondition.skipped(),
         ]),
       },
     ],

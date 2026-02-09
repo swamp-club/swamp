@@ -242,7 +242,7 @@ Deno.test("executes workflow with multiple jobs", async () => {
             Step.create({ name: "unit", task: StepTask.shell("echo") }),
           ],
           dependsOn: [
-            { job: "build", condition: TriggerCondition.succeeded("build") },
+            { job: "build", condition: TriggerCondition.succeeded() },
           ],
         }),
       ],
@@ -286,7 +286,7 @@ Deno.test("executes workflow with step dependencies", async () => {
               dependsOn: [
                 {
                   step: "setup",
-                  condition: TriggerCondition.succeeded("setup"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),
@@ -362,7 +362,7 @@ Deno.test("skips job when trigger condition not met", async () => {
             Step.create({ name: "unit", task: StepTask.shell("echo") }),
           ],
           dependsOn: [
-            { job: "build", condition: TriggerCondition.succeeded("build") },
+            { job: "build", condition: TriggerCondition.succeeded() },
           ],
         }),
       ],
@@ -407,7 +407,7 @@ Deno.test("runs job on failure condition", async () => {
             Step.create({ name: "alert", task: StepTask.shell("echo") }),
           ],
           dependsOn: [
-            { job: "build", condition: TriggerCondition.failed("build") },
+            { job: "build", condition: TriggerCondition.failed() },
           ],
         }),
       ],
@@ -642,7 +642,7 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
             Step.create({ name: "step1", task: StepTask.shell("echo") }),
           ],
           dependsOn: [
-            { job: "job-a", condition: TriggerCondition.succeeded("job-a") },
+            { job: "job-a", condition: TriggerCondition.succeeded() },
           ],
         }),
         Job.create({
@@ -651,8 +651,8 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
             Step.create({ name: "step1", task: StepTask.shell("echo") }),
           ],
           dependsOn: [
-            { job: "job-a", condition: TriggerCondition.succeeded("job-a") },
-            { job: "job-b", condition: TriggerCondition.succeeded("job-b") },
+            { job: "job-a", condition: TriggerCondition.succeeded() },
+            { job: "job-b", condition: TriggerCondition.succeeded() },
           ],
         }),
       ],
@@ -930,7 +930,7 @@ Deno.test("updates data context between workflow steps", async () => {
               dependsOn: [
                 {
                   step: "step1",
-                  condition: TriggerCondition.succeeded("step1"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),
@@ -1002,7 +1002,7 @@ Deno.test("updates both resource and data context when step produces both", asyn
               dependsOn: [
                 {
                   step: "step1",
-                  condition: TriggerCondition.succeeded("step1"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),
