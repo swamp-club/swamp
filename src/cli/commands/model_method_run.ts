@@ -202,6 +202,7 @@ export const modelMethodRunCommand = new Command()
             repoDir,
             modelType,
             modelId: evaluatedDefinition.id,
+            logger: runLogger,
             dataRepository: unifiedDataRepo,
             definitionRepository: definitionRepo,
           },

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
+import type { Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
 import type { Definition } from "../definitions/definition.ts";
@@ -131,6 +132,11 @@ export interface MethodContext {
    * Repository for tracking execution history.
    */
   outputRepository?: OutputRepository;
+
+  /**
+   * Logger for emitting log messages. Category is set automatically.
+   */
+  logger: Logger;
 
   /**
    * Optional callbacks for streaming stdout/stderr output.

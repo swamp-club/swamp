@@ -19,6 +19,7 @@ import { modelRegistry } from "../src/domain/models/model.ts";
 import type { MethodContext } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { getLogger } from "@logtape/logtape";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-simple-return-" });
@@ -56,6 +57,7 @@ function createTestContext(
     repoDir,
     modelType,
     modelId,
+    logger: getLogger(["test"]),
     dataRepository: new FileSystemUnifiedDataRepository(repoDir),
     definitionRepository: new YamlDefinitionRepository(repoDir),
   };

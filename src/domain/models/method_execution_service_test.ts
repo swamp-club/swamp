@@ -14,6 +14,7 @@ import { z } from "zod";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { generateDataId } from "../data/data_id.ts";
+import { getLogger } from "@logtape/logtape";
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -63,6 +64,7 @@ function createTestContext(overrides?: Partial<MethodContext>): MethodContext {
     repoDir: ".",
     modelType: ModelType.create("swamp/echo"),
     modelId: crypto.randomUUID(),
+    logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
     ...overrides,
@@ -673,3 +675,44 @@ Deno.test(
     assertEquals(finalAttrs?.OperationStatus, "SUCCESS");
   },
 );
+
+Deno.test("execute passes logger in context to method", async () => {
+  const service = new DefaultMethodExecutionService();
+  let capturedLogger: unknown = undefined;
+
+  const schema = z.object({ value: z.string().optional() });
+  const model: ModelDefinition = {
+    type: ModelType.create("test/logger-check"),
+    version: "1",
+    inputAttributesSchema: schema,
+    dataOutputSpecs: {},
+    methods: {
+      run: {
+        description: "Method that captures the logger from context",
+        inputAttributesSchema: schema,
+        execute: (_definition, context) => {
+          capturedLogger = context.logger;
+          // Verify logger methods are callable (no-op in test env)
+          context.logger.trace`trace message`;
+          context.logger.debug`debug message`;
+          context.logger.info`info message`;
+          context.logger.warning`warning message`;
+          context.logger.error`error message`;
+          context.logger.fatal`fatal message`;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    attributes: { value: "test" },
+  });
+
+  const context = createTestContext({ modelType: model.type });
+  await service.executeWorkflow(definition, model, "run", context);
+
+  assertEquals(capturedLogger !== undefined, true);
+  assertEquals(typeof (capturedLogger as { info: unknown }).info, "function");
+});
