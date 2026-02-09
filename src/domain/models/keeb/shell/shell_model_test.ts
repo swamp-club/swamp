@@ -13,6 +13,7 @@ import type { MethodContext } from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
 import { generateDataId } from "../../../data/data_id.ts";
+import { getLogger } from "@logtape/logtape";
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -64,6 +65,7 @@ function createTestContext(
     repoDir: "/tmp",
     modelType: SHELL_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
     ...overrides,
