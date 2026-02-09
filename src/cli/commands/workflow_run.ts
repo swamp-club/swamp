@@ -304,6 +304,6 @@ export const workflowRunCommand = new Command()
         throw error;
       }
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Workflow execution failed: ${message}`);
+      throw new UserError(`Workflow execution failed: ${message}`);
     }
   });

@@ -141,6 +141,8 @@ export const workflowEvaluateCommand = new Command()
 /**
  * Evaluates a single workflow, replacing CEL expressions with values.
  * Vault expressions are left as-is for runtime resolution.
+ * forEach-related expressions (self.* and forEach.in) are left raw for
+ * runtime expansion.
  */
 async function evaluateWorkflow(
   workflow: Workflow,
@@ -167,10 +169,31 @@ async function evaluateWorkflow(
   const context = await modelResolver.buildContext();
   context.inputs = inputs;
 
-  // Evaluate CEL-only expressions; skip vault-containing expressions
+  // Collect forEach.in expressions to skip during evaluation
+  const forEachInExpressions = new Set<string>();
+  for (const job of workflow.jobs) {
+    for (const step of job.steps) {
+      if (step.forEach) {
+        const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
+        if (match) {
+          forEachInExpressions.add(step.forEach.in);
+        }
+      }
+    }
+  }
+
+  // Evaluate CEL-only expressions; skip vault, self.*, and forEach.in expressions
   const evaluatedValues = new Map<string, unknown>();
   for (const expr of expressions) {
     if (containsVaultExpression(expr.celExpression)) {
+      continue;
+    }
+    // Skip self.* expressions — they reference forEach variables resolved at runtime
+    if (expr.celExpression.match(/\bself\./)) {
+      continue;
+    }
+    // Skip forEach.in expressions — they must remain as strings for forEach expansion
+    if (forEachInExpressions.has(expr.raw)) {
       continue;
     }
 

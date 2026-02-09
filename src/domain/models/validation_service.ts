@@ -309,9 +309,13 @@ export class DefaultModelValidationService implements ModelValidationService {
       // Extract env references (these are always valid - resolved at runtime)
       const envRefs = extractEnvReferences(celExpression);
 
+      // Check for inputs references (valid when model defines an inputs schema)
+      const hasInputsRef = /\binputs\./.test(celExpression);
+
       // Check for expressions with valid ${{...}} syntax but no valid references
       if (
-        pathRefs.length === 0 && selfRefs.length === 0 && envRefs.length === 0
+        pathRefs.length === 0 && selfRefs.length === 0 &&
+        envRefs.length === 0 && !hasInputsRef
       ) {
         const error = this.validateExpressionContent(celExpression, raw, path);
         if (error) errors.push(error);
