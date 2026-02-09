@@ -334,12 +334,18 @@ export class DefaultStepExecutor implements StepExecutor {
     } else if (ctx.expressionContext) {
       runLogger.info("Evaluating expressions");
       // Set self context for this specific model before evaluating
+      // Preserve any forEach variables that were set by the workflow engine
+      const forEachVars: Record<string, unknown> = {};
+      if (ctx.forEachVariable && ctx.forEachVariable.name) {
+        forEachVars[ctx.forEachVariable.name] = ctx.forEachVariable.value;
+      }
       ctx.expressionContext.self = {
         id: originalDefinition.id,
         name: originalDefinition.name,
         version: originalDefinition.version,
         tags: originalDefinition.tags,
         attributes: originalDefinition.attributes,
+        ...forEachVars,
       };
 
       // Evaluate step task inputs and merge into context
@@ -1090,8 +1096,8 @@ export class WorkflowExecutionService {
       // Extract the CEL expression (remove ${{ }})
       const match = inExpression.match(/\$\{\{\s*(.+?)\s*\}\}/);
       if (!match) {
-        throw new Error(
-          `Invalid forEach.in expression: ${inExpression}. Must be in ${{}} format.`,
+        throw new UserError(
+          `Invalid forEach.in expression: ${inExpression}. Must be in $\{{ }} format.`,
         );
       }
 
@@ -1100,6 +1106,8 @@ export class WorkflowExecutionService {
 
       // Handle both arrays and objects
       const expandedSteps: ExpandedStep[] = [];
+
+      const nameHasExpression = /\$\{\{.+?\}\}/.test(step.name);
 
       if (Array.isArray(items)) {
         // Array iteration: self.{item} = item value
@@ -1119,6 +1127,9 @@ export class WorkflowExecutionService {
           if (nameMatch) {
             const value = celEvaluator.evaluate(nameMatch[1], stepContext);
             expandedName = step.name.replace(nameMatch[0], String(value));
+          } else if (!nameHasExpression) {
+            // Step name has no expression template — append item value for uniqueness
+            expandedName = `${step.name}-${String(item)}`;
           }
 
           expandedSteps.push({
@@ -1147,6 +1158,9 @@ export class WorkflowExecutionService {
           if (nameMatch) {
             const evalValue = celEvaluator.evaluate(nameMatch[1], stepContext);
             expandedName = step.name.replace(nameMatch[0], String(evalValue));
+          } else if (!nameHasExpression) {
+            // Step name has no expression template — append key for uniqueness
+            expandedName = `${step.name}-${key}`;
           }
 
           expandedSteps.push({
@@ -1156,7 +1170,7 @@ export class WorkflowExecutionService {
           });
         }
       } else {
-        throw new Error(
+        throw new UserError(
           `forEach.in must evaluate to an array or object, got: ${typeof items}`,
         );
       }
@@ -1591,6 +1605,8 @@ export class WorkflowExecutionService {
   /**
    * Evaluates CEL expressions in a workflow, leaving vault expressions raw.
    * Vault expressions are resolved at runtime only.
+   * forEach-related expressions (self.* and forEach.in) are left raw for
+   * runtime expansion.
    */
   private evaluateWorkflow(
     workflow: Workflow,
@@ -1604,10 +1620,31 @@ export class WorkflowExecutionService {
       return workflow;
     }
 
-    // Evaluate CEL-only expressions; skip vault-containing expressions
+    // Collect forEach.in expressions to skip during evaluation
+    const forEachInExpressions = new Set<string>();
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        if (step.forEach) {
+          const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
+          if (match) {
+            forEachInExpressions.add(step.forEach.in);
+          }
+        }
+      }
+    }
+
+    // Evaluate CEL-only expressions; skip vault, self.*, and forEach.in expressions
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
       if (containsVaultExpression(expr.celExpression)) {
+        continue;
+      }
+      // Skip self.* expressions — they reference forEach variables resolved at runtime
+      if (expr.celExpression.match(/\bself\./)) {
+        continue;
+      }
+      // Skip forEach.in expressions — they must remain as strings for forEach expansion
+      if (forEachInExpressions.has(expr.raw)) {
         continue;
       }
 
