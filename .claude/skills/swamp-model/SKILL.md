@@ -79,7 +79,7 @@ swamp type describe swamp/echo --json
 ```json
 {
   "type": { "raw": "swamp/echo", "normalized": "swamp/echo" },
-  "version": 1,
+  "version": "2026.02.09.1",
   "inputAttributesSchema": {/* JSON Schema */},
   "resourceAttributesSchema": {/* JSON Schema */},
   "methods": [

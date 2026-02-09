@@ -25,6 +25,14 @@ Deno.test("CalVer.isValid rejects invalid formats", () => {
   assertEquals(CalVer.isValid("abc"), false);
 });
 
+Deno.test("CalVer.isValid rejects invalid date ranges", () => {
+  assertEquals(CalVer.isValid("2025.13.01.1"), false); // month 13
+  assertEquals(CalVer.isValid("2025.00.01.1"), false); // month 0
+  assertEquals(CalVer.isValid("2025.01.00.1"), false); // day 0
+  assertEquals(CalVer.isValid("2025.01.32.1"), false); // day 32
+  assertEquals(CalVer.isValid("2025.13.45.1"), false); // month 13, day 45
+});
+
 Deno.test("CalVer.create returns instance for valid version", () => {
   const cv = CalVer.create("2025.01.15.1");
   assertEquals(cv.value, "2025.01.15.1");
