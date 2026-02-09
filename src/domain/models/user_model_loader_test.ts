@@ -9,6 +9,7 @@ import type { UnifiedDataRepository } from "../../infrastructure/persistence/uni
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
+import { getLogger } from "@logtape/logtape";
 
 // Import models barrel to ensure swamp/echo is registered for duplicate test
 import "./models.ts";
@@ -61,6 +62,7 @@ function createTestContext(modelType: ModelType): MethodContext {
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),
+    logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
   };

@@ -106,6 +106,7 @@ execute: (async (definition, context) => {
   // definition.name       - User-provided name
   // definition.attributes - Validated input data
   // context.repoDir       - Repository root path
+  // context.logger        - LogTape Logger for emitting log messages
   // context.dataRepository - For advanced data operations
 
   // For external resources (APIs, cloud services, etc.)
@@ -273,6 +274,46 @@ models from accidentally overwriting data.
 - Multiple models can read the same data via CEL expressions
 - Only the creating model can update its own data
 - Use unique data names to avoid conflicts
+
+## Logging
+
+Model methods have access to a pre-configured LogTape logger via
+`context.logger`. The logger category is set automatically based on the model
+type and method name — no configuration needed.
+
+### Log Levels
+
+From low to high severity: `trace`, `debug`, `info`, `warning`, `error`,
+`fatal`.
+
+### Structured Placeholders (Preferred)
+
+Use named `{placeholder}` tokens with a properties object:
+
+```typescript
+context.logger.info("Processing {name}", { name: definition.name });
+context.logger.error("Request failed: {error}", { error: err.message });
+```
+
+Use `{*}` to inline all properties from the object:
+
+```typescript
+context.logger.info("Bucket created: {*}", {
+  bucket: "my-bucket",
+  region: "us-east-1",
+});
+// Output: Bucket created: bucket=my-bucket region=us-east-1
+```
+
+### Additional Features
+
+- `context.logger.with({ requestId: "abc" })` — returns a logger with extra
+  properties on all messages
+- `context.logger.getChild("subsystem")` — creates a child logger with a
+  sub-category
+- Logger respects `--log-level`, `--verbose`, `--quiet`, and `--json` flags
+  automatically
+- In JSON mode, non-fatal messages are suppressed; fatal goes to stderr as JSON
 
 ## Examples
 
