@@ -57,6 +57,17 @@ export class YamlEvaluatedWorkflowRepository {
     return workflows;
   }
 
+  /**
+   * Finds an evaluated workflow by its name.
+   *
+   * @param name - The workflow name
+   * @returns The evaluated workflow if found, or null
+   */
+  async findByName(name: string): Promise<Workflow | null> {
+    const workflows = await this.findAll();
+    return workflows.find((w) => w.name === name) ?? null;
+  }
+
   async save(workflow: Workflow): Promise<void> {
     const dir = this.getWorkflowsDir();
     await ensureDir(dir);

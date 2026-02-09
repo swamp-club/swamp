@@ -13,6 +13,7 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -26,6 +27,10 @@ import {
   extractExpressions,
   replaceExpressions,
 } from "../expressions/expression_parser.ts";
+import {
+  containsVaultExpression,
+  ExpressionEvaluationService,
+} from "../expressions/expression_evaluation_service.ts";
 import { extractResourceDependencies } from "../expressions/dependency_extractor.ts";
 import {
   type DataRecord,
@@ -36,6 +41,7 @@ import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   DataOutputValidationService,
 } from "../models/data_output_validation_service.ts";
+import { UserError } from "../errors.ts";
 import {
   getRunLogger,
   getWorkflowRunLogger,
@@ -61,6 +67,8 @@ export interface StepExecutionContext {
   step?: Step;
   /** Whether step executors should log execution details via LogTape */
   enableStepLogging?: boolean;
+  /** When true, load previously-evaluated definitions instead of evaluating CEL */
+  useLastEvaluated?: boolean;
 }
 
 /**
@@ -287,9 +295,26 @@ export class DefaultStepExecutor implements StepExecutor {
       );
     }
 
-    // Evaluate expressions for execution (after validation passes)
+    // Evaluate CEL expressions (vault left raw for persistence)
     let evaluatedDefinition = originalDefinition;
-    if (ctx.expressionContext) {
+    if (ctx.useLastEvaluated) {
+      // Load previously-evaluated definition from cache
+      runLogger?.info("Loading last evaluated definition");
+      const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(
+        ctx.repoDir,
+      );
+      const lastEvaluated = await evaluatedDefRepo.findByName(
+        modelType,
+        originalDefinition.name,
+      );
+      if (!lastEvaluated) {
+        throw new Error(
+          `No previously evaluated definition found for "${originalDefinition.name}". ` +
+            `Run the workflow without --last-evaluated first.`,
+        );
+      }
+      evaluatedDefinition = lastEvaluated;
+    } else if (ctx.expressionContext) {
       runLogger?.info("Evaluating expressions");
       // Set self context for this specific model before evaluating
       ctx.expressionContext.self = {
@@ -306,6 +331,19 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.repoDir,
       );
     }
+
+    // Save evaluated definition (with vault expressions still raw) for --last-evaluated
+    const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(ctx.repoDir);
+    await evaluatedDefRepo.save(modelType, evaluatedDefinition);
+
+    // Resolve vault expressions at runtime (never persisted)
+    const evalService = new ExpressionEvaluationService(
+      new YamlDefinitionRepository(ctx.repoDir),
+      ctx.repoDir,
+    );
+    evaluatedDefinition = await evalService.resolveVaultExpressionsInDefinition(
+      evaluatedDefinition,
+    );
 
     // Validate method exists on the model
     const method = modelDef.methods[task.methodName];
@@ -522,12 +560,13 @@ export class DefaultStepExecutor implements StepExecutor {
   }
 
   /**
-   * Evaluates expressions in a definition.
+   * Evaluates CEL expressions in a definition, leaving vault expressions raw.
+   * Vault expressions are resolved at runtime only.
    */
   private async evaluateDefinitionExpressions(
     definition: Definition,
     context: ExpressionContext,
-    repoDir: string,
+    _repoDir: string,
   ): Promise<Definition> {
     const celEvaluator = new CelEvaluator();
     const definitionData = definition.toData();
@@ -537,26 +576,18 @@ export class DefaultStepExecutor implements StepExecutor {
       return definition;
     }
 
-    // Create ModelResolver for vault expression handling
-    const definitionRepoForResolver = new YamlDefinitionRepository(repoDir);
-    const modelResolver = new ModelResolver(definitionRepoForResolver, {
-      repoDir,
-    });
-
-    // Evaluate each expression
+    // Evaluate CEL-only expressions; skip vault-containing expressions
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      // First resolve any vault expressions in the CEL expression
-      const resolvedCelExpr = await modelResolver.resolveVaultExpressions(
-        expr.celExpression,
-      );
+      if (containsVaultExpression(expr.celExpression)) {
+        continue;
+      }
 
-      // Then evaluate the CEL expression
-      const value = celEvaluator.evaluate(resolvedCelExpr, context);
+      const value = celEvaluator.evaluate(expr.celExpression, context);
       evaluatedValues.set(expr.raw, value);
     }
 
-    // Replace expressions with evaluated values
+    // Replace only CEL-only expressions with evaluated values
     const evaluatedData = replaceExpressions(definitionData, evaluatedValues);
 
     // Create new Definition from evaluated data
@@ -645,7 +676,7 @@ export class WorkflowExecutionService {
   async execute(
     idOrName: string,
     progress?: ExecutionProgressCallback,
-    options?: { enableStepLogging?: boolean },
+    options?: { enableStepLogging?: boolean; lastEvaluated?: boolean },
   ): Promise<WorkflowRun> {
     // Look up workflow
     const workflow = await this.lookupWorkflow(idOrName);
@@ -653,18 +684,37 @@ export class WorkflowExecutionService {
       throw new Error(`Workflow not found: ${idOrName}`);
     }
 
-    // Build expression context for the workflow
-    const expressionContext = await this.modelResolver.buildContext();
+    let expressionContext: ExpressionContext | undefined;
 
-    // Evaluate workflow and save to workflows-evaluated/
-    const evaluatedWorkflow = await this.evaluateWorkflow(
-      workflow,
-      expressionContext,
-    );
-    const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-      this.repoDir,
-    );
-    await evaluatedWorkflowRepo.save(evaluatedWorkflow);
+    if (options?.lastEvaluated) {
+      // Load previously evaluated workflow from cache
+      const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+        this.repoDir,
+      );
+      const lastEvaluated = await evaluatedWorkflowRepo.findByName(
+        workflow.name,
+      );
+      if (!lastEvaluated) {
+        throw new UserError(
+          `No previously evaluated workflow found for "${workflow.name}".\n\n` +
+            `Run the workflow without --last-evaluated first to generate evaluated data:\n` +
+            `  swamp workflow run ${workflow.name}`,
+        );
+      }
+      // No expression context needed — we use pre-evaluated definitions per-step
+    } else {
+      // Build expression context and evaluate workflow
+      expressionContext = await this.modelResolver.buildContext();
+
+      const evaluatedWorkflow = await this.evaluateWorkflow(
+        workflow,
+        expressionContext,
+      );
+      const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+        this.repoDir,
+      );
+      await evaluatedWorkflowRepo.save(evaluatedWorkflow);
+    }
 
     // Create workflow run
     const run = WorkflowRun.create(workflow);
@@ -712,6 +762,7 @@ export class WorkflowExecutionService {
             expressionContext,
             progress,
             options?.enableStepLogging,
+            options?.lastEvaluated,
           )
         ),
       );
@@ -730,9 +781,10 @@ export class WorkflowExecutionService {
     workflow: Workflow,
     run: WorkflowRun,
     jobName: string,
-    expressionContext: ExpressionContext,
+    expressionContext: ExpressionContext | undefined,
     progress?: ExecutionProgressCallback,
     enableStepLogging?: boolean,
+    lastEvaluated?: boolean,
   ): Promise<void> {
     const job = workflow.getJob(jobName);
     if (!job) {
@@ -809,6 +861,7 @@ export class WorkflowExecutionService {
               expressionContext,
               streamingCallbacks,
               enableStepLogging,
+              lastEvaluated,
             )
           ),
         );
@@ -915,9 +968,10 @@ export class WorkflowExecutionService {
     job: Job,
     jobRun: JobRun,
     stepName: string,
-    expressionContext: ExpressionContext,
+    expressionContext: ExpressionContext | undefined,
     progress?: ExecutionProgressCallback,
     enableStepLogging?: boolean,
+    lastEvaluated?: boolean,
   ): Promise<void> {
     const step = job.getStep(stepName);
     if (!step) {
@@ -949,16 +1003,17 @@ export class WorkflowExecutionService {
         jobName: job.name,
         stepName,
         repoDir: this.repoDir,
-        expressionContext,
+        expressionContext: lastEvaluated ? undefined : expressionContext,
         progress,
         workflowRun: run,
         step, // Include step for accessing data output overrides
         enableStepLogging,
+        useLastEvaluated: lastEvaluated,
       };
 
       const output = await this.executor.execute(step, ctx);
 
-      // Update expression context with new resource and data if this was a model method
+      // Track data artifacts and update expression context if this was a model method
       if (step.task.isModelMethod() && output && typeof output === "object") {
         const taskOutput = output as {
           model?: string;
@@ -981,7 +1036,9 @@ export class WorkflowExecutionService {
             stepRun.addDataArtifact(artifact);
           }
         }
-        if (taskOutput.model) {
+
+        // Update expression context for subsequent steps (only when not using --last-evaluated)
+        if (expressionContext && taskOutput.model) {
           // Create model entry if it doesn't exist
           if (!expressionContext.model[taskOutput.model]) {
             expressionContext.model[taskOutput.model] = {
@@ -1143,12 +1200,13 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Evaluates expressions in a workflow.
+   * Evaluates CEL expressions in a workflow, leaving vault expressions raw.
+   * Vault expressions are resolved at runtime only.
    */
-  private async evaluateWorkflow(
+  private evaluateWorkflow(
     workflow: Workflow,
     context: ExpressionContext,
-  ): Promise<Workflow> {
+  ): Workflow {
     const celEvaluator = new CelEvaluator();
     const workflowData = workflow.toData();
     const expressions = extractExpressions(workflowData);
@@ -1157,20 +1215,18 @@ export class WorkflowExecutionService {
       return workflow;
     }
 
-    // Evaluate each expression
+    // Evaluate CEL-only expressions; skip vault-containing expressions
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      // First resolve any vault expressions in the CEL expression
-      const resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
-        expr.celExpression,
-      );
+      if (containsVaultExpression(expr.celExpression)) {
+        continue;
+      }
 
-      // Then evaluate the CEL expression
-      const value = celEvaluator.evaluate(resolvedCelExpr, context);
+      const value = celEvaluator.evaluate(expr.celExpression, context);
       evaluatedValues.set(expr.raw, value);
     }
 
-    // Replace expressions with evaluated values
+    // Replace only CEL-only expressions with evaluated values
     const evaluatedData = replaceExpressions(workflowData, evaluatedValues);
 
     // Create new Workflow from evaluated data

@@ -11,6 +11,7 @@ import { ModelOutput } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
+import { UserError } from "../../domain/errors.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
@@ -24,6 +25,11 @@ export const modelMethodRunCommand = new Command()
   .description("Execute a method on a model")
   .arguments("<model_id_or_name:model_name> <method_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--last-evaluated",
+    "Skip CEL evaluation, use previously evaluated definition",
+    { default: false },
+  )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -84,22 +90,50 @@ export const modelMethodRunCommand = new Command()
         );
       }
 
-      // Evaluate expressions (including vault expressions) before execution
       const evaluationService = new ExpressionEvaluationService(
         definitionRepo,
         repoDir,
         { dataRepo: unifiedDataRepo },
       );
 
+      const lastEvaluated = options.lastEvaluated as boolean;
       let evaluatedDefinition = definition;
-      if (evaluationService.hasDefinitionExpressions(definition)) {
-        runLogger.info("Evaluating expressions");
-        const evalResult = await evaluationService.evaluateDefinition(
-          definition,
+
+      if (lastEvaluated) {
+        // Load previously-evaluated definition from cache
+        runLogger.info("Loading last evaluated definition");
+        const evaluatedDefRepo = repoContext.evaluatedDefinitionRepo;
+        const lastEval = await evaluatedDefRepo.findByName(
           modelType,
+          definition.name,
         );
-        evaluatedDefinition = evalResult.definition;
+        if (!lastEval) {
+          throw new UserError(
+            `No previously evaluated definition found for "${definition.name}".\n\n` +
+              `Run the method without --last-evaluated first to generate evaluated data:\n` +
+              `  swamp model method run ${definition.name} ${methodName}`,
+          );
+        }
+        evaluatedDefinition = lastEval;
+      } else {
+        // Evaluate CEL expressions (vault expressions left raw for persistence)
+        if (evaluationService.hasDefinitionExpressions(definition)) {
+          runLogger.info("Evaluating expressions");
+          const evalResult = await evaluationService.evaluateDefinition(
+            definition,
+            modelType,
+          );
+          evaluatedDefinition = evalResult.definition;
+        }
+
+        // Save evaluated definition (with vault expressions still raw) for --last-evaluated
+        const evaluatedDefRepo = repoContext.evaluatedDefinitionRepo;
+        await evaluatedDefRepo.save(modelType, evaluatedDefinition);
       }
+
+      // Resolve vault expressions at runtime (never persisted)
+      evaluatedDefinition = await evaluationService
+        .resolveVaultExpressionsInDefinition(evaluatedDefinition);
 
       runLogger.info("Executing method {method}", { method: methodName });
 

@@ -141,6 +141,11 @@ export const workflowRunCommand = new Command()
   .arguments("<workflow_id_or_name:workflow_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--tui", "Use interactive TUI dashboard", { default: false })
+  .option(
+    "--last-evaluated",
+    "Skip CEL evaluation, use previously evaluated workflow and definitions",
+    { default: false },
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
@@ -160,6 +165,7 @@ export const workflowRunCommand = new Command()
     );
 
     const tui = options.tui as boolean;
+    const lastEvaluated = options.lastEvaluated as boolean;
 
     try {
       // Look up workflow first to get its data
@@ -189,7 +195,9 @@ export const workflowRunCommand = new Command()
           },
         };
 
-        const run = await executionService.execute(workflow.name, progress);
+        const run = await executionService.execute(workflow.name, progress, {
+          lastEvaluated,
+        });
 
         // Get the path for the run
         const path = runRepo.getPath(workflow.id, run.id);
@@ -220,7 +228,9 @@ export const workflowRunCommand = new Command()
         const executeWorkflow = async (
           progress: ExecutionProgressCallback,
         ): Promise<WorkflowRun> => {
-          return await executionService.execute(workflow.name, progress);
+          return await executionService.execute(workflow.name, progress, {
+            lastEvaluated,
+          });
         };
 
         const data = await renderWorkflowExecution(
@@ -244,6 +254,7 @@ export const workflowRunCommand = new Command()
         const progress = createLogProgressCallback(workflow.name);
         const run = await executionService.execute(workflow.name, progress, {
           enableStepLogging: true,
+          lastEvaluated,
         });
 
         ctx.logger.debug`Workflow run completed: status=${run.status}`;

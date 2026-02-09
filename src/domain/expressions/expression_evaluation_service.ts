@@ -8,6 +8,7 @@ import {
   extractExpressions,
   replaceExpressions,
 } from "./expression_parser.ts";
+import type { ExpressionLocation } from "./expression.ts";
 import { extractModelRefs } from "./dependency_extractor.ts";
 import {
   type ExpressionContext,
@@ -20,6 +21,20 @@ import {
   type GraphNode,
   TopologicalSortService,
 } from "../workflows/topological_sort_service.ts";
+
+/**
+ * Pattern to detect vault.get() references inside a CEL expression.
+ */
+const VAULT_GET_PATTERN = /vault\.get\s*\(/;
+
+/**
+ * Checks whether a CEL expression references vault.get().
+ * Expressions containing vault references must NOT be evaluated during
+ * the persist phase — they are resolved at runtime only.
+ */
+export function containsVaultExpression(celExpression: string): boolean {
+  return VAULT_GET_PATTERN.test(celExpression);
+}
 
 /**
  * Result of evaluating a single definition.
@@ -75,24 +90,23 @@ export class ExpressionEvaluationService {
    * @param context - The evaluation context
    * @returns The data with expressions replaced
    */
-  async evaluateData(
+  evaluateData(
     data: unknown,
     context: ExpressionContext,
-  ): Promise<unknown> {
+  ): unknown {
     const expressions = extractExpressions(data);
     if (expressions.length === 0) {
       return data;
     }
 
+    // Evaluate CEL-only expressions; skip vault-containing expressions
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      // First resolve any vault expressions in the CEL expression
-      const resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
-        expr.celExpression,
-      );
+      if (containsVaultExpression(expr.celExpression)) {
+        continue;
+      }
 
-      // Then evaluate the CEL expression
-      const value = this.celEvaluator.evaluate(resolvedCelExpr, context);
+      const value = this.celEvaluator.evaluate(expr.celExpression, context);
       evaluatedValues.set(expr.raw, value);
     }
 
@@ -139,20 +153,20 @@ export class ExpressionEvaluationService {
       return { definition, type, hadExpressions: false };
     }
 
-    // Evaluate each expression
+    // Evaluate CEL-only expressions; skip vault-containing expressions
+    // Vault expressions are resolved at runtime only, never persisted
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      // First resolve any vault expressions in the CEL expression
-      const resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
-        expr.celExpression,
-      );
+      if (containsVaultExpression(expr.celExpression)) {
+        // Leave vault-containing expressions (vault-only and mixed) as raw
+        continue;
+      }
 
-      // Then evaluate the CEL expression
-      const value = this.celEvaluator.evaluate(resolvedCelExpr, ctx);
+      const value = this.celEvaluator.evaluate(expr.celExpression, ctx);
       evaluatedValues.set(expr.raw, value);
     }
 
-    // Replace expressions with evaluated values
+    // Replace only the CEL-only expressions with evaluated values
     const evaluatedData = replaceExpressions(definitionData, evaluatedValues);
 
     // Create new Definition from evaluated data
@@ -298,5 +312,92 @@ export class ExpressionEvaluationService {
   hasDefinitionExpressions(definition: Definition): boolean {
     const data = definition.toData();
     return this.checkForExpressions(data);
+  }
+
+  /**
+   * Resolves remaining vault expressions in an already-evaluated definition.
+   * This is the runtime phase — vault secrets are resolved here and never persisted.
+   *
+   * @param definition - The definition (may contain remaining ${{ vault.get(...) }} expressions)
+   * @returns A new definition with vault expressions resolved to actual secret values
+   */
+  async resolveVaultExpressionsInDefinition(
+    definition: Definition,
+  ): Promise<Definition> {
+    const definitionData = definition.toData();
+    const expressions = extractExpressions(definitionData);
+
+    // Filter to only vault-containing expressions
+    const vaultExpressions = expressions.filter((expr) =>
+      containsVaultExpression(expr.celExpression)
+    );
+
+    if (vaultExpressions.length === 0) {
+      return definition;
+    }
+
+    return await this.resolveVaultInExpressions(
+      definitionData,
+      vaultExpressions,
+    );
+  }
+
+  /**
+   * Resolves remaining vault expressions in arbitrary data.
+   * This is the runtime phase — vault secrets are resolved here and never persisted.
+   *
+   * @param data - The data (may contain remaining ${{ vault.get(...) }} expressions)
+   * @returns The data with vault expressions resolved
+   */
+  async resolveVaultExpressionsInData(data: unknown): Promise<unknown> {
+    const expressions = extractExpressions(data);
+    const vaultExpressions = expressions.filter((expr) =>
+      containsVaultExpression(expr.celExpression)
+    );
+
+    if (vaultExpressions.length === 0) {
+      return data;
+    }
+
+    const evaluatedValues = new Map<string, unknown>();
+    for (const expr of vaultExpressions) {
+      // Resolve vault expressions first, then evaluate the full CEL
+      const resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
+        expr.celExpression,
+      );
+      const value = this.celEvaluator.evaluate(resolvedCelExpr, {
+        model: {},
+        env: {},
+      });
+      evaluatedValues.set(expr.raw, value);
+    }
+
+    return replaceExpressions(data, evaluatedValues);
+  }
+
+  /**
+   * Internal: resolves vault expressions in definition data and returns a new Definition.
+   */
+  private async resolveVaultInExpressions(
+    definitionData: ReturnType<Definition["toData"]>,
+    vaultExpressions: ExpressionLocation[],
+  ): Promise<Definition> {
+    const evaluatedValues = new Map<string, unknown>();
+    for (const expr of vaultExpressions) {
+      // Resolve vault references, then evaluate the CEL expression
+      const resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
+        expr.celExpression,
+      );
+      const value = this.celEvaluator.evaluate(resolvedCelExpr, {
+        model: {},
+        env: {},
+      });
+      evaluatedValues.set(expr.raw, value);
+    }
+
+    const resolvedData = replaceExpressions(definitionData, evaluatedValues);
+    return DefinitionClass.fromData(
+      resolvedData as ReturnType<Definition["toData"]>,
+    );
   }
 }
