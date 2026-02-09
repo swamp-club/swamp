@@ -1060,7 +1060,7 @@ export class WorkflowExecutionService {
 
     // Check all dependency conditions
     for (const dep of job.dependsOn) {
-      if (!dep.condition.evaluate(run)) {
+      if (!dep.condition.evaluate(run, dep.job)) {
         return false;
       }
     }
@@ -1076,7 +1076,7 @@ export class WorkflowExecutionService {
 
     // Check all dependency conditions
     for (const dep of step.dependsOn) {
-      if (!dep.condition.evaluate(jobRun)) {
+      if (!dep.condition.evaluate(jobRun, dep.step)) {
         return false;
       }
     }

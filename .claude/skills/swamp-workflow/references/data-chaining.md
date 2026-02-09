@@ -92,7 +92,6 @@ jobs:
       - job: lookup
         condition:
           type: succeeded
-          ref: lookup
     steps:
       - name: create-security-group
         task:

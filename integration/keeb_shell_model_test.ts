@@ -205,7 +205,7 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
           dependsOn: [
             {
               job: "download",
-              condition: TriggerCondition.succeeded("download"),
+              condition: TriggerCondition.succeeded(),
             },
           ],
         }),
@@ -287,7 +287,7 @@ Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
               dependsOn: [
                 {
                   step: "run-source",
-                  condition: TriggerCondition.succeeded("run-source"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),

@@ -105,7 +105,6 @@ jobs:
       - job: build
         condition:
           type: succeeded
-          ref: build
     steps:
       - name: upload
         description: Upload artifacts

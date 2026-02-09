@@ -117,7 +117,6 @@ Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple wor
             job: "build",
             condition: {
               type: "succeeded",
-              jobName: "build",
             },
           },
         ],
@@ -255,7 +254,7 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
         dependsOn: [
           {
             job: "setup",
-            condition: { type: "succeeded", jobName: "setup" },
+            condition: { type: "succeeded" },
           },
         ],
         steps: [
@@ -272,7 +271,7 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
         dependsOn: [
           {
             job: "setup",
-            condition: { type: "succeeded", jobName: "setup" },
+            condition: { type: "succeeded" },
           },
         ],
         steps: [
@@ -289,11 +288,11 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
         dependsOn: [
           {
             job: "build-frontend",
-            condition: { type: "succeeded", jobName: "build-frontend" },
+            condition: { type: "succeeded" },
           },
           {
             job: "build-backend",
-            condition: { type: "succeeded", jobName: "build-backend" },
+            condition: { type: "succeeded" },
           },
         ],
         steps: [

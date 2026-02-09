@@ -303,7 +303,7 @@ Deno.test("Workflow Architecture: multiple steps create multiple Data artifacts"
               dependsOn: [
                 {
                   step: "step-one",
-                  condition: TriggerCondition.succeeded("step-one"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),
@@ -706,7 +706,7 @@ Deno.test("Workflow Architecture: dependent step skipped on failure", async () =
               dependsOn: [
                 {
                   step: "failing-step",
-                  condition: TriggerCondition.succeeded("failing-step"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),
@@ -868,7 +868,7 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
             }),
           ],
           dependsOn: [
-            { job: "build", condition: TriggerCondition.succeeded("build") },
+            { job: "build", condition: TriggerCondition.succeeded() },
           ],
         }),
         Job.create({
@@ -880,7 +880,7 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
             }),
           ],
           dependsOn: [
-            { job: "test", condition: TriggerCondition.succeeded("test") },
+            { job: "test", condition: TriggerCondition.succeeded() },
           ],
         }),
       ],
@@ -947,7 +947,7 @@ Deno.test("Workflow Architecture: mixed shell and model steps", async () => {
               dependsOn: [
                 {
                   step: "shell-step",
-                  condition: TriggerCondition.succeeded("shell-step"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),
@@ -957,7 +957,7 @@ Deno.test("Workflow Architecture: mixed shell and model steps", async () => {
               dependsOn: [
                 {
                   step: "model-step",
-                  condition: TriggerCondition.succeeded("model-step"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),

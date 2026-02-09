@@ -24,7 +24,7 @@ Deno.test("Step.create creates step with all props", () => {
     description: "Runs the model",
     task,
     dependsOn: [
-      { step: "prepare", condition: TriggerCondition.succeeded("prepare") },
+      { step: "prepare", condition: TriggerCondition.succeeded() },
     ],
     weight: 10,
   });
@@ -43,8 +43,8 @@ Deno.test("Step.getDependencyNames returns step names", () => {
     name: "final",
     task,
     dependsOn: [
-      { step: "step1", condition: TriggerCondition.succeeded("step1") },
-      { step: "step2", condition: TriggerCondition.succeeded("step2") },
+      { step: "step1", condition: TriggerCondition.succeeded() },
+      { step: "step2", condition: TriggerCondition.succeeded() },
     ],
   });
 
@@ -106,12 +106,12 @@ Deno.test("Step.fromData and toData roundtrip correctly", () => {
     description: "A complex step",
     task: StepTask.modelMethod("model", "method"),
     dependsOn: [
-      { step: "step1", condition: TriggerCondition.succeeded("step1") },
+      { step: "step1", condition: TriggerCondition.succeeded() },
       {
         step: "step2",
         condition: TriggerCondition.or([
-          TriggerCondition.failed("step2"),
-          TriggerCondition.skipped("step2"),
+          TriggerCondition.failed(),
+          TriggerCondition.skipped(),
         ]),
       },
     ],

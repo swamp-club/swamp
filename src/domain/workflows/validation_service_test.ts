@@ -59,7 +59,7 @@ Deno.test("validates workflow with job dependencies", async () => {
           }),
         ],
         dependsOn: [
-          { job: "build", condition: TriggerCondition.succeeded("build") },
+          { job: "build", condition: TriggerCondition.succeeded() },
         ],
       }),
     ],
@@ -85,7 +85,7 @@ Deno.test("validates workflow with step dependencies", async () => {
             name: "compile",
             task: StepTask.shell("echo", { args: ["compile"] }),
             dependsOn: [
-              { step: "setup", condition: TriggerCondition.succeeded("setup") },
+              { step: "setup", condition: TriggerCondition.succeeded() },
             ],
           }),
         ],
@@ -304,7 +304,7 @@ Deno.test("passes all validations for complex valid workflow", async () => {
             dependsOn: [
               {
                 step: "checkout",
-                condition: TriggerCondition.succeeded("checkout"),
+                condition: TriggerCondition.succeeded(),
               },
             ],
           }),
@@ -319,7 +319,7 @@ Deno.test("passes all validations for complex valid workflow", async () => {
           }),
         ],
         dependsOn: [
-          { job: "setup", condition: TriggerCondition.succeeded("setup") },
+          { job: "setup", condition: TriggerCondition.succeeded() },
         ],
       }),
       Job.create({
@@ -333,12 +333,12 @@ Deno.test("passes all validations for complex valid workflow", async () => {
             name: "integration",
             task: StepTask.shell("npm", { args: ["run", "test:integration"] }),
             dependsOn: [
-              { step: "unit", condition: TriggerCondition.succeeded("unit") },
+              { step: "unit", condition: TriggerCondition.succeeded() },
             ],
           }),
         ],
         dependsOn: [
-          { job: "build", condition: TriggerCondition.succeeded("build") },
+          { job: "build", condition: TriggerCondition.succeeded() },
         ],
       }),
       Job.create({
@@ -350,7 +350,7 @@ Deno.test("passes all validations for complex valid workflow", async () => {
           }),
         ],
         dependsOn: [
-          { job: "test", condition: TriggerCondition.succeeded("test") },
+          { job: "test", condition: TriggerCondition.succeeded() },
         ],
       }),
     ],

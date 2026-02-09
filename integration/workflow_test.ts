@@ -96,7 +96,7 @@ function createTestWorkflow(name: string): Workflow {
           }),
         ],
         dependsOn: [
-          { job: "build", condition: TriggerCondition.succeeded("build") },
+          { job: "build", condition: TriggerCondition.succeeded() },
         ],
       }),
     ],
@@ -648,7 +648,7 @@ Deno.test("CLI: workflow run skips job when condition not met", async () => {
             }),
           ],
           dependsOn: [
-            { job: "build", condition: TriggerCondition.succeeded("build") },
+            { job: "build", condition: TriggerCondition.succeeded() },
           ],
         }),
       ],
@@ -868,7 +868,7 @@ Deno.test("CLI: workflow run succeeds with valid model expressions", async () =>
               dependsOn: [
                 {
                   step: "write-source",
-                  condition: TriggerCondition.succeeded("write-source"),
+                  condition: TriggerCondition.succeeded(),
                 },
               ],
             }),

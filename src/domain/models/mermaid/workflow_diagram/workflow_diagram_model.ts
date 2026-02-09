@@ -23,7 +23,6 @@ export const WorkflowExecutionSchema = z.object({
       job: z.string(),
       condition: z.object({
         type: z.string(),
-        jobName: z.string(),
       }),
     })).optional(),
     steps: z.array(z.object({
@@ -39,7 +38,6 @@ export const WorkflowExecutionSchema = z.object({
         step: z.string(),
         condition: z.object({
           type: z.string(),
-          stepName: z.string(),
         }),
       })).optional(),
     })),
