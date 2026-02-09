@@ -23,6 +23,7 @@ function createMockDataRepo(
   findByNameResult: Record<string, unknown> | null = null,
 ): UnifiedDataRepository {
   return {
+    findAllGlobal: () => Promise.resolve([]),
     findByName: () => Promise.resolve(findByNameResult as unknown as null),
     findById: () => Promise.resolve(null),
     listVersions: () => Promise.resolve([]),

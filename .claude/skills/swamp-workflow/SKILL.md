@@ -10,21 +10,24 @@ machine-readable output.
 
 ## Quick Reference
 
-| Task              | Command                                                |
-| ----------------- | ------------------------------------------------------ |
-| Get schema        | `swamp workflow schema get --json`                     |
-| Search workflows  | `swamp workflow search [query] --json`                 |
-| Get a workflow    | `swamp workflow get <id_or_name> --json`               |
-| Create a workflow | `swamp workflow create <name> --json`                  |
-| Edit a workflow   | `swamp workflow edit [id_or_name]`                     |
-| Delete a workflow | `swamp workflow delete <id_or_name> --json`            |
-| Validate workflow | `swamp workflow validate [id_or_name] --json`          |
-| Evaluate workflow | `swamp workflow evaluate <id_or_name> --json`          |
-| Run a workflow    | `swamp workflow run <id_or_name> --json`               |
-| Run with inputs   | `swamp workflow run <id_or_name> --input '{}' --json`  |
-| View run history  | `swamp workflow history search --json`                 |
-| Get latest run    | `swamp workflow history get <workflow> --json`         |
-| View run logs     | `swamp workflow history logs <run_or_workflow> --json` |
+| Task               | Command                                                |
+| ------------------ | ------------------------------------------------------ |
+| Get schema         | `swamp workflow schema get --json`                     |
+| Search workflows   | `swamp workflow search [query] --json`                 |
+| Get a workflow     | `swamp workflow get <id_or_name> --json`               |
+| Create a workflow  | `swamp workflow create <name> --json`                  |
+| Edit a workflow    | `swamp workflow edit [id_or_name]`                     |
+| Delete a workflow  | `swamp workflow delete <id_or_name> --json`            |
+| Validate workflow  | `swamp workflow validate [id_or_name] --json`          |
+| Evaluate workflow  | `swamp workflow evaluate <id_or_name> --json`          |
+| Run a workflow     | `swamp workflow run <id_or_name> --json`               |
+| Run with inputs    | `swamp workflow run <id_or_name> --input '{}' --json`  |
+| View run history   | `swamp workflow history search --json`                 |
+| Get latest run     | `swamp workflow history get <workflow> --json`         |
+| View run logs      | `swamp workflow history logs <run_or_workflow> --json` |
+| List workflow data | `swamp data list --workflow <name> --json`             |
+| Search wf data     | `swamp data search --workflow <name> --json`           |
+| Get workflow data  | `swamp data get --workflow <name> <data_name> --json`  |
 
 ## Repository Structure
 

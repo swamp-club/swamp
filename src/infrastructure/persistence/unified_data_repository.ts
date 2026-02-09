@@ -9,7 +9,7 @@ import {
   generateDataId,
   type OwnerDefinition,
 } from "../../domain/data/mod.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 
 /**
  * Error thrown when ownership validation fails.
@@ -40,6 +40,15 @@ export interface GarbageCollectionResult {
  * Repository interface for unified Data storage with versioning.
  */
 export interface UnifiedDataRepository {
+  /**
+   * Finds all data across all model types and models.
+   *
+   * @returns Array of data with their model type and model ID
+   */
+  findAllGlobal(): Promise<
+    Array<{ data: Data; modelType: ModelType; modelId: string }>
+  >;
+
   /**
    * Finds data by name, optionally for a specific version.
    *
@@ -255,6 +264,105 @@ export interface UnifiedDataRepository {
  */
 export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   constructor(private readonly repoDir: string) {}
+
+  async findAllGlobal(): Promise<
+    Array<{ data: Data; modelType: ModelType; modelId: string }>
+  > {
+    const results: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+    const baseDir = this.getBaseDir();
+
+    await this.collectAllData(baseDir, [], results);
+
+    return results;
+  }
+
+  /**
+   * Recursively collects all data from the directory tree.
+   * Walks .swamp/data/{type-segments...}/{model-id}/{data-name}/ structure.
+   *
+   * When a directory contains a subdirectory with numeric version directories
+   * (or a "latest" symlink), we've reached a data-name level. The path segments
+   * before the model-id form the model type.
+   */
+  private async collectAllData(
+    currentDir: string,
+    pathSegments: string[],
+    results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
+  ): Promise<void> {
+    try {
+      const entries: { name: string; isDirectory: boolean }[] = [];
+      for await (const entry of Deno.readDir(currentDir)) {
+        if (entry.isDirectory) {
+          entries.push({ name: entry.name, isDirectory: true });
+        }
+      }
+
+      // Check if we're at a model-id level by seeing if any child directories
+      // contain data-name directories (which contain version subdirectories)
+      for (const entry of entries) {
+        const childPath = join(currentDir, entry.name);
+        const childSegments = [...pathSegments, entry.name];
+
+        // Try to determine if this is a model-id directory by checking if
+        // its children look like data-name directories (containing version dirs)
+        const isModelIdDir = await this.isModelIdDirectory(childPath);
+
+        if (isModelIdDir && childSegments.length >= 2) {
+          // pathSegments = type segments, entry.name = model ID
+          const typeSegments = pathSegments;
+          const modelId = entry.name;
+          const typeStr = typeSegments.join("/");
+
+          try {
+            const modelType = ModelType.create(typeStr);
+            const dataItems = await this.findAllForModel(modelType, modelId);
+            for (const data of dataItems) {
+              results.push({ data, modelType, modelId });
+            }
+          } catch {
+            // Skip invalid model types
+          }
+        } else {
+          // Keep recursing deeper into type directories
+          await this.collectAllData(childPath, childSegments, results);
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Checks if a directory looks like a model-id directory by examining
+   * if its children contain version subdirectories or a "latest" symlink.
+   */
+  private async isModelIdDirectory(dir: string): Promise<boolean> {
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (!entry.isDirectory && !entry.isSymlink) continue;
+
+        // Check if this child is a data-name directory
+        const childPath = join(dir, entry.name);
+        try {
+          for await (const subEntry of Deno.readDir(childPath)) {
+            // If we find a "latest" symlink or a numeric directory, this is a data dir
+            if (subEntry.name === "latest" || /^\d+$/.test(subEntry.name)) {
+              return true;
+            }
+          }
+        } catch {
+          // Skip unreadable directories
+        }
+      }
+    } catch {
+      // Directory doesn't exist or can't be read
+    }
+    return false;
+  }
 
   async findByName(
     type: ModelType,

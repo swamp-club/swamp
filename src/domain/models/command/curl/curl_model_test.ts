@@ -29,6 +29,7 @@ const hasNetworkPermission = await (async () => {
  */
 function createMockDataRepo(): UnifiedDataRepository {
   return {
+    findAllGlobal: () => Promise.resolve([]),
     findByName: () => Promise.resolve(null),
     findById: () => Promise.resolve(null),
     listVersions: () => Promise.resolve([]),

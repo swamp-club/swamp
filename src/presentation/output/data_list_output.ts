@@ -34,9 +34,35 @@ export interface DataListData {
 }
 
 /**
+ * Data item with workflow context.
+ */
+export interface WorkflowDataListItem extends DataListItem {
+  modelId: string;
+  modelName: string;
+  modelType: string;
+  jobName: string;
+  stepName: string;
+}
+
+/**
+ * Data structure for workflow-scoped data list output.
+ */
+export interface WorkflowDataListData {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  runStatus: string;
+  groups: Array<{ type: string; items: WorkflowDataListItem[] }>;
+  total: number;
+}
+
+/**
  * Renders the data list output in either log or JSON mode.
  */
-export function renderDataList(data: DataListData, mode: OutputMode): void {
+export function renderDataList(
+  data: DataListData | WorkflowDataListData,
+  mode: OutputMode,
+): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {

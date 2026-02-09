@@ -17,3 +17,8 @@ export {
 export { type CreateDataProps, Data } from "./data.ts";
 
 export { type UnifiedDataRepository } from "./repositories.ts";
+
+export {
+  type WorkflowDataItem,
+  WorkflowDataService,
+} from "./workflow_data_service.ts";

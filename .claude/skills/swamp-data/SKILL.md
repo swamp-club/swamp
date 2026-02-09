@@ -10,13 +10,20 @@ machine-readable output.
 
 ## Quick Reference
 
-| Task                   | Command                                     |
-| ---------------------- | ------------------------------------------- |
-| List model data        | `swamp data list <model> --json`            |
-| Get specific data      | `swamp data get <model> <name> --json`      |
-| View version history   | `swamp data versions <model> <name> --json` |
-| Run garbage collection | `swamp data gc --json`                      |
-| Preview GC (dry run)   | `swamp data gc --dry-run --json`            |
+| Task                   | Command                                        |
+| ---------------------- | ---------------------------------------------- |
+| Search all data        | `swamp data search --json`                     |
+| Search with filters    | `swamp data search --type resource --since 1d` |
+| Search by workflow     | `swamp data search --workflow my-workflow`     |
+| Search by model        | `swamp data search --model my-model`           |
+| Free-text search       | `swamp data search vpc --json`                 |
+| List model data        | `swamp data list <model> --json`               |
+| List workflow data     | `swamp data list --workflow <name> --json`     |
+| Get specific data      | `swamp data get <model> <name> --json`         |
+| Get data via workflow  | `swamp data get --workflow <name> <data_name>` |
+| View version history   | `swamp data versions <model> <name> --json`    |
+| Run garbage collection | `swamp data gc --json`                         |
+| Preview GC (dry run)   | `swamp data gc --dry-run --json`               |
 
 ## Data Concepts
 
@@ -63,6 +70,58 @@ retention:
 | Integer (N) | Keep only the latest N versions       |
 | Duration    | Keep versions newer than the duration |
 | `infinite`  | Keep all versions forever             |
+
+## Search Data
+
+Search across all models with extensive filtering options.
+
+```bash
+# All data in the repo
+swamp data search --json
+
+# Filter by type tag
+swamp data search --type resource --json
+
+# Data from last hour
+swamp data search --since 1h --json
+
+# Workflow-produced data
+swamp data search --workflow test-data-fetch --json
+
+# Model-specific data
+swamp data search --model my-processor --json
+
+# By content type
+swamp data search --content-type application/json --json
+
+# By owner type
+swamp data search --owner-type workflow-step --json
+
+# Free-text search
+swamp data search vpc --json
+
+# Combined filters (AND logic)
+swamp data search --type resource --since 1d --workflow deploy --json
+
+# Limit results
+swamp data search --limit 10 --json
+```
+
+**Search filters:**
+
+| Filter           | Description                                             |
+| ---------------- | ------------------------------------------------------- |
+| `--type`         | Data type tag (log, file, resource, data)               |
+| `--lifetime`     | Lifetime (ephemeral, infinite, job, workflow, duration) |
+| `--owner-type`   | Owner type (model-method, workflow-step, manual)        |
+| `--workflow`     | Workflow name tag                                       |
+| `--model`        | Model name                                              |
+| `--content-type` | MIME content type                                       |
+| `--since`        | Duration (1h, 1d, 7d, 1w, 1mo)                          |
+| `--output`       | Model output ID                                         |
+| `--run`          | Workflow run ID                                         |
+| `--streaming`    | Only streaming data                                     |
+| `--limit`        | Max results (default: 50)                               |
 
 ## List Model Data
 
@@ -113,6 +172,24 @@ swamp data get my-model execution-log --json
   "createdAt": "2025-01-15T10:30:00Z",
   "path": ".swamp/data/my-type/abc-123/execution-log/5/raw"
 }
+```
+
+## Workflow-Scoped Data Access
+
+List or get data produced by a workflow run instead of specifying a model.
+
+```bash
+# List all data from the latest run of a workflow
+swamp data list --workflow test-data-fetch --json
+
+# List data from a specific run
+swamp data list --workflow test-data-fetch --run <run_id> --json
+
+# Get specific data by name from a workflow run
+swamp data get --workflow test-data-fetch output --json
+
+# Get with specific version
+swamp data get --workflow test-data-fetch output --version 2 --json
 ```
 
 ## View Version History

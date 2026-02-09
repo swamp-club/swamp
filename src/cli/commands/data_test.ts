@@ -24,6 +24,7 @@ Deno.test("dataCommand has all subcommands registered", async () => {
 
   assertEquals(commandNames.includes("get"), true);
   assertEquals(commandNames.includes("list"), true);
+  assertEquals(commandNames.includes("search"), true);
   assertEquals(commandNames.includes("versions"), true);
 });
 
