@@ -7,6 +7,7 @@ import {
 } from "../../presentation/output/workflow_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   createWorkflowId,
   type WorkflowId,
@@ -69,7 +70,7 @@ export const workflowValidateCommand = new Command()
       const allWorkflows = await repo.findAll();
 
       if (allWorkflows.length === 0) {
-        throw new Error("No workflows found");
+        throw new UserError("No workflows found");
       }
 
       const results: WorkflowValidateData[] = [];
@@ -113,7 +114,7 @@ export const workflowValidateCommand = new Command()
     }
 
     if (!workflow) {
-      throw new Error(`Workflow not found: ${workflowIdOrName}`);
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
     }
 
     ctx.logger.debug`Found workflow: id=${workflow.id}, name=${workflow.name}`;

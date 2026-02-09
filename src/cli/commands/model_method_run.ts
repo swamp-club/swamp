@@ -6,12 +6,12 @@ import {
 } from "../../presentation/output/model_method_run_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import { UserError } from "../../domain/errors.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
@@ -71,7 +71,7 @@ export const modelMethodRunCommand = new Command()
         modelIdOrName,
       );
       if (!result) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       const { definition, type: modelType } = result;
 
@@ -107,14 +107,14 @@ export const modelMethodRunCommand = new Command()
       // Get the model definition from registry
       const modelDef = modelRegistry.get(modelType);
       if (!modelDef) {
-        throw new Error(`Unknown model type: ${modelType.normalized}`);
+        throw new UserError(`Unknown model type: ${modelType.normalized}`);
       }
 
       // Validate method exists on the model
       const method = modelDef.methods[methodName];
       if (!method) {
         const availableMethods = Object.keys(modelDef.methods).join(", ");
-        throw new Error(
+        throw new UserError(
           `Unknown method '${methodName}' for type '${modelType.normalized}'. Available methods: ${
             availableMethods || "none"
           }`,

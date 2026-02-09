@@ -5,6 +5,7 @@ import {
 } from "../../presentation/output/workflow_create_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -30,7 +31,7 @@ export const workflowCreateCommand = new Command()
     // Check if name already exists
     const existing = await repo.findByName(name);
     if (existing) {
-      throw new Error(`Workflow with name '${name}' already exists`);
+      throw new UserError(`Workflow with name '${name}' already exists`);
     }
 
     // Create workflow with a default job (schema requires at least one job)

@@ -5,6 +5,7 @@ import {
 } from "../../presentation/output/model_create_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -37,7 +38,7 @@ export const modelCreateCommand = new Command()
     if (!modelRegistry.has(modelType)) {
       const availableTypes = modelRegistry.types().map((t) => t.normalized)
         .join(", ");
-      throw new Error(
+      throw new UserError(
         `Unknown model type: ${typeArg}. Available types: ${
           availableTypes || "none"
         }`,
@@ -54,7 +55,7 @@ export const modelCreateCommand = new Command()
     // Check if name already exists (globally unique across all types)
     const existing = await definitionRepo.findByNameGlobal(name);
     if (existing) {
-      throw new Error(
+      throw new UserError(
         `Model definition with name '${name}' already exists (type: '${existing.type.normalized}')`,
       );
     }

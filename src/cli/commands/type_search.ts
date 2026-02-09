@@ -6,6 +6,7 @@ import {
 } from "../../presentation/output/type_search_output.tsx";
 import { renderTypeDescribe } from "../../presentation/output/type_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { UserError } from "../../domain/errors.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { z } from "zod";
@@ -54,7 +55,7 @@ function displayTypeDescribe(item: TypeSearchItem, options: AnyOptions): void {
   const definition = modelRegistry.get(modelType);
 
   if (!definition) {
-    throw new Error(`Type not found: ${item.normalized}`);
+    throw new UserError(`Type not found: ${item.normalized}`);
   }
 
   const inputAttributesSchema = zodToJsonSchema(

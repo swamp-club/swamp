@@ -7,6 +7,7 @@ import {
 } from "../../presentation/output/model_evaluate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 
@@ -75,7 +76,7 @@ export const modelEvaluateCommand = new Command()
         modelIdOrName,
       );
       if (!lookupResult) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
 
       const { definition, type } = lookupResult;

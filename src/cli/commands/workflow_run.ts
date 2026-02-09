@@ -10,6 +10,7 @@ import {
 import { renderWorkflowExecution } from "../../presentation/output/workflow_execution_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   type ExecutionProgressCallback,
   type ImplicitDependencyMap,
@@ -183,7 +184,7 @@ export const workflowRunCommand = new Command()
         await workflowRepo.findById(createWorkflowId(workflowIdOrName));
 
       if (!workflow) {
-        throw new Error(`Workflow not found: ${workflowIdOrName}`);
+        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
 
       // Validate inputs against workflow schema if provided
@@ -299,6 +300,9 @@ export const workflowRunCommand = new Command()
         }
       }
     } catch (error) {
+      if (error instanceof UserError) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Workflow execution failed: ${message}`);
     }

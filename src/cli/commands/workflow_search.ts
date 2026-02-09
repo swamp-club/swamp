@@ -10,6 +10,7 @@ import {
 } from "../../presentation/output/workflow_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 
@@ -59,7 +60,7 @@ async function displayWorkflowGet(
   const workflow = await repo.findByName(item.name);
 
   if (!workflow) {
-    throw new Error(`Workflow not found: ${item.name}`);
+    throw new UserError(`Workflow not found: ${item.name}`);
   }
 
   const data: WorkflowGetData = {

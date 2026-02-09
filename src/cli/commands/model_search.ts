@@ -11,6 +11,7 @@ import {
 import type { OutputMode } from "../../presentation/output/output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -65,12 +66,12 @@ async function displayModelGet(
   );
 
   if (!modelType) {
-    throw new Error(`Unknown model type: ${item.type}`);
+    throw new UserError(`Unknown model type: ${item.type}`);
   }
 
   const definition = await definitionRepo.findById(modelType, definitionId);
   if (!definition) {
-    throw new Error(`Model not found: ${item.id}`);
+    throw new UserError(`Model not found: ${item.id}`);
   }
 
   const data: ModelGetData = {

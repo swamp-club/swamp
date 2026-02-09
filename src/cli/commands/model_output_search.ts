@@ -11,6 +11,7 @@ import {
 import type { OutputMode } from "../../presentation/output/output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { ModelOutput } from "../../domain/models/model_output.ts";
@@ -95,7 +96,7 @@ async function displayModelOutputGet(
   const result = allOutputs.find((r) => r.output.id === item.id);
 
   if (!result) {
-    throw new Error(`Output not found: ${item.id}`);
+    throw new UserError(`Output not found: ${item.id}`);
   }
 
   const { output, type } = result;

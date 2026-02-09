@@ -7,6 +7,7 @@ import {
 } from "../../presentation/output/model_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import {
   DefaultModelValidationService,
@@ -54,7 +55,7 @@ export const modelValidateCommand = new Command()
         const allDefinitions = await definitionRepo.findAllGlobal();
 
         if (allDefinitions.length === 0) {
-          throw new Error("No models found");
+          throw new UserError("No models found");
         }
 
         const results: ModelValidateData[] = [];
@@ -103,7 +104,7 @@ export const modelValidateCommand = new Command()
         modelIdOrName,
       );
       if (!result) {
-        throw new Error(`Model not found: ${modelIdOrName}`);
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       const { definition, type: modelType } = result;
 
@@ -113,7 +114,7 @@ export const modelValidateCommand = new Command()
       // Get the model definition
       const modelDef = modelRegistry.get(modelType);
       if (!modelDef) {
-        throw new Error(`Unknown model type: ${modelType.normalized}`);
+        throw new UserError(`Unknown model type: ${modelType.normalized}`);
       }
 
       // Run validations
