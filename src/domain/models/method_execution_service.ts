@@ -12,6 +12,7 @@ import { Data } from "../data/mod.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
+import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -147,14 +148,27 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       throw new Error(`Method '${methodName}' not found in model`);
     }
 
-    // Execute the initial method
-    const result = await this.execute(definition, method, context);
+    // Upgrade definition if needed
+    const upgradeService = new DefinitionUpgradeService();
+    const upgradeResult = upgradeService.upgrade(definition, modelDef);
+    const currentDefinition = upgradeResult.definition;
+
+    // Persist upgraded definition if it was upgraded
+    if (upgradeResult.upgraded && context.definitionRepository) {
+      await context.definitionRepository.save(
+        context.modelType,
+        currentDefinition,
+      );
+    }
+
+    // Execute the initial method with the (possibly upgraded) definition
+    const result = await this.execute(currentDefinition, method, context);
     let currentDataOutputs = result.dataOutputs ?? [];
 
     // Store data outputs
     const storedArtifacts: DataArtifactRef[] = [];
     if (currentDataOutputs.length > 0) {
-      const definitionHash = await definition.computeHash();
+      const definitionHash = await currentDefinition.computeHash();
       for (const output of currentDataOutputs) {
         const artifact = await this.storeDataOutput(
           output,
@@ -168,9 +182,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
     // Create ModelOutput if output repository is available
     if (context.outputRepository) {
-      const definitionHash = await definition.computeHash();
+      const definitionHash = await currentDefinition.computeHash();
       const output = ModelOutput.create({
-        definitionId: definition.id,
+        definitionId: currentDefinition.id,
         methodName,
         status: "running",
         provenance: {
@@ -187,7 +201,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // Process follow-up actions
     if (result.followUpActions && currentDataOutputs.length > 0) {
       const finalResult = await this.processFollowUpActions(
-        definition,
+        currentDefinition,
         modelDef,
         context,
         result.followUpActions,

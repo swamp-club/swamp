@@ -305,10 +305,10 @@ Deno.test("Definition.create with type and typeVersion", () => {
   const definition = Definition.create({
     name: "test-definition",
     type: "swamp/echo",
-    typeVersion: 1,
+    typeVersion: "2026.02.09.1",
   });
   assertEquals(definition.type, "swamp/echo");
-  assertEquals(definition.typeVersion, 1);
+  assertEquals(definition.typeVersion, "2026.02.09.1");
 });
 
 Deno.test("Definition.create without type and typeVersion defaults to undefined", () => {
@@ -321,11 +321,11 @@ Deno.test("Definition.toData includes type and typeVersion", () => {
   const definition = Definition.create({
     name: "test-definition",
     type: "swamp/echo",
-    typeVersion: 2,
+    typeVersion: "2026.02.09.2",
   });
   const data = definition.toData();
   assertEquals(data.type, "swamp/echo");
-  assertEquals(data.typeVersion, 2);
+  assertEquals(data.typeVersion, "2026.02.09.2");
 });
 
 Deno.test("Definition.fromData round-trips type and typeVersion", () => {
@@ -333,12 +333,12 @@ Deno.test("Definition.fromData round-trips type and typeVersion", () => {
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-definition",
     type: "aws/ec2/vpc",
-    typeVersion: 3,
+    typeVersion: "2026.02.09.3",
   });
   const data = definition.toData();
   const restored = Definition.fromData(data);
   assertEquals(restored.type, "aws/ec2/vpc");
-  assertEquals(restored.typeVersion, 3);
+  assertEquals(restored.typeVersion, "2026.02.09.3");
   assertEquals(restored.id, definition.id);
   assertEquals(restored.name, definition.name);
 });
@@ -358,11 +358,72 @@ Deno.test("Definition.computeHash is stable regardless of type/typeVersion", asy
     version: 1,
     attributes: { message: "hello" },
     type: "swamp/echo",
-    typeVersion: 1,
+    typeVersion: "2026.02.09.1",
   });
 
   const hash1 = await defWithout.computeHash();
   const hash2 = await defWith.computeHash();
 
   assertEquals(hash1, hash2);
+});
+
+// --- withUpgradedAttributes tests ---
+
+Deno.test("Definition.withUpgradedAttributes preserves id, name, tags", () => {
+  const original = Definition.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "my-definition",
+    type: "swamp/echo",
+    typeVersion: "2025.01.15.1",
+    tags: { env: "prod" },
+    attributes: { message: "hello" },
+  });
+
+  const upgraded = Definition.withUpgradedAttributes(
+    original,
+    { content: "hello", priority: "medium" },
+    "2026.02.09.1",
+  );
+
+  assertEquals(upgraded.id, "550e8400-e29b-41d4-a716-446655440000");
+  assertEquals(upgraded.name, "my-definition");
+  assertEquals(upgraded.type, "swamp/echo");
+  assertEquals(upgraded.tags, { env: "prod" });
+  assertEquals(upgraded.version, 1);
+});
+
+Deno.test("Definition.withUpgradedAttributes updates attributes and typeVersion", () => {
+  const original = Definition.create({
+    name: "test-def",
+    type: "swamp/echo",
+    typeVersion: "2025.01.15.1",
+    attributes: { message: "old" },
+  });
+
+  const upgraded = Definition.withUpgradedAttributes(
+    original,
+    { content: "new", priority: "high" },
+    "2026.02.09.1",
+  );
+
+  assertEquals(upgraded.attributes, { content: "new", priority: "high" });
+  assertEquals(upgraded.typeVersion, "2026.02.09.1");
+  // Original should be unchanged
+  assertEquals(original.attributes, { message: "old" });
+  assertEquals(original.typeVersion, "2025.01.15.1");
+});
+
+Deno.test("Legacy numeric typeVersion coerced to undefined", () => {
+  const definition = Definition.fromData({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "legacy-def",
+    version: 1,
+    type: "swamp/echo",
+    typeVersion: 1 as unknown as string,
+    tags: {},
+    attributes: { message: "hello" },
+    inputs: undefined,
+  });
+
+  assertEquals(definition.typeVersion, undefined);
 });

@@ -12,7 +12,7 @@ const testData: TypeDescribeData = {
     raw: "swamp/echo",
     normalized: "swamp/echo",
   },
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: {
     type: "object",
     properties: {

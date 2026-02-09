@@ -96,7 +96,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "test/data-model-${Date.now()}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     process: {
@@ -181,7 +181,7 @@ import { z } from "npm:zod@4";
 
 export const model = {
   type: "test/regular-${Date.now()}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ msg: z.string() }),
   methods: {
     run: {
@@ -218,7 +218,7 @@ import { z } from "npm:zod@4";
 
 export const model = {
   type: "swamp/echo",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -251,7 +251,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "${typeId}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     create: {
@@ -325,7 +325,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "${typeId}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     run: {
@@ -366,7 +366,7 @@ Deno.test("UserModelLoader loads multiple models from directory", async () => {
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/multi-a-${Date.now()}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ a: z.string() }),
   methods: {
     run: {
@@ -381,7 +381,7 @@ export const model = {
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/multi-b-${Date.now()}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ b: z.string() }),
   methods: {
     run: {
@@ -418,7 +418,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "${typeId}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     execute: {
@@ -486,7 +486,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "${typeId}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     fetch: {
@@ -552,7 +552,7 @@ Deno.test("UserModelLoader discovers nested files with correct relative paths", 
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/nested-a-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ a: z.string() }),
   methods: {
     run: {
@@ -566,7 +566,7 @@ export const model = {
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/nested-b-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ b: z.string() }),
   methods: {
     run: {
@@ -598,7 +598,7 @@ Deno.test("UserModelLoader excludes _test.ts in subdirectories", async () => {
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/subdir-notest-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
   methods: {
     run: { description: "Run", execute: async () => ({ dataOutputs: [] }) },
@@ -626,7 +626,7 @@ Deno.test("UserModelLoader handles deeply nested directories (3+ levels)", async
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/deep-nested-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
   methods: {
     run: { description: "Run", execute: async () => ({ dataOutputs: [] }) },
@@ -657,7 +657,7 @@ Deno.test("UserModelLoader loads extension with single method in array", async (
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/ext-single-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -710,7 +710,7 @@ Deno.test("UserModelLoader loads extension with multiple methods in array", asyn
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/ext-multi-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -784,7 +784,7 @@ Deno.test("UserModelLoader extension with method name conflict fails gracefully"
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/ext-conflict-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -826,7 +826,7 @@ Deno.test("UserModelLoader extension with duplicate method names within array fa
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/ext-dup-methods-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -880,7 +880,7 @@ Deno.test("UserModelLoader extension methods inherit target model's inputAttribu
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/ext-inherit-schema-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -956,7 +956,7 @@ Deno.test("UserModelLoader multiple extensions targeting same type", async () =>
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/multi-ext-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -1015,7 +1015,7 @@ Deno.test("UserModelLoader two-pass ordering: user model registered before exten
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/two-pass-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -1061,7 +1061,7 @@ Deno.test("UserModelLoader extension method execute produces proper DataOutput",
 import { z } from "npm:zod@4";
 export const model = {
   type: "test/ext-execute-${ts}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     write: {
@@ -1134,7 +1134,7 @@ import { z } from "npm:zod@4";
 
 export const model = {
   type: "${typeId}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     run: {
@@ -1181,7 +1181,7 @@ import { z } from "npm:zod@4";
 
 export const model = {
   type: "${typeId}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   dataOutputSpecs: {
     "data": {

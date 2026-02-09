@@ -8,7 +8,7 @@ import { createDefinitionId } from "../definitions/definition.ts";
 
 const defaultProvenance: ExecutionProvenance = {
   definitionHash: "abc123",
-  modelVersion: 1,
+  modelVersion: "2026.02.09.1",
   triggeredBy: "manual",
 };
 
@@ -88,7 +88,7 @@ Deno.test("ModelOutput.create stores method name", () => {
 Deno.test("ModelOutput.create stores provenance", () => {
   const provenance: ExecutionProvenance = {
     definitionHash: "xyz789",
-    modelVersion: 2,
+    modelVersion: "2026.02.09.2",
     triggeredBy: "workflow",
     workflowId: "wf-123",
     workflowRunId: "run-456",
@@ -305,7 +305,7 @@ Deno.test("ModelOutput toData/fromData roundtrip", () => {
     status: "running",
     provenance: {
       definitionHash: "hash123",
-      modelVersion: 3,
+      modelVersion: "2026.02.09.3",
       triggeredBy: "workflow",
       workflowId: "wf-1",
     },
@@ -364,7 +364,7 @@ Deno.test("ModelOutput fromData with explicit data", () => {
     retryCount: 2,
     provenance: {
       definitionHash: "hash",
-      modelVersion: 1,
+      modelVersion: "2026.02.09.1",
       triggeredBy: "manual" as const,
     },
     artifacts: {

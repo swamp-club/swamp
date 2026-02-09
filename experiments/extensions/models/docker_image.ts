@@ -190,7 +190,7 @@ async function executeBuildPush(
  */
 export const dockerImageModel = defineModel({
   type: ModelType.create("docker/image"),
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputAttributesSchema,
   methods: {
     build: {

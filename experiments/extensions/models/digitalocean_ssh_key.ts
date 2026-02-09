@@ -298,7 +298,7 @@ async function executeSync(
  */
 export const digitaloceanSshKeyModel = defineModel({
   type: ModelType.create("digitalocean/ssh-key"),
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputAttributesSchema,
   methods: {
     create: {

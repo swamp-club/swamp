@@ -101,7 +101,7 @@ Deno.test("SHELL_MODEL_TYPE has correct normalized type", () => {
 });
 
 Deno.test("shellModel has correct version", () => {
-  assertEquals(shellModel.version, 1);
+  assertEquals(shellModel.version, "2026.02.09.1");
 });
 
 Deno.test("shellModel.type equals SHELL_MODEL_TYPE", () => {

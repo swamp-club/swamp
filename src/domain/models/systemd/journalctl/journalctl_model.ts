@@ -209,7 +209,7 @@ export const journalctlModel: ModelDefinition<
   typeof JournalctlInputAttributesSchema
 > = defineModel({
   type: JOURNALCTL_MODEL_TYPE,
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: JournalctlInputAttributesSchema,
   dataOutputSpecs: {
     "log": {

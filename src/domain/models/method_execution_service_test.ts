@@ -204,7 +204,7 @@ function createTestModel(options: {
 
   return {
     type: ModelType.create("test/workflow"),
-    version: 1,
+    version: "2026.02.09.1",
     inputAttributesSchema: schema,
     dataOutputSpecs: {},
     methods: {
@@ -470,7 +470,7 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
 
   const model: ModelDefinition = {
     type: ModelType.create("test/recursive"),
-    version: 1,
+    version: "2026.02.09.1",
     inputAttributesSchema: schema,
     dataOutputSpecs: {},
     methods: {
@@ -541,7 +541,7 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
 
   const model: ModelDefinition = {
     type: ModelType.create("test/infinite"),
-    version: 1,
+    version: "2026.02.09.1",
     inputAttributesSchema: schema,
     dataOutputSpecs: {},
     methods: {
@@ -593,7 +593,7 @@ Deno.test(
 
     const model: ModelDefinition = {
       type: ModelType.create("test/token-passing"),
-      version: 1,
+      version: "2026.02.09.1",
       inputAttributesSchema: schema,
       dataOutputSpecs: {},
       methods: {

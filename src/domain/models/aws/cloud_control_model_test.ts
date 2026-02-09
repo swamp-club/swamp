@@ -44,7 +44,7 @@ Deno.test("AWSCloudControlModel.defineAndRegister returns valid ModelDefinition"
   const definition = model.defineAndRegister();
 
   // Verify the definition has the expected structure
-  assertEquals(definition.version, 1);
+  assertEquals(definition.version, "2026.02.09.1");
   assertEquals(typeof definition.methods.create, "object");
   assertEquals(typeof definition.methods.delete, "object");
   assertEquals(typeof definition.methods.sync, "object");

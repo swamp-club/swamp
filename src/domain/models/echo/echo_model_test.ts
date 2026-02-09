@@ -88,7 +88,7 @@ Deno.test("ECHO_MODEL_TYPE has correct normalized type", () => {
 });
 
 Deno.test("echoModel has correct version", () => {
-  assertEquals(echoModel.version, 1);
+  assertEquals(echoModel.version, "2026.02.09.1");
 });
 
 Deno.test("echoModel.type equals ECHO_MODEL_TYPE", () => {

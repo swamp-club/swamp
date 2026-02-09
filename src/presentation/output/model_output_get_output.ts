@@ -5,7 +5,7 @@ import type { OutputMode } from "./output.ts";
  */
 export interface ProvenanceData {
   definitionHash: string;
-  modelVersion: number;
+  modelVersion: string;
   triggeredBy: string;
   workflowId?: string;
   workflowRunId?: string;

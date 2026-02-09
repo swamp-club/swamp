@@ -398,7 +398,7 @@ function executeReboot(
  */
 export const digitaloceanDropletModel = defineModel({
   type: ModelType.create("digitalocean/droplet"),
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputAttributesSchema,
   methods: {
     create: {

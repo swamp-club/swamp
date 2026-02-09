@@ -421,7 +421,7 @@ import { z } from "npm:zod@4";
 
 export const model = {
   type: "${typeId}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
     process: {
@@ -488,7 +488,7 @@ import { z } from "npm:zod@4";
 
 export const model = {
   type: "${typeId}",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: z.object({ name: z.string() }),
   methods: {
     create: {

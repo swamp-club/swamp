@@ -84,7 +84,7 @@ function createTestModel(typeString: string): ModelDefinition {
   const type = ModelType.create(typeString);
   return {
     type,
-    version: 1,
+    version: "2026.02.09.1",
     inputAttributesSchema: z.object({ message: z.string() }),
     dataOutputSpecs: {},
     methods: {
@@ -153,7 +153,7 @@ Deno.test("ModelRegistry.get returns registered model", () => {
 
   const retrieved = registry.get("swamp/echo");
   assertEquals(retrieved?.type.normalized, "swamp/echo");
-  assertEquals(retrieved?.version, 1);
+  assertEquals(retrieved?.version, "2026.02.09.1");
 });
 
 Deno.test("ModelRegistry.get accepts ModelType", () => {
@@ -341,7 +341,7 @@ Deno.test("ModelRegistry.extend preserves original methods and schema", () => {
 
   const extended = registry.get("swamp/preserve-test");
   assertEquals(extended!.inputAttributesSchema, originalSchema);
-  assertEquals(extended!.version, 1);
+  assertEquals(extended!.version, "2026.02.09.1");
   assertEquals(extended!.methods.write.description, "Write message to data");
 });
 
@@ -393,4 +393,116 @@ Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
   const result = await extended.methods.greet.execute(definition, context);
   const attrs = getDataOutputAttributes(result.dataOutputs);
   assertEquals(attrs?.greeting, "Hello, world");
+});
+
+// --- CalVer validation tests ---
+
+Deno.test("ModelRegistry.register rejects non-CalVer version string", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/invalid-version"),
+    version: "not-a-calver",
+    inputAttributesSchema: z.object({}),
+    dataOutputSpecs: {},
+    methods: {},
+  };
+
+  assertThrows(
+    () => registry.register(model),
+    Error,
+    'Invalid CalVer version "not-a-calver"',
+  );
+});
+
+Deno.test("ModelRegistry.register accepts model with CalVer version and valid upgrade chain", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/with-upgrades"),
+    version: "2026.02.09.1",
+    inputAttributesSchema: z.object({}),
+    dataOutputSpecs: {},
+    methods: {},
+    upgrades: [
+      {
+        toVersion: "2025.06.01.1",
+        description: "Add field",
+        upgradeAttributes: (old) => ({ ...old, added: true }),
+      },
+      {
+        toVersion: "2026.02.09.1",
+        description: "Rename field",
+        upgradeAttributes: (old) => old,
+      },
+    ],
+  };
+
+  registry.register(model);
+  assertEquals(registry.has("test/with-upgrades"), true);
+});
+
+Deno.test("ModelRegistry.register rejects upgrades not in chronological order", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/bad-order"),
+    version: "2026.02.09.1",
+    inputAttributesSchema: z.object({}),
+    dataOutputSpecs: {},
+    methods: {},
+    upgrades: [
+      {
+        toVersion: "2026.02.09.1",
+        description: "Later",
+        upgradeAttributes: (old) => old,
+      },
+      {
+        toVersion: "2025.06.01.1",
+        description: "Earlier",
+        upgradeAttributes: (old) => old,
+      },
+    ],
+  };
+
+  assertThrows(
+    () => registry.register(model),
+    Error,
+    "not in chronological order",
+  );
+});
+
+Deno.test("ModelRegistry.register rejects when last upgrade toVersion doesn't match model version", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/mismatch-version"),
+    version: "2026.02.09.1",
+    inputAttributesSchema: z.object({}),
+    dataOutputSpecs: {},
+    methods: {},
+    upgrades: [
+      {
+        toVersion: "2025.06.01.1",
+        description: "Only upgrade",
+        upgradeAttributes: (old) => old,
+      },
+    ],
+  };
+
+  assertThrows(
+    () => registry.register(model),
+    Error,
+    'Last upgrade toVersion "2025.06.01.1" does not match model version "2026.02.09.1"',
+  );
+});
+
+Deno.test("ModelRegistry.register accepts model with no upgrades", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/no-upgrades"),
+    version: "2026.02.09.1",
+    inputAttributesSchema: z.object({}),
+    dataOutputSpecs: {},
+    methods: {},
+  };
+
+  registry.register(model);
+  assertEquals(registry.has("test/no-upgrades"), true);
 });

@@ -651,7 +651,7 @@ async function executeSync(
  */
 export const digitaloceanAppModel = defineModel({
   type: ModelType.create("digitalocean/app"),
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputAttributesSchema,
   methods: {
     create: {

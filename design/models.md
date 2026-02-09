@@ -32,14 +32,101 @@ Each instance of a model has a unique ID that is a uuidv4.
 
 ## Version
 
-Each model has a version number, starting with 1. Models must support data
-written by all earlier versions, but not later versions.
+Each model has a version using **CalVer** format `YYYY.MM.DD.MICRO` (e.g.,
+`"2025.01.15.1"`, `"2025.06.01.3"`). The micro counter allows multiple version
+bumps per day and resets for each new date.
 
-For example, a model '4' can read data from version 1-4, but not '5'.
+Version comparison splits on `.`, compares the first three segments as
+zero-padded strings, and the fourth as a number. This is implemented as the
+`CalVer` value object in `src/domain/models/calver.ts`.
+
+Models must support data written by all earlier versions, but not later
+versions.
 
 ## Migration
 
-A model can migrate its definitions and data from one version to the next.
+A model can migrate its definitions from one version to the next using **upgrade
+functions**. Each model declares an ordered list of `VersionUpgrade` entries,
+one per version transition. When a definition's `typeVersion` is behind the
+model's current `version`, the upgrade chain runs all applicable upgrades in
+order, transforming attributes at each step.
+
+Upgrades are **lazy** — they run at method execution time in
+`executeWorkflow()`, not at load time. The upgraded definition is persisted so
+the upgrade only runs once.
+
+### Upgrade Rules
+
+- Upgrades must be ordered chronologically by `toVersion`
+- The last upgrade's `toVersion` must equal the model's current `version`
+- Upgrade functions are pure attribute transforms (old attrs → new attrs)
+- Upgrades are forward-only; there is no downgrade path
+
+### Example
+
+A model starts at version `"2025.01.15.1"` with just a `message` attribute. On
+`"2025.06.01.1"`, a `priority` field is added with a default. On
+`"2026.02.09.1"`, the `message` field is renamed to `content`:
+
+```typescript
+import { z } from "zod";
+
+export const model = {
+  type: "acme/notifier",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({
+    content: z.string().min(1),
+    priority: z.enum(["low", "medium", "high"]),
+  }),
+  upgrades: [
+    {
+      toVersion: "2025.06.01.1",
+      description: "Add priority field with default 'medium'",
+      upgradeAttributes: (old) => ({ ...old, priority: "medium" }),
+    },
+    {
+      toVersion: "2026.02.09.1",
+      description: "Rename 'message' to 'content'",
+      upgradeAttributes: (old) => {
+        const { message, ...rest } = old;
+        return { ...rest, content: message };
+      },
+    },
+  ],
+  methods: {
+    send: {
+      description: "Send a notification",
+      execute: async (definition, _context) => {
+        const attrs = definition.attributes;
+        return {
+          data: {
+            attributes: {
+              sent: true,
+              content: attrs.content,
+              priority: attrs.priority,
+            },
+          },
+        };
+      },
+    },
+  },
+};
+```
+
+If a definition was created at `"2025.01.15.1"` with `{ message: "hello" }`, and
+the model is now at `"2026.02.09.1"`, running a method will:
+
+1. Apply upgrade to `"2025.06.01.1"`: `{ message: "hello", priority: "medium" }`
+2. Apply upgrade to `"2026.02.09.1"`: `{ content: "hello", priority: "medium" }`
+3. Persist the definition with `typeVersion: "2026.02.09.1"` and new attributes
+4. Execute the method with the upgraded definition
+
+### Backwards Compatibility
+
+Existing definitions on disk with numeric `typeVersion` (e.g., `typeVersion: 1`)
+are automatically coerced to `undefined` by the `DefinitionSchema`, meaning
+"pre-CalVer, needs upgrade from earliest version". They will be upgraded on
+first method execution and persisted with the new CalVer `typeVersion`.
 
 ## Definitions
 

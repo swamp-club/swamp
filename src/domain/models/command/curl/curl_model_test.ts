@@ -104,7 +104,7 @@ Deno.test("CURL_MODEL_TYPE has correct normalized type", () => {
 });
 
 Deno.test("curlModel has correct version", () => {
-  assertEquals(curlModel.version, 1);
+  assertEquals(curlModel.version, "2026.02.09.1");
 });
 
 Deno.test("curlModel.type equals CURL_MODEL_TYPE", () => {

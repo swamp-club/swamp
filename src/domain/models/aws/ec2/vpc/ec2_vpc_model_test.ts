@@ -101,7 +101,7 @@ Deno.test("EC2VpcModel - model type", () => {
 });
 
 Deno.test("EC2VpcModel - version", () => {
-  assertEquals(ec2VpcModel.version, 1);
+  assertEquals(ec2VpcModel.version, "2026.02.09.1");
 });
 
 Deno.test("EC2VpcModel - has required methods", () => {

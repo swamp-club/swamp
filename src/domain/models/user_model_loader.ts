@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { join, resolve } from "@std/path";
 import { ModelType } from "./model_type.ts";
+import { CalVer } from "./calver.ts";
 import type { Definition } from "../definitions/definition.ts";
 import {
   type DataOutput,
@@ -12,6 +13,7 @@ import {
   type MethodResult,
   type ModelDefinition,
   modelRegistry,
+  type VersionUpgrade,
 } from "./model.ts";
 
 /**
@@ -74,17 +76,33 @@ const UserMethodSchema = z.object({
 }).passthrough();
 
 /**
+ * Schema for validating a user-supplied upgrade step.
+ */
+const UserUpgradeSchema = z.object({
+  toVersion: z.string().refine(CalVer.isValid, {
+    message: "toVersion must be valid CalVer (YYYY.MM.DD.MICRO)",
+  }),
+  description: z.string(),
+  upgradeAttributes: z.custom<
+    (old: Record<string, unknown>) => Record<string, unknown>
+  >((val) => typeof val === "function"),
+});
+
+/**
  * Schema for validating user model exports.
  */
 const UserModelSchema = z.object({
   type: z.string(),
-  version: z.number(),
+  version: z.string().refine(CalVer.isValid, {
+    message: "version must be valid CalVer (YYYY.MM.DD.MICRO)",
+  }),
   inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
   ),
   dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema)
     .optional(),
   methods: z.record(z.string(), UserMethodSchema),
+  upgrades: z.array(UserUpgradeSchema).optional(),
 });
 
 /**
@@ -410,12 +428,22 @@ export class UserModelLoader {
       }
     }
 
+    // Convert user upgrades to VersionUpgrade[]
+    const upgrades: VersionUpgrade[] | undefined = userModel.upgrades?.map(
+      (u) => ({
+        toVersion: u.toVersion,
+        description: u.description,
+        upgradeAttributes: u.upgradeAttributes,
+      }),
+    );
+
     return {
       type: modelType,
       version: userModel.version,
       inputAttributesSchema: userModel.inputAttributesSchema,
       dataOutputSpecs: { ...defaultSpecs, ...userSpecs },
       methods,
+      ...(upgrades && upgrades.length > 0 ? { upgrades } : {}),
     };
   }
 

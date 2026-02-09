@@ -75,7 +75,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "test/resource-model",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     provision: {
@@ -189,7 +189,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "test/data-model",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     fetch: {
@@ -318,7 +318,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "test/expression-model",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     deploy: {
@@ -406,7 +406,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "test/simple-data",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     process: {
@@ -480,7 +480,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "test/legacy-format",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     run: {
@@ -517,7 +517,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "test/simple-format",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     run: {

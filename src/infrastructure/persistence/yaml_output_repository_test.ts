@@ -20,7 +20,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 const defaultProvenance: ExecutionProvenance = {
   definitionHash: "abc123",
-  modelVersion: 1,
+  modelVersion: "2026.02.09.1",
   triggeredBy: "manual",
 };
 
@@ -58,7 +58,7 @@ Deno.test("YamlOutputRepository.save creates yaml file with correct path structu
       methodName: "deploy",
       provenance: {
         definitionHash: "xyz789",
-        modelVersion: 2,
+        modelVersion: "2026.02.09.2",
         triggeredBy: "workflow",
         workflowId: "wf-123",
       },

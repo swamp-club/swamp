@@ -209,7 +209,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;
     const modelDef = modelRegistry.get(type);
-    data.typeVersion = modelDef?.version ?? data.typeVersion ?? 1;
+    data.typeVersion = modelDef?.version ?? data.typeVersion;
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);

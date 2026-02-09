@@ -361,5 +361,5 @@ Deno.test("mermaidWorkflowModel: model type is correctly defined", () => {
     "mermaid/workflow-diagram",
   );
   assertEquals(mermaidWorkflowModel.type, MERMAID_WORKFLOW_MODEL_TYPE);
-  assertEquals(mermaidWorkflowModel.version, 1);
+  assertEquals(mermaidWorkflowModel.version, "2026.02.09.1");
 });

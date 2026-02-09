@@ -101,7 +101,7 @@ Deno.test("EC2SubnetModel - model type", () => {
 });
 
 Deno.test("EC2SubnetModel - version", () => {
-  assertEquals(ec2SubnetModel.version, 1);
+  assertEquals(ec2SubnetModel.version, "2026.02.09.1");
 });
 
 Deno.test("EC2SubnetModel - has required methods", () => {

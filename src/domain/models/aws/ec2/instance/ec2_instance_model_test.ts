@@ -101,7 +101,7 @@ Deno.test("EC2InstanceModel - model type", () => {
 });
 
 Deno.test("EC2InstanceModel - version", () => {
-  assertEquals(ec2InstanceModel.version, 1);
+  assertEquals(ec2InstanceModel.version, "2026.02.09.1");
 });
 
 Deno.test("EC2InstanceModel - has required methods", () => {

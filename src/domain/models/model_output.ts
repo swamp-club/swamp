@@ -48,7 +48,10 @@ export type ExecutionError = z.infer<typeof ExecutionErrorSchema>;
  */
 export const ExecutionProvenanceSchema = z.object({
   definitionHash: z.string(),
-  modelVersion: z.number().int().positive(),
+  modelVersion: z.preprocess(
+    (val) => (typeof val === "number" ? String(val) : val),
+    z.string(),
+  ),
   triggeredBy: z.enum(TriggerTypes),
   workflowId: z.string().optional(),
   workflowRunId: z.string().optional(),

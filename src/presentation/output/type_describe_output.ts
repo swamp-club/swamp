@@ -26,7 +26,7 @@ export interface TypeDescribeData {
     raw: string;
     normalized: string;
   };
-  version: number;
+  version: string;
   inputAttributesSchema: object;
   methods: MethodDescribeData[];
 }

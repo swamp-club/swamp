@@ -267,7 +267,7 @@ export const shellModel: ModelDefinition<
   typeof ShellInputAttributesSchema
 > = defineModel({
   type: SHELL_MODEL_TYPE,
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: ShellInputAttributesSchema,
   dataOutputSpecs: {
     "result": {

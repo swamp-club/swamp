@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import { ModelType } from "./model_type.ts";
+import { CalVer } from "./calver.ts";
 import type { Definition } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import {
@@ -244,14 +245,30 @@ export interface MethodDefinition<
 }
 
 /**
+ * A version upgrade step that transforms definition attributes from one
+ * version to the next.
+ */
+export interface VersionUpgrade {
+  /** The CalVer version this upgrade produces (e.g., "2025.06.01.1") */
+  toVersion: string;
+  /** Human-readable description of what changed */
+  description: string;
+  /** Transform old attributes into new attributes */
+  upgradeAttributes: (
+    oldAttributes: Record<string, unknown>,
+  ) => Record<string, unknown>;
+}
+
+/**
  * Definition of a model type (the aggregate root).
  *
  * A model defines:
  * - Its type identifier
- * - Current version
+ * - Current version (CalVer format: YYYY.MM.DD.MICRO)
  * - Schema for validating definition attributes
  * - Data output specifications
  * - Available methods
+ * - Optional upgrade chain for migrating definitions between versions
  */
 export interface ModelDefinition<
   TInputAttrs extends z.ZodTypeAny = z.ZodTypeAny,
@@ -263,8 +280,9 @@ export interface ModelDefinition<
 
   /**
    * Current version of this model definition.
+   * CalVer format: YYYY.MM.DD.MICRO (e.g., "2025.01.15.1")
    */
-  version: number;
+  version: string;
 
   /**
    * Zod schema for validating definition attributes.
@@ -282,6 +300,14 @@ export interface ModelDefinition<
    * Available methods on this model.
    */
   methods: Record<string, MethodDefinition>;
+
+  /**
+   * Ordered list of upgrade functions for migrating definitions between versions.
+   * Each entry transforms attributes from the previous version to `toVersion`.
+   * Must be ordered chronologically by `toVersion`.
+   * The last entry's `toVersion` must equal `version`.
+   */
+  upgrades?: VersionUpgrade[];
 }
 
 /**
@@ -293,6 +319,8 @@ export class ModelRegistry {
   /**
    * Registers a model definition.
    *
+   * Validates CalVer version format and upgrade chain ordering.
+   *
    * @param model - The model definition to register
    */
   register(model: ModelDefinition): void {
@@ -300,6 +328,51 @@ export class ModelRegistry {
     if (this.models.has(key)) {
       throw new Error(`Model type already registered: ${key}`);
     }
+
+    // Validate CalVer version
+    if (!CalVer.isValid(model.version)) {
+      throw new Error(
+        `Invalid CalVer version "${model.version}" for model type "${key}". ` +
+          `Expected format YYYY.MM.DD.MICRO (e.g., "2025.01.15.1")`,
+      );
+    }
+
+    // Validate upgrades if provided
+    if (model.upgrades && model.upgrades.length > 0) {
+      for (let i = 0; i < model.upgrades.length; i++) {
+        const upgrade = model.upgrades[i];
+
+        // Validate each toVersion is valid CalVer
+        if (!CalVer.isValid(upgrade.toVersion)) {
+          throw new Error(
+            `Invalid CalVer version "${upgrade.toVersion}" in upgrade at index ${i} ` +
+              `for model type "${key}"`,
+          );
+        }
+
+        // Validate chronological ordering
+        if (i > 0) {
+          const prev = CalVer.create(model.upgrades[i - 1].toVersion);
+          const curr = CalVer.create(upgrade.toVersion);
+          if (CalVer.compare(prev, curr) >= 0) {
+            throw new Error(
+              `Upgrades for model type "${key}" are not in chronological order: ` +
+                `"${prev.value}" must be before "${curr.value}"`,
+            );
+          }
+        }
+      }
+
+      // Validate last upgrade's toVersion matches model version
+      const lastUpgrade = model.upgrades[model.upgrades.length - 1];
+      if (lastUpgrade.toVersion !== model.version) {
+        throw new Error(
+          `Last upgrade toVersion "${lastUpgrade.toVersion}" does not match model ` +
+            `version "${model.version}" for model type "${key}"`,
+        );
+      }
+    }
+
     this.models.set(key, model);
   }
 

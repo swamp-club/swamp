@@ -138,7 +138,7 @@ async function executeGenerate(
  */
 export const anthropicClaudeModel = defineModel({
   type: ModelType.create("anthropic/claude"),
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputAttributesSchema,
   methods: {
     generate: {

@@ -154,7 +154,7 @@ async function executeList(
  */
 export const githubPrListModel = defineModel({
   type: ModelType.create("github/pr-list"),
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputAttributesSchema,
   methods: {
     list: {

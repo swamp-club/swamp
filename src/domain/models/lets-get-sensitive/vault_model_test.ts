@@ -85,7 +85,7 @@ Deno.test("VAULT_MODEL_TYPE has correct normalized type", () => {
 });
 
 Deno.test("vaultModel has correct version", () => {
-  assertEquals(vaultModel.version, 1);
+  assertEquals(vaultModel.version, "2026.02.09.1");
 });
 
 Deno.test("vaultModel.type equals VAULT_MODEL_TYPE", () => {

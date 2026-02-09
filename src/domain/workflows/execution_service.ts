@@ -363,7 +363,7 @@ export class DefaultStepExecutor implements StepExecutor {
       methodName: task.methodName,
       provenance: {
         definitionHash,
-        modelVersion: originalDefinition.version,
+        modelVersion: modelDef.version,
         triggeredBy: "workflow",
         workflowId: ctx.workflowId,
         workflowRunId: ctx.workflowRunId,

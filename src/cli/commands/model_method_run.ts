@@ -144,7 +144,7 @@ export const modelMethodRunCommand = new Command()
         methodName,
         provenance: {
           definitionHash,
-          modelVersion: definition.version,
+          modelVersion: modelDef.version,
           triggeredBy: "manual",
         },
       });

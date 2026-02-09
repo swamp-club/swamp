@@ -64,7 +64,7 @@ export const modelCreateCommand = new Command()
     const definition = Definition.create({
       name,
       type: modelType.normalized,
-      typeVersion: modelDef?.version ?? 1,
+      typeVersion: modelDef?.version,
     });
     await definitionRepo.save(modelType, definition);
 

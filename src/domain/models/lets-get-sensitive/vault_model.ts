@@ -317,7 +317,7 @@ export const vaultModel: ModelDefinition<
   typeof VaultInputAttributesSchema
 > = defineModel({
   type: VAULT_MODEL_TYPE,
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: VaultInputAttributesSchema,
   dataOutputSpecs: {
     "result": {

@@ -86,10 +86,17 @@ export const InputsSchemaSchema: z.ZodType<InputsSchema | undefined> = z
 
 /**
  * Zod schema for the core properties of a Definition.
+ *
+ * `typeVersion` accepts CalVer strings.  Legacy numeric values (from
+ * pre-CalVer definitions stored on disk) are coerced to `undefined` so
+ * the upgrade chain treats them as "oldest version, needs full upgrade".
  */
 export const DefinitionSchema = z.object({
   type: z.string().optional(),
-  typeVersion: z.number().int().positive().optional(),
+  typeVersion: z.preprocess(
+    (val) => (typeof val === "number" ? undefined : val),
+    z.string().optional(),
+  ),
   id: z.string().uuid(),
   name: z.string().min(1),
   version: z.number().int().positive(),
@@ -108,7 +115,7 @@ export type DefinitionData = z.infer<typeof DefinitionSchema>;
  */
 export interface CreateDefinitionProps {
   type?: string;
-  typeVersion?: number;
+  typeVersion?: string;
   id?: string;
   name: string;
   version?: number;
@@ -129,7 +136,7 @@ export interface CreateDefinitionProps {
 export class Definition {
   private constructor(
     readonly type: string | undefined,
-    readonly typeVersion: number | undefined,
+    readonly typeVersion: string | undefined,
     readonly id: DefinitionId,
     readonly name: string,
     readonly version: number,
@@ -188,6 +195,32 @@ export class Definition {
       validated.tags,
       validated.attributes,
       validated.inputs,
+    );
+  }
+
+  /**
+   * Creates a new Definition with upgraded attributes and an updated typeVersion.
+   * Preserves the same id, name, version, tags, and inputs.
+   *
+   * @param original - The original definition to upgrade
+   * @param newAttributes - The upgraded attributes
+   * @param newTypeVersion - The CalVer version after upgrade
+   * @returns A new Definition with upgraded attributes
+   */
+  static withUpgradedAttributes(
+    original: Definition,
+    newAttributes: Record<string, unknown>,
+    newTypeVersion: string,
+  ): Definition {
+    return new Definition(
+      original.type,
+      newTypeVersion,
+      original.id,
+      original.name,
+      original.version,
+      { ...original._tags },
+      structuredClone(newAttributes),
+      original._inputs ? structuredClone(original._inputs) : undefined,
     );
   }
 

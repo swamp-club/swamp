@@ -574,7 +574,7 @@ export abstract class AWSCloudControlModel<
 
     return {
       type: this.modelType,
-      version: 1,
+      version: "2026.02.09.1",
       inputAttributesSchema: this.config.inputAttributesSchema,
       dataOutputSpecs: {
         "resource": {

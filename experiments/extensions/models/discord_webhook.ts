@@ -114,7 +114,7 @@ async function executeSend(
  */
 export const discordWebhookModel = defineModel({
   type: ModelType.create("discord/webhook"),
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputAttributesSchema,
   methods: {
     send: {

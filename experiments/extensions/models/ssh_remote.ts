@@ -199,7 +199,7 @@ export const sshRemoteModel: ModelDefinition<
   typeof SshRemoteInputAttributesSchema
 > = defineModel({
   type: SSH_REMOTE_MODEL_TYPE,
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: SshRemoteInputAttributesSchema,
   methods: {
     execute: {

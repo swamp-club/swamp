@@ -364,7 +364,7 @@ export const mermaidWorkflowModel: ModelDefinition<
   typeof MermaidWorkflowInputAttributesSchema
 > = defineModel({
   type: MERMAID_WORKFLOW_MODEL_TYPE,
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: MermaidWorkflowInputAttributesSchema,
   dataOutputSpecs: {
     "metadata": {

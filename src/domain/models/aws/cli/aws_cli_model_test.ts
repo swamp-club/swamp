@@ -73,7 +73,7 @@ Deno.test("AWS_CLI_MODEL_TYPE has correct normalized type", () => {
 });
 
 Deno.test("awsCliModel has correct version", () => {
-  assertEquals(awsCliModel.version, 1);
+  assertEquals(awsCliModel.version, "2026.02.09.1");
 });
 
 Deno.test("awsCliModel.type equals AWS_CLI_MODEL_TYPE", () => {
