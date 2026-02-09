@@ -14,11 +14,13 @@ export interface SkillInfo {
  * List of skills to bundle with the swamp binary.
  */
 const BUNDLED_SKILLS: SkillInfo[] = [
+  { relativePath: "swamp-data/SKILL.md", name: "swamp-data" },
   { relativePath: "swamp-model/SKILL.md", name: "swamp-model" },
   {
     relativePath: "swamp-model/references/data-chaining.md",
     name: "swamp-model",
   },
+  { relativePath: "swamp-repo/SKILL.md", name: "swamp-repo" },
   { relativePath: "swamp-workflow/SKILL.md", name: "swamp-workflow" },
   {
     relativePath: "swamp-workflow/references/data-chaining.md",

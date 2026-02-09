@@ -37,5 +37,14 @@
     "jsx": "react",
     "strict": true
   },
-  "exclude": ["experiments/webapp/"]
+  "exclude": [
+    "experiments/webapp/",
+    "design/",
+    "scripts/",
+    "integration/",
+    ".github/",
+    ".agents/",
+    "workflows/",
+    ".vault-test-vault/"
+  ]
 }
