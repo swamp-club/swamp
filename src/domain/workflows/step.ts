@@ -18,9 +18,22 @@ export const StepDependencySchema = z.object({
 });
 
 /**
+ * Schema for forEach iteration.
+ */
+export const ForEachSchema = z.object({
+  item: z.string().min(1), // Variable name (e.g., "env")
+  in: z.string().min(1), // Expression (e.g., "${{ inputs.environments }}")
+});
+
+/**
  * Type representing step dependency data.
  */
 export type StepDependencyData = z.infer<typeof StepDependencySchema>;
+
+/**
+ * Type representing forEach data.
+ */
+export type ForEachData = z.infer<typeof ForEachSchema>;
 
 /**
  * Zod schema for Step entity.
@@ -29,6 +42,7 @@ export const StepSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   task: StepTaskSchema,
+  forEach: ForEachSchema.optional(),
   dependsOn: z.array(StepDependencySchema).default([]),
   weight: z.number().default(0),
   dataOutputOverrides: z.array(DataOutputOverrideSchema).optional(),
@@ -48,12 +62,21 @@ export interface StepDependency {
 }
 
 /**
+ * ForEach iteration configuration.
+ */
+export interface ForEach {
+  item: string;
+  in: string;
+}
+
+/**
  * Properties for creating a new Step.
  */
 export interface CreateStepProps {
   name: string;
   description?: string;
   task: StepTask;
+  forEach?: ForEach;
   dependsOn?: StepDependency[];
   weight?: number;
   dataOutputOverrides?: DataOutputOverride[];
@@ -75,6 +98,7 @@ export class Step {
     readonly name: string,
     readonly description: string | undefined,
     private _task: StepTask,
+    readonly forEach: ForEach | undefined,
     private _dependsOn: StepDependency[],
     readonly weight: number,
     private _dataOutputOverrides: DataOutputOverride[],
@@ -88,6 +112,7 @@ export class Step {
       name: props.name,
       description: props.description,
       task: props.task.toData(),
+      forEach: props.forEach,
       dependsOn: (props.dependsOn ?? []).map((d) => ({
         step: d.step,
         condition: d.condition.toData(),
@@ -119,10 +144,16 @@ export class Step {
         tags: override.tags,
       }));
 
+    // Convert forEach data to ForEach interface
+    const forEach: ForEach | undefined = validated.forEach
+      ? { item: validated.forEach.item, in: validated.forEach.in }
+      : undefined;
+
     return new Step(
       validated.name,
       validated.description,
       task,
+      forEach,
       dependsOn,
       validated.weight,
       dataOutputOverrides,
@@ -165,6 +196,9 @@ export class Step {
       name: this.name,
       description: this.description,
       task: this._task.toData(),
+      forEach: this.forEach
+        ? { item: this.forEach.item, in: this.forEach.in }
+        : undefined,
       dependsOn: this._dependsOn.map((d) => ({
         step: d.step,
         condition: d.condition.toData() as TriggerConditionData,

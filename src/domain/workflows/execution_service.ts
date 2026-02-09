@@ -69,6 +69,19 @@ export interface StepExecutionContext {
   enableStepLogging?: boolean;
   /** When true, load previously-evaluated definitions instead of evaluating CEL */
   useLastEvaluated?: boolean;
+  /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
+  forEachVariable?: { name: string; value: unknown };
+}
+
+/**
+ * Represents an expanded step from a forEach iteration.
+ */
+interface ExpandedStep {
+  step: Step;
+  /** The expanded step name after evaluating expressions */
+  expandedName: string;
+  /** The forEach variable name and value */
+  forEachVar: { name: string; value: unknown };
 }
 
 /**
@@ -243,7 +256,11 @@ export class DefaultStepExecutor implements StepExecutor {
   }
 
   private async executeModelMethod(
-    task: { modelIdOrName: string; methodName: string },
+    task: {
+      modelIdOrName: string;
+      methodName: string;
+      inputs?: Record<string, unknown>;
+    },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
     const definitionRepo = new YamlDefinitionRepository(ctx.repoDir);
@@ -324,6 +341,24 @@ export class DefaultStepExecutor implements StepExecutor {
         tags: originalDefinition.tags,
         attributes: originalDefinition.attributes,
       };
+
+      // Evaluate step task inputs and merge into context
+      let stepInputs: Record<string, unknown> = {};
+      if (task.inputs) {
+        // Evaluate any expressions in the step task inputs
+        const evalService = new ExpressionEvaluationService(
+          new YamlDefinitionRepository(ctx.repoDir),
+          ctx.repoDir,
+        );
+        stepInputs = evalService.evaluateData(
+          task.inputs,
+          ctx.expressionContext,
+        ) as Record<string, unknown>;
+      }
+
+      // Merge step inputs with existing context inputs (step inputs take precedence)
+      const originalInputs = ctx.expressionContext.inputs ?? {};
+      ctx.expressionContext.inputs = { ...originalInputs, ...stepInputs };
 
       evaluatedDefinition = await this.evaluateDefinitionExpressions(
         originalDefinition,
@@ -676,7 +711,11 @@ export class WorkflowExecutionService {
   async execute(
     idOrName: string,
     progress?: ExecutionProgressCallback,
-    options?: { enableStepLogging?: boolean; lastEvaluated?: boolean },
+    options?: {
+      enableStepLogging?: boolean;
+      lastEvaluated?: boolean;
+      inputs?: Record<string, unknown>;
+    },
   ): Promise<WorkflowRun> {
     // Look up workflow
     const workflow = await this.lookupWorkflow(idOrName);
@@ -705,6 +744,11 @@ export class WorkflowExecutionService {
     } else {
       // Build expression context and evaluate workflow
       expressionContext = await this.modelResolver.buildContext();
+
+      // Add workflow inputs to context
+      if (options?.inputs) {
+        expressionContext.inputs = options.inputs;
+      }
 
       const evaluatedWorkflow = await this.evaluateWorkflow(
         workflow,
@@ -836,13 +880,51 @@ export class WorkflowExecutionService {
     };
 
     try {
+      // Expand forEach steps if we have expression context
+      let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
+      if (expressionContext && !lastEvaluated) {
+        expandedStepsMap = this.expandForEachSteps(job, expressionContext);
+      }
+
       // Build step nodes with implicit dependencies from expressions
       const { nodes: stepNodes } = await this.buildStepNodesWithImplicitDeps(
         job,
         workflow,
       );
 
-      const sortedSteps = this.sortService.sort(stepNodes);
+      // If we have expanded steps, update the graph nodes
+      let effectiveNodes = stepNodes;
+      if (expandedStepsMap) {
+        effectiveNodes = [];
+        for (const node of stepNodes) {
+          const expanded = expandedStepsMap.get(node.name);
+          if (expanded && expanded.length > 0) {
+            // Create nodes for each expanded step
+            for (const exp of expanded) {
+              effectiveNodes.push({
+                name: exp.expandedName,
+                weight: node.weight,
+                // Map dependencies to expanded step names
+                dependencies: node.dependencies.map((dep) => {
+                  const depExpanded = expandedStepsMap!.get(dep);
+                  // For now, depend on all expansions of the dependency
+                  // (future: support forEach-aware dependency mapping)
+                  return depExpanded && depExpanded.length > 0
+                    ? depExpanded[0].expandedName
+                    : dep;
+                }),
+              });
+            }
+          } else if (!expanded || expanded.length === 0) {
+            // Skip steps that expanded to empty (e.g., empty array)
+            continue;
+          } else {
+            effectiveNodes.push(node);
+          }
+        }
+      }
+
+      const sortedSteps = this.sortService.sort(effectiveNodes);
 
       // Execute steps level by level
       let jobFailed = false;
@@ -851,19 +933,36 @@ export class WorkflowExecutionService {
 
         // Execute steps in parallel within each level
         const stepResults = await Promise.allSettled(
-          level.map((stepName) =>
-            this.executeStep(
+          level.map((stepName) => {
+            // Find the expanded step info if applicable
+            let forEachVar: { name: string; value: unknown } | undefined;
+            let originalStep: Step | undefined;
+
+            if (expandedStepsMap) {
+              for (const [, expanded] of expandedStepsMap) {
+                const found = expanded.find((e) => e.expandedName === stepName);
+                if (found) {
+                  forEachVar = found.forEachVar;
+                  originalStep = found.step;
+                  break;
+                }
+              }
+            }
+
+            return this.executeExpandedStep(
               workflow,
               run,
               job,
               jobRun,
               stepName,
+              originalStep,
+              forEachVar,
               expressionContext,
               streamingCallbacks,
               enableStepLogging,
               lastEvaluated,
-            )
-          ),
+            );
+          }),
         );
 
         // Check for failures
@@ -962,6 +1061,118 @@ export class WorkflowExecutionService {
     return { nodes, implicitDeps: implicitDepsMap };
   }
 
+  /**
+   * Expands forEach steps into multiple concrete steps.
+   * For steps with forEach, evaluates the `in` expression and creates
+   * one expanded step per item in the result.
+   *
+   * @param job - The job containing steps
+   * @param context - Expression context for evaluating forEach.in
+   * @returns Map of original step name to expanded steps (or single entry for non-forEach steps)
+   */
+  private expandForEachSteps(
+    job: Job,
+    context: ExpressionContext,
+  ): Map<string, ExpandedStep[]> {
+    const celEvaluator = new CelEvaluator();
+    const result = new Map<string, ExpandedStep[]>();
+
+    for (const step of job.steps) {
+      if (!step.forEach) {
+        // No forEach - use original step as-is
+        result.set(step.name, [{
+          step,
+          expandedName: step.name,
+          forEachVar: { name: "", value: undefined },
+        }]);
+        continue;
+      }
+
+      // Evaluate the forEach.in expression
+      const inExpression = step.forEach.in;
+      const itemName = step.forEach.item;
+
+      // Extract the CEL expression (remove ${{ }})
+      const match = inExpression.match(/\$\{\{\s*(.+?)\s*\}\}/);
+      if (!match) {
+        throw new Error(
+          `Invalid forEach.in expression: ${inExpression}. Must be in ${{}} format.`,
+        );
+      }
+
+      const celExpr = match[1];
+      const items = celEvaluator.evaluate(celExpr, context);
+
+      // Handle both arrays and objects
+      const expandedSteps: ExpandedStep[] = [];
+
+      if (Array.isArray(items)) {
+        // Array iteration: self.{item} = item value
+        for (const item of items) {
+          // Evaluate the step name with the forEach context
+          const stepContext = {
+            ...context,
+            self: {
+              ...context.self,
+              [itemName]: item,
+            },
+          };
+
+          // Evaluate step name (may contain ${{ self.env }})
+          let expandedName = step.name;
+          const nameMatch = step.name.match(/\$\{\{\s*(.+?)\s*\}\}/);
+          if (nameMatch) {
+            const value = celEvaluator.evaluate(nameMatch[1], stepContext);
+            expandedName = step.name.replace(nameMatch[0], String(value));
+          }
+
+          expandedSteps.push({
+            step,
+            expandedName,
+            forEachVar: { name: itemName, value: item },
+          });
+        }
+      } else if (items && typeof items === "object") {
+        // Object iteration: self.{item} = { key, value }
+        for (const [key, value] of Object.entries(items)) {
+          const objItem = { key, value };
+
+          // Evaluate the step name with the forEach context
+          const stepContext = {
+            ...context,
+            self: {
+              ...context.self,
+              [itemName]: objItem,
+            },
+          };
+
+          // Evaluate step name
+          let expandedName = step.name;
+          const nameMatch = step.name.match(/\$\{\{\s*(.+?)\s*\}\}/);
+          if (nameMatch) {
+            const evalValue = celEvaluator.evaluate(nameMatch[1], stepContext);
+            expandedName = step.name.replace(nameMatch[0], String(evalValue));
+          }
+
+          expandedSteps.push({
+            step,
+            expandedName,
+            forEachVar: { name: itemName, value: objItem },
+          });
+        }
+      } else {
+        throw new Error(
+          `forEach.in must evaluate to an array or object, got: ${typeof items}`,
+        );
+      }
+
+      // If no items, still store empty array
+      result.set(step.name, expandedSteps);
+    }
+
+    return result;
+  }
+
   private async executeStep(
     workflow: Workflow,
     run: WorkflowRun,
@@ -1052,6 +1263,189 @@ export class WorkflowExecutionService {
             };
           }
           const modelData = expressionContext.model[taskOutput.model];
+
+          // Update resource context if available
+          if (taskOutput.resourceId && taskOutput.resourceAttributes) {
+            modelData.resource = {
+              id: taskOutput.resourceId,
+              version: 1,
+              createdAt: new Date().toISOString(),
+              attributes: taskOutput.resourceAttributes,
+            };
+          }
+          // Update data context if available
+          if (taskOutput.dataId && taskOutput.dataAttributes) {
+            const dataName = taskOutput.dataName ?? "output";
+            const record: DataRecord = {
+              id: taskOutput.dataId,
+              name: dataName,
+              version: 1,
+              createdAt: new Date().toISOString(),
+              attributes: taskOutput.dataAttributes,
+              tags: {},
+            };
+
+            // Rebuild map from existing data (may be unwrapped or map)
+            let dataMap: Record<string, DataRecord> = {};
+            if (modelData.data) {
+              if (
+                "id" in modelData.data &&
+                typeof modelData.data.id === "string"
+              ) {
+                // Already unwrapped — re-wrap
+                const existing = modelData.data as DataRecord;
+                dataMap[existing.name] = existing;
+              } else {
+                dataMap = modelData.data as Record<string, DataRecord>;
+              }
+            }
+            dataMap[dataName] = record;
+
+            // Unwrap single artifact
+            const entries = Object.values(dataMap);
+            modelData.data = entries.length === 1 ? entries[0] : dataMap;
+          }
+        }
+      }
+
+      stepRun.succeed(output);
+      progress?.onStepComplete?.(run, job.name, stepName);
+    } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
+      stepRun.fail(errorMessage);
+      progress?.onStepFail?.(run, job.name, stepName, errorMessage);
+      throw error;
+    }
+  }
+
+  /**
+   * Executes a step that may have been expanded from a forEach.
+   * Handles both regular steps and forEach-expanded steps.
+   */
+  private async executeExpandedStep(
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    jobRun: JobRun,
+    stepName: string,
+    originalStep: Step | undefined,
+    forEachVar: { name: string; value: unknown } | undefined,
+    expressionContext: ExpressionContext | undefined,
+    progress?: ExecutionProgressCallback,
+    enableStepLogging?: boolean,
+    lastEvaluated?: boolean,
+  ): Promise<void> {
+    // For forEach-expanded steps, use the original step but create a dynamic step run
+    const step = originalStep ?? job.getStep(stepName);
+    if (!step) {
+      throw new Error(`Step not found: ${stepName}`);
+    }
+
+    // For forEach-expanded steps, we need to dynamically create the step run
+    let stepRun = jobRun.getStep(stepName);
+    if (!stepRun && forEachVar && forEachVar.name) {
+      // This is a forEach-expanded step - add it to the job run
+      jobRun.addExpandedStep(stepName);
+      stepRun = jobRun.getStep(stepName);
+    }
+    if (!stepRun) {
+      throw new Error(`Step run not found: ${stepName}`);
+    }
+
+    // Check if step's trigger condition is met (skip for forEach-expanded steps
+    // as they don't have the same dependencies structure)
+    if (!forEachVar || !forEachVar.name) {
+      const shouldRun = this.shouldStepRun(step, jobRun);
+      if (!shouldRun) {
+        stepRun.skip();
+        progress?.onStepSkip?.(run, job.name, stepName);
+        return;
+      }
+    }
+
+    // Start step
+    stepRun.start();
+    progress?.onStepStart?.(run, job.name, stepName);
+
+    try {
+      // Build the expression context with forEach variable
+      let stepExprContext = expressionContext;
+      if (expressionContext && forEachVar && forEachVar.name) {
+        const baseSelf = expressionContext.self ?? {
+          id: "",
+          name: "",
+          version: 1,
+          tags: {},
+          attributes: {},
+        };
+        stepExprContext = {
+          ...expressionContext,
+          self: {
+            ...baseSelf,
+            [forEachVar.name]: forEachVar.value,
+          },
+        };
+      }
+
+      const ctx: StepExecutionContext = {
+        workflowId: workflow.id,
+        workflowRunId: run.id,
+        workflowName: workflow.name,
+        jobName: job.name,
+        stepName,
+        repoDir: this.repoDir,
+        expressionContext: lastEvaluated ? undefined : stepExprContext,
+        progress,
+        workflowRun: run,
+        step,
+        enableStepLogging,
+        useLastEvaluated: lastEvaluated,
+        forEachVariable: forEachVar,
+      };
+
+      const output = await this.executor.execute(step, ctx);
+
+      // Track data artifacts and update expression context if this was a model method
+      if (step.task.isModelMethod() && output && typeof output === "object") {
+        const taskOutput = output as {
+          model?: string;
+          resourceId?: string;
+          resourceAttributes?: Record<string, unknown>;
+          dataId?: string;
+          dataName?: string;
+          dataAttributes?: Record<string, unknown>;
+          dataArtifacts?: Array<{
+            dataId: string;
+            name: string;
+            version: number;
+            tags: Record<string, string>;
+          }>;
+        };
+
+        // Track data artifacts in step run
+        if (taskOutput.dataArtifacts) {
+          for (const artifact of taskOutput.dataArtifacts) {
+            stepRun.addDataArtifact(artifact);
+          }
+        }
+
+        // Update expression context for subsequent steps (only when not using --last-evaluated)
+        if (stepExprContext && taskOutput.model) {
+          // Create model entry if it doesn't exist
+          if (!stepExprContext.model[taskOutput.model]) {
+            stepExprContext.model[taskOutput.model] = {
+              input: {
+                id: "",
+                name: taskOutput.model,
+                version: 1,
+                tags: {},
+                attributes: {},
+              },
+            };
+          }
+          const modelData = stepExprContext.model[taskOutput.model];
 
           // Update resource context if available
           if (taskOutput.resourceId && taskOutput.resourceAttributes) {

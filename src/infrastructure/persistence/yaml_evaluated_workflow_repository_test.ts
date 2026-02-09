@@ -11,6 +11,7 @@ Deno.test("findByName returns workflow with matching name", async () => {
     const workflow = Workflow.fromData({
       id: "a1b2c3d4-e5f6-1a2b-9c3d-4e5f6a7b8c9d",
       name: "test-workflow",
+      inputs: undefined,
       version: 1,
       jobs: [
         {

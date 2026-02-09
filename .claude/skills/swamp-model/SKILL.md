@@ -10,22 +10,23 @@ machine-readable output.
 
 ## Quick Reference
 
-| Task               | Command                                               |
-| ------------------ | ----------------------------------------------------- |
-| Search model types | `swamp type search [query] --json`                    |
-| Describe a type    | `swamp type describe <type> --json`                   |
-| Create model input | `swamp model create <type> <name> --json`             |
-| Search models      | `swamp model search [query] --json`                   |
-| Get model details  | `swamp model get <id_or_name> --json`                 |
-| Edit model input   | `swamp model edit [id_or_name]`                       |
-| Delete a model     | `swamp model delete <id_or_name> --json`              |
-| Validate model     | `swamp model validate [id_or_name] --json`            |
-| Evaluate input(s)  | `swamp model evaluate [id_or_name] --json`            |
-| Run a method       | `swamp model method run <id_or_name> <method> --json` |
-| Search outputs     | `swamp model output search [query] --json`            |
-| Get output details | `swamp model output get <output_or_model> --json`     |
-| View output logs   | `swamp model output logs <output_id> --json`          |
-| View output data   | `swamp model output data <output_id> --json`          |
+| Task               | Command                                                  |
+| ------------------ | -------------------------------------------------------- |
+| Search model types | `swamp type search [query] --json`                       |
+| Describe a type    | `swamp type describe <type> --json`                      |
+| Create model input | `swamp model create <type> <name> --json`                |
+| Search models      | `swamp model search [query] --json`                      |
+| Get model details  | `swamp model get <id_or_name> --json`                    |
+| Edit model input   | `swamp model edit [id_or_name]`                          |
+| Delete a model     | `swamp model delete <id_or_name> --json`                 |
+| Validate model     | `swamp model validate [id_or_name] --json`               |
+| Evaluate input(s)  | `swamp model evaluate [id_or_name] --json`               |
+| Run a method       | `swamp model method run <id_or_name> <method> --json`    |
+| Run with inputs    | `swamp model method run <name> <method> --input '{}' -j` |
+| Search outputs     | `swamp model output search [query] --json`               |
+| Get output details | `swamp model output get <output_or_model> --json`        |
+| View output logs   | `swamp model output logs <output_id> --json`             |
+| View output data   | `swamp model output data <output_id> --json`             |
 
 ## Repository Structure
 
@@ -127,6 +128,33 @@ tags: {}
 attributes:
   message: "Hello, world!"
 ```
+
+### Model Inputs Schema
+
+Models can define an `inputs` schema for runtime parameterization:
+
+```yaml
+id: 550e8400-e29b-41d4-a716-446655440000
+name: my-deploy
+version: 1
+tags: {}
+inputs:
+  properties:
+    environment:
+      type: string
+      enum: ["dev", "staging", "production"]
+      description: Target environment
+    dryRun:
+      type: boolean
+      default: false
+  required: ["environment"]
+attributes:
+  target: ${{ inputs.environment }}
+  simulate: ${{ inputs.dryRun }}
+```
+
+Inputs are provided at runtime with `--input` or `--input-file` and referenced
+in attributes using `${{ inputs.<name> }}` expressions.
 
 ## Edit a Model
 
@@ -234,6 +262,7 @@ Model inputs support CEL expressions using `${{ <expression> }}` syntax.
 
 | Reference                                  | Description                        |
 | ------------------------------------------ | ---------------------------------- |
+| `inputs.<name>`                            | Runtime input value                |
 | `model.<name>.input.attributes.<field>`    | Another model's input attribute    |
 | `model.<name>.resource.attributes.<field>` | Another model's resource attribute |
 | `model.<name>.data.attributes.<field>`     | Another model's data attribute     |
@@ -330,7 +359,18 @@ Execute a method on a model input.
 
 ```bash
 swamp model method run my-echo write --json
+swamp model method run my-deploy create --input '{"environment": "prod"}' --json
+swamp model method run my-deploy create --input-file inputs.yaml --json
+swamp model method run my-deploy create --last-evaluated --json
 ```
+
+**Options:**
+
+| Flag               | Description                                |
+| ------------------ | ------------------------------------------ |
+| `--input <json>`   | Input values as JSON string                |
+| `--input-file <f>` | Input values from YAML file                |
+| `--last-evaluated` | Use previously evaluated model (skip eval) |
 
 **Output shape:**
 

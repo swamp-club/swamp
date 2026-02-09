@@ -24,6 +24,8 @@ import {
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
+import { parseInputs } from "../input_parser.ts";
+import { InputValidationService } from "../../domain/inputs/mod.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -146,6 +148,8 @@ export const workflowRunCommand = new Command()
     "Skip CEL evaluation, use previously evaluated workflow and definitions",
     { default: false },
   )
+  .option("--input <json:string>", "Input values as JSON")
+  .option("--input-file <file:string>", "Input values from YAML file")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
@@ -167,6 +171,12 @@ export const workflowRunCommand = new Command()
     const tui = options.tui as boolean;
     const lastEvaluated = options.lastEvaluated as boolean;
 
+    // Parse input values
+    const { inputs } = await parseInputs({
+      input: options.input as string | undefined,
+      inputFile: options.inputFile as string | undefined,
+    });
+
     try {
       // Look up workflow first to get its data
       const workflow = await workflowRepo.findByName(workflowIdOrName) ??
@@ -174,6 +184,27 @@ export const workflowRunCommand = new Command()
 
       if (!workflow) {
         throw new Error(`Workflow not found: ${workflowIdOrName}`);
+      }
+
+      // Validate inputs against workflow schema if provided
+      if (workflow.inputs) {
+        const validationService = new InputValidationService();
+        const inputsWithDefaults = validationService.applyDefaults(
+          inputs,
+          workflow.inputs,
+        );
+        const validationResult = validationService.validate(
+          inputsWithDefaults,
+          workflow.inputs,
+        );
+        if (!validationResult.valid) {
+          const errorMessages = validationResult.errors
+            .map((e) => `  ${e.message}`)
+            .join("\n");
+          throw new Error(`Input validation failed:\n${errorMessages}`);
+        }
+        // Use inputs with defaults applied
+        Object.assign(inputs, inputsWithDefaults);
       }
 
       if (ctx.outputMode === "json" && !tui) {
@@ -197,6 +228,7 @@ export const workflowRunCommand = new Command()
 
         const run = await executionService.execute(workflow.name, progress, {
           lastEvaluated,
+          inputs,
         });
 
         // Get the path for the run
@@ -230,6 +262,7 @@ export const workflowRunCommand = new Command()
         ): Promise<WorkflowRun> => {
           return await executionService.execute(workflow.name, progress, {
             lastEvaluated,
+            inputs,
           });
         };
 
@@ -255,6 +288,7 @@ export const workflowRunCommand = new Command()
         const run = await executionService.execute(workflow.name, progress, {
           enableStepLogging: true,
           lastEvaluated,
+          inputs,
         });
 
         ctx.logger.debug`Workflow run completed: status=${run.status}`;

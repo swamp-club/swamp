@@ -131,13 +131,19 @@ export interface DataNamespace {
 export interface ExpressionContext {
   /** Map of model name/UUID to model data */
   model: Record<string, ModelData>;
-  /** Self-reference for the current input being evaluated */
+  /**
+   * Self-reference for the current input being evaluated.
+   * When forEach is used, additional keys are added for the iteration variable
+   * (e.g., self.env for forEach with item: "env")
+   */
   self?: {
     id: string;
     name: string;
     version: number;
     tags: Record<string, string>;
     attributes: Record<string, unknown>;
+    /** Index signature to allow forEach variables like self.env, self.tag */
+    [key: string]: unknown;
   };
   /** Input values provided when instantiating a definition */
   inputs?: Record<string, unknown>;

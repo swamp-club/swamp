@@ -11,6 +11,7 @@ const mockWorkflow: WorkflowData = {
   id: "test-workflow-id",
   name: "test-workflow",
   description: "A test workflow",
+  inputs: undefined,
   version: 1,
   jobs: [
     {

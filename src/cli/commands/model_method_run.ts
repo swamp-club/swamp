@@ -13,6 +13,8 @@ import { DefaultMethodExecutionService } from "../../domain/models/method_execut
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
+import { parseInputs } from "../input_parser.ts";
+import { InputValidationService } from "../../domain/inputs/mod.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -30,6 +32,8 @@ export const modelMethodRunCommand = new Command()
     "Skip CEL evaluation, use previously evaluated definition",
     { default: false },
   )
+  .option("--input <json:string>", "Input values as JSON")
+  .option("--input-file <file:string>", "Input values from YAML file")
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -54,6 +58,12 @@ export const modelMethodRunCommand = new Command()
       ctx.logger
         .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
 
+      // Parse input values
+      const { inputs } = await parseInputs({
+        input: options.input as string | undefined,
+        inputFile: options.inputFile as string | undefined,
+      });
+
       // Look up the model definition
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
       const result = await findDefinitionByIdOrName(
@@ -64,6 +74,27 @@ export const modelMethodRunCommand = new Command()
         throw new Error(`Model not found: ${modelIdOrName}`);
       }
       const { definition, type: modelType } = result;
+
+      // Validate inputs against model's input schema if provided
+      if (definition.inputs) {
+        const validationService = new InputValidationService();
+        const inputsWithDefaults = validationService.applyDefaults(
+          inputs,
+          definition.inputs,
+        );
+        const validationResult = validationService.validate(
+          inputsWithDefaults,
+          definition.inputs,
+        );
+        if (!validationResult.valid) {
+          const errorMessages = validationResult.errors
+            .map((e) => `  ${e.message}`)
+            .join("\n");
+          throw new Error(`Input validation failed:\n${errorMessages}`);
+        }
+        // Use inputs with defaults applied
+        Object.assign(inputs, inputsWithDefaults);
+      }
 
       // Create run logger for real-time output
       const runLogger = getRunLogger(definition.name, methodName);
@@ -117,11 +148,15 @@ export const modelMethodRunCommand = new Command()
         evaluatedDefinition = lastEval;
       } else {
         // Evaluate CEL expressions (vault expressions left raw for persistence)
-        if (evaluationService.hasDefinitionExpressions(definition)) {
+        if (
+          evaluationService.hasDefinitionExpressions(definition) ||
+          Object.keys(inputs).length > 0
+        ) {
           runLogger.info("Evaluating expressions");
           const evalResult = await evaluationService.evaluateDefinition(
             definition,
             modelType,
+            inputs,
           );
           evaluatedDefinition = evalResult.definition;
         }

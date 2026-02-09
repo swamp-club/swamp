@@ -9,6 +9,7 @@ function createTestWorkflow(): Workflow {
     id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     name: "test-workflow",
     description: "Test workflow",
+    inputs: undefined,
     version: 1,
     jobs: [
       {

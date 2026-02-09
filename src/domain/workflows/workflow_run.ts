@@ -325,6 +325,17 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Adds a new expanded step (from forEach) to the job run.
+   * The step is created in pending state.
+   */
+  addExpandedStep(stepName: string): void {
+    // Only add if not already present
+    if (!this._steps.find((s) => s.stepName === stepName)) {
+      this._steps.push(StepRun.pending(stepName));
+    }
+  }
+
+  /**
    * Marks the job as running.
    */
   start(): void {

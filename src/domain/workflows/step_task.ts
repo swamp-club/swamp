@@ -12,6 +12,7 @@ export const StepTaskSchema = z.discriminatedUnion("type", [
     type: z.literal("model_method"),
     modelIdOrName: z.string().min(1),
     methodName: z.string().min(1),
+    inputs: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
     type: z.literal("shell"),
@@ -47,11 +48,16 @@ export class StepTask {
   /**
    * Creates a model method task.
    */
-  static modelMethod(modelIdOrName: string, methodName: string): StepTask {
+  static modelMethod(
+    modelIdOrName: string,
+    methodName: string,
+    inputs?: Record<string, unknown>,
+  ): StepTask {
     return new StepTask({
       type: "model_method",
       modelIdOrName,
       methodName,
+      inputs,
     });
   }
 

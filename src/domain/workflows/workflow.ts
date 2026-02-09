@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { createWorkflowId, type WorkflowId } from "./workflow_id.ts";
 import { Job, type JobData, JobSchema } from "./job.ts";
+import {
+  type InputsSchema,
+  InputsSchemaSchema,
+} from "../definitions/definition.ts";
 
 /**
  * Zod schema for Workflow aggregate root.
@@ -9,6 +13,7 @@ export const WorkflowSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
   description: z.string().optional(),
+  inputs: InputsSchemaSchema,
   jobs: z.array(JobSchema).min(1),
   version: z.number().int().positive().default(1),
 });
@@ -25,6 +30,7 @@ export interface CreateWorkflowProps {
   id?: string;
   name: string;
   description?: string;
+  inputs?: InputsSchema;
   jobs?: Job[];
   version?: number;
 }
@@ -44,6 +50,7 @@ export class Workflow {
     readonly id: WorkflowId,
     readonly name: string,
     readonly description: string | undefined,
+    readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
     readonly version: number,
   ) {}
@@ -61,6 +68,7 @@ export class Workflow {
       id,
       name: props.name,
       description: props.description,
+      inputs: props.inputs,
       jobs: jobs.map((j) => j.toData()),
       version,
     };
@@ -74,6 +82,7 @@ export class Workflow {
       createWorkflowId(data.id),
       data.name,
       data.description,
+      data.inputs,
       jobs,
       data.version,
     );
@@ -90,6 +99,7 @@ export class Workflow {
       createWorkflowId(validated.id),
       validated.name,
       validated.description,
+      validated.inputs,
       jobs,
       validated.version,
     );
@@ -127,6 +137,7 @@ export class Workflow {
       id: this.id,
       name: this.name,
       description: this.description,
+      inputs: this.inputs,
       jobs: this._jobs.map((j) => j.toData()) as JobData[],
       version: this.version,
     };

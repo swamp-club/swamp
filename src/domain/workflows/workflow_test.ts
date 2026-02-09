@@ -110,6 +110,7 @@ Deno.test("Workflow.fromData reconstructs workflow correctly", () => {
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-workflow",
     description: "Test description",
+    inputs: undefined,
     jobs: [
       {
         name: "job1",
@@ -194,4 +195,136 @@ Deno.test("Workflow.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.description, original.description);
   assertEquals(restored.jobs.length, original.jobs.length);
   assertEquals(restored.version, original.version);
+});
+
+// Inputs field tests
+
+Deno.test("Workflow.create creates workflow with inputs schema", () => {
+  const workflow = Workflow.create({
+    name: "workflow-with-inputs",
+    inputs: {
+      properties: {
+        environment: {
+          type: "string",
+          enum: ["dev", "staging", "production"],
+          description: "Target environment",
+        },
+        count: {
+          type: "integer",
+          default: 1,
+        },
+      },
+      required: ["environment"],
+    },
+  });
+
+  assertEquals(workflow.inputs !== undefined, true);
+  assertEquals(workflow.inputs?.properties?.environment?.type, "string");
+  assertEquals(workflow.inputs?.properties?.environment?.enum, [
+    "dev",
+    "staging",
+    "production",
+  ]);
+  assertEquals(workflow.inputs?.required, ["environment"]);
+});
+
+Deno.test("Workflow.create creates workflow without inputs", () => {
+  const workflow = Workflow.create({
+    name: "workflow-no-inputs",
+  });
+
+  assertEquals(workflow.inputs, undefined);
+});
+
+Deno.test("Workflow.fromData reconstructs workflow with inputs correctly", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow-inputs",
+    description: "Test with inputs",
+    inputs: {
+      properties: {
+        message: {
+          type: "string" as const,
+          description: "A message to display",
+        },
+        verbose: {
+          type: "boolean" as const,
+          default: false,
+        },
+      },
+      required: ["message"],
+    },
+    jobs: [
+      {
+        name: "job1",
+        steps: [
+          {
+            name: "step1",
+            task: { type: "shell" as const, command: "echo", args: [] },
+            dependsOn: [],
+            weight: 0,
+          },
+        ],
+        dependsOn: [],
+        weight: 0,
+      },
+    ],
+    version: 1,
+  };
+
+  const workflow = Workflow.fromData(data);
+  assertEquals(workflow.inputs !== undefined, true);
+  assertEquals(workflow.inputs?.properties?.message?.type, "string");
+  assertEquals(workflow.inputs?.properties?.verbose?.default, false);
+  assertEquals(workflow.inputs?.required, ["message"]);
+});
+
+Deno.test("Workflow.toData includes inputs in output", () => {
+  const workflow = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    inputs: {
+      properties: {
+        env: { type: "string" },
+      },
+    },
+    jobs: [createTestJob("job1")],
+  });
+
+  const data = workflow.toData();
+  assertEquals(data.inputs !== undefined, true);
+  assertEquals(data.inputs?.properties?.env?.type, "string");
+});
+
+Deno.test("Workflow.fromData and toData roundtrip with inputs", () => {
+  const original = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "roundtrip-inputs",
+    inputs: {
+      properties: {
+        environment: {
+          type: "string",
+          enum: ["dev", "staging", "production"],
+        },
+        replicas: {
+          type: "integer",
+          default: 3,
+        },
+      },
+      required: ["environment"],
+    },
+    jobs: [createTestJob("deploy")],
+  });
+
+  const data = original.toData();
+  const restored = Workflow.fromData(data);
+
+  assertEquals(restored.inputs?.properties?.environment?.type, "string");
+  assertEquals(restored.inputs?.properties?.environment?.enum, [
+    "dev",
+    "staging",
+    "production",
+  ]);
+  assertEquals(restored.inputs?.properties?.replicas?.default, 3);
+  assertEquals(restored.inputs?.required, ["environment"]);
 });

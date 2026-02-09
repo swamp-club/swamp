@@ -90,7 +90,54 @@ export const model = {
 | `type`                  | Yes      | Unique identifier (`namespace/name`) |
 | `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)  |
 | `inputAttributesSchema` | Yes      | Zod schema for input validation      |
+| `inputsSchema`          | No       | Zod schema for runtime inputs        |
 | `methods`               | Yes      | Object of method definitions         |
+
+### Model-Level Inputs
+
+Models can define an `inputsSchema` for runtime parameterization. These inputs
+are provided via `--input` or `--input-file` when running methods:
+
+```typescript
+export const model = {
+  type: "myorg/deploy",
+  version: 1,
+  inputAttributesSchema: z.object({
+    serviceName: z.string(),
+    target: z.string(), // Will use ${{ inputs.environment }}
+  }),
+  inputsSchema: z.object({
+    environment: z.enum(["dev", "staging", "production"]),
+    dryRun: z.boolean().optional().default(false),
+  }),
+  methods: {
+    deploy: {
+      description: "Deploy the service",
+      execute: async (definition, context) => {
+        // Inputs are evaluated before execution, so definition.attributes
+        // contains the resolved values (e.g., target = "production")
+        return {
+          resource: {
+            attributes: {
+              deployed: true,
+              target: definition.attributes.target,
+            },
+          },
+        };
+      },
+    },
+  },
+};
+```
+
+**Usage:**
+
+```bash
+swamp model method run my-deploy deploy --input '{"environment": "production"}' --json
+```
+
+The `inputsSchema` defines what runtime inputs are accepted. These inputs are
+available in CEL expressions via `${{ inputs.<name> }}`.
 
 ## Execute Function
 
@@ -104,9 +151,10 @@ outputs. There are three return formats: the preferred simpler formats
 execute: (async (definition, context) => {
   // definition.id         - UUID
   // definition.name       - User-provided name
-  // definition.attributes - Validated input data
+  // definition.attributes - Validated input data (expressions already resolved)
   // context.repoDir       - Repository root path
   // context.dataRepository - For advanced data operations
+  // context.inputs        - Runtime inputs (if inputsSchema defined)
 
   // For external resources (APIs, cloud services, etc.)
   return {

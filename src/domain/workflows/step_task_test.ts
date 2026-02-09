@@ -7,9 +7,27 @@ Deno.test("StepTask.modelMethod creates model method task", () => {
     type: "model_method",
     modelIdOrName: "my-model",
     methodName: "run",
+    inputs: undefined,
   });
   assertEquals(task.isModelMethod(), true);
   assertEquals(task.isShell(), false);
+});
+
+Deno.test("StepTask.modelMethod creates model method task with inputs", () => {
+  const task = StepTask.modelMethod("my-model", "run", {
+    environment: "dev",
+    count: 5,
+  });
+  assertEquals(task.data, {
+    type: "model_method",
+    modelIdOrName: "my-model",
+    methodName: "run",
+    inputs: {
+      environment: "dev",
+      count: 5,
+    },
+  });
+  assertEquals(task.isModelMethod(), true);
 });
 
 Deno.test("StepTask.shell creates shell task with defaults", () => {

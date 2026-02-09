@@ -19,7 +19,9 @@ machine-readable output.
 | Edit a workflow   | `swamp workflow edit [id_or_name]`                     |
 | Delete a workflow | `swamp workflow delete <id_or_name> --json`            |
 | Validate workflow | `swamp workflow validate [id_or_name] --json`          |
+| Evaluate workflow | `swamp workflow evaluate <id_or_name> --json`          |
 | Run a workflow    | `swamp workflow run <id_or_name> --json`               |
+| Run with inputs   | `swamp workflow run <id_or_name> --input '{}' --json`  |
 | View run history  | `swamp workflow history search --json`                 |
 | Get latest run    | `swamp workflow history get <workflow> --json`         |
 | View run logs     | `swamp workflow history logs <run_or_workflow> --json` |
@@ -89,6 +91,16 @@ id: abc-123
 name: my-deploy-workflow
 description: Deploy workflow with build and deploy jobs
 version: 1
+inputs:
+  properties:
+    environment:
+      type: string
+      enum: ["dev", "staging", "production"]
+      description: Target deployment environment
+    replicas:
+      type: integer
+      default: 1
+  required: ["environment"]
 jobs:
   - name: build
     description: Build the application
@@ -111,6 +123,7 @@ jobs:
         task:
           type: shell
           command: ./deploy.sh
+          args: ["--env", "${{ inputs.environment }}"]
 ```
 
 ## Edit a Workflow
@@ -202,7 +215,18 @@ swamp workflow validate --json  # Validate all
 
 ```bash
 swamp workflow run my-workflow --json
+swamp workflow run my-workflow --input '{"environment": "production"}' --json
+swamp workflow run my-workflow --input-file inputs.yaml --json
+swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated workflow
 ```
+
+**Options:**
+
+| Flag               | Description                                   |
+| ------------------ | --------------------------------------------- |
+| `--input <json>`   | Input values as JSON string                   |
+| `--input-file <f>` | Input values from YAML file                   |
+| `--last-evaluated` | Use previously evaluated workflow (skip eval) |
 
 **Output shape:**
 
@@ -305,6 +329,209 @@ swamp workflow history logs run-456 build.compile --json  # Specific step logs
   "exitCode": 0
 }
 ```
+
+## Workflow Inputs
+
+Workflows can define an `inputs` schema for parameterization. Inputs are
+validated against a JSON Schema before execution.
+
+### Input Schema
+
+```yaml
+inputs:
+  properties:
+    environment:
+      type: string
+      enum: ["dev", "staging", "production"]
+      description: Target environment
+    replicas:
+      type: integer
+      default: 1
+    tags:
+      type: object
+      additionalProperties:
+        type: string
+  required: ["environment"]
+```
+
+### Supported Types
+
+| Type      | Description     | Example                                  |
+| --------- | --------------- | ---------------------------------------- |
+| `string`  | Text value      | `type: string`                           |
+| `integer` | Whole number    | `type: integer`                          |
+| `number`  | Decimal number  | `type: number`                           |
+| `boolean` | True/false      | `type: boolean`                          |
+| `array`   | List of items   | `type: array`, `items: { type: string }` |
+| `object`  | Key-value pairs | `type: object`, `properties: {...}`      |
+
+### Input Validation
+
+| Constraint             | Description                       |
+| ---------------------- | --------------------------------- |
+| `required: [...]`      | List of required input names      |
+| `enum: [...]`          | Allowed values for string/integer |
+| `default: value`       | Default value if not provided     |
+| `minItems/maxItems`    | Array length constraints          |
+| `uniqueItems: true`    | Array must have no duplicates     |
+| `additionalProperties` | Allow/restrict extra object keys  |
+
+### Using Inputs in Expressions
+
+Reference inputs with `${{ inputs.<name> }}`:
+
+```yaml
+steps:
+  - name: deploy
+    task:
+      type: shell
+      command: ./deploy.sh
+      args: ["--env", "${{ inputs.environment }}"]
+  - name: scale
+    task:
+      type: model_method
+      modelIdOrName: my-service
+      methodName: scale
+      inputs:
+        replicas: ${{ inputs.replicas }}
+```
+
+## Evaluate Workflows
+
+Evaluate expressions in workflow definitions without executing. CEL expressions
+are resolved and vault expressions remain raw for runtime resolution.
+
+```bash
+swamp workflow evaluate my-workflow --json
+swamp workflow evaluate my-workflow --input '{"environment": "dev"}' --json
+swamp workflow evaluate --all --json
+```
+
+**Options:**
+
+| Flag               | Description                 |
+| ------------------ | --------------------------- |
+| `--input <json>`   | Input values as JSON string |
+| `--input-file <f>` | Input values from YAML file |
+| `--all`            | Evaluate all workflows      |
+
+**Output shape (single):**
+
+```json
+{
+  "name": "my-workflow",
+  "outputPath": ".swamp/workflows-evaluated/abc-123.yaml"
+}
+```
+
+**Output shape (--all):**
+
+```json
+{
+  "total": 3,
+  "evaluated": [
+    { "name": "workflow-1", "outputPath": "..." },
+    { "name": "workflow-2", "outputPath": "..." }
+  ]
+}
+```
+
+**Key behaviors:**
+
+- CEL expressions (`${{ inputs.X }}`, `${{ model.X.resource... }}`) are resolved
+- Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
+- Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
+
+## forEach Iteration
+
+Steps can iterate over arrays or objects using `forEach`. Each iteration creates
+a separate step instance.
+
+### Iterate Over Array
+
+```yaml
+inputs:
+  properties:
+    environments:
+      type: array
+      items: { type: string }
+      minItems: 1
+
+jobs:
+  - name: deploy-all
+    steps:
+      - name: deploy-${{self.env}}
+        forEach:
+          item: env
+          in: ${{ inputs.environments }}
+        task:
+          type: model_method
+          modelIdOrName: my-service
+          methodName: deploy
+          inputs:
+            environment: ${{ self.env }}
+```
+
+With `--input '{"environments": ["dev", "staging", "prod"]}'`, creates steps:
+
+- `deploy-dev`
+- `deploy-staging`
+- `deploy-prod`
+
+### Iterate Over Object
+
+```yaml
+inputs:
+  properties:
+    tags:
+      type: object
+      additionalProperties: { type: string }
+
+jobs:
+  - name: apply-tags
+    steps:
+      - name: tag-${{self.tag.key}}
+        forEach:
+          item: tag
+          in: ${{ inputs.tags }}
+        task:
+          type: shell
+          command: echo
+          args: ["${{ self.tag.key }}=${{ self.tag.value }}"]
+```
+
+With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
+
+- `tag-env` (with `self.tag.key="env"`, `self.tag.value="prod"`)
+- `tag-team` (with `self.tag.key="team"`, `self.tag.value="platform"`)
+
+### forEach Variables
+
+| Variable            | Description                    |
+| ------------------- | ------------------------------ |
+| `self.{item}`       | Current item (array iteration) |
+| `self.{item}.key`   | Key name (object iteration)    |
+| `self.{item}.value` | Value (object iteration)       |
+
+## Step Task Inputs
+
+When a step calls a model method, pass inputs to the model:
+
+```yaml
+steps:
+  - name: create-resource
+    task:
+      type: model_method
+      modelIdOrName: my-model
+      methodName: create
+      inputs:
+        environment: ${{ inputs.environment }}
+        config:
+          replicas: ${{ inputs.replicas }}
+```
+
+The `inputs` field on `model_method` tasks passes values to the model's input
+schema, enabling dynamic configuration at workflow runtime.
 
 ## Data Artifact Tracking
 
