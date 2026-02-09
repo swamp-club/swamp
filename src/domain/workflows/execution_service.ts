@@ -144,9 +144,11 @@ export class DefaultStepExecutor implements StepExecutor {
     command: Deno.Command,
     ctx: StepExecutionContext,
   ): Promise<unknown> {
-    const stepLogger = ctx.enableStepLogging
-      ? getWorkflowRunLogger(ctx.workflowName, ctx.jobName, ctx.stepName)
-      : undefined;
+    const stepLogger = getWorkflowRunLogger(
+      ctx.workflowName,
+      ctx.jobName,
+      ctx.stepName,
+    );
 
     const process = command.spawn();
 
@@ -158,7 +160,7 @@ export class DefaultStepExecutor implements StepExecutor {
       process.stdout,
       (line) => {
         stdoutLines.push(line);
-        stepLogger?.info(line);
+        stepLogger.info(line);
         if (ctx.progress?.onStepStdout && ctx.workflowRun) {
           ctx.progress.onStepStdout(
             ctx.workflowRun,
@@ -174,7 +176,7 @@ export class DefaultStepExecutor implements StepExecutor {
       process.stderr,
       (line) => {
         stderrLines.push(line);
-        stepLogger?.warn(line);
+        stepLogger.warn(line);
         if (ctx.progress?.onStepStderr && ctx.workflowRun) {
           ctx.progress.onStepStderr(
             ctx.workflowRun,
@@ -256,11 +258,9 @@ export class DefaultStepExecutor implements StepExecutor {
     const { definition: originalDefinition, type: modelType } = lookupResult;
 
     // Log via model method run logger (same categories as standalone)
-    const runLogger = ctx.enableStepLogging
-      ? getRunLogger(originalDefinition.name, task.methodName)
-      : undefined;
+    const runLogger = getRunLogger(originalDefinition.name, task.methodName);
 
-    runLogger?.info("Found model {name} ({type})", {
+    runLogger.info("Found model {name} ({type})", {
       name: originalDefinition.name,
       type: modelType.normalized,
     });
@@ -290,7 +290,7 @@ export class DefaultStepExecutor implements StepExecutor {
     // Evaluate expressions for execution (after validation passes)
     let evaluatedDefinition = originalDefinition;
     if (ctx.expressionContext) {
-      runLogger?.info("Evaluating expressions");
+      runLogger.info("Evaluating expressions");
       // Set self context for this specific model before evaluating
       ctx.expressionContext.self = {
         id: originalDefinition.id,
@@ -343,40 +343,36 @@ export class DefaultStepExecutor implements StepExecutor {
     let dataName: string | undefined;
 
     try {
-      runLogger?.info("Executing method {method}", {
+      runLogger.info("Executing method {method}", {
         method: task.methodName,
       });
 
-      // Build streaming callbacks — log via runLogger when enabled,
-      // and always call progress callback for persistence
-      const hasProgressStreaming = ctx.progress?.onStepStdout ||
-        ctx.progress?.onStepStderr;
-      const streaming = (runLogger || hasProgressStreaming)
-        ? {
-          onStdout: (line: string) => {
-            runLogger?.info(line);
-            if (ctx.progress?.onStepStdout && ctx.workflowRun) {
-              ctx.progress.onStepStdout(
-                ctx.workflowRun,
-                ctx.jobName,
-                ctx.stepName,
-                line,
-              );
-            }
-          },
-          onStderr: (line: string) => {
-            runLogger?.warn(line);
-            if (ctx.progress?.onStepStderr && ctx.workflowRun) {
-              ctx.progress.onStepStderr(
-                ctx.workflowRun,
-                ctx.jobName,
-                ctx.stepName,
-                line,
-              );
-            }
-          },
-        }
-        : undefined;
+      // Build streaming callbacks — log via runLogger,
+      // and call progress callback for persistence
+      const streaming = {
+        onStdout: (line: string) => {
+          runLogger.info(line);
+          if (ctx.progress?.onStepStdout && ctx.workflowRun) {
+            ctx.progress.onStepStdout(
+              ctx.workflowRun,
+              ctx.jobName,
+              ctx.stepName,
+              line,
+            );
+          }
+        },
+        onStderr: (line: string) => {
+          runLogger.warn(line);
+          if (ctx.progress?.onStepStderr && ctx.workflowRun) {
+            ctx.progress.onStepStderr(
+              ctx.workflowRun,
+              ctx.jobName,
+              ctx.stepName,
+              line,
+            );
+          }
+        },
+      };
 
       // Execute the method with EVALUATED definition
       const result = await executionService.executeWorkflow(
@@ -387,6 +383,7 @@ export class DefaultStepExecutor implements StepExecutor {
           repoDir: ctx.repoDir,
           modelType,
           modelId: evaluatedDefinition.id,
+          logger: runLogger,
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
           streaming,
@@ -455,15 +452,13 @@ export class DefaultStepExecutor implements StepExecutor {
           output.addDataArtifact(artifactRef);
           savedArtifacts.push(artifactRef);
 
-          if (runLogger) {
-            const dataPath = unifiedDataRepo.getPath(
-              modelType,
-              evaluatedDefinition.id,
-              dataOutput.name,
-              saveResult.version,
-            );
-            runLogger.info("Data saved to {path}", { path: dataPath });
-          }
+          const dataPath = unifiedDataRepo.getPath(
+            modelType,
+            evaluatedDefinition.id,
+            dataOutput.name,
+            saveResult.version,
+          );
+          runLogger.info("Data saved to {path}", { path: dataPath });
 
           // Use first JSON data output for context refresh
           if (
@@ -485,7 +480,7 @@ export class DefaultStepExecutor implements StepExecutor {
       output.markSucceeded();
       await outputRepo.save(modelType, task.methodName, output);
 
-      runLogger?.with({ summary: true }).info(
+      runLogger.with({ summary: true }).info(
         "Method {method} completed on {model}",
         { method: task.methodName, model: originalDefinition.name },
       );
@@ -511,7 +506,7 @@ export class DefaultStepExecutor implements StepExecutor {
       output.markFailed({ message: errorMessage, stack: errorStack });
       await outputRepo.save(modelType, task.methodName, output);
 
-      runLogger?.error("Method {method} failed: {error}", {
+      runLogger.error("Method {method} failed: {error}", {
         method: task.methodName,
         model: originalDefinition.name,
         error: errorMessage,

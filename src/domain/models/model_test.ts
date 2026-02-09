@@ -12,6 +12,7 @@ import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { generateDataId } from "../data/data_id.ts";
+import { getLogger } from "@logtape/logtape";
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -61,6 +62,7 @@ function createTestContext(modelType: ModelType): MethodContext {
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),
+    logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
   };

@@ -19,6 +19,7 @@ import {
   echoModel,
 } from "../src/domain/models/echo/echo_model.ts";
 import type { MethodContext } from "../src/domain/models/model.ts";
+import { getLogger } from "@logtape/logtape";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-integration-" });
@@ -106,6 +107,7 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
       repoDir,
       modelType,
       modelId: definition.id,
+      logger: getLogger(["test"]),
       dataRepository: dataRepo,
       definitionRepository: definitionRepo,
     };

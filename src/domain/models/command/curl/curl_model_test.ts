@@ -13,6 +13,7 @@ import type { MethodContext } from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
 import { generateDataId } from "../../../data/data_id.ts";
+import { getLogger } from "@logtape/logtape";
 
 // Check if we have network permission for integration tests
 const hasNetworkPermission = await (async () => {
@@ -71,6 +72,7 @@ function createTestContext(): MethodContext {
     repoDir: "/tmp",
     modelType: CURL_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
   };
