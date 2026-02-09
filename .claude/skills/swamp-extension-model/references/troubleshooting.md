@@ -25,7 +25,7 @@ Add either `dataAttributesSchema` (ephemeral) or `resourceAttributesSchema`
 ```typescript
 export const model = {
   type: "...",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   dataAttributesSchema: DataSchema,  // Add this
   methods: { ... },

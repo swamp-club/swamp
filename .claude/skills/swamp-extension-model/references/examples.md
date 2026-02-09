@@ -20,7 +20,7 @@ const DataSchema = z.object({
 
 export const model = {
   type: "myorg/text-processor",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   dataAttributesSchema: DataSchema,
   methods: {
@@ -84,7 +84,7 @@ const ResourceSchema = z.object({
 
 export const model = {
   type: "myorg/deployment",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   resourceAttributesSchema: ResourceSchema,
   methods: {
@@ -146,7 +146,7 @@ const DataSchema = z.object({ message: z.string(), timestamp: z.string() });
 
 export const model = {
   type: "myorg/echo",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   dataAttributesSchema: DataSchema,
   methods: {
@@ -191,7 +191,7 @@ const DataSchema = z.object({
 
 export const model = {
   type: "myorg/config-generator",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   dataAttributesSchema: DataSchema,
   methods: {

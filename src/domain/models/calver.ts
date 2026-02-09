@@ -28,9 +28,16 @@ export class CalVer {
 
   /**
    * Checks whether a string is a valid CalVer version.
+   *
+   * Validates both format (YYYY.MM.DD.MICRO) and semantic date
+   * ranges (month 01–12, day 01–31).
    */
   static isValid(version: string): boolean {
-    return CalVer.PATTERN.test(version);
+    if (!CalVer.PATTERN.test(version)) return false;
+    const parts = version.split(".");
+    const month = Number(parts[1]);
+    const day = Number(parts[2]);
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31;
   }
 
   /**

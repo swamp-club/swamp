@@ -62,7 +62,7 @@ const InputSchema = z.object({ message: z.string() });
 
 export const model = {
   type: "myorg/my-model",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     run: {
@@ -88,7 +88,7 @@ export const model = {
 | Field                   | Required | Description                          |
 | ----------------------- | -------- | ------------------------------------ |
 | `type`                  | Yes      | Unique identifier (`namespace/name`) |
-| `version`               | Yes      | Schema version number                |
+| `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)  |
 | `inputAttributesSchema` | Yes      | Zod schema for input validation      |
 | `methods`               | Yes      | Object of method definitions         |
 
@@ -288,7 +288,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "myorg/shell",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     run: {
@@ -324,7 +324,7 @@ const InputSchema = z.object({ query: z.string() });
 
 export const model = {
   type: "myorg/search",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     search: {
@@ -378,7 +378,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "myorg/api-resource",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     create: {
@@ -424,7 +424,7 @@ const InputSchema = z.object({
 
 export const model = {
   type: "myorg/s3-bucket",
-  version: 1,
+  version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
     create: {
