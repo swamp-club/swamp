@@ -233,3 +233,151 @@ Deno.test("RepoService.getMarker returns data after init", async () => {
     assertEquals(marker!.swampVersion, "0.1.0");
   });
 });
+
+Deno.test("RepoService.init creates settings.local.json", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath);
+
+    assertEquals(result.claudeSettingsCreated, true);
+
+    // Check settings.local.json exists and has expected content
+    const settingsPath = join(tempDir, ".claude", "settings.local.json");
+    const content = await Deno.readTextFile(settingsPath);
+    const settings = JSON.parse(content);
+
+    assertEquals(Array.isArray(settings.permissions?.allow), true);
+    assertStringIncludes(
+      JSON.stringify(settings.permissions.allow),
+      "swamp model",
+    );
+  });
+});
+
+Deno.test("RepoService.init does not overwrite existing settings.local.json", async () => {
+  await withTempDir(async (tempDir) => {
+    // Create existing settings
+    const claudeDir = join(tempDir, ".claude");
+    await Deno.mkdir(claudeDir, { recursive: true });
+    const settingsPath = join(claudeDir, "settings.local.json");
+    const existingSettings = {
+      permissions: { allow: ["Bash(custom command:*)"] },
+    };
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify(existingSettings, null, 2),
+    );
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath);
+
+    assertEquals(result.claudeSettingsCreated, false);
+
+    // Check content is unchanged
+    const content = await Deno.readTextFile(settingsPath);
+    const settings = JSON.parse(content);
+    assertEquals(settings.permissions.allow, ["Bash(custom command:*)"]);
+  });
+});
+
+Deno.test("RepoService.upgrade merges new permissions into existing settings", async () => {
+  await withTempDir(async (tempDir) => {
+    // Init first
+    const oldService = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await oldService.init(repoPath);
+
+    // Modify settings to add custom permission and remove some default ones
+    const settingsPath = join(tempDir, ".claude", "settings.local.json");
+    const customSettings = {
+      permissions: {
+        allow: ["Bash(custom command:*)", "Bash(swamp model search:*)"],
+      },
+    };
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify(customSettings, null, 2),
+    );
+
+    // Upgrade
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.claudeSettingsUpdated, true);
+
+    // Check that custom permission is preserved and new ones are added
+    const content = await Deno.readTextFile(settingsPath);
+    const settings = JSON.parse(content);
+
+    // Custom permission preserved
+    assertStringIncludes(
+      JSON.stringify(settings.permissions.allow),
+      "Bash(custom command:*)",
+    );
+    // Default permissions added
+    assertStringIncludes(
+      JSON.stringify(settings.permissions.allow),
+      "Bash(swamp vault:*)",
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade creates settings if they do not exist", async () => {
+  await withTempDir(async (tempDir) => {
+    // Init first
+    const oldService = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await oldService.init(repoPath);
+
+    // Remove settings file
+    const settingsPath = join(tempDir, ".claude", "settings.local.json");
+    await Deno.remove(settingsPath);
+
+    // Upgrade
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.claudeSettingsUpdated, true);
+
+    // Check settings created
+    const content = await Deno.readTextFile(settingsPath);
+    const settings = JSON.parse(content);
+    assertEquals(Array.isArray(settings.permissions?.allow), true);
+  });
+});
+
+Deno.test("RepoService.upgrade returns false if settings unchanged", async () => {
+  await withTempDir(async (tempDir) => {
+    // Init first
+    const oldService = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await oldService.init(repoPath);
+
+    // Upgrade immediately (settings already have all permissions)
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.claudeSettingsUpdated, false);
+  });
+});
+
+Deno.test("RepoService.init generates CLAUDE.md with skills section", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const content = await Deno.readTextFile(claudeMdPath);
+
+    assertStringIncludes(content, "## Skills");
+    assertStringIncludes(content, "swamp-model");
+    assertStringIncludes(content, "swamp-workflow");
+    assertStringIncludes(content, "plan mode");
+  });
+});
