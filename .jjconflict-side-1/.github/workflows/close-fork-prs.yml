@@ -1,0 +1,40 @@
+name: Close Fork PRs
+
+on:
+  pull_request_target:
+    types: [opened]
+
+jobs:
+  close-fork-pr:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.fork == true
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Close PR and comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `Thank you for your interest in contributing to this project!
+
+            Unfortunately, we are not accepting pull requests from forks at this time. This repository uses automated workflows that require write access to the repository, which is not available for fork-based PRs.
+
+            If you'd like to contribute, please reach out to the maintainers to discuss alternative approaches.
+
+            This PR has been automatically closed.`
+            });
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              state: 'closed'
+            });
+
+            console.log(`Closed fork PR #${prNumber}`);
