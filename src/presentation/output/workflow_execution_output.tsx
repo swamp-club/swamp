@@ -26,6 +26,7 @@ import {
 export interface WorkflowExecutionInput {
   workflow: WorkflowData;
   workflowYaml: string;
+  repoDir: string;
 }
 
 /**
@@ -173,6 +174,7 @@ async function renderInteractiveExecution(
     <WorkflowExecutionUI
       workflow={input.workflow}
       workflowYaml={input.workflowYaml}
+      repoDir={input.repoDir}
       onExit={() => {
         // Resolved when user presses 'q' - finalRunData will be set
       }}

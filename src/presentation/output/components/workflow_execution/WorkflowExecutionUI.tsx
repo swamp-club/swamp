@@ -58,6 +58,7 @@ function getPendingDependencies(
 interface WorkflowExecutionUIProps {
   workflow: WorkflowData;
   workflowYaml: string;
+  repoDir: string;
   onExit: () => void;
   registerDispatch: (dispatch: React.Dispatch<ExecutionAction>) => void;
 }
@@ -66,7 +67,7 @@ interface WorkflowExecutionUIProps {
  * Main interactive workflow execution UI component.
  */
 export function WorkflowExecutionUI(
-  { workflow, workflowYaml, onExit, registerDispatch }:
+  { workflow, workflowYaml, repoDir, onExit, registerDispatch }:
     WorkflowExecutionUIProps,
 ): React.ReactElement {
   const { exit } = useApp();
@@ -78,7 +79,7 @@ export function WorkflowExecutionUI(
   );
 
   // Create log service instance
-  const [logService] = React.useState(() => new LogStreamService());
+  const [logService] = React.useState(() => new LogStreamService(repoDir));
 
   // Register dispatch with parent for event handling
   useEffect(() => {

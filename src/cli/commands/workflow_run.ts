@@ -269,7 +269,7 @@ export const workflowRunCommand = new Command()
         };
 
         const data = await renderWorkflowExecution(
-          { workflow: cleanData, workflowYaml },
+          { workflow: cleanData, workflowYaml, repoDir },
           executeWorkflow,
           ctx.outputMode,
         );
