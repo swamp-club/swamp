@@ -104,7 +104,7 @@ export function buildJournalctlArgs(
  */
 async function readLogs(
   definition: Definition,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   // Validate definition attributes
   const attrs = JournalctlInputAttributesSchema.parse(definition.attributes);
@@ -171,29 +171,19 @@ async function readLogs(
     throw new Error(`journalctl failed: ${stderr}`);
   }
 
-  const definitionHash = await definition.computeHash();
+  const writer = context.createDataWriter!({
+    name: `${definition.name}-logs`,
+    specType: DataSpecType.create("log"),
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    streaming: true,
+    tags: { type: "log" },
+  });
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-logs`,
-        specType: DataSpecType.create("log"),
-        content: new TextEncoder().encode(logLines.join("\n")),
-        metadata: {
-          contentType: "text/plain",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: true,
-          tags: { type: "log" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "read",
-          },
-        },
-      },
-    ],
-  };
+  const handle = await writer.writeText(logLines.join("\n"));
+
+  return { dataHandles: [handle] };
 }
 
 /**

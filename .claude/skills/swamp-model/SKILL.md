@@ -96,7 +96,6 @@ swamp type describe swamp/echo --json
 **Key fields:**
 
 - `inputAttributesSchema` - JSON Schema for input YAML `attributes` section
-- `resourceAttributesSchema` - JSON Schema for resulting resource
 - `methods` - Available operations with their input schemas
 
 ## Create Model Inputs

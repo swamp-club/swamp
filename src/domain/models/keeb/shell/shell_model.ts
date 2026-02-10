@@ -193,8 +193,6 @@ async function executeCommand(
   const endTime = Date.now();
   const durationMs = endTime - startTime;
 
-  const definitionHash = await definition.computeHash();
-
   // Create data attributes for the result
   const resultAttributes = {
     exitCode,
@@ -215,44 +213,31 @@ async function executeCommand(
   }
   const outputLogContent = outputLogParts.join("\n");
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-result`,
-        specType: DataSpecType.create("result"),
-        content: new TextEncoder().encode(JSON.stringify(resultAttributes)),
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "data" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "execute",
-          },
-        },
-      },
-      {
-        name: `${definition.name}-output`,
-        specType: DataSpecType.create("log"),
-        content: new TextEncoder().encode(outputLogContent),
-        metadata: {
-          contentType: "text/plain",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: true,
-          tags: { type: "log" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "execute",
-          },
-        },
-      },
-    ],
-  };
+  const resultWriter = context.createDataWriter!({
+    name: `${definition.name}-result`,
+    specType: DataSpecType.create("result"),
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "data" },
+  });
+
+  const logWriter = context.createDataWriter!({
+    name: `${definition.name}-output`,
+    specType: DataSpecType.create("log"),
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    streaming: true,
+    tags: { type: "log" },
+  });
+
+  const resultHandle = await resultWriter.writeText(
+    JSON.stringify(resultAttributes),
+  );
+  const logHandle = await logWriter.writeText(outputLogContent);
+
+  return { dataHandles: [resultHandle, logHandle] };
 }
 
 /**

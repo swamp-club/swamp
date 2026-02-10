@@ -3,16 +3,107 @@ import { dirname, join } from "@std/path";
 import { UserModelLoader } from "./user_model_loader.ts";
 import { modelRegistry } from "./model.ts";
 import { Definition } from "../definitions/definition.ts";
-import type { MethodContext } from "./model.ts";
+import type {
+  DataHandle,
+  DataWriter,
+  DataWriterFactory,
+  DataWriterOptions,
+  MethodContext,
+} from "./model.ts";
 import type { ModelType } from "./model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { generateDataId } from "../data/data_id.ts";
+import { type DataId, generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import { getLogger } from "@logtape/logtape";
 
 // Import models barrel to ensure swamp/echo is registered for duplicate test
 import "./models.ts";
+
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: DataWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: options.specType,
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: { ...options.tags },
+      metadata: {
+        contentType: options.contentType,
+        lifetime: options.lifetime,
+        garbageCollection: options.garbageCollection,
+        streaming: options.streaming ?? false,
+        tags: { ...options.tags },
+        ownerDefinition: options.ownerDefinition ?? {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -34,6 +125,10 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -57,15 +152,20 @@ function createMockDefinitionRepo(): DefinitionRepository {
 /**
  * Creates a test MethodContext with mocked repositories.
  */
-function createTestContext(modelType: ModelType): MethodContext {
-  return {
+function createTestContext(
+  modelType: ModelType,
+): { context: MethodContext; getResults: () => MockWriterResult[] } {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
   };
+  return { context, getResults };
 }
 
 // Helper to create a temporary directory with model files.
@@ -88,7 +188,7 @@ async function withTempModels(
   }
 }
 
-Deno.test("UserModelLoader loads valid model with dataOutputs", async () => {
+Deno.test("UserModelLoader loads valid model with dataHandles", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -103,16 +203,20 @@ export const model = {
   methods: {
     process: {
       description: "Process the message",
-      execute: async (definition, _context) => {
-        return {
-          dataOutputs: [{
-            name: definition.name + "-data",
-            content: JSON.stringify({
-              message: definition.attributes.message,
-              processedAt: new Date().toISOString(),
-            }),
-          }],
-        };
+      execute: async (definition, context) => {
+        const writer = context.createDataWriter({
+          name: definition.name + "-data",
+          specType: { value: "data", _brand: "DataSpecType" },
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          message: definition.attributes.message,
+          processedAt: new Date().toISOString(),
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -188,12 +292,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async (definition) => ({
-        dataOutputs: [{
-          name: definition.name + "-result",
-          content: JSON.stringify({ result: "ok" }),
-        }],
-      }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -227,7 +326,7 @@ export const model = {
   methods: {
     write: {
       description: "Write message",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -242,7 +341,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -263,8 +362,8 @@ export const model = {
   );
 });
 
-Deno.test("UserModelLoader converts plain dataOutputs to proper DataOutput format", async () => {
-  const typeId = `@user/convert-data-${Date.now()}`;
+Deno.test("UserModelLoader passes through dataHandles from user execute", async () => {
+  const typeId = `@user/passthrough-handles-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -279,24 +378,28 @@ export const model = {
   methods: {
     create: {
       description: "Create a resource",
-      execute: async (definition, _context) => {
-        // Return plain objects - the loader should add proper metadata
-        return {
-          dataOutputs: [{
-            name: definition.name + "-data",
-            content: JSON.stringify({
-              id: "resource-123",
-              status: "created",
-            }),
-          }],
-        };
+      execute: async (definition, context) => {
+        // Use context.createDataWriter to write data
+        const writer = context.createDataWriter({
+          name: definition.name + "-data",
+          specType: { value: "data", _brand: "DataSpecType" },
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          id: "resource-123",
+          status: "created",
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
 };
 `;
 
-  await withTempModels({ "convert_data.ts": modelCode }, async (dir) => {
+  await withTempModels({ "passthrough_data.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
@@ -311,27 +414,23 @@ export const model = {
       attributes: { name: "test" },
     });
 
-    const context = createTestContext(modelDef!.type);
+    const { context, getResults } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.create.execute(
       definition,
       context,
     );
 
-    // Verify the dataOutputs have proper structure
-    assertEquals(methodResult.dataOutputs !== undefined, true);
-    assertEquals(methodResult.dataOutputs!.length, 1);
+    // Verify the dataHandles are passed through
+    assertEquals(methodResult.dataHandles !== undefined, true);
+    assertEquals(methodResult.dataHandles!.length, 1);
 
-    const dataOutput = methodResult.dataOutputs![0];
-    assertEquals(dataOutput.name, "test-input-data");
-    assertEquals(dataOutput.metadata !== undefined, true);
-    assertEquals(dataOutput.metadata.contentType, "application/octet-stream");
-    assertEquals(dataOutput.metadata.lifetime, "infinite");
-    assertEquals(dataOutput.metadata.ownerDefinition !== undefined, true);
-    assertEquals(dataOutput.metadata.ownerDefinition.ownerType, "model-method");
-    assertEquals(dataOutput.metadata.ownerDefinition.ownerRef, "create");
+    const handle = methodResult.dataHandles![0];
+    assertEquals(handle.name, "test-input-data");
 
-    // Verify the content
-    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
+    // Verify content was written via mock writer
+    const results = getResults();
+    assertEquals(results.length, 1);
+    const content = JSON.parse(new TextDecoder().decode(results[0].content));
     assertEquals(content.id, "resource-123");
     assertEquals(content.status, "created");
   });
@@ -354,14 +453,7 @@ export const model = {
     run: {
       description: "Run without own schema",
       // No inputAttributesSchema here - should inherit from model
-      execute: async (definition, _context) => {
-        return {
-          dataOutputs: [{
-            name: definition.name + "-result",
-            content: JSON.stringify({ result: "processed" }),
-          }],
-        };
-      },
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -394,7 +486,7 @@ export const model = {
   methods: {
     run: {
       description: "Run A",
-      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-a", content: JSON.stringify({ a: "a" }) }] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -409,7 +501,7 @@ export const model = {
   methods: {
     run: {
       description: "Run B",
-      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-b", content: JSON.stringify({ b: "b" }) }] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -430,8 +522,8 @@ export const model = {
   );
 });
 
-Deno.test("UserModelLoader converts resource return format to dataOutputs", async () => {
-  const typeId = `@user/resource-format-${Date.now()}`;
+Deno.test("UserModelLoader user method returns empty dataHandles", async () => {
+  const typeId = `@user/empty-handles-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -445,24 +537,16 @@ export const model = {
   inputAttributesSchema: InputSchema,
   methods: {
     execute: {
-      description: "Test method that returns resource format",
-      execute: async (definition, _context) => {
-        return {
-          resource: {
-            id: definition.id,
-            attributes: {
-              testOutput: "Processed: " + definition.attributes.testInput,
-              executedAt: "2024-01-01T00:00:00Z",
-            },
-          },
-        };
+      description: "Test method that returns empty dataHandles",
+      execute: async (_definition, _context) => {
+        return { dataHandles: [] };
       },
     },
   },
 };
 `;
 
-  await withTempModels({ "resource_format.ts": modelCode }, async (dir) => {
+  await withTempModels({ "empty_handles.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
@@ -476,30 +560,20 @@ export const model = {
       attributes: { testInput: "Hello World" },
     });
 
-    const context = createTestContext(modelDef!.type);
+    const { context } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.execute.execute(
       definition,
       context,
     );
 
-    // Verify resource was converted to dataOutputs
-    assertEquals(methodResult.dataOutputs !== undefined, true);
-    assertEquals(methodResult.dataOutputs!.length, 1);
-
-    const dataOutput = methodResult.dataOutputs![0];
-    assertEquals(dataOutput.name, "resource");
-    assertEquals(dataOutput.metadata.contentType, "application/json");
-    assertEquals(dataOutput.metadata.tags.type, "resource");
-
-    // Verify the content contains the resource attributes
-    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
-    assertEquals(content.testOutput, "Processed: Hello World");
-    assertEquals(content.executedAt, "2024-01-01T00:00:00Z");
+    // Verify empty dataHandles are passed through
+    assertEquals(methodResult.dataHandles !== undefined, true);
+    assertEquals(methodResult.dataHandles!.length, 0);
   });
 });
 
-Deno.test("UserModelLoader converts data return format to dataOutputs", async () => {
-  const typeId = `@user/data-format-${Date.now()}`;
+Deno.test("UserModelLoader user method without dataHandles returns undefined", async () => {
+  const typeId = `@user/no-handles-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -513,25 +587,16 @@ export const model = {
   inputAttributesSchema: InputSchema,
   methods: {
     fetch: {
-      description: "Test method that returns data format",
-      execute: async (definition, _context) => {
-        return {
-          data: {
-            attributes: {
-              result: "Query result for: " + definition.attributes.query,
-              count: 42,
-            },
-            name: "query-result",
-            tags: { source: "test" },
-          },
-        };
+      description: "Test method that returns no dataHandles",
+      execute: async (_definition, _context) => {
+        return {};
       },
     },
   },
 };
 `;
 
-  await withTempModels({ "data_format.ts": modelCode }, async (dir) => {
+  await withTempModels({ "no_handles.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
@@ -545,25 +610,14 @@ export const model = {
       attributes: { query: "SELECT *" },
     });
 
-    const context = createTestContext(modelDef!.type);
+    const { context } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.fetch.execute(
       definition,
       context,
     );
 
-    // Verify data was converted to dataOutputs
-    assertEquals(methodResult.dataOutputs !== undefined, true);
-    assertEquals(methodResult.dataOutputs!.length, 1);
-
-    const dataOutput = methodResult.dataOutputs![0];
-    assertEquals(dataOutput.name, "query-result");
-    assertEquals(dataOutput.metadata.contentType, "application/json");
-    assertEquals(dataOutput.metadata.tags.source, "test");
-
-    // Verify the content contains the data attributes
-    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
-    assertEquals(content.result, "Query result for: SELECT *");
-    assertEquals(content.count, 42);
+    // Verify dataHandles is undefined when not provided
+    assertEquals(methodResult.dataHandles, undefined);
   });
 });
 
@@ -580,7 +634,7 @@ export const model = {
   methods: {
     run: {
       description: "Run A",
-      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-a", content: JSON.stringify({ a: "a" }) }] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -594,7 +648,7 @@ export const model = {
   methods: {
     run: {
       description: "Run B",
-      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-b", content: JSON.stringify({ b: "b" }) }] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -624,7 +678,7 @@ export const model = {
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
   methods: {
-    run: { description: "Run", execute: async () => ({ dataOutputs: [] }) },
+    run: { description: "Run", execute: async () => ({ dataHandles: [] }) },
   },
 };
 `;
@@ -652,7 +706,7 @@ export const model = {
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
   methods: {
-    run: { description: "Run", execute: async () => ({ dataOutputs: [] }) },
+    run: { description: "Run", execute: async () => ({ dataHandles: [] }) },
   },
 };
 `;
@@ -685,7 +739,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -696,12 +750,7 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit the echo message",
-      execute: async (definition, _context) => ({
-        data: {
-          attributes: { audited: true, name: definition.name },
-          name: "audit-result",
-        },
-      }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -738,7 +787,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -749,11 +798,11 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit",
-      execute: async () => ({ data: { attributes: { audited: true } } }),
+      execute: async () => ({ dataHandles: [] }),
     },
     verify: {
       description: "Verify",
-      execute: async () => ({ data: { attributes: { verified: true } } }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -784,7 +833,7 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -812,7 +861,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -823,7 +872,7 @@ export const extension = {
   methods: [{
     write: {
       description: "Duplicate write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -854,7 +903,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -867,13 +916,13 @@ export const extension = {
     {
       audit: {
         description: "Audit v1",
-        execute: async () => ({ dataOutputs: [] }),
+        execute: async () => ({ dataHandles: [] }),
       },
     },
     {
       audit: {
         description: "Audit v2",
-        execute: async () => ({ dataOutputs: [] }),
+        execute: async () => ({ dataHandles: [] }),
       },
     },
   ],
@@ -908,7 +957,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -919,7 +968,7 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit without own schema",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -951,9 +1000,7 @@ export const extension = {
   methods: [{
     audit_ext_test_${Date.now()}: {
       description: "Audit the echo",
-      execute: async (definition, _context) => ({
-        data: { attributes: { audited: true, name: definition.name } },
-      }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -984,7 +1031,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -995,7 +1042,7 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit",
-      execute: async () => ({ data: { attributes: { audited: true } } }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -1006,7 +1053,7 @@ export const extension = {
   methods: [{
     verify: {
       description: "Verify",
-      execute: async () => ({ data: { attributes: { verified: true } } }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -1043,7 +1090,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1054,7 +1101,7 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -1078,7 +1125,7 @@ export const extension = {
   );
 });
 
-Deno.test("UserModelLoader extension method execute produces proper DataOutput", async () => {
+Deno.test("UserModelLoader extension method execute passes through dataHandles", async () => {
   const ts = Date.now();
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -1089,7 +1136,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1100,12 +1147,21 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit",
-      execute: async (definition, _context) => ({
-        data: {
-          attributes: { audited: true, msg: definition.attributes.message },
+      execute: async (definition, context) => {
+        const writer = context.createDataWriter({
           name: "audit-result",
-        },
-      }),
+          specType: { value: "data", _brand: "DataSpecType" },
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          audited: true,
+          msg: definition.attributes.message,
+        }));
+        return { dataHandles: [handle] };
+      },
     },
   }],
 };
@@ -1124,23 +1180,24 @@ export const extension = {
         name: "test-audit",
         attributes: { message: "hello" },
       });
-      const context = createTestContext(modelDef!.type);
+      const { context, getResults } = createTestContext(modelDef!.type);
 
       const methodResult = await modelDef!.methods.audit.execute(
         definition,
         context,
       );
 
-      assertEquals(methodResult.dataOutputs !== undefined, true);
-      assertEquals(methodResult.dataOutputs!.length, 1);
+      assertEquals(methodResult.dataHandles !== undefined, true);
+      assertEquals(methodResult.dataHandles!.length, 1);
 
-      const dataOutput = methodResult.dataOutputs![0];
-      assertEquals(dataOutput.name, "audit-result");
-      assertEquals(dataOutput.metadata.contentType, "application/json");
-      assertEquals(dataOutput.metadata.ownerDefinition.ownerRef, "audit");
+      const handle = methodResult.dataHandles![0];
+      assertEquals(handle.name, "audit-result");
 
+      // Verify content written via mock writer
+      const results = getResults();
+      assertEquals(results.length, 1);
       const content = JSON.parse(
-        new TextDecoder().decode(dataOutput.content),
+        new TextDecoder().decode(results[0].content),
       );
       assertEquals(content.audited, true);
       assertEquals(content.msg, "hello");
@@ -1162,7 +1219,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1177,21 +1234,11 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    // Verify default "data" and "resource" spec types are present
-    assertEquals(Object.keys(modelDef!.dataOutputSpecs).length, 2);
+    // Verify default "data" spec type is present
     assertEquals(modelDef!.dataOutputSpecs["data"] !== undefined, true);
-    assertEquals(modelDef!.dataOutputSpecs["resource"] !== undefined, true);
     assertEquals(modelDef!.dataOutputSpecs["data"].specType.value, "data");
     assertEquals(
-      modelDef!.dataOutputSpecs["resource"].specType.value,
-      "resource",
-    );
-    assertEquals(
       modelDef!.dataOutputSpecs["data"].contentType,
-      "application/json",
-    );
-    assertEquals(
-      modelDef!.dataOutputSpecs["resource"].contentType,
       "application/json",
     );
   });
@@ -1221,7 +1268,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1236,8 +1283,7 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    // User "data" spec overrides default, "resource" default preserved, "metrics" added
-    assertEquals(Object.keys(modelDef!.dataOutputSpecs).length, 3);
+    // User "data" spec overrides default, "metrics" added
     assertEquals(
       modelDef!.dataOutputSpecs["data"].description,
       "Custom data spec",
@@ -1245,10 +1291,6 @@ export const model = {
     assertEquals(
       modelDef!.dataOutputSpecs["data"].contentType,
       "text/plain",
-    );
-    assertEquals(
-      modelDef!.dataOutputSpecs["resource"].specType.value,
-      "resource",
     );
     assertEquals(
       modelDef!.dataOutputSpecs["metrics"].specType.value,
@@ -1270,7 +1312,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1297,7 +1339,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1324,7 +1366,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1353,7 +1395,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1383,7 +1425,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1409,7 +1451,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1436,7 +1478,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1463,7 +1505,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1490,7 +1532,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
