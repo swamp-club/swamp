@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { type ModelGetData, renderModelGet } from "./model_get_output.ts";
 
@@ -73,4 +74,39 @@ Deno.test("renderModelGet JSON includes tags and attributes", () => {
 
 Deno.test("renderModelGet with log mode does not throw", () => {
   renderModelGet(testDataWithoutResource, "log");
+});
+
+Deno.test("renderModelGet log mode shows model details", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelGet(testDataWithoutResource, "log");
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Name:");
+    assertStringIncludes(combined, "test-echo");
+    assertStringIncludes(combined, "(swamp/echo)");
+    assertStringIncludes(combined, "Tags:");
+    assertStringIncludes(combined, "env:");
+    assertStringIncludes(combined, "Attributes:");
+    assertStringIncludes(combined, "message:");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderModelGet log mode shows resource when present", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderModelGet(testDataWithResource, "log");
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Resource:");
+    assertStringIncludes(combined, "Created:");
+  } finally {
+    console.log = originalLog;
+  }
 });

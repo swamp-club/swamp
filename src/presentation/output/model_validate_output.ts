@@ -1,4 +1,5 @@
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { bold, cyan, dim, green, red } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "./output.ts";
 
 export interface ValidationItemData {
@@ -22,6 +23,31 @@ export interface ModelValidateAllData {
   passed: boolean;
 }
 
+const checkmark = "\u2713";
+const cross = "\u2717";
+const arrow = "\u2192";
+
+function formatValidationLines(validations: ValidationItemData[]): string[] {
+  const lines: string[] = [];
+  for (const v of validations) {
+    if (v.passed) {
+      lines.push(`  ${green(checkmark)} ${v.name}`);
+    } else {
+      lines.push(`  ${red(cross)} ${v.name}`);
+      if (v.error) {
+        lines.push(`    ${red(arrow)} ${v.error}`);
+      }
+    }
+  }
+  return lines;
+}
+
+function formatResult(passed: boolean, label: string): string {
+  return passed
+    ? `${bold(cyan(`${label}:`))} ${green("PASSED")}`
+    : `${bold(cyan(`${label}:`))} ${red("FAILED")}`;
+}
+
 export function renderModelValidate(
   data: ModelValidateData,
   mode: OutputMode,
@@ -29,39 +55,23 @@ export function renderModelValidate(
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {
-    const logger = getSwampLogger(["model", "validate"]);
-    const checkmark = "\u2713";
-    const cross = "\u2717";
-    const arrow = "\u2192";
-
-    logger.info("Validating model: {modelName} ({type})", {
-      modelName: data.modelName,
-      type: data.type,
-    });
-
-    for (const v of data.validations) {
-      const icon = v.passed ? checkmark : cross;
-      if (v.passed) {
-        logger.info("  {icon} {name}", { icon, name: v.name });
-      } else {
-        logger.warn("  {icon} {name}", { icon, name: v.name });
-        if (v.error) {
-          logger.warn("    {arrow} {error}", { arrow, error: v.error });
-        }
-      }
-    }
+    const lines: string[] = [];
+    lines.push(
+      `${bold(cyan("Validating:"))} ${bold(data.modelName)} ${
+        dim(`(${data.type})`)
+      }`,
+    );
+    lines.push(...formatValidationLines(data.validations));
 
     const passedCount = data.validations.filter((v) => v.passed).length;
     const totalCount = data.validations.length;
-    logger.info("Summary: {passedCount}/{totalCount} validations passed", {
-      passedCount,
-      totalCount,
-    });
-    if (data.passed) {
-      logger.info("Result: PASSED");
-    } else {
-      logger.warn("Result: FAILED");
-    }
+    lines.push(
+      `${
+        bold(cyan("Summary:"))
+      } ${passedCount}/${totalCount} validations passed`,
+    );
+    lines.push(formatResult(data.passed, "Result"));
+    writeOutput(lines.join("\n"));
   }
 }
 
@@ -83,46 +93,23 @@ export function renderModelValidateAll(
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {
-    const logger = getSwampLogger(["model", "validate"]);
-    const checkmark = "\u2713";
-    const cross = "\u2717";
-    const arrow = "\u2192";
-
-    logger.info("Validating all models...");
+    const lines: string[] = [];
+    lines.push(bold(cyan("Validating all models...")));
 
     for (const model of models) {
-      logger.info("{modelName} ({type})", {
-        modelName: model.modelName,
-        type: model.type,
-      });
-
-      for (const v of model.validations) {
-        const icon = v.passed ? checkmark : cross;
-        if (v.passed) {
-          logger.info("  {icon} {name}", { icon, name: v.name });
-        } else {
-          logger.warn("  {icon} {name}", { icon, name: v.name });
-          if (v.error) {
-            logger.warn("    {arrow} {error}", { arrow, error: v.error });
-          }
-        }
-      }
-
-      if (model.passed) {
-        logger.info("Result: PASSED");
-      } else {
-        logger.warn("Result: FAILED");
-      }
+      lines.push("");
+      lines.push(
+        `${bold(cyan(model.modelName))} ${dim(`(${model.type})`)}`,
+      );
+      lines.push(...formatValidationLines(model.validations));
+      lines.push(formatResult(model.passed, "Result"));
     }
 
-    logger.info("Summary: {totalPassed}/{total} models passed", {
-      totalPassed,
-      total: models.length,
-    });
-    if (passed) {
-      logger.info("Overall: PASSED");
-    } else {
-      logger.warn("Overall: FAILED");
-    }
+    lines.push("");
+    lines.push(
+      `${bold(cyan("Summary:"))} ${totalPassed}/${models.length} models passed`,
+    );
+    lines.push(formatResult(passed, "Overall"));
+    writeOutput(lines.join("\n"));
   }
 }

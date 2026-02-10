@@ -1,4 +1,11 @@
+import { bold, cyan, dim } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "./output.ts";
+import {
+  formatMethodLines,
+  formatSchemaAttributes,
+  type MethodDescribeData,
+} from "./type_describe_output.ts";
 
 /**
  * Data structure for resource information.
@@ -20,6 +27,21 @@ export interface ModelGetData {
   tags: Record<string, string>;
   attributes: Record<string, unknown>;
   resource?: ResourceData;
+  typeVersion?: string;
+  inputAttributesSchema?: object;
+  methods?: MethodDescribeData[];
+}
+
+/**
+ * Formats a record as indented key: value lines.
+ */
+function formatRecord(
+  record: Record<string, unknown>,
+  indent: string,
+): string[] {
+  return Object.entries(record).map(([key, value]) =>
+    `${indent}${key}: ${dim(String(value))}`
+  );
 }
 
 /**
@@ -29,6 +51,63 @@ export function renderModelGet(data: ModelGetData, mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {
-    console.log(JSON.stringify(data, null, 2));
+    const lines = [
+      `${bold(cyan("Name:"))} ${bold(data.name)} ${dim(`(${data.type})`)}`,
+      `${bold(cyan("ID:"))} ${dim(data.id)}`,
+      `${bold(cyan("Version:"))} ${data.version}`,
+    ];
+
+    const tagEntries = Object.entries(data.tags);
+    if (tagEntries.length > 0) {
+      lines.push("");
+      lines.push(bold(cyan("Tags:")));
+      lines.push(...formatRecord(data.tags, "  "));
+    }
+
+    const attrEntries = Object.entries(data.attributes);
+    if (attrEntries.length > 0) {
+      lines.push("");
+      lines.push(bold(cyan("Attributes:")));
+      lines.push(...formatRecord(data.attributes, "  "));
+    }
+
+    if (data.resource) {
+      lines.push("");
+      lines.push(bold(cyan("Resource:")));
+      lines.push(`  ${bold(cyan("ID:"))} ${dim(data.resource.id)}`);
+      lines.push(
+        `  ${bold(cyan("Created:"))} ${data.resource.createdAt}`,
+      );
+      const resAttrs = Object.entries(data.resource.attributes);
+      if (resAttrs.length > 0) {
+        lines.push(`  ${cyan("Attributes:")}`);
+        lines.push(...formatRecord(data.resource.attributes, "    "));
+      }
+    }
+
+    if (data.typeVersion) {
+      lines.push("");
+      lines.push(bold(cyan("Type Version:")) + ` ${data.typeVersion}`);
+    }
+
+    if (data.inputAttributesSchema) {
+      const schemaAttrs = formatSchemaAttributes(
+        data.inputAttributesSchema,
+        "  ",
+      );
+      if (schemaAttrs.length > 0) {
+        lines.push("");
+        lines.push(bold(cyan("Input Schema:")));
+        lines.push(...schemaAttrs);
+      }
+    }
+
+    if (data.methods && data.methods.length > 0) {
+      lines.push("");
+      lines.push(bold(cyan("Methods:")));
+      lines.push(...formatMethodLines(data.methods));
+    }
+
+    writeOutput(lines.join("\n"));
   }
 }
