@@ -1,8 +1,9 @@
 // deno-lint-ignore verbatim-module-syntax
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
+import { useScrollableList } from "./hooks/mod.ts";
 
 /**
  * Represents a single type search result item.
@@ -85,8 +86,6 @@ export function TypeSearchUI(
   const { exit } = useApp();
 
   const [query, setQuery] = useState(initialQuery);
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const [scrollOffset, setScrollOffset] = useState(0);
 
   // Create fzf instance for fuzzy searching (memoized to avoid recreation on every render)
   const fzf = useMemo(
@@ -99,24 +98,14 @@ export function TypeSearchUI(
 
   // Get filtered results
   const results: FzfResultItem<TypeSearchItem>[] = fzf.find(query);
-  const maxVisible = 10;
 
-  // Adjust scroll offset to keep selected item visible
-  useEffect(() => {
-    if (selectedIndex < scrollOffset) {
-      setScrollOffset(selectedIndex);
-    } else if (selectedIndex >= scrollOffset + maxVisible) {
-      setScrollOffset(selectedIndex - maxVisible + 1);
-    }
-  }, [selectedIndex, scrollOffset]);
-
-  const visibleResults = results.slice(scrollOffset, scrollOffset + maxVisible);
-
-  // Reset selection and scroll when query changes
-  useEffect(() => {
-    setSelectedIndex(0);
-    setScrollOffset(0);
-  }, [query]);
+  // Use shared scrollable list hook
+  const {
+    selectedIndex,
+    setSelectedIndex,
+    visibleItems: visibleResults,
+    scrollMetrics,
+  } = useScrollableList(results, 10, [query]);
 
   const handleSelect = useCallback(() => {
     if (results.length > 0 && selectedIndex < results.length) {
@@ -183,18 +172,19 @@ export function TypeSearchUI(
 
       {/* Results list */}
       <Box flexDirection="column" marginTop={1}>
-        {scrollOffset > 0 && <Text dimColor>... {scrollOffset} more above
-        </Text>}
+        {scrollMetrics.hasMoreAbove && (
+          <Text dimColor>... {scrollMetrics.moreAboveCount} more above</Text>
+        )}
         {visibleResults.map((result, index) => (
           <TypeSearchResultItem
             key={result.item.normalized}
             item={result.item}
-            isSelected={index + scrollOffset === selectedIndex}
+            isSelected={index + scrollMetrics.moreAboveCount === selectedIndex}
           />
         ))}
-        {scrollOffset + maxVisible < results.length && (
+        {scrollMetrics.hasMoreBelow && (
           <Text dimColor>
-            ... {results.length - scrollOffset - maxVisible} more below
+            ... {scrollMetrics.moreBelowCount} more below
           </Text>
         )}
         {results.length === 0 && (
