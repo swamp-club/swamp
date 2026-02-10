@@ -178,10 +178,14 @@ export class LogStreamService {
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           pollCount++;
         } else {
-          // Step completed — do a few extra reads to catch late-flushing writes
-          for (let i = 0; i < 3; i++) {
+          // Step completed — keep reading until file size stabilises
+          // (no new data for 3 consecutive polls ≈ 600ms of silence).
+          let stableCount = 0;
+          while (stableCount < 3) {
+            const prevOffset = byteOffset;
             await new Promise((resolve) => setTimeout(resolve, 200));
             yield* readNewContent();
+            stableCount = byteOffset === prevOffset ? stableCount + 1 : 0;
           }
 
           // Flush remaining partial line
