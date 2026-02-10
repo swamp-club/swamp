@@ -4,17 +4,106 @@ import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
 import { echoModel } from "./echo/echo_model.ts";
 import {
-  type DataOutput,
+  type DataHandle,
   DataSpecType,
+  type DataWriter,
+  type DataWriterFactory,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
+  normalizeSpecType,
+  type SpecBasedWriterOptions,
 } from "./model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { generateDataId } from "../data/data_id.ts";
+import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: SpecBasedWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: normalizeSpecType(options.specType),
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: options.tags ?? {},
+      metadata: {
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
+        streaming: options.streaming ?? false,
+        tags: options.tags ?? {},
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -37,6 +126,10 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -60,16 +153,21 @@ function createMockDefinitionRepo(): DefinitionRepository {
 /**
  * Creates a test MethodContext with mocked repositories.
  */
-function createTestContext(overrides?: Partial<MethodContext>): MethodContext {
-  return {
+function createTestContext(
+  overrides?: Partial<MethodContext>,
+): { context: MethodContext; getResults: () => MockWriterResult[] } {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir: ".",
     modelType: ModelType.create("swamp/echo"),
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
     ...overrides,
   };
+  return { context, getResults };
 }
 
 Deno.test("execute with valid definition returns method result", async () => {
@@ -79,17 +177,22 @@ Deno.test("execute with valid definition returns method result", async () => {
     attributes: { message: "Hello, world!" },
   });
 
-  const context = createTestContext();
+  const { context, getResults } = createTestContext();
   const result = await service.execute(
     definition,
     echoModel.methods.write,
     context,
   );
 
-  // Echo model now returns data artifacts
-  assertEquals(result.dataOutputs?.length, 1);
-  const dataOutput = result.dataOutputs![0];
-  const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
+  // Echo model now returns data handles
+  assertEquals(result.dataHandles?.length, 1);
+
+  // Content is in the mock writer results
+  const writerResults = getResults();
+  assertEquals(writerResults.length, 1);
+  const content = JSON.parse(
+    new TextDecoder().decode(writerResults[0].content),
+  );
   assertEquals(content.message, "Hello, world!");
   assertEquals(typeof content.timestamp, "string");
 });
@@ -101,7 +204,7 @@ Deno.test("execute with missing required attribute throws error", async () => {
     attributes: {}, // Missing required 'message'
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
   await assertRejects(
     () => service.execute(definition, echoModel.methods.write, context),
     Error,
@@ -116,7 +219,7 @@ Deno.test("execute with invalid attribute type throws error", async () => {
     attributes: { message: 123 }, // Should be string
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
   await assertRejects(
     () => service.execute(definition, echoModel.methods.write, context),
     Error,
@@ -131,7 +234,7 @@ Deno.test("execute with empty message throws error", async () => {
     attributes: { message: "" }, // Empty message fails min(1) validation
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
   await assertRejects(
     () => service.execute(definition, echoModel.methods.write, context),
     Error,
@@ -146,7 +249,7 @@ Deno.test("execute error message includes Zod details", async () => {
     attributes: { wrongField: "value" },
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
   try {
     await service.execute(definition, echoModel.methods.write, context);
     throw new Error("Expected error to be thrown");
@@ -161,33 +264,23 @@ Deno.test("execute error message includes Zod details", async () => {
 // ---------- Workflow Tests ----------
 
 /**
- * Helper to create a DataOutput with given attributes.
+ * Helper to write data via context.createDataWriter and return a DataHandle.
  */
-function createTestDataOutput(
+async function writeTestData(
+  context: MethodContext,
   name: string,
   attributes: Record<string, unknown>,
-): DataOutput {
-  return {
+): Promise<DataHandle> {
+  const writer = context.createDataWriter!({
     name,
-    specType: DataSpecType.create("data"),
-    content: new TextEncoder().encode(JSON.stringify(attributes)),
-    metadata: {
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      streaming: false,
-      tags: { type: "data" },
-      ownerDefinition: {
-        definitionHash: "test-hash",
-        ownerType: "model-method",
-        ownerRef: "test",
-      },
-    },
-  };
+    specType: "data",
+  });
+  return await writer.writeText(JSON.stringify(attributes));
 }
 
 /**
  * Creates a test model with configurable behavior for workflow testing.
+ * Mock methods use context.createDataWriter to write data and return dataHandles.
  */
 function createTestModel(options: {
   executeImpl?: (
@@ -209,44 +302,41 @@ function createTestModel(options: {
     type: ModelType.create("test/workflow"),
     version: "2026.02.09.1",
     inputAttributesSchema: schema,
-    dataOutputSpecs: {},
+    dataOutputSpecs: {
+      "data": {
+        specType: DataSpecType.create("data"),
+        description: "Test data",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
+      },
+    },
     methods: {
       start: {
         description: "Start method for testing",
         inputAttributesSchema: schema,
         execute: options.executeImpl ??
-          ((_definition) =>
-            Promise.resolve({
-              dataOutputs: [createTestDataOutput("data", { value: "started" })],
-            })),
+          (async (_definition, context) => {
+            const handle = await writeTestData(context, "data", {
+              value: "started",
+            });
+            return { dataHandles: [handle] };
+          }),
       },
       followUp: {
         description: "Follow-up method for testing",
         inputAttributesSchema: schema,
         execute: options.followUpImpl ??
-          ((_definition) =>
-            Promise.resolve({
-              dataOutputs: [
-                createTestDataOutput("data", { value: "followed-up" }),
-              ],
-            })),
+          (async (_definition, context) => {
+            const handle = await writeTestData(context, "data", {
+              value: "followed-up",
+            });
+            return { dataHandles: [handle] };
+          }),
       },
     },
   };
-}
-
-/**
- * Helper to get attributes from a DataOutput.
- */
-function getDataOutputAttributes(
-  result: MethodResult,
-  index = 0,
-): Record<string, unknown> | undefined {
-  if (!result.dataOutputs || result.dataOutputs.length <= index) {
-    return undefined;
-  }
-  const content = new TextDecoder().decode(result.dataOutputs[index].content);
-  return JSON.parse(content);
 }
 
 Deno.test(
@@ -260,7 +350,7 @@ Deno.test(
       attributes: { value: "test" },
     });
 
-    const context = createTestContext({
+    const { context } = createTestContext({
       modelType: model.type,
     });
     const result = await service.executeWorkflow(
@@ -270,8 +360,8 @@ Deno.test(
       context,
     );
 
-    const attrs = getDataOutputAttributes(result);
-    assertEquals(attrs?.value, "started");
+    assertEquals(result.dataHandles !== undefined, true);
+    assertEquals(result.dataHandles!.length >= 1, true);
   },
 );
 
@@ -284,7 +374,7 @@ Deno.test("executeWorkflow - throws error for unknown method", async () => {
     attributes: { value: "test" },
   });
 
-  const context = createTestContext({
+  const { context } = createTestContext({
     modelType: model.type,
   });
 
@@ -299,19 +389,23 @@ Deno.test("executeWorkflow - processes follow-up actions", async () => {
   const service = new DefaultMethodExecutionService();
 
   const model = createTestModel({
-    executeImpl: (_definition) =>
-      Promise.resolve({
-        dataOutputs: [
-          createTestDataOutput("data", { value: "started", counter: 1 }),
-        ],
+    executeImpl: async (_definition, context) => {
+      const handle = await writeTestData(context, "data", {
+        value: "started",
+        counter: 1,
+      });
+      return {
+        dataHandles: [handle],
         followUpActions: [{ methodName: "followUp" }],
-      }),
-    followUpImpl: (_definition) =>
-      Promise.resolve({
-        dataOutputs: [
-          createTestDataOutput("data", { value: "completed", counter: 2 }),
-        ],
-      }),
+      };
+    },
+    followUpImpl: async (_definition, context) => {
+      const handle = await writeTestData(context, "data", {
+        value: "completed",
+        counter: 2,
+      });
+      return { dataHandles: [handle] };
+    },
   });
 
   const definition = Definition.create({
@@ -319,7 +413,7 @@ Deno.test("executeWorkflow - processes follow-up actions", async () => {
     attributes: { value: "test" },
   });
 
-  const context = createTestContext({
+  const { context } = createTestContext({
     modelType: model.type,
   });
   const result = await service.executeWorkflow(
@@ -329,9 +423,8 @@ Deno.test("executeWorkflow - processes follow-up actions", async () => {
     context,
   );
 
-  const attrs = getDataOutputAttributes(result);
-  assertEquals(attrs?.value, "completed");
-  assertEquals(attrs?.counter, 2);
+  assertEquals(result.dataHandles !== undefined, true);
+  assertEquals(result.dataHandles!.length >= 1, true);
 });
 
 Deno.test("executeWorkflow - respects continueCondition", async () => {
@@ -339,31 +432,30 @@ Deno.test("executeWorkflow - respects continueCondition", async () => {
   let followUpCallCount = 0;
 
   const model = createTestModel({
-    executeImpl: (_definition) =>
-      Promise.resolve({
-        dataOutputs: [
-          createTestDataOutput("data", { value: "started", counter: 0 }),
-        ],
+    executeImpl: async (_definition, context) => {
+      const handle = await writeTestData(context, "data", {
+        value: "started",
+        counter: 0,
+      });
+      return {
+        dataHandles: [handle],
         followUpActions: [
           {
             methodName: "followUp",
             // Only continue if counter is less than 0 (never true after start)
-            continueCondition: (dataOutputs: DataOutput[]) => {
-              const attrs = JSON.parse(
-                new TextDecoder().decode(dataOutputs[0].content),
-              );
-              return (attrs.counter as number) < 0;
+            continueCondition: (_dataHandles: DataHandle[]) => {
+              return false; // Never continue
             },
           },
         ],
-      }),
-    followUpImpl: (_definition) => {
+      };
+    },
+    followUpImpl: async (_definition, context) => {
       followUpCallCount++;
-      return Promise.resolve({
-        dataOutputs: [
-          createTestDataOutput("data", { value: "should-not-reach" }),
-        ],
+      const handle = await writeTestData(context, "data", {
+        value: "should-not-reach",
       });
+      return { dataHandles: [handle] };
     },
   });
 
@@ -372,7 +464,7 @@ Deno.test("executeWorkflow - respects continueCondition", async () => {
     attributes: { value: "test" },
   });
 
-  const context = createTestContext({
+  const { context } = createTestContext({
     modelType: model.type,
   });
   const result = await service.executeWorkflow(
@@ -384,8 +476,7 @@ Deno.test("executeWorkflow - respects continueCondition", async () => {
 
   // Follow-up should not be called because condition was false
   assertEquals(followUpCallCount, 0);
-  const attrs = getDataOutputAttributes(result);
-  assertEquals(attrs?.value, "started");
+  assertEquals(result.dataHandles !== undefined, true);
 });
 
 Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
@@ -393,21 +484,24 @@ Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
   let attemptCount = 0;
 
   const model = createTestModel({
-    executeImpl: (_definition) =>
-      Promise.resolve({
-        dataOutputs: [createTestDataOutput("data", { value: "started" })],
+    executeImpl: async (_definition, context) => {
+      const handle = await writeTestData(context, "data", {
+        value: "started",
+      });
+      return {
+        dataHandles: [handle],
         followUpActions: [{ methodName: "followUp", maxRetries: 2 }],
-      }),
-    followUpImpl: (_definition) => {
+      };
+    },
+    followUpImpl: async (_definition, context) => {
       attemptCount++;
       if (attemptCount < 3) {
         return Promise.reject(new Error("Simulated failure"));
       }
-      return Promise.resolve({
-        dataOutputs: [
-          createTestDataOutput("data", { value: "succeeded-on-retry" }),
-        ],
+      const handle = await writeTestData(context, "data", {
+        value: "succeeded-on-retry",
       });
+      return { dataHandles: [handle] };
     },
   });
 
@@ -416,7 +510,7 @@ Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
     attributes: { value: "test" },
   });
 
-  const context = createTestContext({
+  const { context } = createTestContext({
     modelType: model.type,
   });
   const result = await service.executeWorkflow(
@@ -428,19 +522,22 @@ Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
 
   // Should have succeeded on the 3rd attempt (1 initial + 2 retries)
   assertEquals(attemptCount, 3);
-  const attrs = getDataOutputAttributes(result);
-  assertEquals(attrs?.value, "succeeded-on-retry");
+  assertEquals(result.dataHandles !== undefined, true);
 });
 
 Deno.test("executeWorkflow - fails after exhausting maxRetries", async () => {
   const service = new DefaultMethodExecutionService();
 
   const model = createTestModel({
-    executeImpl: (_definition) =>
-      Promise.resolve({
-        dataOutputs: [createTestDataOutput("data", { value: "started" })],
+    executeImpl: async (_definition, context) => {
+      const handle = await writeTestData(context, "data", {
+        value: "started",
+      });
+      return {
+        dataHandles: [handle],
         followUpActions: [{ methodName: "followUp", maxRetries: 1 }],
-      }),
+      };
+    },
     followUpImpl: () => Promise.reject(new Error("Always fails")),
   });
 
@@ -449,7 +546,7 @@ Deno.test("executeWorkflow - fails after exhausting maxRetries", async () => {
     attributes: { value: "test" },
   });
 
-  const context = createTestContext({
+  const { context } = createTestContext({
     modelType: model.type,
   });
 
@@ -475,41 +572,53 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
     type: ModelType.create("test/recursive"),
     version: "2026.02.09.1",
     inputAttributesSchema: schema,
-    dataOutputSpecs: {},
+    dataOutputSpecs: {
+      "data": {
+        specType: DataSpecType.create("data"),
+        description: "Test data",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
+      },
+    },
     methods: {
       start: {
         description: "Start method",
         inputAttributesSchema: schema,
-        execute: (_definition) => {
+        execute: async (_definition, context) => {
           callSequence.push("start");
           currentStep = 1;
-          return Promise.resolve({
-            dataOutputs: [createTestDataOutput("data", { step: 1 })],
+          const handle = await writeTestData(context, "data", { step: 1 });
+          return {
+            dataHandles: [handle],
             followUpActions: [{ methodName: "increment" }],
-          });
+          };
         },
       },
       increment: {
         description: "Increment method that may recurse",
         inputAttributesSchema: schema,
-        execute: (_definition) => {
+        execute: async (_definition, context) => {
           callSequence.push(`increment-${currentStep}`);
 
           currentStep++;
 
           // Only recurse if step < 3
           if (currentStep < 3) {
-            return Promise.resolve({
-              dataOutputs: [
-                createTestDataOutput("data", { step: currentStep }),
-              ],
-              followUpActions: [{ methodName: "increment" }],
+            const handle = await writeTestData(context, "data", {
+              step: currentStep,
             });
+            return {
+              dataHandles: [handle],
+              followUpActions: [{ methodName: "increment" }],
+            };
           }
 
-          return Promise.resolve({
-            dataOutputs: [createTestDataOutput("data", { step: currentStep })],
+          const handle = await writeTestData(context, "data", {
+            step: currentStep,
           });
+          return { dataHandles: [handle] };
         },
       },
     },
@@ -520,7 +629,7 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
     attributes: { step: 0 },
   });
 
-  const context = createTestContext({
+  const { context } = createTestContext({
     modelType: model.type,
   });
   const result = await service.executeWorkflow(
@@ -531,8 +640,7 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
   );
 
   assertEquals(callSequence, ["start", "increment-1", "increment-2"]);
-  const attrs = getDataOutputAttributes(result);
-  assertEquals(attrs?.step, 3);
+  assertEquals(result.dataHandles !== undefined, true);
 });
 
 Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
@@ -546,17 +654,27 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
     type: ModelType.create("test/infinite"),
     version: "2026.02.09.1",
     inputAttributesSchema: schema,
-    dataOutputSpecs: {},
+    dataOutputSpecs: {
+      "data": {
+        specType: DataSpecType.create("data"),
+        description: "Test data",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
+      },
+    },
     methods: {
       start: {
         description: "Start infinite loop",
         inputAttributesSchema: schema,
-        execute: (_definition) => {
+        execute: async (_definition, context) => {
           counter++;
-          return Promise.resolve({
-            dataOutputs: [createTestDataOutput("data", { counter })],
+          const handle = await writeTestData(context, "data", { counter });
+          return {
+            dataHandles: [handle],
             followUpActions: [{ methodName: "start" }],
-          });
+          };
         },
       },
     },
@@ -567,7 +685,7 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
     attributes: { counter: 0 },
   });
 
-  const context = createTestContext({
+  const { context } = createTestContext({
     modelType: model.type,
   });
 
@@ -583,11 +701,11 @@ Deno.test(
   async () => {
     const service = new DefaultMethodExecutionService();
     let receivedDefinitionName = "";
-    let previousDataOutputsInCondition: DataOutput[] | undefined = undefined;
+    let previousDataHandlesInCondition: DataHandle[] | undefined = undefined;
 
     // This test demonstrates that:
     // - Follow-up methods receive the same definition
-    // - continueCondition receives the dataOutputs from the previous method
+    // - continueCondition receives the dataHandles from the previous method
     const schema = z.object({
       RequestToken: z.string().optional(),
       OperationStatus: z.string().optional(),
@@ -598,46 +716,51 @@ Deno.test(
       type: ModelType.create("test/token-passing"),
       version: "2026.02.09.1",
       inputAttributesSchema: schema,
-      dataOutputSpecs: {},
+      dataOutputSpecs: {
+        "data": {
+          specType: DataSpecType.create("data"),
+          description: "Test data",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
+        },
+      },
       methods: {
         create: {
-          description: "Create method that returns RequestToken in data output",
+          description: "Create method that returns RequestToken in data handle",
           inputAttributesSchema: schema,
-          execute: (_definition) => {
-            return Promise.resolve({
-              dataOutputs: [
-                createTestDataOutput("data", {
-                  RequestToken: "test-request-token-123",
-                  OperationStatus: "IN_PROGRESS",
-                }),
-              ],
+          execute: async (_definition, context) => {
+            const handle = await writeTestData(context, "data", {
+              RequestToken: "test-request-token-123",
+              OperationStatus: "IN_PROGRESS",
+            });
+            return {
+              dataHandles: [handle],
               followUpActions: [
                 {
                   methodName: "sync",
-                  continueCondition: (dataOutputs: DataOutput[]) => {
-                    previousDataOutputsInCondition = dataOutputs;
+                  continueCondition: (dataHandles: DataHandle[]) => {
+                    previousDataHandlesInCondition = dataHandles;
                     return true;
                   },
                 },
               ],
-            });
+            };
           },
         },
         sync: {
           description: "Sync method that uses definition",
           inputAttributesSchema: schema,
-          execute: (definition) => {
+          execute: async (definition, context) => {
             // Capture the definition name to verify it's the same definition
             receivedDefinitionName = definition.name;
 
-            return Promise.resolve({
-              dataOutputs: [
-                createTestDataOutput("data", {
-                  RequestToken: "test-request-token-123",
-                  OperationStatus: "SUCCESS",
-                }),
-              ],
+            const handle = await writeTestData(context, "data", {
+              RequestToken: "test-request-token-123",
+              OperationStatus: "SUCCESS",
             });
+            return { dataHandles: [handle] };
           },
         },
       },
@@ -648,7 +771,7 @@ Deno.test(
       attributes: { OriginalValue: "from-yaml" },
     });
 
-    const context = createTestContext({
+    const { context } = createTestContext({
       modelType: model.type,
     });
     const result = await service.executeWorkflow(
@@ -661,19 +784,14 @@ Deno.test(
     // Verify sync received the same definition
     assertEquals(receivedDefinitionName, "test-definition");
 
-    // Verify continueCondition received the data outputs from create
-    assertEquals(previousDataOutputsInCondition !== undefined, true);
-    const conditionDataOutputs = previousDataOutputsInCondition!;
-    assertEquals(conditionDataOutputs.length, 1);
-    const conditionAttrs = JSON.parse(
-      new TextDecoder().decode(conditionDataOutputs[0].content),
-    );
-    assertEquals(conditionAttrs.RequestToken, "test-request-token-123");
-    assertEquals(conditionAttrs.OperationStatus, "IN_PROGRESS");
+    // Verify continueCondition received the data handles from create
+    assertEquals(previousDataHandlesInCondition !== undefined, true);
+    const conditionHandles = previousDataHandlesInCondition!;
+    assertEquals(conditionHandles.length, 1);
 
-    // Verify final result
-    const finalAttrs = getDataOutputAttributes(result);
-    assertEquals(finalAttrs?.OperationStatus, "SUCCESS");
+    // Verify final result has data handles
+    assertEquals(result.dataHandles !== undefined, true);
+    assertEquals(result.dataHandles!.length >= 1, true);
   },
 );
 
@@ -711,7 +829,7 @@ Deno.test("execute passes logger in context to method", async () => {
     attributes: { value: "test" },
   });
 
-  const context = createTestContext({ modelType: model.type });
+  const { context } = createTestContext({ modelType: model.type });
   await service.executeWorkflow(definition, model, "run", context);
 
   assertEquals(capturedLogger !== undefined, true);

@@ -50,8 +50,8 @@ const testData: WorkflowSchemaData = {
   },
   stepTask: {
     oneOf: [
-      { type: "object", properties: { type: { const: "shell" } } },
       { type: "object", properties: { type: { const: "model_method" } } },
+      { type: "object", properties: { type: { const: "workflow" } } },
     ],
   },
   triggerCondition: {

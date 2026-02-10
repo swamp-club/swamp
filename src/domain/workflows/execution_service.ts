@@ -38,14 +38,17 @@ import {
   ModelResolver,
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
-import {
-  DataOutputValidationService,
-} from "../models/data_output_validation_service.ts";
 import { UserError } from "../errors.ts";
+import { InputOverrideValidationService } from "../inputs/mod.ts";
 import {
   getRunLogger,
-  getWorkflowRunLogger,
+  runFileSink,
 } from "../../infrastructure/logging/logger.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { join } from "@std/path";
 
 /**
  * Context for step execution.
@@ -71,6 +74,10 @@ export interface StepExecutionContext {
   useLastEvaluated?: boolean;
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: { name: string; value: unknown };
+  /** Current workflow nesting depth for recursion guard (max 10) */
+  workflowNestingDepth?: number;
+  /** Set of ancestor workflow IDs for cycle detection */
+  ancestorWorkflowIds?: Set<string>;
 }
 
 /**
@@ -99,162 +106,122 @@ export interface StepExecutor {
 }
 
 /**
- * Default step executor that handles model methods and shell commands.
+ * Maximum nesting depth for workflow-calling-workflow execution.
+ */
+const MAX_WORKFLOW_NESTING_DEPTH = 10;
+
+/**
+ * Default step executor that handles model methods and workflow invocations.
  */
 export class DefaultStepExecutor implements StepExecutor {
   private readonly validationService = new DefaultModelValidationService();
 
+  constructor(
+    private readonly workflowRepo?: WorkflowRepository,
+    private readonly runRepo?: WorkflowRunRepository,
+    private readonly repoDir?: string,
+  ) {}
+
   async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     const task = step.task.data;
 
-    if (task.type === "shell") {
-      return await this.executeShell(task, ctx);
-    } else if (task.type === "model_method") {
+    if (task.type === "model_method") {
       return await this.executeModelMethod(task, ctx);
+    } else if (task.type === "workflow") {
+      return await this.executeWorkflowTask(task, ctx);
     }
 
     throw new Error(`Unknown task type: ${(task as { type: string }).type}`);
   }
 
-  private async executeShell(
+  private async executeWorkflowTask(
     task: {
-      command: string;
-      args: string[];
-      workingDir?: string;
-      timeout?: number;
-      env?: Record<string, string>;
+      workflowIdOrName: string;
+      inputs?: Record<string, unknown>;
     },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
-    const cwd = task.workingDir ?? ctx.repoDir;
+    if (!this.workflowRepo || !this.runRepo || !this.repoDir) {
+      throw new Error(
+        "Workflow execution requires workflowRepo, runRepo, and repoDir to be provided to DefaultStepExecutor",
+      );
+    }
 
-    const commandOptions: Deno.CommandOptions = {
-      args: task.args,
-      cwd,
-      stdout: "piped",
-      stderr: "piped",
+    // Recursion guard
+    const depth = ctx.workflowNestingDepth ?? 0;
+    if (depth >= MAX_WORKFLOW_NESTING_DEPTH) {
+      throw new Error(
+        `Maximum workflow nesting depth (${MAX_WORKFLOW_NESTING_DEPTH}) exceeded. ` +
+          `Workflow "${task.workflowIdOrName}" cannot be invoked at depth ${
+            depth + 1
+          }.`,
+      );
+    }
+
+    // Cycle detection
+    const ancestors = ctx.ancestorWorkflowIds ?? new Set<string>();
+    if (ancestors.has(task.workflowIdOrName)) {
+      const chain = [...ancestors, task.workflowIdOrName].join(" -> ");
+      throw new Error(
+        `Workflow cycle detected: ${chain}. ` +
+          `A workflow cannot invoke itself directly or indirectly.`,
+      );
+    }
+
+    // Evaluate inputs using the expression context
+    let evaluatedInputs = task.inputs;
+    if (task.inputs && ctx.expressionContext) {
+      const evalService = new ExpressionEvaluationService(
+        new YamlDefinitionRepository(ctx.repoDir),
+        ctx.repoDir,
+      );
+      evaluatedInputs = evalService.evaluateData(
+        task.inputs,
+        ctx.expressionContext,
+      ) as Record<string, unknown>;
+    }
+
+    // Create a child WorkflowExecutionService with nesting context
+    const childAncestors = new Set(ancestors);
+    childAncestors.add(ctx.workflowName);
+
+    const childExecutor = new DefaultStepExecutor(
+      this.workflowRepo,
+      this.runRepo,
+      this.repoDir,
+    );
+
+    const childService = new WorkflowExecutionService(
+      this.workflowRepo,
+      this.runRepo,
+      this.repoDir,
+      childExecutor,
+    );
+
+    const childRun = await childService.execute(
+      task.workflowIdOrName,
+      ctx.progress,
+      {
+        enableStepLogging: ctx.enableStepLogging,
+        inputs: evaluatedInputs,
+        workflowNestingDepth: depth + 1,
+        ancestorWorkflowIds: childAncestors,
+      },
+    );
+
+    // Propagate child workflow failure to the parent step
+    if (childRun.status === "failed") {
+      throw new Error(
+        `Nested workflow "${task.workflowIdOrName}" failed.`,
+      );
+    }
+
+    return {
+      type: "workflow",
+      workflow: task.workflowIdOrName,
+      runId: childRun.id,
+      status: childRun.status,
     };
-
-    if (task.env) {
-      commandOptions.env = task.env;
-    }
-
-    const command = new Deno.Command(task.command, commandOptions);
-
-    // Use streaming if progress callbacks or step logging are enabled
-    if (
-      ctx.progress?.onStepStdout || ctx.progress?.onStepStderr ||
-      ctx.enableStepLogging
-    ) {
-      return await this.executeShellStreaming(command, ctx);
-    }
-
-    // Buffered execution (original behavior)
-    const result = await command.output();
-
-    if (!result.success) {
-      const stderr = new TextDecoder().decode(result.stderr);
-      throw new Error(`Shell command failed: ${stderr}`);
-    }
-
-    const stdout = new TextDecoder().decode(result.stdout);
-    return { stdout: stdout.trim(), exitCode: result.code };
-  }
-
-  private async executeShellStreaming(
-    command: Deno.Command,
-    ctx: StepExecutionContext,
-  ): Promise<unknown> {
-    const stepLogger = getWorkflowRunLogger(
-      ctx.workflowName,
-      ctx.jobName,
-      ctx.stepName,
-    );
-
-    const process = command.spawn();
-
-    const stdoutLines: string[] = [];
-    const stderrLines: string[] = [];
-
-    // Stream stdout and stderr concurrently
-    const stdoutPromise = this.streamOutput(
-      process.stdout,
-      (line) => {
-        stdoutLines.push(line);
-        stepLogger.info(line);
-        if (ctx.progress?.onStepStdout && ctx.workflowRun) {
-          ctx.progress.onStepStdout(
-            ctx.workflowRun,
-            ctx.jobName,
-            ctx.stepName,
-            line,
-          );
-        }
-      },
-    );
-
-    const stderrPromise = this.streamOutput(
-      process.stderr,
-      (line) => {
-        stderrLines.push(line);
-        stepLogger.warn(line);
-        if (ctx.progress?.onStepStderr && ctx.workflowRun) {
-          ctx.progress.onStepStderr(
-            ctx.workflowRun,
-            ctx.jobName,
-            ctx.stepName,
-            line,
-          );
-        }
-      },
-    );
-
-    // Wait for streams to complete and process to exit
-    const [, , status] = await Promise.all([
-      stdoutPromise,
-      stderrPromise,
-      process.status,
-    ]);
-
-    if (!status.success) {
-      throw new Error(`Shell command failed: ${stderrLines.join("\n")}`);
-    }
-
-    return { stdout: stdoutLines.join("\n").trim(), exitCode: status.code };
-  }
-
-  private async streamOutput(
-    stream: ReadableStream<Uint8Array>,
-    onLine: (line: string) => void,
-  ): Promise<void> {
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-
-        // Process all complete lines
-        for (let i = 0; i < lines.length - 1; i++) {
-          onLine(lines[i]);
-        }
-
-        // Keep the incomplete line in the buffer
-        buffer = lines[lines.length - 1];
-      }
-
-      // Process any remaining content
-      if (buffer) {
-        onLine(buffer);
-      }
-    } finally {
-      reader.releaseLock();
-    }
   }
 
   private async executeModelMethod(
@@ -334,12 +301,18 @@ export class DefaultStepExecutor implements StepExecutor {
     } else if (ctx.expressionContext) {
       runLogger.info("Evaluating expressions");
       // Set self context for this specific model before evaluating
+      // Preserve any forEach variables that were set by the workflow engine
+      const forEachVars: Record<string, unknown> = {};
+      if (ctx.forEachVariable && ctx.forEachVariable.name) {
+        forEachVars[ctx.forEachVariable.name] = ctx.forEachVariable.value;
+      }
       ctx.expressionContext.self = {
         id: originalDefinition.id,
         name: originalDefinition.name,
         version: originalDefinition.version,
         tags: originalDefinition.tags,
         attributes: originalDefinition.attributes,
+        ...forEachVars,
       };
 
       // Evaluate step task inputs and merge into context
@@ -365,6 +338,51 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.expressionContext,
         ctx.repoDir,
       );
+
+      // Validate and apply step inputs as attribute overrides (implicit inputs)
+      // But only for keys that aren't defined in the definition's inputs schema
+      // (those are handled by expression evaluation via ${{ inputs.X }})
+      const definitionInputKeys = originalDefinition.inputs
+        ? Object.keys(
+          (originalDefinition.inputs as {
+            properties?: Record<string, unknown>;
+          })
+            .properties || {},
+        )
+        : [];
+      const overrideInputs = Object.fromEntries(
+        Object.entries(stepInputs).filter(([key]) =>
+          !definitionInputKeys.includes(key)
+        ),
+      );
+      if (Object.keys(overrideInputs).length > 0) {
+        const method = modelDef.methods[task.methodName];
+        if (method) {
+          const overrideValidationService =
+            new InputOverrideValidationService();
+          const overrideResult = overrideValidationService.validate(
+            overrideInputs,
+            method.inputAttributesSchema,
+          );
+          if (!overrideResult.valid) {
+            const errorMessages = overrideResult.errors
+              .map((e) => {
+                let msg = `  ${e.key}: ${e.message}`;
+                if (e.suggestion) {
+                  msg += ` (${e.suggestion})`;
+                }
+                return msg;
+              })
+              .join("\n");
+            throw new UserError(
+              `Invalid step input overrides in "${ctx.stepName}":\n${errorMessages}`,
+            );
+          }
+        }
+        for (const [key, value] of Object.entries(overrideInputs)) {
+          evaluatedDefinition.setAttribute(key, value);
+        }
+      }
     }
 
     // Save evaluated definition (with vault expressions still raw) for --last-evaluated
@@ -408,6 +426,10 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Mark as running and save
     output.markRunning();
+    // Reference the workflow run's log file for history access
+    if (ctx.workflowRun?.logFile) {
+      output.setLogFile(ctx.workflowRun.logFile);
+    }
     await outputRepo.save(modelType, task.methodName, output);
 
     // Track data outputs for context refresh
@@ -420,34 +442,26 @@ export class DefaultStepExecutor implements StepExecutor {
         method: task.methodName,
       });
 
-      // Build streaming callbacks — log via runLogger,
-      // and call progress callback for persistence
-      const streaming = {
-        onStdout: (line: string) => {
-          runLogger.info(line);
-          if (ctx.progress?.onStepStdout && ctx.workflowRun) {
-            ctx.progress.onStepStdout(
-              ctx.workflowRun,
-              ctx.jobName,
-              ctx.stepName,
-              line,
-            );
-          }
-        },
-        onStderr: (line: string) => {
-          runLogger.warn(line);
-          if (ctx.progress?.onStepStderr && ctx.workflowRun) {
-            ctx.progress.onStepStderr(
-              ctx.workflowRun,
-              ctx.jobName,
-              ctx.stepName,
-              line,
-            );
-          }
-        },
+      // Build workflow-specific tag overrides
+      const workflowTagOverrides: Record<string, string> = {
+        type: "step-output",
+        workflow: ctx.workflowName,
+        step: ctx.stepName,
       };
 
+      // Convert step's dataOutputOverrides to the format expected by createDataWriterFactory
+      const stepDataOutputOverrides = ctx.step?.dataOutputOverrides
+        ? Array.from(ctx.step.dataOutputOverrides).map((override) => ({
+          specType: override.specType.value,
+          lifetime: override.lifetime,
+          garbageCollection: override.garbageCollection,
+          tags: override.tags,
+        }))
+        : undefined;
+
       // Execute the method with EVALUATED definition
+      // Logger handles both console and file persistence via RunFileSink
+      // Data is persisted by DataWriter during execution — no double-save
       const result = await executionService.executeWorkflow(
         evaluatedDefinition,
         modelDef,
@@ -459,68 +473,26 @@ export class DefaultStepExecutor implements StepExecutor {
           logger: runLogger,
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
-          streaming,
           modelDefinition: modelDef,
+          tagOverrides: workflowTagOverrides,
+          dataOutputOverrides: stepDataOutputOverrides,
         },
       );
 
-      // Apply workflow step overrides (on top of definition overrides)
-      if (ctx.step?.dataOutputOverrides && result.dataOutputs) {
-        const validationService = new DataOutputValidationService();
-        result.dataOutputs = result.dataOutputs.map((output) => {
-          const spec = modelDef.dataOutputSpecs[output.specType.value];
-          return validationService.applyDefaultsAndOverrides(
-            output,
-            spec,
-            Array.from(ctx.step!.dataOutputOverrides),
-          );
-        });
-      }
-
-      // Handle data output persistence
+      // Extract artifact info from dataHandles (already persisted by DataWriter)
       const savedArtifacts: Array<{
         dataId: string;
         name: string;
         version: number;
         tags: Record<string, string>;
       }> = [];
-      if (result.dataOutputs && result.dataOutputs.length > 0) {
-        for (const dataOutput of result.dataOutputs) {
-          // Create Data entity from DataOutput with workflow-specific tags
-          const { Data } = await import("../data/mod.ts");
-
-          // Merge workflow-specific tags with model output tags
-          const workflowTags: Record<string, string> = {
-            ...dataOutput.metadata.tags,
-            type: "step-output",
-            workflow: ctx.workflowName,
-            step: ctx.stepName,
-          };
-
-          const data = Data.create({
-            name: dataOutput.name,
-            contentType: dataOutput.metadata.contentType,
-            lifetime: dataOutput.metadata.lifetime,
-            garbageCollection: dataOutput.metadata.garbageCollection,
-            streaming: dataOutput.metadata.streaming,
-            tags: workflowTags,
-            ownerDefinition: dataOutput.metadata.ownerDefinition,
-          });
-
-          // Save the data
-          const saveResult = await unifiedDataRepo.save(
-            modelType,
-            evaluatedDefinition.id,
-            data,
-            dataOutput.content,
-          );
-
-          // Track artifact in output and for returning to step run
+      if (result.dataHandles && result.dataHandles.length > 0) {
+        for (const handle of result.dataHandles) {
           const artifactRef = {
-            dataId: data.id,
-            name: dataOutput.name,
-            version: saveResult.version,
-            tags: workflowTags,
+            dataId: handle.dataId,
+            name: handle.name,
+            version: handle.version,
+            tags: handle.tags,
           };
           output.addDataArtifact(artifactRef);
           savedArtifacts.push(artifactRef);
@@ -528,20 +500,28 @@ export class DefaultStepExecutor implements StepExecutor {
           const dataPath = unifiedDataRepo.getPath(
             modelType,
             evaluatedDefinition.id,
-            dataOutput.name,
-            saveResult.version,
+            handle.name,
+            handle.version,
           );
           runLogger.info("Data saved to {path}", { path: dataPath });
 
-          // Use first JSON data output for context refresh
+          // Use first JSON data handle for context refresh
           if (
-            !dataId && dataOutput.metadata.contentType === "application/json"
+            !dataId && handle.metadata.contentType === "application/json"
           ) {
-            dataId = data.id;
-            dataName = dataOutput.name;
+            dataId = handle.dataId;
+            dataName = handle.name;
             try {
-              const text = new TextDecoder().decode(dataOutput.content);
-              dataAttributes = JSON.parse(text) as Record<string, unknown>;
+              const content = await unifiedDataRepo.getContent(
+                modelType,
+                evaluatedDefinition.id,
+                handle.name,
+                handle.version,
+              );
+              if (content) {
+                const text = new TextDecoder().decode(content);
+                dataAttributes = JSON.parse(text) as Record<string, unknown>;
+              }
             } catch {
               // Not valid JSON, skip attributes
             }
@@ -655,20 +635,6 @@ export interface ExecutionProgressCallback {
   onWorkflowComplete?(run: WorkflowRun): void;
   /** Called once at start with implicit dependency mappings */
   onImplicitDependencies?(implicitDeps: ImplicitDependencyMap): void;
-  /** Called for each line of stdout from shell commands */
-  onStepStdout?(
-    run: WorkflowRun,
-    jobName: string,
-    stepName: string,
-    line: string,
-  ): void;
-  /** Called for each line of stderr from shell commands */
-  onStepStderr?(
-    run: WorkflowRun,
-    jobName: string,
-    stepName: string,
-    line: string,
-  ): void;
 }
 
 /**
@@ -687,7 +653,8 @@ export class WorkflowExecutionService {
     private readonly repoDir: string,
     executor?: StepExecutor,
   ) {
-    this.executor = executor ?? new DefaultStepExecutor();
+    this.executor = executor ??
+      new DefaultStepExecutor(workflowRepo, runRepo, repoDir);
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
     this.dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     this.modelResolver = new ModelResolver(this.definitionRepo, {
@@ -710,10 +677,12 @@ export class WorkflowExecutionService {
       enableStepLogging?: boolean;
       lastEvaluated?: boolean;
       inputs?: Record<string, unknown>;
+      workflowNestingDepth?: number;
+      ancestorWorkflowIds?: Set<string>;
     },
   ): Promise<WorkflowRun> {
     // Look up workflow
-    const workflow = await this.lookupWorkflow(idOrName);
+    let workflow = await this.lookupWorkflow(idOrName);
     if (!workflow) {
       throw new Error(`Workflow not found: ${idOrName}`);
     }
@@ -731,11 +700,12 @@ export class WorkflowExecutionService {
       if (!lastEvaluated) {
         throw new UserError(
           `No previously evaluated workflow found for "${workflow.name}".\n\n` +
-            `Run the workflow without --last-evaluated first to generate evaluated data:\n` +
-            `  swamp workflow run ${workflow.name}`,
+            `Evaluate the workflow first to generate evaluated data:\n` +
+            `  swamp workflow evaluate ${workflow.name}`,
         );
       }
-      // No expression context needed — we use pre-evaluated definitions per-step
+      // Use the fully evaluated workflow (forEach expanded, expressions resolved)
+      workflow = lastEvaluated;
     } else {
       // Build expression context and evaluate workflow
       expressionContext = await this.modelResolver.buildContext();
@@ -775,9 +745,20 @@ export class WorkflowExecutionService {
       progress?.onImplicitDependencies?.(allImplicitDeps);
     }
 
+    // Register run file sink target for the workflow log output
+    const workflowLogPath = join(
+      swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
+      workflow.id,
+      `workflow-run-${run.id}.log`,
+    );
+    const workflowLogCategory: string[] = [];
+    await runFileSink.register(workflowLogCategory, workflowLogPath);
+    run.setLogFile(workflowLogPath);
+
     // Start execution
     run.start();
     progress?.onWorkflowStart?.(run);
+
     await this.saveRun(workflow.id, run);
 
     // Sort jobs topologically
@@ -802,6 +783,8 @@ export class WorkflowExecutionService {
             progress,
             options?.enableStepLogging,
             options?.lastEvaluated,
+            options?.workflowNestingDepth,
+            options?.ancestorWorkflowIds,
           )
         ),
       );
@@ -812,6 +795,9 @@ export class WorkflowExecutionService {
     run.complete();
     progress?.onWorkflowComplete?.(run);
     await this.saveRun(workflow.id, run);
+
+    // Unregister workflow log file sink
+    runFileSink.unregister(workflowLogCategory);
 
     return run;
   }
@@ -824,6 +810,8 @@ export class WorkflowExecutionService {
     progress?: ExecutionProgressCallback,
     enableStepLogging?: boolean,
     lastEvaluated?: boolean,
+    workflowNestingDepth?: number,
+    ancestorWorkflowIds?: Set<string>,
   ): Promise<void> {
     const job = workflow.getJob(jobName);
     if (!job) {
@@ -847,138 +835,108 @@ export class WorkflowExecutionService {
     jobRun.start();
     progress?.onJobStart?.(run, jobName);
 
-    // Create throttled save for incremental log persistence
-    const [throttledSave, cleanupThrottledSave] = this.createThrottledSave(
-      workflow.id,
-      run,
+    // Expand forEach steps if we have expression context
+    let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
+    if (expressionContext && !lastEvaluated) {
+      expandedStepsMap = this.expandForEachSteps(job, expressionContext);
+    }
+
+    // Build step nodes with implicit dependencies from expressions
+    const { nodes: stepNodes } = await this.buildStepNodesWithImplicitDeps(
+      job,
+      workflow,
     );
 
-    // Wrap progress callbacks to persist logs incrementally
-    const streamingCallbacks: ExecutionProgressCallback = {
-      ...progress,
-      onStepStdout: (run, jobName, stepName, line) => {
-        // Call original callback if provided
-        progress?.onStepStdout?.(run, jobName, stepName, line);
-        // Append log line to step run and trigger save
-        const stepRun = run.getJob(jobName)?.getStep(stepName);
-        stepRun?.appendStdout(line);
-        throttledSave();
-      },
-      onStepStderr: (run, jobName, stepName, line) => {
-        // Call original callback if provided
-        progress?.onStepStderr?.(run, jobName, stepName, line);
-        // Append log line to step run and trigger save
-        const stepRun = run.getJob(jobName)?.getStep(stepName);
-        stepRun?.appendStderr(line);
-        throttledSave();
-      },
-    };
-
-    try {
-      // Expand forEach steps if we have expression context
-      let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
-      if (expressionContext && !lastEvaluated) {
-        expandedStepsMap = this.expandForEachSteps(job, expressionContext);
-      }
-
-      // Build step nodes with implicit dependencies from expressions
-      const { nodes: stepNodes } = await this.buildStepNodesWithImplicitDeps(
-        job,
-        workflow,
-      );
-
-      // If we have expanded steps, update the graph nodes
-      let effectiveNodes = stepNodes;
-      if (expandedStepsMap) {
-        effectiveNodes = [];
-        for (const node of stepNodes) {
-          const expanded = expandedStepsMap.get(node.name);
-          if (expanded && expanded.length > 0) {
-            // Create nodes for each expanded step
-            for (const exp of expanded) {
-              effectiveNodes.push({
-                name: exp.expandedName,
-                weight: node.weight,
-                // Map dependencies to expanded step names
-                dependencies: node.dependencies.map((dep) => {
-                  const depExpanded = expandedStepsMap!.get(dep);
-                  // For now, depend on all expansions of the dependency
-                  // (future: support forEach-aware dependency mapping)
-                  return depExpanded && depExpanded.length > 0
-                    ? depExpanded[0].expandedName
-                    : dep;
-                }),
-              });
-            }
-          } else if (!expanded || expanded.length === 0) {
-            // Skip steps that expanded to empty (e.g., empty array)
-            continue;
-          } else {
-            effectiveNodes.push(node);
+    // If we have expanded steps, update the graph nodes
+    let effectiveNodes = stepNodes;
+    if (expandedStepsMap) {
+      effectiveNodes = [];
+      for (const node of stepNodes) {
+        const expanded = expandedStepsMap.get(node.name);
+        if (expanded && expanded.length > 0) {
+          // Create nodes for each expanded step
+          for (const exp of expanded) {
+            effectiveNodes.push({
+              name: exp.expandedName,
+              weight: node.weight,
+              // Map dependencies to expanded step names
+              dependencies: node.dependencies.map((dep) => {
+                const depExpanded = expandedStepsMap!.get(dep);
+                // For now, depend on all expansions of the dependency
+                // (future: support forEach-aware dependency mapping)
+                return depExpanded && depExpanded.length > 0
+                  ? depExpanded[0].expandedName
+                  : dep;
+              }),
+            });
           }
+        } else if (!expanded || expanded.length === 0) {
+          // Skip steps that expanded to empty (e.g., empty array)
+          continue;
+        } else {
+          effectiveNodes.push(node);
         }
       }
+    }
 
-      const sortedSteps = this.sortService.sort(effectiveNodes);
+    const sortedSteps = this.sortService.sort(effectiveNodes);
 
-      // Execute steps level by level
-      let jobFailed = false;
-      for (const level of sortedSteps.levels) {
-        if (jobFailed) break;
+    // Execute steps level by level
+    let jobFailed = false;
+    for (const level of sortedSteps.levels) {
+      if (jobFailed) break;
 
-        // Execute steps in parallel within each level
-        const stepResults = await Promise.allSettled(
-          level.map((stepName) => {
-            // Find the expanded step info if applicable
-            let forEachVar: { name: string; value: unknown } | undefined;
-            let originalStep: Step | undefined;
+      // Execute steps in parallel within each level
+      const stepResults = await Promise.allSettled(
+        level.map((stepName) => {
+          // Find the expanded step info if applicable
+          let forEachVar: { name: string; value: unknown } | undefined;
+          let originalStep: Step | undefined;
 
-            if (expandedStepsMap) {
-              for (const [, expanded] of expandedStepsMap) {
-                const found = expanded.find((e) => e.expandedName === stepName);
-                if (found) {
-                  forEachVar = found.forEachVar;
-                  originalStep = found.step;
-                  break;
-                }
+          if (expandedStepsMap) {
+            for (const [, expanded] of expandedStepsMap) {
+              const found = expanded.find((e) => e.expandedName === stepName);
+              if (found) {
+                forEachVar = found.forEachVar;
+                originalStep = found.step;
+                break;
               }
             }
-
-            return this.executeExpandedStep(
-              workflow,
-              run,
-              job,
-              jobRun,
-              stepName,
-              originalStep,
-              forEachVar,
-              expressionContext,
-              streamingCallbacks,
-              enableStepLogging,
-              lastEvaluated,
-            );
-          }),
-        );
-
-        // Check for failures
-        for (const result of stepResults) {
-          if (result.status === "rejected") {
-            jobFailed = true;
           }
+
+          return this.executeExpandedStep(
+            workflow,
+            run,
+            job,
+            jobRun,
+            stepName,
+            originalStep,
+            forEachVar,
+            expressionContext,
+            progress,
+            enableStepLogging,
+            lastEvaluated,
+            workflowNestingDepth,
+            ancestorWorkflowIds,
+          );
+        }),
+      );
+
+      // Check for failures
+      for (const result of stepResults) {
+        if (result.status === "rejected") {
+          jobFailed = true;
         }
       }
-
-      // Complete job
-      if (jobFailed) {
-        jobRun.fail();
-      } else {
-        jobRun.succeed();
-      }
-      progress?.onJobComplete?.(run, jobName);
-    } finally {
-      // Clean up any pending timers
-      cleanupThrottledSave();
     }
+
+    // Complete job
+    if (jobFailed) {
+      jobRun.fail();
+    } else {
+      jobRun.succeed();
+    }
+    progress?.onJobComplete?.(run, jobName);
   }
 
   /**
@@ -1090,8 +1048,8 @@ export class WorkflowExecutionService {
       // Extract the CEL expression (remove ${{ }})
       const match = inExpression.match(/\$\{\{\s*(.+?)\s*\}\}/);
       if (!match) {
-        throw new Error(
-          `Invalid forEach.in expression: ${inExpression}. Must be in ${{}} format.`,
+        throw new UserError(
+          `Invalid forEach.in expression: ${inExpression}. Must be in $\{{ }} format.`,
         );
       }
 
@@ -1100,6 +1058,8 @@ export class WorkflowExecutionService {
 
       // Handle both arrays and objects
       const expandedSteps: ExpandedStep[] = [];
+
+      const nameHasExpression = /\$\{\{.+?\}\}/.test(step.name);
 
       if (Array.isArray(items)) {
         // Array iteration: self.{item} = item value
@@ -1119,6 +1079,9 @@ export class WorkflowExecutionService {
           if (nameMatch) {
             const value = celEvaluator.evaluate(nameMatch[1], stepContext);
             expandedName = step.name.replace(nameMatch[0], String(value));
+          } else if (!nameHasExpression) {
+            // Step name has no expression template — append item value for uniqueness
+            expandedName = `${step.name}-${String(item)}`;
           }
 
           expandedSteps.push({
@@ -1147,6 +1110,9 @@ export class WorkflowExecutionService {
           if (nameMatch) {
             const evalValue = celEvaluator.evaluate(nameMatch[1], stepContext);
             expandedName = step.name.replace(nameMatch[0], String(evalValue));
+          } else if (!nameHasExpression) {
+            // Step name has no expression template — append key for uniqueness
+            expandedName = `${step.name}-${key}`;
           }
 
           expandedSteps.push({
@@ -1156,7 +1122,7 @@ export class WorkflowExecutionService {
           });
         }
       } else {
-        throw new Error(
+        throw new UserError(
           `forEach.in must evaluate to an array or object, got: ${typeof items}`,
         );
       }
@@ -1178,6 +1144,8 @@ export class WorkflowExecutionService {
     progress?: ExecutionProgressCallback,
     enableStepLogging?: boolean,
     lastEvaluated?: boolean,
+    workflowNestingDepth?: number,
+    ancestorWorkflowIds?: Set<string>,
   ): Promise<void> {
     const step = job.getStep(stepName);
     if (!step) {
@@ -1212,9 +1180,11 @@ export class WorkflowExecutionService {
         expressionContext: lastEvaluated ? undefined : expressionContext,
         progress,
         workflowRun: run,
-        step, // Include step for accessing data output overrides
+        step,
         enableStepLogging,
         useLastEvaluated: lastEvaluated,
+        workflowNestingDepth,
+        ancestorWorkflowIds,
       };
 
       const output = await this.executor.execute(step, ctx);
@@ -1331,6 +1301,8 @@ export class WorkflowExecutionService {
     progress?: ExecutionProgressCallback,
     enableStepLogging?: boolean,
     lastEvaluated?: boolean,
+    workflowNestingDepth?: number,
+    ancestorWorkflowIds?: Set<string>,
   ): Promise<void> {
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
@@ -1398,6 +1370,8 @@ export class WorkflowExecutionService {
         enableStepLogging,
         useLastEvaluated: lastEvaluated,
         forEachVariable: forEachVar,
+        workflowNestingDepth,
+        ancestorWorkflowIds,
       };
 
       const output = await this.executor.execute(step, ctx);
@@ -1548,49 +1522,10 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Creates a throttled save function that batches saves to avoid excessive I/O.
-   * Saves at most once every 100ms.
-   * Returns a tuple of [saveFunction, cleanupFunction].
-   */
-  private createThrottledSave(
-    workflowId: WorkflowId,
-    run: WorkflowRun,
-  ): [() => void, () => void] {
-    let timer: number | null = null;
-    let pendingSave = false;
-
-    const save = () => {
-      pendingSave = true;
-      if (timer !== null) return;
-
-      timer = setTimeout(() => {
-        if (pendingSave) {
-          // Fire and forget - don't await to avoid blocking
-          this.saveRun(workflowId, run).catch((error) => {
-            console.error(
-              "Failed to save workflow run during streaming:",
-              error,
-            );
-          });
-          pendingSave = false;
-        }
-        timer = null;
-      }, 100);
-    };
-
-    const cleanup = () => {
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    };
-
-    return [save, cleanup];
-  }
-
-  /**
    * Evaluates CEL expressions in a workflow, leaving vault expressions raw.
    * Vault expressions are resolved at runtime only.
+   * forEach-related expressions (self.* and forEach.in) are left raw for
+   * runtime expansion.
    */
   private evaluateWorkflow(
     workflow: Workflow,
@@ -1604,10 +1539,31 @@ export class WorkflowExecutionService {
       return workflow;
     }
 
-    // Evaluate CEL-only expressions; skip vault-containing expressions
+    // Collect forEach.in expressions to skip during evaluation
+    const forEachInExpressions = new Set<string>();
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        if (step.forEach) {
+          const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
+          if (match) {
+            forEachInExpressions.add(step.forEach.in);
+          }
+        }
+      }
+    }
+
+    // Evaluate CEL-only expressions; skip vault, self.*, and forEach.in expressions
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
       if (containsVaultExpression(expr.celExpression)) {
+        continue;
+      }
+      // Skip self.* expressions — they reference forEach variables resolved at runtime
+      if (expr.celExpression.match(/\bself\./)) {
+        continue;
+      }
+      // Skip forEach.in expressions — they must remain as strings for forEach expansion
+      if (forEachInExpressions.has(expr.raw)) {
         continue;
       }
 

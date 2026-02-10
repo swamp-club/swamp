@@ -24,9 +24,9 @@ Deno.test("findByName returns workflow with matching name", async () => {
               dependsOn: [],
               weight: 0,
               task: {
-                type: "shell",
-                command: "echo hello",
-                args: [],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
             },
           ],

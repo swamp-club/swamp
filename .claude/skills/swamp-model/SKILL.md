@@ -12,8 +12,8 @@ machine-readable output.
 
 | Task               | Command                                                  |
 | ------------------ | -------------------------------------------------------- |
-| Search model types | `swamp type search [query] --json`                       |
-| Describe a type    | `swamp type describe <type> --json`                      |
+| Search model types | `swamp model type search [query] --json`                 |
+| Describe a type    | `swamp model type describe <type> --json`                |
 | Create model input | `swamp model create <type> <name> --json`                |
 | Search models      | `swamp model search [query] --json`                      |
 | Get model details  | `swamp model get <id_or_name> --json`                    |
@@ -52,8 +52,8 @@ Use `swamp repo index` to rebuild if symlinks become out of sync.
 Find available model types in the system.
 
 ```bash
-swamp type search --json
-swamp type search "echo" --json
+swamp model type search --json
+swamp model type search "echo" --json
 ```
 
 **Output shape:**
@@ -72,7 +72,7 @@ swamp type search "echo" --json
 Get the full schema and available methods for a type.
 
 ```bash
-swamp type describe swamp/echo --json
+swamp model type describe swamp/echo --json
 ```
 
 **Output shape:**
@@ -96,7 +96,6 @@ swamp type describe swamp/echo --json
 **Key fields:**
 
 - `inputAttributesSchema` - JSON Schema for input YAML `attributes` section
-- `resourceAttributesSchema` - JSON Schema for resulting resource
 - `methods` - Available operations with their input schemas
 
 ## Create Model Inputs
@@ -158,41 +157,16 @@ in attributes using `${{ inputs.<name> }}` expressions.
 
 ## Edit a Model
 
-Open model input file in your editor, or update via stdin in non-interactive
-mode.
+**Recommended:** Use `swamp model get <name> --json` to get the file path, then
+edit directly with the Edit tool, then validate with
+`swamp model validate <name> --json`. Never modify the `id` field.
 
-```bash
-# Interactive: opens in editor
-swamp model edit my-echo
-swamp model edit my-echo --resource  # Edit resource file instead
+**Alternative methods:**
 
-# Non-interactive: update from stdin
-cat updated-model.yaml | swamp model edit my-echo --json
+- Interactive: `swamp model edit my-echo` (opens in system editor)
+- Stdin: `cat updated.yaml | swamp model edit my-echo --json`
 
-# With here-doc (agent-friendly)
-swamp model edit my-echo --json <<EOF
-id: existing-uuid
-name: my-echo
-version: 1
-attributes:
-  message: "Updated message"
-EOF
-```
-
-Without arguments in interactive mode, shows a search interface to select a
-model.
-
-**Output shape (when updating via stdin):**
-
-```json
-{
-  "path": ".swamp/definitions/swamp/echo/abc-123.yaml",
-  "status": "updated",
-  "name": "my-echo",
-  "type": "swamp/echo",
-  "editType": "definition"
-}
-```
+Run `swamp repo index` if search results seem stale after editing.
 
 ## Delete a Model
 
@@ -484,9 +458,9 @@ swamp model output data output-789 --json
 
 ## Workflow Example
 
-1. **Search** for the right type: `swamp type search "echo" --json`
+1. **Search** for the right type: `swamp model type search "echo" --json`
 2. **Describe** to understand the schema:
-   `swamp type describe swamp/echo --json`
+   `swamp model type describe swamp/echo --json`
 3. **Create** an input file: `swamp model create swamp/echo my-message --json`
 4. **Edit** the YAML file to set `attributes.message`
 5. **Validate** the model: `swamp model validate my-message --json`

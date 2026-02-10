@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   renderTypeDescribe,
@@ -36,6 +37,43 @@ const testData: TypeDescribeData = {
   ],
 };
 
+const testDataWithSpecs: TypeDescribeData = {
+  type: {
+    raw: "AWS::EC2::VPC",
+    normalized: "aws/ec2/vpc",
+  },
+  version: "2026.01.15.1",
+  inputAttributesSchema: {
+    type: "object",
+    properties: {
+      cidrBlock: { type: "string" },
+      enableDnsSupport: { type: "boolean" },
+    },
+    required: ["cidrBlock"],
+  },
+  methods: [
+    {
+      name: "create",
+      description: "Create a new VPC",
+      inputAttributesSchema: {
+        type: "object",
+        properties: {
+          cidrBlock: { type: "string" },
+        },
+        required: ["cidrBlock"],
+      },
+      dataOutputSpecs: [
+        {
+          specType: "vpc",
+          description: "VPC resource state",
+          contentType: "application/json",
+          lifetime: "persistent",
+        },
+      ],
+    },
+  ],
+};
+
 Deno.test("renderTypeDescribe with json mode outputs valid JSON", () => {
   const logs: string[] = [];
   const originalLog = console.log;
@@ -55,6 +93,33 @@ Deno.test("renderTypeDescribe with json mode outputs valid JSON", () => {
   }
 });
 
+Deno.test("renderTypeDescribe with log mode outputs plain text, not JSON", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderTypeDescribe(testData, "log");
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Type:");
+    assertStringIncludes(combined, "swamp/echo");
+    assertStringIncludes(combined, "Version:");
+    assertStringIncludes(combined, "Methods:");
+    assertStringIncludes(combined, "write");
+    assertThrows(() => JSON.parse(combined), SyntaxError);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("renderTypeDescribe with log mode does not throw", () => {
   renderTypeDescribe(testData, "log");
+});
+
+Deno.test("renderTypeDescribe log mode with different raw and normalized names", () => {
+  renderTypeDescribe(testDataWithSpecs, "log");
+});
+
+Deno.test("renderTypeDescribe log mode with data output specs", () => {
+  renderTypeDescribe(testDataWithSpecs, "log");
 });

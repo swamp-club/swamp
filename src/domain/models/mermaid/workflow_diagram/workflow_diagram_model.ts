@@ -29,10 +29,10 @@ export const WorkflowExecutionSchema = z.object({
       name: z.string(),
       status: z.enum(["succeeded", "failed", "cancelled", "skipped"]),
       task: z.object({
-        type: z.enum(["model_method", "shell"]),
+        type: z.enum(["model_method", "workflow"]),
         modelIdOrName: z.string().optional(),
         methodName: z.string().optional(),
-        command: z.string().optional(),
+        workflowIdOrName: z.string().optional(),
       }),
       dependsOn: z.array(z.object({
         step: z.string(),
@@ -169,10 +169,12 @@ function generateMermaidDiagram(
         stepNodes.push(stepId);
 
         let taskInfo = "";
-        if (step.task.type === "model_method") {
+        if (
+          step.task.type === "model_method"
+        ) {
           taskInfo = `${step.task.modelIdOrName}.${step.task.methodName}`;
-        } else if (step.task.type === "shell") {
-          taskInfo = `shell: ${step.task.command?.substring(0, 20)}...`;
+        } else if (step.task.type === "workflow") {
+          taskInfo = `workflow: ${step.task.workflowIdOrName}`;
         }
 
         lines.push(`        ${stepId}["${step.name}<br/>${taskInfo}"]`);
@@ -273,7 +275,7 @@ function generateMermaidDiagram(
  */
 async function executeGenerate(
   definition: Definition,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   const attrs = MermaidWorkflowInputAttributesSchema.parse(
     definition.attributes,
@@ -310,46 +312,23 @@ async function executeGenerate(
     checksum,
   };
 
-  const definitionHash = await definition.computeHash();
+  const metadataWriter = context.createDataWriter!({
+    name: `${definition.name}-metadata`,
+    specType: "metadata",
+  });
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-metadata`,
-        specType: DataSpecType.create("metadata"),
-        content: new TextEncoder().encode(JSON.stringify(metadataAttributes)),
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "data" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "generate",
-          },
-        },
-      },
-      {
-        name: `${definition.name}-diagram`,
-        specType: DataSpecType.create("file"),
-        content,
-        metadata: {
-          contentType: "text/plain",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "file", filename },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "generate",
-          },
-        },
-      },
-    ],
-  };
+  const diagramWriter = context.createDataWriter!({
+    name: `${definition.name}-diagram`,
+    specType: "file",
+    tags: { filename },
+  });
+
+  const metadataHandle = await metadataWriter.writeText(
+    JSON.stringify(metadataAttributes),
+  );
+  const diagramHandle = await diagramWriter.writeAll(content);
+
+  return { dataHandles: [metadataHandle, diagramHandle] };
 }
 
 /**

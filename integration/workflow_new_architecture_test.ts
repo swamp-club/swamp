@@ -100,7 +100,7 @@ Deno.test("Workflow Architecture: workflow references model by name", async () =
           steps: [
             Step.create({
               name: "write-echo",
-              task: StepTask.modelMethod("my-echo-model", "write"),
+              task: StepTask.model("my-echo-model", "write"),
             }),
           ],
         }),
@@ -156,7 +156,7 @@ Deno.test("Workflow Architecture: workflow references model by UUID", async () =
           steps: [
             Step.create({
               name: "write-echo",
-              task: StepTask.modelMethod(model.id, "write"),
+              task: StepTask.model(model.id, "write"),
             }),
           ],
         }),
@@ -208,7 +208,7 @@ Deno.test("Workflow Architecture: step creates Data artifact", async () => {
           steps: [
             Step.create({
               name: "write-data",
-              task: StepTask.modelMethod("data-creator-model", "write"),
+              task: StepTask.model("data-creator-model", "write"),
             }),
           ],
         }),
@@ -295,11 +295,11 @@ Deno.test("Workflow Architecture: multiple steps create multiple Data artifacts"
           steps: [
             Step.create({
               name: "step-one",
-              task: StepTask.modelMethod("model-one", "write"),
+              task: StepTask.model("model-one", "write"),
             }),
             Step.create({
               name: "step-two",
-              task: StepTask.modelMethod("model-two", "write"),
+              task: StepTask.model("model-two", "write"),
               dependsOn: [
                 {
                   step: "step-one",
@@ -376,7 +376,7 @@ Deno.test("Workflow Architecture: workflow run is persisted", async () => {
           steps: [
             Step.create({
               name: "tracked-step",
-              task: StepTask.modelMethod("tracked-model", "write"),
+              task: StepTask.model("tracked-model", "write"),
             }),
           ],
         }),
@@ -433,7 +433,7 @@ Deno.test("Workflow Architecture: workflow run history", async () => {
           steps: [
             Step.create({
               name: "history-step",
-              task: StepTask.modelMethod("history-model", "write"),
+              task: StepTask.model("history-model", "write"),
             }),
           ],
         }),
@@ -488,7 +488,7 @@ Deno.test("Workflow Architecture: step execution duration is tracked", async () 
           steps: [
             Step.create({
               name: "timing-step",
-              task: StepTask.modelMethod("timing-model", "write"),
+              task: StepTask.model("timing-model", "write"),
             }),
           ],
         }),
@@ -557,7 +557,7 @@ Deno.test("Workflow Architecture: fails for non-existent model", async () => {
           steps: [
             Step.create({
               name: "missing-step",
-              task: StepTask.modelMethod("nonexistent-model", "write"),
+              task: StepTask.model("nonexistent-model", "write"),
             }),
           ],
         }),
@@ -609,7 +609,7 @@ Deno.test("Workflow Architecture: fails for invalid expression", async () => {
           steps: [
             Step.create({
               name: "invalid-step",
-              task: StepTask.modelMethod("invalid-expr-model", "write"),
+              task: StepTask.model("invalid-expr-model", "write"),
             }),
           ],
         }),
@@ -649,7 +649,7 @@ Deno.test("Workflow Architecture: step failure propagates correctly", async () =
           steps: [
             Step.create({
               name: "failing-step",
-              task: StepTask.shell("false"), // Always fails
+              task: StepTask.model("failing-model", "run"), // Always fails
             }),
           ],
         }),
@@ -698,11 +698,11 @@ Deno.test("Workflow Architecture: dependent step skipped on failure", async () =
           steps: [
             Step.create({
               name: "failing-step",
-              task: StepTask.shell("false"),
+              task: StepTask.model("failing-model", "run"),
             }),
             Step.create({
               name: "dependent-step",
-              task: StepTask.modelMethod("skip-test-model", "write"),
+              task: StepTask.model("skip-test-model", "write"),
               dependsOn: [
                 {
                   step: "failing-step",
@@ -782,7 +782,7 @@ Deno.test("Workflow Architecture: data persists after workflow completion", asyn
           steps: [
             Step.create({
               name: "persist-step",
-              task: StepTask.modelMethod("persist-data-model", "write"),
+              task: StepTask.model("persist-data-model", "write"),
             }),
           ],
         }),
@@ -855,7 +855,7 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
           steps: [
             Step.create({
               name: "compile",
-              task: StepTask.modelMethod("build-model", "write"),
+              task: StepTask.model("build-model", "write"),
             }),
           ],
         }),
@@ -864,7 +864,7 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
           steps: [
             Step.create({
               name: "unit-tests",
-              task: StepTask.modelMethod("test-model", "write"),
+              task: StepTask.model("test-model", "write"),
             }),
           ],
           dependsOn: [
@@ -876,7 +876,7 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
           steps: [
             Step.create({
               name: "deploy-step",
-              task: StepTask.modelMethod("deploy-model", "write"),
+              task: StepTask.model("deploy-model", "write"),
             }),
           ],
           dependsOn: [
@@ -919,17 +919,29 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
   });
 });
 
-Deno.test("Workflow Architecture: mixed shell and model steps", async () => {
+Deno.test("Workflow Architecture: mixed model steps", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const workflowRepo = new YamlWorkflowRepository(repoDir);
 
-    const model = Definition.create({
+    const shellModel = Definition.create({
+      name: "shell-model",
+      attributes: { message: "Shell step replacement" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, shellModel);
+
+    const mixedModel = Definition.create({
       name: "mixed-model",
       attributes: { message: "Model step" },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(ECHO_MODEL_TYPE, mixedModel);
+
+    const finalModel = Definition.create({
+      name: "final-model",
+      attributes: { message: "Final step" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, finalModel);
 
     const workflow = Workflow.create({
       name: "mixed-steps-workflow",
@@ -939,11 +951,11 @@ Deno.test("Workflow Architecture: mixed shell and model steps", async () => {
           steps: [
             Step.create({
               name: "shell-step",
-              task: StepTask.shell("echo", { args: ["Shell step executed"] }),
+              task: StepTask.model("shell-model", "write"),
             }),
             Step.create({
               name: "model-step",
-              task: StepTask.modelMethod("mixed-model", "write"),
+              task: StepTask.model("mixed-model", "write"),
               dependsOn: [
                 {
                   step: "shell-step",
@@ -953,7 +965,7 @@ Deno.test("Workflow Architecture: mixed shell and model steps", async () => {
             }),
             Step.create({
               name: "final-shell",
-              task: StepTask.shell("echo", { args: ["Final step"] }),
+              task: StepTask.model("final-model", "write"),
               dependsOn: [
                 {
                   step: "model-step",

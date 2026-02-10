@@ -8,6 +8,7 @@ import {
   type ModelDefinition,
 } from "../../model.ts";
 import type { Definition } from "../../../definitions/definition.ts";
+import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 
 /**
  * Schema for AWS CLI model input attributes.
@@ -114,7 +115,7 @@ function parseCommand(command: string): string[] {
  */
 async function executeRun(
   definition: Definition,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   const attrs = AwsCliInputAttributesSchema.parse(definition.attributes);
 
@@ -130,81 +131,51 @@ async function executeRun(
   // Parse command into args, handling quoted strings
   const args = parseCommand(attrs.command);
 
-  const startTime = Date.now();
+  const result = await executeProcess({
+    command: "aws",
+    args,
+    env,
+    timeoutMs: attrs.timeout,
+    logger: context.logger,
+  });
 
-  // Create abort controller for timeout
-  const abortController = new AbortController();
-  const timeoutId = setTimeout(() => abortController.abort(), attrs.timeout);
+  if (!result.success) {
+    throw new Error(
+      `AWS CLI failed (exit ${result.exitCode}): ${
+        result.stderr.trim() || result.stdout.trim()
+      }`,
+    );
+  }
 
-  try {
-    const command = new Deno.Command("aws", {
-      args,
-      stdout: "piped",
-      stderr: "piped",
-      env,
-      signal: abortController.signal,
-    });
-
-    const result = await command.output();
-    const stdout = new TextDecoder().decode(result.stdout);
-    const stderr = new TextDecoder().decode(result.stderr);
-    const durationMs = Date.now() - startTime;
-
-    if (!result.success) {
-      throw new Error(
-        `AWS CLI failed (exit ${result.code}): ${
-          stderr.trim() || stdout.trim()
-        }`,
-      );
-    }
-
-    // Optionally parse JSON output
-    let json: unknown = undefined;
-    if (attrs.parseJson) {
-      const trimmedOutput = stdout.trim();
-      if (trimmedOutput.length > 0) {
-        try {
-          json = JSON.parse(trimmedOutput);
-        } catch {
-          // Leave as undefined if not valid JSON
-        }
+  // Optionally parse JSON output
+  let json: unknown = undefined;
+  if (attrs.parseJson) {
+    const trimmedOutput = result.stdout.trim();
+    if (trimmedOutput.length > 0) {
+      try {
+        json = JSON.parse(trimmedOutput);
+      } catch {
+        // Leave as undefined if not valid JSON
       }
     }
-
-    const dataAttributes = {
-      output: stdout.trim(),
-      json,
-      exitCode: result.code,
-      executedAt: new Date().toISOString(),
-      durationMs,
-    };
-
-    const definitionHash = await definition.computeHash();
-
-    return {
-      dataOutputs: [
-        {
-          name: `${definition.name}-data`,
-          specType: DataSpecType.create("data"),
-          content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: { type: "data" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: "run",
-            },
-          },
-        },
-      ],
-    };
-  } finally {
-    clearTimeout(timeoutId);
   }
+
+  const dataAttributes = {
+    output: result.stdout.trim(),
+    json,
+    exitCode: result.exitCode,
+    executedAt: new Date().toISOString(),
+    durationMs: result.durationMs,
+  };
+
+  const writer = context.createDataWriter!({
+    name: `${definition.name}-data`,
+    specType: "data",
+  });
+
+  const handle = await writer.writeText(JSON.stringify(dataAttributes));
+
+  return { dataHandles: [handle] };
 }
 
 /**

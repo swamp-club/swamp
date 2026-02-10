@@ -3,16 +3,108 @@ import { dirname, join } from "@std/path";
 import { UserModelLoader } from "./user_model_loader.ts";
 import { modelRegistry } from "./model.ts";
 import { Definition } from "../definitions/definition.ts";
-import type { MethodContext } from "./model.ts";
+import { normalizeSpecType } from "./model.ts";
+import type {
+  DataHandle,
+  DataWriter,
+  DataWriterFactory,
+  MethodContext,
+  SpecBasedWriterOptions,
+} from "./model.ts";
 import type { ModelType } from "./model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { generateDataId } from "../data/data_id.ts";
+import { type DataId, generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import { getLogger } from "@logtape/logtape";
 
 // Import models barrel to ensure swamp/echo is registered for duplicate test
 import "./models.ts";
+
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: SpecBasedWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: normalizeSpecType(options.specType),
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: { ...(options.tags ?? {}) },
+      metadata: {
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
+        streaming: options.streaming ?? false,
+        tags: { ...(options.tags ?? {}) },
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -35,6 +127,10 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -58,15 +154,20 @@ function createMockDefinitionRepo(): DefinitionRepository {
 /**
  * Creates a test MethodContext with mocked repositories.
  */
-function createTestContext(modelType: ModelType): MethodContext {
-  return {
+function createTestContext(
+  modelType: ModelType,
+): { context: MethodContext; getResults: () => MockWriterResult[] } {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
   };
+  return { context, getResults };
 }
 
 // Helper to create a temporary directory with model files.
@@ -89,7 +190,7 @@ async function withTempModels(
   }
 }
 
-Deno.test("UserModelLoader loads valid model with dataOutputs", async () => {
+Deno.test("UserModelLoader loads valid model with dataHandles", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -98,22 +199,36 @@ const InputSchema = z.object({
 });
 
 export const model = {
-  type: "test/data-model-${Date.now()}",
+  type: "@user/data-model-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     process: {
       description: "Process the message",
-      execute: async (definition, _context) => {
-        return {
-          dataOutputs: [{
-            name: definition.name + "-data",
-            content: JSON.stringify({
-              message: definition.attributes.message,
-              processedAt: new Date().toISOString(),
-            }),
-          }],
-        };
+      execute: async (definition, context) => {
+        const writer = context.createDataWriter({
+          name: definition.name + "-data",
+          specType: "data",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          message: definition.attributes.message,
+          processedAt: new Date().toISOString(),
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -152,7 +267,7 @@ export const notAModel = { foo: "bar" };
 Deno.test("UserModelLoader handles invalid model structure", async () => {
   const modelCode = `
 export const model = {
-  type: "test/invalid",
+  type: "@user/invalid",
   // Missing required fields
 };
 `;
@@ -183,18 +298,23 @@ export const model = { type: "test/should-skip" };
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "test/regular-${Date.now()}",
+  type: "@user/regular-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ msg: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
-      execute: async (definition) => ({
-        dataOutputs: [{
-          name: definition.name + "-result",
-          content: JSON.stringify({ result: "ok" }),
-        }],
-      }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -215,36 +335,77 @@ export const model = {
 });
 
 Deno.test("UserModelLoader prevents duplicate type registration", async () => {
-  // First, ensure swamp/echo is registered (it's already in the global registry)
-  const modelCode = `
+  // Test that two models with the same type fail on the second one
+  const ts = Date.now();
+  const typeId = `@user/duplicate-${ts}`;
+  const model1 = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "swamp/echo",
+  type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write message",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const model2 = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.2",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
 
-  await withTempModels({ "duplicate.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+  await withTempModels(
+    { "aaa_first.ts": model1, "zzz_second.ts": model2 },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertEquals(result.failed[0].file, "duplicate.ts");
-    assertStringIncludes(result.failed[0].error, "already registered");
-  });
+      // First model should load, second should fail as duplicate
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.failed.length, 1);
+      assertEquals(result.failed[0].file, "zzz_second.ts");
+      assertStringIncludes(result.failed[0].error, "already registered");
+    },
+  );
 });
 
-Deno.test("UserModelLoader converts plain dataOutputs to proper DataOutput format", async () => {
-  const typeId = `test/convert-data-${Date.now()}`;
+Deno.test("UserModelLoader passes through dataHandles from user execute", async () => {
+  const typeId = `@user/passthrough-handles-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -256,27 +417,41 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     create: {
       description: "Create a resource",
-      execute: async (definition, _context) => {
-        // Return plain objects - the loader should add proper metadata
-        return {
-          dataOutputs: [{
-            name: definition.name + "-data",
-            content: JSON.stringify({
-              id: "resource-123",
-              status: "created",
-            }),
-          }],
-        };
+      execute: async (definition, context) => {
+        // Use context.createDataWriter to write data
+        const writer = context.createDataWriter({
+          name: definition.name + "-data",
+          specType: "data",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          id: "resource-123",
+          status: "created",
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
 };
 `;
 
-  await withTempModels({ "convert_data.ts": modelCode }, async (dir) => {
+  await withTempModels({ "passthrough_data.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
@@ -291,34 +466,30 @@ export const model = {
       attributes: { name: "test" },
     });
 
-    const context = createTestContext(modelDef!.type);
+    const { context, getResults } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.create.execute(
       definition,
       context,
     );
 
-    // Verify the dataOutputs have proper structure
-    assertEquals(methodResult.dataOutputs !== undefined, true);
-    assertEquals(methodResult.dataOutputs!.length, 1);
+    // Verify the dataHandles are passed through
+    assertEquals(methodResult.dataHandles !== undefined, true);
+    assertEquals(methodResult.dataHandles!.length, 1);
 
-    const dataOutput = methodResult.dataOutputs![0];
-    assertEquals(dataOutput.name, "test-input-data");
-    assertEquals(dataOutput.metadata !== undefined, true);
-    assertEquals(dataOutput.metadata.contentType, "application/octet-stream");
-    assertEquals(dataOutput.metadata.lifetime, "infinite");
-    assertEquals(dataOutput.metadata.ownerDefinition !== undefined, true);
-    assertEquals(dataOutput.metadata.ownerDefinition.ownerType, "model-method");
-    assertEquals(dataOutput.metadata.ownerDefinition.ownerRef, "create");
+    const handle = methodResult.dataHandles![0];
+    assertEquals(handle.name, "test-input-data");
 
-    // Verify the content
-    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
+    // Verify content was written via mock writer
+    const results = getResults();
+    assertEquals(results.length, 1);
+    const content = JSON.parse(new TextDecoder().decode(results[0].content));
     assertEquals(content.id, "resource-123");
     assertEquals(content.status, "created");
   });
 });
 
 Deno.test("UserModelLoader uses model inputAttributesSchema when method lacks one", async () => {
-  const typeId = `test/method-inherits-schema-${Date.now()}`;
+  const typeId = `@user/method-inherits-schema-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -330,18 +501,21 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run without own schema",
       // No inputAttributesSchema here - should inherit from model
-      execute: async (definition, _context) => {
-        return {
-          dataOutputs: [{
-            name: definition.name + "-result",
-            content: JSON.stringify({ result: "processed" }),
-          }],
-        };
-      },
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -368,13 +542,23 @@ Deno.test("UserModelLoader loads multiple models from directory", async () => {
   const model1 = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/multi-a-${Date.now()}",
+  type: "@user/multi-a-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ a: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run A",
-      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-a", content: JSON.stringify({ a: "a" }) }] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -383,13 +567,23 @@ export const model = {
   const model2 = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/multi-b-${Date.now()}",
+  type: "@user/multi-b-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ b: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run B",
-      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-b", content: JSON.stringify({ b: "b" }) }] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -410,8 +604,8 @@ export const model = {
   );
 });
 
-Deno.test("UserModelLoader converts resource return format to dataOutputs", async () => {
-  const typeId = `test/resource-format-${Date.now()}`;
+Deno.test("UserModelLoader user method returns empty dataHandles", async () => {
+  const typeId = `@user/empty-handles-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -423,26 +617,28 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     execute: {
-      description: "Test method that returns resource format",
-      execute: async (definition, _context) => {
-        return {
-          resource: {
-            id: definition.id,
-            attributes: {
-              testOutput: "Processed: " + definition.attributes.testInput,
-              executedAt: "2024-01-01T00:00:00Z",
-            },
-          },
-        };
+      description: "Test method that returns empty dataHandles",
+      execute: async (_definition, _context) => {
+        return { dataHandles: [] };
       },
     },
   },
 };
 `;
 
-  await withTempModels({ "resource_format.ts": modelCode }, async (dir) => {
+  await withTempModels({ "empty_handles.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
@@ -456,30 +652,20 @@ export const model = {
       attributes: { testInput: "Hello World" },
     });
 
-    const context = createTestContext(modelDef!.type);
+    const { context } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.execute.execute(
       definition,
       context,
     );
 
-    // Verify resource was converted to dataOutputs
-    assertEquals(methodResult.dataOutputs !== undefined, true);
-    assertEquals(methodResult.dataOutputs!.length, 1);
-
-    const dataOutput = methodResult.dataOutputs![0];
-    assertEquals(dataOutput.name, "resource");
-    assertEquals(dataOutput.metadata.contentType, "application/json");
-    assertEquals(dataOutput.metadata.tags.type, "resource");
-
-    // Verify the content contains the resource attributes
-    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
-    assertEquals(content.testOutput, "Processed: Hello World");
-    assertEquals(content.executedAt, "2024-01-01T00:00:00Z");
+    // Verify empty dataHandles are passed through
+    assertEquals(methodResult.dataHandles !== undefined, true);
+    assertEquals(methodResult.dataHandles!.length, 0);
   });
 });
 
-Deno.test("UserModelLoader converts data return format to dataOutputs", async () => {
-  const typeId = `test/data-format-${Date.now()}`;
+Deno.test("UserModelLoader user method without dataHandles returns undefined", async () => {
+  const typeId = `@user/no-handles-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -491,27 +677,28 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     fetch: {
-      description: "Test method that returns data format",
-      execute: async (definition, _context) => {
-        return {
-          data: {
-            attributes: {
-              result: "Query result for: " + definition.attributes.query,
-              count: 42,
-            },
-            name: "query-result",
-            tags: { source: "test" },
-          },
-        };
+      description: "Test method that returns no dataHandles",
+      execute: async (_definition, _context) => {
+        return {};
       },
     },
   },
 };
 `;
 
-  await withTempModels({ "data_format.ts": modelCode }, async (dir) => {
+  await withTempModels({ "no_handles.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
@@ -525,25 +712,14 @@ export const model = {
       attributes: { query: "SELECT *" },
     });
 
-    const context = createTestContext(modelDef!.type);
+    const { context } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.fetch.execute(
       definition,
       context,
     );
 
-    // Verify data was converted to dataOutputs
-    assertEquals(methodResult.dataOutputs !== undefined, true);
-    assertEquals(methodResult.dataOutputs!.length, 1);
-
-    const dataOutput = methodResult.dataOutputs![0];
-    assertEquals(dataOutput.name, "query-result");
-    assertEquals(dataOutput.metadata.contentType, "application/json");
-    assertEquals(dataOutput.metadata.tags.source, "test");
-
-    // Verify the content contains the data attributes
-    const content = JSON.parse(new TextDecoder().decode(dataOutput.content));
-    assertEquals(content.result, "Query result for: SELECT *");
-    assertEquals(content.count, 42);
+    // Verify dataHandles is undefined when not provided
+    assertEquals(methodResult.dataHandles, undefined);
   });
 });
 
@@ -554,13 +730,23 @@ Deno.test("UserModelLoader discovers nested files with correct relative paths", 
   const modelA = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/nested-a-${ts}",
+  type: "@user/nested-a-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ a: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run A",
-      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-a", content: JSON.stringify({ a: "a" }) }] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -568,13 +754,23 @@ export const model = {
   const modelB = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/nested-b-${ts}",
+  type: "@user/nested-b-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ b: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run B",
-      execute: async (d) => ({ dataOutputs: [{ name: d.name + "-b", content: JSON.stringify({ b: "b" }) }] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -600,11 +796,21 @@ Deno.test("UserModelLoader excludes _test.ts in subdirectories", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/subdir-notest-${ts}",
+  type: "@user/subdir-notest-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
-    run: { description: "Run", execute: async () => ({ dataOutputs: [] }) },
+    run: { description: "Run", execute: async () => ({ dataHandles: [] }) },
   },
 };
 `;
@@ -628,11 +834,21 @@ Deno.test("UserModelLoader handles deeply nested directories (3+ levels)", async
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/deep-nested-${ts}",
+  type: "@user/deep-nested-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
-    run: { description: "Run", execute: async () => ({ dataOutputs: [] }) },
+    run: { description: "Run", execute: async () => ({ dataHandles: [] }) },
   },
 };
 `;
@@ -659,29 +875,34 @@ Deno.test("UserModelLoader loads extension with single method in array", async (
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-single-${ts}",
+  type: "@user/ext-single-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-single-${ts}",
+  type: "@user/ext-single-${ts}",
   methods: [{
     audit: {
       description: "Audit the echo message",
-      execute: async (definition, _context) => ({
-        data: {
-          attributes: { audited: true, name: definition.name },
-          name: "audit-result",
-        },
-      }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -699,7 +920,7 @@ export const extension = {
       assertEquals(result.failed.length, 0);
 
       // Verify the method was added
-      const modelDef = modelRegistry.get(`test/ext-single-${ts}`);
+      const modelDef = modelRegistry.get(`@user/ext-single-${ts}`);
       assertEquals(modelDef !== undefined, true);
       assertEquals("write" in modelDef!.methods, true);
       assertEquals("audit" in modelDef!.methods, true);
@@ -712,28 +933,38 @@ Deno.test("UserModelLoader loads extension with multiple methods in array", asyn
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-multi-${ts}",
+  type: "@user/ext-multi-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-multi-${ts}",
+  type: "@user/ext-multi-${ts}",
   methods: [{
     audit: {
       description: "Audit",
-      execute: async () => ({ data: { attributes: { audited: true } } }),
+      execute: async () => ({ dataHandles: [] }),
     },
     verify: {
       description: "Verify",
-      execute: async () => ({ data: { attributes: { verified: true } } }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -748,7 +979,7 @@ export const extension = {
       assertEquals(result.loaded.length, 1);
       assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`test/ext-multi-${ts}`);
+      const modelDef = modelRegistry.get(`@user/ext-multi-${ts}`);
       assertEquals("write" in modelDef!.methods, true);
       assertEquals("audit" in modelDef!.methods, true);
       assertEquals("verify" in modelDef!.methods, true);
@@ -760,11 +991,11 @@ Deno.test("UserModelLoader extension targeting unregistered type fails gracefull
   const ts = Date.now();
   const extCode = `
 export const extension = {
-  type: "test/nonexistent-${ts}",
+  type: "@user/nonexistent-${ts}",
   methods: [{
     audit: {
       description: "Audit",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -786,24 +1017,34 @@ Deno.test("UserModelLoader extension with method name conflict fails gracefully"
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-conflict-${ts}",
+  type: "@user/ext-conflict-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-conflict-${ts}",
+  type: "@user/ext-conflict-${ts}",
   methods: [{
     write: {
       description: "Duplicate write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -828,13 +1069,23 @@ Deno.test("UserModelLoader extension with duplicate method names within array fa
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-dup-methods-${ts}",
+  type: "@user/ext-dup-methods-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -842,18 +1093,18 @@ export const model = {
   // Two array elements with same method name
   const extCode = `
 export const extension = {
-  type: "test/ext-dup-methods-${ts}",
+  type: "@user/ext-dup-methods-${ts}",
   methods: [
     {
       audit: {
         description: "Audit v1",
-        execute: async () => ({ dataOutputs: [] }),
+        execute: async () => ({ dataHandles: [] }),
       },
     },
     {
       audit: {
         description: "Audit v2",
-        execute: async () => ({ dataOutputs: [] }),
+        execute: async () => ({ dataHandles: [] }),
       },
     },
   ],
@@ -882,24 +1133,34 @@ Deno.test("UserModelLoader extension methods inherit target model's inputAttribu
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-inherit-schema-${ts}",
+  type: "@user/ext-inherit-schema-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-inherit-schema-${ts}",
+  type: "@user/ext-inherit-schema-${ts}",
   methods: [{
     audit: {
       description: "Audit without own schema",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -913,7 +1174,7 @@ export const extension = {
 
       assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`test/ext-inherit-schema-${ts}`);
+      const modelDef = modelRegistry.get(`@user/ext-inherit-schema-${ts}`);
       // Extension method should have inputAttributesSchema inherited from target model
       assertEquals(
         modelDef!.methods.audit.inputAttributesSchema !== undefined,
@@ -931,9 +1192,7 @@ export const extension = {
   methods: [{
     audit_ext_test_${Date.now()}: {
       description: "Audit the echo",
-      execute: async (definition, _context) => ({
-        data: { attributes: { audited: true, name: definition.name } },
-      }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -958,35 +1217,45 @@ Deno.test("UserModelLoader multiple extensions targeting same type", async () =>
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/multi-ext-${ts}",
+  type: "@user/multi-ext-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const ext1 = `
 export const extension = {
-  type: "test/multi-ext-${ts}",
+  type: "@user/multi-ext-${ts}",
   methods: [{
     audit: {
       description: "Audit",
-      execute: async () => ({ data: { attributes: { audited: true } } }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
 `;
   const ext2 = `
 export const extension = {
-  type: "test/multi-ext-${ts}",
+  type: "@user/multi-ext-${ts}",
   methods: [{
     verify: {
       description: "Verify",
-      execute: async () => ({ data: { attributes: { verified: true } } }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -1002,7 +1271,7 @@ export const extension = {
       assertEquals(result.extended.length, 2);
       assertEquals(result.failed.length, 0);
 
-      const modelDef = modelRegistry.get(`test/multi-ext-${ts}`);
+      const modelDef = modelRegistry.get(`@user/multi-ext-${ts}`);
       assertEquals("write" in modelDef!.methods, true);
       assertEquals("audit" in modelDef!.methods, true);
       assertEquals("verify" in modelDef!.methods, true);
@@ -1017,24 +1286,34 @@ Deno.test("UserModelLoader two-pass ordering: user model registered before exten
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/two-pass-${ts}",
+  type: "@user/two-pass-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
 export const extension = {
-  type: "test/two-pass-${ts}",
+  type: "@user/two-pass-${ts}",
   methods: [{
     audit: {
       description: "Audit",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
@@ -1051,41 +1330,60 @@ export const extension = {
       assertEquals(result.extended.length, 1);
       assertEquals(result.failed.length, 0);
 
-      const modelDef = modelRegistry.get(`test/two-pass-${ts}`);
+      const modelDef = modelRegistry.get(`@user/two-pass-${ts}`);
       assertEquals("write" in modelDef!.methods, true);
       assertEquals("audit" in modelDef!.methods, true);
     },
   );
 });
 
-Deno.test("UserModelLoader extension method execute produces proper DataOutput", async () => {
+Deno.test("UserModelLoader extension method execute passes through dataHandles", async () => {
   const ts = Date.now();
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-execute-${ts}",
+  type: "@user/ext-execute-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-execute-${ts}",
+  type: "@user/ext-execute-${ts}",
   methods: [{
     audit: {
       description: "Audit",
-      execute: async (definition, _context) => ({
-        data: {
-          attributes: { audited: true, msg: definition.attributes.message },
+      execute: async (definition, context) => {
+        const writer = context.createDataWriter({
           name: "audit-result",
-        },
-      }),
+          specType: "data",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          audited: true,
+          msg: definition.attributes.message,
+        }));
+        return { dataHandles: [handle] };
+      },
     },
   }],
 };
@@ -1099,28 +1397,29 @@ export const extension = {
 
       assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`test/ext-execute-${ts}`);
+      const modelDef = modelRegistry.get(`@user/ext-execute-${ts}`);
       const definition = Definition.create({
         name: "test-audit",
         attributes: { message: "hello" },
       });
-      const context = createTestContext(modelDef!.type);
+      const { context, getResults } = createTestContext(modelDef!.type);
 
       const methodResult = await modelDef!.methods.audit.execute(
         definition,
         context,
       );
 
-      assertEquals(methodResult.dataOutputs !== undefined, true);
-      assertEquals(methodResult.dataOutputs!.length, 1);
+      assertEquals(methodResult.dataHandles !== undefined, true);
+      assertEquals(methodResult.dataHandles!.length, 1);
 
-      const dataOutput = methodResult.dataOutputs![0];
-      assertEquals(dataOutput.name, "audit-result");
-      assertEquals(dataOutput.metadata.contentType, "application/json");
-      assertEquals(dataOutput.metadata.ownerDefinition.ownerRef, "audit");
+      const handle = methodResult.dataHandles![0];
+      assertEquals(handle.name, "audit-result");
 
+      // Verify content written via mock writer
+      const results = getResults();
+      assertEquals(results.length, 1);
       const content = JSON.parse(
-        new TextDecoder().decode(dataOutput.content),
+        new TextDecoder().decode(results[0].content),
       );
       assertEquals(content.audited, true);
       assertEquals(content.msg, "hello");
@@ -1128,10 +1427,10 @@ export const extension = {
   );
 });
 
-// --- Default dataOutputSpecs tests ---
+// --- dataOutputSpecs validation tests ---
 
-Deno.test("UserModelLoader provides default data and resource spec types", async () => {
-  const typeId = `test/default-specs-${Date.now()}`;
+Deno.test("UserModelLoader rejects model without dataOutputSpecs", async () => {
+  const typeId = `@user/no-specs-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1142,43 +1441,24 @@ export const model = {
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
 
-  await withTempModels({ "default_specs.ts": modelCode }, async (dir) => {
+  await withTempModels({ "no_specs.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
-
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
-
-    // Verify default "data" and "resource" spec types are present
-    assertEquals(Object.keys(modelDef!.dataOutputSpecs).length, 2);
-    assertEquals(modelDef!.dataOutputSpecs["data"] !== undefined, true);
-    assertEquals(modelDef!.dataOutputSpecs["resource"] !== undefined, true);
-    assertEquals(modelDef!.dataOutputSpecs["data"].specType.value, "data");
-    assertEquals(
-      modelDef!.dataOutputSpecs["resource"].specType.value,
-      "resource",
-    );
-    assertEquals(
-      modelDef!.dataOutputSpecs["data"].contentType,
-      "application/json",
-    );
-    assertEquals(
-      modelDef!.dataOutputSpecs["resource"].contentType,
-      "application/json",
-    );
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "dataOutputSpecs");
   });
 });
 
-Deno.test("UserModelLoader user-declared dataOutputSpecs override defaults", async () => {
-  const typeId = `test/custom-specs-${Date.now()}`;
+Deno.test("UserModelLoader registers user-declared dataOutputSpecs", async () => {
+  const typeId = `@user/custom-specs-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1191,17 +1471,23 @@ export const model = {
       specType: "data",
       description: "Custom data spec",
       contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
     },
     "metrics": {
       specType: "metrics",
       description: "Metrics output",
       contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "metrics" },
     },
   },
   methods: {
     run: {
       description: "Run",
-      execute: async () => ({ dataOutputs: [] }),
+      execute: async () => ({ dataHandles: [] }),
     },
   },
 };
@@ -1216,8 +1502,7 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    // User "data" spec overrides default, "resource" default preserved, "metrics" added
-    assertEquals(Object.keys(modelDef!.dataOutputSpecs).length, 3);
+    // User "data" spec overrides default, "metrics" added
     assertEquals(
       modelDef!.dataOutputSpecs["data"].description,
       "Custom data spec",
@@ -1227,12 +1512,466 @@ export const model = {
       "text/plain",
     );
     assertEquals(
-      modelDef!.dataOutputSpecs["resource"].specType.value,
-      "resource",
-    );
-    assertEquals(
       modelDef!.dataOutputSpecs["metrics"].specType.value,
       "metrics",
     );
+  });
+});
+
+// --- Namespace validation tests ---
+
+Deno.test("UserModelLoader rejects model without @ prefix", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "mycompany/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "no_at_prefix.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "must use '@' prefix");
+  });
+});
+
+Deno.test("UserModelLoader rejects model with only namespace segment (@user)", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@user",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "only_namespace.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "at least 2 segments");
+  });
+});
+
+Deno.test("UserModelLoader rejects model with only namespace segment (@myorg)", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@myorg",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "only_myorg.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "at least 2 segments");
+  });
+});
+
+Deno.test("UserModelLoader accepts model with custom namespace @adam/mymodel", async () => {
+  const typeId = `@adam/mymodel-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "custom_namespace.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+  });
+});
+
+Deno.test("UserModelLoader accepts model with custom namespace @stack72/name", async () => {
+  const typeId = `@stack72/my-model-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "stack72_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+  });
+});
+
+Deno.test("UserModelLoader accepts model with custom namespace @keeb/name", async () => {
+  const typeId = `@keeb/keyboard-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "keeb_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+  });
+});
+
+Deno.test("UserModelLoader accepts valid @user/name format", async () => {
+  const typeId = `@user/valid-model-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "valid_user_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+  });
+});
+
+Deno.test("UserModelLoader accepts valid @user/foo/bar format with 3 segments", async () => {
+  const typeId = `@user/category/model-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "valid_nested.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+  });
+});
+
+Deno.test("UserModelLoader rejects reserved namespace swamp/*", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "swamp/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "reserved_swamp.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  });
+});
+
+Deno.test("UserModelLoader rejects reserved namespace si/*", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "si/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "reserved_si.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  });
+});
+
+Deno.test("UserModelLoader rejects reserved namespace @swamp/*", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@swamp/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "reserved_at_swamp.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  });
+});
+
+Deno.test("UserModelLoader rejects reserved namespace @si/*", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@si/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "reserved_at_si.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
   });
 });

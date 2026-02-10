@@ -17,31 +17,71 @@ export const model = { ... };
 export const extension = { ... };
 ```
 
-### "Model must have at least one of resourceAttributesSchema or dataAttributesSchema"
+### "Undeclared spec type" or "dataOutputSpecs is required"
 
-Add either `dataAttributesSchema` (ephemeral) or `resourceAttributesSchema`
-(persistent):
+Every model must declare `dataOutputSpecs` listing each spec type used by
+`createDataWriter`. If a method calls `createDataWriter({ specType: "data" })`,
+the model must include a `"data"` entry in `dataOutputSpecs`:
 
 ```typescript
 export const model = {
-  type: "...",
+  type: "@user/my-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataAttributesSchema: DataSchema,  // Add this
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Model output data",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: { ... },
 };
 ```
 
 ### "Model type already registered"
 
-Type name conflicts with built-in or another user model. Use namespaced names:
+Type name conflicts with built-in or another user model. Use unique namespaced
+names:
 
 ```typescript
 // Avoid
-type: "echo"; // May conflict
+type: "@user/echo"; // May conflict with other users
 
 // Use
-type: "mycompany/echo"; // Unique
+type: "@myorg/echo"; // Use your own namespace
+```
+
+### "Model type must use '@' prefix"
+
+User-defined models must start with `@`:
+
+```typescript
+// Wrong - missing @ prefix
+type: "mycompany/echo";
+
+// Correct
+type: "@mycompany/echo";
+type: "@user/echo";
+```
+
+### "Uses a reserved namespace"
+
+Reserved namespaces (`swamp`, `si`) are for built-in types only:
+
+```typescript
+// Wrong - reserved namespace
+type: "swamp/my-model";
+type: "@swamp/my-model";
+type: "si/auth";
+type: "@si/auth";
+
+// Correct - use any other namespace
+type: "@myorg/my-model";
+type: "@user/my-model";
 ```
 
 ### "Cannot extend unregistered model type: ..."
@@ -89,12 +129,12 @@ Models directory priority:
 
 ```bash
 # Verify model loads
-swamp type search --json
+swamp model type search --json
 
 # Check model schema
-swamp type describe myorg/my-model --json
+swamp model type describe @myorg/my-model --json
 
 # Test the model
-swamp model create myorg/my-model test --set fieldName="test"
+swamp model create @myorg/my-model test --set fieldName="test"
 swamp model method run test methodName --json
 ```

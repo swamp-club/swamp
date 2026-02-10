@@ -6,7 +6,7 @@ _Workflow Run_.
 Each workflow is made up of one or more _jobs_.
 
 Jobs are made up for one or more _steps_, where a step can be calling a method
-on a model or a shell command to execute. Jobs can be dependent on each other,
+on a model or invoking another workflow. Jobs can be dependent on each other,
 and only execute if their dependcy condition is met (for example, only run this
 job if one of its upstream dependencies fail).
 
@@ -74,7 +74,7 @@ complex boolean trigger logic.
 ## Steps
 
 Each step has a name, a descirption, and a task (which is either a method on a
-model to run or a shell command to execute. Each step has dependency logic that
+model to run or a nested workflow to invoke). Each step has dependency logic that
 is identical to jobs, only for steps rather than jobs.
 
 ## Workflow Runs

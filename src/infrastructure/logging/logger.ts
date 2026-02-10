@@ -8,6 +8,9 @@ import {
   type Sink,
 } from "@logtape/logtape";
 import { getPrettyFormatter } from "@logtape/pretty";
+import { runFileSink } from "./run_file_sink.ts";
+
+export { runFileSink } from "./run_file_sink.ts";
 
 export interface LoggingOptions {
   prettyOutput?: boolean;
@@ -75,6 +78,7 @@ export async function initializeLogging(
     console: options.noColor
       ? getConsoleSink({ formatter: getTextFormatter() })
       : getConsoleSink(),
+    runFile: runFileSink.sink,
   };
 
   const loggers: Array<{
@@ -132,6 +136,16 @@ export async function initializeLogging(
     loggers: [
       ...loggers,
       {
+        category: ["model", "method", "run"],
+        lowestLevel: logLevel,
+        sinks: ["runFile"],
+      },
+      {
+        category: ["workflow", "run"],
+        lowestLevel: logLevel,
+        sinks: ["runFile"],
+      },
+      {
         category: ["logtape", "meta"],
         lowestLevel: "warning",
         sinks: ["console"],
@@ -144,6 +158,16 @@ export async function initializeLogging(
 
 export function getSwampLogger(category: string[]) {
   return getLogger(category);
+}
+
+/**
+ * Writes plain text to stdout with no decoration (no timestamp, level,
+ * or category prefix). Use for human-readable CLI "log" mode output
+ * that should read like a document rather than a log stream.
+ */
+export function writeOutput(message: string): void {
+  // deno-lint-ignore no-console
+  console.log(message);
 }
 
 export function getRunLogger(modelName: string, methodName: string) {

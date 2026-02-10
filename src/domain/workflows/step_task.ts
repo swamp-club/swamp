@@ -1,13 +1,13 @@
 import { z } from "zod";
 
 /**
- * Zod schema for step tasks.
+ * Raw schema for step tasks (without backward compat preprocessing).
  *
  * A task can be either:
- * - A model method invocation
- * - A shell command execution
+ * - A model method invocation (`type: "model_method"`)
+ * - A nested workflow invocation (`type: "workflow"`)
  */
-export const StepTaskSchema = z.discriminatedUnion("type", [
+const StepTaskRawSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("model_method"),
     modelIdOrName: z.string().min(1),
@@ -15,19 +15,41 @@ export const StepTaskSchema = z.discriminatedUnion("type", [
     inputs: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
-    type: z.literal("shell"),
-    command: z.string().min(1),
-    args: z.array(z.string()).default([]),
-    workingDir: z.string().optional(),
-    timeout: z.number().positive().optional(),
-    env: z.record(z.string(), z.string()).optional(),
+    type: z.literal("workflow"),
+    workflowIdOrName: z.string().min(1),
+    inputs: z.record(z.string(), z.unknown()).optional(),
   }),
 ]);
 
 /**
+ * Zod schema for step tasks with backward compatibility preprocessing.
+ *
+ * - `type: "shell"` throws an actionable error
+ */
+export const StepTaskSchema = z.preprocess((data) => {
+  if (data && typeof data === "object" && "type" in data) {
+    const d = data as Record<string, unknown>;
+    if (d.type === "shell") {
+      throw new Error(
+        `Step task type "shell" is no longer supported. ` +
+          `Use 'type: model_method' with the 'keeb/shell' model instead.\n\n` +
+          `Example:\n` +
+          `  task:\n` +
+          `    type: model_method\n` +
+          `    modelIdOrName: keeb/shell\n` +
+          `    methodName: run\n` +
+          `    inputs:\n` +
+          `      command: "your-command-here"`,
+      );
+    }
+  }
+  return data;
+}, StepTaskRawSchema);
+
+/**
  * Type representing step task data.
  */
-export type StepTaskData = z.infer<typeof StepTaskSchema>;
+export type StepTaskData = z.infer<typeof StepTaskRawSchema>;
 
 /**
  * StepTask is a value object representing the work to be performed by a step.
@@ -62,24 +84,27 @@ export class StepTask {
   }
 
   /**
-   * Creates a shell command task.
+   * Alias for modelMethod() - shorter convenience factory.
    */
-  static shell(
-    command: string,
-    options?: {
-      args?: string[];
-      workingDir?: string;
-      timeout?: number;
-      env?: Record<string, string>;
-    },
+  static model(
+    modelIdOrName: string,
+    methodName: string,
+    inputs?: Record<string, unknown>,
+  ): StepTask {
+    return StepTask.modelMethod(modelIdOrName, methodName, inputs);
+  }
+
+  /**
+   * Creates a workflow invocation task.
+   */
+  static workflow(
+    workflowIdOrName: string,
+    inputs?: Record<string, unknown>,
   ): StepTask {
     return new StepTask({
-      type: "shell",
-      command,
-      args: options?.args ?? [],
-      workingDir: options?.workingDir,
-      timeout: options?.timeout,
-      env: options?.env,
+      type: "workflow",
+      workflowIdOrName,
+      inputs,
     });
   }
 
@@ -91,10 +116,10 @@ export class StepTask {
   }
 
   /**
-   * Returns true if this is a shell command task.
+   * Returns true if this is a workflow invocation task.
    */
-  isShell(): boolean {
-    return this.data.type === "shell";
+  isWorkflow(): boolean {
+    return this.data.type === "workflow";
   }
 
   /**

@@ -8,6 +8,7 @@ import {
   type ModelDefinition,
 } from "../../model.ts";
 import type { Definition } from "../../../definitions/definition.ts";
+import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 
 /**
  * Schema for journalctl model input attributes.
@@ -100,100 +101,36 @@ export function buildJournalctlArgs(
 
 /**
  * Reads system logs via journalctl and returns them as log entries.
- * Uses streaming to handle arbitrarily large outputs without buffer overflow.
  */
 async function readLogs(
   definition: Definition,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   // Validate definition attributes
   const attrs = JournalctlInputAttributesSchema.parse(definition.attributes);
 
   const args = buildJournalctlArgs(attrs);
 
-  const logLines: string[] = [];
-
-  const command = new Deno.Command("journalctl", {
+  const result = await executeProcess({
+    command: "journalctl",
     args,
-    stdout: "piped",
-    stderr: "piped",
+    logger: context.logger,
   });
 
-  const child = command.spawn();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  // Stream stdout using ReadableStream API
-  const reader = child.stdout.getReader();
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Process complete lines
-      let newlineIndex: number;
-      while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        if (line.length > 0) {
-          logLines.push(line);
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
+  if (!result.success) {
+    throw new Error(`journalctl failed: ${result.stderr}`);
   }
 
-  // Handle remaining buffer (final line without trailing newline)
-  if (buffer.length > 0) {
-    logLines.push(buffer);
-  }
+  const logLines = result.stdout.split("\n").filter((line) => line.length > 0);
 
-  const status = await child.status;
-  if (!status.success) {
-    // Read stderr for error message
-    const stderrReader = child.stderr.getReader();
-    const stderrChunks: Uint8Array[] = [];
-    try {
-      while (true) {
-        const { done, value } = await stderrReader.read();
-        if (done) break;
-        stderrChunks.push(value);
-      }
-    } finally {
-      stderrReader.releaseLock();
-    }
-    const stderrDecoder = new TextDecoder();
-    const stderr = stderrChunks.map((c) => stderrDecoder.decode(c)).join("");
-    throw new Error(`journalctl failed: ${stderr}`);
-  }
+  const writer = context.createDataWriter!({
+    name: `${definition.name}-logs`,
+    specType: "log",
+  });
 
-  const definitionHash = await definition.computeHash();
+  const handle = await writer.writeText(logLines.join("\n"));
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-logs`,
-        specType: DataSpecType.create("log"),
-        content: new TextEncoder().encode(logLines.join("\n")),
-        metadata: {
-          contentType: "text/plain",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: true,
-          tags: { type: "log" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "read",
-          },
-        },
-      },
-    ],
-  };
+  return { dataHandles: [handle] };
 }
 
 /**
@@ -218,6 +155,7 @@ export const journalctlModel: ModelDefinition<
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
+      streaming: true,
       tags: { type: "log" },
     },
   },

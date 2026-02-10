@@ -9,7 +9,6 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
 import { VERSION } from "./version.ts";
-import { repoWebappCommand } from "../../../experiments/webapp/cli/webapp_command.ts";
 import { repoIndexCommand } from "./repo_index.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -36,6 +35,7 @@ export const repoInitCommand = new Command()
       initializedAt: result.initializedAt,
       skillsCopied: result.skillsCopied,
       claudeMdCreated: result.claudeMdCreated,
+      claudeSettingsCreated: result.claudeSettingsCreated,
     };
 
     renderRepoInit(data, ctx.outputMode);
@@ -62,6 +62,7 @@ export const repoUpgradeCommand = new Command()
       newVersion: result.newVersion,
       upgradedAt: result.upgradedAt,
       skillsUpdated: result.skillsUpdated,
+      claudeSettingsUpdated: result.claudeSettingsUpdated,
     };
 
     renderRepoUpgrade(data, ctx.outputMode);
@@ -76,5 +77,4 @@ export const repoCommand = new Command()
   })
   .command("init", repoInitCommand)
   .command("upgrade", repoUpgradeCommand)
-  .command("index", repoIndexCommand)
-  .command("webapp", repoWebappCommand);
+  .command("index", repoIndexCommand);

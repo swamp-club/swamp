@@ -26,7 +26,7 @@ type AnyOptions = any;
 /**
  * Converts repository results to ModelOutputSearchItem array.
  */
-async function toModelOutputSearchItems(
+export async function toModelOutputSearchItems(
   results: { output: ModelOutput; type: ModelType; method: string }[],
   definitionRepo: YamlDefinitionRepository,
 ): Promise<ModelOutputSearchItem[]> {

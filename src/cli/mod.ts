@@ -1,10 +1,10 @@
 import { Command } from "@cliffy/command";
+import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, resolve } from "@std/path";
 import { parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
-import { typeCommand } from "./commands/type_describe.ts";
 import { repoCommand, repoInitCommand } from "./commands/repo_init.ts";
 import { workflowCommand } from "./commands/workflow.ts";
 import { completionCommand } from "./commands/completion.ts";
@@ -163,6 +163,7 @@ export async function runCli(args: string[]): Promise<void> {
         Deno.env.get("NO_COLOR") !== undefined;
       if (noColor) {
         Deno.env.set("NO_COLOR", "1");
+        setColorEnabled(false);
       }
       const prettyOutput = !noColor && isStdinTty();
 
@@ -188,7 +189,6 @@ export async function runCli(args: string[]): Promise<void> {
     })
     .command("version", versionCommand)
     .command("model", modelCommand)
-    .command("type", typeCommand)
     .command("init", repoInitCommand)
     .command("repo", repoCommand)
     .command("workflow", workflowCommand)

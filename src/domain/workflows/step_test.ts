@@ -4,7 +4,7 @@ import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 
 Deno.test("Step.create creates step with minimal props", () => {
-  const task = StepTask.shell("echo", { args: ["hello"] });
+  const task = StepTask.model("test-model", "run");
   const step = Step.create({
     name: "say-hello",
     task,
@@ -18,7 +18,7 @@ Deno.test("Step.create creates step with minimal props", () => {
 });
 
 Deno.test("Step.create creates step with all props", () => {
-  const task = StepTask.modelMethod("my-model", "run");
+  const task = StepTask.model("my-model", "run");
   const step = Step.create({
     name: "run-model",
     description: "Runs the model",
@@ -38,7 +38,7 @@ Deno.test("Step.create creates step with all props", () => {
 });
 
 Deno.test("Step.getDependencyNames returns step names", () => {
-  const task = StepTask.shell("echo");
+  const task = StepTask.model("test-model", "run");
   const step = Step.create({
     name: "final",
     task,
@@ -56,9 +56,9 @@ Deno.test("Step.fromData reconstructs step correctly", () => {
     name: "test-step",
     description: "A test step",
     task: {
-      type: "shell" as const,
-      command: "echo",
-      args: ["test"],
+      type: "model_method" as const,
+      modelIdOrName: "test-model",
+      methodName: "run",
     },
     dependsOn: [
       {
@@ -72,14 +72,14 @@ Deno.test("Step.fromData reconstructs step correctly", () => {
   const step = Step.fromData(data);
   assertEquals(step.name, "test-step");
   assertEquals(step.description, "A test step");
-  assertEquals(step.task.isShell(), true);
+  assertEquals(step.task.isModelMethod(), true);
   assertEquals(step.dependsOn.length, 1);
   assertEquals(step.dependsOn[0].step, "prev");
   assertEquals(step.weight, 5);
 });
 
 Deno.test("Step.toData returns correct structure", () => {
-  const task = StepTask.shell("echo", { args: ["hello"] });
+  const task = StepTask.model("test-model", "run");
   const step = Step.create({
     name: "say-hello",
     description: "Says hello",
@@ -93,7 +93,7 @@ Deno.test("Step.toData returns correct structure", () => {
   const data = step.toData();
   assertEquals(data.name, "say-hello");
   assertEquals(data.description, "Says hello");
-  assertEquals(data.task.type, "shell");
+  assertEquals(data.task.type, "model_method");
   assertEquals(data.dependsOn.length, 1);
   assertEquals(data.dependsOn[0].step, "prepare");
   assertEquals(data.dependsOn[0].condition.type, "always");
@@ -104,7 +104,7 @@ Deno.test("Step.fromData and toData roundtrip correctly", () => {
   const original = Step.create({
     name: "complex-step",
     description: "A complex step",
-    task: StepTask.modelMethod("model", "method"),
+    task: StepTask.model("model", "method"),
     dependsOn: [
       { step: "step1", condition: TriggerCondition.succeeded() },
       {
@@ -131,7 +131,7 @@ Deno.test("Step.fromData and toData roundtrip correctly", () => {
 // forEach field tests
 
 Deno.test("Step.create creates step with forEach", () => {
-  const task = StepTask.modelMethod("echo-model", "write");
+  const task = StepTask.model("echo-model", "write");
   const step = Step.create({
     name: "deploy-${{self.env}}",
     task,
@@ -147,7 +147,7 @@ Deno.test("Step.create creates step with forEach", () => {
 });
 
 Deno.test("Step.create creates step without forEach", () => {
-  const task = StepTask.shell("echo");
+  const task = StepTask.model("test-model", "run");
   const step = Step.create({
     name: "simple-step",
     task,
@@ -181,7 +181,7 @@ Deno.test("Step.fromData reconstructs step with forEach", () => {
 Deno.test("Step.toData includes forEach in output", () => {
   const step = Step.create({
     name: "tag-${{self.tag.key}}",
-    task: StepTask.modelMethod("tagger", "apply"),
+    task: StepTask.model("tagger", "apply"),
     forEach: {
       item: "tag",
       in: "${{ inputs.tags }}",
@@ -198,7 +198,7 @@ Deno.test("Step.fromData and toData roundtrip with forEach", () => {
   const original = Step.create({
     name: "deploy-${{self.region}}",
     description: "Deploy to region",
-    task: StepTask.modelMethod("deployer", "deploy"),
+    task: StepTask.model("deployer", "deploy"),
     forEach: {
       item: "region",
       in: "${{ inputs.regions }}",

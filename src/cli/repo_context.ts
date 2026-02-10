@@ -57,11 +57,7 @@ export async function requireInitializedRepo(
 
   if (!isInit) {
     throw new UserError(
-      `Not a swamp repository: ${repoPath.value}\n\n` +
-        `To initialize a new repository, run:\n` +
-        `  swamp repo init\n\n` +
-        `Or specify an existing repository with --repo-dir:\n` +
-        `  swamp <command> --repo-dir /path/to/repo`,
+      `Not a swamp repository: ${repoPath.value}. To initialize a new repository, run 'swamp repo init', or specify an existing repository with 'swamp <command> --repo-dir /path/to/repo'.`,
     );
   }
 

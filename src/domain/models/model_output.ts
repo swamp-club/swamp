@@ -110,6 +110,7 @@ export const ModelOutputSchema = z.object({
   retryCount: z.number().int().nonnegative().default(0),
   provenance: ExecutionProvenanceSchema,
   artifacts: ArtifactsProducedSchema.optional(),
+  logFile: z.string().optional(),
 });
 
 /**
@@ -132,6 +133,7 @@ export interface CreateModelOutputProps {
   retryCount?: number;
   provenance: ExecutionProvenance;
   artifacts?: ArtifactsProduced;
+  logFile?: string;
 }
 
 /**
@@ -152,6 +154,7 @@ export class ModelOutput {
     private _retryCount: number,
     readonly provenance: ExecutionProvenance,
     private _artifacts: ArtifactsProduced,
+    private _logFile: string | undefined,
   ) {}
 
   /**
@@ -176,6 +179,7 @@ export class ModelOutput {
       retryCount: props.retryCount ?? 0,
       provenance: props.provenance,
       artifacts: props.artifacts ?? { dataArtifacts: [] },
+      logFile: props.logFile,
     });
 
     return new ModelOutput(
@@ -190,6 +194,7 @@ export class ModelOutput {
       validated.retryCount,
       validated.provenance,
       validated.artifacts ?? { dataArtifacts: [] },
+      validated.logFile,
     );
   }
 
@@ -213,6 +218,7 @@ export class ModelOutput {
       validated.retryCount,
       validated.provenance,
       validated.artifacts ?? { dataArtifacts: [] },
+      validated.logFile,
     );
   }
 
@@ -258,6 +264,20 @@ export class ModelOutput {
     return {
       dataArtifacts: [...this._artifacts.dataArtifacts],
     };
+  }
+
+  /**
+   * Gets the log file path for this execution.
+   */
+  get logFile(): string | undefined {
+    return this._logFile;
+  }
+
+  /**
+   * Sets the log file path for this execution.
+   */
+  setLogFile(path: string): void {
+    this._logFile = path;
   }
 
   /**
@@ -358,6 +378,9 @@ export class ModelOutput {
     }
     if (this._error) {
       data.error = { ...this._error };
+    }
+    if (this._logFile) {
+      data.logFile = this._logFile;
     }
 
     return data;

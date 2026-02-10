@@ -74,3 +74,67 @@ Deno.test("ModelType.toString returns raw type", () => {
   const type = ModelType.create("AWS::EC2::VPC");
   assertEquals(type.toString(), "AWS::EC2::VPC");
 });
+
+// --- User namespace helper tests ---
+
+Deno.test("ModelType.isUserNamespace returns true for @ prefixed types", () => {
+  assertEquals(ModelType.isUserNamespace("@user/foo"), true);
+  assertEquals(ModelType.isUserNamespace("@adam/bar"), true);
+  assertEquals(ModelType.isUserNamespace("@user/foo/bar"), true);
+});
+
+Deno.test("ModelType.isUserNamespace returns false for non-@ types", () => {
+  assertEquals(ModelType.isUserNamespace("swamp/echo"), false);
+  assertEquals(ModelType.isUserNamespace("aws/ec2/vpc"), false);
+  assertEquals(ModelType.isUserNamespace("user/foo"), false);
+});
+
+Deno.test("ModelType.getUserNamespace extracts namespace correctly", () => {
+  assertEquals(ModelType.getUserNamespace("@user/foo"), "user");
+  assertEquals(ModelType.getUserNamespace("@adam/bar"), "adam");
+  assertEquals(ModelType.getUserNamespace("@mycompany/cloud/aws"), "mycompany");
+  assertEquals(ModelType.getUserNamespace("@user"), "user");
+});
+
+Deno.test("ModelType.getUserNamespace returns undefined for non-@ types", () => {
+  assertEquals(ModelType.getUserNamespace("swamp/echo"), undefined);
+  assertEquals(ModelType.getUserNamespace("user/foo"), undefined);
+});
+
+Deno.test("ModelType.getSegmentCount returns correct counts", () => {
+  // Built-in types
+  assertEquals(ModelType.getSegmentCount("swamp/echo"), 2);
+  assertEquals(ModelType.getSegmentCount("aws/ec2/vpc"), 3);
+  // User namespace types
+  assertEquals(ModelType.getSegmentCount("@user/echo"), 2);
+  assertEquals(ModelType.getSegmentCount("@user/foo/bar"), 3);
+  assertEquals(ModelType.getSegmentCount("@user/a/b/c/d"), 5);
+  // Edge cases
+  assertEquals(ModelType.getSegmentCount("@user"), 1);
+  assertEquals(ModelType.getSegmentCount("single"), 1);
+});
+
+Deno.test("ModelType.isReservedNamespace identifies swamp as reserved", () => {
+  assertEquals(ModelType.isReservedNamespace("swamp/echo"), true);
+  assertEquals(ModelType.isReservedNamespace("swamp/foo/bar"), true);
+  assertEquals(ModelType.isReservedNamespace("@swamp/echo"), true);
+  assertEquals(ModelType.isReservedNamespace("@swamp/foo/bar"), true);
+});
+
+Deno.test("ModelType.isReservedNamespace identifies si as reserved", () => {
+  assertEquals(ModelType.isReservedNamespace("si/auth"), true);
+  assertEquals(ModelType.isReservedNamespace("si/foo/bar"), true);
+  assertEquals(ModelType.isReservedNamespace("@si/auth"), true);
+  assertEquals(ModelType.isReservedNamespace("@si/foo/bar"), true);
+});
+
+Deno.test("ModelType.isReservedNamespace returns false for user namespaces", () => {
+  assertEquals(ModelType.isReservedNamespace("@user/echo"), false);
+  assertEquals(ModelType.isReservedNamespace("@adam/foo"), false);
+  assertEquals(ModelType.isReservedNamespace("@mycompany/model"), false);
+});
+
+Deno.test("ModelType.isReservedNamespace returns false for non-reserved built-in", () => {
+  assertEquals(ModelType.isReservedNamespace("aws/ec2/vpc"), false);
+  assertEquals(ModelType.isReservedNamespace("docker/run"), false);
+});

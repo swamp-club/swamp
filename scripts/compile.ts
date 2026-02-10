@@ -1,10 +1,8 @@
 #!/usr/bin/env -S deno run -A
 
 import { parseArgs } from "@std/cli/parse-args";
-import { exists } from "@std/fs/exists";
 
 interface CompileOptions {
-  includeExperiment: string[];
   output: string;
   target?: string;
   version?: string;
@@ -25,10 +23,8 @@ async function stampVersion(version: string): Promise<string> {
 
 async function main() {
   const args = parseArgs(Deno.args, {
-    string: ["include-experiment", "output", "target", "version"],
-    collect: ["include-experiment"],
+    string: ["output", "target", "version"],
     alias: {
-      "include-experiment": "includeExperiment",
       "o": "output",
       "t": "target",
       "v": "version",
@@ -39,7 +35,6 @@ async function main() {
   });
 
   const options: CompileOptions = {
-    includeExperiment: args.includeExperiment || [],
     output: args.output || "swamp",
     target: args.target,
     version: args.version,
@@ -93,24 +88,6 @@ async function main() {
       "--exclude",
       "workflows",
     ];
-
-    for (const experiment of options.includeExperiment) {
-      if (experiment === "web") {
-        const webDistPath = "experiments/webapp/frontend/dist";
-        if (await exists(webDistPath)) {
-          console.log(`Including web experiment from ${webDistPath}`);
-          baseCommand.push("--include", webDistPath);
-        } else {
-          console.error(
-            `Error: Web experiment not built. Run 'deno run webapp:build' first.`,
-          );
-          Deno.exit(1);
-        }
-      } else {
-        console.error(`Error: Unknown experiment '${experiment}'`);
-        Deno.exit(1);
-      }
-    }
 
     if (options.target) {
       baseCommand.push("--target", options.target);

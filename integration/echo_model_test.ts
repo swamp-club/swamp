@@ -11,6 +11,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir, existsSync } from "@std/fs";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { getLogger } from "@logtape/logtape";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
@@ -18,8 +19,9 @@ import {
   ECHO_MODEL_TYPE,
   echoModel,
 } from "../src/domain/models/echo/echo_model.ts";
-import type { MethodContext } from "../src/domain/models/model.ts";
-import { getLogger } from "@logtape/logtape";
+import type { DataHandle, MethodContext } from "../src/domain/models/model.ts";
+import type { ModelType } from "../src/domain/models/model_type.ts";
+import { createDataWriterFactory } from "../src/domain/models/data_writer.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-integration-" });
@@ -52,17 +54,23 @@ async function initializeTestRepo(repoDir: string): Promise<void> {
 }
 
 /**
- * Helper to get attributes from a DataOutput.
+ * Helper to read data content from a DataHandle.
  */
-function getDataOutputAttributes(
-  dataOutputs: { content: Uint8Array }[] | undefined,
-  index = 0,
-): Record<string, unknown> | undefined {
-  if (!dataOutputs || dataOutputs.length <= index) {
-    return undefined;
-  }
-  const content = new TextDecoder().decode(dataOutputs[index].content);
-  return JSON.parse(content);
+async function getDataHandleContent(
+  dataRepo: FileSystemUnifiedDataRepository,
+  modelType: ModelType,
+  modelId: string,
+  handle: DataHandle,
+): Promise<Record<string, unknown> | undefined> {
+  const content = await dataRepo.getContent(
+    modelType,
+    modelId,
+    handle.name,
+    handle.version,
+  );
+  if (!content) return undefined;
+  const text = new TextDecoder().decode(content);
+  return JSON.parse(text);
 }
 
 Deno.test("Echo model: full flow - create definition, execute write, verify data", async () => {
@@ -102,6 +110,15 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
       testMessage,
     );
 
+    // Create DataWriterFactory for the echo model
+    const { factory: createDataWriter } = createDataWriterFactory(
+      dataRepo,
+      modelType,
+      definition.id,
+      await definition.computeHash(),
+      echoModel.dataOutputSpecs,
+    );
+
     // Create method context
     const context: MethodContext = {
       repoDir,
@@ -110,25 +127,40 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
       logger: getLogger(["test"]),
       dataRepository: dataRepo,
       definitionRepository: definitionRepo,
+      createDataWriter,
     };
 
     // Execute the write method
     const result = await echoModel.methods.write.execute(definition, context);
 
-    // Verify dataOutputs exists
+    // Verify dataHandles exists (new API)
     assertEquals(
-      result.dataOutputs !== undefined,
+      result.dataHandles !== undefined,
       true,
-      "Result should have dataOutputs",
+      "Result should have dataHandles",
     );
     assertEquals(
-      result.dataOutputs!.length >= 1,
+      result.dataHandles!.length >= 1,
       true,
-      "Should have at least one data output",
+      "Should have at least one data handle",
     );
 
-    // Verify data output content
-    const dataAttrs = getDataOutputAttributes(result.dataOutputs);
+    // Verify data handle metadata
+    const handle = result.dataHandles![0];
+    assertEquals(
+      handle.specType.value,
+      "message",
+      "Should have message spec type",
+    );
+    assertEquals(handle.metadata.contentType, "application/json");
+
+    // Verify data content (read from disk via dataRepo)
+    const dataAttrs = await getDataHandleContent(
+      dataRepo,
+      modelType,
+      definition.id,
+      handle,
+    );
     assertEquals(
       dataAttrs?.message,
       testMessage,

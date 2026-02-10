@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import type { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -20,9 +21,9 @@ Deno.test("typeSearchCommand has correct description", async () => {
   );
 });
 
-Deno.test("typeSearchCommand is registered as subcommand of typeCommand", async () => {
-  const { typeCommand } = await import("./type_describe.ts");
-  const commands = typeCommand.getCommands();
-  const searchCmd = commands.find((c) => c.getName() === "search");
+Deno.test("typeSearchCommand is registered as subcommand of modelTypeCommand", async () => {
+  const { modelTypeCommand } = await import("./model_type.ts");
+  const commands = modelTypeCommand.getCommands();
+  const searchCmd = commands.find((c: Command) => c.getName() === "search");
   assertEquals(searchCmd !== undefined, true);
 });

@@ -7,7 +7,7 @@ import { TriggerCondition } from "./trigger_condition.ts";
 function createTestStep(name: string): Step {
   return Step.create({
     name,
-    task: StepTask.shell("echo", { args: [name] }),
+    task: StepTask.model("test-model", "run"),
   });
 }
 
@@ -94,7 +94,11 @@ Deno.test("Job.fromData reconstructs job correctly", () => {
     steps: [
       {
         name: "step1",
-        task: { type: "shell" as const, command: "echo", args: [] },
+        task: {
+          type: "model_method" as const,
+          modelIdOrName: "test-model",
+          methodName: "run",
+        },
         dependsOn: [],
         weight: 0,
       },
@@ -146,11 +150,11 @@ Deno.test("Job.fromData and toData roundtrip correctly", () => {
     steps: [
       Step.create({
         name: "step1",
-        task: StepTask.shell("echo", { args: ["1"] }),
+        task: StepTask.model("test-model", "run"),
       }),
       Step.create({
         name: "step2",
-        task: StepTask.modelMethod("model", "run"),
+        task: StepTask.model("model", "run"),
         dependsOn: [
           { step: "step1", condition: TriggerCondition.succeeded() },
         ],

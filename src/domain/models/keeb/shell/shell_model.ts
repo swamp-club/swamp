@@ -8,6 +8,7 @@ import {
   type ModelDefinition,
 } from "../../model.ts";
 import type { Definition } from "../../../definitions/definition.ts";
+import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 
 /**
  * Schema for shell model input attributes.
@@ -59,53 +60,6 @@ export type ShellDataAttributes = z.infer<typeof ShellDataAttributesSchema>;
 export const SHELL_MODEL_TYPE = ModelType.create("keeb/shell");
 
 /**
- * Streams output from a readable stream, calling onLine for each line.
- * Returns the complete output as a string.
- */
-async function streamOutput(
-  stream: ReadableStream<Uint8Array>,
-  onLine?: (line: string) => void,
-): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  const lines: string[] = [];
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const bufferLines = buffer.split("\n");
-
-      // Process all complete lines
-      for (let i = 0; i < bufferLines.length - 1; i++) {
-        lines.push(bufferLines[i]);
-        if (onLine) {
-          onLine(bufferLines[i]);
-        }
-      }
-
-      // Keep the incomplete line in the buffer
-      buffer = bufferLines[bufferLines.length - 1];
-    }
-
-    // Process any remaining content
-    if (buffer) {
-      lines.push(buffer);
-      if (onLine) {
-        onLine(buffer);
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  return lines.join("\n");
-}
-
-/**
  * Executes a shell command and captures the output.
  */
 async function executeCommand(
@@ -115,85 +69,30 @@ async function executeCommand(
   // Validate definition attributes
   const attrs = ShellInputAttributesSchema.parse(definition.attributes);
 
-  const startTime = Date.now();
   let stdout = "";
   let stderr = "";
   let exitCode = 0;
+  let durationMs = 0;
 
   try {
-    const commandOptions: Deno.CommandOptions = {
+    const result = await executeProcess({
+      command: "sh",
       args: ["-c", attrs.run],
-      stdout: "piped",
-      stderr: "piped",
-    };
+      cwd: attrs.workingDir,
+      env: attrs.env,
+      timeoutMs: attrs.timeout,
+      logger: context.logger,
+    });
 
-    if (attrs.workingDir) {
-      commandOptions.cwd = attrs.workingDir;
-    }
-
-    if (attrs.env) {
-      commandOptions.env = attrs.env;
-    }
-
-    const command = new Deno.Command("sh", commandOptions);
-
-    // Use streaming if callbacks are provided
-    if (context.streaming?.onStdout || context.streaming?.onStderr) {
-      const process = command.spawn();
-
-      // Stream stdout and stderr concurrently
-      const [stdoutResult, stderrResult, status] = await Promise.all([
-        streamOutput(process.stdout, context.streaming?.onStdout),
-        streamOutput(process.stderr, context.streaming?.onStderr),
-        process.status,
-      ]);
-
-      stdout = stdoutResult;
-      stderr = stderrResult;
-      exitCode = status.code;
-    } else if (attrs.timeout) {
-      // Handle timeout with AbortSignal (non-streaming)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), attrs.timeout);
-
-      try {
-        const child = command.spawn();
-
-        // Create a race between command completion and timeout
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          controller.signal.addEventListener("abort", () => {
-            child.kill("SIGTERM");
-            reject(new Error(`Command timed out after ${attrs.timeout}ms`));
-          });
-        });
-
-        const output = await Promise.race([child.output(), timeoutPromise]);
-        clearTimeout(timeoutId);
-
-        stdout = new TextDecoder().decode(output.stdout);
-        stderr = new TextDecoder().decode(output.stderr);
-        exitCode = output.code;
-      } catch (error) {
-        clearTimeout(timeoutId);
-        throw error;
-      }
-    } else {
-      // Buffered execution (original behavior)
-      const output = await command.output();
-      stdout = new TextDecoder().decode(output.stdout);
-      stderr = new TextDecoder().decode(output.stderr);
-      exitCode = output.code;
-    }
+    stdout = result.stdout;
+    stderr = result.stderr;
+    exitCode = result.exitCode;
+    durationMs = result.durationMs;
   } catch (error) {
     // Handle execution errors (command not found, timeout, etc.)
     stderr = error instanceof Error ? error.message : String(error);
     exitCode = -1;
   }
-
-  const endTime = Date.now();
-  const durationMs = endTime - startTime;
-
-  const definitionHash = await definition.computeHash();
 
   // Create data attributes for the result
   const resultAttributes = {
@@ -215,44 +114,22 @@ async function executeCommand(
   }
   const outputLogContent = outputLogParts.join("\n");
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-result`,
-        specType: DataSpecType.create("result"),
-        content: new TextEncoder().encode(JSON.stringify(resultAttributes)),
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "data" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "execute",
-          },
-        },
-      },
-      {
-        name: `${definition.name}-output`,
-        specType: DataSpecType.create("log"),
-        content: new TextEncoder().encode(outputLogContent),
-        metadata: {
-          contentType: "text/plain",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: true,
-          tags: { type: "log" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "execute",
-          },
-        },
-      },
-    ],
-  };
+  const resultWriter = context.createDataWriter!({
+    name: `${definition.name}-result`,
+    specType: "result",
+  });
+
+  const logWriter = context.createDataWriter!({
+    name: `${definition.name}-output`,
+    specType: "log",
+  });
+
+  const resultHandle = await resultWriter.writeText(
+    JSON.stringify(resultAttributes),
+  );
+  const logHandle = await logWriter.writeText(outputLogContent);
+
+  return { dataHandles: [resultHandle, logHandle] };
 }
 
 /**
@@ -285,6 +162,7 @@ export const shellModel: ModelDefinition<
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
+      streaming: true,
       tags: { type: "log" },
     },
   },

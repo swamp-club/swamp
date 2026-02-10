@@ -1,8 +1,9 @@
 // deno-lint-ignore verbatim-module-syntax
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
+import { useScrollableList } from "./hooks/mod.ts";
 
 /**
  * Represents a single workflow run search result item.
@@ -92,25 +93,29 @@ export function WorkflowHistorySearchUI(
   const { exit } = useApp();
 
   const [query, setQuery] = useState(initialQuery);
-  const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // Create fzf instance for fuzzy searching
-  const fzf = new Fzf(runs, {
-    selector: (item) =>
-      `${item.workflowName} ${item.runId} ${item.status} ${
-        item.startedAt ?? ""
-      }`,
-  });
+  // Create fzf instance for fuzzy searching (memoized to avoid recreation on every render)
+  const fzf = useMemo(
+    () =>
+      new Fzf(runs, {
+        selector: (item) =>
+          `${item.workflowName} ${item.runId} ${item.status} ${
+            item.startedAt ?? ""
+          }`,
+      }),
+    [runs],
+  );
 
   // Get filtered results
   const results: FzfResultItem<WorkflowHistorySearchItem>[] = fzf.find(query);
-  const maxVisible = 10;
-  const visibleResults = results.slice(0, maxVisible);
 
-  // Reset selection when query changes
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [query]);
+  // Use shared scrollable list hook
+  const {
+    selectedIndex,
+    setSelectedIndex,
+    visibleItems: visibleResults,
+    scrollMetrics,
+  } = useScrollableList(results, 10, [query]);
 
   const handleSelect = useCallback(() => {
     if (results.length > 0 && selectedIndex < results.length) {
@@ -177,15 +182,20 @@ export function WorkflowHistorySearchUI(
 
       {/* Results list */}
       <Box flexDirection="column" marginTop={1}>
+        {scrollMetrics.hasMoreAbove && (
+          <Text dimColor>... {scrollMetrics.moreAboveCount} more above</Text>
+        )}
         {visibleResults.map((result, index) => (
           <WorkflowHistorySearchResultItem
             key={result.item.runId}
             item={result.item}
-            isSelected={index === selectedIndex}
+            isSelected={index + scrollMetrics.moreAboveCount === selectedIndex}
           />
         ))}
-        {results.length > maxVisible && (
-          <Text dimColor>... {results.length - maxVisible} more results</Text>
+        {scrollMetrics.hasMoreBelow && (
+          <Text dimColor>
+            ... {scrollMetrics.moreBelowCount} more below
+          </Text>
         )}
         {results.length === 0 && (
           <Text color="yellow">No matching runs found</Text>

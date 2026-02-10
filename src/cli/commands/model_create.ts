@@ -9,14 +9,16 @@ import { UserError } from "../../domain/errors.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { toMethodDescribeData, zodToJsonSchema } from "./type_describe.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
-import { modelSearchCommand } from "./model_search.ts";
+import { modelSearchAction, modelSearchCommand } from "./model_search.ts";
 import { modelGetCommand } from "./model_get.ts";
 import { modelDeleteCommand } from "./model_delete.ts";
 import { modelEditCommand } from "./model_edit.ts";
 import { modelEvaluateCommand } from "./model_evaluate.ts";
 import { modelOutputCommand } from "./model_output.ts";
+import { modelTypeCommand } from "./model_type.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -76,6 +78,16 @@ export const modelCreateCommand = new Command()
       type: modelType.normalized,
       name: definition.name,
       path: definitionRepo.getPath(modelType, definition.id),
+      version: modelDef?.version,
+      inputAttributesSchema: modelDef
+        ? zodToJsonSchema(modelDef.inputAttributesSchema)
+        : undefined,
+      methods: modelDef
+        ? Object.entries(modelDef.methods).map(
+          ([name, method]) =>
+            toMethodDescribeData(name, method, modelDef.dataOutputSpecs),
+        )
+        : undefined,
     };
 
     renderModelCreate(data, ctx.outputMode);
@@ -96,4 +108,16 @@ export const modelCommand = new Command()
   .command("search", modelSearchCommand)
   .command("validate", modelValidateCommand)
   .command("method", modelMethodCommand)
-  .command("output", modelOutputCommand);
+  .command("output", modelOutputCommand)
+  .command("type", modelTypeCommand)
+  .command(
+    "list",
+    new Command()
+      .description("Alias for model search")
+      .hidden()
+      .arguments("[query:string]")
+      .option("--repo-dir <dir:string>", "Repository directory", {
+        default: ".",
+      })
+      .action(modelSearchAction),
+  );

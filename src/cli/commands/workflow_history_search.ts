@@ -96,82 +96,85 @@ function filterRuns(
   );
 }
 
+export async function workflowHistorySearchAction(
+  options: AnyOptions,
+  query?: string,
+): Promise<void> {
+  const ctx = createContext(
+    options as GlobalOptions,
+    ["workflow", "history", "search"],
+  );
+  ctx.logger.debug`Searching workflow history with query: ${query ?? "(none)"}`;
+
+  const { repoContext } = await requireInitializedRepo({
+    repoDir: options.repoDir ?? ".",
+    outputMode: ctx.outputMode,
+  });
+  const workflowRepo = repoContext.workflowRepo;
+  const runRepo = repoContext.workflowRunRepo;
+
+  // Get all workflows
+  const allWorkflows = await workflowRepo.findAll();
+
+  // Get all runs for all workflows
+  const allRuns: WorkflowRun[] = [];
+  for (const workflow of allWorkflows) {
+    const runs = await runRepo.findAllByWorkflowId(workflow.id);
+    allRuns.push(...runs);
+  }
+
+  // Sort by startedAt descending (most recent first)
+  allRuns.sort((a, b) => {
+    const aTime = a.startedAt?.getTime() ?? 0;
+    const bTime = b.startedAt?.getTime() ?? 0;
+    return bTime - aTime;
+  });
+
+  const searchItems = allRuns.map(toSearchItem);
+
+  if (ctx.outputMode === "json") {
+    // Non-interactive: filter and output JSON
+    const filteredRuns = filterRuns(searchItems, query ?? "");
+    const data: WorkflowHistorySearchData = {
+      query: query ?? "",
+      results: filteredRuns,
+    };
+    await renderWorkflowHistorySearch(data, ctx.outputMode);
+  } else {
+    // Interactive: show fuzzy search UI
+    const data: WorkflowHistorySearchData = {
+      query: query ?? "",
+      results: searchItems,
+    };
+
+    const selected = await renderWorkflowHistorySearch(data, ctx.outputMode);
+
+    if (selected) {
+      ctx.logger.debug`Selected run: ${selected.runId}`;
+      // Display the run details
+      const run = await runRepo.findById(
+        createWorkflowId(selected.workflowId),
+        createWorkflowRunId(selected.runId),
+      );
+      if (run) {
+        const path = runRepo.getPath(
+          createWorkflowId(selected.workflowId),
+          createWorkflowRunId(selected.runId),
+        );
+        const runData = toRunData(run, path);
+        renderWorkflowRun(runData, ctx.outputMode);
+      }
+    } else {
+      ctx.logger.debug`Search cancelled`;
+    }
+  }
+
+  ctx.logger.debug("Workflow history search command completed");
+}
+
 export const workflowHistorySearchCommand = new Command()
   .name("search")
   .description("Search workflow run history")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(
-      options as GlobalOptions,
-      ["workflow", "history", "search"],
-    );
-    ctx.logger.debug`Searching workflow history with query: ${
-      query ?? "(none)"
-    }`;
-
-    const { repoContext } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
-    });
-    const workflowRepo = repoContext.workflowRepo;
-    const runRepo = repoContext.workflowRunRepo;
-
-    // Get all workflows
-    const allWorkflows = await workflowRepo.findAll();
-
-    // Get all runs for all workflows
-    const allRuns: WorkflowRun[] = [];
-    for (const workflow of allWorkflows) {
-      const runs = await runRepo.findAllByWorkflowId(workflow.id);
-      allRuns.push(...runs);
-    }
-
-    // Sort by startedAt descending (most recent first)
-    allRuns.sort((a, b) => {
-      const aTime = a.startedAt?.getTime() ?? 0;
-      const bTime = b.startedAt?.getTime() ?? 0;
-      return bTime - aTime;
-    });
-
-    const searchItems = allRuns.map(toSearchItem);
-
-    if (ctx.outputMode === "json") {
-      // Non-interactive: filter and output JSON
-      const filteredRuns = filterRuns(searchItems, query ?? "");
-      const data: WorkflowHistorySearchData = {
-        query: query ?? "",
-        results: filteredRuns,
-      };
-      await renderWorkflowHistorySearch(data, ctx.outputMode);
-    } else {
-      // Interactive: show fuzzy search UI
-      const data: WorkflowHistorySearchData = {
-        query: query ?? "",
-        results: searchItems,
-      };
-
-      const selected = await renderWorkflowHistorySearch(data, ctx.outputMode);
-
-      if (selected) {
-        ctx.logger.debug`Selected run: ${selected.runId}`;
-        // Display the run details
-        const run = await runRepo.findById(
-          createWorkflowId(selected.workflowId),
-          createWorkflowRunId(selected.runId),
-        );
-        if (run) {
-          const path = runRepo.getPath(
-            createWorkflowId(selected.workflowId),
-            createWorkflowRunId(selected.runId),
-          );
-          const runData = toRunData(run, path);
-          renderWorkflowRun(runData, ctx.outputMode);
-        }
-      } else {
-        ctx.logger.debug`Search cancelled`;
-      }
-    }
-
-    ctx.logger.debug("Workflow history search command completed");
-  });
+  .action(workflowHistorySearchAction);

@@ -93,9 +93,9 @@ Deno.test("CLI: workflow evaluate single workflow", async () => {
             {
               name: "deploy-step",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["Deploying to ${{ inputs.environment }}"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,
@@ -110,7 +110,7 @@ Deno.test("CLI: workflow evaluate single workflow", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -133,7 +133,11 @@ Deno.test("CLI: workflow evaluate single workflow", async () => {
     // Check that evaluated workflow was saved
     const evaluatedDir = join(repoDir, ".swamp/workflows-evaluated");
     const files = Array.from(Deno.readDirSync(evaluatedDir));
-    assertEquals(files.length >= 1, true, "Should have evaluated workflow file");
+    assertEquals(
+      files.length >= 1,
+      true,
+      "Should have evaluated workflow file",
+    );
   });
 });
 
@@ -158,9 +162,9 @@ Deno.test("CLI: workflow evaluate all workflows", async () => {
               {
                 name: "step1",
                 task: {
-                  type: "shell",
-                  command: "echo",
-                  args: [`Workflow ${i}`],
+                  type: "model_method",
+                  modelIdOrName: "test-model",
+                  methodName: "run",
                 },
                 dependsOn: [],
                 weight: 0,
@@ -172,7 +176,7 @@ Deno.test("CLI: workflow evaluate all workflows", async () => {
         ],
       };
       await Deno.writeTextFile(
-        join(workflowDir, `${workflowId}.yaml`),
+        join(workflowDir, `workflow-${workflowId}.yaml`),
         stringifyYaml(workflowData as Record<string, unknown>),
       );
     }
@@ -210,9 +214,12 @@ Deno.test("CLI: workflow evaluate replaces input expressions", async () => {
             {
               name: "step1",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["${{ inputs.message }}"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "write",
+                inputs: {
+                  greeting: "${{ inputs.message }}",
+                },
               },
               dependsOn: [],
               weight: 0,
@@ -227,7 +234,7 @@ Deno.test("CLI: workflow evaluate replaces input expressions", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -259,9 +266,13 @@ Deno.test("CLI: workflow evaluate replaces input expressions", async () => {
       const jobs = evaluated.jobs as Array<Record<string, unknown>>;
       const steps = jobs[0].steps as Array<Record<string, unknown>>;
       const task = steps[0].task as Record<string, unknown>;
-      const args = task.args as string[];
+      const inputs = task.inputs as Record<string, unknown>;
 
-      assertEquals(args[0], "Hello World", "Expression should be replaced");
+      assertEquals(
+        inputs.greeting,
+        "Hello World",
+        "Expression should be replaced",
+      );
     }
   });
 });
@@ -297,9 +308,12 @@ Deno.test("CLI: workflow evaluate preserves vault expressions", async () => {
             {
               name: "step1",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["${{ vault.get('test-vault', 'api-key') }}"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "write",
+                inputs: {
+                  secret: "${{ vault.get(test-vault, api-key) }}",
+                },
               },
               dependsOn: [],
               weight: 0,
@@ -314,7 +328,7 @@ Deno.test("CLI: workflow evaluate preserves vault expressions", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -361,9 +375,9 @@ Deno.test("CLI: workflow evaluate JSON output includes workflow data", async () 
             {
               name: "step1",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["test"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,
@@ -378,7 +392,7 @@ Deno.test("CLI: workflow evaluate JSON output includes workflow data", async () 
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -420,9 +434,9 @@ Deno.test("CLI: workflow evaluate does not execute workflow", async () => {
             {
               name: "create-marker",
               task: {
-                type: "shell",
-                command: "touch",
-                args: [markerFile],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,
@@ -437,7 +451,7 @@ Deno.test("CLI: workflow evaluate does not execute workflow", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 

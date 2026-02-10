@@ -12,7 +12,6 @@ import {
   type MethodDefinition,
   modelRegistry,
 } from "../../domain/models/model.ts";
-import { typeSearchCommand } from "./type_search.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -21,14 +20,14 @@ type AnyOptions = any;
 /**
  * Converts a Zod schema to JSON Schema format.
  */
-function zodToJsonSchema(schema: z.ZodTypeAny): object {
+export function zodToJsonSchema(schema: z.ZodTypeAny): object {
   return z.toJSONSchema(schema);
 }
 
 /**
  * Converts a MethodDefinition to MethodDescribeData for presentation.
  */
-function toMethodDescribeData(
+export function toMethodDescribeData(
   name: string,
   method: MethodDefinition,
   dataOutputSpecs?: Record<string, DataOutputSpecification>,
@@ -110,12 +109,3 @@ export const typeDescribeCommand = new Command()
   .arguments("<type:model_type>")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(typeDescribeAction);
-
-export const typeCommand = new Command()
-  .name("type")
-  .description("Inspect model types")
-  .action(function () {
-    this.showHelp();
-  })
-  .command("describe", typeDescribeCommand)
-  .command("search", typeSearchCommand);

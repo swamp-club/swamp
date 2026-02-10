@@ -64,7 +64,7 @@ swamp workflow schema get --json
   "jobDependency": {/* JSON Schema for job dependency with condition */},
   "step": {/* JSON Schema for step objects */},
   "stepDependency": {/* JSON Schema for step dependency with condition */},
-  "stepTask": {/* JSON Schema for task (shell or model_method) */},
+  "stepTask": {/* JSON Schema for task (model_method or workflow) */},
   "triggerCondition": {/* JSON Schema for dependency conditions */}
 }
 ```
@@ -111,9 +111,9 @@ jobs:
       - name: compile
         description: Compile source code
         task:
-          type: shell
-          command: deno
-          args: ["task", "build"]
+          type: model_method
+          modelIdOrName: build-runner
+          methodName: build
   - name: deploy
     description: Deploy the application
     dependsOn:
@@ -124,51 +124,25 @@ jobs:
       - name: upload
         description: Upload artifacts
         task:
-          type: shell
-          command: ./deploy.sh
-          args: ["--env", "${{ inputs.environment }}"]
+          type: model_method
+          modelIdOrName: deploy-service
+          methodName: deploy
+          inputs:
+            environment: ${{ inputs.environment }}
 ```
 
 ## Edit a Workflow
 
-Open workflow file in your editor, or update via stdin in non-interactive mode.
+**Recommended:** Use `swamp workflow get <name> --json` to get the file path,
+then edit directly with the Edit tool, then validate with
+`swamp workflow validate <name> --json`. Never modify the `id` field.
 
-```bash
-# Interactive: opens in editor
-swamp workflow edit my-workflow
+**Alternative methods:**
 
-# Non-interactive: update from stdin
-cat updated-workflow.yaml | swamp workflow edit my-workflow --json
+- Interactive: `swamp workflow edit my-workflow` (opens in system editor)
+- Stdin: `cat updated.yaml | swamp workflow edit my-workflow --json`
 
-# With here-doc (agent-friendly)
-swamp workflow edit my-workflow --json <<EOF
-id: existing-uuid
-name: my-workflow
-version: 1
-jobs:
-  - name: updated-job
-    steps:
-      - name: step1
-        task:
-          type: shell
-          command: echo
-          args: ["updated"]
-EOF
-```
-
-Without arguments in interactive mode, shows a search interface to select a
-workflow.
-
-**Output shape (when updating via stdin):**
-
-```json
-{
-  "path": ".swamp/workflows/workflow-abc-123.yaml",
-  "status": "updated",
-  "name": "my-workflow",
-  "id": "abc-123"
-}
-```
+Run `swamp repo index` if search results seem stale after editing.
 
 ## Delete a Workflow
 
@@ -225,11 +199,11 @@ swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated work
 
 **Options:**
 
-| Flag               | Description                                   |
-| ------------------ | --------------------------------------------- |
-| `--input <json>`   | Input values as JSON string                   |
-| `--input-file <f>` | Input values from YAML file                   |
-| `--last-evaluated` | Use previously evaluated workflow (skip eval) |
+| Flag               | Description                                                        |
+| ------------------ | ------------------------------------------------------------------ |
+| `--input <json>`   | Input values as JSON string                                        |
+| `--input-file <f>` | Input values from YAML file                                        |
+| `--last-evaluated` | Use previously evaluated workflow (skip eval and input validation) |
 
 **Output shape:**
 
@@ -265,8 +239,6 @@ swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated work
 
 ### Search Run History
 
-Find workflow runs across all workflows.
-
 ```bash
 swamp workflow history search --json
 swamp workflow history search "deploy" --json
@@ -292,8 +264,6 @@ swamp workflow history search "deploy" --json
 
 ### Get Latest Run
 
-Get the most recent run for a specific workflow.
-
 ```bash
 swamp workflow history get my-workflow --json
 ```
@@ -313,8 +283,6 @@ swamp workflow history get my-workflow --json
 ```
 
 ### View Run Logs
-
-View logs and output for a workflow run or specific step.
 
 ```bash
 swamp workflow history logs my-workflow --json        # Latest run logs
@@ -350,10 +318,6 @@ inputs:
     replicas:
       type: integer
       default: 1
-    tags:
-      type: object
-      additionalProperties:
-        type: string
   required: ["environment"]
 ```
 
@@ -368,17 +332,6 @@ inputs:
 | `array`   | List of items   | `type: array`, `items: { type: string }` |
 | `object`  | Key-value pairs | `type: object`, `properties: {...}`      |
 
-### Input Validation
-
-| Constraint             | Description                       |
-| ---------------------- | --------------------------------- |
-| `required: [...]`      | List of required input names      |
-| `enum: [...]`          | Allowed values for string/integer |
-| `default: value`       | Default value if not provided     |
-| `minItems/maxItems`    | Array length constraints          |
-| `uniqueItems: true`    | Array must have no duplicates     |
-| `additionalProperties` | Allow/restrict extra object keys  |
-
 ### Using Inputs in Expressions
 
 Reference inputs with `${{ inputs.<name> }}`:
@@ -387,22 +340,17 @@ Reference inputs with `${{ inputs.<name> }}`:
 steps:
   - name: deploy
     task:
-      type: shell
-      command: ./deploy.sh
-      args: ["--env", "${{ inputs.environment }}"]
-  - name: scale
-    task:
       type: model_method
-      modelIdOrName: my-service
-      methodName: scale
+      modelIdOrName: deploy-service
+      methodName: deploy
       inputs:
-        replicas: ${{ inputs.replicas }}
+        environment: ${{ inputs.environment }}
 ```
 
 ## Evaluate Workflows
 
-Evaluate expressions in workflow definitions without executing. CEL expressions
-are resolved and vault expressions remain raw for runtime resolution.
+Evaluate expressions without executing. CEL expressions are resolved; vault
+expressions remain raw for runtime resolution.
 
 ```bash
 swamp workflow evaluate my-workflow --json
@@ -410,218 +358,47 @@ swamp workflow evaluate my-workflow --input '{"environment": "dev"}' --json
 swamp workflow evaluate --all --json
 ```
 
-**Options:**
-
-| Flag               | Description                 |
-| ------------------ | --------------------------- |
-| `--input <json>`   | Input values as JSON string |
-| `--input-file <f>` | Input values from YAML file |
-| `--all`            | Evaluate all workflows      |
-
-**Output shape (single):**
-
-```json
-{
-  "name": "my-workflow",
-  "outputPath": ".swamp/workflows-evaluated/abc-123.yaml"
-}
-```
-
-**Output shape (--all):**
-
-```json
-{
-  "total": 3,
-  "evaluated": [
-    { "name": "workflow-1", "outputPath": "..." },
-    { "name": "workflow-2", "outputPath": "..." }
-  ]
-}
-```
-
 **Key behaviors:**
 
 - CEL expressions (`${{ inputs.X }}`, `${{ model.X.resource... }}`) are resolved
+- forEach steps are expanded into concrete steps with resolved inputs
 - Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
 - Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
 
-## forEach Iteration
+## Step Task Types
 
-Steps can iterate over arrays or objects using `forEach`. Each iteration creates
-a separate step instance.
+Steps support two task types:
 
-### Iterate Over Array
-
-```yaml
-inputs:
-  properties:
-    environments:
-      type: array
-      items: { type: string }
-      minItems: 1
-
-jobs:
-  - name: deploy-all
-    steps:
-      - name: deploy-${{self.env}}
-        forEach:
-          item: env
-          in: ${{ inputs.environments }}
-        task:
-          type: model_method
-          modelIdOrName: my-service
-          methodName: deploy
-          inputs:
-            environment: ${{ self.env }}
-```
-
-With `--input '{"environments": ["dev", "staging", "prod"]}'`, creates steps:
-
-- `deploy-dev`
-- `deploy-staging`
-- `deploy-prod`
-
-### Iterate Over Object
+**`model_method`** - Call a method on a model:
 
 ```yaml
-inputs:
-  properties:
-    tags:
-      type: object
-      additionalProperties: { type: string }
-
-jobs:
-  - name: apply-tags
-    steps:
-      - name: tag-${{self.tag.key}}
-        forEach:
-          item: tag
-          in: ${{ inputs.tags }}
-        task:
-          type: shell
-          command: echo
-          args: ["${{ self.tag.key }}=${{ self.tag.value }}"]
+task:
+  type: model_method
+  modelIdOrName: my-model
+  methodName: run
+  inputs: # Optional: pass values to the model
+    key: ${{ inputs.value }}
 ```
 
-With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
-
-- `tag-env` (with `self.tag.key="env"`, `self.tag.value="prod"`)
-- `tag-team` (with `self.tag.key="team"`, `self.tag.value="platform"`)
-
-### forEach Variables
-
-| Variable            | Description                    |
-| ------------------- | ------------------------------ |
-| `self.{item}`       | Current item (array iteration) |
-| `self.{item}.key`   | Key name (object iteration)    |
-| `self.{item}.value` | Value (object iteration)       |
-
-## Step Task Inputs
-
-When a step calls a model method, pass inputs to the model:
+**`workflow`** - Invoke another workflow (waits for completion):
 
 ```yaml
-steps:
-  - name: create-resource
-    task:
-      type: model_method
-      modelIdOrName: my-model
-      methodName: create
-      inputs:
-        environment: ${{ inputs.environment }}
-        config:
-          replicas: ${{ inputs.replicas }}
+task:
+  type: workflow
+  workflowIdOrName: child-workflow
+  inputs: # Optional: pass inputs to the child workflow
+    key: value
 ```
 
-The `inputs` field on `model_method` tasks passes values to the model's input
-schema, enabling dynamic configuration at workflow runtime.
-
-## Data Artifact Tracking
-
-Workflow steps track all Data artifacts produced during execution. Each step run
-includes a `dataArtifacts` array with references to created data.
-
-### Automatic Tagging
-
-Data created during workflow execution receives automatic tags:
-
-| Tag        | Value               | Description                      |
-| ---------- | ------------------- | -------------------------------- |
-| `type`     | `step-output`       | Identifies workflow-created data |
-| `workflow` | `{workflow-name}`   | Source workflow name             |
-| `step`     | `{job-name}.{step}` | Full step path                   |
-
-### Querying Workflow Data
-
-Use CEL expressions to find data from workflows:
-
-```yaml
-# Find all data from a specific workflow
-workflowOutputs: ${{ data.findByTag("workflow", "my-deploy") }}
-
-# Find data from a specific step
-stepData: ${{ data.findByTag("step", "build.compile") }}
-```
-
-## Expressions in Workflows
-
-Model inputs can contain CEL expressions using `${{ <expression> }}` syntax.
-
-### Automatic Dependency Resolution
-
-Expressions that reference `model.<name>.resource.attributes.*` create implicit
-step dependencies. The workflow engine automatically ensures dependent steps run
-in the correct order.
-
-```yaml
-jobs:
-  - name: main
-    steps:
-      - name: create-subnet # Runs second (depends on vpc)
-        task:
-          type: model_method
-          modelIdOrName: subnet-input
-          methodName: create
-      - name: create-vpc # Runs first
-        task:
-          type: model_method
-          modelIdOrName: vpc-input
-          methodName: create
-# If subnet-input has: vpcId: ${{ model.vpc-input.resource.attributes.vpcId }}
-# create-vpc runs first due to implicit dependency
-```
-
-### Environment Variables
-
-Access environment variables using the `env` namespace:
-
-```yaml
-attributes:
-  region: ${{ env.AWS_REGION }}
-  api_key: ${{ env.API_KEY }}
-```
+Nested workflows have a max depth of 10 and cycle detection is enforced.
 
 ## Working with Vaults
 
-Access secrets in workflow steps using vault expressions. See **swamp-vault**
-skill for complete vault management.
-
-**Quick syntax:**
+Access secrets using vault expressions. See **swamp-vault** skill for details.
 
 ```yaml
-# In step attributes
 apiKey: ${{ vault.get(vault-name, secret-key) }}
 dbPassword: ${{ vault.get(prod-secrets, DB_PASSWORD) }}
-```
-
-**Using the vault model** (`swamp/lets-get-sensitive`):
-
-```yaml
-- name: store-secret
-  task:
-    type: model_method
-    modelIdOrName: store-creds # type: swamp/lets-get-sensitive
-    methodName: put
 ```
 
 ## Workflow Example
@@ -647,6 +424,14 @@ End-to-end workflow creation:
 
 ## References
 
+- **Nested workflows**: See
+  [references/nested-workflows.md](references/nested-workflows.md) for full
+  examples of workflows calling other workflows, forEach with workflows, and
+  nesting limitations
+- **Expressions, forEach, and data tracking**: See
+  [references/expressions-and-foreach.md](references/expressions-and-foreach.md)
+  for forEach iteration patterns, CEL expressions, implicit dependency
+  resolution, environment variables, and data artifact tagging
 - **Data chaining**: See
   [references/data-chaining.md](references/data-chaining.md) for aws/cli model
   workflow examples and chaining patterns

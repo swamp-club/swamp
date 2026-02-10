@@ -68,15 +68,3 @@ After completing work, run these checks:
   use `--` before the file path)
 - Refactorings that change shared constants, paths, or cross-component contracts
   must include integration tests to verify components still work together
-
-## Experiments
-
-The `experiments/` directory contains optional, self-contained experiments. **Do
-not** include experiments in:
-
-- Testing or test coverage considerations
-- Refactoring or code improvement efforts
-- New feature development patterns
-- Architecture decisions
-
-These are isolated experiments that may be removed at any time.

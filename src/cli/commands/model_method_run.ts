@@ -12,9 +12,21 @@ import { ModelOutput } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import { getRunLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  getRunLogger,
+  runFileSink,
+} from "../../infrastructure/logging/logger.ts";
 import { parseInputs } from "../input_parser.ts";
-import { InputValidationService } from "../../domain/inputs/mod.ts";
+import {
+  InputOverrideValidationService,
+  InputValidationService,
+} from "../../domain/inputs/mod.ts";
+import { join } from "@std/path";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { modelMethodHistoryCommand } from "./model_method_history.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -99,6 +111,17 @@ export const modelMethodRunCommand = new Command()
       // Create run logger for real-time output
       const runLogger = getRunLogger(definition.name, methodName);
 
+      // Register run file sink target for log persistence
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const logFilePath = join(
+        swampPath(repoDir, SWAMP_SUBDIRS.outputs),
+        modelType.normalized,
+        methodName,
+        `${definition.id}-${timestamp}.log`,
+      );
+      const runLogCategory: string[] = [];
+      await runFileSink.register(runLogCategory, logFilePath);
+
       runLogger.info("Found model {name} ({type})", {
         name: definition.name,
         type: modelType.normalized,
@@ -166,6 +189,45 @@ export const modelMethodRunCommand = new Command()
         await evaluatedDefRepo.save(modelType, evaluatedDefinition);
       }
 
+      // Validate and apply CLI inputs as attribute overrides (implicit inputs)
+      // But only for keys that aren't defined in the definition's inputs schema
+      // (those are handled by expression evaluation via ${{ inputs.X }})
+      const definitionInputKeys = definition.inputs
+        ? Object.keys(
+          (definition.inputs as { properties?: Record<string, unknown> })
+            .properties || {},
+        )
+        : [];
+      const overrideInputs = Object.fromEntries(
+        Object.entries(inputs).filter(([key]) =>
+          !definitionInputKeys.includes(key)
+        ),
+      );
+      if (Object.keys(overrideInputs).length > 0) {
+        const overrideValidationService = new InputOverrideValidationService();
+        const overrideResult = overrideValidationService.validate(
+          overrideInputs,
+          method.inputAttributesSchema,
+        );
+        if (!overrideResult.valid) {
+          const errorMessages = overrideResult.errors
+            .map((e) => {
+              let msg = `  ${e.key}: ${e.message}`;
+              if (e.suggestion) {
+                msg += ` (${e.suggestion})`;
+              }
+              return msg;
+            })
+            .join("\n");
+          throw new UserError(
+            `Invalid input overrides:\n${errorMessages}`,
+          );
+        }
+        for (const [key, value] of Object.entries(overrideInputs)) {
+          evaluatedDefinition.setAttribute(key, value);
+        }
+      }
+
       // Resolve vault expressions at runtime (never persisted)
       evaluatedDefinition = await evaluationService
         .resolveVaultExpressionsInDefinition(evaluatedDefinition);
@@ -184,8 +246,9 @@ export const modelMethodRunCommand = new Command()
         },
       });
 
-      // Mark as running and save
+      // Mark as running, set log file path, and save
       output.markRunning();
+      output.setLogFile(logFilePath);
       await outputRepo.save(modelType, methodName, output);
 
       // Track artifacts for output
@@ -210,64 +273,50 @@ export const modelMethodRunCommand = new Command()
 
         runLogger.info("Method executed");
 
-        // Handle data output persistence
-        if (execResult.dataOutputs && execResult.dataOutputs.length > 0) {
-          for (const dataOutput of execResult.dataOutputs) {
-            ctx.logger.debug`Saving data output: ${dataOutput.name}`;
-
-            // Create Data entity from DataOutput
-            const { Data } = await import("../../domain/data/mod.ts");
-            const data = Data.create({
-              name: dataOutput.name,
-              contentType: dataOutput.metadata.contentType,
-              lifetime: dataOutput.metadata.lifetime,
-              garbageCollection: dataOutput.metadata.garbageCollection,
-              streaming: dataOutput.metadata.streaming,
-              tags: dataOutput.metadata.tags,
-              ownerDefinition: dataOutput.metadata.ownerDefinition,
-            });
-
-            // Save the data
-            const saveResult = await unifiedDataRepo.save(
-              modelType,
-              definition.id,
-              data,
-              dataOutput.content,
-            );
-
+        // Data is already persisted by DataWriter — extract artifact info from handles
+        if (execResult.dataHandles && execResult.dataHandles.length > 0) {
+          for (const handle of execResult.dataHandles) {
             const dataPath = unifiedDataRepo.getPath(
               modelType,
               definition.id,
-              dataOutput.name,
-              saveResult.version,
+              handle.name,
+              handle.version,
             );
 
             runLogger.info("Data saved to {path}", {
               path: dataPath,
-              name: dataOutput.name,
+              name: handle.name,
             });
 
             // Track artifact in output
             output.addDataArtifact({
-              dataId: data.id,
-              name: dataOutput.name,
-              version: saveResult.version,
-              tags: dataOutput.metadata.tags,
+              dataId: handle.dataId,
+              name: handle.name,
+              version: handle.version,
+              tags: handle.tags,
             });
 
             // Parse content if JSON for display purposes
             let attributes: Record<string, unknown> | undefined;
-            if (dataOutput.metadata.contentType === "application/json") {
+            if (handle.metadata.contentType === "application/json") {
               try {
-                const text = new TextDecoder().decode(dataOutput.content);
-                attributes = JSON.parse(text) as Record<string, unknown>;
+                const content = await unifiedDataRepo.getContent(
+                  modelType,
+                  evaluatedDefinition.id,
+                  handle.name,
+                  handle.version,
+                );
+                if (content) {
+                  const text = new TextDecoder().decode(content);
+                  attributes = JSON.parse(text) as Record<string, unknown>;
+                }
               } catch {
                 // Not valid JSON, skip attributes
               }
             }
 
             dataArtifacts.push({
-              id: data.id,
+              id: handle.dataId,
               path: dataPath,
               attributes,
             });
@@ -318,6 +367,9 @@ export const modelMethodRunCommand = new Command()
         );
       }
 
+      // Unregister run file sink target
+      runFileSink.unregister(runLogCategory);
+
       ctx.logger.debug("Method run command completed");
     },
   );
@@ -328,4 +380,5 @@ export const modelMethodCommand = new Command()
   .action(function () {
     this.showHelp();
   })
-  .command("run", modelMethodRunCommand);
+  .command("run", modelMethodRunCommand)
+  .command("history", modelMethodHistoryCommand);

@@ -189,7 +189,7 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
           steps: [
             Step.create({
               name: "download-step",
-              task: StepTask.modelMethod("download-data", "execute"),
+              task: StepTask.model("download-data", "execute"),
             }),
           ],
         }),
@@ -199,7 +199,7 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
           steps: [
             Step.create({
               name: "process-step",
-              task: StepTask.modelMethod("process-data", "execute"),
+              task: StepTask.model("process-data", "execute"),
             }),
           ],
           dependsOn: [
@@ -279,11 +279,11 @@ Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
           steps: [
             Step.create({
               name: "run-source",
-              task: StepTask.modelMethod("source-shell", "execute"),
+              task: StepTask.model("source-shell", "execute"),
             }),
             Step.create({
               name: "run-dependent",
-              task: StepTask.modelMethod("dependent-shell", "execute"),
+              task: StepTask.model("dependent-shell", "execute"),
               dependsOn: [
                 {
                   step: "run-source",

@@ -9,12 +9,15 @@
     "jsr:@logtape/logtape@^2.0.2": "2.0.2",
     "jsr:@logtape/pretty@2": "2.0.2",
     "jsr:@std/assert@1": "1.0.16",
+    "jsr:@std/assert@^1.0.17": "1.0.18",
     "jsr:@std/cli@1": "1.0.27",
+    "jsr:@std/fmt@1": "1.0.9",
     "jsr:@std/fmt@~1.0.2": "1.0.9",
     "jsr:@std/fs@1": "1.0.22",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/path@1": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
+    "jsr:@std/testing@*": "1.0.17",
     "jsr:@std/text@~1.0.7": "1.0.17",
     "jsr:@std/yaml@1": "1.0.11",
     "npm:@aws-sdk/client-cloudcontrol@3": "3.984.0",
@@ -36,7 +39,7 @@
         "jsr:@cliffy/flags",
         "jsr:@cliffy/internal",
         "jsr:@cliffy/table",
-        "jsr:@std/fmt",
+        "jsr:@std/fmt@~1.0.2",
         "jsr:@std/text"
       ]
     },
@@ -52,7 +55,7 @@
     "@cliffy/table@1.0.0-rc.8": {
       "integrity": "8bbcdc2ba5e0061b4b13810a24e6f5c6ab19c09f0cce9eb691ccd76c7c6c9db5",
       "dependencies": [
-        "jsr:@std/fmt"
+        "jsr:@std/fmt@~1.0.2"
       ]
     },
     "@logtape/logtape@2.0.2": {
@@ -67,6 +70,12 @@
     },
     "@std/assert@1.0.16": {
       "integrity": "6a7272ed1eaa77defe76e5ff63ca705d9c495077e2d5fd0126d2b53fc5bd6532",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/assert@1.0.18": {
+      "integrity": "270245e9c2c13b446286de475131dc688ca9abcd94fc5db41d43a219b34d1c78",
       "dependencies": [
         "jsr:@std/internal"
       ]
@@ -90,6 +99,13 @@
     "@std/path@1.1.4": {
       "integrity": "1d2d43f39efb1b42f0b1882a25486647cb851481862dc7313390b2bb044314b5",
       "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/testing@1.0.17": {
+      "integrity": "87bdc2700fa98249d48a17cd72413352d3d3680dcfbdb64947fd0982d6bbf681",
+      "dependencies": [
+        "jsr:@std/assert@^1.0.17",
         "jsr:@std/internal"
       ]
     },
@@ -1266,6 +1282,7 @@
       "jsr:@logtape/pretty@2",
       "jsr:@std/assert@1",
       "jsr:@std/cli@1",
+      "jsr:@std/fmt@1",
       "jsr:@std/fs@1",
       "jsr:@std/path@1",
       "jsr:@std/yaml@1",

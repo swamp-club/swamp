@@ -2,6 +2,7 @@ import { Command } from "@cliffy/command";
 import {
   renderWorkflowCreate,
   type WorkflowCreateData,
+  type WorkflowJobData,
 } from "../../presentation/output/workflow_create_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
@@ -42,7 +43,7 @@ export const workflowCreateCommand = new Command()
         Step.create({
           name: "example",
           description: "Example step (edit or replace)",
-          task: StepTask.shell("echo", { args: ["Hello from workflow!"] }),
+          task: StepTask.model("example-model", "run"),
         }),
       ],
     });
@@ -55,10 +56,21 @@ export const workflowCreateCommand = new Command()
 
     ctx.logger.debug`Created workflow with ID: ${workflow.id}`;
 
+    const jobs: WorkflowJobData[] = workflow.jobs.map((job) => ({
+      name: job.name,
+      description: job.description ?? "",
+      steps: job.steps.map((step) => ({
+        name: step.name,
+        description: step.description ?? "",
+        taskType: step.task.data.type,
+      })),
+    }));
+
     const data: WorkflowCreateData = {
       id: workflow.id,
       name: workflow.name,
       path: repo.getPath(workflow.id),
+      jobs,
     };
 
     renderWorkflowCreate(data, ctx.outputMode);

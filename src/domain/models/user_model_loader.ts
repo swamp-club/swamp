@@ -4,7 +4,7 @@ import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
 import type { Definition } from "../definitions/definition.ts";
 import {
-  type DataOutput,
+  type DataHandle,
   type DataOutputSpecification,
   DataOutputSpecificationSchema,
   DataSpecType,
@@ -18,40 +18,13 @@ import {
 
 /**
  * Plain object result returned by user methods before conversion.
+ * User models must use context.createDataWriter() to produce data.
  */
 interface UserMethodResult {
   /**
-   * Direct data outputs with explicit content and metadata.
+   * Handles for data written via context.createDataWriter() during execution.
    */
-  dataOutputs?: Array<{
-    name: string;
-    specType?: string;
-    content: Uint8Array | string;
-    metadata?: {
-      contentType?: string;
-      lifetime?: string;
-      garbageCollection?: number;
-      streaming?: boolean;
-      tags?: Record<string, string>;
-    };
-  }>;
-  /**
-   * Resource output - a simpler format that gets converted to dataOutputs.
-   * The resource attributes are serialized as JSON and tagged with type=resource.
-   */
-  resource?: {
-    id?: string;
-    attributes: Record<string, unknown>;
-  };
-  /**
-   * Data output - a simpler format that gets converted to dataOutputs.
-   * The data attributes are serialized as JSON.
-   */
-  data?: {
-    attributes: Record<string, unknown>;
-    name?: string;
-    tags?: Record<string, string>;
-  };
+  dataHandles?: DataHandle[];
   [key: string]: unknown;
 }
 
@@ -99,11 +72,102 @@ const UserModelSchema = z.object({
   inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
   ),
-  dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema)
-    .optional(),
+  dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema),
   methods: z.record(z.string(), UserMethodSchema),
   upgrades: z.array(UserUpgradeSchema).optional(),
 });
+
+/**
+ * Formats a Zod error into a clear, actionable message.
+ */
+function formatUserModelError(error: z.ZodError): string {
+  const issues = error.issues;
+
+  // Check for missing dataOutputSpecs
+  const dataOutputSpecsIssue = issues.find(
+    (i) => i.path[0] === "dataOutputSpecs" && i.code === "invalid_type",
+  );
+  if (dataOutputSpecsIssue) {
+    return (
+      "Missing required 'dataOutputSpecs' field. " +
+      "Add dataOutputSpecs to declare what data your model produces.\n\n" +
+      "Example:\n" +
+      "  dataOutputSpecs: {\n" +
+      "    result: {\n" +
+      '      specType: "result",\n' +
+      '      contentType: "application/json",\n' +
+      '      lifetime: { type: "persistent" },\n' +
+      '      garbageCollection: { type: "keep_latest", count: 10 },\n' +
+      "      tags: {},\n" +
+      "    },\n" +
+      "  },"
+    );
+  }
+
+  // Check for missing inputAttributesSchema
+  const inputSchemaIssue = issues.find(
+    (i) => i.path[0] === "inputAttributesSchema",
+  );
+  if (inputSchemaIssue) {
+    return (
+      "Missing or invalid 'inputAttributesSchema'. " +
+      "Add a Zod schema to validate model inputs.\n\n" +
+      "Example:\n" +
+      "  inputAttributesSchema: z.object({\n" +
+      '    name: z.string().describe("Resource name"),\n' +
+      "  }),"
+    );
+  }
+
+  // Check for missing type
+  const typeIssue = issues.find((i) => i.path[0] === "type");
+  if (typeIssue) {
+    return (
+      "Missing required 'type' field. " +
+      "Add a namespaced type identifier.\n\n" +
+      "Example:\n" +
+      '  type: "@myorg/my-model",'
+    );
+  }
+
+  // Check for missing version
+  const versionIssue = issues.find((i) => i.path[0] === "version");
+  if (versionIssue) {
+    return (
+      "Missing or invalid 'version' field. " +
+      "Use CalVer format: YYYY.MM.DD.MICRO.\n\n" +
+      "Example:\n" +
+      '  version: "2026.02.10.1",'
+    );
+  }
+
+  // Check for missing methods
+  const methodsIssue = issues.find((i) => i.path[0] === "methods");
+  if (methodsIssue) {
+    return (
+      "Missing required 'methods' field. " +
+      "Add at least one method to your model.\n\n" +
+      "Example:\n" +
+      "  methods: {\n" +
+      "    run: {\n" +
+      '      description: "Execute the model",\n' +
+      "      execute: async (definition, context) => {\n" +
+      "        // Your logic here\n" +
+      "        return { dataHandles: [] };\n" +
+      "      },\n" +
+      "    },\n" +
+      "  },"
+    );
+  }
+
+  // Fallback: format all issues concisely
+  return issues
+    .map((i) => {
+      const path = i.path.join(".");
+      return `${path}: ${i.message}`;
+    })
+    .join("; ");
+}
 
 /**
  * Schema for validating user extension exports.
@@ -182,11 +246,22 @@ export class UserModelLoader {
       try {
         const parsed = UserModelSchema.safeParse(module.model);
         if (!parsed.success) {
-          result.failed.push({ file, error: parsed.error.message });
+          result.failed.push({
+            file,
+            error: formatUserModelError(parsed.error),
+          });
           continue;
         }
 
         const userModel = parsed.data;
+
+        // Validate namespace before registration
+        const namespaceError = this.validateUserNamespace(userModel.type);
+        if (namespaceError) {
+          result.failed.push({ file, error: namespaceError });
+          continue;
+        }
+
         const modelDef = this.convertToModelDefinition(userModel);
 
         if (!modelRegistry.has(modelDef.type)) {
@@ -221,6 +296,39 @@ export class UserModelLoader {
     }
 
     return result;
+  }
+
+  /**
+   * Validates that a user-defined model type follows the required namespace conventions.
+   *
+   * Requirements:
+   * - Must not use reserved namespaces (swamp, si)
+   * - Must start with '@' (user namespace prefix)
+   * - Must have at least 2 segments (e.g., "@myorg/echo")
+   *
+   * @param rawType - The raw type string from the user model
+   * @returns Error message if validation fails, undefined if valid
+   */
+  private validateUserNamespace(rawType: string): string | undefined {
+    const normalized = ModelType.create(rawType).normalized;
+
+    // Check for reserved built-in namespaces
+    if (ModelType.isReservedNamespace(normalized)) {
+      return `Model type '${rawType}' uses a reserved namespace. User models cannot use 'swamp' or 'si' namespaces.`;
+    }
+
+    // Must start with '@'
+    if (!ModelType.isUserNamespace(normalized)) {
+      return `Model type '${rawType}' must use '@' prefix. Expected format: @<namespace>/<name> (e.g., @myorg/my-model)`;
+    }
+
+    // Must have at least 2 segments
+    const segmentCount = ModelType.getSegmentCount(normalized);
+    if (segmentCount < 2) {
+      return `Model type '${rawType}' must have at least 2 segments. Expected format: @<namespace>/<name> (e.g., @myorg/my-model)`;
+    }
+
+    return undefined;
   }
 
   /**
@@ -275,7 +383,7 @@ export class UserModelLoader {
         description: method.description,
         inputAttributesSchema: method.inputAttributesSchema ??
           targetModel.inputAttributesSchema,
-        execute: this.wrapUserExecute(name, method.execute),
+        execute: this.wrapUserExecute(method.execute),
       };
     }
 
@@ -289,93 +397,16 @@ export class UserModelLoader {
   }
 
   /**
-   * Wraps a user execute function to convert UserMethodResult to MethodResult
-   * with proper DataOutput format.
+   * Wraps a user execute function to pass through dataHandles from the result.
+   * User models write data via context.createDataWriter() and return handles.
    */
   private wrapUserExecute(
-    methodName: string,
     userExecuteFn: UserExecuteFn,
   ): (definition: Definition, context: MethodContext) => Promise<MethodResult> {
     return async (definition, context): Promise<MethodResult> => {
       const userResult = await userExecuteFn(definition, context);
-      const definitionHash = await definition.computeHash();
 
-      // Convert user data outputs to proper DataOutput format
-      const dataOutputs: DataOutput[] = [];
-
-      // Handle resource output (simpler format)
-      if (userResult.resource && userResult.resource.attributes) {
-        const resourceJson = JSON.stringify(userResult.resource.attributes);
-        dataOutputs.push({
-          name: "resource",
-          specType: DataSpecType.create("resource"),
-          content: new TextEncoder().encode(resourceJson),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: { type: "resource" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: methodName,
-            },
-          },
-        });
-      }
-
-      // Handle data output (simpler format)
-      if (userResult.data && userResult.data.attributes) {
-        const dataJson = JSON.stringify(userResult.data.attributes);
-        dataOutputs.push({
-          name: userResult.data.name ?? "data",
-          specType: DataSpecType.create("data"),
-          content: new TextEncoder().encode(dataJson),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: userResult.data.tags ?? { type: "data" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: methodName,
-            },
-          },
-        });
-      }
-
-      // Handle explicit dataOutputs
-      if (userResult.dataOutputs) {
-        for (const output of userResult.dataOutputs) {
-          const content = typeof output.content === "string"
-            ? new TextEncoder().encode(output.content)
-            : output.content;
-
-          dataOutputs.push({
-            name: output.name,
-            specType: DataSpecType.create(output.specType ?? "data"),
-            content,
-            metadata: {
-              contentType: output.metadata?.contentType ??
-                "application/octet-stream",
-              lifetime: output.metadata?.lifetime ?? "infinite",
-              garbageCollection: output.metadata?.garbageCollection ?? 10,
-              streaming: output.metadata?.streaming ?? false,
-              tags: output.metadata?.tags ?? { type: "data" },
-              ownerDefinition: {
-                definitionHash,
-                ownerType: "model-method",
-                ownerRef: methodName,
-              },
-            },
-          });
-        }
-      }
-
-      return { dataOutputs };
+      return { dataHandles: userResult.dataHandles };
     };
   }
 
@@ -394,38 +425,17 @@ export class UserModelLoader {
         description: method.description,
         inputAttributesSchema: method.inputAttributesSchema ??
           userModel.inputAttributesSchema,
-        execute: this.wrapUserExecute(name, method.execute),
+        execute: this.wrapUserExecute(method.execute),
       };
     }
 
-    const defaultSpecs: Record<string, DataOutputSpecification> = {
-      "data": {
-        specType: DataSpecType.create("data"),
-        description: "Data output",
-        contentType: "application/json",
-        lifetime: "infinite",
-        garbageCollection: 10,
-        tags: { type: "data" },
-      },
-      "resource": {
-        specType: DataSpecType.create("resource"),
-        description: "Resource output",
-        contentType: "application/json",
-        lifetime: "infinite",
-        garbageCollection: 10,
-        tags: { type: "resource" },
-      },
-    };
-
     // User-declared specs need specType converted from string to DataSpecType
     const userSpecs: Record<string, DataOutputSpecification> = {};
-    if (userModel.dataOutputSpecs) {
-      for (const [key, spec] of Object.entries(userModel.dataOutputSpecs)) {
-        userSpecs[key] = {
-          ...spec,
-          specType: DataSpecType.create(String(spec.specType)),
-        };
-      }
+    for (const [key, spec] of Object.entries(userModel.dataOutputSpecs)) {
+      userSpecs[key] = {
+        ...spec,
+        specType: DataSpecType.create(String(spec.specType)),
+      };
     }
 
     // Convert user upgrades to VersionUpgrade[]
@@ -441,7 +451,7 @@ export class UserModelLoader {
       type: modelType,
       version: userModel.version,
       inputAttributesSchema: userModel.inputAttributesSchema,
-      dataOutputSpecs: { ...defaultSpecs, ...userSpecs },
+      dataOutputSpecs: { ...userSpecs },
       methods,
       ...(upgrades && upgrades.length > 0 ? { upgrades } : {}),
     };
