@@ -75,25 +75,31 @@ export class LogStreamService {
   }
 
   /**
-   * Streams logs in real-time. Returns an async iterator that yields new log entries.
-   * For completed steps, returns all logs immediately.
-   * For pending/running steps, polls the log file for updates until completion.
+   * Streams logs in real-time by tailing the log file.
+   * Uses byte offset tracking to read only new content on each poll.
+   * Polls every 500ms for smooth streaming.
    */
   async *streamLogs(
     target: LogStreamTarget,
-    startFrom: number = 0,
   ): AsyncIterableIterator<LogEntry> {
     try {
-      let lastLogCount = startFrom;
       let lastStepStatus = target.stepStatus;
       let isComplete = false;
       let pollCount = 0;
-      const maxPolls = 120;
+      const pollIntervalMs = 500;
+      const maxPolls = 480; // 4 minutes at 500ms
+      let byteOffset = 0;
+      let partialLine = "";
+
+      // Find the log file once
+      const logFile = await this.findLogFile({
+        type: "job",
+        jobName: target.jobName,
+        workflowRunId: target.workflowRunId,
+      });
 
       while (!isComplete && pollCount < maxPolls) {
-        const currentTarget = { ...target };
-
-        // Get current step status by re-reading the workflow run file
+        // Check step status
         if (target.stepName && target.workflowRunId) {
           const currentStepInfo = await this.getCurrentStepInfo(
             target.jobName,
@@ -101,38 +107,65 @@ export class LogStreamService {
             target.workflowRunId,
           );
           if (currentStepInfo) {
-            currentTarget.stepStatus = currentStepInfo.status;
+            if (lastStepStatus !== currentStepInfo.status) {
+              lastStepStatus = currentStepInfo.status;
+            }
           }
         }
 
-        // Get current logs
-        const logs = await this.getLogs(currentTarget);
+        // Read new content from log file using byte offset
+        if (logFile) {
+          try {
+            const stat = await Deno.stat(logFile);
+            if (stat.size > byteOffset) {
+              const file = await Deno.open(logFile, { read: true });
+              try {
+                await file.seek(byteOffset, Deno.SeekMode.Start);
+                const buf = new Uint8Array(stat.size - byteOffset);
+                const bytesRead = await file.read(buf);
+                if (bytesRead && bytesRead > 0) {
+                  byteOffset += bytesRead;
+                  const text = partialLine +
+                    new TextDecoder().decode(buf.subarray(0, bytesRead));
 
-        // Yield only new logs
-        for (let i = lastLogCount; i < logs.length; i++) {
-          yield logs[i];
-        }
+                  const lines = text.split("\n");
+                  // Last element may be a partial line (no trailing newline yet)
+                  partialLine = lines.pop() ?? "";
 
-        lastLogCount = logs.length;
-
-        // Check if step status changed
-        if (lastStepStatus !== currentTarget.stepStatus) {
-          yield {
-            message:
-              `[INFO] Step status changed: ${lastStepStatus} → ${currentTarget.stepStatus}`,
-            timestamp: new Date(),
-          };
-          lastStepStatus = currentTarget.stepStatus;
+                  for (const line of lines) {
+                    if (line.trim()) {
+                      yield {
+                        message: line,
+                        timestamp: parseLogTimestamp(line),
+                      };
+                    }
+                  }
+                }
+              } finally {
+                file.close();
+              }
+            }
+          } catch {
+            // File may not exist yet, keep polling
+          }
         }
 
         // Check if we should continue polling
         if (
-          currentTarget.stepStatus === "pending" ||
-          currentTarget.stepStatus === "running"
+          lastStepStatus === "pending" ||
+          lastStepStatus === "running"
         ) {
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           pollCount++;
         } else {
+          // Flush any remaining partial line
+          if (partialLine.trim()) {
+            yield {
+              message: partialLine,
+              timestamp: parseLogTimestamp(partialLine),
+            };
+            partialLine = "";
+          }
           isComplete = true;
         }
       }
@@ -140,7 +173,7 @@ export class LogStreamService {
       if (pollCount >= maxPolls) {
         yield {
           message: `[INFO] Stopped polling for updates after ${
-            maxPolls * 2
+            Math.round(maxPolls * pollIntervalMs / 1000)
           } seconds`,
           timestamp: new Date(),
         };
@@ -231,7 +264,7 @@ export class LogStreamService {
           timestamp: new Date(),
         });
         for (const line of lines) {
-          entries.push({ message: line, timestamp: new Date() });
+          entries.push({ message: line, timestamp: parseLogTimestamp(line) });
         }
         return entries;
       } catch {
@@ -267,7 +300,7 @@ export class LogStreamService {
         const content = await Deno.readTextFile(logFile);
         const lines = content.split("\n").filter((line) => line.trim());
         for (const line of lines) {
-          entries.push({ message: line, timestamp: new Date() });
+          entries.push({ message: line, timestamp: parseLogTimestamp(line) });
         }
       } catch {
         entries.push({
@@ -447,4 +480,25 @@ export class LogStreamService {
 
     return entries;
   }
+}
+
+/**
+ * Parses a timestamp from a LogTape-formatted log line.
+ * Expected format: "2026-02-10 12:02:38.976 +00:00 [INF] ..."
+ * Returns the parsed Date or current time if parsing fails.
+ */
+function parseLogTimestamp(line: string): Date {
+  // Match ISO-ish timestamp at start: "YYYY-MM-DD HH:MM:SS.mmm +HH:MM"
+  const match = line.match(
+    /^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+([+-]\d{2}:\d{2})/,
+  );
+  if (match) {
+    // Convert "2026-02-10 12:02:38.976 +00:00" → "2026-02-10T12:02:38.976+00:00"
+    const dateStr = `${match[1].trim().replace(" ", "T")}${match[2]}`;
+    const parsed = new Date(dateStr);
+    if (!isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return new Date();
 }

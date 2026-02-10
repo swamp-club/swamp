@@ -340,7 +340,7 @@ Deno.test("LogStreamService - getLogs handles missing step", async () => {
   }
 });
 
-Deno.test("LogStreamService - streamLogs for completed step", async () => {
+Deno.test("LogStreamService - streamLogs for completed step exits immediately", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
 
@@ -383,11 +383,72 @@ Deno.test("LogStreamService - streamLogs for completed step", async () => {
       logs.push(log);
     }
 
-    // YAML fallback: streaming header, started at, completed at
+    // streamLogs tails the log file; for completed steps with no log file,
+    // it exits immediately with no entries. Completed steps use getLogs() instead.
+    assertEquals(logs.length, 0);
+  } finally {
+    await cleanup(tempDir);
+  }
+});
+
+Deno.test("LogStreamService - streamLogs reads from log file", async () => {
+  const tempDir = await createTempDir();
+  const service = new LogStreamService(tempDir);
+
+  try {
+    const workflowId = "workflow-123";
+    const runId = "run-789";
+
+    // Create the workflow run directory and log file
+    const runDir = join(tempDir, ".swamp", "workflow-runs", workflowId);
+    await Deno.mkdir(runDir, { recursive: true });
+
+    const logContent = [
+      "2024-01-01 10:00:01.000 +00:00 [INF] workflow·run·test: Line 1",
+      "2024-01-01 10:00:02.000 +00:00 [INF] workflow·run·test: Line 2",
+      "2024-01-01 10:00:03.000 +00:00 [INF] workflow·run·test: Line 3",
+      "",
+    ].join("\n");
+    await Deno.writeTextFile(
+      join(runDir, `workflow-run-${runId}.log`),
+      logContent,
+    );
+
+    // Create run YAML so status check works
+    const runData: WorkflowRunData = {
+      id: runId,
+      workflowId: workflowId,
+      workflowName: "test-workflow",
+      status: "succeeded",
+      jobs: [{
+        jobName: "test-job",
+        status: "succeeded",
+        steps: [{
+          stepName: "test-step",
+          status: "succeeded",
+        }],
+      }],
+    };
+    await createWorkflowRunFile(tempDir, workflowId, runId, runData);
+
+    const target: LogStreamTarget = {
+      type: "step",
+      jobName: "test-job",
+      stepName: "test-step",
+      workflowRunId: runId,
+      stepStatus: "succeeded",
+    };
+
+    const logs = [];
+    for await (const log of service.streamLogs(target)) {
+      logs.push(log);
+    }
+
+    // Completed step: reads all file content, then exits
     assertEquals(logs.length, 3);
-    assertStringIncludes(logs[0].message, "Streaming logs for step");
-    assertStringIncludes(logs[1].message, "Step started at");
-    assertStringIncludes(logs[2].message, "Step completed at");
+    assertStringIncludes(logs[0].message, "Line 1");
+    assertStringIncludes(logs[1].message, "Line 2");
+    assertStringIncludes(logs[2].message, "Line 3");
   } finally {
     await cleanup(tempDir);
   }
