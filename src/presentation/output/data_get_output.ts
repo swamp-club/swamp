@@ -16,7 +16,7 @@ export interface DataGetData {
   streaming: boolean;
   tags: Record<string, string>;
   ownerDefinition: {
-    definitionHash: string;
+    definitionHash?: string;
     ownerType: string;
     ownerRef: string;
     workflowId?: string;

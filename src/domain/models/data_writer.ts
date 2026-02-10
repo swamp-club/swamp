@@ -1,18 +1,22 @@
+import { z } from "zod";
+import { getLogger } from "@logtape/logtape";
 import { Data } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { ModelType } from "./model_type.ts";
-import {
-  type DataHandle,
-  type DataOutputSpecification,
-  type DataWriter,
-  type DataWriterCallbacks,
-  type DataWriterFactory,
-  normalizeSpecType,
-  type ResolvedDataWriterOptions,
-  type SpecBasedWriterOptions,
+import type {
+  DataHandle,
+  DataWriter,
+  DataWriterCallbacks,
+  FileOutputSpec,
+  FileWriterOverrides,
+  ResolvedDataWriterOptions,
+  ResourceOutputSpec,
+  ResourceWriteOverrides,
 } from "./model.ts";
-import type { DataSpecType } from "./model.ts";
+import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
+
+const logger = getLogger(["swamp", "data-writer"]);
 
 /**
  * Default implementation of the DataWriter domain service.
@@ -28,7 +32,6 @@ export class DefaultDataWriter implements DataWriter {
   private readonly modelType: ModelType;
   private readonly modelId: string;
   private readonly options: ResolvedDataWriterOptions;
-  private readonly normalizedSpecType: DataSpecType;
   private readonly callbacks: DataWriterCallbacks;
 
   private allocated: { version: number; contentPath: string } | null = null;
@@ -47,7 +50,6 @@ export class DefaultDataWriter implements DataWriter {
     this.modelType = modelType;
     this.modelId = modelId;
     this.options = options;
-    this.normalizedSpecType = normalizeSpecType(options.specType);
     this.callbacks = callbacks;
     this.dataId = repo.nextId();
     this.name = options.name;
@@ -204,7 +206,6 @@ export class DefaultDataWriter implements DataWriter {
 
   private get ownerDefinition(): OwnerDefinition {
     return this.options.ownerDefinition ?? {
-      definitionHash: "",
       ownerType: "model-method",
       ownerRef: this.modelId,
     };
@@ -227,7 +228,8 @@ export class DefaultDataWriter implements DataWriter {
   private buildHandle(version: number, size: number): DataHandle {
     return {
       name: this.options.name,
-      specType: this.normalizedSpecType,
+      specName: this.options.specName,
+      kind: this.options.kind,
       dataId: this.dataId,
       version,
       size,
@@ -253,103 +255,226 @@ export class DefaultDataWriter implements DataWriter {
 }
 
 /**
- * Creates a DataWriterFactory bound to a specific execution context.
+ * Creates a writeResource function bound to a specific execution context.
  *
- * The factory resolves spec-based options against the model's declared
- * DataOutputSpecifications, merges workflow overrides, and produces
- * fully-resolved DefaultDataWriter instances.
+ * The returned function validates data against the resource's Zod schema (warn on failure),
+ * serializes to JSON, writes via DefaultDataWriter, and returns a DataHandle.
  *
  * @param repo - The unified data repository
  * @param modelType - The model type
  * @param modelId - The model ID (definition ID)
- * @param definitionHash - The definition hash for ownership
- * @param dataOutputSpecs - The model's declared data output specifications
+ * @param resources - The model's declared resource output specifications
  * @param tagOverrides - Tags merged into every writer (e.g., workflow step tags)
- * @param dataOutputOverrides - Overrides merged into every writer's options
- * @param callbacks - Optional callbacks for streaming events
- * @returns A tuple of [factory, getHandles] where getHandles returns all completed handles
+ * @param dataOutputOverrides - Overrides for specific spec names
+ * @returns A tuple of [writeResource, getHandles]
  */
-export function createDataWriterFactory(
+export function createResourceWriter(
   repo: UnifiedDataRepository,
   modelType: ModelType,
   modelId: string,
-  definitionHash: string,
-  dataOutputSpecs: Record<string, DataOutputSpecification>,
+  resources: Record<string, ResourceOutputSpec>,
   tagOverrides?: Record<string, string>,
   dataOutputOverrides?: Array<{
-    specType: string;
-    lifetime?: string;
-    garbageCollection?: string | number;
+    specName: string;
+    lifetime?: Lifetime;
+    garbageCollection?: GarbageCollectionPolicy;
     tags?: Record<string, string>;
   }>,
-  callbacks?: DataWriterCallbacks,
-): { factory: DataWriterFactory; getHandles: () => DataHandle[] } {
+): {
+  writeResource: (
+    specName: string,
+    data: Record<string, unknown>,
+    overrides?: ResourceWriteOverrides,
+  ) => Promise<DataHandle>;
+  getHandles: () => DataHandle[];
+} {
   const handles: DataHandle[] = [];
-  const writers: DefaultDataWriter[] = [];
 
-  const factory: DataWriterFactory = (options: SpecBasedWriterOptions) => {
-    // Look up the spec — fail fast if not declared
-    const spec = dataOutputSpecs[options.specType];
+  const writeResource = async (
+    specName: string,
+    data: Record<string, unknown>,
+    overrides?: ResourceWriteOverrides,
+  ): Promise<DataHandle> => {
+    const spec = resources[specName];
     if (!spec) {
-      const declared = Object.keys(dataOutputSpecs).join(", ");
+      const declared = Object.keys(resources).join(", ");
       throw new Error(
-        `Undeclared spec type '${options.specType}' in model '${modelType.normalized}'. ` +
-          `Declared spec types: ${declared || "(none)"}`,
+        `Undeclared resource spec '${specName}' in model '${modelType.normalized}'. ` +
+          `Declared resource specs: ${declared || "(none)"}`,
       );
     }
 
-    // Resolve: spec defaults -> call-site overrides
-    const resolvedTags = {
-      ...spec.tags,
-      ...(options.tags ?? {}),
-    };
-
-    let resolvedOptions: ResolvedDataWriterOptions = {
-      name: options.name,
-      specType: spec.specType,
-      contentType: options.contentType ?? spec.contentType,
-      lifetime: options.lifetime ?? spec.lifetime,
-      garbageCollection: options.garbageCollection ?? spec.garbageCollection,
-      streaming: options.streaming ?? spec.streaming,
-      tags: resolvedTags,
-    };
-
-    // Apply workflow tag overrides
-    if (tagOverrides) {
-      resolvedOptions = {
-        ...resolvedOptions,
-        tags: {
-          ...resolvedOptions.tags,
-          ...tagOverrides,
-        },
-      };
+    // Validate data against schema (warn on failure, don't throw)
+    const validationResult = spec.schema.safeParse(data);
+    if (!validationResult.success) {
+      const formattedError = validationResult.error instanceof z.ZodError
+        ? validationResult.error.issues.map((i: z.ZodIssue) =>
+          `${i.message} at "${i.path.join(".")}"`
+        ).join("; ")
+        : String(validationResult.error);
+      logger.warn(
+        "Resource '{specName}' data does not match schema: {error}",
+        { specName, error: formattedError },
+      );
     }
 
-    // Apply data output overrides for this spec type
+    // Resolve tags: spec defaults -> overrides -> tag overrides
+    const resolvedTags: Record<string, string> = {
+      type: "resource",
+      ...(spec.tags ?? {}),
+      ...(overrides?.tags ?? {}),
+    };
+
+    // Apply global tag overrides
+    if (tagOverrides) {
+      Object.assign(resolvedTags, tagOverrides);
+    }
+
+    // Resolve lifetime and gc with overrides
+    let lifetime = overrides?.lifetime ?? spec.lifetime;
+    let garbageCollection = overrides?.garbageCollection ??
+      spec.garbageCollection;
+
+    // Apply data output overrides for this spec name
     if (dataOutputOverrides) {
-      const normalizedSpec = normalizeSpecType(resolvedOptions.specType);
       const override = dataOutputOverrides.find(
-        (o) => o.specType === normalizedSpec.value,
+        (o) => o.specName === specName,
       );
       if (override) {
-        resolvedOptions = {
-          ...resolvedOptions,
-          lifetime: override.lifetime ?? resolvedOptions.lifetime,
-          garbageCollection: override.garbageCollection ??
-            resolvedOptions.garbageCollection,
-          tags: {
-            ...resolvedOptions.tags,
-            ...(override.tags ?? {}),
-          },
-        };
+        lifetime = override.lifetime ?? lifetime;
+        garbageCollection = override.garbageCollection ?? garbageCollection;
+        if (override.tags) {
+          Object.assign(resolvedTags, override.tags);
+        }
       }
     }
 
-    // Set ownership from definitionHash
-    resolvedOptions.ownerDefinition = {
-      ownerType: "model-method",
-      ownerRef: modelId,
-      definitionHash,
+    const resolvedOptions: ResolvedDataWriterOptions = {
+      name: specName,
+      specName,
+      kind: "resource",
+      contentType: "application/json",
+      lifetime,
+      garbageCollection,
+      tags: resolvedTags,
+      ownerDefinition: {
+        ownerType: "model-method",
+        ownerRef: modelId,
+      },
+    };
+
+    const writer = new DefaultDataWriter(
+      repo,
+      modelType,
+      modelId,
+      resolvedOptions,
+    );
+
+    const handle = await writer.writeText(JSON.stringify(data));
+    handles.push(handle);
+    return handle;
+  };
+
+  return { writeResource, getHandles: () => [...handles] };
+}
+
+/**
+ * Creates a createFileWriter function bound to a specific execution context.
+ *
+ * The returned function creates DefaultDataWriter instances for writing
+ * binary/streaming file content.
+ *
+ * @param repo - The unified data repository
+ * @param modelType - The model type
+ * @param modelId - The model ID (definition ID)
+ * @param files - The model's declared file output specifications
+ * @param tagOverrides - Tags merged into every writer (e.g., workflow step tags)
+ * @param dataOutputOverrides - Overrides for specific spec names
+ * @param callbacks - Optional callbacks for streaming events
+ * @returns A tuple of [createFileWriter, getHandles]
+ */
+export function createFileWriterFactory(
+  repo: UnifiedDataRepository,
+  modelType: ModelType,
+  modelId: string,
+  files: Record<string, FileOutputSpec>,
+  tagOverrides?: Record<string, string>,
+  dataOutputOverrides?: Array<{
+    specName: string;
+    lifetime?: Lifetime;
+    garbageCollection?: GarbageCollectionPolicy;
+    tags?: Record<string, string>;
+  }>,
+  callbacks?: DataWriterCallbacks,
+): {
+  createFileWriter: (
+    specName: string,
+    overrides?: FileWriterOverrides,
+  ) => DataWriter;
+  getHandles: () => DataHandle[];
+} {
+  const handles: DataHandle[] = [];
+  const writers: DefaultDataWriter[] = [];
+
+  const createFileWriter = (
+    specName: string,
+    overrides?: FileWriterOverrides,
+  ): DataWriter => {
+    const spec = files[specName];
+    if (!spec) {
+      const declared = Object.keys(files).join(", ");
+      throw new Error(
+        `Undeclared file spec '${specName}' in model '${modelType.normalized}'. ` +
+          `Declared file specs: ${declared || "(none)"}`,
+      );
+    }
+
+    // Resolve tags: spec defaults -> overrides -> tag overrides
+    const resolvedTags: Record<string, string> = {
+      type: "file",
+      ...(spec.tags ?? {}),
+      ...(overrides?.tags ?? {}),
+    };
+
+    // Apply global tag overrides
+    if (tagOverrides) {
+      Object.assign(resolvedTags, tagOverrides);
+    }
+
+    // Resolve options with overrides
+    const contentType = overrides?.contentType ?? spec.contentType;
+    let lifetime = overrides?.lifetime ?? spec.lifetime;
+    let garbageCollection = overrides?.garbageCollection ??
+      spec.garbageCollection;
+    const streaming = overrides?.streaming ?? spec.streaming;
+
+    // Apply data output overrides for this spec name
+    if (dataOutputOverrides) {
+      const override = dataOutputOverrides.find(
+        (o) => o.specName === specName,
+      );
+      if (override) {
+        lifetime = override.lifetime ?? lifetime;
+        garbageCollection = override.garbageCollection ?? garbageCollection;
+        if (override.tags) {
+          Object.assign(resolvedTags, override.tags);
+        }
+      }
+    }
+
+    const resolvedOptions: ResolvedDataWriterOptions = {
+      name: specName,
+      specName,
+      kind: "file",
+      contentType,
+      lifetime,
+      garbageCollection,
+      streaming,
+      tags: resolvedTags,
+      ownerDefinition: {
+        ownerType: "model-method",
+        ownerRef: modelId,
+      },
     };
 
     const writer = new DefaultDataWriter(
@@ -397,5 +522,5 @@ export function createDataWriterFactory(
     return writer;
   };
 
-  return { factory, getHandles: () => [...handles] };
+  return { createFileWriter, getHandles: () => [...handles] };
 }

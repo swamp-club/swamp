@@ -25,16 +25,22 @@ import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import { ModelOutput } from "../models/model_output.ts";
 import {
   extractExpressions,
+  isTaskInputsPath,
   replaceExpressions,
 } from "../expressions/expression_parser.ts";
 import {
   containsVaultExpression,
   ExpressionEvaluationService,
 } from "../expressions/expression_evaluation_service.ts";
-import { extractResourceDependencies } from "../expressions/dependency_extractor.ts";
+import {
+  extractFileContentsDependencies,
+  extractResourceDependencies,
+  hasStepOutputDependency,
+} from "../expressions/dependency_extractor.ts";
 import {
   type DataRecord,
   type ExpressionContext,
+  type FileDataRecord,
   ModelResolver,
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
@@ -433,9 +439,8 @@ export class DefaultStepExecutor implements StepExecutor {
     await outputRepo.save(modelType, task.methodName, output);
 
     // Track data outputs for context refresh
-    let dataAttributes: Record<string, unknown> = {};
-    let dataId: string | undefined;
-    let dataName: string | undefined;
+    const resources: Record<string, DataRecord> = {};
+    const files: Record<string, FileDataRecord> = {};
 
     try {
       runLogger.info("Executing method {method}", {
@@ -449,10 +454,10 @@ export class DefaultStepExecutor implements StepExecutor {
         step: ctx.stepName,
       };
 
-      // Convert step's dataOutputOverrides to the format expected by createDataWriterFactory
+      // Convert step's dataOutputOverrides to the format expected by writer factories
       const stepDataOutputOverrides = ctx.step?.dataOutputOverrides
         ? Array.from(ctx.step.dataOutputOverrides).map((override) => ({
-          specType: override.specType.value,
+          specName: override.specName,
           lifetime: override.lifetime,
           garbageCollection: override.garbageCollection,
           tags: override.tags,
@@ -473,7 +478,6 @@ export class DefaultStepExecutor implements StepExecutor {
           logger: runLogger,
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
-          modelDefinition: modelDef,
           tagOverrides: workflowTagOverrides,
           dataOutputOverrides: stepDataOutputOverrides,
         },
@@ -505,25 +509,52 @@ export class DefaultStepExecutor implements StepExecutor {
           );
           runLogger.info("Data saved to {path}", { path: dataPath });
 
-          // Use first JSON data handle for context refresh
-          if (
-            !dataId && handle.metadata.contentType === "application/json"
-          ) {
-            dataId = handle.dataId;
-            dataName = handle.name;
-            try {
-              const content = await unifiedDataRepo.getContent(
-                modelType,
-                evaluatedDefinition.id,
-                handle.name,
-                handle.version,
-              );
-              if (content) {
-                const text = new TextDecoder().decode(content);
-                dataAttributes = JSON.parse(text) as Record<string, unknown>;
+          // Build context data from handles
+          if (handle.kind === "resource") {
+            let attributes: Record<string, unknown> = {};
+            if (handle.metadata.contentType === "application/json") {
+              try {
+                const content = await unifiedDataRepo.getContent(
+                  modelType,
+                  evaluatedDefinition.id,
+                  handle.name,
+                  handle.version,
+                );
+                if (content) {
+                  const text = new TextDecoder().decode(content);
+                  attributes = JSON.parse(text) as Record<string, unknown>;
+                }
+              } catch {
+                // Not valid JSON, skip attributes
               }
+            }
+            resources[handle.specName] = {
+              id: handle.dataId,
+              name: handle.name,
+              version: handle.version,
+              createdAt: new Date().toISOString(),
+              attributes,
+              tags: handle.tags,
+            };
+          } else if (handle.kind === "file") {
+            const contentPath = unifiedDataRepo.getContentPath(
+              modelType,
+              evaluatedDefinition.id,
+              handle.name,
+              handle.version,
+            );
+            try {
+              const stat = await Deno.stat(contentPath);
+              files[handle.specName] = {
+                id: handle.dataId,
+                version: handle.version,
+                createdAt: new Date().toISOString(),
+                path: contentPath,
+                size: stat.size,
+                contentType: handle.metadata.contentType,
+              };
             } catch {
-              // Not valid JSON, skip attributes
+              // File not found, skip
             }
           }
         }
@@ -542,12 +573,8 @@ export class DefaultStepExecutor implements StepExecutor {
         type: "model_method",
         model: task.modelIdOrName,
         method: task.methodName,
-        resourceId: "", // Legacy field, now empty
-        resourcePath: "", // Legacy field, now empty
-        resourceAttributes: dataAttributes, // Use dataAttributes for backward compat
-        dataId: dataId ?? "",
-        dataName: dataName ?? "output",
-        dataAttributes,
+        resources,
+        files,
         dataArtifacts: savedArtifacts,
       };
     } catch (error) {
@@ -995,6 +1022,59 @@ export class WorkflowExecutionService {
                 }
               }
             }
+
+            // Extract file.contents() dependencies from expressions
+            const fileContentsRefs = extractFileContentsDependencies(
+              expr.celExpression,
+            );
+            for (const modelRef of fileContentsRefs) {
+              const dependsOnStep = modelToStep.get(modelRef);
+              if (dependsOnStep && dependsOnStep !== step.name) {
+                if (
+                  !explicitDeps.includes(dependsOnStep) &&
+                  !implicitDeps.includes(dependsOnStep)
+                ) {
+                  implicitDeps.push(dependsOnStep);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Also scan task.inputs for implicit dependencies
+      const taskInputs = step.task.data.inputs;
+      if (taskInputs) {
+        const inputExpressions = extractExpressions(taskInputs);
+        for (const expr of inputExpressions) {
+          const resourceRefs = extractResourceDependencies(
+            expr.celExpression,
+          );
+          for (const modelRef of resourceRefs) {
+            const dependsOnStep = modelToStep.get(modelRef);
+            if (dependsOnStep && dependsOnStep !== step.name) {
+              if (
+                !explicitDeps.includes(dependsOnStep) &&
+                !implicitDeps.includes(dependsOnStep)
+              ) {
+                implicitDeps.push(dependsOnStep);
+              }
+            }
+          }
+
+          const fileContentsRefs = extractFileContentsDependencies(
+            expr.celExpression,
+          );
+          for (const modelRef of fileContentsRefs) {
+            const dependsOnStep = modelToStep.get(modelRef);
+            if (dependsOnStep && dependsOnStep !== step.name) {
+              if (
+                !explicitDeps.includes(dependsOnStep) &&
+                !implicitDeps.includes(dependsOnStep)
+              ) {
+                implicitDeps.push(dependsOnStep);
+              }
+            }
           }
         }
       }
@@ -1193,11 +1273,8 @@ export class WorkflowExecutionService {
       if (step.task.isModelMethod() && output && typeof output === "object") {
         const taskOutput = output as {
           model?: string;
-          resourceId?: string;
-          resourceAttributes?: Record<string, unknown>;
-          dataId?: string;
-          dataName?: string;
-          dataAttributes?: Record<string, unknown>;
+          resources?: Record<string, DataRecord>;
+          files?: Record<string, FileDataRecord>;
           dataArtifacts?: Array<{
             dataId: string;
             name: string;
@@ -1229,46 +1306,23 @@ export class WorkflowExecutionService {
           }
           const modelData = expressionContext.model[taskOutput.model];
 
-          // Update resource context if available
-          if (taskOutput.resourceId && taskOutput.resourceAttributes) {
-            modelData.resource = {
-              id: taskOutput.resourceId,
-              version: 1,
-              createdAt: new Date().toISOString(),
-              attributes: taskOutput.resourceAttributes,
-            };
-          }
-          // Update data context if available
-          if (taskOutput.dataId && taskOutput.dataAttributes) {
-            const dataName = taskOutput.dataName ?? "output";
-            const record: DataRecord = {
-              id: taskOutput.dataId,
-              name: dataName,
-              version: 1,
-              createdAt: new Date().toISOString(),
-              attributes: taskOutput.dataAttributes,
-              tags: {},
-            };
-
-            // Rebuild map from existing data (may be unwrapped or map)
-            let dataMap: Record<string, DataRecord> = {};
-            if (modelData.data) {
-              if (
-                "id" in modelData.data &&
-                typeof modelData.data.id === "string"
-              ) {
-                // Already unwrapped — re-wrap
-                const existing = modelData.data as DataRecord;
-                dataMap[existing.name] = existing;
-              } else {
-                dataMap = modelData.data as Record<string, DataRecord>;
-              }
+          // Update resource context
+          if (taskOutput.resources) {
+            if (!modelData.resource) modelData.resource = {};
+            for (
+              const [specName, record] of Object.entries(taskOutput.resources)
+            ) {
+              modelData.resource[specName] = record;
             }
-            dataMap[dataName] = record;
-
-            // Unwrap single artifact
-            const entries = Object.values(dataMap);
-            modelData.data = entries.length === 1 ? entries[0] : dataMap;
+          }
+          // Update file context
+          if (taskOutput.files) {
+            if (!modelData.file) modelData.file = {};
+            for (
+              const [specName, fileData] of Object.entries(taskOutput.files)
+            ) {
+              modelData.file[specName] = fileData;
+            }
           }
         }
       }
@@ -1380,11 +1434,8 @@ export class WorkflowExecutionService {
       if (step.task.isModelMethod() && output && typeof output === "object") {
         const taskOutput = output as {
           model?: string;
-          resourceId?: string;
-          resourceAttributes?: Record<string, unknown>;
-          dataId?: string;
-          dataName?: string;
-          dataAttributes?: Record<string, unknown>;
+          resources?: Record<string, DataRecord>;
+          files?: Record<string, FileDataRecord>;
           dataArtifacts?: Array<{
             dataId: string;
             name: string;
@@ -1416,46 +1467,23 @@ export class WorkflowExecutionService {
           }
           const modelData = stepExprContext.model[taskOutput.model];
 
-          // Update resource context if available
-          if (taskOutput.resourceId && taskOutput.resourceAttributes) {
-            modelData.resource = {
-              id: taskOutput.resourceId,
-              version: 1,
-              createdAt: new Date().toISOString(),
-              attributes: taskOutput.resourceAttributes,
-            };
-          }
-          // Update data context if available
-          if (taskOutput.dataId && taskOutput.dataAttributes) {
-            const dataName = taskOutput.dataName ?? "output";
-            const record: DataRecord = {
-              id: taskOutput.dataId,
-              name: dataName,
-              version: 1,
-              createdAt: new Date().toISOString(),
-              attributes: taskOutput.dataAttributes,
-              tags: {},
-            };
-
-            // Rebuild map from existing data (may be unwrapped or map)
-            let dataMap: Record<string, DataRecord> = {};
-            if (modelData.data) {
-              if (
-                "id" in modelData.data &&
-                typeof modelData.data.id === "string"
-              ) {
-                // Already unwrapped — re-wrap
-                const existing = modelData.data as DataRecord;
-                dataMap[existing.name] = existing;
-              } else {
-                dataMap = modelData.data as Record<string, DataRecord>;
-              }
+          // Update resource context
+          if (taskOutput.resources) {
+            if (!modelData.resource) modelData.resource = {};
+            for (
+              const [specName, record] of Object.entries(taskOutput.resources)
+            ) {
+              modelData.resource[specName] = record;
             }
-            dataMap[dataName] = record;
-
-            // Unwrap single artifact
-            const entries = Object.values(dataMap);
-            modelData.data = entries.length === 1 ? entries[0] : dataMap;
+          }
+          // Update file context
+          if (taskOutput.files) {
+            if (!modelData.file) modelData.file = {};
+            for (
+              const [specName, fileData] of Object.entries(taskOutput.files)
+            ) {
+              modelData.file[specName] = fileData;
+            }
           }
         }
       }
@@ -1564,6 +1592,14 @@ export class WorkflowExecutionService {
       }
       // Skip forEach.in expressions — they must remain as strings for forEach expansion
       if (forEachInExpressions.has(expr.raw)) {
+        continue;
+      }
+      // Skip task.inputs expressions that depend on step outputs (resource, file, execution, data, file.contents).
+      // These are evaluated at step execution time when upstream step outputs are available.
+      if (
+        isTaskInputsPath(expr.path) &&
+        hasStepOutputDependency(expr.celExpression)
+      ) {
         continue;
       }
 

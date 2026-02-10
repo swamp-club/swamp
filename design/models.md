@@ -3,12 +3,12 @@
 A model in swamp is defined by a _type_. They are instantiated by creating a
 _definition_, whose attributes can be set statically or dynamically through
 _inputs_. An instantiated _model_ can be used through calling _methods_, which
-_output_ their results and can store _data_ that is immutable, has a _lifetime_,
-a _content type_, can be marked as _streamable_, can be _tagged_ with
-capabilities, and stores the _definition_ that created it (so the model can be
-instantiated from the data it produces). Data produced by a model can only be
-written again by the an instantiated model with the same definition as the
-original data.
+_output_ their results and can store _resources_ and _files_. Resources are
+structured data with a schema, and files are raw content with a content type.
+Both are immutable, have a _lifetime_, can be _tagged_ with capabilities, and
+store the _definition_ that created it (so the model can be instantiated from
+the data it produces). Data produced by a model can only be written again by an
+instantiated model with the same definition as the original data.
 
 ## Type
 
@@ -98,19 +98,11 @@ export const model = {
       description: "Send a notification",
       execute: async (definition, context) => {
         const attrs = definition.attributes;
-        const writer = context.createDataWriter!({
-          name: "result",
-          specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource("result", {
           sent: true,
           content: attrs.content,
           priority: attrs.priority,
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -189,29 +181,34 @@ or by supplying the definiton directly, then can invoke methods on those models.
 
 ## Data
 
-Models can store data, identified by a unique name for a given instance of a
-model. The raw data is written, alongside metadata needed to understand what is
-within each data file.
+Models produce two kinds of output data: **resources** and **files**.
 
-A method should use an interface to write data, and specify the behavior and the
-information itself. When a method writes some data, it will be tracked in the
-output automatically.
+### Resources
 
-Data is immutable. Each write to the same unique name creates a new version of
-the data. The latest version can always be referred to as "latest". When used in
-a CEL expression, "latest" is implied. Old versions can only be retrieved by a
-CEL function. Versions will be auto-incrementing integers, starting at 1.
+Resources are structured data with a Zod schema. They represent external
+resource state, API responses, or any structured output. Resources are declared
+in the model's `resources` field and written with `context.writeResource()`.
 
-Data can only be written by a model instantiated from the same definiton that
-originally wrote the data. This is called the _owner_ of the data.
+Resources are auto-tagged with `type: "resource"`.
 
-Data has metadata, which consists of:
+### Files
 
-- A unique name for the data
+Files are raw content with a content type (MIME type). They represent file
+artifacts, logs, or any binary/text output. Files are declared in the model's
+`files` field and written with `context.createFileWriter()`. Files can optionally
+be marked as `streaming: true` for line-oriented output (replacing the old
+dedicated log type).
+
+Files are auto-tagged with `type: "file"`.
+
+### Common Properties
+
+Both resources and files share these properties:
+
+- A unique name (the spec name, declared in `resources` or `files`)
 - A unique id for the data
 - The full definition of the model that wrote the data, so we can re-instantiate
   a model to operate on the data
-- A content type
 - A lifetime, which defines how long the data should persist. Lifetimes can be
   expressed as a duration string (1h, 5m, 10d, 1mo, 10y). A lifetime of
   "ephemeral" means the data will only be stored for the duration of a method
@@ -223,11 +220,16 @@ Data has metadata, which consists of:
 - A garbage collection setting, which defines how many versions should be
   stored. This has the same values as lifetime, but can also accept a raw
   integer that specifies a specific number.
-- A streaming flag, which indicates the data is line-oriented and should provide
-  a streaming event
 - A set of tags, which are used to mark data for human indexing and retrieval
-  later. A standardized 'type' is always present. For example, a 'log' would
-  have type=log tag.
+  later.
+
+Data is immutable. Each write to the same spec name creates a new version of
+the data. The latest version can always be referred to as "latest". When used in
+a CEL expression, "latest" is implied. Old versions can only be retrieved by a
+CEL function. Versions will be auto-incrementing integers, starting at 1.
+
+Data can only be written by a model instantiated from the same definition that
+originally wrote the data. This is called the _owner_ of the data.
 
 The raw data will be written to
 `.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/raw`.
@@ -238,45 +240,41 @@ The metadata will be written to
 There will be a symlink to the latest version at
 `.swamp/data/{normalized-type}/{model-id}/{data-name}/latest/`.
 
-### Logs
+## Data Output API
 
-Logs will have a tag of 'type=log' and be set to streaming, with a content type
-of plain text.
+Methods write data during execution using two APIs on the method context:
+`writeResource()` for structured resources and `createFileWriter()` for file
+artifacts. Data is written directly to disk and the method returns lightweight
+`DataHandle` references.
 
-### Files
+### Writing Resources
 
-Files will have a data tag of 'type=file'.
-
-### Resources
-
-Files that represent external resource data will be tagged with 'type=resource'.
-
-## DataWriter API
-
-Methods write data during execution using the `DataWriter` domain service,
-accessed through `context.createDataWriter()`. Data is written directly to disk
-and the method returns lightweight `DataHandle` references.
-
-### Writing Data
+Use `context.writeResource(specName, data, overrides?)` to write structured
+resource data. Returns a `Promise<DataHandle>`.
 
 ```typescript
 execute: async (definition, context) => {
-  const writer = context.createDataWriter!({
-    name: "result",
-    specType: "data",
-    contentType: "application/json",
-    lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "data" },
-  });
-  const handle = await writer.writeText(JSON.stringify({
+  const handle = await context.writeResource("result", {
     result: "processed value",
-  }));
+  });
   return { dataHandles: [handle] };
 };
 ```
 
-### Writer Methods
+### Writing Files
+
+Use `context.createFileWriter(specName, overrides?)` to get a `DataWriter` for
+file output.
+
+```typescript
+execute: async (definition, context) => {
+  const writer = context.createFileWriter("execution-log");
+  const handle = await writer.writeText("Step 1 completed\nStep 2 completed\n");
+  return { dataHandles: [handle] };
+};
+```
+
+### Writer Methods (for `createFileWriter`)
 
 | Method                      | Description                                      |
 | --------------------------- | ------------------------------------------------ |
@@ -289,17 +287,18 @@ execute: async (definition, context) => {
 
 ### DataHandle
 
-Lightweight reference to data already persisted by a `DataWriter`:
+Lightweight reference to data already persisted:
 
-| Field      | Description                          |
-| ---------- | ------------------------------------ |
-| `name`     | Data artifact name                   |
-| `specType` | Data spec type                       |
-| `dataId`   | Unique ID for this data              |
-| `version`  | Version number of this write         |
-| `size`     | Size of the written content in bytes |
-| `tags`     | Tags from the writer options         |
-| `metadata` | Full metadata for the data artifact  |
+| Field      | Description                              |
+| ---------- | ---------------------------------------- |
+| `name`     | Data artifact name                       |
+| `specName` | The spec name from `resources` or `files` |
+| `kind`     | `"resource"` or `"file"`                 |
+| `dataId`   | Unique ID for this data                  |
+| `version`  | Version number of this write             |
+| `size`     | Size of the written content in bytes     |
+| `tags`     | Tags from the writer options             |
+| `metadata` | Full metadata for the data artifact      |
 
 ## Output
 

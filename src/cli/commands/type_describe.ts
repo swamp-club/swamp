@@ -8,9 +8,10 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
-  type DataOutputSpecification,
+  type FileOutputSpec,
   type MethodDefinition,
   modelRegistry,
+  type ResourceOutputSpec,
 } from "../../domain/models/model.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -30,25 +31,45 @@ function zodToJsonSchema(schema: z.ZodTypeAny): object {
 function toMethodDescribeData(
   name: string,
   method: MethodDefinition,
-  dataOutputSpecs?: Record<string, DataOutputSpecification>,
+  resources?: Record<string, ResourceOutputSpec>,
+  files?: Record<string, FileOutputSpec>,
 ): MethodDescribeData {
+  const resourceSpecs = resources
+    ? Object.entries(resources).map(
+      ([specName, spec]) => ({
+        specName,
+        kind: "resource" as const,
+        description: spec.description,
+        schema: zodToJsonSchema(spec.schema),
+        lifetime: spec.lifetime,
+        garbageCollection: spec.garbageCollection,
+        tags: spec.tags,
+      }),
+    )
+    : [];
+
+  const fileSpecs = files
+    ? Object.entries(files).map(
+      ([specName, spec]) => ({
+        specName,
+        kind: "file" as const,
+        description: spec.description,
+        contentType: spec.contentType,
+        lifetime: spec.lifetime,
+        garbageCollection: spec.garbageCollection,
+        streaming: spec.streaming,
+        tags: spec.tags,
+      }),
+    )
+    : [];
+
+  const dataOutputSpecs = [...resourceSpecs, ...fileSpecs];
+
   return {
     name,
     description: method.description,
     inputAttributesSchema: zodToJsonSchema(method.inputAttributesSchema),
-    dataOutputSpecs: dataOutputSpecs
-      ? Object.values(dataOutputSpecs).map(
-        (spec) => ({
-          specType: spec.specType.value,
-          description: spec.description,
-          contentType: spec.contentType,
-          lifetime: spec.lifetime,
-          garbageCollection: spec.garbageCollection,
-          streaming: spec.streaming,
-          tags: spec.tags,
-        }),
-      )
-      : undefined,
+    dataOutputSpecs: dataOutputSpecs.length > 0 ? dataOutputSpecs : undefined,
   };
 }
 
@@ -85,7 +106,12 @@ function typeDescribeAction(options: AnyOptions, typeArg: string): void {
   const methods: MethodDescribeData[] = Object.entries(definition.methods)
     .map(
       ([name, method]) =>
-        toMethodDescribeData(name, method, definition.dataOutputSpecs),
+        toMethodDescribeData(
+          name,
+          method,
+          definition.resources,
+          definition.files,
+        ),
     );
 
   // Build the output data

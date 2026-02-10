@@ -3,6 +3,7 @@ import {
   containsExpression,
   extractCelExpression,
   extractExpressions,
+  isTaskInputsPath,
   replaceExpressions,
 } from "./expression_parser.ts";
 
@@ -247,4 +248,41 @@ Deno.test("extractCelExpression returns null for invalid format", () => {
   assertEquals(extractCelExpression("no expression"), null);
   assertEquals(extractCelExpression("${ single braces }"), null);
   assertEquals(extractCelExpression("{{ no dollar }}"), null);
+});
+
+// Tests for isTaskInputsPath
+
+Deno.test("isTaskInputsPath returns true for task.inputs with dot path", () => {
+  assertEquals(
+    isTaskInputsPath("jobs[0].steps[1].task.inputs.vpc_id"),
+    true,
+  );
+});
+
+Deno.test("isTaskInputsPath returns true for task.inputs with bracket path", () => {
+  assertEquals(
+    isTaskInputsPath("jobs[0].steps[0].task.inputs[0]"),
+    true,
+  );
+});
+
+Deno.test("isTaskInputsPath returns false for task.modelIdOrName", () => {
+  assertEquals(
+    isTaskInputsPath("jobs[0].steps[0].task.modelIdOrName"),
+    false,
+  );
+});
+
+Deno.test("isTaskInputsPath returns false for step name", () => {
+  assertEquals(
+    isTaskInputsPath("jobs[0].steps[0].name"),
+    false,
+  );
+});
+
+Deno.test("isTaskInputsPath returns false for model definition attribute", () => {
+  assertEquals(
+    isTaskInputsPath("attributes.vpc_id"),
+    false,
+  );
 });

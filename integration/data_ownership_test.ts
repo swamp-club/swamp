@@ -11,7 +11,6 @@ import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { Data } from "../src/domain/data/data.ts";
-import { computeDefinitionHash } from "../src/domain/data/data_metadata.ts";
 import type { OwnerDefinition } from "../src/domain/data/data_metadata.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import {
@@ -32,15 +31,13 @@ async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "data"));
 }
 
-async function createOwner(
+function createOwner(
   ownerType: "model-method" | "workflow-step" | "manual",
   ref: string,
   workflowId?: string,
   workflowRunId?: string,
-): Promise<OwnerDefinition> {
-  const definitionHash = await computeDefinitionHash(ownerType, ref);
+): OwnerDefinition {
   return {
-    definitionHash,
     ownerType,
     ownerRef: ref,
     workflowId,
@@ -58,7 +55,7 @@ Deno.test("Data Ownership: create data with model-method owner", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("model-method", "test/model:create");
+    const owner = createOwner("model-method", "test/model:create");
 
     const data = Data.create({
       name: "owned-data",
@@ -95,7 +92,7 @@ Deno.test("Data Ownership: create data with workflow-step owner", async () => {
     const modelId = crypto.randomUUID();
     const workflowId = crypto.randomUUID();
     const workflowRunId = crypto.randomUUID();
-    const owner = await createOwner(
+    const owner = createOwner(
       "workflow-step",
       "my-workflow:build-job:compile-step",
       workflowId,
@@ -134,7 +131,7 @@ Deno.test("Data Ownership: create data with manual owner", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("manual", "user:admin@example.com");
+    const owner = createOwner("manual", "user:admin@example.com");
 
     const data = Data.create({
       name: "manual-data",
@@ -171,7 +168,7 @@ Deno.test("Data Ownership: same owner can write new versions", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("model-method", "test/model:update");
+    const owner = createOwner("model-method", "test/model:update");
 
     const data = Data.create({
       name: "update-test",
@@ -218,11 +215,11 @@ Deno.test("Data Ownership: different owner is rejected", async () => {
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
-    const owner1 = await createOwner(
+    const owner1 = createOwner(
       "model-method",
       "test/model:original-owner",
     );
-    const owner2 = await createOwner(
+    const owner2 = createOwner(
       "model-method",
       "test/model:different-owner",
     );
@@ -281,8 +278,8 @@ Deno.test("Data Ownership: different owner type is rejected", async () => {
     const modelId = crypto.randomUUID();
 
     // Same ref, different type
-    const modelOwner = await createOwner("model-method", "shared-ref");
-    const workflowOwner = await createOwner("workflow-step", "shared-ref");
+    const modelOwner = createOwner("model-method", "shared-ref");
+    const workflowOwner = createOwner("workflow-step", "shared-ref");
 
     // Create with model-method owner
     const data1 = Data.create({
@@ -324,18 +321,17 @@ Deno.test("Data Ownership: different owner type is rejected", async () => {
   });
 });
 
-Deno.test("Data Ownership: hash validation detects tampering", async () => {
+Deno.test("Data Ownership: modified ownerRef is rejected", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
-    // Create owner with correct hash
-    const owner = await createOwner("model-method", "test/model:original");
+    const owner = createOwner("model-method", "test/model:original");
 
     const data = Data.create({
-      name: "hash-protected",
+      name: "ref-protected",
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 5,
@@ -351,13 +347,13 @@ Deno.test("Data Ownership: hash validation detects tampering", async () => {
     );
 
     // Try with modified owner ref but keeping same type
-    const modifiedOwner = await createOwner(
+    const modifiedOwner = createOwner(
       "model-method",
       "test/model:modified",
     );
 
     const dataWithModifiedOwner = Data.create({
-      name: "hash-protected",
+      name: "ref-protected",
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 5,
@@ -389,9 +385,9 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
-    const owner1 = await createOwner("model-method", "test/model:method1");
-    const owner2 = await createOwner("model-method", "test/model:method2");
-    const owner3 = await createOwner("workflow-step", "workflow:step1");
+    const owner1 = createOwner("model-method", "test/model:method1");
+    const owner2 = createOwner("model-method", "test/model:method2");
+    const owner3 = createOwner("workflow-step", "workflow:step1");
 
     // Create data with owner1
     const data1 = Data.create({
@@ -523,28 +519,54 @@ Deno.test("Data Ownership: new data with non-existing name succeeds", async () =
   });
 });
 
-Deno.test("Data Ownership: owner hash is deterministic", async () => {
-  // Same inputs should produce same hash
-  const hash1 = await computeDefinitionHash(
-    "model-method",
-    "test/model:method",
-  );
-  const hash2 = await computeDefinitionHash(
-    "model-method",
-    "test/model:method",
-  );
-  assertEquals(hash1, hash2);
+Deno.test("Data Ownership: same ownerType+ownerRef matches regardless of other fields", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const type = ModelType.create("test/model");
+    const modelId = crypto.randomUUID();
 
-  // Different inputs should produce different hashes
-  const hash3 = await computeDefinitionHash("model-method", "different/ref");
-  assertEquals(hash1 !== hash3, true);
+    // Create data with one owner
+    const owner1 = createOwner("model-method", "test/model:method");
 
-  // Different type same ref should produce different hash
-  const hash4 = await computeDefinitionHash(
-    "workflow-step",
-    "test/model:method",
-  );
-  assertEquals(hash1 !== hash4, true);
+    const data1 = Data.create({
+      name: "factory-data",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "test" },
+      ownerDefinition: owner1,
+    });
+
+    await repo.save(
+      type,
+      modelId,
+      data1,
+      new TextEncoder().encode(JSON.stringify({ input: "first" })),
+    );
+
+    // Create data with same ownerType+ownerRef (simulates factory pattern
+    // where different inputs produce different content but same logical owner)
+    const owner2 = createOwner("model-method", "test/model:method");
+
+    const data2 = Data.create({
+      name: "factory-data",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "test" },
+      ownerDefinition: owner2,
+    });
+
+    // Should succeed because ownerType + ownerRef match
+    const result = await repo.save(
+      type,
+      modelId,
+      data2,
+      new TextEncoder().encode(JSON.stringify({ input: "second" })),
+    );
+    assertEquals(result.version, 2);
+  });
 });
 
 Deno.test("Data Ownership: rejected write doesn't corrupt existing data", async () => {
@@ -554,8 +576,8 @@ Deno.test("Data Ownership: rejected write doesn't corrupt existing data", async 
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
-    const originalOwner = await createOwner("model-method", "original");
-    const attackerOwner = await createOwner("model-method", "attacker");
+    const originalOwner = createOwner("model-method", "original");
+    const attackerOwner = createOwner("model-method", "attacker");
 
     // Create original data
     const originalData = Data.create({
@@ -619,7 +641,7 @@ Deno.test("Data Ownership: owner persists across multiple versions", async () =>
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("model-method", "persistent-owner");
+    const owner = createOwner("model-method", "persistent-owner");
 
     const data = Data.create({
       name: "multi-version",
@@ -641,7 +663,6 @@ Deno.test("Data Ownership: owner persists across multiple versions", async () =>
       assertExists(loaded);
       assertEquals(loaded.ownerDefinition.ownerType, "model-method");
       assertEquals(loaded.ownerDefinition.ownerRef, "persistent-owner");
-      assertEquals(loaded.ownerDefinition.definitionHash, owner.definitionHash);
     }
   });
 });
@@ -660,8 +681,8 @@ Deno.test("Data Ownership: different models can own data with same name", async 
     const modelId1 = crypto.randomUUID();
     const modelId2 = crypto.randomUUID();
 
-    const owner1 = await createOwner("model-method", "model1:method");
-    const owner2 = await createOwner("model-method", "model2:method");
+    const owner1 = createOwner("model-method", "model1:method");
+    const owner2 = createOwner("model-method", "model2:method");
 
     // Same data name, different model instances, different owners
     const data1 = Data.create({

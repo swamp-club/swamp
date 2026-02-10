@@ -11,7 +11,6 @@ import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { Data } from "../src/domain/data/data.ts";
-import { computeDefinitionHash } from "../src/domain/data/data_metadata.ts";
 import type { OwnerDefinition } from "../src/domain/data/data_metadata.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -33,10 +32,8 @@ async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "definitions"));
 }
 
-async function createOwner(ref: string): Promise<OwnerDefinition> {
-  const definitionHash = await computeDefinitionHash("model-method", ref);
+function createOwner(ref: string): OwnerDefinition {
   return {
-    definitionHash,
     ownerType: "model-method",
     ownerRef: ref,
   };
@@ -52,7 +49,7 @@ Deno.test("Data Tagging: create data with required type tag", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:tag-test");
+    const owner = createOwner("test/model:tag-test");
 
     const data = Data.create({
       name: "tagged-data",
@@ -82,7 +79,7 @@ Deno.test("Data Tagging: create data with multiple tags", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:multi-tag");
+    const owner = createOwner("test/model:multi-tag");
 
     const data = Data.create({
       name: "multi-tagged",
@@ -122,7 +119,7 @@ Deno.test("Data Tagging: tags persist across versions", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:tag-persist");
+    const owner = createOwner("test/model:tag-persist");
 
     const data = Data.create({
       name: "persistent-tags",
@@ -168,7 +165,7 @@ Deno.test("Data Tagging: findByTag returns matching records", async () => {
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:find-tag");
+    const owner = createOwner("test/model:find-tag");
 
     // Create multiple models with different data types
     const models = [
@@ -239,7 +236,7 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:custom-tags");
+    const owner = createOwner("test/model:custom-tags");
 
     // Create models with different environments
     const environments = ["production", "staging", "development"];
@@ -298,7 +295,7 @@ Deno.test("Data Tagging: findByTag returns all versions with matching tag", asyn
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:latest-only");
+    const owner = createOwner("test/model:latest-only");
 
     const definition = Definition.create({
       name: "versioned-model",
@@ -354,7 +351,7 @@ Deno.test("Data Tagging: different type categories", async () => {
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:categories");
+    const owner = createOwner("test/model:categories");
 
     // Create data with different type categories
     const categories = [
@@ -414,7 +411,7 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:workflow-tags");
+    const owner = createOwner("test/model:workflow-tags");
 
     // Simulate workflow step outputs with workflow/step tags
     const workflows = [
@@ -484,13 +481,13 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
 // Tag Access in CEL Expressions
 // ============================================================================
 
-Deno.test("Data Tagging: access tags via model.X.data.Y.tags", async () => {
+Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:tag-access");
+    const owner = createOwner("test/model:tag-access");
 
     const definition = Definition.create({
       name: "my-vpc",
@@ -525,11 +522,11 @@ Deno.test("Data Tagging: access tags via model.X.data.Y.tags", async () => {
     });
     const context = await modelResolver.buildContext();
 
-    // Access tags directly
+    // Access tags directly via resource namespace
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
-    assertExists(modelData.data);
-    const dataRecord = modelData.data as {
+    assertExists(modelData.resource);
+    const dataRecord = modelData.resource!["vpc-state"] as {
       tags: Record<string, string>;
     };
     assertEquals(dataRecord.tags.type, "resource");
@@ -542,13 +539,13 @@ Deno.test("Data Tagging: access tags via model.X.data.Y.tags", async () => {
 // Multiple Data Items Per Model
 // ============================================================================
 
-Deno.test("Data Tagging: multiple data items with different tags", async () => {
+Deno.test("Data Tagging: multiple resource items with different tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:multi-data");
+    const owner = createOwner("test/model:multi-data");
 
     const definition = Definition.create({
       name: "multi-output-model",
@@ -557,7 +554,7 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     });
     await definitionRepo.save(type, definition);
 
-    // Create multiple data items with different tags
+    // Create multiple resource data items with different custom tags
     const dataItems: Array<{
       name: string;
       tags: Record<string, string>;
@@ -565,22 +562,22 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     }> = [
       {
         name: "stdout",
-        tags: { type: "output", stream: "stdout" },
-        content: "standard output",
+        tags: { type: "resource", stream: "stdout" },
+        content: JSON.stringify({ output: "standard output" }),
       },
       {
         name: "stderr",
-        tags: { type: "output", stream: "stderr" },
-        content: "error output",
+        tags: { type: "resource", stream: "stderr" },
+        content: JSON.stringify({ output: "error output" }),
       },
       {
         name: "exit-code",
-        tags: { type: "status" },
+        tags: { type: "resource", category: "status" },
         content: JSON.stringify({ code: 0 }),
       },
       {
         name: "timing",
-        tags: { type: "metrics", category: "performance" },
+        tags: { type: "resource", category: "performance" },
         content: JSON.stringify({ duration: 1234 }),
       },
     ];
@@ -588,9 +585,7 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     for (const item of dataItems) {
       const data = Data.create({
         name: item.name,
-        contentType: item.name === "exit-code" || item.name === "timing"
-          ? "application/json"
-          : "text/plain",
+        contentType: "application/json",
         lifetime: "infinite",
         garbageCollection: 5,
         tags: item.tags,
@@ -611,32 +606,32 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     });
     const context = await modelResolver.buildContext();
 
-    // Access all data from model (multi-artifact: data is a map)
+    // Access all resource data from model (resource is a map of specName -> DataRecord)
     const modelData = context.model["multi-output-model"];
     assertExists(modelData);
-    assertExists(modelData.data);
-    const dataMap = modelData.data as Record<
+    assertExists(modelData.resource);
+    const resourceMap = modelData.resource as Record<
       string,
       { tags: Record<string, string> }
     >;
-    assertExists(dataMap["stdout"]);
-    assertExists(dataMap["stderr"]);
-    assertExists(dataMap["exit-code"]);
-    assertExists(dataMap["timing"]);
+    assertExists(resourceMap["stdout"]);
+    assertExists(resourceMap["stderr"]);
+    assertExists(resourceMap["exit-code"]);
+    assertExists(resourceMap["timing"]);
 
-    // Verify tags
-    assertEquals(dataMap["stdout"].tags.stream, "stdout");
-    assertEquals(dataMap["stderr"].tags.stream, "stderr");
-    assertEquals(dataMap["timing"].tags.category, "performance");
+    // Verify custom tags
+    assertEquals(resourceMap["stdout"].tags.stream, "stdout");
+    assertEquals(resourceMap["stderr"].tags.stream, "stderr");
+    assertEquals(resourceMap["timing"].tags.category, "performance");
 
     // Query by tags
     assertExists(context.data);
 
-    const outputs = context.data.findByTag("type", "output");
-    assertEquals(outputs.length, 2);
+    const resources = context.data.findByTag("type", "resource");
+    assertEquals(resources.length, 4);
 
-    const metrics = context.data.findByTag("type", "metrics");
-    assertEquals(metrics.length, 1);
+    const perfItems = context.data.findByTag("category", "performance");
+    assertEquals(perfItems.length, 1);
   });
 });
 
@@ -670,7 +665,7 @@ Deno.test("Data Tagging: special characters in tag values", async () => {
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:special-tags");
+    const owner = createOwner("test/model:special-tags");
 
     const definition = Definition.create({
       name: "special-tags-model",
@@ -718,7 +713,7 @@ Deno.test("Data Tagging: tag-based organization in findAllForModel", async () =>
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:find-all");
+    const owner = createOwner("test/model:find-all");
 
     // Create data with different types
     const dataItems = [
