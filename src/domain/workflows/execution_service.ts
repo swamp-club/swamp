@@ -719,7 +719,7 @@ export class WorkflowExecutionService {
     },
   ): Promise<WorkflowRun> {
     // Look up workflow
-    const workflow = await this.lookupWorkflow(idOrName);
+    let workflow = await this.lookupWorkflow(idOrName);
     if (!workflow) {
       throw new Error(`Workflow not found: ${idOrName}`);
     }
@@ -737,11 +737,12 @@ export class WorkflowExecutionService {
       if (!lastEvaluated) {
         throw new UserError(
           `No previously evaluated workflow found for "${workflow.name}".\n\n` +
-            `Run the workflow without --last-evaluated first to generate evaluated data:\n` +
-            `  swamp workflow run ${workflow.name}`,
+            `Evaluate the workflow first to generate evaluated data:\n` +
+            `  swamp workflow evaluate ${workflow.name}`,
         );
       }
-      // No expression context needed — we use pre-evaluated definitions per-step
+      // Use the fully evaluated workflow (forEach expanded, expressions resolved)
+      workflow = lastEvaluated;
     } else {
       // Build expression context and evaluate workflow
       expressionContext = await this.modelResolver.buildContext();

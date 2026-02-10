@@ -222,11 +222,11 @@ swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated work
 
 **Options:**
 
-| Flag               | Description                                   |
-| ------------------ | --------------------------------------------- |
-| `--input <json>`   | Input values as JSON string                   |
-| `--input-file <f>` | Input values from YAML file                   |
-| `--last-evaluated` | Use previously evaluated workflow (skip eval) |
+| Flag               | Description                                                        |
+| ------------------ | ------------------------------------------------------------------ |
+| `--input <json>`   | Input values as JSON string                                        |
+| `--input-file <f>` | Input values from YAML file                                        |
+| `--last-evaluated` | Use previously evaluated workflow (skip eval and input validation) |
 
 **Output shape:**
 
@@ -439,8 +439,11 @@ swamp workflow evaluate --all --json
 **Key behaviors:**
 
 - CEL expressions (`${{ inputs.X }}`, `${{ model.X.resource... }}`) are resolved
+- forEach steps are expanded into concrete steps with resolved inputs
 - Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
 - Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
+- After evaluating with inputs, `--last-evaluated` can run without re-providing
+  inputs
 
 ## forEach Iteration
 

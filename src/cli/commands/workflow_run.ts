@@ -188,7 +188,8 @@ export const workflowRunCommand = new Command()
       }
 
       // Validate inputs against workflow schema if provided
-      if (workflow.inputs) {
+      // Skip validation when using --last-evaluated since inputs are already baked in
+      if (workflow.inputs && !lastEvaluated) {
         const validationService = new InputValidationService();
         const inputsWithDefaults = validationService.applyDefaults(
           inputs,

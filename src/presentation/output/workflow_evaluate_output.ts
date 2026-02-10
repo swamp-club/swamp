@@ -6,6 +6,7 @@ export interface WorkflowEvaluateItemData {
   id: string;
   name: string;
   hadExpressions: boolean;
+  forEachExpanded?: boolean;
   outputPath?: string;
   jobs?: JobData[];
 }
@@ -60,8 +61,17 @@ export function renderWorkflowEvaluateSingle(
 
     if (item.hadExpressions) {
       logger.info("  Expressions evaluated");
-    } else {
+    } else if (!item.forEachExpanded) {
       logger.info("  No expressions to evaluate");
+    }
+
+    if (item.forEachExpanded && item.jobs) {
+      logger.info("  forEach steps expanded:");
+      for (const job of item.jobs) {
+        for (const step of job.steps) {
+          logger.info("    - {step}", { step: step.name });
+        }
+      }
     }
 
     if (item.outputPath) {
