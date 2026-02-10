@@ -266,6 +266,11 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.expressionContext,
         ctx.repoDir,
       );
+
+      // Step inputs override evaluated attributes (implicit inputs)
+      for (const [key, value] of Object.entries(stepInputs)) {
+        evaluatedDefinition.setAttribute(key, value);
+      }
     }
 
     // Save evaluated definition (with vault expressions still raw) for --last-evaluated

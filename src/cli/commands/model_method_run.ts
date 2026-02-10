@@ -186,6 +186,11 @@ export const modelMethodRunCommand = new Command()
         await evaluatedDefRepo.save(modelType, evaluatedDefinition);
       }
 
+      // CLI inputs override evaluated attributes (implicit inputs)
+      for (const [key, value] of Object.entries(inputs)) {
+        evaluatedDefinition.setAttribute(key, value);
+      }
+
       // Resolve vault expressions at runtime (never persisted)
       evaluatedDefinition = await evaluationService
         .resolveVaultExpressionsInDefinition(evaluatedDefinition);
