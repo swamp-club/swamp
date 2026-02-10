@@ -263,6 +263,7 @@ export const workflowRunCommand = new Command()
           progress: ExecutionProgressCallback,
         ): Promise<WorkflowRun> => {
           return await executionService.execute(workflow.name, progress, {
+            enableStepLogging: true,
             lastEvaluated,
             inputs,
           });

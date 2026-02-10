@@ -294,8 +294,7 @@ export class LogStreamService {
       for await (const workflowEntry of Deno.readDir(baseRunsDir)) {
         if (workflowEntry.isDirectory) {
           const workflowDir = join(baseRunsDir, workflowEntry.name);
-          const logFileName =
-            `workflow-run-${target.workflowRunId}-${target.jobName}.log`;
+          const logFileName = `workflow-run-${target.workflowRunId}.log`;
           const potentialPath = join(workflowDir, logFileName);
 
           try {
@@ -400,10 +399,36 @@ export class LogStreamService {
         });
       }
 
-      // Check output for exit code info
+      // Check output for stdout and exit code
       const stepOutput = step.output as
-        | { exitCode?: number }
+        | { stdout?: string; stderr?: string; exitCode?: number }
         | undefined;
+
+      // Show stdout content if available
+      if (stepOutput?.stdout) {
+        const lines = stepOutput.stdout.split("\n");
+        for (const line of lines) {
+          if (line.trim()) {
+            entries.push({
+              message: line,
+              timestamp: step.startedAt ? new Date(step.startedAt) : new Date(),
+            });
+          }
+        }
+      }
+
+      // Show stderr if available
+      if (stepOutput?.stderr) {
+        const lines = stepOutput.stderr.split("\n");
+        for (const line of lines) {
+          if (line.trim()) {
+            entries.push({
+              message: `[STDERR] ${line}`,
+              timestamp: step.startedAt ? new Date(step.startedAt) : new Date(),
+            });
+          }
+        }
+      }
 
       if (step.completedAt) {
         entries.push({
