@@ -95,7 +95,7 @@ Deno.test("LogStreamService - getLogs for pending step", async () => {
   }
 });
 
-Deno.test("LogStreamService - getLogs for completed step with output", async () => {
+Deno.test("LogStreamService - getLogs for completed step falls back to YAML timing", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
 
@@ -117,7 +117,6 @@ Deno.test("LogStreamService - getLogs for completed step with output", async () 
           startedAt: "2024-01-01T10:00:00Z",
           completedAt: "2024-01-01T10:00:05Z",
           output: {
-            stdout: "Hello, World!\nStep executed successfully",
             exitCode: 0,
           },
         }],
@@ -136,19 +135,17 @@ Deno.test("LogStreamService - getLogs for completed step with output", async () 
 
     const logs = await service.getLogs(target);
 
-    // Should have: streaming message, started at, stdout lines, completed at
-    assertEquals(logs.length >= 4, true);
+    // YAML fallback returns: streaming header, started at, completed at
+    assertEquals(logs.length, 3);
     assertStringIncludes(logs[0].message, "Streaming logs for step");
     assertStringIncludes(logs[1].message, "Step started at");
-    assertStringIncludes(logs[2].message, "Hello, World!");
-    assertStringIncludes(logs[3].message, "Step executed successfully");
-    assertStringIncludes(logs[logs.length - 1].message, "Step completed at");
+    assertStringIncludes(logs[2].message, "Step completed at");
   } finally {
     await cleanup(tempDir);
   }
 });
 
-Deno.test("LogStreamService - getLogs for step with stderr", async () => {
+Deno.test("LogStreamService - getLogs for failed step shows timing from YAML", async () => {
   const tempDir = await createTempDir();
   const service = new LogStreamService(tempDir);
 
@@ -170,8 +167,6 @@ Deno.test("LogStreamService - getLogs for step with stderr", async () => {
           startedAt: "2024-01-01T10:00:00Z",
           completedAt: "2024-01-01T10:00:05Z",
           output: {
-            stdout: "Some output",
-            stderr: "Error occurred\nFailed to execute",
             exitCode: 1,
           },
         }],
@@ -190,11 +185,11 @@ Deno.test("LogStreamService - getLogs for step with stderr", async () => {
 
     const logs = await service.getLogs(target);
 
-    // Find stderr entries
-    const stderrLogs = logs.filter((log) => log.message.includes("[STDERR]"));
-    assertEquals(stderrLogs.length, 2);
-    assertStringIncludes(stderrLogs[0].message, "[STDERR] Error occurred");
-    assertStringIncludes(stderrLogs[1].message, "[STDERR] Failed to execute");
+    // YAML fallback: streaming header, started at, completed at with exit code
+    assertEquals(logs.length, 3);
+    assertStringIncludes(logs[0].message, "Streaming logs for step");
+    assertStringIncludes(logs[1].message, "Step started at");
+    assertStringIncludes(logs[2].message, "exit code: 1");
   } finally {
     await cleanup(tempDir);
   }
@@ -367,7 +362,6 @@ Deno.test("LogStreamService - streamLogs for completed step", async () => {
           startedAt: "2024-01-01T10:00:00Z",
           completedAt: "2024-01-01T10:00:05Z",
           output: {
-            stdout: "Line 1\nLine 2\nLine 3",
             exitCode: 0,
           },
         }],
@@ -389,12 +383,11 @@ Deno.test("LogStreamService - streamLogs for completed step", async () => {
       logs.push(log);
     }
 
-    // Should have all logs from the completed step
-    assertEquals(logs.length >= 5, true); // streaming, started, 3 stdout lines, completed
+    // YAML fallback: streaming header, started at, completed at
+    assertEquals(logs.length, 3);
     assertStringIncludes(logs[0].message, "Streaming logs for step");
-    assertStringIncludes(logs[2].message, "Line 1");
-    assertStringIncludes(logs[3].message, "Line 2");
-    assertStringIncludes(logs[4].message, "Line 3");
+    assertStringIncludes(logs[1].message, "Step started at");
+    assertStringIncludes(logs[2].message, "Step completed at");
   } finally {
     await cleanup(tempDir);
   }
