@@ -1,7 +1,6 @@
 export { createDataId, type DataId, generateDataId } from "./data_id.ts";
 
 export {
-  computeDefinitionHash,
   type DataMetadata,
   DataMetadataSchema,
   type GarbageCollectionPolicy,

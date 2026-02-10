@@ -8,8 +8,8 @@ querying AWS for configuration values.
 ## Implicit Dependency Resolution
 
 When a model input contains an expression like
-`${{ model.<name>.data.attributes.json.<field> }}`, the workflow engine
-automatically:
+`${{ model.<name>.resource.<specName>.attributes.<field> }}`, the workflow
+engine automatically:
 
 1. Detects the dependency on the referenced model
 2. Ensures the referenced model's method runs first
@@ -58,12 +58,12 @@ attributes:
 # my-instance input (references aws/cli output)
 name: my-instance
 attributes:
-  imageId: ${{ model.latest-ami.data.attributes.json.ImageId }}
+  imageId: ${{ model.latest-ami.resource.data.attributes.json.ImageId }}
   instanceType: t3.micro
 ```
 
 The workflow engine detects that `my-instance` references
-`latest-ami.data.attributes`, creating an implicit dependency.
+`latest-ami.resource.data.attributes`, creating an implicit dependency.
 
 ## Example: Multi-Step Infrastructure Workflow
 
@@ -121,7 +121,7 @@ name: subnet-lookup
 attributes:
   command: >-
     ec2 describe-subnets
-    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.data.attributes.json.VpcId }}"
+    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.attributes.json.VpcId }}"
     --query "Subnets[0]"
   parseJson: true
 ```
@@ -130,7 +130,7 @@ attributes:
 # app-security-group - chains from vpc-lookup
 name: app-security-group
 attributes:
-  vpcId: ${{ model.vpc-lookup.data.attributes.json.VpcId }}
+  vpcId: ${{ model.vpc-lookup.resource.data.attributes.json.VpcId }}
   groupName: app-sg
   description: Security group for application
 ```
@@ -139,19 +139,20 @@ attributes:
 # app-server - chains from multiple lookups
 name: app-server
 attributes:
-  imageId: ${{ model.latest-ami.data.attributes.json.ImageId }}
-  subnetId: ${{ model.subnet-lookup.data.attributes.json.SubnetId }}
+  imageId: ${{ model.latest-ami.resource.data.attributes.json.ImageId }}
+  subnetId: ${{ model.subnet-lookup.resource.data.attributes.json.SubnetId }}
   securityGroupIds:
-    - ${{ model.app-security-group.resource.attributes.groupId }}
+    - ${{ model.app-security-group.resource.resource.attributes.groupId }}
   instanceType: t3.micro
 ```
 
-## Mixing Data and Resource References
+## Resource References
 
-Workflows can chain both `data.attributes` (from aws/cli and similar models) and
-`resource.attributes` (from infrastructure models):
+All model data outputs are accessed via
+`model.<name>.resource.<specName>.attributes.<field>`:
 
-| Reference Type    | Use Case                  | Example                                         |
-| ----------------- | ------------------------- | ----------------------------------------------- |
-| `data.attributes` | CLI output, API responses | `model.ami-lookup.data.attributes.json.ImageId` |
-| `resource`        | Created infrastructure    | `model.my-vpc.resource.attributes.vpcId`        |
+| Model Type    | Spec Name  | Example                                                  |
+| ------------- | ---------- | -------------------------------------------------------- |
+| aws/cli       | `data`     | `model.ami-lookup.resource.data.attributes.json.ImageId` |
+| Cloud Control | `resource` | `model.my-vpc.resource.resource.attributes.VpcId`        |
+| Custom models | (varies)   | `model.my-deploy.resource.state.attributes.endpoint`     |

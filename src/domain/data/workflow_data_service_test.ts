@@ -5,7 +5,7 @@ import { ModelType } from "../models/model_type.ts";
 import { WorkflowRun } from "../workflows/workflow_run.ts";
 import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { computeDefinitionHash } from "./data_metadata.ts";
+import { computeDefinitionHash } from "../models/model_output.ts";
 import {
   type createDefinitionId,
   Definition,
@@ -21,10 +21,10 @@ async function createTestData(
   name: string,
   tags: Record<string, string> = { type: "resource" },
 ): Promise<Data> {
-  const definitionHash = await computeDefinitionHash(
-    "model-method",
-    "test:create",
-  );
+  const definitionHash = await computeDefinitionHash({
+    type: "model-method",
+    ref: "test:create",
+  });
   return Data.create({
     name,
     contentType: "application/json",
