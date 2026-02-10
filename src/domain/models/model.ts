@@ -18,55 +18,35 @@ import type { UnifiedDataRepository } from "../../infrastructure/persistence/uni
 import type { OutputRepository } from "./repositories.ts";
 
 /**
- * Data spec type - identifies a category of data output.
- * Value object - equality by value.
+ * Specification for a resource data output (JSON with Zod schema).
+ * Resources are structured data validated against a schema.
  */
-export class DataSpecType {
-  private constructor(readonly value: string) {
-    if (!value || value.trim().length === 0) {
-      throw new Error("Data spec type cannot be empty");
-    }
-  }
-
-  static create(value: string): DataSpecType {
-    return new DataSpecType(value.trim());
-  }
-
-  equals(other: DataSpecType): boolean {
-    return this.value === other.value;
-  }
-
-  toString(): string {
-    return this.value;
-  }
-}
-
-/**
- * Normalizes a specType value to a DataSpecType instance.
- * Accepts either an existing DataSpecType or a plain string.
- */
-export function normalizeSpecType(
-  specType: DataSpecType | string,
-): DataSpecType {
-  if (specType instanceof DataSpecType) {
-    return specType;
-  }
-  return DataSpecType.create(specType);
-}
-
-/**
- * Specification for a data output spec type.
- * Value object - immutable. This is the single source of truth for how
- * a particular category of data output should be stored.
- */
-export interface DataOutputSpecification {
-  /** The spec type identifier */
-  specType: DataSpecType;
-
+export interface ResourceOutputSpec {
   /** Human-readable description */
   description?: string;
 
-  /** Content type for this data output */
+  /** Zod schema — validates data on write, powers CEL hints */
+  schema: z.ZodTypeAny;
+
+  /** Lifetime policy */
+  lifetime: Lifetime;
+
+  /** Garbage collection policy */
+  garbageCollection: GarbageCollectionPolicy;
+
+  /** Tags applied to this data output (auto-includes type: "resource") */
+  tags?: Record<string, string>;
+}
+
+/**
+ * Specification for a file data output (binary/text, including logs).
+ * Files are unstructured content identified by content type.
+ */
+export interface FileOutputSpec {
+  /** Human-readable description */
+  description?: string;
+
+  /** MIME type */
   contentType: string;
 
   /** Lifetime policy */
@@ -75,25 +55,60 @@ export interface DataOutputSpecification {
   /** Garbage collection policy */
   garbageCollection: GarbageCollectionPolicy;
 
-  /** Whether this supports streaming */
+  /** For line-oriented streaming (logs) */
   streaming?: boolean;
 
-  /** Tags applied to this data output */
-  tags: Record<string, string>;
+  /** Tags applied to this data output (auto-includes type: "file") */
+  tags?: Record<string, string>;
 }
 
 /**
- * Zod schema for data output specification.
+ * Zod schema for resource output specification (used by user model loader).
+ * Note: `schema` is validated as a ZodType instance at runtime.
  */
-export const DataOutputSpecificationSchema = z.object({
-  specType: z.string().min(1),
+export const ResourceOutputSpecSchema = z.object({
+  description: z.string().optional(),
+  schema: z.custom<z.ZodTypeAny>((val) => val instanceof z.ZodType),
+  lifetime: LifetimeSchema,
+  garbageCollection: GarbageCollectionSchema,
+  tags: z.record(z.string(), z.string()).optional(),
+});
+
+/**
+ * Zod schema for file output specification (used by user model loader).
+ */
+export const FileOutputSpecSchema = z.object({
   description: z.string().optional(),
   contentType: z.string(),
   lifetime: LifetimeSchema,
   garbageCollection: GarbageCollectionSchema,
   streaming: z.boolean().optional(),
-  tags: z.record(z.string(), z.string()),
+  tags: z.record(z.string(), z.string()).optional(),
 });
+
+/**
+ * Override spec defaults when writing a resource.
+ */
+export interface ResourceWriteOverrides {
+  /** Override the instance name (defaults to specName). */
+  name?: string;
+  lifetime?: Lifetime;
+  garbageCollection?: GarbageCollectionPolicy;
+  tags?: Record<string, string>;
+}
+
+/**
+ * Override spec defaults when creating a file writer.
+ */
+export interface FileWriterOverrides {
+  /** Override the instance name (defaults to specName). */
+  name?: string;
+  contentType?: string;
+  lifetime?: Lifetime;
+  garbageCollection?: GarbageCollectionPolicy;
+  streaming?: boolean;
+  tags?: Record<string, string>;
+}
 
 /**
  * Context provided to method execution.
@@ -140,27 +155,34 @@ export interface MethodContext {
   logger: Logger;
 
   /**
-   * The model definition for validation and defaults.
+   * Write a resource — validates against schema, serializes JSON, returns handle.
    */
-  modelDefinition?: ModelDefinition;
+  writeResource?: (
+    specName: string,
+    data: Record<string, unknown>,
+    overrides?: ResourceWriteOverrides,
+  ) => Promise<DataHandle>;
 
   /**
-   * Factory for creating DataWriter instances to write data during execution.
+   * Create a file writer — returns DataWriter for binary/streaming content.
    */
-  createDataWriter?: DataWriterFactory;
+  createFileWriter?: (
+    specName: string,
+    overrides?: FileWriterOverrides,
+  ) => DataWriter;
 
   /**
-   * Tags merged into every DataWriter created during execution.
+   * Tags merged into every writer created during execution.
    * Used by workflow steps to inject workflow-specific tags.
    */
   tagOverrides?: Record<string, string>;
 
   /**
-   * Data output overrides merged into every DataWriter's options.
-   * Used by workflow steps to override lifetime, gc, and tags per spec type.
+   * Data output overrides merged into every writer's options.
+   * Used by workflow steps to override lifetime, gc, and tags per spec name.
    */
   dataOutputOverrides?: Array<{
-    specType: string;
+    specName: string;
     lifetime?: Lifetime;
     garbageCollection?: GarbageCollectionPolicy;
     tags?: Record<string, string>;
@@ -174,8 +196,10 @@ export interface MethodContext {
 export interface DataHandle {
   /** Human-readable name of this data artifact. */
   name: string;
-  /** Reference to the declared spec type. */
-  specType: DataSpecType;
+  /** The declared spec name (key in resources or files). */
+  specName: string;
+  /** Whether this handle is for a resource or file. */
+  kind: "resource" | "file";
   /** Unique data ID. */
   dataId: DataId;
   /** Version number on disk. */
@@ -192,34 +216,13 @@ export interface DataHandle {
 }
 
 /**
- * Options for creating a DataWriter from a spec-based call site.
- * Only `name` and `specType` are required — defaults come from the
- * model's DataOutputSpecification. Optional fields override spec defaults.
- */
-export interface SpecBasedWriterOptions {
-  /** Unique instance name for this data artifact */
-  name: string;
-  /** Key into dataOutputSpecs — must match a declared spec type */
-  specType: string;
-  /** Override the spec's default content type */
-  contentType?: string;
-  /** Override the spec's default lifetime */
-  lifetime?: Lifetime;
-  /** Override the spec's default garbage collection policy */
-  garbageCollection?: GarbageCollectionPolicy;
-  /** Override the spec's default streaming flag */
-  streaming?: boolean;
-  /** Merged on top of spec's default tags */
-  tags?: Record<string, string>;
-}
-
-/**
  * Fully resolved options used internally by DefaultDataWriter.
  * All fields are required (resolved from spec + overrides).
  */
 export interface ResolvedDataWriterOptions {
   name: string;
-  specType: DataSpecType | string;
+  specName: string;
+  kind: "resource" | "file";
   contentType: string;
   lifetime: Lifetime;
   garbageCollection: GarbageCollectionPolicy;
@@ -261,15 +264,6 @@ export interface DataWriterCallbacks {
   /** Called for each line written by writeLine or writeStream. */
   onLine?: (dataName: string, line: string) => void;
 }
-
-/**
- * Factory function for creating DataWriter instances.
- * Accepts spec-based options — the factory resolves defaults from
- * the model's DataOutputSpecification.
- */
-export type DataWriterFactory = (
-  options: SpecBasedWriterOptions,
-) => DataWriter;
 
 /**
  * Follow-up action to be executed after a method completes.
@@ -389,11 +383,16 @@ export interface ModelDefinition<
   inputAttributesSchema: TInputAttrs;
 
   /**
-   * Data output specifications - declares what spec types this model produces.
-   * Keys are spec type values, values are full specifications.
-   * REQUIRED for all models.
+   * Resource output specifications — structured JSON data validated against a Zod schema.
+   * Keys are spec names, values are full specifications.
    */
-  dataOutputSpecs: Record<string, DataOutputSpecification>;
+  resources?: Record<string, ResourceOutputSpec>;
+
+  /**
+   * File output specifications — binary or text content identified by MIME type.
+   * Keys are spec names, values are full specifications.
+   */
+  files?: Record<string, FileOutputSpec>;
 
   /**
    * Available methods on this model.

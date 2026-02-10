@@ -9,7 +9,6 @@ import {
 import type { ModelType } from "../model_type.ts";
 import {
   type DataHandle,
-  DataSpecType,
   defineModel,
   type FollowUpAction,
   type MethodContext,
@@ -171,19 +170,14 @@ export abstract class AWSCloudControlModel<
   }
 
   /**
-   * Writes attributes as a DataHandle via DataWriter.
+   * Writes attributes as a DataHandle via writeResource.
    */
   protected async writeDataHandle(
-    definition: Definition,
+    _definition: Definition,
     attributes: Record<string, unknown>,
     context: MethodContext,
   ): Promise<DataHandle> {
-    const writer = context.createDataWriter!({
-      name: `${definition.name}-data`,
-      specType: "resource",
-    });
-
-    return await writer.writeText(JSON.stringify(attributes));
+    return await context.writeResource!("resource", attributes);
   }
 
   /**
@@ -547,14 +541,12 @@ export abstract class AWSCloudControlModel<
       type: this.modelType,
       version: "2026.02.09.1",
       inputAttributesSchema: this.config.inputAttributesSchema,
-      dataOutputSpecs: {
+      resources: {
         "resource": {
-          specType: DataSpecType.create("resource"),
           description: `AWS ${this.typeName} resource data`,
-          contentType: "application/json",
+          schema: z.record(z.string(), z.unknown()),
           lifetime: "infinite",
           garbageCollection: 10,
-          tags: { type: "resource" },
         },
       },
       methods: {

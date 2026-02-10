@@ -28,18 +28,17 @@ Models produce data when methods execute. Each data item has:
 - **Version**: Auto-incrementing integer (starts at 1)
 - **Lifetime**: How long data persists
 - **Content type**: MIME type of the data
-- **Tags**: Key-value pairs for categorization (e.g., `type=log`)
+- **Tags**: Key-value pairs for categorization (e.g., `type=resource`)
 
 ### Data Tags
 
 Standard tags categorize data:
 
-| Tag             | Description                      |
-| --------------- | -------------------------------- |
-| `type=log`      | Execution logs (streaming, text) |
-| `type=file`     | File artifacts                   |
-| `type=resource` | External resource state          |
-| `type=data`     | General model data               |
+| Tag               | Description                                     |
+| ----------------- | ----------------------------------------------- |
+| `type=resource`   | Structured JSON data (validated against schema) |
+| `type=file`       | Binary/text file artifacts (including logs)     |
+| `specName=<name>` | Output spec key name (for `data.findBySpec()`)  |
 
 ### Lifetime Types
 
@@ -109,7 +108,7 @@ swamp data get my-model execution-log --json
   "version": 5,
   "lifetime": "7d",
   "contentType": "text/plain",
-  "tags": { "type": "log" },
+  "tags": { "type": "resource" },
   "createdAt": "2025-01-15T10:30:00Z",
   "path": ".swamp/data/my-type/abc-123/execution-log/5/raw"
 }
@@ -200,21 +199,29 @@ swamp data gc -f --json  # Skip confirmation prompt
 Use CEL expressions to access model data in workflows and model inputs:
 
 ```yaml
-# Access latest version (implied)
-value: ${{ model.my-model.data.attributes.result }}
+# Access latest resource data via dot notation
+value: ${{ model.my-model.resource.output.attributes.result }}
 
 # Access specific version
 value: ${{ data.version("my-model", "output", 2).attributes.result }}
+
+# Access file metadata
+path: ${{ model.my-model.file.content.path }}
+size: ${{ model.my-model.file.content.size }}
+
+# Lazy-load file contents
+body: ${{ file.contents("my-model", "content") }}
 ```
 
 ### Data Namespace Functions
 
-| Function                                     | Description                            |
-| -------------------------------------------- | -------------------------------------- |
-| `data.version(modelName, dataName, version)` | Get specific version of data           |
-| `data.latest(modelName, dataName)`           | Get latest version of data             |
-| `data.listVersions(modelName, dataName)`     | Get array of available version numbers |
-| `data.findByTag(tagKey, tagValue)`           | Find all data matching a tag           |
+| Function                                     | Description                               |
+| -------------------------------------------- | ----------------------------------------- |
+| `data.version(modelName, dataName, version)` | Get specific version of data              |
+| `data.latest(modelName, dataName)`           | Get latest version of data                |
+| `data.listVersions(modelName, dataName)`     | Get array of available version numbers    |
+| `data.findByTag(tagKey, tagValue)`           | Find all data matching a tag              |
+| `data.findBySpec(modelName, specName)`       | Find all data from a specific output spec |
 
 **DataRecord structure** returned by these functions:
 
@@ -235,25 +242,30 @@ value: ${{ data.version("my-model", "output", 2).attributes.result }}
 # Get specific version
 oldValue: ${{ data.version("my-model", "state", 2).attributes.value }}
 
-# Get latest (same as model.my-model.data)
+# Get latest
 current: ${{ data.latest("my-model", "output").attributes.result }}
 
 # List versions for conditional logic
 hasHistory: ${{ size(data.listVersions("my-model", "state")) > 1 }}
 
-# Find all logs across models
-allLogs: ${{ data.findByTag("type", "log") }}
+# Find all resources across models
+allResources: ${{ data.findByTag("type", "resource") }}
 
 # Find data from a specific workflow
 workflowData: ${{ data.findByTag("workflow", "my-workflow") }}
+
+# Find all instances from a factory model's output spec
+subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 ```
 
 **Key rules:**
 
-- `model.<name>.data` always refers to the latest version
+- `model.<name>.resource.<specName>` accesses the latest version of a resource
+- `model.<name>.file.<specName>` accesses file metadata (path, size,
+  contentType)
 - Use `data.version()` function for specific versions
 - Use `data.findByTag()` to query across models
-- Data expressions create implicit step dependencies in workflows
+- Resource/file expressions create implicit step dependencies in workflows
 
 ## Data Ownership
 

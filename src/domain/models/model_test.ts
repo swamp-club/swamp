@@ -2,15 +2,11 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
 import {
   type DataHandle,
-  DataSpecType,
   type DataWriter,
-  type DataWriterFactory,
   defineModel,
   type MethodContext,
   type ModelDefinition,
   ModelRegistry,
-  normalizeSpecType,
-  type SpecBasedWriterOptions,
 } from "./model.ts";
 import { ModelType } from "./model_type.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
@@ -28,36 +24,68 @@ interface MockWriterResult {
 }
 
 /**
- * Creates a mock DataWriterFactory that stores written content in memory.
+ * Creates mock writeResource and createFileWriter functions that store written content in memory.
  */
-function createMockDataWriterFactory(): {
-  factory: DataWriterFactory;
+function createMockWriters(): {
+  writeResource: (
+    specName: string,
+    data: Record<string, unknown>,
+  ) => Promise<DataHandle>;
+  createFileWriter: (specName: string) => DataWriter;
   getResults: () => MockWriterResult[];
 } {
   const results: MockWriterResult[] = [];
   const getResults = (): MockWriterResult[] => results;
   let nextId = 1;
 
-  const factory: DataWriterFactory = (
-    options: SpecBasedWriterOptions,
-  ): DataWriter => {
+  const writeResource = (
+    specName: string,
+    data: Record<string, unknown>,
+  ): Promise<DataHandle> => {
     const dataId = `mock-data-${nextId++}` as DataId;
-
-    const buildHandle = (content: Uint8Array): DataHandle => ({
-      name: options.name,
-      specType: normalizeSpecType(options.specType),
+    const content = new TextEncoder().encode(JSON.stringify(data));
+    const handle: DataHandle = {
+      name: specName,
+      specName,
+      kind: "resource",
       dataId,
       version: 1,
       size: content.length,
-      tags: options.tags ?? {},
+      tags: {},
       metadata: {
-        contentType: options.contentType ?? "application/json",
-        lifetime: options.lifetime ?? "infinite",
-        garbageCollection: options.garbageCollection ?? 10,
-        streaming: options.streaming ?? false,
-        tags: options.tags ?? {},
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: {},
         ownerDefinition: {
-          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    };
+    results.push({ handle, content });
+    return Promise.resolve(handle);
+  };
+
+  const createFileWriter = (specName: string): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: specName,
+      specName,
+      kind: "file",
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: {},
+      metadata: {
+        contentType: "application/octet-stream",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: {},
+        ownerDefinition: {
           ownerType: "model-method",
           ownerRef: "test",
         },
@@ -66,7 +94,7 @@ function createMockDataWriterFactory(): {
 
     return {
       dataId,
-      name: options.name,
+      name: specName,
       writeAll(content: Uint8Array): Promise<DataHandle> {
         const handle = buildHandle(content);
         results.push({ handle, content });
@@ -101,7 +129,7 @@ function createMockDataWriterFactory(): {
     } as DataWriter;
   };
 
-  return { factory, getResults };
+  return { writeResource, createFileWriter, getResults };
 }
 
 /**
@@ -155,7 +183,7 @@ function createTestContext(modelType: ModelType): {
   context: MethodContext;
   getResults: () => MockWriterResult[];
 } {
-  const { factory, getResults } = createMockDataWriterFactory();
+  const { writeResource, createFileWriter, getResults } = createMockWriters();
   const context: MethodContext = {
     repoDir: "/tmp",
     modelType,
@@ -163,7 +191,8 @@ function createTestContext(modelType: ModelType): {
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
-    createDataWriter: factory,
+    writeResource,
+    createFileWriter,
   };
   return { context, getResults };
 }
@@ -188,11 +217,13 @@ function createTestModel(typeString: string): ModelDefinition {
     type,
     version: "2026.02.09.1",
     inputAttributesSchema: z.object({ message: z.string() }),
-    dataOutputSpecs: {
+    resources: {
       "data": {
-        specType: DataSpecType.create("data"),
         description: "Test data",
-        contentType: "application/json",
+        schema: z.object({
+          message: z.string(),
+          timestamp: z.string(),
+        }),
         lifetime: "infinite",
         garbageCollection: 10,
         tags: { type: "data" },
@@ -203,16 +234,10 @@ function createTestModel(typeString: string): ModelDefinition {
         description: "Write message to data",
         inputAttributesSchema: z.object({ message: z.string() }),
         execute: async (definition: Definition, context: MethodContext) => {
-          const writer = context.createDataWriter!({
-            name: `${definition.name}-data`,
-            specType: "data",
+          const handle = await context.writeResource!("data", {
+            message: definition.attributes.message,
+            timestamp: new Date().toISOString(),
           });
-          const handle = await writer.writeText(
-            JSON.stringify({
-              message: definition.attributes.message,
-              timestamp: new Date().toISOString(),
-            }),
-          );
           return { dataHandles: [handle] };
         },
       },
@@ -454,15 +479,9 @@ Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
       description: "Greet",
       inputAttributesSchema: z.object({ message: z.string() }),
       execute: async (definition: Definition, context: MethodContext) => {
-        const writer = context.createDataWriter!({
-          name: "greeting",
-          specType: "data",
+        const handle = await context.writeResource!("data", {
+          greeting: `Hello, ${definition.attributes.message}`,
         });
-        const handle = await writer.writeText(
-          JSON.stringify({
-            greeting: `Hello, ${definition.attributes.message}`,
-          }),
-        );
         return { dataHandles: [handle] };
       },
     },
@@ -491,7 +510,6 @@ Deno.test("ModelRegistry.register rejects non-CalVer version string", () => {
     type: ModelType.create("test/invalid-version"),
     version: "not-a-calver",
     inputAttributesSchema: z.object({}),
-    dataOutputSpecs: {},
     methods: {},
   };
 
@@ -508,7 +526,6 @@ Deno.test("ModelRegistry.register accepts model with CalVer version and valid up
     type: ModelType.create("test/with-upgrades"),
     version: "2026.02.09.1",
     inputAttributesSchema: z.object({}),
-    dataOutputSpecs: {},
     methods: {},
     upgrades: [
       {
@@ -534,7 +551,6 @@ Deno.test("ModelRegistry.register rejects upgrades not in chronological order", 
     type: ModelType.create("test/bad-order"),
     version: "2026.02.09.1",
     inputAttributesSchema: z.object({}),
-    dataOutputSpecs: {},
     methods: {},
     upgrades: [
       {
@@ -563,7 +579,6 @@ Deno.test("ModelRegistry.register rejects when last upgrade toVersion doesn't ma
     type: ModelType.create("test/mismatch-version"),
     version: "2026.02.09.1",
     inputAttributesSchema: z.object({}),
-    dataOutputSpecs: {},
     methods: {},
     upgrades: [
       {
@@ -587,7 +602,6 @@ Deno.test("ModelRegistry.register accepts model with no upgrades", () => {
     type: ModelType.create("test/no-upgrades"),
     version: "2026.02.09.1",
     inputAttributesSchema: z.object({}),
-    dataOutputSpecs: {},
     methods: {},
   };
 

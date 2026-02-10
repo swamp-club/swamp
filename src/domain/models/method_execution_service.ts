@@ -12,7 +12,10 @@ import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
-import { createDataWriterFactory } from "./data_writer.ts";
+import {
+  createFileWriterFactory,
+  createResourceWriter,
+} from "./data_writer.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -77,8 +80,8 @@ export interface MethodExecutionService {
  * Default implementation of the method execution service.
  *
  * Validates definition attributes against the method's schema before execution.
- * Creates DataWriterFactory and injects it into context so methods write
- * data directly to disk. The result contains DataHandle[] (already persisted).
+ * Creates writeResource/createFileWriter and injects them into context so methods
+ * write data directly to disk. The result contains DataHandle[] (already persisted).
  */
 export class DefaultMethodExecutionService implements MethodExecutionService {
   private readonly dataOutputValidationService =
@@ -105,19 +108,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // Execute the method
     const result = await method.execute(definition, context);
 
-    // Validate data handles if model definition is provided
-    if (result.dataHandles && context.modelDefinition) {
-      const specs = context.modelDefinition.dataOutputSpecs;
-
-      // Find the method name (for better error messages)
-      const methodName = Object.entries(context.modelDefinition.methods)
-        .find(([_, m]) => m === method)?.[0] ?? "unknown";
-
-      // Validate spec type references
+    // Validate data handles
+    if (result.dataHandles) {
       const validation = this.dataOutputValidationService.validate(
         result.dataHandles,
-        specs,
-        methodName,
       );
 
       if (!validation.valid) {
@@ -154,30 +148,47 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       );
     }
 
-    // Create DataWriterFactory for this execution
+    // Create writeResource and createFileWriter for this execution
     const definitionHash = await currentDefinition.computeHash();
-    const { factory, getHandles: _getHandles } = createDataWriterFactory(
+    const resources = modelDef.resources ?? {};
+    const files = modelDef.files ?? {};
+
+    const {
+      writeResource,
+      getHandles: _getResourceHandles,
+    } = createResourceWriter(
       context.dataRepository,
       context.modelType,
       context.modelId,
-      definitionHash,
-      modelDef.dataOutputSpecs,
+      resources,
       context.tagOverrides,
       context.dataOutputOverrides,
     );
 
-    // Inject factory into context
-    const contextWithWriter: MethodContext = {
+    const {
+      createFileWriter,
+      getHandles: _getFileHandles,
+    } = createFileWriterFactory(
+      context.dataRepository,
+      context.modelType,
+      context.modelId,
+      files,
+      context.tagOverrides,
+      context.dataOutputOverrides,
+    );
+
+    // Inject into context
+    const contextWithWriters: MethodContext = {
       ...context,
-      createDataWriter: factory,
-      modelDefinition: modelDef,
+      writeResource,
+      createFileWriter,
     };
 
     // Execute the initial method
     const result = await this.execute(
       currentDefinition,
       method,
-      contextWithWriter,
+      contextWithWriters,
     );
     let currentHandles = result.dataHandles ?? [];
 
@@ -211,7 +222,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const finalResult = await this.processFollowUpActions(
         currentDefinition,
         modelDef,
-        contextWithWriter,
+        contextWithWriters,
         result.followUpActions,
         currentHandles,
         0,

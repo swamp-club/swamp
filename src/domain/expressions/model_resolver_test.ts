@@ -200,6 +200,81 @@ Deno.test("DataCache.getDataNames returns empty array for missing model", () => 
   assertEquals(names, []);
 });
 
+// DataCache.findBySpec tests
+
+Deno.test("DataCache.findBySpec returns records matching model and specName tag", () => {
+  const cache = new DataCache();
+
+  const subnetA: DataRecord = {
+    id: "sub-1",
+    name: "subnet-a",
+    version: 1,
+    createdAt: "2024-01-01T00:00:00Z",
+    attributes: { cidr: "10.0.1.0/24" },
+    tags: { type: "resource", specName: "subnet" },
+  };
+  const subnetB: DataRecord = {
+    id: "sub-2",
+    name: "subnet-b",
+    version: 1,
+    createdAt: "2024-01-01T00:00:00Z",
+    attributes: { cidr: "10.0.2.0/24" },
+    tags: { type: "resource", specName: "subnet" },
+  };
+  const other: DataRecord = {
+    id: "other-1",
+    name: "vpc",
+    version: 1,
+    createdAt: "2024-01-01T00:00:00Z",
+    attributes: {},
+    tags: { type: "resource", specName: "vpc" },
+  };
+
+  cache.addData("factory-model", "subnet-a", 1, subnetA);
+  cache.addData("factory-model", "subnet-b", 1, subnetB);
+  cache.addData("factory-model", "vpc", 1, other);
+
+  const results = cache.findBySpec("factory-model", "subnet");
+  assertEquals(results.length, 2);
+  assertEquals(results.some((r) => r.name === "subnet-a"), true);
+  assertEquals(results.some((r) => r.name === "subnet-b"), true);
+});
+
+Deno.test("DataCache.findBySpec returns empty array for no matches", () => {
+  const cache = new DataCache();
+  const results = cache.findBySpec("nonexistent", "spec");
+  assertEquals(results, []);
+});
+
+Deno.test("DataCache.findBySpec does not mix models", () => {
+  const cache = new DataCache();
+
+  const recordA: DataRecord = {
+    id: "r1",
+    name: "item-a",
+    version: 1,
+    createdAt: "2024-01-01T00:00:00Z",
+    attributes: {},
+    tags: { specName: "item" },
+  };
+  const recordB: DataRecord = {
+    id: "r2",
+    name: "item-b",
+    version: 1,
+    createdAt: "2024-01-01T00:00:00Z",
+    attributes: {},
+    tags: { specName: "item" },
+  };
+
+  cache.addData("model-a", "item-a", 1, recordA);
+  cache.addData("model-b", "item-b", 1, recordB);
+
+  assertEquals(cache.findBySpec("model-a", "item").length, 1);
+  assertEquals(cache.findBySpec("model-a", "item")[0].name, "item-a");
+  assertEquals(cache.findBySpec("model-b", "item").length, 1);
+  assertEquals(cache.findBySpec("model-b", "item")[0].name, "item-b");
+});
+
 Deno.test("DataCache handles hyphenated model names", () => {
   const cache = new DataCache();
   const record: DataRecord = {

@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
-  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -58,12 +57,7 @@ async function executeWrite(
     timestamp: new Date().toISOString(),
   };
 
-  const writer = context.createDataWriter!({
-    name: `${definition.name}-message`,
-    specType: "message",
-  });
-
-  const handle = await writer.writeText(JSON.stringify(dataAttributes));
+  const handle = await context.writeResource!("message", dataAttributes);
 
   return { dataHandles: [handle] };
 }
@@ -82,14 +76,12 @@ export const echoModel: ModelDefinition<
   type: ECHO_MODEL_TYPE,
   version: "2026.02.09.1",
   inputAttributesSchema: EchoInputAttributesSchema,
-  dataOutputSpecs: {
+  resources: {
     "message": {
-      specType: DataSpecType.create("message"),
       description: "Echo message with timestamp",
-      contentType: "application/json",
+      schema: EchoDataAttributesSchema,
       lifetime: "ephemeral",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: {
