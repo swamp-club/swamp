@@ -20,14 +20,14 @@ type AnyOptions = any;
 /**
  * Converts a Zod schema to JSON Schema format.
  */
-function zodToJsonSchema(schema: z.ZodTypeAny): object {
+export function zodToJsonSchema(schema: z.ZodTypeAny): object {
   return z.toJSONSchema(schema);
 }
 
 /**
  * Converts a MethodDefinition to MethodDescribeData for presentation.
  */
-function toMethodDescribeData(
+export function toMethodDescribeData(
   name: string,
   method: MethodDefinition,
   dataOutputSpecs?: Record<string, DataOutputSpecification>,

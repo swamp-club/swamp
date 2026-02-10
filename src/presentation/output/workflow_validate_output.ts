@@ -1,5 +1,6 @@
+import { bold, cyan, green, red } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "./output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 export interface ValidationItemData {
   name: string;
@@ -21,6 +22,31 @@ export interface WorkflowValidateAllData {
   passed: boolean;
 }
 
+const checkmark = "\u2713";
+const cross = "\u2717";
+const arrow = "\u2192";
+
+function formatValidationLines(validations: ValidationItemData[]): string[] {
+  const lines: string[] = [];
+  for (const v of validations) {
+    if (v.passed) {
+      lines.push(`  ${green(checkmark)} ${v.name}`);
+    } else {
+      lines.push(`  ${red(cross)} ${v.name}`);
+      if (v.error) {
+        lines.push(`    ${red(arrow)} ${v.error}`);
+      }
+    }
+  }
+  return lines;
+}
+
+function formatResult(passed: boolean, label: string): string {
+  return passed
+    ? `${bold(cyan(`${label}:`))} ${green("PASSED")}`
+    : `${bold(cyan(`${label}:`))} ${red("FAILED")}`;
+}
+
 export function renderWorkflowValidate(
   data: WorkflowValidateData,
   mode: OutputMode,
@@ -28,38 +54,21 @@ export function renderWorkflowValidate(
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {
-    renderLogWorkflowValidate(data);
-  }
-}
+    const lines: string[] = [];
+    lines.push(
+      `${bold(cyan("Validating:"))} ${bold(data.workflowName)}`,
+    );
+    lines.push(...formatValidationLines(data.validations));
 
-function renderLogWorkflowValidate(data: WorkflowValidateData): void {
-  const logger = getSwampLogger(["workflow", "validate"]);
-  const checkmark = "\u2713";
-  const cross = "\u2717";
-
-  logger.info("Validating workflow: {workflowName}", {
-    workflowName: data.workflowName,
-  });
-
-  for (const v of data.validations) {
-    const icon = v.passed ? checkmark : cross;
-    logger.info("  {icon} {name}", { icon, name: v.name });
-    if (v.error) {
-      logger.error("    -> {error}", { error: v.error });
-    }
-  }
-
-  const passedCount = data.validations.filter((v) => v.passed).length;
-  const totalCount = data.validations.length;
-  logger.info("Summary: {passedCount}/{totalCount} validations passed", {
-    passedCount,
-    totalCount,
-  });
-
-  if (data.passed) {
-    logger.info("Result: PASSED");
-  } else {
-    logger.error("Result: FAILED");
+    const passedCount = data.validations.filter((v) => v.passed).length;
+    const totalCount = data.validations.length;
+    lines.push(
+      `${
+        bold(cyan("Summary:"))
+      } ${passedCount}/${totalCount} validations passed`,
+    );
+    lines.push(formatResult(data.passed, "Result"));
+    writeOutput(lines.join("\n"));
   }
 }
 
@@ -81,43 +90,23 @@ export function renderWorkflowValidateAll(
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {
-    renderLogWorkflowValidateAll(data);
-  }
-}
+    const lines: string[] = [];
+    lines.push(bold(cyan("Validating all workflows...")));
 
-function renderLogWorkflowValidateAll(data: WorkflowValidateAllData): void {
-  const logger = getSwampLogger(["workflow", "validate"]);
-  const checkmark = "\u2713";
-  const cross = "\u2717";
-
-  logger.info("Validating all workflows...");
-
-  for (const workflow of data.workflows) {
-    logger.info("{workflowName}", { workflowName: workflow.workflowName });
-
-    for (const v of workflow.validations) {
-      const icon = v.passed ? checkmark : cross;
-      logger.info("  {icon} {name}", { icon, name: v.name });
-      if (v.error) {
-        logger.error("    -> {error}", { error: v.error });
-      }
+    for (const workflow of data.workflows) {
+      lines.push("");
+      lines.push(bold(cyan(workflow.workflowName)));
+      lines.push(...formatValidationLines(workflow.validations));
+      lines.push(formatResult(workflow.passed, "Result"));
     }
 
-    if (workflow.passed) {
-      logger.info("  Result: PASSED");
-    } else {
-      logger.error("  Result: FAILED");
-    }
-  }
-
-  logger.info(
-    "Summary: {totalPassed}/{total} workflows passed",
-    { totalPassed: data.totalPassed, total: data.workflows.length },
-  );
-
-  if (data.passed) {
-    logger.info("Overall: PASSED");
-  } else {
-    logger.error("Overall: FAILED");
+    lines.push("");
+    lines.push(
+      `${
+        bold(cyan("Summary:"))
+      } ${totalPassed}/${data.workflows.length} workflows passed`,
+    );
+    lines.push(formatResult(passed, "Overall"));
+    writeOutput(lines.join("\n"));
   }
 }

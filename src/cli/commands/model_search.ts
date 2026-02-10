@@ -15,6 +15,7 @@ import { UserError } from "../../domain/errors.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { toMethodDescribeData, zodToJsonSchema } from "./type_describe.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -74,6 +75,8 @@ async function displayModelGet(
     throw new UserError(`Model not found: ${item.id}`);
   }
 
+  const modelDef = modelRegistry.get(modelType);
+
   const data: ModelGetData = {
     id: definition.id,
     name: definition.name,
@@ -81,6 +84,16 @@ async function displayModelGet(
     version: definition.version,
     tags: definition.tags,
     attributes: definition.attributes,
+    typeVersion: modelDef?.version,
+    inputAttributesSchema: modelDef
+      ? zodToJsonSchema(modelDef.inputAttributesSchema)
+      : undefined,
+    methods: modelDef
+      ? Object.entries(modelDef.methods).map(
+        ([name, method]) =>
+          toMethodDescribeData(name, method, modelDef.dataOutputSpecs),
+      )
+      : undefined,
   };
 
   renderModelGet(data, outputMode);
