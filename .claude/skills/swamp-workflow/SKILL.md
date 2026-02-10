@@ -128,44 +128,16 @@ jobs:
 
 ## Edit a Workflow
 
-Open workflow file in your editor, or update via stdin in non-interactive mode.
+**Recommended:** Use `swamp workflow get <name> --json` to get the file path,
+then edit directly with the Edit tool, then validate with
+`swamp workflow validate <name> --json`. Never modify the `id` field.
 
-```bash
-# Interactive: opens in editor
-swamp workflow edit my-workflow
+**Alternative methods:**
 
-# Non-interactive: update from stdin
-cat updated-workflow.yaml | swamp workflow edit my-workflow --json
+- Interactive: `swamp workflow edit my-workflow` (opens in system editor)
+- Stdin: `cat updated.yaml | swamp workflow edit my-workflow --json`
 
-# With here-doc (agent-friendly)
-swamp workflow edit my-workflow --json <<EOF
-id: existing-uuid
-name: my-workflow
-version: 1
-jobs:
-  - name: updated-job
-    steps:
-      - name: step1
-        task:
-          type: shell
-          command: echo
-          args: ["updated"]
-EOF
-```
-
-Without arguments in interactive mode, shows a search interface to select a
-workflow.
-
-**Output shape (when updating via stdin):**
-
-```json
-{
-  "path": ".swamp/workflows/workflow-abc-123.yaml",
-  "status": "updated",
-  "name": "my-workflow",
-  "id": "abc-123"
-}
-```
+Run `swamp repo index` if search results seem stale after editing.
 
 ## Delete a Workflow
 
