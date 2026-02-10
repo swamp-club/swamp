@@ -49,8 +49,11 @@ Deno.test("createLogProgressCallback returns all lifecycle callbacks", () => {
 Deno.test("createLogProgressCallback does not include stdout/stderr callbacks", () => {
   const callback = createLogProgressCallback("test-workflow");
 
-  assertEquals(callback.onStepStdout, undefined);
-  assertEquals(callback.onStepStderr, undefined);
+  // onStepStdout/onStepStderr were removed from ExecutionProgressCallback.
+  // Process output now flows through LogTape loggers and RunFileSink.
+  const callbackKeys = Object.keys(callback);
+  assertEquals(callbackKeys.includes("onStepStdout"), false);
+  assertEquals(callbackKeys.includes("onStepStderr"), false);
 });
 
 Deno.test("createLogProgressCallback lifecycle callbacks do not throw", () => {
