@@ -19,7 +19,11 @@ function createTestWorkflow(): Workflow {
           {
             name: "test-step",
             description: "Test step",
-            task: { type: "shell", command: "echo", args: ["hello"] },
+            task: {
+              type: "model_method",
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
             dependsOn: [],
             weight: 0,
           },

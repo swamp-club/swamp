@@ -204,8 +204,9 @@ Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple wor
             name: "compile",
             status: "succeeded" as const,
             task: {
-              type: "shell" as const,
-              command: "make build",
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
             },
           },
         ],
@@ -292,8 +293,9 @@ Deno.test("mermaidWorkflowModel: generate creates simple diagram without steps",
             name: "deploy-step",
             status: "failed" as const,
             task: {
-              type: "shell" as const,
-              command: "deploy.sh",
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
             },
           },
         ],
@@ -345,7 +347,11 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
           {
             name: "init",
             status: "succeeded" as const,
-            task: { type: "shell" as const, command: "setup.sh" },
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
           },
         ],
       },
@@ -362,7 +368,11 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
           {
             name: "build-ui",
             status: "succeeded" as const,
-            task: { type: "shell" as const, command: "npm run build" },
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
           },
         ],
       },
@@ -379,7 +389,11 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
           {
             name: "build-api",
             status: "succeeded" as const,
-            task: { type: "shell" as const, command: "go build" },
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
           },
         ],
       },
@@ -400,7 +414,11 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
           {
             name: "test-integration",
             status: "succeeded" as const,
-            task: { type: "shell" as const, command: "run-tests.sh" },
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
           },
         ],
       },

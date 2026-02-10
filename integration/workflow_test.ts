@@ -82,7 +82,7 @@ function createTestWorkflow(name: string): Workflow {
         steps: [
           Step.create({
             name: "compile",
-            task: StepTask.shell("echo", { args: ["building..."] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
       }),
@@ -92,7 +92,7 @@ function createTestWorkflow(name: string): Workflow {
         steps: [
           Step.create({
             name: "unit",
-            task: StepTask.shell("echo", { args: ["testing..."] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
         dependsOn: [
@@ -511,7 +511,7 @@ Deno.test("CLI: workflow run executes simple workflow", async () => {
           steps: [
             Step.create({
               name: "echo-step",
-              task: StepTask.shell("echo", { args: ["hello"] }),
+              task: StepTask.model("test-model", "run"),
             }),
           ],
         }),
@@ -590,7 +590,7 @@ Deno.test("CLI: workflow run fails when step fails", async () => {
           steps: [
             Step.create({
               name: "failing-step",
-              task: StepTask.shell("false"), // 'false' command always exits with 1
+              task: StepTask.model("test-model", "run"), // 'false' command always exits with 1
             }),
           ],
         }),
@@ -635,7 +635,7 @@ Deno.test("CLI: workflow run skips job when condition not met", async () => {
           steps: [
             Step.create({
               name: "fail",
-              task: StepTask.shell("false"),
+              task: StepTask.model("test-model", "run"),
             }),
           ],
         }),
@@ -644,7 +644,7 @@ Deno.test("CLI: workflow run skips job when condition not met", async () => {
           steps: [
             Step.create({
               name: "run",
-              task: StepTask.shell("echo", { args: ["test"] }),
+              task: StepTask.model("test-model", "run"),
             }),
           ],
           dependsOn: [
@@ -739,7 +739,7 @@ Deno.test("CLI: workflow run fails when model has invalid expression syntax", as
           steps: [
             Step.create({
               name: "write-echo",
-              task: StepTask.modelMethod("invalid-expr-model", "write"),
+              task: StepTask.model("invalid-expr-model", "write"),
             }),
           ],
         }),
@@ -795,7 +795,7 @@ Deno.test("CLI: workflow run fails when model has malformed expression", async (
           steps: [
             Step.create({
               name: "write-echo",
-              task: StepTask.modelMethod("malformed-expr-model", "write"),
+              task: StepTask.model("malformed-expr-model", "write"),
             }),
           ],
         }),
@@ -860,11 +860,11 @@ Deno.test("CLI: workflow run succeeds with valid model expressions", async () =>
           steps: [
             Step.create({
               name: "write-source",
-              task: StepTask.modelMethod("source-model", "write"),
+              task: StepTask.model("source-model", "write"),
             }),
             Step.create({
               name: "write-dependent",
-              task: StepTask.modelMethod("dependent-model", "write"),
+              task: StepTask.model("dependent-model", "write"),
               dependsOn: [
                 {
                   step: "write-source",
@@ -928,7 +928,7 @@ Deno.test("CLI: workflow run succeeds with self reference expressions", async ()
           steps: [
             Step.create({
               name: "write-echo",
-              task: StepTask.modelMethod("self-ref-model", "write"),
+              task: StepTask.model("self-ref-model", "write"),
             }),
           ],
         }),
@@ -999,7 +999,7 @@ Deno.test("CLI: model delete blocked when referenced by workflow, succeeds after
           steps: [
             Step.create({
               name: "write-echo",
-              task: StepTask.modelMethod("my-test-model", "write"),
+              task: StepTask.model("my-test-model", "write"),
             }),
           ],
         }),
@@ -1108,7 +1108,7 @@ Deno.test("CLI: model delete blocked when referenced by workflow using model ID"
             Step.create({
               name: "write-echo",
               // Reference by ID instead of name
-              task: StepTask.modelMethod(input.id, "write"),
+              task: StepTask.model(input.id, "write"),
             }),
           ],
         }),
@@ -1171,7 +1171,7 @@ Deno.test("CLI: model delete succeeds when not referenced by any workflow", asyn
           steps: [
             Step.create({
               name: "echo-step",
-              task: StepTask.shell("echo", { args: ["hello"] }),
+              task: StepTask.model("test-model", "run"),
             }),
           ],
         }),
@@ -1297,7 +1297,7 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
           steps: [
             Step.create({
               name: "echo-step",
-              task: StepTask.shell("echo", { args: ["hello"] }),
+              task: StepTask.model("test-model", "run"),
             }),
           ],
         }),
@@ -1388,7 +1388,7 @@ Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
           steps: [
             Step.create({
               name: "write-echo",
-              task: StepTask.modelMethod("env-test-model", "write"),
+              task: StepTask.model("env-test-model", "write"),
             }),
           ],
         }),
@@ -1447,7 +1447,7 @@ Deno.test("CLI: workflow run evaluates inline env expression with surrounding te
           steps: [
             Step.create({
               name: "write-inline",
-              task: StepTask.modelMethod("inline-env-model", "write"),
+              task: StepTask.model("inline-env-model", "write"),
             }),
           ],
         }),
@@ -1545,7 +1545,7 @@ Deno.test("CLI: workflow run resolves vault expressions in model inputs", async 
           steps: [
             Step.create({
               name: "write-echo",
-              task: StepTask.modelMethod("vault-model", "write"),
+              task: StepTask.model("vault-model", "write"),
             }),
           ],
         }),
@@ -1603,7 +1603,7 @@ Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
           steps: [
             Step.create({
               name: "write-data",
-              task: StepTask.modelMethod("data-tag-test-model", "write"),
+              task: StepTask.model("data-tag-test-model", "write"),
             }),
           ],
         }),
@@ -1690,7 +1690,7 @@ Deno.test("CLI: workflow run persists data artifacts in workflow run record", as
           steps: [
             Step.create({
               name: "write-persist",
-              task: StepTask.modelMethod("persist-test-model", "write"),
+              task: StepTask.model("persist-test-model", "write"),
             }),
           ],
         }),
@@ -1743,6 +1743,158 @@ Deno.test("CLI: workflow run persists data artifacts in workflow run record", as
       stepData.dataArtifacts[0].tags.step,
       "write-persist",
       "Tag step should match",
+    );
+  });
+});
+
+// workflow nesting tests (workflow calling workflow)
+
+Deno.test("CLI: workflow run executes nested workflow via type: workflow", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+
+    // Create echo model definitions
+    const childEcho = Definition.create({
+      name: "child-echo",
+      attributes: { message: "Hello from child workflow" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, childEcho);
+
+    const parentEcho = Definition.create({
+      name: "parent-echo",
+      attributes: { message: "Hello from parent workflow" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, parentEcho);
+
+    // Create the child workflow
+    const childWorkflow = Workflow.create({
+      name: "child-workflow",
+      jobs: [
+        Job.create({
+          name: "child-job",
+          steps: [
+            Step.create({
+              name: "child-echo-step",
+              task: StepTask.model("child-echo", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(childWorkflow);
+
+    // Create the parent workflow that calls the child workflow
+    const parentWorkflow = Workflow.create({
+      name: "parent-workflow",
+      jobs: [
+        Job.create({
+          name: "parent-echo-job",
+          steps: [
+            Step.create({
+              name: "parent-echo-step",
+              task: StepTask.model("parent-echo", "write"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "call-child-job",
+          steps: [
+            Step.create({
+              name: "invoke-child",
+              task: StepTask.workflow("child-workflow"),
+            }),
+          ],
+          dependsOn: [
+            {
+              job: "parent-echo-job",
+              condition: TriggerCondition.succeeded(),
+            },
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(parentWorkflow);
+
+    // Run the parent workflow
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "parent-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Parent workflow should succeed. stderr: ${result.stderr}, stdout: ${result.stdout}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+    assertEquals(output.workflowName, "parent-workflow");
+
+    // Verify parent echo job succeeded
+    const parentJob = output.jobs.find(
+      (j: { name: string }) => j.name === "parent-echo-job",
+    );
+    assertEquals(parentJob?.status, "succeeded");
+    assertEquals(parentJob?.steps[0]?.status, "succeeded");
+
+    // Verify child workflow invocation job succeeded
+    const childJob = output.jobs.find(
+      (j: { name: string }) => j.name === "call-child-job",
+    );
+    assertEquals(childJob?.status, "succeeded");
+    assertEquals(childJob?.steps[0]?.status, "succeeded");
+  });
+});
+
+Deno.test("CLI: workflow run detects direct workflow cycle", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+
+    // Create a workflow that calls itself
+    const selfCallingWorkflow = Workflow.create({
+      name: "self-calling",
+      jobs: [
+        Job.create({
+          name: "recursive-job",
+          steps: [
+            Step.create({
+              name: "call-self",
+              task: StepTask.workflow("self-calling"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(selfCallingWorkflow);
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "self-calling",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    // Workflow should fail due to cycle detection
+    assertEquals(
+      result.code !== 0,
+      true,
+      `Self-calling workflow should fail. stdout: ${result.stdout}`,
     );
   });
 });

@@ -11,7 +11,7 @@ function createTestJob(name: string): Job {
     steps: [
       Step.create({
         name: "step1",
-        task: StepTask.shell("echo", { args: [name] }),
+        task: StepTask.model("test-model", "run"),
       }),
     ],
   });
@@ -117,7 +117,11 @@ Deno.test("Workflow.fromData reconstructs workflow correctly", () => {
         steps: [
           {
             name: "step1",
-            task: { type: "shell" as const, command: "echo", args: [] },
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
             dependsOn: [],
             weight: 0,
           },
@@ -167,7 +171,7 @@ Deno.test("Workflow.fromData and toData roundtrip correctly", () => {
         steps: [
           Step.create({
             name: "compile",
-            task: StepTask.shell("npm", { args: ["run", "build"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
       }),
@@ -176,7 +180,7 @@ Deno.test("Workflow.fromData and toData roundtrip correctly", () => {
         steps: [
           Step.create({
             name: "unit",
-            task: StepTask.shell("npm", { args: ["test"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
         dependsOn: [
@@ -260,7 +264,11 @@ Deno.test("Workflow.fromData reconstructs workflow with inputs correctly", () =>
         steps: [
           {
             name: "step1",
-            task: { type: "shell" as const, command: "echo", args: [] },
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
             dependsOn: [],
             weight: 0,
           },

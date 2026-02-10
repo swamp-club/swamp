@@ -276,9 +276,9 @@ Deno.test("CLI: workflow run with missing required input fails", async () => {
             {
               name: "step1",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["test"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,
@@ -336,9 +336,9 @@ Deno.test("CLI: workflow run with input-file works", async () => {
             {
               name: "step1",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["${{ inputs.message }}"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,

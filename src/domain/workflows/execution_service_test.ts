@@ -1,5 +1,6 @@
-import { assertEquals, assertNotEquals } from "@std/assert";
+import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import {
+  DefaultStepExecutor,
   type StepExecutionContext,
   type StepExecutor,
   WorkflowExecutionService,
@@ -162,7 +163,7 @@ function createSimpleWorkflow(): Workflow {
         steps: [
           Step.create({
             name: "step1",
-            task: StepTask.shell("echo", { args: ["hello"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
       }),
@@ -207,13 +208,19 @@ Deno.test("executes workflow with multiple jobs", async () => {
         Job.create({
           name: "build",
           steps: [
-            Step.create({ name: "compile", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "compile",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
         Job.create({
           name: "test",
           steps: [
-            Step.create({ name: "unit", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "unit",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
           dependsOn: [
             { job: "build", condition: TriggerCondition.succeeded() },
@@ -252,11 +259,11 @@ Deno.test("executes workflow with step dependencies", async () => {
           steps: [
             Step.create({
               name: "setup",
-              task: StepTask.shell("echo"),
+              task: StepTask.model("test-model", "run"),
             }),
             Step.create({
               name: "compile",
-              task: StepTask.shell("echo"),
+              task: StepTask.model("test-model", "run"),
               dependsOn: [
                 {
                   step: "setup",
@@ -327,13 +334,19 @@ Deno.test("skips job when trigger condition not met", async () => {
         Job.create({
           name: "build",
           steps: [
-            Step.create({ name: "compile", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "compile",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
         Job.create({
           name: "test",
           steps: [
-            Step.create({ name: "unit", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "unit",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
           dependsOn: [
             { job: "build", condition: TriggerCondition.succeeded() },
@@ -372,13 +385,19 @@ Deno.test("runs job on failure condition", async () => {
         Job.create({
           name: "build",
           steps: [
-            Step.create({ name: "compile", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "compile",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
         Job.create({
           name: "notify",
           steps: [
-            Step.create({ name: "alert", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "alert",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
           dependsOn: [
             { job: "build", condition: TriggerCondition.failed() },
@@ -537,19 +556,28 @@ Deno.test("executes independent jobs in parallel", async () => {
         Job.create({
           name: "job-a",
           steps: [
-            Step.create({ name: "step1", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
         Job.create({
           name: "job-b",
           steps: [
-            Step.create({ name: "step1", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
         Job.create({
           name: "job-c",
           steps: [
-            Step.create({ name: "step1", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
       ],
@@ -601,19 +629,28 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
         Job.create({
           name: "job-a",
           steps: [
-            Step.create({ name: "step1", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
         Job.create({
           name: "job-b",
           steps: [
-            Step.create({ name: "step1", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
         Job.create({
           name: "job-c",
           steps: [
-            Step.create({ name: "step1", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
           dependsOn: [
             { job: "job-a", condition: TriggerCondition.succeeded() },
@@ -622,7 +659,10 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
         Job.create({
           name: "job-d",
           steps: [
-            Step.create({ name: "step1", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
           dependsOn: [
             { job: "job-a", condition: TriggerCondition.succeeded() },
@@ -673,33 +713,6 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
   });
 });
 
-Deno.test("DefaultStepExecutor passes env to shell commands", async () => {
-  await withTempDir(async (tempDir) => {
-    const { DefaultStepExecutor } = await import("./execution_service.ts");
-    const executor = new DefaultStepExecutor();
-
-    const step = Step.create({
-      name: "env-test",
-      task: StepTask.shell("printenv", {
-        args: ["TEST_VAR"],
-        env: { TEST_VAR: "hello_from_env" },
-      }),
-    });
-
-    const ctx: StepExecutionContext = {
-      workflowId: createWorkflowId("test-workflow-id"),
-      workflowRunId: "test-run-id",
-      workflowName: "test-workflow",
-      repoDir: tempDir,
-      jobName: "test-job",
-      stepName: "env-test",
-    };
-
-    const result = await executor.execute(step, ctx) as { stdout: string };
-    assertEquals(result.stdout, "hello_from_env");
-  });
-});
-
 Deno.test("executes independent steps within a job in parallel", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -713,9 +726,18 @@ Deno.test("executes independent steps within a job in parallel", async () => {
         Job.create({
           name: "job1",
           steps: [
-            Step.create({ name: "step-a", task: StepTask.shell("echo") }),
-            Step.create({ name: "step-b", task: StepTask.shell("echo") }),
-            Step.create({ name: "step-c", task: StepTask.shell("echo") }),
+            Step.create({
+              name: "step-a",
+              task: StepTask.model("test-model", "run"),
+            }),
+            Step.create({
+              name: "step-b",
+              task: StepTask.model("test-model", "run"),
+            }),
+            Step.create({
+              name: "step-c",
+              task: StepTask.model("test-model", "run"),
+            }),
           ],
         }),
       ],
@@ -825,11 +847,11 @@ Deno.test("updates data context between workflow steps", async () => {
           steps: [
             Step.create({
               name: "step1",
-              task: StepTask.modelMethod("auth-model", "authenticate"),
+              task: StepTask.model("auth-model", "authenticate"),
             }),
             Step.create({
               name: "step2",
-              task: StepTask.modelMethod("list-model", "list"),
+              task: StepTask.model("list-model", "list"),
               dependsOn: [
                 {
                   step: "step1",
@@ -897,11 +919,11 @@ Deno.test("updates both resource and data context when step produces both", asyn
           steps: [
             Step.create({
               name: "step1",
-              task: StepTask.modelMethod("sync-model", "sync"),
+              task: StepTask.model("sync-model", "sync"),
             }),
             Step.create({
               name: "step2",
-              task: StepTask.modelMethod("report-model", "generate"),
+              task: StepTask.model("report-model", "generate"),
               dependsOn: [
                 {
                   step: "step1",
@@ -943,6 +965,206 @@ Deno.test("updates both resource and data context when step produces both", asyn
     assertEquals(
       syncModelData?.data?.attributes?.lastSyncTime,
       "2024-01-01T00:00:00Z",
+    );
+  });
+});
+
+// --- Workflow nesting and cycle detection tests ---
+
+Deno.test("DefaultStepExecutor rejects workflow task when nesting depth exceeded", async () => {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new DefaultStepExecutor(workflowRepo, runRepo, "/tmp");
+
+  const step = Step.create({
+    name: "nested-step",
+    task: StepTask.workflow("child-workflow"),
+  });
+
+  const ctx: StepExecutionContext = {
+    workflowId: createWorkflowId("parent-id"),
+    workflowRunId: "run-123",
+    workflowName: "parent-workflow",
+    jobName: "job1",
+    stepName: "nested-step",
+    repoDir: "/tmp",
+    workflowNestingDepth: 10, // At the limit
+  };
+
+  await assertRejects(
+    () => executor.execute(step, ctx),
+    Error,
+    "Maximum workflow nesting depth (10) exceeded",
+  );
+});
+
+Deno.test("DefaultStepExecutor allows workflow task at depth below limit", async () => {
+  // Depth 9 should pass the nesting check (limit is 10).
+  // It will fail later because the child workflow doesn't exist, but the
+  // error message should NOT be about nesting depth.
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new DefaultStepExecutor(workflowRepo, runRepo, "/tmp");
+
+  const step = Step.create({
+    name: "nested-step",
+    task: StepTask.workflow("nonexistent-child"),
+  });
+
+  const ctx: StepExecutionContext = {
+    workflowId: createWorkflowId("parent-id"),
+    workflowRunId: "run-123",
+    workflowName: "parent-workflow",
+    jobName: "job1",
+    stepName: "nested-step",
+    repoDir: "/tmp",
+    workflowNestingDepth: 9,
+  };
+
+  // Should pass depth check but fail on workflow lookup
+  const error = await assertRejects(
+    () => executor.execute(step, ctx),
+    Error,
+  );
+  // Verify it's NOT a nesting depth error
+  assertEquals(
+    (error as Error).message.includes("nesting depth"),
+    false,
+  );
+});
+
+Deno.test("DefaultStepExecutor rejects workflow task on direct cycle", async () => {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new DefaultStepExecutor(workflowRepo, runRepo, "/tmp");
+
+  const step = Step.create({
+    name: "recursive-step",
+    task: StepTask.workflow("parent-workflow"),
+  });
+
+  const ctx: StepExecutionContext = {
+    workflowId: createWorkflowId("parent-id"),
+    workflowRunId: "run-123",
+    workflowName: "parent-workflow",
+    jobName: "job1",
+    stepName: "recursive-step",
+    repoDir: "/tmp",
+    ancestorWorkflowIds: new Set(["parent-workflow"]),
+  };
+
+  await assertRejects(
+    () => executor.execute(step, ctx),
+    Error,
+    "Workflow cycle detected",
+  );
+});
+
+Deno.test("DefaultStepExecutor rejects workflow task on indirect cycle", async () => {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new DefaultStepExecutor(workflowRepo, runRepo, "/tmp");
+
+  const step = Step.create({
+    name: "cycle-step",
+    task: StepTask.workflow("workflow-a"),
+  });
+
+  // Simulates: workflow-a -> workflow-b -> workflow-c trying to call workflow-a
+  const ctx: StepExecutionContext = {
+    workflowId: createWorkflowId("workflow-c-id"),
+    workflowRunId: "run-123",
+    workflowName: "workflow-c",
+    jobName: "job1",
+    stepName: "cycle-step",
+    repoDir: "/tmp",
+    ancestorWorkflowIds: new Set(["workflow-a", "workflow-b", "workflow-c"]),
+  };
+
+  await assertRejects(
+    () => executor.execute(step, ctx),
+    Error,
+    "Workflow cycle detected",
+  );
+});
+
+Deno.test("DefaultStepExecutor rejects workflow task without repos", async () => {
+  const executor = new DefaultStepExecutor(); // No repos
+
+  const step = Step.create({
+    name: "nested-step",
+    task: StepTask.workflow("child-workflow"),
+  });
+
+  const ctx: StepExecutionContext = {
+    workflowId: createWorkflowId("parent-id"),
+    workflowRunId: "run-123",
+    workflowName: "parent-workflow",
+    jobName: "job1",
+    stepName: "nested-step",
+    repoDir: "/tmp",
+  };
+
+  await assertRejects(
+    () => executor.execute(step, ctx),
+    Error,
+    "Workflow execution requires workflowRepo, runRepo, and repoDir",
+  );
+});
+
+Deno.test("nesting context is propagated through WorkflowExecutionService to steps", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    // Create a mock executor that captures context
+    class ContextCapturingExecutor implements StepExecutor {
+      capturedContexts: StepExecutionContext[] = [];
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new ContextCapturingExecutor();
+
+    const workflow = Workflow.create({
+      name: "parent-workflow",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    // Execute with nesting context
+    const ancestors = new Set(["grandparent-workflow"]);
+    await service.execute(workflow.name, undefined, {
+      workflowNestingDepth: 3,
+      ancestorWorkflowIds: ancestors,
+    });
+
+    // Verify the context was propagated to the step executor
+    assertEquals(executor.capturedContexts.length, 1);
+    assertEquals(executor.capturedContexts[0].workflowNestingDepth, 3);
+    assertEquals(
+      executor.capturedContexts[0].ancestorWorkflowIds?.has(
+        "grandparent-workflow",
+      ),
+      true,
     );
   });
 });

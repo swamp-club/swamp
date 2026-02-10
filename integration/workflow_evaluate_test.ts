@@ -93,9 +93,9 @@ Deno.test("CLI: workflow evaluate single workflow", async () => {
             {
               name: "deploy-step",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["Deploying to ${{ inputs.environment }}"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,
@@ -162,9 +162,9 @@ Deno.test("CLI: workflow evaluate all workflows", async () => {
               {
                 name: "step1",
                 task: {
-                  type: "shell",
-                  command: "echo",
-                  args: [`Workflow ${i}`],
+                  type: "model_method",
+                  modelIdOrName: "test-model",
+                  methodName: "run",
                 },
                 dependsOn: [],
                 weight: 0,
@@ -214,9 +214,9 @@ Deno.test("CLI: workflow evaluate replaces input expressions", async () => {
             {
               name: "step1",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["${{ inputs.message }}"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,
@@ -301,9 +301,9 @@ Deno.test("CLI: workflow evaluate preserves vault expressions", async () => {
             {
               name: "step1",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["${{ vault.get('test-vault', 'api-key') }}"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,
@@ -365,9 +365,9 @@ Deno.test("CLI: workflow evaluate JSON output includes workflow data", async () 
             {
               name: "step1",
               task: {
-                type: "shell",
-                command: "echo",
-                args: ["test"],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,
@@ -424,9 +424,9 @@ Deno.test("CLI: workflow evaluate does not execute workflow", async () => {
             {
               name: "create-marker",
               task: {
-                type: "shell",
-                command: "touch",
-                args: [markerFile],
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "run",
               },
               dependsOn: [],
               weight: 0,

@@ -42,7 +42,7 @@ export const workflowCreateCommand = new Command()
         Step.create({
           name: "example",
           description: "Example step (edit or replace)",
-          task: StepTask.shell("echo", { args: ["Hello from workflow!"] }),
+          task: StepTask.model("example-model", "run"),
         }),
       ],
     });

@@ -15,11 +15,11 @@ function createTestWorkflow(): Workflow {
         steps: [
           Step.create({
             name: "step1",
-            task: StepTask.shell("echo", { args: ["1"] }),
+            task: StepTask.model("test-model", "run"),
           }),
           Step.create({
             name: "step2",
-            task: StepTask.shell("echo", { args: ["2"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
       }),
@@ -28,7 +28,7 @@ function createTestWorkflow(): Workflow {
         steps: [
           Step.create({
             name: "step3",
-            task: StepTask.shell("echo", { args: ["3"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
       }),

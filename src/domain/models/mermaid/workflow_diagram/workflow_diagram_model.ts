@@ -29,10 +29,10 @@ export const WorkflowExecutionSchema = z.object({
       name: z.string(),
       status: z.enum(["succeeded", "failed", "cancelled", "skipped"]),
       task: z.object({
-        type: z.enum(["model_method", "shell"]),
+        type: z.enum(["model_method", "workflow"]),
         modelIdOrName: z.string().optional(),
         methodName: z.string().optional(),
-        command: z.string().optional(),
+        workflowIdOrName: z.string().optional(),
       }),
       dependsOn: z.array(z.object({
         step: z.string(),
@@ -169,10 +169,12 @@ function generateMermaidDiagram(
         stepNodes.push(stepId);
 
         let taskInfo = "";
-        if (step.task.type === "model_method") {
+        if (
+          step.task.type === "model_method"
+        ) {
           taskInfo = `${step.task.modelIdOrName}.${step.task.methodName}`;
-        } else if (step.task.type === "shell") {
-          taskInfo = `shell: ${step.task.command?.substring(0, 20)}...`;
+        } else if (step.task.type === "workflow") {
+          taskInfo = `workflow: ${step.task.workflowIdOrName}`;
         }
 
         lines.push(`        ${stepId}["${step.name}<br/>${taskInfo}"]`);

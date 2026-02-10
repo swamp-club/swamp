@@ -202,7 +202,7 @@ Deno.test("Integration: workflow create via repository context creates index", a
     // Create a workflow
     const step = Step.create({
       name: "step1",
-      task: StepTask.shell("echo hello"),
+      task: StepTask.model("test-model", "run"),
     });
     const job = Job.create({ name: "job1", steps: [step] });
     const workflow = Workflow.create({ name: "test-workflow", jobs: [job] });
@@ -240,7 +240,7 @@ Deno.test("Integration: workflow run creates run index with latest symlink", asy
     // Create a workflow
     const step = Step.create({
       name: "step1",
-      task: StepTask.shell("echo hello"),
+      task: StepTask.model("test-model", "run"),
     });
     const job = Job.create({ name: "job1", steps: [step] });
     const workflow = Workflow.create({

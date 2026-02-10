@@ -347,7 +347,7 @@ function resolveForEachTaskExpressions(
 ): any {
   const expandedTask = JSON.parse(JSON.stringify(taskData));
 
-  // Resolve expressions in task inputs (model_method tasks)
+  // Resolve expressions in task inputs (model and workflow tasks)
   if (expandedTask.inputs) {
     for (const [key, val] of Object.entries(expandedTask.inputs)) {
       if (typeof val === "string") {

@@ -27,7 +27,7 @@ function createTestWorkflow(name: string): Workflow {
         steps: [
           Step.create({
             name: "step1",
-            task: StepTask.shell("echo", { args: ["hello"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
       }),
@@ -167,10 +167,7 @@ Deno.test("YamlWorkflowRepository preserves complex workflow data", async () => 
             Step.create({
               name: "compile",
               description: "Compile step",
-              task: StepTask.shell("npm", {
-                args: ["run", "build"],
-                workingDir: "/app",
-              }),
+              task: StepTask.model("test-model", "run"),
               weight: 10,
             }),
           ],

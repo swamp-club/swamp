@@ -10,7 +10,7 @@ Deno.test("StepTask.modelMethod creates model method task", () => {
     inputs: undefined,
   });
   assertEquals(task.isModelMethod(), true);
-  assertEquals(task.isShell(), false);
+  assertEquals(task.isWorkflow(), false);
 });
 
 Deno.test("StepTask.modelMethod creates model method task with inputs", () => {
@@ -30,35 +30,37 @@ Deno.test("StepTask.modelMethod creates model method task with inputs", () => {
   assertEquals(task.isModelMethod(), true);
 });
 
-Deno.test("StepTask.shell creates shell task with defaults", () => {
-  const task = StepTask.shell("echo");
-  assertEquals(task.data, {
-    type: "shell",
-    command: "echo",
-    args: [],
-    workingDir: undefined,
-    timeout: undefined,
-    env: undefined,
-  });
-  assertEquals(task.isModelMethod(), false);
-  assertEquals(task.isShell(), true);
+Deno.test("StepTask.model is an alias for modelMethod", () => {
+  const task = StepTask.model("my-model", "run");
+  assertEquals(task.data.type, "model_method");
+  assertEquals(task.isModelMethod(), true);
 });
 
-Deno.test("StepTask.shell creates shell task with options", () => {
-  const task = StepTask.shell("npm", {
-    args: ["install", "--production"],
-    workingDir: "/app",
-    timeout: 60000,
-    env: { NODE_ENV: "production" },
+Deno.test("StepTask.workflow creates workflow task", () => {
+  const task = StepTask.workflow("deploy-pipeline");
+  assertEquals(task.data, {
+    type: "workflow",
+    workflowIdOrName: "deploy-pipeline",
+    inputs: undefined,
+  });
+  assertEquals(task.isWorkflow(), true);
+  assertEquals(task.isModelMethod(), false);
+});
+
+Deno.test("StepTask.workflow creates workflow task with inputs", () => {
+  const task = StepTask.workflow("deploy-pipeline", {
+    environment: "production",
+    replicas: 3,
   });
   assertEquals(task.data, {
-    type: "shell",
-    command: "npm",
-    args: ["install", "--production"],
-    workingDir: "/app",
-    timeout: 60000,
-    env: { NODE_ENV: "production" },
+    type: "workflow",
+    workflowIdOrName: "deploy-pipeline",
+    inputs: {
+      environment: "production",
+      replicas: 3,
+    },
   });
+  assertEquals(task.isWorkflow(), true);
 });
 
 Deno.test("StepTask.fromData creates model method task", () => {
@@ -71,38 +73,57 @@ Deno.test("StepTask.fromData creates model method task", () => {
   assertEquals(task.data.type, "model_method");
 });
 
-Deno.test("StepTask.fromData creates shell task", () => {
+Deno.test("StepTask.fromData creates workflow task", () => {
   const task = StepTask.fromData({
-    type: "shell",
-    command: "ls",
-    args: ["-la"],
+    type: "workflow",
+    workflowIdOrName: "my-workflow",
   });
-  assertEquals(task.isShell(), true);
-  assertEquals(task.data.type, "shell");
+  assertEquals(task.isWorkflow(), true);
+  assertEquals(task.data.type, "workflow");
 });
 
-Deno.test("StepTask.toData returns correct structure", () => {
-  const task = StepTask.shell("echo", { args: ["hello"] });
+Deno.test("StepTask.toData returns correct structure for model method task", () => {
+  const task = StepTask.modelMethod("my-model", "run", { key: "value" });
   const data = task.toData();
   assertEquals(data, {
-    type: "shell",
-    command: "echo",
-    args: ["hello"],
-    workingDir: undefined,
-    timeout: undefined,
-    env: undefined,
+    type: "model_method",
+    modelIdOrName: "my-model",
+    methodName: "run",
+    inputs: { key: "value" },
   });
 });
 
-Deno.test("StepTask.equals returns true for identical tasks", () => {
+Deno.test("StepTask.toData returns correct structure for workflow task", () => {
+  const task = StepTask.workflow("my-workflow", { env: "dev" });
+  const data = task.toData();
+  assertEquals(data, {
+    type: "workflow",
+    workflowIdOrName: "my-workflow",
+    inputs: { env: "dev" },
+  });
+});
+
+Deno.test("StepTask.equals returns true for identical model method tasks", () => {
   const task1 = StepTask.modelMethod("model", "method");
   const task2 = StepTask.modelMethod("model", "method");
   assertEquals(task1.equals(task2), true);
 });
 
-Deno.test("StepTask.equals returns false for different tasks", () => {
+Deno.test("StepTask.equals returns false for different model method tasks", () => {
   const task1 = StepTask.modelMethod("model1", "method");
   const task2 = StepTask.modelMethod("model2", "method");
+  assertEquals(task1.equals(task2), false);
+});
+
+Deno.test("StepTask.equals returns true for identical workflow tasks", () => {
+  const task1 = StepTask.workflow("wf", { env: "dev" });
+  const task2 = StepTask.workflow("wf", { env: "dev" });
+  assertEquals(task1.equals(task2), true);
+});
+
+Deno.test("StepTask.equals returns false for different task types", () => {
+  const task1 = StepTask.modelMethod("model", "run");
+  const task2 = StepTask.workflow("model");
   assertEquals(task1.equals(task2), false);
 });
 
@@ -128,45 +149,39 @@ Deno.test("StepTaskSchema rejects empty methodName", () => {
   });
 });
 
-Deno.test("StepTaskSchema rejects empty command", () => {
+Deno.test("StepTaskSchema rejects empty workflowIdOrName", () => {
   assertThrows(() => {
     StepTaskSchema.parse({
-      type: "shell",
-      command: "",
+      type: "workflow",
+      workflowIdOrName: "",
     });
   });
 });
 
-Deno.test("StepTaskSchema rejects non-positive timeout", () => {
-  assertThrows(() => {
-    StepTaskSchema.parse({
-      type: "shell",
-      command: "echo",
-      timeout: 0,
-    });
-  });
+// Backward compatibility tests
+
+Deno.test("StepTaskSchema throws clear error for shell type", () => {
+  assertThrows(
+    () => {
+      StepTaskSchema.parse({
+        type: "shell",
+        command: "echo",
+      });
+    },
+    Error,
+    'Step task type "shell" is no longer supported',
+  );
 });
 
-Deno.test("StepTaskSchema sets default args for shell task", () => {
-  const result = StepTaskSchema.parse({
-    type: "shell",
-    command: "echo",
-  });
-  assertEquals(result.type, "shell");
-  if (result.type === "shell") {
-    assertEquals(result.args, []);
-  }
-});
-
-Deno.test("StepTask.fromData creates shell task with env", () => {
-  const task = StepTask.fromData({
-    type: "shell",
-    command: "npm",
-    args: ["install"],
-    env: { NODE_ENV: "production", CI: "true" },
-  });
-  assertEquals(task.isShell(), true);
-  if (task.data.type === "shell") {
-    assertEquals(task.data.env, { NODE_ENV: "production", CI: "true" });
-  }
+Deno.test("StepTaskSchema shell error suggests keeb/shell model", () => {
+  assertThrows(
+    () => {
+      StepTaskSchema.parse({
+        type: "shell",
+        command: "echo",
+      });
+    },
+    Error,
+    "keeb/shell",
+  );
 });

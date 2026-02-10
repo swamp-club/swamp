@@ -17,7 +17,7 @@ function createSimpleWorkflow(): Workflow {
         steps: [
           Step.create({
             name: "compile",
-            task: StepTask.shell("npm", { args: ["run", "build"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
       }),
@@ -46,7 +46,7 @@ Deno.test("validates workflow with job dependencies", async () => {
         steps: [
           Step.create({
             name: "compile",
-            task: StepTask.shell("echo", { args: ["build"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
       }),
@@ -55,7 +55,7 @@ Deno.test("validates workflow with job dependencies", async () => {
         steps: [
           Step.create({
             name: "run-tests",
-            task: StepTask.shell("echo", { args: ["test"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
         dependsOn: [
@@ -79,11 +79,11 @@ Deno.test("validates workflow with step dependencies", async () => {
         steps: [
           Step.create({
             name: "setup",
-            task: StepTask.shell("echo", { args: ["setup"] }),
+            task: StepTask.model("test-model", "run"),
           }),
           Step.create({
             name: "compile",
-            task: StepTask.shell("echo", { args: ["compile"] }),
+            task: StepTask.model("test-model", "run"),
             dependsOn: [
               { step: "setup", condition: TriggerCondition.succeeded() },
             ],
@@ -108,13 +108,13 @@ Deno.test("fails on duplicate job names", async () => {
   const job1 = Job.create({
     name: "build",
     steps: [
-      Step.create({ name: "s1", task: StepTask.shell("echo") }),
+      Step.create({ name: "s1", task: StepTask.model("test-model", "run") }),
     ],
   });
   const job2 = Job.create({
     name: "build", // duplicate!
     steps: [
-      Step.create({ name: "s1", task: StepTask.shell("echo") }),
+      Step.create({ name: "s1", task: StepTask.model("test-model", "run") }),
     ],
   });
 
@@ -132,11 +132,11 @@ Deno.test("fails on duplicate job names", async () => {
 Deno.test("fails on duplicate step names within job", async () => {
   const step1 = Step.create({
     name: "compile",
-    task: StepTask.shell("echo"),
+    task: StepTask.model("test-model", "run"),
   });
   const step2 = Step.create({
     name: "compile", // duplicate!
-    task: StepTask.shell("echo"),
+    task: StepTask.model("test-model", "run"),
   });
 
   const job = Job.create({
@@ -167,7 +167,10 @@ Deno.test("fails on invalid job dependency reference", async () => {
       Job.create({
         name: "test",
         steps: [
-          Step.create({ name: "s1", task: StepTask.shell("echo") }),
+          Step.create({
+            name: "s1",
+            task: StepTask.model("test-model", "run"),
+          }),
         ],
         dependsOn: [
           { job: "nonexistent", condition: TriggerCondition.always() },
@@ -193,7 +196,7 @@ Deno.test("fails on invalid step dependency reference", async () => {
         steps: [
           Step.create({
             name: "compile",
-            task: StepTask.shell("echo"),
+            task: StepTask.model("test-model", "run"),
             dependsOn: [
               { step: "nonexistent", condition: TriggerCondition.always() },
             ],
@@ -214,11 +217,15 @@ Deno.test("fails on invalid step dependency reference", async () => {
 Deno.test("fails on cyclic job dependencies", async () => {
   const jobA = Job.create({
     name: "a",
-    steps: [Step.create({ name: "s", task: StepTask.shell("echo") })],
+    steps: [
+      Step.create({ name: "s", task: StepTask.model("test-model", "run") }),
+    ],
   });
   const jobB = Job.create({
     name: "b",
-    steps: [Step.create({ name: "s", task: StepTask.shell("echo") })],
+    steps: [
+      Step.create({ name: "s", task: StepTask.model("test-model", "run") }),
+    ],
   });
 
   // Create cycle: a -> b -> a
@@ -249,11 +256,11 @@ Deno.test("fails on cyclic job dependencies", async () => {
 Deno.test("fails on cyclic step dependencies", async () => {
   const stepA = Step.create({
     name: "a",
-    task: StepTask.shell("echo"),
+    task: StepTask.model("test-model", "run"),
   });
   const stepB = Step.create({
     name: "b",
-    task: StepTask.shell("echo"),
+    task: StepTask.model("test-model", "run"),
   });
 
   // Create cycle: a -> b -> a
@@ -296,11 +303,11 @@ Deno.test("passes all validations for complex valid workflow", async () => {
         steps: [
           Step.create({
             name: "checkout",
-            task: StepTask.shell("git", { args: ["checkout"] }),
+            task: StepTask.model("test-model", "run"),
           }),
           Step.create({
             name: "install",
-            task: StepTask.shell("npm", { args: ["install"] }),
+            task: StepTask.model("test-model", "run"),
             dependsOn: [
               {
                 step: "checkout",
@@ -315,7 +322,7 @@ Deno.test("passes all validations for complex valid workflow", async () => {
         steps: [
           Step.create({
             name: "compile",
-            task: StepTask.shell("npm", { args: ["run", "build"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
         dependsOn: [
@@ -327,11 +334,11 @@ Deno.test("passes all validations for complex valid workflow", async () => {
         steps: [
           Step.create({
             name: "unit",
-            task: StepTask.shell("npm", { args: ["test"] }),
+            task: StepTask.model("test-model", "run"),
           }),
           Step.create({
             name: "integration",
-            task: StepTask.shell("npm", { args: ["run", "test:integration"] }),
+            task: StepTask.model("test-model", "run"),
             dependsOn: [
               { step: "unit", condition: TriggerCondition.succeeded() },
             ],
@@ -346,7 +353,7 @@ Deno.test("passes all validations for complex valid workflow", async () => {
         steps: [
           Step.create({
             name: "push",
-            task: StepTask.shell("npm", { args: ["run", "deploy"] }),
+            task: StepTask.model("test-model", "run"),
           }),
         ],
         dependsOn: [

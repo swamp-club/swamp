@@ -353,7 +353,7 @@ Deno.test("SymlinkRepoIndexService indexes workflows", async () => {
     // Create a workflow
     const step = Step.create({
       name: "step1",
-      task: StepTask.shell("echo hello"),
+      task: StepTask.model("test-model", "run"),
     });
     const job = Job.create({ name: "job1", steps: [step] });
     const workflow = Workflow.create({ name: "my-workflow", jobs: [job] });
@@ -386,7 +386,7 @@ Deno.test("SymlinkRepoIndexService indexes workflow runs with latest symlink", a
     // Create a workflow
     const step = Step.create({
       name: "step1",
-      task: StepTask.shell("echo hello"),
+      task: StepTask.model("test-model", "run"),
     });
     const job = Job.create({ name: "job1", steps: [step] });
     const workflow = Workflow.create({ name: "my-workflow", jobs: [job] });

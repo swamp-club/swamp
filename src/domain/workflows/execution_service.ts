@@ -42,10 +42,8 @@ import { UserError } from "../errors.ts";
 import { InputOverrideValidationService } from "../inputs/mod.ts";
 import {
   getRunLogger,
-  getWorkflowRunLogger,
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
-import { executeProcess } from "../../infrastructure/process/process_executor.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -76,6 +74,10 @@ export interface StepExecutionContext {
   useLastEvaluated?: boolean;
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: { name: string; value: unknown };
+  /** Current workflow nesting depth for recursion guard (max 10) */
+  workflowNestingDepth?: number;
+  /** Set of ancestor workflow IDs for cycle detection */
+  ancestorWorkflowIds?: Set<string>;
 }
 
 /**
@@ -104,53 +106,115 @@ export interface StepExecutor {
 }
 
 /**
- * Default step executor that handles model methods and shell commands.
+ * Maximum nesting depth for workflow-calling-workflow execution.
+ */
+const MAX_WORKFLOW_NESTING_DEPTH = 10;
+
+/**
+ * Default step executor that handles model methods and workflow invocations.
  */
 export class DefaultStepExecutor implements StepExecutor {
   private readonly validationService = new DefaultModelValidationService();
 
+  constructor(
+    private readonly workflowRepo?: WorkflowRepository,
+    private readonly runRepo?: WorkflowRunRepository,
+    private readonly repoDir?: string,
+  ) {}
+
   async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     const task = step.task.data;
 
-    if (task.type === "shell") {
-      return await this.executeShell(task, ctx);
-    } else if (task.type === "model_method") {
+    if (task.type === "model_method") {
       return await this.executeModelMethod(task, ctx);
+    } else if (task.type === "workflow") {
+      return await this.executeWorkflowTask(task, ctx);
     }
 
     throw new Error(`Unknown task type: ${(task as { type: string }).type}`);
   }
 
-  private async executeShell(
+  private async executeWorkflowTask(
     task: {
-      command: string;
-      args: string[];
-      workingDir?: string;
-      timeout?: number;
-      env?: Record<string, string>;
+      workflowIdOrName: string;
+      inputs?: Record<string, unknown>;
     },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
-    const cwd = task.workingDir ?? ctx.repoDir;
-
-    const stepLogger = ctx.enableStepLogging
-      ? getWorkflowRunLogger(ctx.workflowName, ctx.jobName, ctx.stepName)
-      : undefined;
-
-    const result = await executeProcess({
-      command: task.command,
-      args: task.args,
-      cwd,
-      env: task.env,
-      timeoutMs: task.timeout,
-      logger: stepLogger,
-    });
-
-    if (!result.success) {
-      throw new Error(`Shell command failed: ${result.stderr}`);
+    if (!this.workflowRepo || !this.runRepo || !this.repoDir) {
+      throw new Error(
+        "Workflow execution requires workflowRepo, runRepo, and repoDir to be provided to DefaultStepExecutor",
+      );
     }
 
-    return { stdout: result.stdout.trim(), exitCode: result.exitCode };
+    // Recursion guard
+    const depth = ctx.workflowNestingDepth ?? 0;
+    if (depth >= MAX_WORKFLOW_NESTING_DEPTH) {
+      throw new Error(
+        `Maximum workflow nesting depth (${MAX_WORKFLOW_NESTING_DEPTH}) exceeded. ` +
+          `Workflow "${task.workflowIdOrName}" cannot be invoked at depth ${
+            depth + 1
+          }.`,
+      );
+    }
+
+    // Cycle detection
+    const ancestors = ctx.ancestorWorkflowIds ?? new Set<string>();
+    if (ancestors.has(task.workflowIdOrName)) {
+      const chain = [...ancestors, task.workflowIdOrName].join(" -> ");
+      throw new Error(
+        `Workflow cycle detected: ${chain}. ` +
+          `A workflow cannot invoke itself directly or indirectly.`,
+      );
+    }
+
+    // Evaluate inputs using the expression context
+    let evaluatedInputs = task.inputs;
+    if (task.inputs && ctx.expressionContext) {
+      const evalService = new ExpressionEvaluationService(
+        new YamlDefinitionRepository(ctx.repoDir),
+        ctx.repoDir,
+      );
+      evaluatedInputs = evalService.evaluateData(
+        task.inputs,
+        ctx.expressionContext,
+      ) as Record<string, unknown>;
+    }
+
+    // Create a child WorkflowExecutionService with nesting context
+    const childAncestors = new Set(ancestors);
+    childAncestors.add(ctx.workflowName);
+
+    const childExecutor = new DefaultStepExecutor(
+      this.workflowRepo,
+      this.runRepo,
+      this.repoDir,
+    );
+
+    const childService = new WorkflowExecutionService(
+      this.workflowRepo,
+      this.runRepo,
+      this.repoDir,
+      childExecutor,
+    );
+
+    const childRun = await childService.execute(
+      task.workflowIdOrName,
+      ctx.progress,
+      {
+        enableStepLogging: ctx.enableStepLogging,
+        inputs: evaluatedInputs,
+        workflowNestingDepth: depth + 1,
+        ancestorWorkflowIds: childAncestors,
+      },
+    );
+
+    return {
+      type: "workflow",
+      workflow: task.workflowIdOrName,
+      runId: childRun.id,
+      status: childRun.status,
+    };
   }
 
   private async executeModelMethod(
@@ -582,7 +646,8 @@ export class WorkflowExecutionService {
     private readonly repoDir: string,
     executor?: StepExecutor,
   ) {
-    this.executor = executor ?? new DefaultStepExecutor();
+    this.executor = executor ??
+      new DefaultStepExecutor(workflowRepo, runRepo, repoDir);
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
     this.dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     this.modelResolver = new ModelResolver(this.definitionRepo, {
@@ -605,6 +670,8 @@ export class WorkflowExecutionService {
       enableStepLogging?: boolean;
       lastEvaluated?: boolean;
       inputs?: Record<string, unknown>;
+      workflowNestingDepth?: number;
+      ancestorWorkflowIds?: Set<string>;
     },
   ): Promise<WorkflowRun> {
     // Look up workflow
@@ -709,6 +776,8 @@ export class WorkflowExecutionService {
             progress,
             options?.enableStepLogging,
             options?.lastEvaluated,
+            options?.workflowNestingDepth,
+            options?.ancestorWorkflowIds,
           )
         ),
       );
@@ -734,6 +803,8 @@ export class WorkflowExecutionService {
     progress?: ExecutionProgressCallback,
     enableStepLogging?: boolean,
     lastEvaluated?: boolean,
+    workflowNestingDepth?: number,
+    ancestorWorkflowIds?: Set<string>,
   ): Promise<void> {
     const job = workflow.getJob(jobName);
     if (!job) {
@@ -838,6 +909,8 @@ export class WorkflowExecutionService {
             progress,
             enableStepLogging,
             lastEvaluated,
+            workflowNestingDepth,
+            ancestorWorkflowIds,
           );
         }),
       );
@@ -1064,6 +1137,8 @@ export class WorkflowExecutionService {
     progress?: ExecutionProgressCallback,
     enableStepLogging?: boolean,
     lastEvaluated?: boolean,
+    workflowNestingDepth?: number,
+    ancestorWorkflowIds?: Set<string>,
   ): Promise<void> {
     const step = job.getStep(stepName);
     if (!step) {
@@ -1098,9 +1173,11 @@ export class WorkflowExecutionService {
         expressionContext: lastEvaluated ? undefined : expressionContext,
         progress,
         workflowRun: run,
-        step, // Include step for accessing data output overrides
+        step,
         enableStepLogging,
         useLastEvaluated: lastEvaluated,
+        workflowNestingDepth,
+        ancestorWorkflowIds,
       };
 
       const output = await this.executor.execute(step, ctx);
@@ -1217,6 +1294,8 @@ export class WorkflowExecutionService {
     progress?: ExecutionProgressCallback,
     enableStepLogging?: boolean,
     lastEvaluated?: boolean,
+    workflowNestingDepth?: number,
+    ancestorWorkflowIds?: Set<string>,
   ): Promise<void> {
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
@@ -1284,6 +1363,8 @@ export class WorkflowExecutionService {
         enableStepLogging,
         useLastEvaluated: lastEvaluated,
         forEachVariable: forEachVar,
+        workflowNestingDepth,
+        ancestorWorkflowIds,
       };
 
       const output = await this.executor.execute(step, ctx);
