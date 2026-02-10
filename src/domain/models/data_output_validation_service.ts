@@ -1,5 +1,4 @@
-import type { DataOutput, DataOutputSpecification } from "./model.ts";
-import type { DataOutputOverride } from "./data_output_override.ts";
+import type { DataHandle } from "./model.ts";
 
 export interface DataOutputValidationResult {
   valid: boolean;
@@ -7,88 +6,37 @@ export interface DataOutputValidationResult {
 }
 
 /**
- * Domain service for validating and enhancing data outputs.
+ * Domain service for validating data handles produced by method execution.
+ *
+ * Spec type validation is now enforced at writer creation time by the
+ * DataWriterFactory. This service focuses on detecting duplicate instance
+ * names within a single method execution.
  */
 export class DataOutputValidationService {
   /**
-   * Validates that all data outputs reference declared spec types.
+   * Validates data handles for duplicate instance names.
    */
   validate(
-    dataOutputs: DataOutput[],
-    specs: Record<string, DataOutputSpecification>,
+    dataHandles: DataHandle[],
+    _specs: Record<string, unknown>,
     methodName: string,
   ): DataOutputValidationResult {
     const errors: string[] = [];
-    const declaredSpecTypes = new Set(Object.keys(specs));
-
-    // Check that all outputs reference declared spec types
-    for (const output of dataOutputs) {
-      const specTypeValue = output.specType.value;
-
-      if (!declaredSpecTypes.has(specTypeValue)) {
-        errors.push(
-          `Data output '${output.name}' references undeclared spec type '${specTypeValue}' ` +
-            `in method '${methodName}'. Declared spec types: ${
-              Array.from(declaredSpecTypes).join(", ")
-            }`,
-        );
-      }
-    }
 
     // Check for duplicate instance names
     const names = new Set<string>();
-    for (const output of dataOutputs) {
-      if (names.has(output.name)) {
+    for (const handle of dataHandles) {
+      if (names.has(handle.name)) {
         errors.push(
-          `Duplicate data instance name '${output.name}' in method '${methodName}'`,
+          `Duplicate data instance name '${handle.name}' in method '${methodName}'`,
         );
       }
-      names.add(output.name);
+      names.add(handle.name);
     }
 
     return {
       valid: errors.length === 0,
       errors,
-    };
-  }
-
-  /**
-   * Applies defaults from spec and merges overrides.
-   */
-  applyDefaultsAndOverrides(
-    dataOutput: DataOutput,
-    spec: DataOutputSpecification,
-    overrides?: DataOutputOverride[],
-  ): DataOutput {
-    // Find override for this spec type
-    const override = overrides?.find((o) =>
-      o.specType.equals(dataOutput.specType)
-    );
-
-    return {
-      ...dataOutput,
-      metadata: {
-        ...dataOutput.metadata,
-        contentType: dataOutput.metadata.contentType ??
-          spec.contentType ??
-          "application/json",
-        lifetime: override?.lifetime ??
-          dataOutput.metadata.lifetime ??
-          spec.lifetime ??
-          "infinite",
-        garbageCollection: override?.garbageCollection ??
-          dataOutput.metadata.garbageCollection ??
-          spec.garbageCollection ??
-          10,
-        streaming: dataOutput.metadata.streaming ??
-          spec.streaming ??
-          false,
-        tags: {
-          ...(spec.tags ?? {}),
-          ...(dataOutput.metadata.tags ?? {}),
-          ...(override?.tags ?? {}),
-        },
-      },
     };
   }
 }

@@ -273,7 +273,7 @@ function generateMermaidDiagram(
  */
 async function executeGenerate(
   definition: Definition,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   const attrs = MermaidWorkflowInputAttributesSchema.parse(
     definition.attributes,
@@ -310,46 +310,23 @@ async function executeGenerate(
     checksum,
   };
 
-  const definitionHash = await definition.computeHash();
+  const metadataWriter = context.createDataWriter!({
+    name: `${definition.name}-metadata`,
+    specType: "metadata",
+  });
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-metadata`,
-        specType: DataSpecType.create("metadata"),
-        content: new TextEncoder().encode(JSON.stringify(metadataAttributes)),
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "data" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "generate",
-          },
-        },
-      },
-      {
-        name: `${definition.name}-diagram`,
-        specType: DataSpecType.create("file"),
-        content,
-        metadata: {
-          contentType: "text/plain",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "file", filename },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "generate",
-          },
-        },
-      },
-    ],
-  };
+  const diagramWriter = context.createDataWriter!({
+    name: `${definition.name}-diagram`,
+    specType: "file",
+    tags: { filename },
+  });
+
+  const metadataHandle = await metadataWriter.writeText(
+    JSON.stringify(metadataAttributes),
+  );
+  const diagramHandle = await diagramWriter.writeAll(content);
+
+  return { dataHandles: [metadataHandle, diagramHandle] };
 }
 
 /**
