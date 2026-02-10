@@ -385,8 +385,13 @@ context.logger.info("Bucket created: {*}", {
 
 ### Shell Command Model
 
+Use `executeProcess` from `src/infrastructure/process/process_executor.ts` for
+shell commands. Pass `context.logger` to stream output through LogTape (console
+display + file persistence via RunFileSink).
+
 ```typescript
 import { z } from "npm:zod@4";
+import { executeProcess } from "../../../../src/infrastructure/process/process_executor.ts";
 
 const InputSchema = z.object({
   command: z.string(),
@@ -400,18 +405,19 @@ export const model = {
   methods: {
     run: {
       description: "Execute shell command",
-      execute: async (definition, _context) => {
-        const cmd = new Deno.Command(definition.attributes.command, {
-          args: definition.attributes.args ?? [],
+      execute: async (definition, context) => {
+        const result = await executeProcess({
+          command: definition.attributes.command,
+          args: definition.attributes.args,
+          logger: context.logger,
         });
-        const output = await cmd.output();
 
         return {
           data: {
             attributes: {
-              stdout: new TextDecoder().decode(output.stdout),
-              stderr: new TextDecoder().decode(output.stderr),
-              exitCode: output.code,
+              stdout: result.stdout,
+              stderr: result.stderr,
+              exitCode: result.exitCode,
             },
             name: "output",
           },

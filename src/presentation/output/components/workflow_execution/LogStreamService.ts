@@ -11,15 +11,6 @@ import type {
 } from "../../../../domain/workflows/workflow_run.ts";
 
 /**
- * Step output structure from workflow runs
- */
-interface StepOutput {
-  stdout?: string;
-  stderr?: string;
-  exitCode?: number;
-}
-
-/**
  * Information about a log stream target.
  */
 export interface LogStreamTarget {
@@ -27,7 +18,7 @@ export interface LogStreamTarget {
   jobName: string;
   stepName?: string;
   workflowRunId: string;
-  stepStatus?: string; // Add step status to determine if logs should be shown
+  stepStatus?: string;
 }
 
 /**
@@ -40,7 +31,8 @@ export interface LogEntry {
 
 /**
  * Service for streaming logs from workflow step executions.
- * Reads log files from the .swamp/logs/ directory structure.
+ * Reads .log files written by RunFileSink, falling back to YAML output
+ * for backward compatibility.
  */
 export class LogStreamService {
   private repoDir: string;
@@ -53,40 +45,39 @@ export class LogStreamService {
    * Checks if logs exist for a given step or job.
    */
   async hasLogs(target: LogStreamTarget): Promise<boolean> {
-    const logPath = this.getLogPath(target);
-    try {
-      const stat = await Deno.stat(logPath);
-      return stat.isDirectory;
-    } catch {
-      return false;
-    }
+    const logFile = await this.findLogFile(target);
+    return logFile !== null;
   }
 
   /**
    * Gets all available log entries for a target.
    * For steps, returns logs from that specific step.
-   * For jobs, aggregates logs from all steps in the job.
+   * For jobs, reads from the job-level log file.
    */
   async getLogs(target: LogStreamTarget): Promise<LogEntry[]> {
-    const entries: LogEntry[] = [];
-
     if (target.type === "step" && target.stepName) {
-      const stepLogs = await this.getStepLogsFromWorkflowRun(
+      return await this.getStepLogs(
         target.jobName,
         target.stepName,
         target.workflowRunId,
         target.stepStatus,
       );
-      entries.push(...stepLogs);
     }
 
-    return entries;
+    if (target.type === "job") {
+      return await this.getJobLogs(
+        target.jobName,
+        target.workflowRunId,
+      );
+    }
+
+    return [];
   }
 
   /**
    * Streams logs in real-time. Returns an async iterator that yields new log entries.
    * For completed steps, returns all logs immediately.
-   * For pending/running steps, polls for updates until completion.
+   * For pending/running steps, polls the log file for updates until completion.
    */
   async *streamLogs(target: LogStreamTarget): AsyncIterableIterator<LogEntry> {
     try {
@@ -94,10 +85,9 @@ export class LogStreamService {
       let lastStepStatus = target.stepStatus;
       let isComplete = false;
       let pollCount = 0;
-      const maxPolls = 120; // Poll for up to 2 minutes (120 * 1 second)
+      const maxPolls = 120;
 
       while (!isComplete && pollCount < maxPolls) {
-        // Create a new target with updated status for polling
         const currentTarget = { ...target };
 
         // Get current step status by re-reading the workflow run file
@@ -112,18 +102,10 @@ export class LogStreamService {
           }
         }
 
-        // Get current logs with updated target
-        let logs: LogEntry[] = [];
-        if (currentTarget.stepName && currentTarget.workflowRunId) {
-          logs = await this.getStepLogsFromWorkflowRun(
-            currentTarget.jobName,
-            currentTarget.stepName,
-            currentTarget.workflowRunId,
-            currentTarget.stepStatus,
-          );
-        }
+        // Get current logs
+        const logs = await this.getLogs(currentTarget);
 
-        // Yield only new logs (ones we haven't seen before)
+        // Yield only new logs
         for (let i = lastLogCount; i < logs.length; i++) {
           yield logs[i];
           await new Promise((resolve) => setTimeout(resolve, 50));
@@ -146,11 +128,9 @@ export class LogStreamService {
           currentTarget.stepStatus === "pending" ||
           currentTarget.stepStatus === "running"
         ) {
-          // Wait before next poll
-          await new Promise((resolve) => setTimeout(resolve, 2000)); // Poll every 2 seconds
+          await new Promise((resolve) => setTimeout(resolve, 2000));
           pollCount++;
         } else {
-          // Step is completed, succeeded, failed, or skipped - no need to poll
           isComplete = true;
         }
       }
@@ -180,36 +160,12 @@ export class LogStreamService {
     workflowRunId: string,
   ): Promise<{ status: string } | null> {
     try {
-      // Find the workflow run file
-      const baseRunsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
-      let runFile: string | null = null;
+      const runFile = await this.findWorkflowRunFile(workflowRunId);
+      if (!runFile) return null;
 
-      // Search through all workflow template directories
-      for await (const workflowEntry of Deno.readDir(baseRunsDir)) {
-        if (workflowEntry.isDirectory) {
-          const workflowDir = join(baseRunsDir, workflowEntry.name);
-          const targetFileName = `workflow-run-${workflowRunId}.yaml`;
-          const potentialFilePath = join(workflowDir, targetFileName);
-
-          try {
-            await Deno.stat(potentialFilePath);
-            runFile = potentialFilePath;
-            break;
-          } catch {
-            continue;
-          }
-        }
-      }
-
-      if (!runFile) {
-        return null;
-      }
-
-      // Read and parse the workflow run file
       const runFileContent = await Deno.readTextFile(runFile);
       const workflowRun = parseYaml(runFileContent) as WorkflowRunData;
 
-      // Find the specific job and step
       const job = workflowRun.jobs?.find((j: JobRunData) =>
         j.jobName === jobName
       );
@@ -225,17 +181,11 @@ export class LogStreamService {
   }
 
   /**
-   * Gets the base log path for a target.
+   * Gets logs for a specific step.
+   * Reads from the job-level .log file produced by RunFileSink,
+   * falling back to YAML output for backward compatibility.
    */
-  private getLogPath(_target: LogStreamTarget): string {
-    // Logs are stored in workflow run files under .swamp/workflow-runs/
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
-  }
-
-  /**
-   * Gets logs for a specific step by reading from workflow run files.
-   */
-  private async getStepLogsFromWorkflowRun(
+  private async getStepLogs(
     jobName: string,
     stepName: string,
     workflowRunId: string,
@@ -243,7 +193,6 @@ export class LogStreamService {
   ): Promise<LogEntry[]> {
     const entries: LogEntry[] = [];
 
-    // Only show logs for steps that have started execution
     if (stepStatus === "pending") {
       entries.push({
         message: `[INFO] Step ${jobName}/${stepName} has not started yet`,
@@ -264,39 +213,146 @@ export class LogStreamService {
       return entries;
     }
 
-    try {
-      // Find the workflow run file by searching all workflow directories
-      // File structure: .swamp/workflow-runs/{workflowTemplateId}/workflow-run-{runInstanceId}.yaml
-      const baseRunsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
-      let runFile: string | null = null;
+    // Try reading from .log file first
+    const logFile = await this.findLogFile({
+      type: "job",
+      jobName,
+      workflowRunId,
+    });
 
+    if (logFile) {
       try {
-        // Search through all workflow template directories
-        for await (const workflowEntry of Deno.readDir(baseRunsDir)) {
-          if (workflowEntry.isDirectory) {
-            const workflowDir = join(baseRunsDir, workflowEntry.name);
-            const targetFileName = `workflow-run-${workflowRunId}.yaml`;
-            const potentialFilePath = join(workflowDir, targetFileName);
-
-            try {
-              // Check if this workflow run file exists
-              await Deno.stat(potentialFilePath);
-              runFile = potentialFilePath;
-              break;
-            } catch {
-              // File doesn't exist in this workflow directory, continue searching
-              continue;
-            }
-          }
-        }
-      } catch (error) {
+        const content = await Deno.readTextFile(logFile);
+        const lines = content.split("\n").filter((line) => line.trim());
         entries.push({
-          message:
-            `[ERROR] Could not search workflow runs directories: ${error}`,
+          message: `[LOG] Streaming logs for step: ${jobName}/${stepName}`,
           timestamp: new Date(),
         });
+        for (const line of lines) {
+          entries.push({ message: line, timestamp: new Date() });
+        }
         return entries;
+      } catch {
+        // Fall through to YAML fallback
       }
+    }
+
+    // Fallback: read from workflow run YAML (backward compatibility)
+    return await this.getStepLogsFromYaml(
+      jobName,
+      stepName,
+      workflowRunId,
+    );
+  }
+
+  /**
+   * Gets logs for a job from the job-level .log file.
+   */
+  private async getJobLogs(
+    jobName: string,
+    workflowRunId: string,
+  ): Promise<LogEntry[]> {
+    const entries: LogEntry[] = [];
+
+    const logFile = await this.findLogFile({
+      type: "job",
+      jobName,
+      workflowRunId,
+    });
+
+    if (logFile) {
+      try {
+        const content = await Deno.readTextFile(logFile);
+        const lines = content.split("\n").filter((line) => line.trim());
+        for (const line of lines) {
+          entries.push({ message: line, timestamp: new Date() });
+        }
+      } catch {
+        entries.push({
+          message: `[ERROR] Could not read log file`,
+          timestamp: new Date(),
+        });
+      }
+    }
+
+    return entries;
+  }
+
+  /**
+   * Finds the .log file for a target.
+   * Log files are stored as: .swamp/workflow-runs/{workflowId}/workflow-run-{runId}-{jobName}.log
+   */
+  private async findLogFile(
+    target: LogStreamTarget,
+  ): Promise<string | null> {
+    const baseRunsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
+
+    try {
+      // Search through all workflow template directories
+      for await (const workflowEntry of Deno.readDir(baseRunsDir)) {
+        if (workflowEntry.isDirectory) {
+          const workflowDir = join(baseRunsDir, workflowEntry.name);
+          const logFileName =
+            `workflow-run-${target.workflowRunId}-${target.jobName}.log`;
+          const potentialPath = join(workflowDir, logFileName);
+
+          try {
+            await Deno.stat(potentialPath);
+            return potentialPath;
+          } catch {
+            continue;
+          }
+        }
+      }
+    } catch {
+      // Directory doesn't exist
+    }
+
+    return null;
+  }
+
+  /**
+   * Finds the workflow run YAML file.
+   */
+  private async findWorkflowRunFile(
+    workflowRunId: string,
+  ): Promise<string | null> {
+    const baseRunsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
+
+    try {
+      for await (const workflowEntry of Deno.readDir(baseRunsDir)) {
+        if (workflowEntry.isDirectory) {
+          const workflowDir = join(baseRunsDir, workflowEntry.name);
+          const targetFileName = `workflow-run-${workflowRunId}.yaml`;
+          const potentialFilePath = join(workflowDir, targetFileName);
+
+          try {
+            await Deno.stat(potentialFilePath);
+            return potentialFilePath;
+          } catch {
+            continue;
+          }
+        }
+      }
+    } catch {
+      // Directory doesn't exist
+    }
+
+    return null;
+  }
+
+  /**
+   * Fallback: gets step logs from workflow run YAML (backward compatibility).
+   */
+  private async getStepLogsFromYaml(
+    jobName: string,
+    stepName: string,
+    workflowRunId: string,
+  ): Promise<LogEntry[]> {
+    const entries: LogEntry[] = [];
+
+    try {
+      const runFile = await this.findWorkflowRunFile(workflowRunId);
 
       if (!runFile) {
         entries.push({
@@ -307,11 +363,9 @@ export class LogStreamService {
         return entries;
       }
 
-      // Read and parse the workflow run file
       const runFileContent = await Deno.readTextFile(runFile);
       const workflowRun = parseYaml(runFileContent) as WorkflowRunData;
 
-      // Find the specific job and step
       const job = workflowRun.jobs?.find((j: JobRunData) =>
         j.jobName === jobName
       );
@@ -332,7 +386,6 @@ export class LogStreamService {
         return entries;
       }
 
-      // Add step execution info
       entries.push({
         message: `[LOG] Streaming logs for step: ${jobName}/${stepName}`,
         timestamp: new Date(),
@@ -345,34 +398,10 @@ export class LogStreamService {
         });
       }
 
-      // Type guard for step output
-      const stepOutput = step.output as StepOutput | undefined;
-
-      // Add actual stdout logs if available
-      if (stepOutput?.stdout) {
-        const stdoutLines = stepOutput.stdout.split("\n").filter((
-          line: string,
-        ) => line.trim());
-        for (const line of stdoutLines) {
-          entries.push({
-            message: line,
-            timestamp: step.startedAt ? new Date(step.startedAt) : new Date(),
-          });
-        }
-      }
-
-      // Add stderr logs if available
-      if (stepOutput?.stderr) {
-        const stderrLines = stepOutput.stderr.split("\n").filter((
-          line: string,
-        ) => line.trim());
-        for (const line of stderrLines) {
-          entries.push({
-            message: `[STDERR] ${line}`,
-            timestamp: step.startedAt ? new Date(step.startedAt) : new Date(),
-          });
-        }
-      }
+      // Check output for exit code info
+      const stepOutput = step.output as
+        | { exitCode?: number }
+        | undefined;
 
       if (step.completedAt) {
         entries.push({
