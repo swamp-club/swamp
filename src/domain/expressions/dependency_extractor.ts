@@ -6,8 +6,8 @@ export type DependencyType =
   | "resource"
   | "data"
   | "file"
-  | "log"
-  | "execution";
+  | "execution"
+  | "definition";
 
 /**
  * Artifact types that create implicit workflow dependencies.
@@ -16,7 +16,6 @@ export const ArtifactDependencyTypes: readonly DependencyType[] = [
   "resource",
   "data",
   "file",
-  "log",
 ] as const;
 
 /**
@@ -31,17 +30,23 @@ export interface ExpressionDependency {
 
 /**
  * Pattern to match model references in CEL expressions.
- * Matches: model.<name-or-uuid>.(input|resource|data|file|log|execution)
+ * Matches: model.<name-or-uuid>.(input|resource|file|execution|definition)
  */
 const MODEL_REF_PATTERN =
-  /model\.([a-zA-Z0-9_-]+)\.(input|resource|data|file|log|execution)/g;
+  /model\.([a-zA-Z0-9_-]+)\.(input|resource|file|execution|definition)/g;
 
 /**
  * Pattern to match data function calls in CEL expressions.
  * Matches: data.version('model', 'data', N), data.latest('model', 'data'), data.listVersions('model', 'data')
  */
 const DATA_FUNCTION_PATTERN =
-  /data\.(version|latest|listVersions)\s*\(\s*['"]([^'"]+)['"]/g;
+  /data\.(version|latest|listVersions|findBySpec)\s*\(\s*['"]([^'"]+)['"]/g;
+
+/**
+ * Pattern to match file.contents() calls in CEL expressions.
+ * Matches: file.contents('model', 'spec')
+ */
+const FILE_CONTENTS_PATTERN = /file\.contents\s*\(\s*['"]([^'"]+)['"]/g;
 
 /**
  * Extracts model dependencies from a CEL expression.
@@ -93,18 +98,24 @@ export function extractModelRefs(expression: string): string[] {
     refs.add(match[2]);
   }
 
+  // Extract from file.contents('model', ...)
+  const fileContentsMatches = expression.matchAll(FILE_CONTENTS_PATTERN);
+  for (const match of fileContentsMatches) {
+    refs.add(match[1]);
+  }
+
   return [...refs];
 }
 
 /**
- * Checks if an expression has any artifact dependencies (resource, data, file, log).
+ * Checks if an expression has any artifact dependencies (resource, file).
  * Artifact dependencies create implicit workflow step dependencies.
  *
  * @param expression - The CEL expression to check
  * @returns True if the expression references any model artifacts
  */
 export function hasArtifactDependency(expression: string): boolean {
-  return /model\.[a-zA-Z0-9_-]+\.(resource|data|file|log)/.test(expression);
+  return /model\.[a-zA-Z0-9_-]+\.(resource|file)/.test(expression);
 }
 
 /**
@@ -121,10 +132,10 @@ export function hasResourceDependency(expression: string): boolean {
 /**
  * Extracts all artifact dependencies from a CEL expression.
  * These create implicit workflow step dependencies.
- * Includes both model.X.data patterns and data.version/latest/listVersions function calls.
+ * Includes both model.X.resource/file patterns and data.version/latest/listVersions function calls.
  *
  * @param expression - The CEL expression to analyze
- * @returns Array of dependencies with artifact types (resource, data, file, log)
+ * @returns Array of dependencies with artifact types (resource, data, file)
  */
 export function extractArtifactDependencies(
   expression: string,
@@ -133,7 +144,7 @@ export function extractArtifactDependencies(
   const seen = new Set<string>();
 
   // Extract from model.X.property patterns
-  const pattern = /model\.([a-zA-Z0-9_-]+)\.(resource|data|file|log)/g;
+  const pattern = /model\.([a-zA-Z0-9_-]+)\.(resource|file)/g;
   const matches = expression.matchAll(pattern);
   for (const match of matches) {
     const modelRef = match[1];
@@ -155,6 +166,18 @@ export function extractArtifactDependencies(
     if (!seen.has(key)) {
       seen.add(key);
       dependencies.push({ modelRef, type: "data" });
+    }
+  }
+
+  // Extract from file.contents() calls (create file dependencies)
+  const fileContentsMatches = expression.matchAll(FILE_CONTENTS_PATTERN);
+  for (const match of fileContentsMatches) {
+    const modelRef = match[1];
+    const key = `${modelRef}:file`;
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      dependencies.push({ modelRef, type: "file" });
     }
   }
 
@@ -213,5 +236,59 @@ export function extractDataFunctionDependencies(expression: string): string[] {
  * @returns True if the expression contains data.version, data.latest, or data.listVersions
  */
 export function hasDataFunctionDependency(expression: string): boolean {
-  return /data\.(version|latest|listVersions)\s*\(/.test(expression);
+  return /data\.(version|latest|listVersions|findBySpec)\s*\(/.test(expression);
+}
+
+/**
+ * Extracts model references from file.contents() calls.
+ *
+ * @param expression - The CEL expression to analyze
+ * @returns Array of model references from file.contents() calls
+ */
+export function extractFileContentsDependencies(
+  expression: string,
+): string[] {
+  const refs = new Set<string>();
+
+  const matches = expression.matchAll(FILE_CONTENTS_PATTERN);
+  for (const match of matches) {
+    refs.add(match[1]);
+  }
+
+  return [...refs];
+}
+
+/**
+ * Checks if an expression has any file.contents() calls.
+ *
+ * @param expression - The CEL expression to check
+ * @returns True if the expression contains file.contents()
+ */
+export function hasFileContentsDependency(expression: string): boolean {
+  return /file\.contents\s*\(/.test(expression);
+}
+
+/**
+ * Checks if an expression has any execution dependencies.
+ * Execution dependencies reference model.*.execution.* patterns.
+ *
+ * @param expression - The CEL expression to check
+ * @returns True if the expression references any model execution data
+ */
+export function hasExecutionDependency(expression: string): boolean {
+  return /model\.[a-zA-Z0-9_-]+\.execution/.test(expression);
+}
+
+/**
+ * Checks if an expression depends on step outputs (artifacts, execution, data functions, or file contents).
+ * These dependencies cannot be resolved before the producing step runs.
+ *
+ * @param expression - The CEL expression to check
+ * @returns True if the expression depends on any step output
+ */
+export function hasStepOutputDependency(expression: string): boolean {
+  return hasArtifactDependency(expression) ||
+    hasExecutionDependency(expression) ||
+    hasDataFunctionDependency(expression) ||
+    hasFileContentsDependency(expression);
 }

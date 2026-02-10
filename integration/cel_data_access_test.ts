@@ -12,7 +12,6 @@ import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { Data } from "../src/domain/data/data.ts";
-import { computeDefinitionHash } from "../src/domain/data/data_metadata.ts";
 import type { OwnerDefinition } from "../src/domain/data/data_metadata.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -40,10 +39,8 @@ async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "vault"));
 }
 
-async function createOwner(ref: string): Promise<OwnerDefinition> {
-  const definitionHash = await computeDefinitionHash("model-method", ref);
+function createOwner(ref: string): OwnerDefinition {
   return {
-    definitionHash,
     ownerType: "model-method",
     ownerRef: ref,
   };
@@ -176,13 +173,13 @@ Deno.test("CEL Data Access: reference hyphenated model name", async () => {
 // Access Data from Other Models
 // ============================================================================
 
-Deno.test("CEL Data Access: access latest data via model.X.data.Y", async () => {
+Deno.test("CEL Data Access: access latest resource via model.X.resource.specName", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:create");
+    const owner = createOwner("test/model:create");
 
     // Create model
     const sourceModel = Definition.create({
@@ -218,19 +215,17 @@ Deno.test("CEL Data Access: access latest data via model.X.data.Y", async () => 
     });
     const context = await modelResolver.buildContext();
 
-    // Access latest data (single artifact unwrapped)
+    // Access latest resource via model.X.resource.specName
     const modelData = context.model["data_source"];
     assertExists(modelData);
-    assertExists(modelData.data);
-    const dataRecord = modelData.data as {
-      version: number;
-      attributes: Record<string, unknown>;
-    };
+    assertExists(modelData.resource);
+    const resourceRecord = modelData.resource!["resource_state"];
+    assertExists(resourceRecord);
 
     // Latest version should be 3
-    assertEquals(dataRecord.version, 3);
-    assertEquals(dataRecord.attributes.version, 3);
-    assertEquals(dataRecord.attributes.id, "id-3");
+    assertEquals(resourceRecord.version, 3);
+    assertEquals(resourceRecord.attributes.version, 3);
+    assertEquals(resourceRecord.attributes.id, "id-3");
   });
 });
 
@@ -240,7 +235,7 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:version-access");
+    const owner = createOwner("test/model:version-access");
 
     // Create model
     const model = Definition.create({
@@ -307,7 +302,7 @@ Deno.test("CEL Data Access: access data via data.latest()", async () => {
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:latest");
+    const owner = createOwner("test/model:latest");
 
     const model = Definition.create({
       name: "latest_test",
@@ -355,7 +350,7 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:list");
+    const owner = createOwner("test/model:list");
 
     const model = Definition.create({
       name: "list_versions_model",
@@ -399,13 +394,13 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
 // Cross-Model Data References
 // ============================================================================
 
-Deno.test("CEL Data Access: reference data from dependent model", async () => {
+Deno.test("CEL Data Access: reference resource from dependent model", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:cross-ref");
+    const owner = createOwner("test/model:cross-ref");
 
     // Create VPC model with resource data
     const vpcModel = Definition.create({
@@ -434,13 +429,13 @@ Deno.test("CEL Data Access: reference data from dependent model", async () => {
       })),
     );
 
-    // Create subnet model that references VPC data
+    // Create subnet model that references VPC resource data via new pattern
     const subnetModel = Definition.create({
       name: "my_subnet",
       attributes: {
-        // Reference VPC resource data (single artifact: data is unwrapped)
-        vpc_id_ref: "${{ model.my_vpc.data.attributes.vpcId }}",
-        vpc_state_ref: "${{ model.my_vpc.data.attributes.state }}",
+        // New pattern: model.X.resource.specName.attributes.field
+        vpc_id_ref: "${{ model.my_vpc.resource.resource.attributes.vpcId }}",
+        vpc_state_ref: "${{ model.my_vpc.resource.resource.attributes.state }}",
       },
     });
     await definitionRepo.save(type, subnetModel);
@@ -466,7 +461,7 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:chain");
+    const owner = createOwner("test/model:chain");
 
     // Model A - base config
     const modelA = Definition.create({
@@ -480,7 +475,7 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "output" },
+      tags: { type: "resource" },
       ownerDefinition: owner,
     });
 
@@ -503,7 +498,7 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "output" },
+      tags: { type: "resource" },
       ownerDefinition: owner,
     });
 
@@ -514,14 +509,14 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
       new TextEncoder().encode(JSON.stringify({ computed: 200 })),
     );
 
-    // Model C - references both A and B data
+    // Model C - references both A and B resource data via new pattern
     const modelC = Definition.create({
       name: "model_c",
       attributes: {
-        from_a: "${{ model.model_a.data.attributes.computed }}",
-        from_b: "${{ model.model_b.data.attributes.computed }}",
+        from_a: "${{ model.model_a.resource.result.attributes.computed }}",
+        from_b: "${{ model.model_b.resource.result.attributes.computed }}",
         sum:
-          "${{ model.model_a.data.attributes.computed + model.model_b.data.attributes.computed }}",
+          "${{ model.model_a.resource.result.attributes.computed + model.model_b.resource.result.attributes.computed }}",
       },
     });
     await definitionRepo.save(type, modelC);
@@ -722,13 +717,13 @@ Deno.test("CEL Data Access: handle missing data gracefully", async () => {
   });
 });
 
-Deno.test("CEL Data Access: multiple data items from same model", async () => {
+Deno.test("CEL Data Access: multiple resource items from same model", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
-    const owner = await createOwner("test/model:multi-data");
+    const owner = createOwner("test/model:multi-data");
 
     const model = Definition.create({
       name: "multi_data_model",
@@ -736,7 +731,7 @@ Deno.test("CEL Data Access: multiple data items from same model", async () => {
     });
     await definitionRepo.save(type, model);
 
-    // Create multiple data items
+    // Create multiple resource data items
     const dataItems = ["stdout", "stderr", "exitcode", "timing"];
 
     for (const name of dataItems) {
@@ -745,7 +740,7 @@ Deno.test("CEL Data Access: multiple data items from same model", async () => {
         contentType: "application/json",
         lifetime: "infinite",
         garbageCollection: 5,
-        tags: { type: "output" },
+        tags: { type: "resource" },
         ownerDefinition: owner,
       });
 
@@ -763,18 +758,14 @@ Deno.test("CEL Data Access: multiple data items from same model", async () => {
     });
     const context = await modelResolver.buildContext();
 
-    // All data items accessible
+    // All resource items accessible via model.X.resource.specName
     const modelData = context.model["multi_data_model"];
     assertExists(modelData);
-    assertExists(modelData.data);
+    assertExists(modelData.resource);
 
-    const dataMap = modelData.data as Record<
-      string,
-      { attributes: Record<string, unknown> }
-    >;
     for (const name of dataItems) {
-      assertExists(dataMap[name]);
-      assertEquals(dataMap[name].attributes.name, name);
+      assertExists(modelData.resource![name]);
+      assertEquals(modelData.resource![name].attributes.name, name);
     }
   });
 });

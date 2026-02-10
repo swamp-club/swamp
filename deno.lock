@@ -22,9 +22,9 @@
     "jsr:@std/yaml@1": "1.0.11",
     "npm:@aws-sdk/client-cloudcontrol@3": "3.984.0",
     "npm:@aws-sdk/client-secrets-manager@3": "3.984.0",
+    "npm:@marcbachmann/cel-js@7.3.1": "7.3.1",
     "npm:@types/node@24.0.7": "24.0.7",
     "npm:@types/react@18": "18.3.28",
-    "npm:cel-js@0.4": "0.4.0",
     "npm:fast-json-patch@3": "3.1.1",
     "npm:fzf@0.5.2": "0.5.2",
     "npm:ink-testing-library@4": "4.0.0_@types+react@18.3.28",
@@ -585,29 +585,9 @@
     "@aws/lambda-invoke-store@0.2.3": {
       "integrity": "sha512-oLvsaPMTBejkkmHhjf09xTgk71mOqyr/409NKhRIL08If7AhVfUsJhVsx386uJaqNd42v9kWamQ9lFbkoC2dYw=="
     },
-    "@chevrotain/cst-dts-gen@11.0.3": {
-      "integrity": "sha512-BvIKpRLeS/8UbfxXxgC33xOumsacaeCKAjAeLyOn7Pcp95HiRbrpl14S+9vaZLolnbssPIUuiUd8IvgkRyt6NQ==",
-      "dependencies": [
-        "@chevrotain/gast",
-        "@chevrotain/types",
-        "lodash-es"
-      ]
-    },
-    "@chevrotain/gast@11.0.3": {
-      "integrity": "sha512-+qNfcoNk70PyS/uxmj3li5NiECO+2YKZZQMbmjTqRI3Qchu8Hig/Q9vgkHpI3alNjr7M+a2St5pw5w5F6NL5/Q==",
-      "dependencies": [
-        "@chevrotain/types",
-        "lodash-es"
-      ]
-    },
-    "@chevrotain/regexp-to-ast@11.0.3": {
-      "integrity": "sha512-1fMHaBZxLFvWI067AVbGJav1eRY7N8DDvYCTwGBiE/ytKBgP8azTdgyrKyWZ9Mfh09eHWb5PgTSO8wi7U824RA=="
-    },
-    "@chevrotain/types@11.0.3": {
-      "integrity": "sha512-gsiM3G8b58kZC2HaWR50gu6Y1440cHiJ+i3JUvcp/35JchYejb2+5MVeJK0iKThYpAa/P2PYFV4hoi44HD+aHQ=="
-    },
-    "@chevrotain/utils@11.0.3": {
-      "integrity": "sha512-YslZMgtJUyuMbZ+aKvfF3x1f5liK4mWNxghFRv7jqRR9C3R3fAOGTTKvxXDa2Y1s9zSbcpuO0cAxDYsc9SrXoQ=="
+    "@marcbachmann/cel-js@7.3.1": {
+      "integrity": "sha512-P6o26TvjStT8V8+8EF+yq9Pp7ZFV00bpiUMbssr76XbIZGxaB+NNWeBp6WNxOrR9gp0JPzvJueCKHpOs5LE9PQ==",
+      "bin": true
     },
     "@smithy/abort-controller@4.2.8": {
       "integrity": "sha512-peuVfkYHAmS5ybKxWcfraK7WBBP0J+rkfUcbHJJKQ4ir3UAUNQI+Y4Vt/PqSzGqgloJ5O1dk7+WzNL8wcCSXbw==",
@@ -1011,26 +991,8 @@
     "bowser@2.13.1": {
       "integrity": "sha512-OHawaAbjwx6rqICCKgSG0SAnT05bzd7ppyKLVUITZpANBaaMFBAsaNkto3LoQ31tyFP5kNujE8Cdx85G9VzOkw=="
     },
-    "cel-js@0.4.0": {
-      "integrity": "sha512-ANcaOr9HyrU2n+5VjYD5MFqYVy4gSWCgTj04vcyti1NyG1+VyeWwWbobj5P/mLZR/gwmdYFWnV++k5bdfBqgUQ==",
-      "dependencies": [
-        "chevrotain",
-        "ramda"
-      ]
-    },
     "chalk@5.6.2": {
       "integrity": "sha512-7NzBL0rN6fMUW+f7A6Io4h40qQlG+xGmtMxfbnH/K7TAtt8JQWVQK+6g0UXKMeVJoyV5EkkNsErQ8pVD3bLHbA=="
-    },
-    "chevrotain@11.0.3": {
-      "integrity": "sha512-ci2iJH6LeIkvP9eJW6gpueU8cnZhv85ELY8w8WiFtNjMHA5ad6pQLaJo9mEly/9qUyCpvqX8/POVUTf18/HFdw==",
-      "dependencies": [
-        "@chevrotain/cst-dts-gen",
-        "@chevrotain/gast",
-        "@chevrotain/regexp-to-ast",
-        "@chevrotain/types",
-        "@chevrotain/utils",
-        "lodash-es"
-      ]
     },
     "cli-boxes@3.0.0": {
       "integrity": "sha512-/lzGpEWL/8PfI0BmBOPRwp0c/wFNX1RdUML3jK/RcSBA9T8mZDdQpqYBKtCFTOfQbwPqWEOpjqW+Fnayc0969g=="
@@ -1150,9 +1112,6 @@
     "js-tokens@4.0.0": {
       "integrity": "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ=="
     },
-    "lodash-es@4.17.21": {
-      "integrity": "sha512-mKnC+QJ9pWVzv+C4/U3rRsHapFfHvQFoFB92e52xeyGMcX6/OlIl78je1u8vePzYZSkkogMPJ2yjxxsb89cxyw=="
-    },
     "loose-envify@1.4.0": {
       "integrity": "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==",
       "dependencies": [
@@ -1171,9 +1130,6 @@
     },
     "patch-console@2.0.0": {
       "integrity": "sha512-0YNdUceMdaQwoKce1gatDScmMo5pu/tfABfnzEqeG0gtTmd7mh/WcwgUjtAeOU7N8nFFlbQBnFK2gXW5fGvmMA=="
-    },
-    "ramda@0.30.1": {
-      "integrity": "sha512-tEF5I22zJnuclswcZMc8bDIrwRHRzf+NqVEmqg50ShAZMP7MWeR/RGDthfM/p+BlqvF2fXAzpn8i+SJcYD3alw=="
     },
     "react-reconciler@0.29.2_react@18.3.1": {
       "integrity": "sha512-zZQqIiYgDCTP/f1N/mAR10nJGrPD2ZR+jDSEsKWJHYC7Cm2wodlwbR3upZRdC3cjIjSlTLNVyO7Iu0Yy7t2AYg==",
@@ -1288,8 +1244,8 @@
       "jsr:@std/yaml@1",
       "npm:@aws-sdk/client-cloudcontrol@3",
       "npm:@aws-sdk/client-secrets-manager@3",
+      "npm:@marcbachmann/cel-js@7.3.1",
       "npm:@types/react@18",
-      "npm:cel-js@0.4",
       "npm:fast-json-patch@3",
       "npm:fzf@0.5.2",
       "npm:ink-testing-library@4",

@@ -3,11 +3,15 @@ import {
   extractArtifactDependencies,
   extractDataFunctionDependencies,
   extractDependencies,
+  extractFileContentsDependencies,
   extractModelRefs,
   extractResourceDependencies,
   hasDataFunctionDependency,
+  hasExecutionDependency,
+  hasFileContentsDependency,
   hasResourceDependency,
   hasSelfReference,
+  hasStepOutputDependency,
 } from "./dependency_extractor.ts";
 
 Deno.test("extractDependencies finds input dependencies", () => {
@@ -146,12 +150,15 @@ Deno.test("extractArtifactDependencies includes data function calls", () => {
   assertEquals(deps[0].type, "data");
 });
 
-Deno.test("extractArtifactDependencies combines model.X.data and data functions", () => {
+Deno.test("extractArtifactDependencies combines model.X.resource and data functions", () => {
   const expr =
-    "model.a.data.result.value + data.version('b', 'output', 1).value";
+    "model.a.resource.result.attributes.value + data.version('b', 'output', 1).value";
   const deps = extractArtifactDependencies(expr);
   assertEquals(deps.length, 2);
-  assertEquals(deps.some((d) => d.modelRef === "a" && d.type === "data"), true);
+  assertEquals(
+    deps.some((d) => d.modelRef === "a" && d.type === "resource"),
+    true,
+  );
   assertEquals(deps.some((d) => d.modelRef === "b" && d.type === "data"), true);
 });
 
@@ -191,4 +198,167 @@ Deno.test("hasDataFunctionDependency returns true for data.listVersions", () => 
 Deno.test("hasDataFunctionDependency returns false for other expressions", () => {
   assertEquals(hasDataFunctionDependency("model.foo.data.bar"), false);
   assertEquals(hasDataFunctionDependency("self.name"), false);
+});
+
+// Tests for file.contents() dependency extraction
+
+Deno.test("extractModelRefs extracts model name from file.contents()", () => {
+  const expr = "file.contents('my-model', 'report')";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("my-model"), true);
+});
+
+Deno.test("extractArtifactDependencies returns file dep for file.contents()", () => {
+  const expr = "file.contents('my-model', 'report')";
+  const deps = extractArtifactDependencies(expr);
+  assertEquals(deps.length, 1);
+  assertEquals(deps[0].modelRef, "my-model");
+  assertEquals(deps[0].type, "file");
+});
+
+Deno.test("extractFileContentsDependencies returns model name", () => {
+  const expr = "file.contents('my-model', 'report')";
+  const refs = extractFileContentsDependencies(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("my-model"), true);
+});
+
+Deno.test("extractFileContentsDependencies returns empty for no file.contents()", () => {
+  const expr = "model.foo.input.x + self.name";
+  const refs = extractFileContentsDependencies(expr);
+  assertEquals(refs.length, 0);
+});
+
+Deno.test("hasFileContentsDependency returns true for file.contents()", () => {
+  assertEquals(
+    hasFileContentsDependency("file.contents('model', 'spec')"),
+    true,
+  );
+});
+
+Deno.test("hasFileContentsDependency returns false for other expressions", () => {
+  assertEquals(hasFileContentsDependency("model.foo.file.bar"), false);
+  assertEquals(hasFileContentsDependency("self.name"), false);
+});
+
+Deno.test("extractModelRefs includes both model.X and file.contents() refs", () => {
+  const expr =
+    "model.source.resource.result.attributes.x + file.contents('target', 'report')";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 2);
+  assertEquals(refs.includes("source"), true);
+  assertEquals(refs.includes("target"), true);
+});
+
+// Tests for hasExecutionDependency
+
+Deno.test("hasExecutionDependency returns true for execution refs", () => {
+  assertEquals(
+    hasExecutionDependency("model.foo.execution.status"),
+    true,
+  );
+});
+
+Deno.test("hasExecutionDependency returns true for hyphenated model name", () => {
+  assertEquals(
+    hasExecutionDependency("model.my-model.execution.exitCode"),
+    true,
+  );
+});
+
+Deno.test("hasExecutionDependency returns false for resource refs", () => {
+  assertEquals(
+    hasExecutionDependency("model.foo.resource.attributes.id"),
+    false,
+  );
+});
+
+Deno.test("hasExecutionDependency returns false for input refs", () => {
+  assertEquals(
+    hasExecutionDependency("model.foo.input.attributes.name"),
+    false,
+  );
+});
+
+// Tests for hasStepOutputDependency
+
+Deno.test("hasStepOutputDependency returns true for resource refs", () => {
+  assertEquals(
+    hasStepOutputDependency("model.foo.resource.result.attributes.id"),
+    true,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns true for file refs", () => {
+  assertEquals(
+    hasStepOutputDependency("model.foo.file.report.path"),
+    true,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns true for execution refs", () => {
+  assertEquals(
+    hasStepOutputDependency("model.foo.execution.status"),
+    true,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns true for data function calls", () => {
+  assertEquals(
+    hasStepOutputDependency("data.latest('my-model', 'output').attributes.id"),
+    true,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns true for file.contents calls", () => {
+  assertEquals(
+    hasStepOutputDependency("file.contents('my-model', 'report')"),
+    true,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns false for input refs only", () => {
+  assertEquals(
+    hasStepOutputDependency("model.foo.input.attributes.name"),
+    false,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns false for simple inputs ref", () => {
+  assertEquals(
+    hasStepOutputDependency("inputs.vpc_id"),
+    false,
+  );
+});
+
+// Tests for data.findBySpec() dependency extraction
+
+Deno.test("extractModelRefs includes model refs from data.findBySpec calls", () => {
+  const expr = "data.findBySpec('my-model', 'subnet')";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("my-model"), true);
+});
+
+Deno.test("extractArtifactDependencies includes data.findBySpec calls", () => {
+  const expr = "data.findBySpec('my-model', 'subnet')";
+  const deps = extractArtifactDependencies(expr);
+  assertEquals(deps.length, 1);
+  assertEquals(deps[0].modelRef, "my-model");
+  assertEquals(deps[0].type, "data");
+});
+
+Deno.test("hasDataFunctionDependency returns true for data.findBySpec", () => {
+  assertEquals(
+    hasDataFunctionDependency("data.findBySpec('model', 'spec')"),
+    true,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns true for data.findBySpec calls", () => {
+  assertEquals(
+    hasStepOutputDependency("data.findBySpec('my-model', 'subnet')"),
+    true,
+  );
 });

@@ -152,13 +152,14 @@ export class Data {
 
   /**
    * Checks if this data is owned by the given owner definition.
-   * Ownership is verified by comparing definition hashes.
+   * Ownership is verified by comparing ownerType and ownerRef.
    *
    * @param definition - The owner definition to check
-   * @returns true if the definition hash matches
+   * @returns true if the ownerType and ownerRef match
    */
   isOwnedBy(definition: OwnerDefinition): boolean {
-    return this.ownerDefinition.definitionHash === definition.definitionHash;
+    return this.ownerDefinition.ownerType === definition.ownerType &&
+      this.ownerDefinition.ownerRef === definition.ownerRef;
   }
 
   /**

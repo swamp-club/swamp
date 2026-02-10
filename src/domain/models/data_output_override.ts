@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { DataSpecType } from "./model.ts";
 import {
   type GarbageCollectionPolicy,
   GarbageCollectionSchema,
@@ -12,8 +11,8 @@ import {
  * Value object - immutable.
  */
 export interface DataOutputOverride {
-  /** The spec type to override */
-  specType: DataSpecType;
+  /** The spec name to override */
+  specName: string;
 
   /** Override lifetime */
   lifetime?: Lifetime;
@@ -26,7 +25,7 @@ export interface DataOutputOverride {
 }
 
 export const DataOutputOverrideSchema = z.object({
-  specType: z.string().min(1),
+  specName: z.string().min(1),
   lifetime: LifetimeSchema.optional(),
   garbageCollection: GarbageCollectionSchema.optional(),
   tags: z.record(z.string(), z.string()).optional(),

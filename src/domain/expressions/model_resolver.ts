@@ -28,6 +28,19 @@ export interface DataRecord {
 }
 
 /**
+ * File metadata record for CEL expressions.
+ * Eagerly loaded into the model context.
+ */
+export interface FileDataRecord {
+  id: string;
+  version: number;
+  createdAt: string;
+  path: string;
+  size: number;
+  contentType: string;
+}
+
+/**
  * Data about a single model for CEL context.
  */
 export interface ModelData {
@@ -46,32 +59,10 @@ export interface ModelData {
     attributes: Record<string, unknown>;
     inputs?: InputsSchema;
   };
-  resource?: {
-    id: string;
-    version: number;
-    createdAt: string;
-    attributes: Record<string, unknown>;
-  };
-  /** Latest DataRecord (single artifact) or map of data-name -> DataRecord (multiple) */
-  data?: Record<string, DataRecord> | DataRecord;
-  file?: {
-    id: string;
-    version: number;
-    createdAt: string;
-    filename: string;
-    contentType: string;
-    size: number;
-    checksum: string;
-    path: string;
-  };
-  log?: {
-    id: string;
-    version: number;
-    createdAt: string;
-    entries: Array<{
-      message: string;
-    }>;
-  };
+  /** Resource data: specName → DataRecord (includes id, version, attributes, etc.) */
+  resource?: Record<string, DataRecord>;
+  /** File metadata: specName → file metadata (path, size, contentType, etc.) */
+  file?: Record<string, FileDataRecord>;
   execution?: {
     id: string;
     methodName: string;
@@ -123,6 +114,30 @@ export interface DataNamespace {
    * @returns Array of matching DataRecords
    */
   findByTag(tagKey: string, tagValue: string): DataRecord[];
+
+  /**
+   * Find all data records for a model that match a given spec name.
+   * Uses the auto-injected `specName` tag to identify records from a specific output spec.
+   * @param modelName - The model name
+   * @param specName - The output spec name
+   * @returns Array of matching DataRecords
+   */
+  findBySpec(modelName: string, specName: string): DataRecord[];
+}
+
+/**
+ * Namespace for lazy-loading file contents in CEL expressions.
+ */
+export interface FileNamespace {
+  /**
+   * Lazy-load file contents from disk.
+   * Reads file synchronously for CEL evaluation.
+   *
+   * @param modelName - The model name
+   * @param specName - The file spec name
+   * @returns The file contents as string, or null if not found
+   */
+  contents(modelName: string, specName: string): string | null;
 }
 
 /**
@@ -157,6 +172,8 @@ export interface ExpressionContext {
   env: Record<string, string>;
   /** Data namespace for versioned data access */
   data?: DataNamespace;
+  /** File namespace for lazy-loading file contents */
+  file?: FileNamespace;
   /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }
@@ -189,6 +206,9 @@ export class DataCache {
   // (tagKey:tagValue) -> DataRecord[]
   private byTag: Map<string, DataRecord[]> = new Map();
 
+  // (modelName) -> (specName) -> DataRecord[]
+  private byModelSpec: Map<string, Map<string, DataRecord[]>> = new Map();
+
   /**
    * Adds a data record to the cache.
    */
@@ -215,6 +235,19 @@ export class DataCache {
         this.byTag.set(tagKey, []);
       }
       this.byTag.get(tagKey)!.push(record);
+    }
+
+    // Add to model+spec index (from specName tag)
+    const specTag = record.tags["specName"];
+    if (specTag) {
+      if (!this.byModelSpec.has(modelName)) {
+        this.byModelSpec.set(modelName, new Map());
+      }
+      const specMap = this.byModelSpec.get(modelName)!;
+      if (!specMap.has(specTag)) {
+        specMap.set(specTag, []);
+      }
+      specMap.get(specTag)!.push(record);
     }
   }
 
@@ -255,6 +288,14 @@ export class DataCache {
    */
   findByTag(tagKey: string, tagValue: string): DataRecord[] {
     return this.byTag.get(`${tagKey}:${tagValue}`) ?? [];
+  }
+
+  /**
+   * Finds all data records for a model that match a given spec name.
+   * Uses the `specName` tag populated during data writes.
+   */
+  findBySpec(modelName: string, specName: string): DataRecord[] {
+    return this.byModelSpec.get(modelName)?.get(specName) ?? [];
   }
 
   /**
@@ -437,21 +478,44 @@ export class ModelResolver {
           }
         }
 
-        // Populate model.data with latest versions
+        // Populate model.resource and model.file from latest data versions
         const modelData = context.model[modelName];
         if (modelData) {
           const dataNames = dataCache.getDataNames(modelName);
-          if (dataNames.length > 0) {
-            const dataMap: Record<string, DataRecord> = {};
-            for (const dataName of dataNames) {
-              const latestRecord = dataCache.getLatest(modelName, dataName);
-              if (latestRecord) {
-                dataMap[dataName] = latestRecord;
+          for (const dataName of dataNames) {
+            const latestRecord = dataCache.getLatest(modelName, dataName);
+            if (!latestRecord) continue;
+
+            const dataType = latestRecord.tags["type"];
+
+            if (dataType === "resource") {
+              // Populate resource context: specName → full DataRecord
+              if (!modelData.resource) modelData.resource = {};
+              modelData.resource[dataName] = latestRecord;
+            } else if (dataType === "file") {
+              // Populate file context: specName → file metadata
+              if (!modelData.file) modelData.file = {};
+              const contentPath = this.dataRepo.getContentPath(
+                modelType,
+                definition.id,
+                dataName,
+                latestRecord.version as number,
+              );
+              try {
+                const stat = Deno.statSync(contentPath);
+                modelData.file[dataName] = {
+                  id: latestRecord.id as string,
+                  version: latestRecord.version as number,
+                  createdAt: latestRecord.createdAt as string,
+                  path: contentPath,
+                  size: stat.size,
+                  contentType: latestRecord.tags["contentType"] ??
+                    "application/octet-stream",
+                };
+              } catch {
+                // File not found on disk, skip
               }
             }
-            const entries = Object.values(dataMap);
-            // Unwrap single artifact for direct DataRecord access
-            modelData.data = entries.length === 1 ? entries[0] : dataMap;
           }
         }
       }
@@ -474,6 +538,23 @@ export class ModelResolver {
       },
       findByTag: (tagKey: string, tagValue: string): DataRecord[] => {
         return dataCache.findByTag(tagKey, tagValue);
+      },
+      findBySpec: (modelName: string, specName: string): DataRecord[] => {
+        return dataCache.findBySpec(modelName, specName);
+      },
+    };
+
+    // Create file namespace for lazy-loading file contents
+    context.file = {
+      contents: (modelName: string, specName: string): string | null => {
+        const modelData = context.model[modelName];
+        if (!modelData?.file?.[specName]) return null;
+        const filePath = modelData.file[specName].path;
+        try {
+          return Deno.readTextFileSync(filePath);
+        } catch {
+          return null;
+        }
       },
     };
 
