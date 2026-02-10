@@ -138,7 +138,7 @@ export class LogStreamService {
                 for (const line of lines) {
                   if (line.trim() && line.includes(categoryFilter)) {
                     yield {
-                      message: line,
+                      message: extractLogMessage(line),
                       timestamp: parseLogTimestamp(line),
                     };
                   }
@@ -187,7 +187,7 @@ export class LogStreamService {
           // Flush remaining partial line
           if (partialLine.trim()) {
             yield {
-              message: partialLine,
+              message: extractLogMessage(partialLine),
               timestamp: parseLogTimestamp(partialLine),
             };
             partialLine = "";
@@ -295,7 +295,10 @@ export class LogStreamService {
           timestamp: new Date(),
         });
         for (const line of lines) {
-          entries.push({ message: line, timestamp: parseLogTimestamp(line) });
+          entries.push({
+            message: extractLogMessage(line),
+            timestamp: parseLogTimestamp(line),
+          });
         }
         return entries;
       } catch {
@@ -335,7 +338,10 @@ export class LogStreamService {
           line.trim() && line.includes(jobCategoryFilter)
         );
         for (const line of lines) {
-          entries.push({ message: line, timestamp: parseLogTimestamp(line) });
+          entries.push({
+            message: extractLogMessage(line),
+            timestamp: parseLogTimestamp(line),
+          });
         }
       } catch {
         entries.push({
@@ -518,15 +524,19 @@ export class LogStreamService {
 }
 
 /**
+ * Regex that matches the LogTape text-formatter prefix:
+ *   "YYYY-MM-DD HH:MM:SS.mmm +HH:MM [LVL] category·sub: "
+ */
+const LOGTAPE_PREFIX_RE =
+  /^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+([+-]\d{2}:\d{2})\s+\[\w+\]\s+\S+:\s/;
+
+/**
  * Parses a timestamp from a LogTape-formatted log line.
  * Expected format: "2026-02-10 12:02:38.976 +00:00 [INF] ..."
  * Returns the parsed Date or current time if parsing fails.
  */
 function parseLogTimestamp(line: string): Date {
-  // Match ISO-ish timestamp at start: "YYYY-MM-DD HH:MM:SS.mmm +HH:MM"
-  const match = line.match(
-    /^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+([+-]\d{2}:\d{2})/,
-  );
+  const match = line.match(LOGTAPE_PREFIX_RE);
   if (match) {
     // Convert "2026-02-10 12:02:38.976 +00:00" → "2026-02-10T12:02:38.976+00:00"
     const dateStr = `${match[1].trim().replace(" ", "T")}${match[2]}`;
@@ -536,4 +546,13 @@ function parseLogTimestamp(line: string): Date {
     }
   }
   return new Date();
+}
+
+/**
+ * Strips the LogTape prefix (timestamp, level, category) from a log line,
+ * returning only the message content. Falls back to the full line.
+ */
+function extractLogMessage(line: string): string {
+  const match = line.match(LOGTAPE_PREFIX_RE);
+  return match ? line.slice(match[0].length) : line;
 }
