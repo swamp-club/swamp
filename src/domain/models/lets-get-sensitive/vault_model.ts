@@ -151,46 +151,31 @@ async function executeGet(
       success: true,
     };
 
-    const definitionHash = await definition.computeHash();
+    const resultWriter = context.createDataWriter!({
+      name: `${definition.name}-result`,
+      specType: DataSpecType.create("result"),
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    });
 
-    return {
-      dataOutputs: [
-        {
-          name: `${definition.name}-result`,
-          specType: DataSpecType.create("result"),
-          content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: { type: "data" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: "get",
-            },
-          },
-        },
-        {
-          name: `${definition.name}-audit-log`,
-          specType: DataSpecType.create("log"),
-          content: new TextEncoder().encode(logLines.join("\n")),
-          metadata: {
-            contentType: "text/plain",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: true,
-            tags: { type: "log" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: "get",
-            },
-          },
-        },
-      ],
-    };
+    const logWriter = context.createDataWriter!({
+      name: `${definition.name}-audit-log`,
+      specType: DataSpecType.create("log"),
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: true,
+      tags: { type: "log" },
+    });
+
+    const resultHandle = await resultWriter.writeText(
+      JSON.stringify(dataAttributes),
+    );
+    const logHandle = await logWriter.writeText(logLines.join("\n"));
+
+    return { dataHandles: [resultHandle, logHandle] };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logLines.push(`[vault] ❌ Failed to retrieve secret: ${errorMessage}`);
@@ -250,46 +235,31 @@ async function executePut(
       success: true,
     };
 
-    const definitionHash = await definition.computeHash();
+    const resultWriter = context.createDataWriter!({
+      name: `${definition.name}-result`,
+      specType: DataSpecType.create("result"),
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    });
 
-    return {
-      dataOutputs: [
-        {
-          name: `${definition.name}-result`,
-          specType: DataSpecType.create("result"),
-          content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: { type: "data" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: "put",
-            },
-          },
-        },
-        {
-          name: `${definition.name}-audit-log`,
-          specType: DataSpecType.create("log"),
-          content: new TextEncoder().encode(logLines.join("\n")),
-          metadata: {
-            contentType: "text/plain",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: true,
-            tags: { type: "log" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: "put",
-            },
-          },
-        },
-      ],
-    };
+    const logWriter = context.createDataWriter!({
+      name: `${definition.name}-audit-log`,
+      specType: DataSpecType.create("log"),
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: true,
+      tags: { type: "log" },
+    });
+
+    const resultHandle = await resultWriter.writeText(
+      JSON.stringify(dataAttributes),
+    );
+    const logHandle = await logWriter.writeText(logLines.join("\n"));
+
+    return { dataHandles: [resultHandle, logHandle] };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logLines.push(`[vault] ❌ Failed to store secret: ${errorMessage}`);
