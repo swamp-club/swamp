@@ -1,4 +1,5 @@
 import { Command } from "@cliffy/command";
+import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, resolve } from "@std/path";
 import { parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -162,6 +163,7 @@ export async function runCli(args: string[]): Promise<void> {
         Deno.env.get("NO_COLOR") !== undefined;
       if (noColor) {
         Deno.env.set("NO_COLOR", "1");
+        setColorEnabled(false);
       }
       const prettyOutput = !noColor && isStdinTty();
 

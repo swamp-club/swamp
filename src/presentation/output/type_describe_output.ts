@@ -1,4 +1,5 @@
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { bold, cyan, dim } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "./output.ts";
 
 /**
@@ -32,9 +33,15 @@ export interface TypeDescribeData {
   methods: MethodDescribeData[];
 }
 
+interface JsonSchemaProperty {
+  type?: string;
+  enum?: string[];
+  description?: string;
+}
+
 interface JsonSchemaObject {
   type?: string;
-  properties?: Record<string, { type?: string }>;
+  properties?: Record<string, JsonSchemaProperty>;
   required?: string[];
 }
 
@@ -51,8 +58,9 @@ function formatSchemaAttributes(
   const required = new Set(s.required ?? []);
   return Object.entries(s.properties).map(([name, prop]) => {
     const parts = [name];
-    if (prop.type) parts.push(`(${prop.type})`);
-    if (required.has(name)) parts.push("*required");
+    if (prop.type) parts.push(dim(`(${prop.type})`));
+    if (prop.enum) parts.push(dim(`[${prop.enum.join(", ")}]`));
+    if (required.has(name)) parts.push(dim("*required"));
     return `${indent}${parts.join(" ")}`;
   });
 }
@@ -69,54 +77,52 @@ export function renderTypeDescribe(
     return;
   }
 
-  const logger = getSwampLogger(["type", "describe"]);
+  const lines: string[] = [];
 
   const typeName = data.type.raw !== data.type.normalized
-    ? `${data.type.normalized} (${data.type.raw})`
+    ? `${data.type.normalized} ${dim(`(${data.type.raw})`)}`
     : data.type.normalized;
 
-  logger.info("Type: {typeName}", { typeName });
-  logger.info("Version: {version}", { version: data.version });
+  lines.push(`${bold(cyan("Type:"))} ${typeName}`);
+  lines.push(`${bold(cyan("Version:"))} ${data.version}`);
 
   const attrs = formatSchemaAttributes(data.inputAttributesSchema, "  ");
   if (attrs.length > 0) {
-    logger.info("");
-    logger.info("Input Attributes:");
-    for (const attr of attrs) {
-      logger.info(attr);
-    }
+    lines.push("");
+    lines.push(bold(cyan("Input Attributes:")));
+    lines.push(...attrs);
   }
 
   if (data.methods.length > 0) {
-    logger.info("");
-    logger.info("Methods:");
-    for (const method of data.methods) {
-      logger.info("  {name} - {description}", {
-        name: method.name,
-        description: method.description,
-      });
+    lines.push("");
+    lines.push(bold(cyan("Methods:")));
+    for (let i = 0; i < data.methods.length; i++) {
+      const method = data.methods[i];
+      lines.push(
+        `  ${bold(cyan(method.name))} ${dim("-")} ${method.description}`,
+      );
 
       const methodAttrs = formatSchemaAttributes(
         method.inputAttributesSchema,
         "      ",
       );
       if (methodAttrs.length > 0) {
-        logger.info("    Input Attributes:");
-        for (const attr of methodAttrs) {
-          logger.info(attr);
-        }
+        lines.push(`    ${cyan("Input Attributes:")}`);
+        lines.push(...methodAttrs);
       }
 
       if (method.dataOutputSpecs && method.dataOutputSpecs.length > 0) {
-        logger.info("    Data Outputs:");
+        lines.push(`    ${cyan("Data Outputs:")}`);
         for (const spec of method.dataOutputSpecs) {
           const parts = [spec.specType];
-          if (spec.description) parts.push(`- ${spec.description}`);
+          if (spec.description) parts.push(`${dim("-")} ${spec.description}`);
           const meta = [spec.contentType, spec.lifetime].filter(Boolean);
-          if (meta.length > 0) parts.push(`(${meta.join(", ")})`);
-          logger.info(`      ${parts.join(" ")}`);
+          if (meta.length > 0) parts.push(dim(`(${meta.join(", ")})`));
+          lines.push(`      ${parts.join(" ")}`);
         }
       }
     }
   }
+
+  writeOutput(lines.join("\n"));
 }
