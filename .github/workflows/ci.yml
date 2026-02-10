@@ -53,8 +53,6 @@ jobs:
       - name: Setup Claude environment
         run: |
           mkdir -p ~/.claude
-          # Exclude experiments folder from Claude's view
-          echo 'experiments/' > .claudeignore
 
       - name: Claude Code Review
         uses: anthropics/claude-code-action@v1

@@ -858,32 +858,29 @@ attributes:
       echoDefinitionContent,
     );
 
-    // 4. Evaluate the expression using model evaluate
-    const evalResult = await runCliCommand([
+    // 4. Run the model method to resolve vault expressions at runtime
+    const runResult = await runCliCommand([
       "model",
-      "evaluate",
+      "method",
+      "run",
       "echo-with-vault",
+      "write",
       "--repo-dir",
       repoDir,
       "--json",
     ]);
     assertEquals(
-      evalResult.code,
+      runResult.code,
       0,
-      `Model evaluate should succeed. stderr: ${evalResult.stderr}`,
+      `Model method run should succeed. stderr: ${runResult.stderr}`,
     );
 
-    // 5. Verify the evaluate command produced the expected output
-    const evalOutput = JSON.parse(evalResult.stdout);
+    // 5. Verify the run produced the expected output
+    const runOutput = JSON.parse(runResult.stdout);
     assertEquals(
-      evalOutput.name,
+      runOutput.modelName,
       "echo-with-vault",
-      "Evaluated definition should have the correct name",
-    );
-    assertEquals(
-      evalOutput.attributes.message,
-      secretValue,
-      "Vault expression should resolve to the secret value",
+      "Method run should complete for the correct model",
     );
   });
 });

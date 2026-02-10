@@ -1,4 +1,5 @@
 import { Command } from "@cliffy/command";
+import { stringify as stringifyYaml } from "@std/yaml";
 import {
   renderWorkflowSearch,
   type WorkflowSearchData,
@@ -8,11 +9,25 @@ import {
   renderWorkflowGet,
   type WorkflowGetData,
 } from "../../presentation/output/workflow_get_output.ts";
+import { renderWorkflowActionSelect } from "../../presentation/output/workflow_action_select_output.tsx";
+import { renderInputFileSelect } from "../../presentation/output/input_file_select_output.tsx";
+import { renderWorkflowExecution } from "../../presentation/output/workflow_execution_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import {
+  type ExecutionProgressCallback,
+  WorkflowExecutionService,
+} from "../../domain/workflows/execution_service.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { createWorkflowRunId } from "../../domain/workflows/workflow_id.ts";
+import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
+import { parseInputs } from "../input_parser.ts";
+import { InputValidationService } from "../../domain/inputs/mod.ts";
+import type { InputsSchema } from "../../domain/definitions/definition.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -83,20 +98,199 @@ async function displayWorkflowGet(
   renderWorkflowGet(data, ctx.outputMode);
 }
 
+/**
+ * Gets the required input names from a workflow's input schema.
+ */
+function getRequiredInputs(schema: InputsSchema | undefined): string[] {
+  if (!schema) return [];
+
+  const properties = schema.properties ?? schema;
+  const required = schema.required ?? [];
+
+  // Find required inputs that don't have defaults
+  const missingRequired: string[] = [];
+  for (const key of required) {
+    const propSchema = properties[key];
+    if (
+      propSchema &&
+      typeof propSchema === "object" &&
+      propSchema !== null &&
+      !("default" in propSchema)
+    ) {
+      missingRequired.push(key);
+    }
+  }
+
+  return missingRequired;
+}
+
+/**
+ * Checks if all required inputs have defaults.
+ */
+function hasAllDefaults(schema: InputsSchema | undefined): boolean {
+  if (!schema) return true;
+
+  const properties = schema.properties ?? schema;
+  const required = schema.required ?? [];
+
+  for (const key of required) {
+    const propSchema = properties[key];
+    if (
+      propSchema &&
+      typeof propSchema === "object" &&
+      propSchema !== null &&
+      !("default" in propSchema)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Executes a workflow after search selection.
+ */
+async function executeWorkflowFromSearch(
+  item: WorkflowSearchItem,
+  repo: YamlWorkflowRepository,
+  runRepo: YamlWorkflowRunRepository,
+  repoDir: string,
+  options: AnyOptions,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
+  const workflow = await repo.findByName(item.name);
+
+  if (!workflow) {
+    throw new UserError(`Workflow not found: ${item.name}`);
+  }
+
+  // Get required inputs info
+  const requiredInputs = getRequiredInputs(workflow.inputs);
+  const allHaveDefaults = hasAllDefaults(workflow.inputs);
+
+  // Show input file selection if workflow has inputs
+  let inputFilePath: string | undefined;
+
+  if (workflow.inputs && Object.keys(workflow.inputs).length > 0) {
+    const selection = await renderInputFileSelect(
+      {
+        workflowName: workflow.name,
+        requiredInputs,
+        hasDefaults: allHaveDefaults,
+        searchDir: repoDir,
+      },
+      ctx.outputMode,
+    );
+
+    if (!selection) {
+      // User cancelled
+      ctx.logger.debug`Input file selection cancelled`;
+      return;
+    }
+
+    if (selection.type === "file" && selection.path) {
+      inputFilePath = selection.path;
+    }
+  }
+
+  // Parse inputs from selected file
+  const { inputs } = await parseInputs({
+    inputFile: inputFilePath,
+  });
+
+  // Validate inputs
+  if (workflow.inputs) {
+    const validationService = new InputValidationService();
+    const inputsWithDefaults = validationService.applyDefaults(
+      inputs,
+      workflow.inputs,
+    );
+    const validationResult = validationService.validate(
+      inputsWithDefaults,
+      workflow.inputs,
+    );
+    if (!validationResult.valid) {
+      const errorMessages = validationResult.errors
+        .map((e) => `  ${e.message}`)
+        .join("\n");
+      throw new UserError(`Input validation failed:\n${errorMessages}`);
+    }
+    // Use inputs with defaults applied
+    Object.assign(inputs, inputsWithDefaults);
+  }
+
+  // Execute workflow
+  const executionService = new WorkflowExecutionService(
+    repo,
+    runRepo,
+    repoDir,
+  );
+
+  const tui = options.tui as boolean;
+
+  if (tui) {
+    // TUI mode: use the live Ink dashboard
+    const workflowData = workflow.toData();
+    const cleanData = JSON.parse(JSON.stringify(workflowData));
+    const workflowYaml = stringifyYaml(cleanData as Record<string, unknown>);
+
+    const executeWorkflow = async (
+      progress: ExecutionProgressCallback,
+    ): Promise<WorkflowRun> => {
+      return await executionService.execute(workflow.name, progress, {
+        inputs,
+      });
+    };
+
+    const data = await renderWorkflowExecution(
+      { workflow: cleanData, workflowYaml },
+      executeWorkflow,
+      ctx.outputMode,
+    );
+
+    const path = runRepo.getPath(workflow.id, createWorkflowRunId(data.id));
+    data.path = path;
+
+    ctx.logger.debug`Workflow run completed: status=${data.status}`;
+
+    if (data.status === "failed") {
+      Deno.exit(1);
+    }
+  } else {
+    // Default: LogTape-based output with step logging
+    const progress = createLogProgressCallback(workflow.name);
+    const run = await executionService.execute(workflow.name, progress, {
+      enableStepLogging: true,
+      inputs,
+    });
+
+    ctx.logger.debug`Workflow run completed: status=${run.status}`;
+
+    if (run.status === "failed") {
+      Deno.exit(1);
+    }
+  }
+}
+
 export const workflowSearchCommand = new Command()
   .name("search")
   .description("Search for workflows")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option("--tui", "Use interactive TUI dashboard when running", {
+    default: false,
+  })
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
     ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoDir, repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });
     const repo = repoContext.workflowRepo;
+    const runRepo = repoContext.workflowRunRepo;
 
     const allWorkflows = await repo.findAll();
     const searchItems = allWorkflows.map(toSearchItem);
@@ -126,8 +320,40 @@ export const workflowSearchCommand = new Command()
 
       if (selected) {
         ctx.logger.debug`Selected workflow: ${selected.name}`;
-        // Display the workflow details
-        await displayWorkflowGet(selected, repo, options);
+
+        // Get the full workflow to check for inputs
+        const workflow = await repo.findByName(selected.name);
+        const hasInputs = !!(workflow?.inputs &&
+          Object.keys(workflow.inputs).length > 0);
+
+        // Show action selection
+        const action = await renderWorkflowActionSelect(
+          {
+            workflowName: selected.name,
+            workflowDescription: selected.description,
+            hasInputs,
+          },
+          ctx.outputMode,
+        );
+
+        if (!action) {
+          ctx.logger.debug`Action selection cancelled`;
+          return;
+        }
+
+        if (action === "view") {
+          // Display the workflow details
+          await displayWorkflowGet(selected, repo, options);
+        } else if (action === "run") {
+          // Execute the workflow
+          await executeWorkflowFromSearch(
+            selected,
+            repo,
+            runRepo,
+            repoDir,
+            options,
+          );
+        }
       } else {
         ctx.logger.debug`Search cancelled`;
       }

@@ -17,7 +17,10 @@ import {
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
 import { parseInputs } from "../input_parser.ts";
-import { InputValidationService } from "../../domain/inputs/mod.ts";
+import {
+  InputOverrideValidationService,
+  InputValidationService,
+} from "../../domain/inputs/mod.ts";
 import { join } from "@std/path";
 import {
   SWAMP_SUBDIRS,
@@ -186,9 +189,43 @@ export const modelMethodRunCommand = new Command()
         await evaluatedDefRepo.save(modelType, evaluatedDefinition);
       }
 
-      // CLI inputs override evaluated attributes (implicit inputs)
-      for (const [key, value] of Object.entries(inputs)) {
-        evaluatedDefinition.setAttribute(key, value);
+      // Validate and apply CLI inputs as attribute overrides (implicit inputs)
+      // But only for keys that aren't defined in the definition's inputs schema
+      // (those are handled by expression evaluation via ${{ inputs.X }})
+      const definitionInputKeys = definition.inputs
+        ? Object.keys(
+          (definition.inputs as { properties?: Record<string, unknown> })
+            .properties || {},
+        )
+        : [];
+      const overrideInputs = Object.fromEntries(
+        Object.entries(inputs).filter(([key]) =>
+          !definitionInputKeys.includes(key)
+        ),
+      );
+      if (Object.keys(overrideInputs).length > 0) {
+        const overrideValidationService = new InputOverrideValidationService();
+        const overrideResult = overrideValidationService.validate(
+          overrideInputs,
+          method.inputAttributesSchema,
+        );
+        if (!overrideResult.valid) {
+          const errorMessages = overrideResult.errors
+            .map((e) => {
+              let msg = `  ${e.key}: ${e.message}`;
+              if (e.suggestion) {
+                msg += ` (${e.suggestion})`;
+              }
+              return msg;
+            })
+            .join("\n");
+          throw new UserError(
+            `Invalid input overrides:\n${errorMessages}`,
+          );
+        }
+        for (const [key, value] of Object.entries(overrideInputs)) {
+          evaluatedDefinition.setAttribute(key, value);
+        }
       }
 
       // Resolve vault expressions at runtime (never persisted)

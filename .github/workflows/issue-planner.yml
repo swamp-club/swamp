@@ -56,7 +56,6 @@ jobs:
       - name: Setup Claude environment
         run: |
           mkdir -p ~/.claude
-          echo 'experiments/' > .claudeignore
 
       - name: Generate implementation plan
         uses: anthropics/claude-code-action@v1
@@ -221,7 +220,6 @@ jobs:
         if: steps.find-plan.outputs.found == 'true'
         run: |
           mkdir -p ~/.claude
-          echo 'experiments/' > .claudeignore
 
       - name: Update plan with feedback
         if: steps.find-plan.outputs.found == 'true'

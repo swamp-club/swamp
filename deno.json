@@ -8,8 +8,6 @@
     "check": "deno check main.ts",
     "lint": "deno lint",
     "fmt": "deno fmt",
-    "webapp:install": "cd experiments/webapp/frontend && npm install",
-    "webapp:build": "cd experiments/webapp/frontend && npm run build",
     "compile": "deno run -A scripts/compile.ts"
   },
   "imports": {
@@ -38,10 +36,8 @@
     "strict": true
   },
   "exclude": [
-    "experiments/webapp/",
     "design/",
     "scripts/",
-    "integration/",
     ".github/",
     ".agents/",
     "workflows/",

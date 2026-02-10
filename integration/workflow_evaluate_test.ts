@@ -110,7 +110,7 @@ Deno.test("CLI: workflow evaluate single workflow", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -133,7 +133,11 @@ Deno.test("CLI: workflow evaluate single workflow", async () => {
     // Check that evaluated workflow was saved
     const evaluatedDir = join(repoDir, ".swamp/workflows-evaluated");
     const files = Array.from(Deno.readDirSync(evaluatedDir));
-    assertEquals(files.length >= 1, true, "Should have evaluated workflow file");
+    assertEquals(
+      files.length >= 1,
+      true,
+      "Should have evaluated workflow file",
+    );
   });
 });
 
@@ -172,7 +176,7 @@ Deno.test("CLI: workflow evaluate all workflows", async () => {
         ],
       };
       await Deno.writeTextFile(
-        join(workflowDir, `${workflowId}.yaml`),
+        join(workflowDir, `workflow-${workflowId}.yaml`),
         stringifyYaml(workflowData as Record<string, unknown>),
       );
     }
@@ -227,7 +231,7 @@ Deno.test("CLI: workflow evaluate replaces input expressions", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -314,7 +318,7 @@ Deno.test("CLI: workflow evaluate preserves vault expressions", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -378,7 +382,7 @@ Deno.test("CLI: workflow evaluate JSON output includes workflow data", async () 
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -437,7 +441,7 @@ Deno.test("CLI: workflow evaluate does not execute workflow", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowId}.yaml`),
+      join(workflowDir, `workflow-${workflowId}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 

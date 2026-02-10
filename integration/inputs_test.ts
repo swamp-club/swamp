@@ -214,7 +214,7 @@ Deno.test("CLI: workflow run with valid input succeeds", async () => {
                 modelIdOrName: "echo-model",
                 methodName: "write",
                 inputs: {
-                  environment: "${{ inputs['environment-one'] }}",
+                  environment: '${{ inputs["environment-one"] }}',
                 },
               },
               dependsOn: [],
@@ -230,7 +230,7 @@ Deno.test("CLI: workflow run with valid input succeeds", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowData.id}.yaml`),
+      join(workflowDir, `workflow-${workflowData.id}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -293,7 +293,7 @@ Deno.test("CLI: workflow run with missing required input fails", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowData.id}.yaml`),
+      join(workflowDir, `workflow-${workflowData.id}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 
@@ -353,7 +353,7 @@ Deno.test("CLI: workflow run with input-file works", async () => {
     const workflowDir = join(repoDir, ".swamp/workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
-      join(workflowDir, `${workflowData.id}.yaml`),
+      join(workflowDir, `workflow-${workflowData.id}.yaml`),
       stringifyYaml(workflowData as Record<string, unknown>),
     );
 

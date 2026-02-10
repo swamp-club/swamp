@@ -9,12 +9,14 @@
     "jsr:@logtape/logtape@^2.0.2": "2.0.2",
     "jsr:@logtape/pretty@2": "2.0.2",
     "jsr:@std/assert@1": "1.0.16",
+    "jsr:@std/assert@^1.0.17": "1.0.18",
     "jsr:@std/cli@1": "1.0.27",
     "jsr:@std/fmt@~1.0.2": "1.0.9",
     "jsr:@std/fs@1": "1.0.22",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/path@1": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
+    "jsr:@std/testing@*": "1.0.17",
     "jsr:@std/text@~1.0.7": "1.0.17",
     "jsr:@std/yaml@1": "1.0.11",
     "npm:@aws-sdk/client-cloudcontrol@3": "3.984.0",
@@ -71,6 +73,12 @@
         "jsr:@std/internal"
       ]
     },
+    "@std/assert@1.0.18": {
+      "integrity": "270245e9c2c13b446286de475131dc688ca9abcd94fc5db41d43a219b34d1c78",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
     "@std/cli@1.0.27": {
       "integrity": "eba97edd0891871a7410e835dd94b3c260c709cca5983df2689c25a71fbe04de"
     },
@@ -90,6 +98,13 @@
     "@std/path@1.1.4": {
       "integrity": "1d2d43f39efb1b42f0b1882a25486647cb851481862dc7313390b2bb044314b5",
       "dependencies": [
+        "jsr:@std/internal"
+      ]
+    },
+    "@std/testing@1.0.17": {
+      "integrity": "87bdc2700fa98249d48a17cd72413352d3d3680dcfbdb64947fd0982d6bbf681",
+      "dependencies": [
+        "jsr:@std/assert@^1.0.17",
         "jsr:@std/internal"
       ]
     },

@@ -39,6 +39,7 @@ import {
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { UserError } from "../errors.ts";
+import { InputOverrideValidationService } from "../inputs/mod.ts";
 import {
   getRunLogger,
   getWorkflowRunLogger,
@@ -267,9 +268,49 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.repoDir,
       );
 
-      // Step inputs override evaluated attributes (implicit inputs)
-      for (const [key, value] of Object.entries(stepInputs)) {
-        evaluatedDefinition.setAttribute(key, value);
+      // Validate and apply step inputs as attribute overrides (implicit inputs)
+      // But only for keys that aren't defined in the definition's inputs schema
+      // (those are handled by expression evaluation via ${{ inputs.X }})
+      const definitionInputKeys = originalDefinition.inputs
+        ? Object.keys(
+          (originalDefinition.inputs as {
+            properties?: Record<string, unknown>;
+          })
+            .properties || {},
+        )
+        : [];
+      const overrideInputs = Object.fromEntries(
+        Object.entries(stepInputs).filter(([key]) =>
+          !definitionInputKeys.includes(key)
+        ),
+      );
+      if (Object.keys(overrideInputs).length > 0) {
+        const method = modelDef.methods[task.methodName];
+        if (method) {
+          const overrideValidationService =
+            new InputOverrideValidationService();
+          const overrideResult = overrideValidationService.validate(
+            overrideInputs,
+            method.inputAttributesSchema,
+          );
+          if (!overrideResult.valid) {
+            const errorMessages = overrideResult.errors
+              .map((e) => {
+                let msg = `  ${e.key}: ${e.message}`;
+                if (e.suggestion) {
+                  msg += ` (${e.suggestion})`;
+                }
+                return msg;
+              })
+              .join("\n");
+            throw new UserError(
+              `Invalid step input overrides in "${ctx.stepName}":\n${errorMessages}`,
+            );
+          }
+        }
+        for (const [key, value] of Object.entries(overrideInputs)) {
+          evaluatedDefinition.setAttribute(key, value);
+        }
       }
     }
 
