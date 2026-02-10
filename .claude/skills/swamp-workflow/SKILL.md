@@ -373,7 +373,7 @@ task:
   type: model_method
   modelIdOrName: my-model
   methodName: run
-  inputs:                    # Optional: pass values to the model
+  inputs: # Optional: pass values to the model
     key: ${{ inputs.value }}
 ```
 
@@ -383,7 +383,7 @@ task:
 task:
   type: workflow
   workflowIdOrName: child-workflow
-  inputs:                    # Optional: pass inputs to the child workflow
+  inputs: # Optional: pass inputs to the child workflow
     key: value
 ```
 

@@ -92,6 +92,7 @@ Deno.test("CLI: workflow with forEach over array creates multiple steps", async 
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     await createEchoModel(repoDir, "echo-model");
+    await createEchoModel(repoDir, "test-model");
 
     // Create workflow with forEach over array
     const workflowData = {
@@ -123,7 +124,7 @@ Deno.test("CLI: workflow with forEach over array creates multiple steps", async 
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
               },
               dependsOn: [],
               weight: 0,
@@ -175,6 +176,7 @@ Deno.test("CLI: workflow with forEach single item array", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     await createEchoModel(repoDir, "echo-single");
+    await createEchoModel(repoDir, "test-model");
 
     const workflowData = {
       id: crypto.randomUUID(),
@@ -202,7 +204,7 @@ Deno.test("CLI: workflow with forEach single item array", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
               },
               dependsOn: [],
               weight: 0,
@@ -270,7 +272,7 @@ Deno.test("CLI: workflow with forEach validates array minItems", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
               },
               dependsOn: [],
               weight: 0,
@@ -313,6 +315,7 @@ Deno.test("CLI: workflow with forEach validates array minItems", async () => {
 Deno.test("CLI: workflow with forEach over object", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
+    await createEchoModel(repoDir, "test-model");
 
     const workflowData = {
       id: crypto.randomUUID(),
@@ -342,7 +345,7 @@ Deno.test("CLI: workflow with forEach over object", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
               },
               dependsOn: [],
               weight: 0,
@@ -408,7 +411,7 @@ Deno.test("CLI: workflow with forEach over empty object succeeds", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
               },
               dependsOn: [],
               weight: 0,
@@ -451,6 +454,7 @@ Deno.test("CLI: workflow with forEach over empty object succeeds", async () => {
 Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
+    await createEchoModel(repoDir, "test-model");
 
     const workflowData = {
       id: crypto.randomUUID(),
@@ -474,7 +478,7 @@ Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
               },
               dependsOn: [],
               weight: 0,
@@ -488,7 +492,7 @@ Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
               },
               dependsOn: [
                 {
@@ -503,7 +507,7 @@ Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
               },
               dependsOn: [],
               weight: 0,

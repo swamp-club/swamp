@@ -82,7 +82,7 @@ function createTestWorkflow(name: string): Workflow {
         steps: [
           Step.create({
             name: "compile",
-            task: StepTask.model("test-model", "run"),
+            task: StepTask.model("test-model", "write"),
           }),
         ],
       }),
@@ -92,7 +92,7 @@ function createTestWorkflow(name: string): Workflow {
         steps: [
           Step.create({
             name: "unit",
-            task: StepTask.model("test-model", "run"),
+            task: StepTask.model("test-model", "write"),
           }),
         ],
         dependsOn: [
@@ -502,6 +502,15 @@ Deno.test("CLI: workflow search with single match returns full details in JSON m
 Deno.test("CLI: workflow run executes simple workflow", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
+
+    // Create model definition so the step can execute
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const testModel = Definition.create({
+      name: "test-model",
+      attributes: { message: "hello" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
+
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = Workflow.create({
       name: "simple-run",
@@ -511,7 +520,7 @@ Deno.test("CLI: workflow run executes simple workflow", async () => {
           steps: [
             Step.create({
               name: "echo-step",
-              task: StepTask.model("test-model", "run"),
+              task: StepTask.model("test-model", "write"),
             }),
           ],
         }),
@@ -549,6 +558,15 @@ Deno.test("CLI: workflow run executes simple workflow", async () => {
 Deno.test("CLI: workflow run executes workflow with dependencies", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
+
+    // Create model definition so steps can execute
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const testModel = Definition.create({
+      name: "test-model",
+      attributes: { message: "hello" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
+
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = createTestWorkflow("dep-run");
     await repo.save(workflow);
@@ -590,7 +608,7 @@ Deno.test("CLI: workflow run fails when step fails", async () => {
           steps: [
             Step.create({
               name: "failing-step",
-              task: StepTask.model("test-model", "run"), // 'false' command always exits with 1
+              task: StepTask.model("nonexistent-model", "run"), // Model not found causes step failure
             }),
           ],
         }),
@@ -1287,6 +1305,15 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
 Deno.test("CLI: workflow delete command removes workflow and all runs", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
+
+    // Create model definition so the workflow can run
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const testModel = Definition.create({
+      name: "test-model",
+      attributes: { message: "hello" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
+
     // Create a workflow
     const workflowRepo = new YamlWorkflowRepository(repoDir);
     const workflow = Workflow.create({
@@ -1297,7 +1324,7 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
           steps: [
             Step.create({
               name: "echo-step",
-              task: StepTask.model("test-model", "run"),
+              task: StepTask.model("test-model", "write"),
             }),
           ],
         }),

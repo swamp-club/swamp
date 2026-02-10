@@ -216,7 +216,10 @@ Deno.test("CLI: workflow evaluate replaces input expressions", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
+                inputs: {
+                  greeting: "${{ inputs.message }}",
+                },
               },
               dependsOn: [],
               weight: 0,
@@ -263,9 +266,13 @@ Deno.test("CLI: workflow evaluate replaces input expressions", async () => {
       const jobs = evaluated.jobs as Array<Record<string, unknown>>;
       const steps = jobs[0].steps as Array<Record<string, unknown>>;
       const task = steps[0].task as Record<string, unknown>;
-      const args = task.args as string[];
+      const inputs = task.inputs as Record<string, unknown>;
 
-      assertEquals(args[0], "Hello World", "Expression should be replaced");
+      assertEquals(
+        inputs.greeting,
+        "Hello World",
+        "Expression should be replaced",
+      );
     }
   });
 });
@@ -303,7 +310,10 @@ Deno.test("CLI: workflow evaluate preserves vault expressions", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "run",
+                methodName: "write",
+                inputs: {
+                  secret: "${{ vault.get(test-vault, api-key) }}",
+                },
               },
               dependsOn: [],
               weight: 0,

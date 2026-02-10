@@ -209,6 +209,13 @@ export class DefaultStepExecutor implements StepExecutor {
       },
     );
 
+    // Propagate child workflow failure to the parent step
+    if (childRun.status === "failed") {
+      throw new Error(
+        `Nested workflow "${task.workflowIdOrName}" failed.`,
+      );
+    }
+
     return {
       type: "workflow",
       workflow: task.workflowIdOrName,

@@ -919,17 +919,29 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
   });
 });
 
-Deno.test("Workflow Architecture: mixed shell and model steps", async () => {
+Deno.test("Workflow Architecture: mixed model steps", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const workflowRepo = new YamlWorkflowRepository(repoDir);
 
-    const model = Definition.create({
+    const shellModel = Definition.create({
+      name: "shell-model",
+      attributes: { message: "Shell step replacement" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, shellModel);
+
+    const mixedModel = Definition.create({
       name: "mixed-model",
       attributes: { message: "Model step" },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(ECHO_MODEL_TYPE, mixedModel);
+
+    const finalModel = Definition.create({
+      name: "final-model",
+      attributes: { message: "Final step" },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, finalModel);
 
     const workflow = Workflow.create({
       name: "mixed-steps-workflow",
@@ -939,7 +951,7 @@ Deno.test("Workflow Architecture: mixed shell and model steps", async () => {
           steps: [
             Step.create({
               name: "shell-step",
-              task: StepTask.model("shell-model", "run"),
+              task: StepTask.model("shell-model", "write"),
             }),
             Step.create({
               name: "model-step",
@@ -953,7 +965,7 @@ Deno.test("Workflow Architecture: mixed shell and model steps", async () => {
             }),
             Step.create({
               name: "final-shell",
-              task: StepTask.model("final-model", "run"),
+              task: StepTask.model("final-model", "write"),
               dependsOn: [
                 {
                   step: "model-step",
