@@ -3,14 +3,20 @@ import {
   type DataSearchData,
   type DataSearchItem,
   renderDataSearch,
-} from "../../presentation/output/data_search_output.ts";
+} from "../../presentation/output/data_search_output.tsx";
+import {
+  type DataGetData,
+  renderDataGet,
+} from "../../presentation/output/data_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import type { Data } from "../../domain/data/data.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { OutputMode } from "../../presentation/output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -167,6 +173,82 @@ export function filterData(
   return result;
 }
 
+/**
+ * Fetches and displays full data details after selection from interactive search.
+ */
+async function displayDataDetail(
+  item: DataSearchItem,
+  dataRepo: FileSystemUnifiedDataRepository,
+  outputMode: OutputMode,
+): Promise<void> {
+  const modelType = ModelType.create(item.modelType);
+
+  // Re-fetch full Data entity
+  const data = await dataRepo.findByName(
+    modelType,
+    item.modelId,
+    item.name,
+  );
+
+  if (!data) {
+    throw new UserError(
+      `Data "${item.name}" not found for model "${item.modelName}"`,
+    );
+  }
+
+  const contentPath = dataRepo.getContentPath(
+    modelType,
+    item.modelId,
+    item.name,
+    data.version,
+  );
+
+  // Build DataGetData for display
+  const output: DataGetData = {
+    id: data.id,
+    name: data.name,
+    modelId: item.modelId,
+    modelName: item.modelName,
+    modelType: modelType.normalized,
+    version: data.version,
+    contentType: data.contentType,
+    lifetime: data.lifetime,
+    garbageCollection: data.garbageCollection,
+    streaming: data.streaming,
+    tags: data.tags,
+    ownerDefinition: data.ownerDefinition,
+    createdAt: data.createdAt.toISOString(),
+    size: data.size,
+    checksum: data.checksum,
+    contentPath,
+  };
+
+  renderDataGet(output, outputMode);
+
+  // Display raw content
+  const content = await dataRepo.getContent(
+    modelType,
+    item.modelId,
+    item.name,
+    data.version,
+  );
+
+  if (content) {
+    console.log();
+    if (data.contentType === "application/json") {
+      try {
+        const text = new TextDecoder().decode(content);
+        const parsed = JSON.parse(text);
+        console.log(JSON.stringify(parsed, null, 2));
+      } catch {
+        console.log(new TextDecoder().decode(content));
+      }
+    } else {
+      console.log(new TextDecoder().decode(content));
+    }
+  }
+}
+
 export const dataSearchCommand = new Command()
   .name("search")
   .description("Search for data across all models")
@@ -286,6 +368,11 @@ export const dataSearchCommand = new Command()
       limited,
     };
 
-    renderDataSearch(data, ctx.outputMode);
+    const selected = await renderDataSearch(data, ctx.outputMode);
+
+    if (selected) {
+      await displayDataDetail(selected, dataRepo, ctx.outputMode);
+    }
+
     ctx.logger.debug("Data search command completed");
   });

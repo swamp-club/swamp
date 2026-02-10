@@ -29,12 +29,37 @@ export interface DataGetData {
 }
 
 /**
+ * Formats a byte size into a human-readable string.
+ */
+function formatSize(bytes?: number): string {
+  if (bytes === undefined) return "unknown";
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
  * Renders the data get output in either log or JSON mode.
  */
 export function renderDataGet(data: DataGetData, mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {
-    console.log(JSON.stringify(data, null, 2));
+    console.log(`Data: ${data.name} (v${data.version})`);
+    console.log(`Model: ${data.modelName} (${data.modelType})`);
+    console.log(`Content: ${data.contentType}, ${formatSize(data.size)}`);
+    console.log(`Lifetime: ${data.lifetime} | GC: ${data.garbageCollection}`);
+
+    const tagEntries = Object.entries(data.tags);
+    if (tagEntries.length > 0) {
+      const tagStr = tagEntries.map(([k, v]) => `${k}=${v}`).join(", ");
+      console.log(`Tags: ${tagStr}`);
+    }
+
+    console.log(
+      `Owner: ${data.ownerDefinition.ownerType} (${data.ownerDefinition.ownerRef})`,
+    );
+    console.log(`Created: ${data.createdAt}`);
+    console.log(`Path: ${data.contentPath}`);
   }
 }

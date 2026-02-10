@@ -57,6 +57,25 @@ export interface WorkflowDataListData {
 }
 
 /**
+ * Formats a byte size into a human-readable string.
+ */
+function formatSize(bytes?: number): string {
+  if (bytes === undefined) return "";
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
+ * Type guard to check if data is WorkflowDataListData.
+ */
+function isWorkflowData(
+  data: DataListData | WorkflowDataListData,
+): data is WorkflowDataListData {
+  return "workflowId" in data;
+}
+
+/**
  * Renders the data list output in either log or JSON mode.
  */
 export function renderDataList(
@@ -65,7 +84,53 @@ export function renderDataList(
 ): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
+  } else if (isWorkflowData(data)) {
+    renderWorkflowDataListLog(data);
   } else {
-    console.log(JSON.stringify(data, null, 2));
+    renderModelDataListLog(data);
+  }
+}
+
+/**
+ * Renders model-scoped data list in human-readable log format.
+ */
+function renderModelDataListLog(data: DataListData): void {
+  console.log(`Data for ${data.modelName} (${data.modelType})`);
+  console.log();
+
+  for (const group of data.groups) {
+    const count = group.items.length;
+    console.log(`${group.type} (${count} ${count === 1 ? "item" : "items"}):`);
+    for (const item of group.items) {
+      const size = formatSize(item.size);
+      const date = item.createdAt.slice(0, 10);
+      console.log(
+        `  ${item.name}  v${item.version}  ${item.contentType}  ${size}  ${date}`,
+      );
+    }
+    console.log();
+  }
+}
+
+/**
+ * Renders workflow-scoped data list in human-readable log format.
+ */
+function renderWorkflowDataListLog(data: WorkflowDataListData): void {
+  console.log(
+    `Data for workflow ${data.workflowName} (run ${data.runId.slice(0, 8)})`,
+  );
+  console.log();
+
+  for (const group of data.groups) {
+    const count = group.items.length;
+    console.log(`${group.type} (${count} ${count === 1 ? "item" : "items"}):`);
+    for (const item of group.items) {
+      const size = formatSize(item.size);
+      const step = `${item.jobName}.${item.stepName}`;
+      console.log(
+        `  ${item.name}  v${item.version}  ${item.modelName}  ${step}  ${size}`,
+      );
+    }
+    console.log();
   }
 }

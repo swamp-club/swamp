@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { filterData, parseDuration } from "./data_search.ts";
-import type { DataSearchItem } from "../../presentation/output/data_search_output.ts";
+import type { DataSearchItem } from "../../presentation/output/data_search_output.tsx";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
