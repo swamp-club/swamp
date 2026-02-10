@@ -191,6 +191,38 @@ export interface UnifiedDataRepository {
   ): Promise<void>;
 
   /**
+   * Allocates a new version directory without writing content.
+   * Used by DataWriter for direct file I/O.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param data - The data entity (for ownership validation)
+   * @returns The allocated version number and content file path
+   */
+  allocateVersion(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+  ): Promise<{ version: number; contentPath: string }>;
+
+  /**
+   * Finalizes a previously allocated version by writing metadata and updating symlinks.
+   * Content must already exist on disk at the content path.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param data - The data entity
+   * @param version - The version number to finalize
+   * @returns Size and checksum of the content
+   */
+  finalizeVersion(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    version: number,
+  ): Promise<{ size: number; checksum: string }>;
+
+  /**
    * Generates a new unique ID.
    */
   nextId(): DataId;
@@ -598,6 +630,84 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
       // Symlink already missing is OK
     }
+  }
+
+  async allocateVersion(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+  ): Promise<{ version: number; contentPath: string }> {
+    // Validate ownership if data with this name already exists
+    const existing = await this.findByName(type, modelId, data.name);
+    if (existing) {
+      if (!existing.isOwnedBy(data.ownerDefinition)) {
+        throw new OwnershipValidationError(
+          data.name,
+          existing.ownerDefinition.definitionHash,
+          data.ownerDefinition.definitionHash,
+        );
+      }
+    }
+
+    // Determine the new version
+    const versions = await this.listVersions(type, modelId, data.name);
+    const newVersion = versions.length > 0 ? Math.max(...versions) + 1 : 1;
+
+    // Create the version directory
+    const versionDir = this.getPath(type, modelId, data.name, newVersion);
+    await ensureDir(versionDir);
+
+    const contentPath = this.getContentPath(
+      type,
+      modelId,
+      data.name,
+      newVersion,
+    );
+
+    return { version: newVersion, contentPath };
+  }
+
+  async finalizeVersion(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    version: number,
+  ): Promise<{ size: number; checksum: string }> {
+    const contentPath = this.getContentPath(
+      type,
+      modelId,
+      data.name,
+      version,
+    );
+
+    // Read content to compute size and checksum
+    const content = await Deno.readFile(contentPath);
+    const size = content.length;
+    const checksum = await this.computeChecksum(content);
+
+    // Create the data with updated version, size, and checksum
+    const dataToSave = data.withNewVersion({
+      version,
+      size,
+      checksum,
+    });
+
+    // Save metadata
+    const metadataPath = this.getMetadataPath(
+      type,
+      modelId,
+      data.name,
+      version,
+    );
+    const metadata = dataToSave.toData();
+    const cleanData = JSON.parse(JSON.stringify(metadata));
+    const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
+    await Deno.writeTextFile(metadataPath, metadataContent);
+
+    // Update latest symlink
+    await this.updateLatestSymlink(type, modelId, data.name, version);
+
+    return { size, checksum };
   }
 
   nextId(): DataId {
