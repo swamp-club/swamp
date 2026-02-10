@@ -1,0 +1,577 @@
+import { z } from "zod";
+import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
+import type { Logger } from "@logtape/logtape";
+import { ModelType } from "./model_type.ts";
+import { CalVer } from "./calver.ts";
+import type { Definition } from "../definitions/definition.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import {
+  type DataId,
+  type DataMetadata,
+  type GarbageCollectionPolicy,
+  GarbageCollectionSchema,
+  type Lifetime,
+  LifetimeSchema,
+  type OwnerDefinition,
+} from "../data/mod.ts";
+import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { OutputRepository } from "./repositories.ts";
+
+/**
+ * Specification for a resource data output (JSON with Zod schema).
+ * Resources are structured data validated against a schema.
+ */
+export interface ResourceOutputSpec {
+  /** Human-readable description */
+  description?: string;
+
+  /** Zod schema — validates data on write, powers CEL hints */
+  schema: z.ZodTypeAny;
+
+  /** Lifetime policy */
+  lifetime: Lifetime;
+
+  /** Garbage collection policy */
+  garbageCollection: GarbageCollectionPolicy;
+
+  /** Tags applied to this data output (auto-includes type: "resource") */
+  tags?: Record<string, string>;
+}
+
+/**
+ * Specification for a file data output (binary/text, including logs).
+ * Files are unstructured content identified by content type.
+ */
+export interface FileOutputSpec {
+  /** Human-readable description */
+  description?: string;
+
+  /** MIME type */
+  contentType: string;
+
+  /** Lifetime policy */
+  lifetime: Lifetime;
+
+  /** Garbage collection policy */
+  garbageCollection: GarbageCollectionPolicy;
+
+  /** For line-oriented streaming (logs) */
+  streaming?: boolean;
+
+  /** Tags applied to this data output (auto-includes type: "file") */
+  tags?: Record<string, string>;
+}
+
+/**
+ * Zod schema for resource output specification (used by user model loader).
+ * Note: `schema` is validated as a ZodType instance at runtime.
+ */
+export const ResourceOutputSpecSchema = z.object({
+  description: z.string().optional(),
+  schema: z.custom<z.ZodTypeAny>((val) => val instanceof z.ZodType),
+  lifetime: LifetimeSchema,
+  garbageCollection: GarbageCollectionSchema,
+  tags: z.record(z.string(), z.string()).optional(),
+});
+
+/**
+ * Zod schema for file output specification (used by user model loader).
+ */
+export const FileOutputSpecSchema = z.object({
+  description: z.string().optional(),
+  contentType: z.string(),
+  lifetime: LifetimeSchema,
+  garbageCollection: GarbageCollectionSchema,
+  streaming: z.boolean().optional(),
+  tags: z.record(z.string(), z.string()).optional(),
+});
+
+/**
+ * Override spec defaults when writing a resource.
+ */
+export interface ResourceWriteOverrides {
+  /** Override the instance name (defaults to specName). */
+  name?: string;
+  lifetime?: Lifetime;
+  garbageCollection?: GarbageCollectionPolicy;
+  tags?: Record<string, string>;
+}
+
+/**
+ * Override spec defaults when creating a file writer.
+ */
+export interface FileWriterOverrides {
+  /** Override the instance name (defaults to specName). */
+  name?: string;
+  contentType?: string;
+  lifetime?: Lifetime;
+  garbageCollection?: GarbageCollectionPolicy;
+  streaming?: boolean;
+  tags?: Record<string, string>;
+}
+
+/**
+ * Context provided to method execution.
+ */
+export interface MethodContext {
+  /**
+   * The base directory for the repository (where data is stored).
+   */
+  repoDir: string;
+
+  /**
+   * The model type for this execution.
+   */
+  modelType: ModelType;
+
+  /**
+   * The model ID (definition ID) for this execution.
+   */
+  modelId: string;
+
+  /**
+   * Optional factory for CloudControl clients (for testing).
+   */
+  cloudControlClientFactory?: () => CloudControlClient;
+
+  /**
+   * Repository for unified data storage.
+   */
+  dataRepository: UnifiedDataRepository;
+
+  /**
+   * Repository for definitions.
+   */
+  definitionRepository: DefinitionRepository;
+
+  /**
+   * Repository for tracking execution history.
+   */
+  outputRepository?: OutputRepository;
+
+  /**
+   * Logger for emitting log messages. Category is set automatically.
+   */
+  logger: Logger;
+
+  /**
+   * Write a resource — validates against schema, serializes JSON, returns handle.
+   */
+  writeResource?: (
+    specName: string,
+    data: Record<string, unknown>,
+    overrides?: ResourceWriteOverrides,
+  ) => Promise<DataHandle>;
+
+  /**
+   * Create a file writer — returns DataWriter for binary/streaming content.
+   */
+  createFileWriter?: (
+    specName: string,
+    overrides?: FileWriterOverrides,
+  ) => DataWriter;
+
+  /**
+   * Tags merged into every writer created during execution.
+   * Used by workflow steps to inject workflow-specific tags.
+   */
+  tagOverrides?: Record<string, string>;
+
+  /**
+   * Data output overrides merged into every writer's options.
+   * Used by workflow steps to override lifetime, gc, and tags per spec name.
+   */
+  dataOutputOverrides?: Array<{
+    specName: string;
+    lifetime?: Lifetime;
+    garbageCollection?: GarbageCollectionPolicy;
+    tags?: Record<string, string>;
+  }>;
+}
+
+/**
+ * Lightweight reference to data already written during method execution.
+ * Value object — the content has already been persisted by a DataWriter.
+ */
+export interface DataHandle {
+  /** Human-readable name of this data artifact. */
+  name: string;
+  /** The declared spec name (key in resources or files). */
+  specName: string;
+  /** Whether this handle is for a resource or file. */
+  kind: "resource" | "file";
+  /** Unique data ID. */
+  dataId: DataId;
+  /** Version number on disk. */
+  version: number;
+  /** Size in bytes. */
+  size: number;
+  /** Tags applied to the data. */
+  tags: Record<string, string>;
+  /** Metadata excluding auto-generated fields. */
+  metadata: Omit<
+    DataMetadata,
+    "id" | "name" | "version" | "createdAt" | "size" | "checksum"
+  >;
+}
+
+/**
+ * Fully resolved options used internally by DefaultDataWriter.
+ * All fields are required (resolved from spec + overrides).
+ */
+export interface ResolvedDataWriterOptions {
+  name: string;
+  specName: string;
+  kind: "resource" | "file";
+  contentType: string;
+  lifetime: Lifetime;
+  garbageCollection: GarbageCollectionPolicy;
+  streaming?: boolean;
+  tags: Record<string, string>;
+  ownerDefinition?: OwnerDefinition;
+}
+
+/**
+ * Domain service interface for writing data directly to disk during method execution.
+ */
+export interface DataWriter {
+  /** The data ID assigned to this writer. */
+  readonly dataId: DataId;
+  /** The data name. */
+  readonly name: string;
+
+  /** Write all content at once. */
+  writeAll(content: Uint8Array): Promise<DataHandle>;
+  /** Write text content (encodes to UTF-8). */
+  writeText(text: string): Promise<DataHandle>;
+  /** Append a single line (streaming). */
+  writeLine(line: string): Promise<void>;
+  /** Pipe a stream to disk with optional line-by-line callbacks. */
+  writeStream(
+    stream: ReadableStream<Uint8Array>,
+    options?: { onLine?: (line: string) => void },
+  ): Promise<DataHandle>;
+  /** Get the file path for direct I/O. */
+  getFilePath(): Promise<string>;
+  /** Finalize a writer that used writeLine/getFilePath and return the handle. */
+  finalize(): Promise<DataHandle>;
+}
+
+/**
+ * Callbacks for DataWriter events.
+ */
+export interface DataWriterCallbacks {
+  /** Called for each line written by writeLine or writeStream. */
+  onLine?: (dataName: string, line: string) => void;
+}
+
+/**
+ * Follow-up action to be executed after a method completes.
+ */
+export interface FollowUpAction {
+  /**
+   * Name of the method to call next.
+   */
+  methodName: string;
+
+  /**
+   * Delay before executing the follow-up action (in milliseconds).
+   */
+  delayMs?: number;
+
+  /**
+   * Maximum number of retries for this action.
+   */
+  maxRetries?: number;
+
+  /**
+   * Condition that must be met to continue with follow-up actions.
+   * If this returns false, the workflow stops.
+   * Receives the data handles from the previous method execution.
+   */
+  continueCondition?: (dataHandles: DataHandle[]) => boolean;
+}
+
+/**
+ * Result of a method execution.
+ */
+export interface MethodResult {
+  /**
+   * Data handles referencing artifacts already persisted by DataWriter.
+   */
+  dataHandles?: DataHandle[];
+
+  /**
+   * Optional follow-up actions to execute.
+   */
+  followUpActions?: FollowUpAction[];
+}
+
+/**
+ * Definition of a model method.
+ */
+export interface MethodDefinition<
+  TInputAttrs extends z.ZodTypeAny = z.ZodTypeAny,
+> {
+  /**
+   * Human-readable description of what the method does.
+   */
+  description: string;
+
+  /**
+   * Zod schema for validating the definition attributes required by this method.
+   * The method will only execute if the definition's attributes match this schema.
+   */
+  inputAttributesSchema: TInputAttrs;
+
+  /**
+   * Executes the method with the given definition and context.
+   *
+   * @param definition - The definition containing attributes
+   * @param context - Execution context
+   * @returns The method result
+   */
+  execute(
+    definition: Definition,
+    context: MethodContext,
+  ): Promise<MethodResult>;
+}
+
+/**
+ * A version upgrade step that transforms definition attributes from one
+ * version to the next.
+ */
+export interface VersionUpgrade {
+  /** The CalVer version this upgrade produces (e.g., "2025.06.01.1") */
+  toVersion: string;
+  /** Human-readable description of what changed */
+  description: string;
+  /** Transform old attributes into new attributes */
+  upgradeAttributes: (
+    oldAttributes: Record<string, unknown>,
+  ) => Record<string, unknown>;
+}
+
+/**
+ * Definition of a model type (the aggregate root).
+ *
+ * A model defines:
+ * - Its type identifier
+ * - Current version (CalVer format: YYYY.MM.DD.MICRO)
+ * - Schema for validating definition attributes
+ * - Data output specifications
+ * - Available methods
+ * - Optional upgrade chain for migrating definitions between versions
+ */
+export interface ModelDefinition<
+  TInputAttrs extends z.ZodTypeAny = z.ZodTypeAny,
+> {
+  /**
+   * The model type.
+   */
+  type: ModelType;
+
+  /**
+   * Current version of this model definition.
+   * CalVer format: YYYY.MM.DD.MICRO (e.g., "2025.01.15.1")
+   */
+  version: string;
+
+  /**
+   * Zod schema for validating definition attributes.
+   */
+  inputAttributesSchema: TInputAttrs;
+
+  /**
+   * Resource output specifications — structured JSON data validated against a Zod schema.
+   * Keys are spec names, values are full specifications.
+   */
+  resources?: Record<string, ResourceOutputSpec>;
+
+  /**
+   * File output specifications — binary or text content identified by MIME type.
+   * Keys are spec names, values are full specifications.
+   */
+  files?: Record<string, FileOutputSpec>;
+
+  /**
+   * Available methods on this model.
+   */
+  methods: Record<string, MethodDefinition>;
+
+  /**
+   * Ordered list of upgrade functions for migrating definitions between versions.
+   * Each entry transforms attributes from the previous version to `toVersion`.
+   * Must be ordered chronologically by `toVersion`.
+   * The last entry's `toVersion` must equal `version`.
+   */
+  upgrades?: VersionUpgrade[];
+}
+
+/**
+ * Registry of all known model definitions.
+ */
+export class ModelRegistry {
+  private models = new Map<string, ModelDefinition>();
+
+  /**
+   * Registers a model definition.
+   *
+   * Validates CalVer version format and upgrade chain ordering.
+   *
+   * @param model - The model definition to register
+   */
+  register(model: ModelDefinition): void {
+    const key = model.type.normalized;
+    if (this.models.has(key)) {
+      throw new Error(`Model type already registered: ${key}`);
+    }
+
+    // Validate CalVer version
+    if (!CalVer.isValid(model.version)) {
+      throw new Error(
+        `Invalid CalVer version "${model.version}" for model type "${key}". ` +
+          `Expected format YYYY.MM.DD.MICRO (e.g., "2025.01.15.1")`,
+      );
+    }
+
+    // Validate upgrades if provided
+    if (model.upgrades && model.upgrades.length > 0) {
+      for (let i = 0; i < model.upgrades.length; i++) {
+        const upgrade = model.upgrades[i];
+
+        // Validate each toVersion is valid CalVer
+        if (!CalVer.isValid(upgrade.toVersion)) {
+          throw new Error(
+            `Invalid CalVer version "${upgrade.toVersion}" in upgrade at index ${i} ` +
+              `for model type "${key}"`,
+          );
+        }
+
+        // Validate chronological ordering
+        if (i > 0) {
+          const prev = CalVer.create(model.upgrades[i - 1].toVersion);
+          const curr = CalVer.create(upgrade.toVersion);
+          if (CalVer.compare(prev, curr) >= 0) {
+            throw new Error(
+              `Upgrades for model type "${key}" are not in chronological order: ` +
+                `"${prev.value}" must be before "${curr.value}"`,
+            );
+          }
+        }
+      }
+
+      // Validate last upgrade's toVersion matches model version
+      const lastUpgrade = model.upgrades[model.upgrades.length - 1];
+      if (lastUpgrade.toVersion !== model.version) {
+        throw new Error(
+          `Last upgrade toVersion "${lastUpgrade.toVersion}" does not match model ` +
+            `version "${model.version}" for model type "${key}"`,
+        );
+      }
+    }
+
+    this.models.set(key, model);
+  }
+
+  /**
+   * Extends an existing model with additional methods.
+   * Creates a new merged ModelDefinition (immutable — doesn't mutate the existing object).
+   *
+   * @param type - The model type to extend (raw or normalized)
+   * @param methods - Additional methods to add
+   * @throws If the target type is not registered
+   * @throws If any method name conflicts with existing methods
+   */
+  extend(
+    type: string | ModelType,
+    methods: Record<string, MethodDefinition>,
+  ): void {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    const key = modelType.normalized;
+    const existing = this.models.get(key);
+
+    if (!existing) {
+      throw new Error(`Cannot extend unregistered model type: ${key}`);
+    }
+
+    // Check for method name conflicts
+    for (const methodName of Object.keys(methods)) {
+      if (existing.methods[methodName]) {
+        throw new Error(
+          `Method '${methodName}' already exists on model type '${key}'`,
+        );
+      }
+    }
+
+    // Create a new merged ModelDefinition (immutable)
+    const merged: ModelDefinition = {
+      ...existing,
+      methods: { ...existing.methods, ...methods },
+    };
+
+    this.models.set(key, merged);
+  }
+
+  /**
+   * Gets a model definition by type.
+   *
+   * @param type - The model type (raw or normalized)
+   * @returns The model definition, or undefined if not found
+   */
+  get(type: string | ModelType): ModelDefinition | undefined {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    return this.models.get(modelType.normalized);
+  }
+
+  /**
+   * Checks if a model type is registered.
+   *
+   * @param type - The model type (raw or normalized)
+   * @returns true if registered, false otherwise
+   */
+  has(type: string | ModelType): boolean {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    return this.models.has(modelType.normalized);
+  }
+
+  /**
+   * Returns all registered model types.
+   */
+  types(): ModelType[] {
+    return Array.from(this.models.values()).map((m) => m.type);
+  }
+}
+
+/**
+ * Global model registry instance.
+ *
+ * Uses globalThis so that the same registry is shared across module
+ * boundaries (e.g., when a Vite bundle has its own copy of this module
+ * but extension models were loaded outside the bundle).
+ */
+const MODEL_REGISTRY_KEY = "__swampModelRegistry";
+// deno-lint-ignore no-explicit-any
+export const modelRegistry: ModelRegistry = (globalThis as any)[
+  MODEL_REGISTRY_KEY
+] ??= new ModelRegistry();
+
+/**
+ * Defines and registers a model with the global registry.
+ *
+ * Use this function at module level to self-register models when the module is imported.
+ * The barrel file (models.ts) imports all model files, triggering registration.
+ *
+ * @param definition - The model definition to register
+ * @returns The same model definition (for re-export)
+ */
+export function defineModel<
+  TInputAttrs extends z.ZodTypeAny,
+>(
+  definition: ModelDefinition<TInputAttrs>,
+): ModelDefinition<TInputAttrs> {
+  if (!modelRegistry.has(definition.type)) {
+    modelRegistry.register(definition);
+  }
+  return definition;
+}

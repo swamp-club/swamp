@@ -1,0 +1,314 @@
+name: Issue Planner
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # Initial plan creation triggered by /plan command
+  create-plan:
+    name: Create Implementation Plan
+    runs-on: ubuntu-latest
+    if: |
+      github.event.issue.pull_request == null &&
+      github.event.comment.body == '/plan' &&
+      (
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'MEMBER' ||
+        github.event.comment.author_association == 'COLLABORATOR'
+      )
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Add reaction to acknowledge
+        run: |
+          gh api \
+            --method POST \
+            "/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='eyes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for existing plan comment
+        id: find-plan
+        run: |
+          # Find existing plan comment by looking for the marker
+          PLAN_COMMENT_ID=$(gh api "/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            --jq '.[] | select(.body | contains("<!-- IMPLEMENTATION-PLAN -->")) | .id' | head -1)
+
+          if [ -n "$PLAN_COMMENT_ID" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "comment_id=$PLAN_COMMENT_ID" >> $GITHUB_OUTPUT
+            echo "Found existing plan comment: $PLAN_COMMENT_ID"
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "No existing plan comment found"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Claude environment
+        run: |
+          mkdir -p ~/.claude
+
+      - name: Generate implementation plan
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE NUMBER: ${{ github.event.issue.number }}
+            ISSUE TITLE: ${{ github.event.issue.title }}
+            ISSUE BODY:
+            ${{ github.event.issue.body }}
+
+            EXISTING PLAN COMMENT ID: ${{ steps.find-plan.outputs.comment_id }}
+            PLAN EXISTS: ${{ steps.find-plan.outputs.found }}
+
+            CRITICAL: Before doing anything else, you MUST:
+            1. Read CLAUDE.md at the repository root - this contains mandatory project standards
+            2. Read the skills in .claude/skills/ directory, especially:
+               - .claude/skills/ddd/SKILL.md for domain-driven design principles
+               - .claude/skills/ddd/references/patterns.md for DDD patterns
+               - Any other relevant skills for the feature being planned
+
+            You MUST follow all guidelines in CLAUDE.md including:
+            - TypeScript strict mode, no `any` types
+            - Named exports, not default exports
+            - Comprehensive unit test coverage
+            - Domain-driven design principles
+            - Test files live next to source files (foo.ts -> foo_test.ts)
+
+            Your task is to create a detailed implementation plan for this issue. Do the following:
+
+            1. **Understand the Request**: Analyze the issue to understand what is being requested.
+
+            2. **Explore the Codebase**: Use Glob, Grep, and Read tools to explore the relevant parts of the codebase. Identify:
+               - Existing code that relates to this feature
+               - Patterns and conventions used in similar features
+               - Files that will need to be modified or created
+               - Any dependencies or constraints
+
+            3. **Create an Implementation Plan**: Write a detailed plan that includes:
+               - **Summary**: A brief overview of the approach
+               - **DDD Analysis**: Identify domain concepts, entities, value objects, aggregates, and services involved (per .claude/skills/ddd/)
+               - **Files to Modify**: List specific files that need changes and what changes
+               - **Files to Create**: List any new files needed and their purpose
+               - **Implementation Steps**: Ordered steps to implement the feature, following project conventions
+               - **Testing Strategy**: How to test the implementation (unit tests next to source files, using @std/assert)
+               - **Code Style Checklist**: Confirm adherence to TypeScript strict mode, named exports, no `any` types
+               - **Potential Challenges**: Any risks or complications to be aware of
+
+            4. **Post the Plan**: Format the plan in clear markdown with headers and bullet points.
+               Be specific about file paths and code locations.
+               Reference line numbers where relevant.
+
+               IMPORTANT: Always start your plan with this exact HTML comment on its own line:
+               <!-- IMPLEMENTATION-PLAN -->
+
+               Then add a header: ## Implementation Plan
+
+               If PLAN EXISTS is "true", UPDATE the existing comment instead of creating a new one:
+               ```
+               gh api --method PATCH "/repos/${{ github.repository }}/issues/comments/${{ steps.find-plan.outputs.comment_id }}" -f body="your plan here"
+               ```
+
+               If PLAN EXISTS is "false", CREATE a new comment:
+               ```
+               gh issue comment ${{ github.event.issue.number }} --body "your plan here"
+               ```
+
+            The plan should be detailed enough that another developer (or Claude) could implement it.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model claude-opus-4-5-20251101
+            --allowedTools Read,Glob,Grep,Bash(gh issue comment:*),Bash(gh api:*)
+
+      - name: Add completion reaction
+        if: success()
+        run: |
+          gh api \
+            --method POST \
+            "/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='rocket'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add failure reaction
+        if: failure()
+        run: |
+          gh api \
+            --method POST \
+            "/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='confused'
+          gh issue comment ${{ github.event.issue.number }} --body "Failed to generate implementation plan. Please check the workflow logs for details."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Update plan based on /plan-update command with feedback
+  update-plan:
+    name: Update Plan with Feedback
+    runs-on: ubuntu-latest
+    # Run on /plan-update commands from maintainers
+    if: |
+      github.event.issue.pull_request == null &&
+      startsWith(github.event.comment.body, '/plan-update') &&
+      (
+        github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'MEMBER' ||
+        github.event.comment.author_association == 'COLLABORATOR'
+      )
+
+    steps:
+      - name: Check for existing plan comment
+        id: find-plan
+        run: |
+          # Find existing plan comment by looking for the marker
+          PLAN_COMMENT_ID=$(gh api "/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+            --jq '.[] | select(.body | contains("<!-- IMPLEMENTATION-PLAN -->")) | .id' | head -1)
+
+          if [ -n "$PLAN_COMMENT_ID" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "comment_id=$PLAN_COMMENT_ID" >> $GITHUB_OUTPUT
+            echo "Found existing plan comment: $PLAN_COMMENT_ID"
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "No existing plan comment found, skipping"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Skip all remaining steps if no plan exists
+      - name: Skip if no plan exists
+        if: steps.find-plan.outputs.found != 'true'
+        run: |
+          echo "No existing plan found, skipping feedback processing"
+          exit 0
+
+      - name: Checkout code
+        if: steps.find-plan.outputs.found == 'true'
+        uses: actions/checkout@v4
+
+      - name: Add reaction to acknowledge
+        if: steps.find-plan.outputs.found == 'true'
+        run: |
+          gh api \
+            --method POST \
+            "/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='eyes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get existing plan content
+        if: steps.find-plan.outputs.found == 'true'
+        id: get-plan
+        run: |
+          PLAN_BODY=$(gh api "/repos/${{ github.repository }}/issues/comments/${{ steps.find-plan.outputs.comment_id }}" --jq '.body')
+          echo "plan<<EOF" >> $GITHUB_OUTPUT
+          echo "$PLAN_BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Claude environment
+        if: steps.find-plan.outputs.found == 'true'
+        run: |
+          mkdir -p ~/.claude
+
+      - name: Update plan with feedback
+        if: steps.find-plan.outputs.found == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE NUMBER: ${{ github.event.issue.number }}
+            ISSUE TITLE: ${{ github.event.issue.title }}
+            ISSUE BODY:
+            ${{ github.event.issue.body }}
+
+            EXISTING PLAN COMMENT ID: ${{ steps.find-plan.outputs.comment_id }}
+
+            EXISTING PLAN:
+            ${{ steps.get-plan.outputs.plan }}
+
+            USER FEEDBACK (from @${{ github.event.comment.user.login }}):
+            The user commented with `/plan-update` followed by their feedback. Here is the full comment:
+            ${{ github.event.comment.body }}
+
+            Extract the feedback by removing the `/plan-update` prefix from the comment.
+
+            CRITICAL: Before doing anything else, you MUST:
+            1. Read CLAUDE.md at the repository root - this contains mandatory project standards
+            2. Read the skills in .claude/skills/ directory, especially:
+               - .claude/skills/ddd/SKILL.md for domain-driven design principles
+               - .claude/skills/ddd/references/patterns.md for DDD patterns
+               - Any other relevant skills for the feature being planned
+
+            You MUST follow all guidelines in CLAUDE.md including:
+            - TypeScript strict mode, no `any` types
+            - Named exports, not default exports
+            - Comprehensive unit test coverage
+            - Domain-driven design principles
+            - Test files live next to source files (foo.ts -> foo_test.ts)
+
+            A user has provided feedback on an existing implementation plan. Your task is to:
+
+            1. **Understand the Feedback**: Analyze what the user is asking for - clarification, changes, additions, or concerns.
+
+            2. **Re-explore if Needed**: If the feedback requires investigating different parts of the codebase, use Glob, Grep, and Read tools.
+
+            3. **Update the Plan**: Revise the implementation plan to address the feedback. Keep the same structure:
+               - **Summary**: A brief overview of the approach
+               - **DDD Analysis**: Identify domain concepts, entities, value objects, aggregates, and services involved (per .claude/skills/ddd/)
+               - **Files to Modify**: List specific files that need changes and what changes
+               - **Files to Create**: List any new files needed and their purpose
+               - **Implementation Steps**: Ordered steps to implement the feature, following project conventions
+               - **Testing Strategy**: How to test the implementation (unit tests next to source files, using @std/assert)
+               - **Code Style Checklist**: Confirm adherence to TypeScript strict mode, named exports, no `any` types
+               - **Potential Challenges**: Any risks or complications to be aware of
+
+            4. **Post the Updated Plan**: UPDATE the existing plan comment (do NOT create a new one):
+               ```
+               gh api --method PATCH "/repos/${{ github.repository }}/issues/comments/${{ steps.find-plan.outputs.comment_id }}" -f body="your updated plan here"
+               ```
+
+               IMPORTANT: Always start your plan with this exact HTML comment on its own line:
+               <!-- IMPLEMENTATION-PLAN -->
+
+               Then add a header: ## Implementation Plan
+
+               At the end of the plan, add a "Revision History" section noting what changed based on the feedback.
+
+            Format the plan in clear markdown. Be specific about file paths and code locations.
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model claude-opus-4-5-20251101
+            --allowedTools Read,Glob,Grep,Bash(gh api:*)
+
+      - name: Add completion reaction
+        if: success() && steps.find-plan.outputs.found == 'true'
+        run: |
+          gh api \
+            --method POST \
+            "/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='rocket'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add failure reaction
+        if: failure() && steps.find-plan.outputs.found == 'true'
+        run: |
+          gh api \
+            --method POST \
+            "/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='confused'
+          gh issue comment ${{ github.event.issue.number }} --body "Failed to update implementation plan. Please check the workflow logs for details."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
