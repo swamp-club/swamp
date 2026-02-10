@@ -8,11 +8,114 @@ import {
   VaultInputAttributesSchema,
   vaultModel,
 } from "./vault_model.ts";
-import type { MethodContext } from "../model.ts";
+import { normalizeSpecType } from "../model.ts";
+import type {
+  DataHandle,
+  DataWriter,
+  DataWriterFactory,
+  MethodContext,
+  SpecBasedWriterOptions,
+} from "../model.ts";
 import type { UnifiedDataRepository } from "../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../definitions/repositories.ts";
-import { generateDataId } from "../../data/data_id.ts";
+import { type DataId, generateDataId } from "../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: SpecBasedWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: normalizeSpecType(options.specType),
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: { ...(options.tags ?? {}) },
+      metadata: {
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
+        streaming: options.streaming ?? false,
+        tags: { ...(options.tags ?? {}) },
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
+
+/**
+ * Helper to get parsed JSON content from the first mock result.
+ */
+function getResultAttributes(
+  results: MockWriterResult[],
+  index = 0,
+): Record<string, unknown> | undefined {
+  if (results.length <= index) return undefined;
+  return JSON.parse(new TextDecoder().decode(results[index].content));
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -34,6 +137,10 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -57,29 +164,21 @@ function createMockDefinitionRepo(): DefinitionRepository {
 /**
  * Creates a test MethodContext with mocked repositories.
  */
-function createTestContext(repoDir: string): MethodContext {
-  return {
+function createTestContext(repoDir: string): {
+  context: MethodContext;
+  getResults: () => MockWriterResult[];
+} {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir,
     modelType: VAULT_MODEL_TYPE,
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
   };
-}
-
-/**
- * Helper to get attributes from a DataOutput.
- */
-function getDataOutputAttributes(
-  dataOutputs: { content: Uint8Array }[] | undefined,
-  index = 0,
-): Record<string, unknown> | undefined {
-  if (!dataOutputs || dataOutputs.length <= index) {
-    return undefined;
-  }
-  const content = new TextDecoder().decode(dataOutputs[index].content);
-  return JSON.parse(content);
+  return { context, getResults };
 }
 
 Deno.test("VAULT_MODEL_TYPE has correct normalized type", () => {
@@ -151,8 +250,8 @@ Deno.test("Vault Model - Get Operation", async () => {
       },
     });
 
-    const context = createTestContext(repoDir);
-    await vaultModel.methods.put.execute(putDefinition, context);
+    const { context: putContext } = createTestContext(repoDir);
+    await vaultModel.methods.put.execute(putDefinition, putContext);
 
     // Now test getting the secret
     const getDefinition = Definition.create({
@@ -164,9 +263,10 @@ Deno.test("Vault Model - Get Operation", async () => {
       },
     });
 
-    const result = await vaultModel.methods.get.execute(getDefinition, context);
+    const { context, getResults } = createTestContext(repoDir);
+    await vaultModel.methods.get.execute(getDefinition, context);
 
-    const attrs = getDataOutputAttributes(result.dataOutputs);
+    const attrs = getResultAttributes(getResults());
     assertEquals(attrs !== undefined, true);
     assertEquals(attrs?.vaultName, "test-vault");
     assertEquals(attrs?.secretKey, "test-secret-key");
@@ -188,10 +288,10 @@ Deno.test("Vault Model - Put Operation", async () => {
       },
     });
 
-    const context = createTestContext(repoDir);
-    const result = await vaultModel.methods.put.execute(definition, context);
+    const { context, getResults } = createTestContext(repoDir);
+    await vaultModel.methods.put.execute(definition, context);
 
-    const attrs = getDataOutputAttributes(result.dataOutputs);
+    const attrs = getResultAttributes(getResults());
     assertEquals(attrs !== undefined, true);
     assertEquals(attrs?.vaultName, "test-vault");
     assertEquals(attrs?.secretKey, "test-secret-key");
@@ -211,7 +311,7 @@ Deno.test("Vault Model - Get with wrong operation fails", async () => {
     },
   });
 
-  const context = createTestContext("/tmp/test");
+  const { context } = createTestContext("/tmp/test");
 
   try {
     await vaultModel.methods.get.execute(definition, context);
@@ -235,7 +335,7 @@ Deno.test("Vault Model - Put without secretValue fails", async () => {
     },
   });
 
-  const context = createTestContext("/tmp/test");
+  const { context } = createTestContext("/tmp/test");
 
   try {
     await vaultModel.methods.put.execute(definition, context);

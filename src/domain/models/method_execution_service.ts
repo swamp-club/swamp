@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type {
-  DataOutput,
+  DataHandle,
   FollowUpAction,
   MethodContext,
   MethodDefinition,
@@ -8,11 +8,11 @@ import type {
   ModelDefinition,
 } from "./model.ts";
 import type { Definition } from "../definitions/definition.ts";
-import { Data } from "../data/mod.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
+import { createDataWriterFactory } from "./data_writer.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -77,6 +77,8 @@ export interface MethodExecutionService {
  * Default implementation of the method execution service.
  *
  * Validates definition attributes against the method's schema before execution.
+ * Creates DataWriterFactory and injects it into context so methods write
+ * data directly to disk. The result contains DataHandle[] (already persisted).
  */
 export class DefaultMethodExecutionService implements MethodExecutionService {
   private readonly dataOutputValidationService =
@@ -103,8 +105,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // Execute the method
     const result = await method.execute(definition, context);
 
-    // Validate and enhance data outputs if model definition is provided
-    if (result.dataOutputs && context.modelDefinition) {
+    // Validate data handles if model definition is provided
+    if (result.dataHandles && context.modelDefinition) {
       const specs = context.modelDefinition.dataOutputSpecs;
 
       // Find the method name (for better error messages)
@@ -113,7 +115,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
       // Validate spec type references
       const validation = this.dataOutputValidationService.validate(
-        result.dataOutputs,
+        result.dataHandles,
         specs,
         methodName,
       );
@@ -123,15 +125,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           `Data output validation failed: ${validation.errors.join("; ")}`,
         );
       }
-
-      // Apply defaults from specs (no overrides at this level)
-      result.dataOutputs = result.dataOutputs.map((output) => {
-        const spec = specs[output.specType.value];
-        return this.dataOutputValidationService.applyDefaultsAndOverrides(
-          output,
-          spec,
-        );
-      });
     }
 
     return result;
@@ -161,28 +154,43 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       );
     }
 
-    // Execute the initial method with the (possibly upgraded) definition
-    const result = await this.execute(currentDefinition, method, context);
-    let currentDataOutputs = result.dataOutputs ?? [];
+    // Create DataWriterFactory for this execution
+    const definitionHash = await currentDefinition.computeHash();
+    const { factory, getHandles: _getHandles } = createDataWriterFactory(
+      context.dataRepository,
+      context.modelType,
+      context.modelId,
+      definitionHash,
+      modelDef.dataOutputSpecs,
+      context.tagOverrides,
+      context.dataOutputOverrides,
+    );
 
-    // Store data outputs
-    const storedArtifacts: DataArtifactRef[] = [];
-    if (currentDataOutputs.length > 0) {
-      const definitionHash = await currentDefinition.computeHash();
-      for (const output of currentDataOutputs) {
-        const artifact = await this.storeDataOutput(
-          output,
-          definitionHash,
-          methodName,
-          context,
-        );
-        storedArtifacts.push(artifact);
-      }
-    }
+    // Inject factory into context
+    const contextWithWriter: MethodContext = {
+      ...context,
+      createDataWriter: factory,
+      modelDefinition: modelDef,
+    };
+
+    // Execute the initial method
+    const result = await this.execute(
+      currentDefinition,
+      method,
+      contextWithWriter,
+    );
+    let currentHandles = result.dataHandles ?? [];
+
+    // Collect artifact refs from handles (data is already persisted)
+    const storedArtifacts: DataArtifactRef[] = currentHandles.map((h) => ({
+      dataId: h.dataId,
+      name: h.name,
+      version: h.version,
+      tags: h.tags,
+    }));
 
     // Create ModelOutput if output repository is available
     if (context.outputRepository) {
-      const definitionHash = await currentDefinition.computeHash();
       const output = ModelOutput.create({
         definitionId: currentDefinition.id,
         methodName,
@@ -199,80 +207,35 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }
 
     // Process follow-up actions
-    if (result.followUpActions && currentDataOutputs.length > 0) {
+    if (result.followUpActions && currentHandles.length > 0) {
       const finalResult = await this.processFollowUpActions(
         currentDefinition,
         modelDef,
-        context,
+        contextWithWriter,
         result.followUpActions,
-        currentDataOutputs,
+        currentHandles,
         0,
       );
-      currentDataOutputs = finalResult.dataOutputs;
+      currentHandles = finalResult.dataHandles;
     }
 
     return {
       ...result,
-      dataOutputs: currentDataOutputs,
+      dataHandles: currentHandles,
     };
   }
 
   /**
-   * Stores a data output and returns a reference to the stored artifact.
-   */
-  private async storeDataOutput(
-    output: DataOutput,
-    definitionHash: string,
-    methodName: string,
-    context: MethodContext,
-  ): Promise<DataArtifactRef> {
-    // Get next version for this data
-    const dataId = context.dataRepository.nextId();
-
-    // Create the Data entity
-    const data = Data.create({
-      id: dataId,
-      name: output.name,
-      version: 1, // Will be updated by save()
-      contentType: output.metadata.contentType,
-      lifetime: output.metadata.lifetime,
-      garbageCollection: output.metadata.garbageCollection,
-      streaming: output.metadata.streaming ?? false,
-      tags: output.metadata.tags,
-      ownerDefinition: {
-        ...output.metadata.ownerDefinition,
-        definitionHash,
-        ownerRef: methodName,
-      },
-    });
-
-    // Save the data with content
-    const saveResult = await context.dataRepository.save(
-      context.modelType,
-      context.modelId,
-      data,
-      output.content,
-    );
-
-    return {
-      dataId: data.id,
-      name: data.name,
-      version: saveResult.version,
-      tags: data.tags,
-    };
-  }
-
-  /**
-   * Process follow-up actions using the data outputs pattern.
+   * Process follow-up actions using the data handles pattern.
    */
   private async processFollowUpActions(
     definition: Definition,
     modelDef: ModelDefinition,
     context: MethodContext,
     followUpActions: FollowUpAction[],
-    currentDataOutputs: DataOutput[],
+    currentHandles: DataHandle[],
     depth: number = 0,
-  ): Promise<{ dataOutputs: DataOutput[] }> {
+  ): Promise<{ dataHandles: DataHandle[] }> {
     if (depth >= DEFAULT_MAX_FOLLOW_UP_DEPTH) {
       throw new Error(
         `Maximum follow-up action depth (${DEFAULT_MAX_FOLLOW_UP_DEPTH}) exceeded. ` +
@@ -292,7 +255,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
         // Check continue condition
         if (action.continueCondition) {
-          const conditionResult = action.continueCondition(currentDataOutputs);
+          const conditionResult = action.continueCondition(currentHandles);
           if (!conditionResult) {
             break;
           }
@@ -313,9 +276,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             context,
           );
 
-          // Update current data outputs
-          if (result.dataOutputs && result.dataOutputs.length > 0) {
-            currentDataOutputs = result.dataOutputs;
+          // Update current handles
+          if (result.dataHandles && result.dataHandles.length > 0) {
+            currentHandles = result.dataHandles;
           }
 
           // If this follow-up method has its own follow-up actions, process them recursively
@@ -325,10 +288,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               modelDef,
               context,
               result.followUpActions,
-              currentDataOutputs,
+              currentHandles,
               depth + 1,
             );
-            currentDataOutputs = recursiveResult.dataOutputs;
+            currentHandles = recursiveResult.dataHandles;
           }
 
           break; // Success, exit retry loop
@@ -343,7 +306,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       }
     }
 
-    return { dataOutputs: currentDataOutputs };
+    return { dataHandles: currentHandles };
   }
 
   private delay(ms: number): Promise<void> {

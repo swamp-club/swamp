@@ -1,18 +1,108 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
 import {
+  type DataHandle,
   DataSpecType,
+  type DataWriter,
+  type DataWriterFactory,
   defineModel,
   type MethodContext,
   type ModelDefinition,
   ModelRegistry,
+  normalizeSpecType,
+  type SpecBasedWriterOptions,
 } from "./model.ts";
 import { ModelType } from "./model_type.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import { generateDataId } from "../data/data_id.ts";
+import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: SpecBasedWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: normalizeSpecType(options.specType),
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: options.tags ?? {},
+      metadata: {
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
+        streaming: options.streaming ?? false,
+        tags: options.tags ?? {},
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -34,6 +124,10 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -57,28 +151,34 @@ function createMockDefinitionRepo(): DefinitionRepository {
 /**
  * Creates a test MethodContext with mocked repositories.
  */
-function createTestContext(modelType: ModelType): MethodContext {
-  return {
+function createTestContext(modelType: ModelType): {
+  context: MethodContext;
+  getResults: () => MockWriterResult[];
+} {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
   };
+  return { context, getResults };
 }
 
 /**
- * Helper to get attributes from a DataOutput.
+ * Helper to get parsed JSON content from mock results.
  */
-function getDataOutputAttributes(
-  dataOutputs: { content: Uint8Array }[] | undefined,
+function getResultAttributes(
+  results: MockWriterResult[],
   index = 0,
 ): Record<string, unknown> | undefined {
-  if (!dataOutputs || dataOutputs.length <= index) {
+  if (results.length <= index) {
     return undefined;
   }
-  const content = new TextDecoder().decode(dataOutputs[index].content);
+  const content = new TextDecoder().decode(results[index].content);
   return JSON.parse(content);
 }
 
@@ -88,39 +188,32 @@ function createTestModel(typeString: string): ModelDefinition {
     type,
     version: "2026.02.09.1",
     inputAttributesSchema: z.object({ message: z.string() }),
-    dataOutputSpecs: {},
+    dataOutputSpecs: {
+      "data": {
+        specType: DataSpecType.create("data"),
+        description: "Test data",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
+      },
+    },
     methods: {
       write: {
         description: "Write message to data",
         inputAttributesSchema: z.object({ message: z.string() }),
-        execute: (definition: Definition, _context: MethodContext) => {
-          const content = new TextEncoder().encode(
+        execute: async (definition: Definition, context: MethodContext) => {
+          const writer = context.createDataWriter!({
+            name: `${definition.name}-data`,
+            specType: "data",
+          });
+          const handle = await writer.writeText(
             JSON.stringify({
               message: definition.attributes.message,
               timestamp: new Date().toISOString(),
             }),
           );
-          return Promise.resolve({
-            dataOutputs: [
-              {
-                name: `${definition.name}-data`,
-                specType: DataSpecType.create("data"),
-                content,
-                metadata: {
-                  contentType: "application/json",
-                  lifetime: "infinite" as const,
-                  garbageCollection: 10,
-                  streaming: false,
-                  tags: { type: "data" },
-                  ownerDefinition: {
-                    definitionHash: "test-hash",
-                    ownerType: "model-method" as const,
-                    ownerRef: "write",
-                  },
-                },
-              },
-            ],
-          });
+          return { dataHandles: [handle] };
         },
       },
     },
@@ -230,9 +323,13 @@ Deno.test("ModelDefinition method can execute", async () => {
     attributes: { message: "hello world" },
   });
 
-  const context = createTestContext(model.type);
+  const { context, getResults } = createTestContext(model.type);
   const result = await model.methods.write.execute(definition, context);
-  const attrs = getDataOutputAttributes(result.dataOutputs);
+
+  assertEquals(result.dataHandles !== undefined, true);
+  assertEquals(result.dataHandles!.length, 1);
+
+  const attrs = getResultAttributes(getResults());
   assertEquals(attrs?.message, "hello world");
   assertEquals(typeof attrs?.timestamp, "string");
 });
@@ -280,7 +377,7 @@ Deno.test("ModelRegistry.extend adds methods to existing model", () => {
     read: {
       description: "Read the data",
       inputAttributesSchema: z.object({ message: z.string() }),
-      execute: () => Promise.resolve({ dataOutputs: [] }),
+      execute: () => Promise.resolve({ dataHandles: [] }),
     },
   });
 
@@ -299,7 +396,7 @@ Deno.test("ModelRegistry.extend throws on unregistered type", () => {
         read: {
           description: "Read",
           inputAttributesSchema: z.object({}),
-          execute: () => Promise.resolve({ dataOutputs: [] }),
+          execute: () => Promise.resolve({ dataHandles: [] }),
         },
       }),
     Error,
@@ -318,7 +415,7 @@ Deno.test("ModelRegistry.extend throws on method name conflict", () => {
         write: {
           description: "Duplicate write",
           inputAttributesSchema: z.object({}),
-          execute: () => Promise.resolve({ dataOutputs: [] }),
+          execute: () => Promise.resolve({ dataHandles: [] }),
         },
       }),
     Error,
@@ -337,7 +434,7 @@ Deno.test("ModelRegistry.extend preserves original methods and schema", () => {
     read: {
       description: "Read the data",
       inputAttributesSchema: z.object({}),
-      execute: () => Promise.resolve({ dataOutputs: [] }),
+      execute: () => Promise.resolve({ dataHandles: [] }),
     },
   });
 
@@ -356,31 +453,17 @@ Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
     greet: {
       description: "Greet",
       inputAttributesSchema: z.object({ message: z.string() }),
-      execute: (definition: Definition, _context: MethodContext) => {
-        const content = new TextEncoder().encode(
+      execute: async (definition: Definition, context: MethodContext) => {
+        const writer = context.createDataWriter!({
+          name: "greeting",
+          specType: "data",
+        });
+        const handle = await writer.writeText(
           JSON.stringify({
             greeting: `Hello, ${definition.attributes.message}`,
           }),
         );
-        return Promise.resolve({
-          dataOutputs: [{
-            name: "greeting",
-            specType: DataSpecType.create("data"),
-            content,
-            metadata: {
-              contentType: "application/json",
-              lifetime: "infinite" as const,
-              garbageCollection: 10,
-              streaming: false,
-              tags: { type: "data" },
-              ownerDefinition: {
-                definitionHash: "test-hash",
-                ownerType: "model-method" as const,
-                ownerRef: "greet",
-              },
-            },
-          }],
-        });
+        return { dataHandles: [handle] };
       },
     },
   });
@@ -390,10 +473,13 @@ Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
     name: "test",
     attributes: { message: "world" },
   });
-  const context = createTestContext(extended.type);
+  const { context, getResults } = createTestContext(extended.type);
 
   const result = await extended.methods.greet.execute(definition, context);
-  const attrs = getDataOutputAttributes(result.dataOutputs);
+  assertEquals(result.dataHandles !== undefined, true);
+  assertEquals(result.dataHandles!.length, 1);
+
+  const attrs = getResultAttributes(getResults());
   assertEquals(attrs?.greeting, "Hello, world");
 });
 

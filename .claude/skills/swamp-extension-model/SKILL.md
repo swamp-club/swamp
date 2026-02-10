@@ -64,19 +64,29 @@ export const model = {
   type: "@user/my-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Model output data",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Process the input message",
-      execute: async (definition, _context) => {
-        return {
-          data: {
-            attributes: {
-              message: definition.attributes.message.toUpperCase(),
-              timestamp: new Date().toISOString(),
-            },
-            name: "result",
-          },
-        };
+      execute: async (definition, context) => {
+        const writer = context.createDataWriter!({
+          name: "result",
+          specType: "data",
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          message: definition.attributes.message.toUpperCase(),
+          timestamp: new Date().toISOString(),
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -85,13 +95,14 @@ export const model = {
 
 ## Model Structure
 
-| Field                   | Required | Description                          |
-| ----------------------- | -------- | ------------------------------------ |
-| `type`                  | Yes      | Unique identifier (`namespace/name`) |
-| `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)  |
-| `inputAttributesSchema` | Yes      | Zod schema for input validation      |
-| `inputsSchema`          | No       | Zod schema for runtime inputs        |
-| `methods`               | Yes      | Object of method definitions         |
+| Field                   | Required | Description                               |
+| ----------------------- | -------- | ----------------------------------------- |
+| `type`                  | Yes      | Unique identifier (`namespace/name`)      |
+| `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)       |
+| `inputAttributesSchema` | Yes      | Zod schema for input validation           |
+| `dataOutputSpecs`       | Yes      | Data output spec declarations (see below) |
+| `inputsSchema`          | No       | Zod schema for runtime inputs             |
+| `methods`               | Yes      | Object of method definitions              |
 
 ### Model-Level Inputs
 
@@ -106,6 +117,16 @@ export const model = {
     serviceName: z.string(),
     target: z.string(), // Will use ${{ inputs.environment }}
   }),
+  dataOutputSpecs: {
+    "resource": {
+      specType: "resource",
+      description: "Deployment resource state",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+    },
+  },
   inputsSchema: z.object({
     environment: z.enum(["dev", "staging", "production"]),
     dryRun: z.boolean().optional().default(false),
@@ -116,14 +137,15 @@ export const model = {
       execute: async (definition, context) => {
         // Inputs are evaluated before execution, so definition.attributes
         // contains the resolved values (e.g., target = "production")
-        return {
-          resource: {
-            attributes: {
-              deployed: true,
-              target: definition.attributes.target,
-            },
-          },
-        };
+        const writer = context.createDataWriter!({
+          name: "resource",
+          specType: "resource",
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          deployed: true,
+          target: definition.attributes.target,
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -139,13 +161,45 @@ swamp model method run my-deploy deploy --input '{"environment": "production"}' 
 The `inputsSchema` defines what runtime inputs are accepted. These inputs are
 available in CEL expressions via `${{ inputs.<name> }}`.
 
+## Data Output Specs
+
+Every model must declare its data output specifications in `dataOutputSpecs`.
+This is the single source of truth for what spec types a model can produce. When
+`createDataWriter` is called with a `specType`, it must match a key in
+`dataOutputSpecs` — otherwise the factory fails fast with an "undeclared spec
+type" error.
+
+Each spec entry defines defaults for `contentType`, `lifetime`,
+`garbageCollection`, and `tags`. The `createDataWriter` call only needs `name`
+and `specType`; all other fields are inherited from the spec and can be
+overridden per-write if needed.
+
+```typescript
+dataOutputSpecs: {
+  "data": {
+    specType: "data",
+    description: "Model output data",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "data" },
+  },
+  "log": {
+    specType: "log",
+    description: "Execution log",
+    contentType: "text/plain",
+    lifetime: "7d",
+    garbageCollection: 5,
+    tags: { type: "log" },
+  },
+},
+```
+
 ## Execute Function
 
-The execute function receives the definition and context, and returns data
-outputs. There are three return formats: the preferred simpler formats
-(`resource` and `data`) and the explicit `dataOutputs` array.
-
-### Preferred: Simple Return Formats
+The execute function receives the definition and context. It uses the
+`DataWriter` API to write data directly to disk and returns `DataHandle`
+references.
 
 ```typescript
 execute: (async (definition, context) => {
@@ -155,79 +209,72 @@ execute: (async (definition, context) => {
   // context.repoDir       - Repository root path
   // context.logger        - LogTape Logger for emitting log messages
   // context.dataRepository - For advanced data operations
+  // context.createDataWriter - Factory for creating DataWriter instances
   // context.inputs        - Runtime inputs (if inputsSchema defined)
 
-  // For external resources (APIs, cloud services, etc.)
-  return {
-    resource: {
-      attributes: {
-        id: "resource-123",
-        status: "created",
-        endpoint: "https://api.example.com/resource/123",
-      },
-    },
-  };
+  // 1. Create a DataWriter — specType must match a key in dataOutputSpecs
+  const writer = context.createDataWriter!({
+    name: "my-data",
+    specType: "data", // references "data" entry in dataOutputSpecs
+  });
 
-  // OR for general data output
-  return {
-    data: {
-      attributes: {
-        result: "processed value",
-        timestamp: new Date().toISOString(),
-      },
-      name: "result", // optional, defaults to "data"
-      tags: { category: "output" }, // optional custom tags
-    },
-  };
+  // 2. Write content using one of the writer methods
+  const handle = await writer.writeText(JSON.stringify({
+    result: "processed value",
+    timestamp: new Date().toISOString(),
+  }));
+
+  // 3. Return the data handles
+  return { dataHandles: [handle] };
 });
 ```
 
-| Format     | Use Case                                 | Default Name | Default Tags       |
-| ---------- | ---------------------------------------- | ------------ | ------------------ |
-| `resource` | External resource state (APIs, services) | `"resource"` | `type: "resource"` |
-| `data`     | General data output                      | `"data"`     | `type: "data"`     |
+### DataWriter API
 
-Both formats automatically:
+Create a writer with `context.createDataWriter(options)`:
 
-- Serialize `attributes` as JSON with `application/json` content type
-- Set lifetime to `"infinite"`
-- Track ownership for data integrity
+**SpecBasedWriterOptions:**
 
-### Explicit: dataOutputs Array
+| Field               | Required | Description                                    |
+| ------------------- | -------- | ---------------------------------------------- |
+| `name`              | Yes      | Unique name for this data artifact             |
+| `specType`          | Yes      | Must match a key in `dataOutputSpecs`          |
+| `contentType`       | No       | Override MIME type (default from spec)         |
+| `lifetime`          | No       | Override lifetime (default from spec)          |
+| `garbageCollection` | No       | Override version retention (default from spec) |
+| `streaming`         | No       | True for line-oriented streaming data          |
+| `tags`              | No       | Override tags (default from spec)              |
 
-For advanced use cases requiring multiple outputs, custom content types, or
-streaming:
+**Writer Methods:**
 
-```typescript
-execute: (async (definition, context) => {
-  return {
-    dataOutputs: [
-      {
-        name: "output-name",
-        content: "string or Uint8Array",
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          tags: { type: "data" },
-        },
-      },
-    ],
-  };
-});
-```
+| Method                      | Description                                      |
+| --------------------------- | ------------------------------------------------ |
+| `writeAll(content)`         | Write complete binary content (`Uint8Array`)     |
+| `writeText(text)`           | Write text content (encoded as UTF-8)            |
+| `writeLine(line)`           | Append a single line (for streaming/incremental) |
+| `writeStream(stream, opts)` | Pipe a `ReadableStream<Uint8Array>`              |
+| `getFilePath()`             | Get the file path for direct I/O                 |
+| `finalize()`                | Finalize after using `writeLine`/`getFilePath`   |
 
-## Data Output Structure
+All write methods that complete a data artifact return a `Promise<DataHandle>`.
+Use `writeLine` for incremental writes, then call `finalize()` to get the
+handle.
 
-Each data output in the `dataOutputs` array has:
+**DataHandle** (returned by write methods):
 
-| Field                  | Required | Description                                  |
-| ---------------------- | -------- | -------------------------------------------- |
-| `name`                 | Yes      | Unique name for this data artifact           |
-| `content`              | Yes      | Data as `string` or `Uint8Array`             |
-| `metadata.contentType` | No       | MIME type (default: `application/json`)      |
-| `metadata.lifetime`    | No       | How long data persists (default: `infinite`) |
-| `metadata.tags`        | No       | Key-value pairs for categorization           |
-| `metadata.streaming`   | No       | True for line-oriented log data              |
+| Field      | Description                          |
+| ---------- | ------------------------------------ |
+| `name`     | Data artifact name                   |
+| `specType` | Data spec type                       |
+| `dataId`   | Unique ID for this data              |
+| `version`  | Version number of this write         |
+| `size`     | Size of the written content in bytes |
+| `tags`     | Tags from the writer options         |
+| `metadata` | Full metadata for the data artifact  |
+
+**UserMethodResult:**
+
+The execute function returns `{ dataHandles?: DataHandle[] }`.
 
 ### Lifetime Values
 
@@ -263,12 +310,18 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit the echo message",
-      execute: async (definition, _context) => ({
-        data: {
-          attributes: { audited: true, name: definition.name },
+      execute: async (definition, context) => {
+        // Extensions use the target model's dataOutputSpecs
+        const writer = context.createDataWriter!({
           name: "audit-result",
-        },
-      }),
+          specType: "data",
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          audited: true,
+          name: definition.name,
+        }));
+        return { dataHandles: [handle] };
+      },
     },
   }],
 };
@@ -402,6 +455,16 @@ export const model = {
   type: "@user/shell",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Command output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Execute shell command",
@@ -412,16 +475,16 @@ export const model = {
           logger: context.logger,
         });
 
-        return {
-          data: {
-            attributes: {
-              stdout: result.stdout,
-              stderr: result.stderr,
-              exitCode: result.exitCode,
-            },
-            name: "output",
-          },
-        };
+        const writer = context.createDataWriter!({
+          name: "output",
+          specType: "data",
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -439,40 +502,51 @@ export const model = {
   type: "@user/search",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Search results",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+    "log": {
+      specType: "log",
+      description: "Search execution log",
+      contentType: "application/json",
+      lifetime: "7d",
+      garbageCollection: 10,
+      tags: { type: "log" },
+    },
+  },
   methods: {
     search: {
       description: "Search and store results with log",
-      execute: async (definition, _context) => {
+      execute: async (definition, context) => {
         const results = ["result1", "result2"];
 
-        return {
-          dataOutputs: [
-            // Primary result data
-            {
-              name: "results",
-              content: JSON.stringify({ results }),
-              metadata: {
-                contentType: "application/json",
-                lifetime: "infinite",
-                tags: { type: "data" },
-              },
-            },
-            // Execution log
-            {
-              name: "search-log",
-              content: JSON.stringify({
-                query: definition.attributes.query,
-                timestamp: new Date().toISOString(),
-                resultCount: results.length,
-              }),
-              metadata: {
-                contentType: "application/json",
-                lifetime: "7d",
-                tags: { type: "log" },
-              },
-            },
-          ],
-        };
+        // Primary result data
+        const resultsWriter = context.createDataWriter!({
+          name: "results",
+          specType: "data",
+        });
+        const resultsHandle = await resultsWriter.writeText(
+          JSON.stringify({ results }),
+        );
+
+        // Execution log
+        const logWriter = context.createDataWriter!({
+          name: "search-log",
+          specType: "log",
+        });
+        const logHandle = await logWriter.writeText(JSON.stringify({
+          query: definition.attributes.query,
+          timestamp: new Date().toISOString(),
+          resultCount: results.length,
+        }));
+
+        return { dataHandles: [resultsHandle, logHandle] };
       },
     },
   },
@@ -493,10 +567,20 @@ export const model = {
   type: "@user/api-resource",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "resource": {
+      specType: "resource",
+      description: "API resource state",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+    },
+  },
   methods: {
     create: {
       description: "Create resource via API",
-      execute: async (definition, _context) => {
+      execute: async (definition, context) => {
         const response = await fetch(definition.attributes.endpoint, {
           method: "POST",
           headers: {
@@ -505,15 +589,16 @@ export const model = {
         });
         const data = await response.json();
 
-        return {
-          resource: {
-            attributes: {
-              resourceId: data.id,
-              status: data.status,
-              createdAt: new Date().toISOString(),
-            },
-          },
-        };
+        const writer = context.createDataWriter!({
+          name: "resource",
+          specType: "resource",
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          resourceId: data.id,
+          status: data.status,
+          createdAt: new Date().toISOString(),
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -539,10 +624,28 @@ export const model = {
   type: "@user/s3-bucket",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "resource": {
+      specType: "resource",
+      description: "S3 bucket resource state",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+    },
+    "data": {
+      specType: "data",
+      description: "S3 object listing",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     create: {
       description: "Create an S3 bucket",
-      execute: async (definition, _context) => {
+      execute: async (definition, context) => {
         const { bucketName, region, accessKeyId, secretAccessKey } =
           definition.attributes;
 
@@ -558,30 +661,31 @@ export const model = {
           },
         );
 
-        return {
-          resource: {
-            attributes: {
-              bucketName,
-              region,
-              arn: `arn:aws:s3:::${bucketName}`,
-              createdAt: new Date().toISOString(),
-            },
-          },
-        };
+        const writer = context.createDataWriter!({
+          name: "resource",
+          specType: "resource",
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          bucketName,
+          region,
+          arn: `arn:aws:s3:::${bucketName}`,
+          createdAt: new Date().toISOString(),
+        }));
+        return { dataHandles: [handle] };
       },
     },
     list: {
       description: "List objects in the bucket",
-      execute: async (definition, _context) => {
+      execute: async (definition, context) => {
         // Implement S3 ListObjects API call
-        return {
-          data: {
-            attributes: {
-              objects: [], // Populate from API response
-            },
-            name: "objects",
-          },
-        };
+        const writer = context.createDataWriter!({
+          name: "objects",
+          specType: "data",
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          objects: [], // Populate from API response
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -604,14 +708,15 @@ methods: {
       const env = methodInput?.environment ?? "dev";
       // Use env for deployment logic...
 
-      return {
-        resource: {
-          attributes: {
-            environment: env,
-            status: "deployed",
-          },
-        },
-      };
+      const writer = context.createDataWriter!({
+        name: "resource",
+        specType: "resource",
+      });
+      const handle = await writer.writeText(JSON.stringify({
+        environment: env,
+        status: "deployed",
+      }));
+      return { dataHandles: [handle] };
     },
   },
 },
