@@ -129,10 +129,10 @@ Models directory priority:
 
 ```bash
 # Verify model loads
-swamp type search --json
+swamp model type search --json
 
 # Check model schema
-swamp type describe @myorg/my-model --json
+swamp model type describe @myorg/my-model --json
 
 # Test the model
 swamp model create @myorg/my-model test --set fieldName="test"

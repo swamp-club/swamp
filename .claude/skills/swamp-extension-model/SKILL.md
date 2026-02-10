@@ -12,9 +12,9 @@ startup.
 
 **Create an extension model when no built-in type exists for your use case.**
 
-If you search for a type with `swamp type search <query>` and get no results,
-you should create a custom model rather than assuming the functionality doesn't
-exist. Extension models let you:
+If you search for a type with `swamp model type search <query>` and get no
+results, you should create a custom model rather than assuming the functionality
+doesn't exist. Extension models let you:
 
 - Integrate with any API or service (AWS S3, Stripe, custom APIs, etc.)
 - Define any automation logic you need
@@ -24,7 +24,7 @@ exist. Extension models let you:
 
 ```
 1. User wants to work with S3 buckets
-2. Run: swamp type search S3 → no results
+2. Run: swamp model type search S3 → no results
 3. Solution: Create extensions/models/s3_bucket.ts with the S3 logic you need
 ```
 
@@ -47,8 +47,8 @@ outputs.
 | Task                | Command/Action                                          |
 | ------------------- | ------------------------------------------------------- |
 | Create model file   | Create `extensions/models/my_model.ts`                  |
-| Verify registration | `swamp type search --json`                              |
-| Check schema        | `swamp type describe @myorg/my-model --json`            |
+| Verify registration | `swamp model type search --json`                        |
+| Check schema        | `swamp model type describe @myorg/my-model --json`      |
 | Create instance     | `swamp model create @myorg/my-model my-instance --json` |
 | Run method          | `swamp model method run my-instance run --json`         |
 
@@ -730,8 +730,8 @@ methods: {
 After creating your model:
 
 ```bash
-swamp type search --json              # Model should appear
-swamp type describe @myorg/my-model   # Check schema
+swamp model type search --json              # Model should appear
+swamp model type describe @myorg/my-model   # Check schema
 ```
 
 ## When to Use Other Skills

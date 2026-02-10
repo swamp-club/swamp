@@ -12,8 +12,8 @@ machine-readable output.
 
 | Task               | Command                                                  |
 | ------------------ | -------------------------------------------------------- |
-| Search model types | `swamp type search [query] --json`                       |
-| Describe a type    | `swamp type describe <type> --json`                      |
+| Search model types | `swamp model type search [query] --json`                 |
+| Describe a type    | `swamp model type describe <type> --json`                |
 | Create model input | `swamp model create <type> <name> --json`                |
 | Search models      | `swamp model search [query] --json`                      |
 | Get model details  | `swamp model get <id_or_name> --json`                    |
@@ -52,8 +52,8 @@ Use `swamp repo index` to rebuild if symlinks become out of sync.
 Find available model types in the system.
 
 ```bash
-swamp type search --json
-swamp type search "echo" --json
+swamp model type search --json
+swamp model type search "echo" --json
 ```
 
 **Output shape:**
@@ -72,7 +72,7 @@ swamp type search "echo" --json
 Get the full schema and available methods for a type.
 
 ```bash
-swamp type describe swamp/echo --json
+swamp model type describe swamp/echo --json
 ```
 
 **Output shape:**
@@ -483,9 +483,9 @@ swamp model output data output-789 --json
 
 ## Workflow Example
 
-1. **Search** for the right type: `swamp type search "echo" --json`
+1. **Search** for the right type: `swamp model type search "echo" --json`
 2. **Describe** to understand the schema:
-   `swamp type describe swamp/echo --json`
+   `swamp model type describe swamp/echo --json`
 3. **Create** an input file: `swamp model create swamp/echo my-message --json`
 4. **Edit** the YAML file to set `attributes.message`
 5. **Validate** the model: `swamp model validate my-message --json`
