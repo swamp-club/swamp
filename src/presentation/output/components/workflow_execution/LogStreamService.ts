@@ -75,31 +75,78 @@ export class LogStreamService {
   }
 
   /**
-   * Streams logs in real-time by tailing the log file.
-   * Uses byte offset tracking to read only new content on each poll.
+   * Streams logs by tailing the log file using byte offset tracking.
    * Polls every 500ms for smooth streaming.
+   *
+   * For running/pending steps: polls continuously until the step completes.
+   * For completed steps: reads all content, then does extra reads to catch
+   * any fire-and-forget writes that haven't flushed to disk yet.
    */
   async *streamLogs(
     target: LogStreamTarget,
   ): AsyncIterableIterator<LogEntry> {
     try {
       let lastStepStatus = target.stepStatus;
-      let isComplete = false;
       let pollCount = 0;
       const pollIntervalMs = 500;
       const maxPolls = 480; // 4 minutes at 500ms
       let byteOffset = 0;
       let partialLine = "";
 
-      // Find the log file once
-      const logFile = await this.findLogFile({
-        type: "job",
-        jobName: target.jobName,
-        workflowRunId: target.workflowRunId,
-      });
+      // Find the log file (retry a few times for steps that haven't started yet)
+      let logFile: string | null = null;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        logFile = await this.findLogFile({
+          type: "job",
+          jobName: target.jobName,
+          workflowRunId: target.workflowRunId,
+        });
+        if (logFile) break;
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
 
-      while (!isComplete && pollCount < maxPolls) {
-        // Check step status
+      // Helper: read new bytes from the log file and yield lines
+      const readNewContent = async function* (): AsyncIterableIterator<
+        LogEntry
+      > {
+        if (!logFile) return;
+        try {
+          const stat = await Deno.stat(logFile);
+          if (stat.size > byteOffset) {
+            const file = await Deno.open(logFile, { read: true });
+            try {
+              await file.seek(byteOffset, Deno.SeekMode.Start);
+              const buf = new Uint8Array(stat.size - byteOffset);
+              const bytesRead = await file.read(buf);
+              if (bytesRead && bytesRead > 0) {
+                byteOffset += bytesRead;
+                const text = partialLine +
+                  new TextDecoder().decode(buf.subarray(0, bytesRead));
+
+                const lines = text.split("\n");
+                partialLine = lines.pop() ?? "";
+
+                for (const line of lines) {
+                  if (line.trim()) {
+                    yield {
+                      message: line,
+                      timestamp: parseLogTimestamp(line),
+                    };
+                  }
+                }
+              }
+            } finally {
+              file.close();
+            }
+          }
+        } catch {
+          // File may not exist yet or be locked
+        }
+      };
+
+      // Main polling loop
+      while (pollCount < maxPolls) {
+        // Refresh step status from the workflow run YAML
         if (target.stepName && target.workflowRunId) {
           const currentStepInfo = await this.getCurrentStepInfo(
             target.jobName,
@@ -107,58 +154,28 @@ export class LogStreamService {
             target.workflowRunId,
           );
           if (currentStepInfo) {
-            if (lastStepStatus !== currentStepInfo.status) {
-              lastStepStatus = currentStepInfo.status;
-            }
+            lastStepStatus = currentStepInfo.status;
           }
         }
 
-        // Read new content from log file using byte offset
-        if (logFile) {
-          try {
-            const stat = await Deno.stat(logFile);
-            if (stat.size > byteOffset) {
-              const file = await Deno.open(logFile, { read: true });
-              try {
-                await file.seek(byteOffset, Deno.SeekMode.Start);
-                const buf = new Uint8Array(stat.size - byteOffset);
-                const bytesRead = await file.read(buf);
-                if (bytesRead && bytesRead > 0) {
-                  byteOffset += bytesRead;
-                  const text = partialLine +
-                    new TextDecoder().decode(buf.subarray(0, bytesRead));
+        // Read and yield new content
+        yield* readNewContent();
 
-                  const lines = text.split("\n");
-                  // Last element may be a partial line (no trailing newline yet)
-                  partialLine = lines.pop() ?? "";
+        const isStepActive = lastStepStatus === "pending" ||
+          lastStepStatus === "running";
 
-                  for (const line of lines) {
-                    if (line.trim()) {
-                      yield {
-                        message: line,
-                        timestamp: parseLogTimestamp(line),
-                      };
-                    }
-                  }
-                }
-              } finally {
-                file.close();
-              }
-            }
-          } catch {
-            // File may not exist yet, keep polling
-          }
-        }
-
-        // Check if we should continue polling
-        if (
-          lastStepStatus === "pending" ||
-          lastStepStatus === "running"
-        ) {
+        if (isStepActive) {
+          // Step still running — keep polling
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           pollCount++;
         } else {
-          // Flush any remaining partial line
+          // Step completed — do a few extra reads to catch late-flushing writes
+          for (let i = 0; i < 3; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            yield* readNewContent();
+          }
+
+          // Flush remaining partial line
           if (partialLine.trim()) {
             yield {
               message: partialLine,
@@ -166,7 +183,7 @@ export class LogStreamService {
             };
             partialLine = "";
           }
-          isComplete = true;
+          break;
         }
       }
 

@@ -54,26 +54,16 @@ export function LogStreamOverlay(
       try {
         setIsLoading(true);
         setError(null);
+        setIsLoading(false);
 
-        const shouldStream = target.stepStatus === "pending" ||
-          target.stepStatus === "running";
-
-        if (shouldStream) {
-          // For running steps, stream from the log file directly.
-          // streamLogs tails the file from byte 0, yielding lines as they appear.
-          setIsLoading(false);
-          const stream = logService.streamLogs(target);
-          for await (const logEntry of stream) {
-            if (!streamActive) break;
-            setLogs((prevLogs) => [...prevLogs, logEntry]);
-          }
-        } else {
-          // For completed/failed/skipped steps, load all logs at once.
-          const initialLogs = await logService.getLogs(target);
-          if (streamActive) {
-            setLogs(initialLogs);
-            setIsLoading(false);
-          }
+        // Always use streamLogs for all steps. It handles:
+        // - Running/pending steps: continuous polling until complete
+        // - Completed steps: reads all content + a final delayed read
+        //   to catch fire-and-forget writes that haven't flushed yet
+        const stream = logService.streamLogs(target);
+        for await (const logEntry of stream) {
+          if (!streamActive) break;
+          setLogs((prevLogs) => [...prevLogs, logEntry]);
         }
       } catch (err) {
         if (streamActive) {
