@@ -3,21 +3,28 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "./output.ts";
 
 /**
+ * Data structure for a data output spec in the describe output.
+ */
+export interface DataOutputSpecDescribeData {
+  specName: string;
+  kind: "resource" | "file";
+  description?: string;
+  schema?: object;
+  contentType?: string;
+  lifetime?: string;
+  garbageCollection?: number | string;
+  streaming?: boolean;
+  tags?: Record<string, string>;
+}
+
+/**
  * Data structure for a method's description.
  */
 export interface MethodDescribeData {
   name: string;
   description: string;
   inputAttributesSchema: object;
-  dataOutputSpecs?: Array<{
-    specType: string;
-    description?: string;
-    contentType?: string;
-    lifetime?: string;
-    garbageCollection?: number | string;
-    streaming?: boolean;
-    tags?: Record<string, string>;
-  }>;
+  dataOutputSpecs?: DataOutputSpecDescribeData[];
 }
 
 /**

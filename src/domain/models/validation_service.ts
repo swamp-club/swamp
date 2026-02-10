@@ -13,6 +13,7 @@ import {
   extractPathReferences,
   extractSelfReferences,
 } from "../expressions/expression_path_extractor.ts";
+import type { DependencyType } from "../expressions/dependency_extractor.ts";
 import {
   formatAvailableKeys,
   validateSchemaPath,
@@ -399,7 +400,7 @@ export class DefaultModelValidationService implements ModelValidationService {
   private async validateModelPathReference(
     ref: {
       modelRef: string;
-      type: "input" | "resource" | "data" | "file" | "log" | "execution";
+      type: DependencyType;
       path: string[];
       rawExpression: string;
     },
@@ -425,67 +426,109 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     // Get the appropriate schema based on type and determine path to validate
-    // The path includes "attributes" as the first segment (e.g., ["attributes", "VpcId"])
-    // but the schema is already for the attributes object itself
     const firstSegment = ref.path[0];
 
     // Validate the path structure
     if (ref.path.length === 0) {
-      // Just "input" or "data" without a path is valid
+      // Just "input" or "resource" without a path is valid
       return null;
     }
 
-    // For data artifacts, .data resolves directly to a DataRecord.
-    // path[0] must be a valid DataRecord property.
-    // Segments after "attributes" or "tags" are user-defined.
-    if (ref.type === "data") {
-      const validDataFields = [
-        "id",
-        "name",
-        "version",
-        "createdAt",
-        "attributes",
-        "tags",
-      ];
-      if (!validDataFields.includes(firstSegment)) {
+    // For resource namespace: model.X.resource.<specName>.<field>
+    // path[0] is the specName, path[1+] are DataRecord fields
+    if (ref.type === "resource") {
+      const specName = firstSegment;
+      const availableSpecs = targetDefinition.resources
+        ? Object.keys(targetDefinition.resources)
+        : [];
+
+      if (availableSpecs.length > 0 && !availableSpecs.includes(specName)) {
         return {
           expression: ref.rawExpression,
-          error: `Invalid path segment "${firstSegment}" for data artifact`,
-          suggestion: `Data artifacts have: ${validDataFields.join(", ")}`,
+          error:
+            `Unknown resource spec "${specName}" on model "${ref.modelRef}"`,
+          suggestion: `Available resource specs: ${availableSpecs.join(", ")}`,
         };
+      }
+
+      // Validate DataRecord fields after specName
+      if (ref.path.length > 1) {
+        const recordField = ref.path[1];
+        const validRecordFields = [
+          "id",
+          "name",
+          "version",
+          "createdAt",
+          "attributes",
+          "tags",
+        ];
+        if (!validRecordFields.includes(recordField)) {
+          return {
+            expression: ref.rawExpression,
+            error: `Invalid field "${recordField}" on resource "${specName}"`,
+            suggestion: `Resource records have: ${
+              validRecordFields.join(", ")
+            }`,
+          };
+        }
+
+        // If accessing .attributes.<field>, validate against the resource schema
+        if (
+          recordField === "attributes" && ref.path.length > 2 &&
+          targetDefinition.resources?.[specName]
+        ) {
+          const schema = targetDefinition.resources[specName].schema;
+          const pathToValidate = ref.path.slice(2);
+          const validationResult = validateSchemaPath(
+            schema,
+            pathToValidate,
+          );
+          if (!validationResult.valid && validationResult.error) {
+            return {
+              expression: ref.rawExpression,
+              error: validationResult.error,
+              suggestion: validationResult.suggestion,
+              availableKeys: validationResult.availableKeys,
+            };
+          }
+        }
       }
       return null;
     }
 
+    // For file namespace: model.X.file.<specName>.<field>
+    // path[0] is the specName, path[1+] are FileDataRecord fields
     if (ref.type === "file") {
-      const validFileSegments = [
-        "id",
-        "version",
-        "createdAt",
-        "filename",
-        "contentType",
-        "size",
-        "checksum",
-        "path",
-      ];
-      if (!validFileSegments.includes(firstSegment)) {
+      const specName = firstSegment;
+      const availableSpecs = targetDefinition.files
+        ? Object.keys(targetDefinition.files)
+        : [];
+
+      if (availableSpecs.length > 0 && !availableSpecs.includes(specName)) {
         return {
           expression: ref.rawExpression,
-          error: `Invalid path segment "${firstSegment}" for file artifact`,
-          suggestion: `File artifacts have: ${validFileSegments.join(", ")}`,
+          error: `Unknown file spec "${specName}" on model "${ref.modelRef}"`,
+          suggestion: `Available file specs: ${availableSpecs.join(", ")}`,
         };
       }
-      return null;
-    }
 
-    if (ref.type === "log") {
-      const validLogSegments = ["id", "version", "createdAt", "entries"];
-      if (!validLogSegments.includes(firstSegment)) {
-        return {
-          expression: ref.rawExpression,
-          error: `Invalid path segment "${firstSegment}" for log artifact`,
-          suggestion: `Log artifacts have: ${validLogSegments.join(", ")}`,
-        };
+      if (ref.path.length > 1) {
+        const fileField = ref.path[1];
+        const validFileFields = [
+          "id",
+          "version",
+          "createdAt",
+          "path",
+          "size",
+          "contentType",
+        ];
+        if (!validFileFields.includes(fileField)) {
+          return {
+            expression: ref.rawExpression,
+            error: `Invalid field "${fileField}" on file "${specName}"`,
+            suggestion: `File records have: ${validFileFields.join(", ")}`,
+          };
+        }
       }
       return null;
     }

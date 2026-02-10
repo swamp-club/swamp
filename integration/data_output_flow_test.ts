@@ -271,11 +271,11 @@ Deno.test("Integration: data commands work with model data artifacts", async () 
       "Should have at least one data artifact",
     );
 
-    // Find the data artifact from groups
+    // Find the resource artifact from groups
     const dataGroup = listOutput.groups.find(
-      (g: { type: string }) => g.type === "data",
+      (g: { type: string }) => g.type === "resource",
     );
-    assertEquals(dataGroup !== undefined, true, "Should have data group");
+    assertEquals(dataGroup !== undefined, true, "Should have resource group");
     assertEquals(
       dataGroup.items.length >= 1,
       true,
@@ -636,9 +636,9 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
 
     const listOutput = JSON.parse(listResult.stdout);
     const dataGroup = listOutput.groups.find(
-      (g: { type: string }) => g.type === "data",
+      (g: { type: string }) => g.type === "resource",
     );
-    assertEquals(dataGroup !== undefined, true, "Should have data group");
+    assertEquals(dataGroup !== undefined, true, "Should have resource group");
     const dataArtifact = dataGroup.items[0];
 
     // Check versions

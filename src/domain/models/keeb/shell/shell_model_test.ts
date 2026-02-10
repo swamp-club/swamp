@@ -9,14 +9,7 @@ import {
   ShellInputAttributesSchema,
   shellModel,
 } from "./shell_model.ts";
-import { normalizeSpecType } from "../../model.ts";
-import type {
-  DataHandle,
-  DataWriter,
-  DataWriterFactory,
-  MethodContext,
-  SpecBasedWriterOptions,
-} from "../../model.ts";
+import type { DataHandle, DataWriter, MethodContext } from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../../../data/data_id.ts";
@@ -31,34 +24,68 @@ interface MockWriterResult {
 }
 
 /**
- * Creates a mock DataWriterFactory that stores written content in memory.
+ * Creates mock writeResource and createFileWriter functions that store written content in memory.
  */
-function createMockDataWriterFactory(): {
-  factory: DataWriterFactory;
+function createMockWriters(): {
+  writeResource: (
+    specName: string,
+    data: Record<string, unknown>,
+  ) => Promise<DataHandle>;
+  createFileWriter: (specName: string) => DataWriter;
   getResults: () => MockWriterResult[];
 } {
   const results: MockWriterResult[] = [];
   const getResults = (): MockWriterResult[] => results;
   let nextId = 1;
 
-  const factory: DataWriterFactory = (
-    options: SpecBasedWriterOptions,
-  ): DataWriter => {
+  const writeResource = (
+    specName: string,
+    data: Record<string, unknown>,
+  ): Promise<DataHandle> => {
     const dataId = `mock-data-${nextId++}` as DataId;
-
-    const buildHandle = (content: Uint8Array): DataHandle => ({
-      name: options.name,
-      specType: normalizeSpecType(options.specType),
+    const content = new TextEncoder().encode(JSON.stringify(data));
+    const handle: DataHandle = {
+      name: specName,
+      specName,
+      kind: "resource",
       dataId,
       version: 1,
       size: content.length,
-      tags: { ...(options.tags ?? {}) },
+      tags: {},
       metadata: {
-        contentType: options.contentType ?? "application/json",
-        lifetime: options.lifetime ?? "infinite",
-        garbageCollection: options.garbageCollection ?? 10,
-        streaming: options.streaming ?? false,
-        tags: { ...(options.tags ?? {}) },
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: {},
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    };
+    results.push({ handle, content });
+    return Promise.resolve(handle);
+  };
+
+  const createFileWriter = (specName: string): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: specName,
+      specName,
+      kind: "file",
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: {},
+      metadata: {
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: {},
         ownerDefinition: {
           definitionHash: "test-hash",
           ownerType: "model-method",
@@ -69,7 +96,7 @@ function createMockDataWriterFactory(): {
 
     return {
       dataId,
-      name: options.name,
+      name: specName,
       writeAll(content: Uint8Array): Promise<DataHandle> {
         const handle = buildHandle(content);
         results.push({ handle, content });
@@ -104,7 +131,7 @@ function createMockDataWriterFactory(): {
     } as DataWriter;
   };
 
-  return { factory, getResults };
+  return { writeResource, createFileWriter, getResults };
 }
 
 /**
@@ -123,7 +150,9 @@ function getResultAttributes(
  * Helper to get output log content as string.
  */
 function getOutputLogContent(results: MockWriterResult[]): string {
-  const logResult = results.find((r) => r.handle.name.includes("output"));
+  const logResult = results.find((r) =>
+    r.handle.kind === "file" && r.handle.specName === "log"
+  );
   if (!logResult) return "";
   return new TextDecoder().decode(logResult.content);
 }
@@ -181,7 +210,7 @@ function createTestContext(
   context: MethodContext;
   getResults: () => MockWriterResult[];
 } {
-  const { factory, getResults } = createMockDataWriterFactory();
+  const { writeResource, createFileWriter, getResults } = createMockWriters();
   const context: MethodContext = {
     repoDir: "/tmp",
     modelType: SHELL_MODEL_TYPE,
@@ -189,7 +218,8 @@ function createTestContext(
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
-    createDataWriter: factory,
+    writeResource,
+    createFileWriter,
     ...overrides,
   };
   return { context, getResults };

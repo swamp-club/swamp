@@ -462,7 +462,7 @@ Deno.test("validateModel detects simple identifier expression", async () => {
 
 // Data path reference tests
 
-Deno.test("validateModel with data path passes for valid DataRecord field", async () => {
+Deno.test("validateModel with resource path passes for valid DataRecord field", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
@@ -471,7 +471,7 @@ Deno.test("validateModel with data path passes for valid DataRecord field", asyn
   const definition = Definition.create({
     name: "test-definition",
     attributes: {
-      message: "${{ model.target-model.data.attributes.message }}",
+      message: "${{ model.target-model.resource.message.attributes.message }}",
     },
   });
 
@@ -515,7 +515,7 @@ Deno.test("validateModel fails for missing .attributes segment", async () => {
   assertStringIncludes(exprResult?.error ?? "", "message");
 });
 
-Deno.test("validateModel fails for 'attribute' instead of 'attributes' in direct DataRecord access", async () => {
+Deno.test("validateModel fails for invalid field in resource DataRecord access", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
@@ -524,8 +524,8 @@ Deno.test("validateModel fails for 'attribute' instead of 'attributes' in direct
   const definition = Definition.create({
     name: "test-definition",
     attributes: {
-      // Common typo: "attribute" instead of "attributes"
-      message: "${{ model.target-model.data.attribute.message }}",
+      // "attribute" is not a valid DataRecord field, should be "attributes"
+      message: "${{ model.target-model.resource.message.attribute.message }}",
     },
   });
 
@@ -541,7 +541,7 @@ Deno.test("validateModel fails for 'attribute' instead of 'attributes' in direct
   assertStringIncludes(exprResult?.error ?? "", "attribute");
 });
 
-Deno.test("validateModel with data path passes for nested attributes in direct DataRecord access", async () => {
+Deno.test("validateModel with resource path passes for nested attributes in DataRecord access", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
@@ -550,7 +550,7 @@ Deno.test("validateModel with data path passes for nested attributes in direct D
   const definition = Definition.create({
     name: "test-definition",
     attributes: {
-      vpcId: "${{ model.target-model.data.attributes.vpcId }}",
+      msg: "${{ model.target-model.resource.message.attributes.message }}",
     },
   });
 
@@ -565,7 +565,7 @@ Deno.test("validateModel with data path passes for nested attributes in direct D
   assertEquals(exprResult?.passed, true);
 });
 
-Deno.test("validateModel with data path passes for scalar DataRecord field", async () => {
+Deno.test("validateModel with resource path passes for scalar DataRecord field", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
@@ -574,7 +574,7 @@ Deno.test("validateModel with data path passes for scalar DataRecord field", asy
   const definition = Definition.create({
     name: "test-definition",
     attributes: {
-      allData: "${{ model.target-model.data.id }}",
+      allData: "${{ model.target-model.resource.message.id }}",
     },
   });
 
@@ -589,7 +589,7 @@ Deno.test("validateModel with data path passes for scalar DataRecord field", asy
   assertEquals(exprResult?.passed, true);
 });
 
-Deno.test("validateModel fails for invalid field in direct DataRecord access", async () => {
+Deno.test("validateModel fails for invalid field in resource DataRecord access", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
@@ -598,7 +598,7 @@ Deno.test("validateModel fails for invalid field in direct DataRecord access", a
   const definition = Definition.create({
     name: "test-definition",
     attributes: {
-      bad: "${{ model.target-model.data.badfield }}",
+      bad: "${{ model.target-model.resource.message.badfield }}",
     },
   });
 

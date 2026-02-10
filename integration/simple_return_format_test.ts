@@ -2,7 +2,7 @@
  * Integration tests for user-defined models and expression-aware validation.
  *
  * Tests verify:
- * 1. User models work with the new dataHandles API
+ * 1. User models work with the writeResource/createFileWriter API
  * 2. Expression-aware validation skips schema validation for expression fields
  */
 
@@ -43,7 +43,7 @@ async function createUserModel(
 // User Model with DataWriter API Tests
 // ============================================================================
 
-// User model that uses the new createDataWriter API correctly
+// User model that uses the writeResource API
 const DATAWRITER_MODEL_CODE = `
 import { z } from "npm:zod@4";
 
@@ -52,18 +52,25 @@ const InputSchema = z.object({
   region: z.string().default("us-west-2"),
 });
 
+const ResourceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  region: z.string(),
+  status: z.string(),
+  endpoint: z.string(),
+  createdAt: z.string(),
+});
+
 export const model = {
   type: "@user/datawriter-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
+  resources: {
     "resource": {
-      specType: "resource",
       description: "Resource output",
-      contentType: "application/json",
+      schema: ResourceSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
     },
   },
   methods: {
@@ -81,17 +88,13 @@ export const model = {
           createdAt: new Date().toISOString(),
         };
 
-        // Use the new DataWriter API
-        if (context.createDataWriter) {
-          const writer = context.createDataWriter({
-            name: "resource",
-            specType: "resource",
-          });
-          const handle = await writer.writeText(JSON.stringify(content));
+        // Use the writeResource API
+        if (context.writeResource) {
+          const handle = await context.writeResource("resource", content);
           return { dataHandles: [handle] };
         }
 
-        // Fallback for tests without createDataWriter
+        // Fallback for tests without writeResource
         return { dataHandles: [] };
       },
     },
@@ -128,16 +131,16 @@ Deno.test("Integration: user model with dataWriter API works", async () => {
     const modelDef = modelRegistry.get(modelType);
     assertEquals(modelDef !== undefined, true, "Model should be registered");
 
-    // 4. Verify dataOutputSpecs are registered
+    // 4. Verify resources are registered
     assertEquals(
-      Object.keys(modelDef!.dataOutputSpecs).length,
+      Object.keys(modelDef!.resources ?? {}).length,
       1,
-      "Should have one data output spec",
+      "Should have one resource spec",
     );
     assertEquals(
-      modelDef!.dataOutputSpecs["resource"]?.specType.value,
-      "resource",
-      "Should have resource spec type",
+      modelDef!.resources!["resource"]?.description,
+      "Resource output",
+      "Should have resource spec description",
     );
   });
 });
@@ -158,7 +161,6 @@ export const model = {
   type: "@user/expression-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {},
   methods: {
     process: {
       description: "Process with expression support",
