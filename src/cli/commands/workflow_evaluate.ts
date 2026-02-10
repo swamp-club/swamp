@@ -13,8 +13,10 @@ import { containsVaultExpression } from "../../domain/expressions/expression_eva
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
   extractExpressions,
+  isTaskInputsPath,
   replaceExpressions,
 } from "../../domain/expressions/expression_parser.ts";
+import { hasStepOutputDependency } from "../../domain/expressions/dependency_extractor.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { ModelResolver } from "../../domain/expressions/model_resolver.ts";
 import {
@@ -194,6 +196,14 @@ async function evaluateWorkflow(
     }
     // Skip forEach.in expressions — they must remain as strings for forEach expansion
     if (forEachInExpressions.has(expr.raw)) {
+      continue;
+    }
+    // Skip task.inputs expressions that depend on step outputs (resource, file, execution, data, file.contents).
+    // These are evaluated at step execution time when upstream step outputs are available.
+    if (
+      isTaskInputsPath(expr.path) &&
+      hasStepOutputDependency(expr.celExpression)
+    ) {
       continue;
     }
 

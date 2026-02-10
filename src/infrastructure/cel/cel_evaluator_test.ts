@@ -268,10 +268,12 @@ Deno.test("transformHyphenatedModelRefs handles multiple hyphens", () => {
   );
 });
 
-Deno.test("transformHyphenatedModelRefs handles data references", () => {
+Deno.test("transformHyphenatedModelRefs handles resource references", () => {
   assertEquals(
-    transformHyphenatedModelRefs("model.proxmox-auth.data.attributes.ticket"),
-    'model["proxmox-auth"].data.attributes.ticket',
+    transformHyphenatedModelRefs(
+      "model.proxmox-auth.resource.auth.attributes.ticket",
+    ),
+    'model["proxmox-auth"].resource.auth.attributes.ticket',
   );
 });
 
@@ -282,10 +284,10 @@ Deno.test("transformHyphenatedModelRefs handles file references", () => {
   );
 });
 
-Deno.test("transformHyphenatedModelRefs handles log references", () => {
+Deno.test("transformHyphenatedModelRefs handles file references with different names", () => {
   assertEquals(
-    transformHyphenatedModelRefs("model.my-service.log.entries"),
-    'model["my-service"].log.entries',
+    transformHyphenatedModelRefs("model.my-service.file.entries"),
+    'model["my-service"].file.entries',
   );
 });
 
@@ -296,15 +298,17 @@ Deno.test("transformHyphenatedModelRefs handles execution references", () => {
   );
 });
 
-Deno.test("CelEvaluator handles hyphenated model names in data access", () => {
+Deno.test("CelEvaluator handles hyphenated model names in resource access", () => {
   const evaluator = new CelEvaluator();
   const context = {
     model: {
       "proxmox-auth": {
-        data: {
-          attributes: {
-            ticket: "PVE:user@pve:123456789::abc123",
-            csrfToken: "12345678:abcdef",
+        resource: {
+          auth: {
+            attributes: {
+              ticket: "PVE:user@pve:123456789::abc123",
+              csrfToken: "12345678:abcdef",
+            },
           },
         },
       },
@@ -313,14 +317,14 @@ Deno.test("CelEvaluator handles hyphenated model names in data access", () => {
 
   assertEquals(
     evaluator.evaluate(
-      "model.proxmox-auth.data.attributes.ticket",
+      "model.proxmox-auth.resource.auth.attributes.ticket",
       context,
     ),
     "PVE:user@pve:123456789::abc123",
   );
   assertEquals(
     evaluator.evaluate(
-      "model.proxmox-auth.data.attributes.csrfToken",
+      "model.proxmox-auth.resource.auth.attributes.csrfToken",
       context,
     ),
     "12345678:abcdef",
@@ -403,7 +407,225 @@ Deno.test("CelEvaluator handles model.foo.data.bar.attributes.x pattern", () => 
   );
 });
 
-// Note: The data namespace functions (data.version(), data.latest(), etc.) are
-// tested in the integration tests (integration/data_expression_test.ts) because
-// cel-js doesn't support function call syntax directly in expressions. The functions
-// work through the expression evaluation service which pre-processes expressions.
+// file.contents() and data.*() functions via Environment-registered receiver methods
+
+Deno.test("CelEvaluator evaluates file.contents() with mock file context", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    file: {
+      contents: (modelName: string, specName: string): string | null => {
+        if (modelName === "my-model" && specName === "config") {
+          return '{"key": "value"}';
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'file.contents("my-model", "config")',
+    context,
+  );
+  assertEquals(result, '{"key": "value"}');
+});
+
+Deno.test("CelEvaluator file.contents() returns null for missing file", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    file: {
+      contents: (_modelName: string, _specName: string): string | null => {
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'file.contents("missing", "file")',
+    context,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("CelEvaluator file.contents() in string concatenation", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    file: {
+      contents: (_modelName: string, _specName: string): string | null => {
+        return "hello world";
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    '"content: " + file.contents("m", "s")',
+    context,
+  );
+  assertEquals(result, "content: hello world");
+});
+
+Deno.test("CelEvaluator evaluates data.latest() with mock data context", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (modelName: string, dataName: string) => {
+        if (modelName === "vpc" && dataName === "info") {
+          return {
+            id: "data-1",
+            name: "info",
+            version: 3,
+            attributes: { vpcId: "vpc-123" },
+          };
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("vpc", "info").attributes.vpcId',
+    context,
+  );
+  assertEquals(result, "vpc-123");
+});
+
+Deno.test("CelEvaluator evaluates data.version() with mock data context", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      version: (
+        modelName: string,
+        dataName: string,
+        version: unknown,
+      ) => {
+        // cel-js passes int literals as bigint
+        if (modelName === "vpc" && dataName === "info" && version == 1) {
+          return {
+            id: "data-1",
+            name: "info",
+            version: 1,
+            attributes: { cidr: "10.0.0.0/16" },
+          };
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.version("vpc", "info", 1).attributes.cidr',
+    context,
+  );
+  assertEquals(result, "10.0.0.0/16");
+});
+
+Deno.test("CelEvaluator evaluates data.listVersions() with mock data context", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      listVersions: (modelName: string, dataName: string) => {
+        if (modelName === "vpc" && dataName === "info") {
+          return [1, 2, 3];
+        }
+        return [];
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.listVersions("vpc", "info")',
+    context,
+  );
+  assertEquals(result, [1, 2, 3]);
+});
+
+Deno.test("CelEvaluator evaluates data.findByTag() with mock data context", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      findByTag: (tagKey: string, tagValue: string) => {
+        if (tagKey === "env" && tagValue === "prod") {
+          return [{ id: "d1", name: "info", version: 1, attributes: {} }];
+        }
+        return [];
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.findByTag("env", "prod")',
+    context,
+  );
+  assertEquals(result, [{
+    id: "d1",
+    name: "info",
+    version: 1,
+    attributes: {},
+  }]);
+});
+
+Deno.test("CelEvaluator evaluates data.findBySpec() with mock data context", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      findBySpec: (modelName: string, specName: string) => {
+        if (modelName === "factory" && specName === "subnet") {
+          return [
+            {
+              id: "d1",
+              name: "subnet-a",
+              version: 1,
+              attributes: { cidr: "10.0.1.0/24" },
+              tags: { specName: "subnet" },
+            },
+            {
+              id: "d2",
+              name: "subnet-b",
+              version: 1,
+              attributes: { cidr: "10.0.2.0/24" },
+              tags: { specName: "subnet" },
+            },
+          ];
+        }
+        return [];
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.findBySpec("factory", "subnet")',
+    context,
+  );
+  assertEquals(Array.isArray(result), true);
+  assertEquals((result as unknown[]).length, 2);
+});
+
+Deno.test("CelEvaluator data.findBySpec() returns empty array for no matches", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      findBySpec: (_modelName: string, _specName: string) => {
+        return [];
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.findBySpec("missing", "spec")',
+    context,
+  );
+  assertEquals(result, []);
+});
+
+Deno.test("CelEvaluator receiver method returns null when receiver lacks method", () => {
+  const evaluator = new CelEvaluator();
+  // Provide a file object that has no contents method
+  const context = {
+    file: { path: "/some/path" },
+  };
+
+  const result = evaluator.evaluate(
+    'file.contents("m", "s")',
+    context,
+  );
+  assertEquals(result, null);
+});

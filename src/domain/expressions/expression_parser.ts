@@ -18,10 +18,10 @@ const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/g;
  * @returns The expression with hyphenated model names using bracket notation
  */
 export function transformHyphenatedModelRefs(expression: string): string {
-  // Pattern matches: model.<name-with-hyphens>.(input|resource|data|file|log|execution)
+  // Pattern matches: model.<name-with-hyphens>.(input|resource|file|execution|definition)
   // The name must contain at least one hyphen to need transformation
   return expression.replace(
-    /model\.([a-zA-Z0-9_]+(?:-[a-zA-Z0-9_-]+)+)\.(input|resource|data|file|log|execution)/g,
+    /model\.([a-zA-Z0-9_]+(?:-[a-zA-Z0-9_-]+)+)\.(input|resource|file|execution|definition)/g,
     'model["$1"].$2',
   );
 }
@@ -188,4 +188,15 @@ function replaceExpressionsRecursive(
 export function extractCelExpression(raw: string): string | null {
   const match = raw.match(/^\$\{\{\s*(.+?)\s*\}\}$/);
   return match ? match[1].trim() : null;
+}
+
+/**
+ * Checks if an expression path is within a step's task.inputs.
+ * These paths contain `.task.inputs.` or `.task.inputs[`.
+ *
+ * @param path - The expression path (e.g., "jobs[0].steps[1].task.inputs.vpc_id")
+ * @returns True if the path is within a step's task.inputs
+ */
+export function isTaskInputsPath(path: string): boolean {
+  return path.includes(".task.inputs.") || path.includes(".task.inputs[");
 }
