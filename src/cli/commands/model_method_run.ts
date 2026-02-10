@@ -12,9 +12,17 @@ import { ModelOutput } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import { getRunLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  getRunLogger,
+  runFileSink,
+} from "../../infrastructure/logging/logger.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
+import { join } from "@std/path";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -98,6 +106,23 @@ export const modelMethodRunCommand = new Command()
 
       // Create run logger for real-time output
       const runLogger = getRunLogger(definition.name, methodName);
+
+      // Register run file sink target for log persistence
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const logFilePath = join(
+        swampPath(repoDir, SWAMP_SUBDIRS.outputs),
+        modelType.normalized,
+        methodName,
+        `${definition.id}-${timestamp}.log`,
+      );
+      const runLogCategory = [
+        "model",
+        "method",
+        "run",
+        definition.name,
+        methodName,
+      ];
+      await runFileSink.register(runLogCategory, logFilePath);
 
       runLogger.info("Found model {name} ({type})", {
         name: definition.name,
@@ -317,6 +342,9 @@ export const modelMethodRunCommand = new Command()
           },
         );
       }
+
+      // Unregister run file sink target
+      runFileSink.unregister(runLogCategory);
 
       ctx.logger.debug("Method run command completed");
     },

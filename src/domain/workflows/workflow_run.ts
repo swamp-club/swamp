@@ -64,9 +64,6 @@ export type WorkflowRunData = z.infer<typeof WorkflowRunSchema>;
  * StepRun tracks the execution state of a single step.
  */
 export class StepRun {
-  private _stdoutLines: string[] = [];
-  private _stderrLines: string[] = [];
-
   constructor(
     readonly stepName: string,
     private _status: RunStatus,
@@ -75,26 +72,7 @@ export class StepRun {
     private _error: string | undefined,
     private _output: unknown,
     private _dataArtifacts: DataArtifactRef[] = [],
-  ) {
-    // If output is already structured with stdout/stderr, extract them
-    if (_output && typeof _output === "object" && "stdout" in _output) {
-      const structuredOutput = _output as {
-        stdout?: string;
-        stderr?: string;
-        exitCode?: number;
-      };
-      if (typeof structuredOutput.stdout === "string") {
-        this._stdoutLines = structuredOutput.stdout.length > 0
-          ? structuredOutput.stdout.split("\n")
-          : [];
-      }
-      if (typeof structuredOutput.stderr === "string") {
-        this._stderrLines = structuredOutput.stderr.length > 0
-          ? structuredOutput.stderr.split("\n")
-          : [];
-      }
-    }
-  }
+  ) {}
 
   /**
    * Creates a pending step run.
@@ -162,33 +140,6 @@ export class StepRun {
   }
 
   /**
-   * Appends a line to stdout and updates the output.
-   */
-  appendStdout(line: string): void {
-    this._stdoutLines.push(line);
-    this._updateOutput();
-  }
-
-  /**
-   * Appends a line to stderr and updates the output.
-   */
-  appendStderr(line: string): void {
-    this._stderrLines.push(line);
-    this._updateOutput();
-  }
-
-  /**
-   * Updates the output field with current stdout/stderr lines.
-   */
-  private _updateOutput(): void {
-    this._output = {
-      stdout: this._stdoutLines.join("\n"),
-      stderr: this._stderrLines.join("\n"),
-      exitCode: undefined,
-    };
-  }
-
-  /**
    * Marks the step as running.
    */
   start(): void {
@@ -202,24 +153,8 @@ export class StepRun {
   succeed(output?: unknown): void {
     this._status = "succeeded";
     this._completedAt = new Date();
-    // If output is provided and structured, use it; otherwise preserve accumulated logs
     if (output !== undefined) {
-      // If output includes exitCode, merge it with accumulated logs
-      if (
-        typeof output === "object" && output !== null && "exitCode" in output
-      ) {
-        const structuredOutput = output as { exitCode: number };
-        this._output = {
-          stdout: this._stdoutLines.join("\n"),
-          stderr: this._stderrLines.join("\n"),
-          exitCode: structuredOutput.exitCode,
-        };
-      } else {
-        this._output = output;
-      }
-    } else if (this._stdoutLines.length > 0 || this._stderrLines.length > 0) {
-      // Use accumulated logs if available
-      this._updateOutput();
+      this._output = output;
     }
   }
 

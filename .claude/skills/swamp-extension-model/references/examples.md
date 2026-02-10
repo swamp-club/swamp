@@ -246,6 +246,63 @@ This pattern enables dynamic configuration where one model generates values that
 are consumed by dependent models, with the workflow engine automatically
 resolving execution order based on expression dependencies.
 
+## Shell Command with Streamed Logging
+
+Use `executeProcess` with `context.logger` for shell commands. Output is
+streamed line-by-line through LogTape — displayed on the console and persisted
+to a `.log` file by `RunFileSink` automatically.
+
+```typescript
+// extensions/models/system_info.ts
+import { z } from "npm:zod@4";
+import { executeProcess } from "../../../../src/infrastructure/process/process_executor.ts";
+
+const InputSchema = z.object({
+  command: z.string().default("uname -a"),
+  timeoutMs: z.number().optional(),
+});
+
+export const model = {
+  type: "myorg/system-info",
+  version: "2026.02.09.1",
+  inputAttributesSchema: InputSchema,
+  methods: {
+    run: {
+      description: "Run a system command with streamed output",
+      execute: async (definition, context) => {
+        const attrs = definition.attributes;
+
+        // executeProcess streams stdout (info) and stderr (warn) through
+        // context.logger, which routes to console + run log file.
+        const result = await executeProcess({
+          command: "sh",
+          args: ["-c", attrs.command],
+          timeoutMs: attrs.timeoutMs,
+          logger: context.logger,
+        });
+
+        if (!result.success) {
+          throw new Error(
+            `Command failed (exit ${result.exitCode}): ${result.stderr}`,
+          );
+        }
+
+        return {
+          data: {
+            attributes: {
+              stdout: result.stdout,
+              exitCode: result.exitCode,
+              durationMs: result.durationMs,
+            },
+            name: "output",
+          },
+        };
+      },
+    },
+  },
+};
+```
+
 ## Extending Existing Model Types
 
 ### Single Method Extension

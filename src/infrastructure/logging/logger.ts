@@ -8,6 +8,9 @@ import {
   type Sink,
 } from "@logtape/logtape";
 import { getPrettyFormatter } from "@logtape/pretty";
+import { runFileSink } from "./run_file_sink.ts";
+
+export { runFileSink } from "./run_file_sink.ts";
 
 export interface LoggingOptions {
   prettyOutput?: boolean;
@@ -75,6 +78,7 @@ export async function initializeLogging(
     console: options.noColor
       ? getConsoleSink({ formatter: getTextFormatter() })
       : getConsoleSink(),
+    runFile: runFileSink.sink,
   };
 
   const loggers: Array<{
@@ -131,6 +135,16 @@ export async function initializeLogging(
     sinks,
     loggers: [
       ...loggers,
+      {
+        category: ["model", "method", "run"],
+        lowestLevel: logLevel,
+        sinks: ["runFile"],
+      },
+      {
+        category: ["workflow", "run"],
+        lowestLevel: logLevel,
+        sinks: ["runFile"],
+      },
       {
         category: ["logtape", "meta"],
         lowestLevel: "warning",

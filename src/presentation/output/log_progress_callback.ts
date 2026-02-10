@@ -7,8 +7,8 @@ import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 
 /**
  * Creates a LogTape-based progress callback for workflow lifecycle events.
- * Stdout/stderr logging is handled by the step executors when enableStepLogging
- * is set, so this callback intentionally omits onStepStdout/onStepStderr.
+ * Process output is streamed through LogTape loggers and persisted by
+ * RunFileSink, so no stdout/stderr callbacks are needed.
  */
 export function createLogProgressCallback(
   workflowName: string,
