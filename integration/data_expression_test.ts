@@ -44,10 +44,10 @@ async function createOwner(ref: string): Promise<OwnerDefinition> {
 }
 
 // ============================================================================
-// Model Data Namespace Access: model.<name>.data.<data-name>
+// Model Resource Namespace Access: model.<name>.resource.<specName>
 // ============================================================================
 
-Deno.test("Integration: model.X.data.Y accesses latest version of data", async () => {
+Deno.test("Integration: model.X.resource.specName accesses latest version of resource", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
@@ -102,21 +102,19 @@ Deno.test("Integration: model.X.data.Y accesses latest version of data", async (
     });
     const context = await modelResolver.buildContext();
 
-    // Verify model.my-vpc.data exists and has latest version (single artifact unwrapped)
+    // Verify model.my-vpc.resource.vpc-info exists and has latest version
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
-    assertExists(modelData.data);
-    const dataRecord = modelData.data as {
-      version: number;
-      attributes: Record<string, unknown>;
-    };
-    assertEquals(dataRecord.version, 2);
-    assertEquals(dataRecord.attributes.vpcId, "vpc-222");
+    assertExists(modelData.resource);
+    const resourceRecord = modelData.resource!["vpc-info"];
+    assertExists(resourceRecord);
+    assertEquals(resourceRecord.version, 2);
+    assertEquals(resourceRecord.attributes.vpcId, "vpc-222");
 
-    // Evaluate CEL expression (single artifact: data is unwrapped)
+    // Evaluate CEL expression with new pattern: model.X.resource.specName.attributes.field
     const celEvaluator = new CelEvaluator();
     const result = celEvaluator.evaluate(
-      'model["my-vpc"].data.attributes.vpcId',
+      'model["my-vpc"].resource["vpc-info"].attributes.vpcId',
       context,
     );
     assertEquals(result, "vpc-222");
@@ -468,7 +466,7 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
 // Multiple Data Items Per Model
 // ============================================================================
 
-Deno.test("Integration: model can have multiple named data items", async () => {
+Deno.test("Integration: model can have multiple named data items with mixed types", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
@@ -484,13 +482,29 @@ Deno.test("Integration: model can have multiple named data items", async () => {
 
     const owner = await createOwner("test/model:create");
 
-    // Create multiple data items
+    // Create resource data items
+    const exitCode = Data.create({
+      name: "exit-code",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "resource" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      definition.id,
+      exitCode,
+      new TextEncoder().encode(JSON.stringify({ code: 0 })),
+    );
+
+    // Create file data items
     const stdout = Data.create({
       name: "stdout",
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "output" },
+      tags: { type: "file" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -505,7 +519,7 @@ Deno.test("Integration: model can have multiple named data items", async () => {
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "error" },
+      tags: { type: "file" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -515,38 +529,22 @@ Deno.test("Integration: model can have multiple named data items", async () => {
       new TextEncoder().encode(""),
     );
 
-    const exitCode = Data.create({
-      name: "exit-code",
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 5,
-      tags: { type: "status" },
-      ownerDefinition: owner,
-    });
-    await dataRepo.save(
-      type,
-      definition.id,
-      exitCode,
-      new TextEncoder().encode(JSON.stringify({ code: 0 })),
-    );
-
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
     });
     const context = await modelResolver.buildContext();
 
-    // All data items should be accessible (multi-artifact: data is a map)
+    // Resource items accessible via model.X.resource.specName
     const modelData = context.model["my-command"];
     assertExists(modelData);
-    assertExists(modelData.data);
-    const dataMap = modelData.data as Record<
-      string,
-      { attributes: Record<string, unknown>; tags: Record<string, string> }
-    >;
-    assertExists(dataMap["stdout"]);
-    assertExists(dataMap["stderr"]);
-    assertExists(dataMap["exit-code"]);
+    assertExists(modelData.resource);
+    assertExists(modelData.resource!["exit-code"]);
+
+    // File items accessible via model.X.file.specName
+    assertExists(modelData.file);
+    assertExists(modelData.file!["stdout"]);
+    assertExists(modelData.file!["stderr"]);
 
     // Also via data functions
     assertExists(context.data);

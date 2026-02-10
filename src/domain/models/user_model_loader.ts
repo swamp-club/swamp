@@ -5,24 +5,23 @@ import { CalVer } from "./calver.ts";
 import type { Definition } from "../definitions/definition.ts";
 import {
   type DataHandle,
-  type DataOutputSpecification,
-  DataOutputSpecificationSchema,
-  DataSpecType,
+  FileOutputSpecSchema,
   type MethodContext,
   type MethodDefinition,
   type MethodResult,
   type ModelDefinition,
   modelRegistry,
+  ResourceOutputSpecSchema,
   type VersionUpgrade,
 } from "./model.ts";
 
 /**
  * Plain object result returned by user methods before conversion.
- * User models must use context.createDataWriter() to produce data.
+ * User models must use context.writeResource() / context.createFileWriter() to produce data.
  */
 interface UserMethodResult {
   /**
-   * Handles for data written via context.createDataWriter() during execution.
+   * Handles for data written via context.writeResource() / context.createFileWriter() during execution.
    */
   dataHandles?: DataHandle[];
   [key: string]: unknown;
@@ -72,7 +71,8 @@ const UserModelSchema = z.object({
   inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
   ),
-  dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema),
+  resources: z.record(z.string(), ResourceOutputSpecSchema).optional(),
+  files: z.record(z.string(), FileOutputSpecSchema).optional(),
   methods: z.record(z.string(), UserMethodSchema),
   upgrades: z.array(UserUpgradeSchema).optional(),
 });
@@ -303,7 +303,7 @@ export class UserModelLoader {
 
   /**
    * Wraps a user execute function to pass through dataHandles from the result.
-   * User models write data via context.createDataWriter() and return handles.
+   * User models write data via context.writeResource() / context.createFileWriter() and return handles.
    */
   private wrapUserExecute(
     userExecuteFn: UserExecuteFn,
@@ -334,15 +334,6 @@ export class UserModelLoader {
       };
     }
 
-    // User-declared specs need specType converted from string to DataSpecType
-    const userSpecs: Record<string, DataOutputSpecification> = {};
-    for (const [key, spec] of Object.entries(userModel.dataOutputSpecs)) {
-      userSpecs[key] = {
-        ...spec,
-        specType: DataSpecType.create(String(spec.specType)),
-      };
-    }
-
     // Convert user upgrades to VersionUpgrade[]
     const upgrades: VersionUpgrade[] | undefined = userModel.upgrades?.map(
       (u) => ({
@@ -356,7 +347,8 @@ export class UserModelLoader {
       type: modelType,
       version: userModel.version,
       inputAttributesSchema: userModel.inputAttributesSchema,
-      dataOutputSpecs: { ...userSpecs },
+      resources: userModel.resources,
+      files: userModel.files,
       methods,
       ...(upgrades && upgrades.length > 0 ? { upgrades } : {}),
     };

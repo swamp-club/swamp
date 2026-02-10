@@ -13,7 +13,6 @@ function createModelDef(
     type: ModelType.create("test/upgradeable"),
     version,
     inputAttributesSchema: z.object({}),
-    dataOutputSpecs: {},
     methods: {},
     upgrades,
   };

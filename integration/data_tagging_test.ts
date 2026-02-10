@@ -484,7 +484,7 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
 // Tag Access in CEL Expressions
 // ============================================================================
 
-Deno.test("Data Tagging: access tags via model.X.data.Y.tags", async () => {
+Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
@@ -525,11 +525,11 @@ Deno.test("Data Tagging: access tags via model.X.data.Y.tags", async () => {
     });
     const context = await modelResolver.buildContext();
 
-    // Access tags directly
+    // Access tags directly via resource namespace
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
-    assertExists(modelData.data);
-    const dataRecord = modelData.data as {
+    assertExists(modelData.resource);
+    const dataRecord = modelData.resource!["vpc-state"] as {
       tags: Record<string, string>;
     };
     assertEquals(dataRecord.tags.type, "resource");
@@ -542,7 +542,7 @@ Deno.test("Data Tagging: access tags via model.X.data.Y.tags", async () => {
 // Multiple Data Items Per Model
 // ============================================================================
 
-Deno.test("Data Tagging: multiple data items with different tags", async () => {
+Deno.test("Data Tagging: multiple resource items with different tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
@@ -557,7 +557,7 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     });
     await definitionRepo.save(type, definition);
 
-    // Create multiple data items with different tags
+    // Create multiple resource data items with different custom tags
     const dataItems: Array<{
       name: string;
       tags: Record<string, string>;
@@ -565,22 +565,22 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     }> = [
       {
         name: "stdout",
-        tags: { type: "output", stream: "stdout" },
-        content: "standard output",
+        tags: { type: "resource", stream: "stdout" },
+        content: JSON.stringify({ output: "standard output" }),
       },
       {
         name: "stderr",
-        tags: { type: "output", stream: "stderr" },
-        content: "error output",
+        tags: { type: "resource", stream: "stderr" },
+        content: JSON.stringify({ output: "error output" }),
       },
       {
         name: "exit-code",
-        tags: { type: "status" },
+        tags: { type: "resource", category: "status" },
         content: JSON.stringify({ code: 0 }),
       },
       {
         name: "timing",
-        tags: { type: "metrics", category: "performance" },
+        tags: { type: "resource", category: "performance" },
         content: JSON.stringify({ duration: 1234 }),
       },
     ];
@@ -588,9 +588,7 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     for (const item of dataItems) {
       const data = Data.create({
         name: item.name,
-        contentType: item.name === "exit-code" || item.name === "timing"
-          ? "application/json"
-          : "text/plain",
+        contentType: "application/json",
         lifetime: "infinite",
         garbageCollection: 5,
         tags: item.tags,
@@ -611,32 +609,32 @@ Deno.test("Data Tagging: multiple data items with different tags", async () => {
     });
     const context = await modelResolver.buildContext();
 
-    // Access all data from model (multi-artifact: data is a map)
+    // Access all resource data from model (resource is a map of specName -> DataRecord)
     const modelData = context.model["multi-output-model"];
     assertExists(modelData);
-    assertExists(modelData.data);
-    const dataMap = modelData.data as Record<
+    assertExists(modelData.resource);
+    const resourceMap = modelData.resource as Record<
       string,
       { tags: Record<string, string> }
     >;
-    assertExists(dataMap["stdout"]);
-    assertExists(dataMap["stderr"]);
-    assertExists(dataMap["exit-code"]);
-    assertExists(dataMap["timing"]);
+    assertExists(resourceMap["stdout"]);
+    assertExists(resourceMap["stderr"]);
+    assertExists(resourceMap["exit-code"]);
+    assertExists(resourceMap["timing"]);
 
-    // Verify tags
-    assertEquals(dataMap["stdout"].tags.stream, "stdout");
-    assertEquals(dataMap["stderr"].tags.stream, "stderr");
-    assertEquals(dataMap["timing"].tags.category, "performance");
+    // Verify custom tags
+    assertEquals(resourceMap["stdout"].tags.stream, "stdout");
+    assertEquals(resourceMap["stderr"].tags.stream, "stderr");
+    assertEquals(resourceMap["timing"].tags.category, "performance");
 
     // Query by tags
     assertExists(context.data);
 
-    const outputs = context.data.findByTag("type", "output");
-    assertEquals(outputs.length, 2);
+    const resources = context.data.findByTag("type", "resource");
+    assertEquals(resources.length, 4);
 
-    const metrics = context.data.findByTag("type", "metrics");
-    assertEquals(metrics.length, 1);
+    const perfItems = context.data.findByTag("category", "performance");
+    assertEquals(perfItems.length, 1);
   });
 });
 

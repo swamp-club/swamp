@@ -18,10 +18,10 @@ const EXPRESSION_PATTERN = /\$\{\{\s*(.+?)\s*\}\}/g;
  * @returns The expression with hyphenated model names using bracket notation
  */
 export function transformHyphenatedModelRefs(expression: string): string {
-  // Pattern matches: model.<name-with-hyphens>.(input|resource|data|file|log|execution)
+  // Pattern matches: model.<name-with-hyphens>.(input|resource|file|execution|definition)
   // The name must contain at least one hyphen to need transformation
   return expression.replace(
-    /model\.([a-zA-Z0-9_]+(?:-[a-zA-Z0-9_-]+)+)\.(input|resource|data|file|log|execution)/g,
+    /model\.([a-zA-Z0-9_]+(?:-[a-zA-Z0-9_-]+)+)\.(input|resource|file|execution|definition)/g,
     'model["$1"].$2',
   );
 }

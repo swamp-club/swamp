@@ -38,10 +38,8 @@ Swamp uses a dual-layer architecture:
 ```
 /models/{model-name}/
   input.yaml → ../.swamp/definitions/{type}/{id}.yaml
-  resource.yaml → ../.swamp/data/{type}/{id}/resource/latest/raw
-  data.yaml → ../.swamp/data/{type}/{id}/data/latest/raw
+  resource.yaml → ../.swamp/data/{type}/{id}/{specName}/latest/raw  (type=resource)
   outputs/ → ../.swamp/outputs/{type}/{id}/
-  logs/ → ../.swamp/data/{type}/{id}/ (filtered by type=log)
   files/ → ../.swamp/data/{type}/{id}/ (filtered by type=file)
 ```
 
@@ -259,15 +257,16 @@ Model inputs support CEL expressions using `${{ <expression> }}` syntax.
 
 ### Reference Types
 
-| Reference                                  | Description                        |
-| ------------------------------------------ | ---------------------------------- |
-| `inputs.<name>`                            | Runtime input value                |
-| `model.<name>.input.attributes.<field>`    | Another model's input attribute    |
-| `model.<name>.resource.attributes.<field>` | Another model's resource attribute |
-| `model.<name>.data.attributes.<field>`     | Another model's data attribute     |
-| `self.name`                                | This model's name                  |
-| `self.version`                             | This model's version               |
-| `self.attributes.<field>`                  | This model's own input attribute   |
+| Reference                                                  | Description                           |
+| ---------------------------------------------------------- | ------------------------------------- |
+| `inputs.<name>`                                            | Runtime input value                   |
+| `model.<name>.input.attributes.<field>`                    | Another model's input attribute       |
+| `model.<name>.resource.<specName>.attributes.<field>`      | A model's resource data field         |
+| `model.<name>.file.<specName>.{path\|size\|contentType}`   | A model's file metadata               |
+| `file.contents("<modelName>", "<specName>")`               | Lazy-load file contents from disk     |
+| `self.name`                                                | This model's name                     |
+| `self.version`                                             | This model's version                  |
+| `self.attributes.<field>`                                  | This model's own input attribute      |
 
 ### CEL Operations
 
@@ -305,14 +304,14 @@ Access specific versions of model data using the `data` namespace:
 # Get specific version
 oldValue: ${{ data.version("my-model", "state", 2).attributes.value }}
 
-# Get latest (same as model.my-model.data)
+# Get latest
 current: ${{ data.latest("my-model", "output").attributes.result }}
 
 # List versions for conditional logic
 hasHistory: ${{ size(data.listVersions("my-model", "state")) > 1 }}
 
 # Find by tag
-allLogs: ${{ data.findByTag("type", "log") }}
+allResources: ${{ data.findByTag("type", "resource") }}
 ```
 
 ### Example with Expressions
@@ -323,7 +322,7 @@ name: my-subnet
 version: 1
 tags: {}
 attributes:
-  vpcId: ${{ model.my-vpc.resource.attributes.vpcId }}
+  vpcId: ${{ model.my-vpc.resource.resource.attributes.VpcId }}
   cidrBlock: "10.0.1.0/24"
   tags:
     Name: ${{ self.name + "-subnet" }}
@@ -382,8 +381,7 @@ swamp model method run my-deploy create --last-evaluated --json
   "status": "succeeded",
   "duration": 150,
   "artifacts": {
-    "resource": ".swamp/data/swamp/echo/abc-123/resource/1/raw",
-    "logs": ".swamp/data/swamp/echo/abc-123/log/1/raw"
+    "resource": ".swamp/data/swamp/echo/abc-123/message/1/raw"
   }
 }
 ```
@@ -438,8 +436,7 @@ swamp model output get my-echo --json  # Latest output for model
   "startedAt": "2025-01-15T10:30:00Z",
   "completedAt": "2025-01-15T10:30:00.150Z",
   "artifacts": [
-    { "type": "resource", "path": "..." },
-    { "type": "log", "path": "..." }
+    { "type": "resource", "path": "..." }
   ]
 }
 ```

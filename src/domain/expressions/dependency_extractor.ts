@@ -6,8 +6,8 @@ export type DependencyType =
   | "resource"
   | "data"
   | "file"
-  | "log"
-  | "execution";
+  | "execution"
+  | "definition";
 
 /**
  * Artifact types that create implicit workflow dependencies.
@@ -16,7 +16,6 @@ export const ArtifactDependencyTypes: readonly DependencyType[] = [
   "resource",
   "data",
   "file",
-  "log",
 ] as const;
 
 /**
@@ -31,10 +30,10 @@ export interface ExpressionDependency {
 
 /**
  * Pattern to match model references in CEL expressions.
- * Matches: model.<name-or-uuid>.(input|resource|data|file|log|execution)
+ * Matches: model.<name-or-uuid>.(input|resource|file|execution|definition)
  */
 const MODEL_REF_PATTERN =
-  /model\.([a-zA-Z0-9_-]+)\.(input|resource|data|file|log|execution)/g;
+  /model\.([a-zA-Z0-9_-]+)\.(input|resource|file|execution|definition)/g;
 
 /**
  * Pattern to match data function calls in CEL expressions.
@@ -97,14 +96,14 @@ export function extractModelRefs(expression: string): string[] {
 }
 
 /**
- * Checks if an expression has any artifact dependencies (resource, data, file, log).
+ * Checks if an expression has any artifact dependencies (resource, file).
  * Artifact dependencies create implicit workflow step dependencies.
  *
  * @param expression - The CEL expression to check
  * @returns True if the expression references any model artifacts
  */
 export function hasArtifactDependency(expression: string): boolean {
-  return /model\.[a-zA-Z0-9_-]+\.(resource|data|file|log)/.test(expression);
+  return /model\.[a-zA-Z0-9_-]+\.(resource|file)/.test(expression);
 }
 
 /**
@@ -121,10 +120,10 @@ export function hasResourceDependency(expression: string): boolean {
 /**
  * Extracts all artifact dependencies from a CEL expression.
  * These create implicit workflow step dependencies.
- * Includes both model.X.data patterns and data.version/latest/listVersions function calls.
+ * Includes both model.X.resource/file patterns and data.version/latest/listVersions function calls.
  *
  * @param expression - The CEL expression to analyze
- * @returns Array of dependencies with artifact types (resource, data, file, log)
+ * @returns Array of dependencies with artifact types (resource, data, file)
  */
 export function extractArtifactDependencies(
   expression: string,
@@ -133,7 +132,7 @@ export function extractArtifactDependencies(
   const seen = new Set<string>();
 
   // Extract from model.X.property patterns
-  const pattern = /model\.([a-zA-Z0-9_-]+)\.(resource|data|file|log)/g;
+  const pattern = /model\.([a-zA-Z0-9_-]+)\.(resource|file)/g;
   const matches = expression.matchAll(pattern);
   for (const match of matches) {
     const modelRef = match[1];

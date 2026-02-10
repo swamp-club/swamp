@@ -759,10 +759,22 @@ class ModelMethodMockExecutor implements StepExecutor {
   /** Maps step name to the model output it should return */
   stepOutputs: Map<string, {
     model: string;
-    resourceId?: string;
-    resourceAttributes?: Record<string, unknown>;
-    dataId?: string;
-    dataAttributes?: Record<string, unknown>;
+    resources?: Record<string, {
+      id: string;
+      name: string;
+      version: number;
+      createdAt: string;
+      attributes: Record<string, unknown>;
+      tags: Record<string, string>;
+    }>;
+    files?: Record<string, {
+      id: string;
+      version: number;
+      createdAt: string;
+      path: string;
+      size: number;
+      contentType: string;
+    }>;
   }> = new Map();
   /** Captures the expression context at each step for verification */
   capturedContexts: Map<string, Record<string, unknown>> = new Map();
@@ -784,11 +796,6 @@ class ModelMethodMockExecutor implements StepExecutor {
       return Promise.resolve({
         type: "model_method",
         method: "test",
-        resourceId: "",
-        resourcePath: "",
-        resourceAttributes: {},
-        dataId: "",
-        dataAttributes: {},
         ...output,
       });
     }
@@ -803,18 +810,34 @@ Deno.test("updates data context between workflow steps", async () => {
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ModelMethodMockExecutor();
 
-    // Configure step1 to produce data that step2 should be able to see
+    // Configure step1 to produce resource data that step2 should be able to see
     executor.stepOutputs.set("step1", {
       model: "auth-model",
-      dataId: "auth-data-123",
-      dataAttributes: { token: "secret-token", expiresAt: "2024-01-01" },
+      resources: {
+        "auth": {
+          id: "auth-data-123",
+          name: "auth",
+          version: 1,
+          createdAt: "2024-01-01T00:00:00Z",
+          attributes: { token: "secret-token", expiresAt: "2024-01-01" },
+          tags: { type: "resource" },
+        },
+      },
     });
 
     // step2 depends on step1, should see the data written by step1
     executor.stepOutputs.set("step2", {
       model: "list-model",
-      resourceId: "list-resource-456",
-      resourceAttributes: { items: ["a", "b", "c"] },
+      resources: {
+        "list": {
+          id: "list-resource-456",
+          name: "list",
+          version: 1,
+          createdAt: "2024-01-01T00:00:00Z",
+          attributes: { items: ["a", "b", "c"] },
+          tags: { type: "resource" },
+        },
+      },
     });
 
     const workflow = Workflow.create({
@@ -856,33 +879,61 @@ Deno.test("updates data context between workflow steps", async () => {
     assertEquals(run.status, "succeeded");
     assertEquals(executor.executedSteps, ["job1/step1", "job1/step2"]);
 
-    // Verify step2 saw the data context updated from step1
+    // Verify step2 saw the resource context updated from step1
     const step2Context = executor.capturedContexts.get("step2");
     const authModelData = step2Context?.["auth-model"] as {
-      data?: { id: string; name: string; attributes: Record<string, unknown> };
+      resource?: Record<
+        string,
+        { id: string; attributes: Record<string, unknown> }
+      >;
     };
 
-    // The data should be available in the context when step2 runs
-    // Single artifact is unwrapped directly as a DataRecord
-    assertEquals(authModelData?.data?.id, "auth-data-123");
-    assertEquals(authModelData?.data?.attributes?.token, "secret-token");
-    assertEquals(authModelData?.data?.attributes?.expiresAt, "2024-01-01");
+    // The resource data should be available in the context when step2 runs
+    // Resources are keyed by specName
+    assertEquals(authModelData?.resource?.["auth"]?.id, "auth-data-123");
+    assertEquals(
+      authModelData?.resource?.["auth"]?.attributes?.token,
+      "secret-token",
+    );
+    assertEquals(
+      authModelData?.resource?.["auth"]?.attributes?.expiresAt,
+      "2024-01-01",
+    );
   });
 });
 
-Deno.test("updates both resource and data context when step produces both", async () => {
+Deno.test("updates both resource and file context when step produces both", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
     const executor = new ModelMethodMockExecutor();
 
-    // Configure step1 to produce both resource and data
+    // Configure step1 to produce both resource and file
     executor.stepOutputs.set("step1", {
       model: "sync-model",
-      resourceId: "resource-123",
-      resourceAttributes: { status: "synced" },
-      dataId: "data-456",
-      dataAttributes: { lastSyncTime: "2024-01-01T00:00:00Z" },
+      resources: {
+        "sync-status": {
+          id: "resource-123",
+          name: "sync-status",
+          version: 1,
+          createdAt: "2024-01-01T00:00:00Z",
+          attributes: {
+            status: "synced",
+            lastSyncTime: "2024-01-01T00:00:00Z",
+          },
+          tags: { type: "resource" },
+        },
+      },
+      files: {
+        "sync-log": {
+          id: "file-456",
+          version: 1,
+          createdAt: "2024-01-01T00:00:00Z",
+          path: "/tmp/sync.log",
+          size: 1024,
+          contentType: "text/plain",
+        },
+      },
     });
 
     executor.stepOutputs.set("step2", {
@@ -890,7 +941,7 @@ Deno.test("updates both resource and data context when step produces both", asyn
     });
 
     const workflow = Workflow.create({
-      name: "resource-and-data-context",
+      name: "resource-and-file-context",
       jobs: [
         Job.create({
           name: "job1",
@@ -927,22 +978,30 @@ Deno.test("updates both resource and data context when step produces both", asyn
 
     assertEquals(run.status, "succeeded");
 
-    // Verify step2 saw both resource and data context from step1
+    // Verify step2 saw both resource and file context from step1
     const step2Context = executor.capturedContexts.get("step2");
     const syncModelData = step2Context?.["sync-model"] as {
-      resource?: { id: string; attributes: Record<string, unknown> };
-      data?: { id: string; name: string; attributes: Record<string, unknown> };
+      resource?: Record<
+        string,
+        { id: string; attributes: Record<string, unknown> }
+      >;
+      file?: Record<
+        string,
+        { id: string; path: string; size: number; contentType: string }
+      >;
     };
 
-    // Resource should be in context
-    assertEquals(syncModelData?.resource?.id, "resource-123");
-    assertEquals(syncModelData?.resource?.attributes?.status, "synced");
-
-    // Data should also be in context (single artifact unwrapped as DataRecord)
-    assertEquals(syncModelData?.data?.id, "data-456");
+    // Resource should be in context (keyed by specName)
+    assertEquals(syncModelData?.resource?.["sync-status"]?.id, "resource-123");
     assertEquals(
-      syncModelData?.data?.attributes?.lastSyncTime,
-      "2024-01-01T00:00:00Z",
+      syncModelData?.resource?.["sync-status"]?.attributes?.status,
+      "synced",
     );
+
+    // File should also be in context (keyed by specName)
+    assertEquals(syncModelData?.file?.["sync-log"]?.id, "file-456");
+    assertEquals(syncModelData?.file?.["sync-log"]?.path, "/tmp/sync.log");
+    assertEquals(syncModelData?.file?.["sync-log"]?.size, 1024);
+    assertEquals(syncModelData?.file?.["sync-log"]?.contentType, "text/plain");
   });
 });

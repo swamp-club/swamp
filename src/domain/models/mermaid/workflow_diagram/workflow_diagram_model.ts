@@ -2,7 +2,6 @@ import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import { computeChecksum } from "../../checksum.ts";
 import {
-  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -310,20 +309,12 @@ async function executeGenerate(
     checksum,
   };
 
-  const metadataWriter = context.createDataWriter!({
-    name: `${definition.name}-metadata`,
-    specType: "metadata",
-  });
-
-  const diagramWriter = context.createDataWriter!({
-    name: `${definition.name}-diagram`,
-    specType: "file",
-    tags: { filename },
-  });
-
-  const metadataHandle = await metadataWriter.writeText(
-    JSON.stringify(metadataAttributes),
+  const metadataHandle = await context.writeResource!(
+    "metadata",
+    metadataAttributes,
   );
+
+  const diagramWriter = context.createFileWriter!("diagram");
   const diagramHandle = await diagramWriter.writeAll(content);
 
   return { dataHandles: [metadataHandle, diagramHandle] };
@@ -343,22 +334,20 @@ export const mermaidWorkflowModel: ModelDefinition<
   type: MERMAID_WORKFLOW_MODEL_TYPE,
   version: "2026.02.09.1",
   inputAttributesSchema: MermaidWorkflowInputAttributesSchema,
-  dataOutputSpecs: {
+  resources: {
     "metadata": {
-      specType: DataSpecType.create("metadata"),
       description: "Workflow diagram metadata (job count, step count, status)",
-      contentType: "application/json",
+      schema: MermaidWorkflowResourceAttributesSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
-    "file": {
-      specType: DataSpecType.create("file"),
+  },
+  files: {
+    "diagram": {
       description: "Mermaid diagram file content",
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "file" },
     },
   },
   methods: {

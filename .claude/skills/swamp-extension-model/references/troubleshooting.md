@@ -17,25 +17,23 @@ export const model = { ... };
 export const extension = { ... };
 ```
 
-### "Undeclared spec type" or "dataOutputSpecs is required"
+### "Unknown resource spec" or "Unknown file spec"
 
-Every model must declare `dataOutputSpecs` listing each spec type used by
-`createDataWriter`. If a method calls `createDataWriter({ specType: "data" })`,
-the model must include a `"data"` entry in `dataOutputSpecs`:
+When calling `writeResource(specName, data)` or `createFileWriter(specName)`,
+the `specName` must match a key declared in the model's `resources` or `files`.
+Declare specs on the model definition:
 
 ```typescript
 export const model = {
   type: "@user/my-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "data": {
-      specType: "data",
+  resources: {
+    "result": {
       description: "Model output data",
-      contentType: "application/json",
+      schema: z.object({ value: z.string() }),
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: { ... },

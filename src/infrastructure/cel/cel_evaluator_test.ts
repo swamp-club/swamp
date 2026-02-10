@@ -268,10 +268,12 @@ Deno.test("transformHyphenatedModelRefs handles multiple hyphens", () => {
   );
 });
 
-Deno.test("transformHyphenatedModelRefs handles data references", () => {
+Deno.test("transformHyphenatedModelRefs handles resource references", () => {
   assertEquals(
-    transformHyphenatedModelRefs("model.proxmox-auth.data.attributes.ticket"),
-    'model["proxmox-auth"].data.attributes.ticket',
+    transformHyphenatedModelRefs(
+      "model.proxmox-auth.resource.auth.attributes.ticket",
+    ),
+    'model["proxmox-auth"].resource.auth.attributes.ticket',
   );
 });
 
@@ -282,10 +284,10 @@ Deno.test("transformHyphenatedModelRefs handles file references", () => {
   );
 });
 
-Deno.test("transformHyphenatedModelRefs handles log references", () => {
+Deno.test("transformHyphenatedModelRefs handles file references with different names", () => {
   assertEquals(
-    transformHyphenatedModelRefs("model.my-service.log.entries"),
-    'model["my-service"].log.entries',
+    transformHyphenatedModelRefs("model.my-service.file.entries"),
+    'model["my-service"].file.entries',
   );
 });
 
@@ -296,15 +298,17 @@ Deno.test("transformHyphenatedModelRefs handles execution references", () => {
   );
 });
 
-Deno.test("CelEvaluator handles hyphenated model names in data access", () => {
+Deno.test("CelEvaluator handles hyphenated model names in resource access", () => {
   const evaluator = new CelEvaluator();
   const context = {
     model: {
       "proxmox-auth": {
-        data: {
-          attributes: {
-            ticket: "PVE:user@pve:123456789::abc123",
-            csrfToken: "12345678:abcdef",
+        resource: {
+          auth: {
+            attributes: {
+              ticket: "PVE:user@pve:123456789::abc123",
+              csrfToken: "12345678:abcdef",
+            },
           },
         },
       },
@@ -313,14 +317,14 @@ Deno.test("CelEvaluator handles hyphenated model names in data access", () => {
 
   assertEquals(
     evaluator.evaluate(
-      "model.proxmox-auth.data.attributes.ticket",
+      "model.proxmox-auth.resource.auth.attributes.ticket",
       context,
     ),
     "PVE:user@pve:123456789::abc123",
   );
   assertEquals(
     evaluator.evaluate(
-      "model.proxmox-auth.data.attributes.csrfToken",
+      "model.proxmox-auth.resource.auth.attributes.csrfToken",
       context,
     ),
     "12345678:abcdef",

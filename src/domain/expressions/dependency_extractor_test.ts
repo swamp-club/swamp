@@ -146,12 +146,15 @@ Deno.test("extractArtifactDependencies includes data function calls", () => {
   assertEquals(deps[0].type, "data");
 });
 
-Deno.test("extractArtifactDependencies combines model.X.data and data functions", () => {
+Deno.test("extractArtifactDependencies combines model.X.resource and data functions", () => {
   const expr =
-    "model.a.data.result.value + data.version('b', 'output', 1).value";
+    "model.a.resource.result.attributes.value + data.version('b', 'output', 1).value";
   const deps = extractArtifactDependencies(expr);
   assertEquals(deps.length, 2);
-  assertEquals(deps.some((d) => d.modelRef === "a" && d.type === "data"), true);
+  assertEquals(
+    deps.some((d) => d.modelRef === "a" && d.type === "resource"),
+    true,
+  );
   assertEquals(deps.some((d) => d.modelRef === "b" && d.type === "data"), true);
 });
 
