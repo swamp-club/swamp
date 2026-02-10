@@ -88,4 +88,68 @@ export class ModelType {
   toString(): string {
     return this.raw;
   }
+
+  /**
+   * Checks if a normalized type string starts with '@' (user namespace).
+   */
+  static isUserNamespace(normalized: string): boolean {
+    return normalized.startsWith("@");
+  }
+
+  /**
+   * Extracts the namespace from a user namespace type.
+   * Returns the segment after '@' (e.g., "@user/foo/bar" → "user").
+   * Returns undefined if not a user namespace.
+   */
+  static getUserNamespace(normalized: string): string | undefined {
+    if (!ModelType.isUserNamespace(normalized)) {
+      return undefined;
+    }
+    const withoutAt = normalized.slice(1);
+    const slashIndex = withoutAt.indexOf("/");
+    if (slashIndex === -1) {
+      return withoutAt;
+    }
+    return withoutAt.slice(0, slashIndex);
+  }
+
+  /**
+   * Returns the number of path segments in a normalized type.
+   * For user namespaces, treats "@namespace" as segment 1.
+   * Examples:
+   * - "swamp/echo" → 2
+   * - "@user/echo" → 2
+   * - "@user/foo/bar" → 3
+   */
+  static getSegmentCount(normalized: string): number {
+    if (ModelType.isUserNamespace(normalized)) {
+      const withoutAt = normalized.slice(1);
+      return withoutAt.split("/").filter((s) => s.length > 0).length;
+    }
+    return normalized.split("/").filter((s) => s.length > 0).length;
+  }
+
+  /**
+   * Reserved built-in namespaces that user extensions cannot use.
+   */
+  private static readonly RESERVED_NAMESPACES = ["swamp", "si"];
+
+  /**
+   * Checks if a normalized type uses a reserved namespace.
+   * Reserved namespaces are: swamp, si (with or without @ prefix).
+   */
+  static isReservedNamespace(normalized: string): boolean {
+    // Check for @swamp/*, @si/*
+    if (ModelType.isUserNamespace(normalized)) {
+      const namespace = ModelType.getUserNamespace(normalized);
+      return namespace !== undefined &&
+        ModelType.RESERVED_NAMESPACES.includes(namespace);
+    }
+    // Check for swamp/*, si/*
+    const firstSlash = normalized.indexOf("/");
+    const firstSegment = firstSlash === -1
+      ? normalized
+      : normalized.slice(0, firstSlash);
+    return ModelType.RESERVED_NAMESPACES.includes(firstSegment);
+  }
 }

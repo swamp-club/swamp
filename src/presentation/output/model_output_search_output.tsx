@@ -127,6 +127,7 @@ export function ModelOutputSearchUI(
 
   const [query, setQuery] = useState(initialQuery);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [scrollOffset, setScrollOffset] = useState(0);
 
   // Create fzf instance for fuzzy searching (memoized to avoid recreation on every render)
   const fzf = useMemo(
@@ -143,11 +144,22 @@ export function ModelOutputSearchUI(
   // Get filtered results
   const results: FzfResultItem<ModelOutputSearchItem>[] = fzf.find(query);
   const maxVisible = 10;
-  const visibleResults = results.slice(0, maxVisible);
 
-  // Reset selection when query changes
+  // Adjust scroll offset to keep selected item visible
+  useEffect(() => {
+    if (selectedIndex < scrollOffset) {
+      setScrollOffset(selectedIndex);
+    } else if (selectedIndex >= scrollOffset + maxVisible) {
+      setScrollOffset(selectedIndex - maxVisible + 1);
+    }
+  }, [selectedIndex, scrollOffset]);
+
+  const visibleResults = results.slice(scrollOffset, scrollOffset + maxVisible);
+
+  // Reset selection and scroll when query changes
   useEffect(() => {
     setSelectedIndex(0);
+    setScrollOffset(0);
   }, [query]);
 
   const handleSelect = useCallback(() => {
@@ -215,15 +227,19 @@ export function ModelOutputSearchUI(
 
       {/* Results list */}
       <Box flexDirection="column" marginTop={1}>
+        {scrollOffset > 0 && <Text dimColor>... {scrollOffset} more above
+        </Text>}
         {visibleResults.map((result, index) => (
           <ModelOutputSearchResultItem
             key={result.item.id}
             item={result.item}
-            isSelected={index === selectedIndex}
+            isSelected={index + scrollOffset === selectedIndex}
           />
         ))}
-        {results.length > maxVisible && (
-          <Text dimColor>... {results.length - maxVisible} more results</Text>
+        {scrollOffset + maxVisible < results.length && (
+          <Text dimColor>
+            ... {results.length - scrollOffset - maxVisible} more below
+          </Text>
         )}
         {results.length === 0 && (
           <Text color="yellow">No matching outputs found</Text>

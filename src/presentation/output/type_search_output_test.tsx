@@ -335,9 +335,9 @@ Deno.test({
     );
 
     const output = lastFrame() ?? "";
-    // Should show "more results" message
+    // Should show "more below" message when there are hidden results
     assertStringIncludes(output, "15 / 15 types");
-    assertStringIncludes(output, "more results");
+    assertStringIncludes(output, "more below");
   },
 });
 

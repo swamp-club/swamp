@@ -97,7 +97,7 @@ const InputSchema = z.object({
 });
 
 export const model = {
-  type: "test/data-model-${Date.now()}",
+  type: "@user/data-model-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
@@ -151,7 +151,7 @@ export const notAModel = { foo: "bar" };
 Deno.test("UserModelLoader handles invalid model structure", async () => {
   const modelCode = `
 export const model = {
-  type: "test/invalid",
+  type: "@user/invalid",
   // Missing required fields
 };
 `;
@@ -182,7 +182,7 @@ export const model = { type: "test/should-skip" };
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "test/regular-${Date.now()}",
+  type: "@user/regular-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ msg: z.string() }),
   methods: {
@@ -214,12 +214,14 @@ export const model = {
 });
 
 Deno.test("UserModelLoader prevents duplicate type registration", async () => {
-  // First, ensure swamp/echo is registered (it's already in the global registry)
-  const modelCode = `
+  // Test that two models with the same type fail on the second one
+  const ts = Date.now();
+  const typeId = `@user/duplicate-${ts}`;
+  const model1 = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "swamp/echo",
+  type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -230,20 +232,39 @@ export const model = {
   },
 };
 `;
+  const model2 = `
+import { z } from "npm:zod@4";
 
-  await withTempModels({ "duplicate.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.2",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertEquals(result.failed[0].file, "duplicate.ts");
-    assertStringIncludes(result.failed[0].error, "already registered");
-  });
+  await withTempModels(
+    { "aaa_first.ts": model1, "zzz_second.ts": model2 },
+    async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
+
+      // First model should load, second should fail as duplicate
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.failed.length, 1);
+      assertEquals(result.failed[0].file, "zzz_second.ts");
+      assertStringIncludes(result.failed[0].error, "already registered");
+    },
+  );
 });
 
 Deno.test("UserModelLoader converts plain dataOutputs to proper DataOutput format", async () => {
-  const typeId = `test/convert-data-${Date.now()}`;
+  const typeId = `@user/convert-data-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -317,7 +338,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader uses model inputAttributesSchema when method lacks one", async () => {
-  const typeId = `test/method-inherits-schema-${Date.now()}`;
+  const typeId = `@user/method-inherits-schema-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -367,7 +388,7 @@ Deno.test("UserModelLoader loads multiple models from directory", async () => {
   const model1 = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/multi-a-${Date.now()}",
+  type: "@user/multi-a-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ a: z.string() }),
   methods: {
@@ -382,7 +403,7 @@ export const model = {
   const model2 = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/multi-b-${Date.now()}",
+  type: "@user/multi-b-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ b: z.string() }),
   methods: {
@@ -410,7 +431,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader converts resource return format to dataOutputs", async () => {
-  const typeId = `test/resource-format-${Date.now()}`;
+  const typeId = `@user/resource-format-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -478,7 +499,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader converts data return format to dataOutputs", async () => {
-  const typeId = `test/data-format-${Date.now()}`;
+  const typeId = `@user/data-format-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -553,7 +574,7 @@ Deno.test("UserModelLoader discovers nested files with correct relative paths", 
   const modelA = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/nested-a-${ts}",
+  type: "@user/nested-a-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ a: z.string() }),
   methods: {
@@ -567,7 +588,7 @@ export const model = {
   const modelB = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/nested-b-${ts}",
+  type: "@user/nested-b-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ b: z.string() }),
   methods: {
@@ -599,7 +620,7 @@ Deno.test("UserModelLoader excludes _test.ts in subdirectories", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/subdir-notest-${ts}",
+  type: "@user/subdir-notest-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
   methods: {
@@ -627,7 +648,7 @@ Deno.test("UserModelLoader handles deeply nested directories (3+ levels)", async
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/deep-nested-${ts}",
+  type: "@user/deep-nested-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
   methods: {
@@ -658,7 +679,7 @@ Deno.test("UserModelLoader loads extension with single method in array", async (
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-single-${ts}",
+  type: "@user/ext-single-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -671,7 +692,7 @@ export const model = {
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-single-${ts}",
+  type: "@user/ext-single-${ts}",
   methods: [{
     audit: {
       description: "Audit the echo message",
@@ -698,7 +719,7 @@ export const extension = {
       assertEquals(result.failed.length, 0);
 
       // Verify the method was added
-      const modelDef = modelRegistry.get(`test/ext-single-${ts}`);
+      const modelDef = modelRegistry.get(`@user/ext-single-${ts}`);
       assertEquals(modelDef !== undefined, true);
       assertEquals("write" in modelDef!.methods, true);
       assertEquals("audit" in modelDef!.methods, true);
@@ -711,7 +732,7 @@ Deno.test("UserModelLoader loads extension with multiple methods in array", asyn
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-multi-${ts}",
+  type: "@user/ext-multi-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -724,7 +745,7 @@ export const model = {
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-multi-${ts}",
+  type: "@user/ext-multi-${ts}",
   methods: [{
     audit: {
       description: "Audit",
@@ -747,7 +768,7 @@ export const extension = {
       assertEquals(result.loaded.length, 1);
       assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`test/ext-multi-${ts}`);
+      const modelDef = modelRegistry.get(`@user/ext-multi-${ts}`);
       assertEquals("write" in modelDef!.methods, true);
       assertEquals("audit" in modelDef!.methods, true);
       assertEquals("verify" in modelDef!.methods, true);
@@ -759,7 +780,7 @@ Deno.test("UserModelLoader extension targeting unregistered type fails gracefull
   const ts = Date.now();
   const extCode = `
 export const extension = {
-  type: "test/nonexistent-${ts}",
+  type: "@user/nonexistent-${ts}",
   methods: [{
     audit: {
       description: "Audit",
@@ -785,7 +806,7 @@ Deno.test("UserModelLoader extension with method name conflict fails gracefully"
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-conflict-${ts}",
+  type: "@user/ext-conflict-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -798,7 +819,7 @@ export const model = {
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-conflict-${ts}",
+  type: "@user/ext-conflict-${ts}",
   methods: [{
     write: {
       description: "Duplicate write",
@@ -827,7 +848,7 @@ Deno.test("UserModelLoader extension with duplicate method names within array fa
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-dup-methods-${ts}",
+  type: "@user/ext-dup-methods-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -841,7 +862,7 @@ export const model = {
   // Two array elements with same method name
   const extCode = `
 export const extension = {
-  type: "test/ext-dup-methods-${ts}",
+  type: "@user/ext-dup-methods-${ts}",
   methods: [
     {
       audit: {
@@ -881,7 +902,7 @@ Deno.test("UserModelLoader extension methods inherit target model's inputAttribu
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-inherit-schema-${ts}",
+  type: "@user/ext-inherit-schema-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -894,7 +915,7 @@ export const model = {
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-inherit-schema-${ts}",
+  type: "@user/ext-inherit-schema-${ts}",
   methods: [{
     audit: {
       description: "Audit without own schema",
@@ -912,7 +933,7 @@ export const extension = {
 
       assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`test/ext-inherit-schema-${ts}`);
+      const modelDef = modelRegistry.get(`@user/ext-inherit-schema-${ts}`);
       // Extension method should have inputAttributesSchema inherited from target model
       assertEquals(
         modelDef!.methods.audit.inputAttributesSchema !== undefined,
@@ -957,7 +978,7 @@ Deno.test("UserModelLoader multiple extensions targeting same type", async () =>
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/multi-ext-${ts}",
+  type: "@user/multi-ext-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -970,7 +991,7 @@ export const model = {
 `;
   const ext1 = `
 export const extension = {
-  type: "test/multi-ext-${ts}",
+  type: "@user/multi-ext-${ts}",
   methods: [{
     audit: {
       description: "Audit",
@@ -981,7 +1002,7 @@ export const extension = {
 `;
   const ext2 = `
 export const extension = {
-  type: "test/multi-ext-${ts}",
+  type: "@user/multi-ext-${ts}",
   methods: [{
     verify: {
       description: "Verify",
@@ -1001,7 +1022,7 @@ export const extension = {
       assertEquals(result.extended.length, 2);
       assertEquals(result.failed.length, 0);
 
-      const modelDef = modelRegistry.get(`test/multi-ext-${ts}`);
+      const modelDef = modelRegistry.get(`@user/multi-ext-${ts}`);
       assertEquals("write" in modelDef!.methods, true);
       assertEquals("audit" in modelDef!.methods, true);
       assertEquals("verify" in modelDef!.methods, true);
@@ -1016,7 +1037,7 @@ Deno.test("UserModelLoader two-pass ordering: user model registered before exten
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/two-pass-${ts}",
+  type: "@user/two-pass-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -1029,7 +1050,7 @@ export const model = {
 `;
   const extCode = `
 export const extension = {
-  type: "test/two-pass-${ts}",
+  type: "@user/two-pass-${ts}",
   methods: [{
     audit: {
       description: "Audit",
@@ -1050,7 +1071,7 @@ export const extension = {
       assertEquals(result.extended.length, 1);
       assertEquals(result.failed.length, 0);
 
-      const modelDef = modelRegistry.get(`test/two-pass-${ts}`);
+      const modelDef = modelRegistry.get(`@user/two-pass-${ts}`);
       assertEquals("write" in modelDef!.methods, true);
       assertEquals("audit" in modelDef!.methods, true);
     },
@@ -1062,7 +1083,7 @@ Deno.test("UserModelLoader extension method execute produces proper DataOutput",
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
-  type: "test/ext-execute-${ts}",
+  type: "@user/ext-execute-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   methods: {
@@ -1075,7 +1096,7 @@ export const model = {
 `;
   const extCode = `
 export const extension = {
-  type: "test/ext-execute-${ts}",
+  type: "@user/ext-execute-${ts}",
   methods: [{
     audit: {
       description: "Audit",
@@ -1098,7 +1119,7 @@ export const extension = {
 
       assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`test/ext-execute-${ts}`);
+      const modelDef = modelRegistry.get(`@user/ext-execute-${ts}`);
       const definition = Definition.create({
         name: "test-audit",
         attributes: { message: "hello" },
@@ -1130,7 +1151,7 @@ export const extension = {
 // --- Default dataOutputSpecs tests ---
 
 Deno.test("UserModelLoader provides default data and resource spec types", async () => {
-  const typeId = `test/default-specs-${Date.now()}`;
+  const typeId = `@user/default-specs-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1177,7 +1198,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader user-declared dataOutputSpecs override defaults", async () => {
-  const typeId = `test/custom-specs-${Date.now()}`;
+  const typeId = `@user/custom-specs-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1233,5 +1254,254 @@ export const model = {
       modelDef!.dataOutputSpecs["metrics"].specType.value,
       "metrics",
     );
+  });
+});
+
+// --- Namespace validation tests ---
+
+Deno.test("UserModelLoader rejects model without @ prefix", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "mycompany/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "no_at_prefix.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "must use '@' prefix");
+  });
+});
+
+Deno.test("UserModelLoader rejects model with only namespace segment", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@user",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "only_namespace.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "at least 2 segments");
+  });
+});
+
+Deno.test("UserModelLoader rejects model with non-user namespace", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@adam/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "wrong_namespace.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "namespace 'adam'");
+    assertStringIncludes(result.failed[0].error, "not allowed");
+  });
+});
+
+Deno.test("UserModelLoader accepts valid @user/name format", async () => {
+  const typeId = `@user/valid-model-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "valid_user_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+  });
+});
+
+Deno.test("UserModelLoader accepts valid @user/foo/bar format with 3 segments", async () => {
+  const typeId = `@user/category/model-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "valid_nested.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+  });
+});
+
+Deno.test("UserModelLoader rejects reserved namespace swamp/*", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "swamp/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "reserved_swamp.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  });
+});
+
+Deno.test("UserModelLoader rejects reserved namespace si/*", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "si/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "reserved_si.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  });
+});
+
+Deno.test("UserModelLoader rejects reserved namespace @swamp/*", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@swamp/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "reserved_at_swamp.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  });
+});
+
+Deno.test("UserModelLoader rejects reserved namespace @si/*", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@si/mymodel",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataOutputs: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "reserved_at_si.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
   });
 });

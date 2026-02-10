@@ -123,6 +123,13 @@ export interface LoadResult {
 }
 
 /**
+ * Allowed namespaces for user-defined models.
+ * Currently only "user" is allowed. When authentication is added,
+ * the authenticated username will be added to this list.
+ */
+const ALLOWED_NAMESPACES = ["user"];
+
+/**
  * Loader for user-defined TypeScript models and extensions.
  *
  * Users export a plain `model` object to define new types, or an `extension`
@@ -187,6 +194,14 @@ export class UserModelLoader {
         }
 
         const userModel = parsed.data;
+
+        // Validate namespace before registration
+        const namespaceError = this.validateUserNamespace(userModel.type);
+        if (namespaceError) {
+          result.failed.push({ file, error: namespaceError });
+          continue;
+        }
+
         const modelDef = this.convertToModelDefinition(userModel);
 
         if (!modelRegistry.has(modelDef.type)) {
@@ -221,6 +236,46 @@ export class UserModelLoader {
     }
 
     return result;
+  }
+
+  /**
+   * Validates that a user-defined model type follows the required namespace conventions.
+   *
+   * Requirements:
+   * - Must start with '@' (user namespace prefix)
+   * - Must use an allowed namespace (currently only "user")
+   * - Must have at least 2 segments (e.g., "@user/echo")
+   * - Must not use reserved namespaces (swamp, si)
+   *
+   * @param rawType - The raw type string from the user model
+   * @returns Error message if validation fails, undefined if valid
+   */
+  private validateUserNamespace(rawType: string): string | undefined {
+    const normalized = ModelType.create(rawType).normalized;
+
+    // Check for reserved built-in namespaces
+    if (ModelType.isReservedNamespace(normalized)) {
+      return `Model type '${rawType}' uses a reserved namespace. User models cannot use 'swamp' or 'si' namespaces.`;
+    }
+
+    // Must start with '@'
+    if (!ModelType.isUserNamespace(normalized)) {
+      return `Model type '${rawType}' must use '@' prefix. Expected format: @user/<name> (e.g., @user/my-model)`;
+    }
+
+    // Must use an allowed namespace
+    const namespace = ModelType.getUserNamespace(normalized);
+    if (!namespace || !ALLOWED_NAMESPACES.includes(namespace)) {
+      return `Model type '${rawType}' uses namespace '${namespace}' which is not allowed. Currently only '@user' namespace is allowed.`;
+    }
+
+    // Must have at least 2 segments
+    const segmentCount = ModelType.getSegmentCount(normalized);
+    if (segmentCount < 2) {
+      return `Model type '${rawType}' must have at least 2 segments. Expected format: @user/<name> (e.g., @user/my-model)`;
+    }
+
+    return undefined;
   }
 
   /**

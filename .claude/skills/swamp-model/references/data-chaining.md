@@ -41,7 +41,7 @@ EOF
 
 ```bash
 # Create the EC2 instance model
-swamp model create myorg/ec2-instance my-instance --json
+swamp model create @user/ec2-instance my-instance --json
 
 # Configure with references to the aws/cli model's data output
 swamp model edit my-instance --json <<EOF
@@ -77,7 +77,7 @@ EOF
 
 ```bash
 # Create an EC2 instance that references the security group
-swamp model create myorg/ec2 my-server --json
+swamp model create @user/ec2 my-server --json
 
 swamp model edit my-server --json <<EOF
 name: my-server
@@ -118,7 +118,7 @@ EOF
 
 ```bash
 # Step 3: Create instance model that uses both lookups
-swamp model create myorg/ec2-instance my-instance --json
+swamp model create @user/ec2-instance my-instance --json
 
 swamp model edit my-instance --json <<EOF
 name: my-instance

@@ -34,14 +34,45 @@ export const model = {
 
 ### "Model type already registered"
 
-Type name conflicts with built-in or another user model. Use namespaced names:
+Type name conflicts with built-in or another user model. Use unique names within
+the `@user` namespace:
 
 ```typescript
 // Avoid
-type: "echo"; // May conflict
+type: "@user/echo"; // May conflict with other users
 
 // Use
-type: "mycompany/echo"; // Unique
+type: "@user/mycompany/echo"; // More unique
+```
+
+### "Model type must use '@' prefix"
+
+User-defined models must use the `@user` namespace:
+
+```typescript
+// Wrong - missing @user namespace
+type: "mycompany/echo";
+
+// Correct
+type: "@user/echo";
+type: "@user/mycompany/echo";
+```
+
+### "Namespace 'X' is not allowed"
+
+Only the `@user` namespace is currently allowed for user models. Reserved
+namespaces (`swamp`, `si`) are for built-in types:
+
+```typescript
+// Wrong - reserved namespace
+type: "swamp/my-model";
+type: "@swamp/my-model";
+
+// Wrong - custom namespace not allowed yet
+type: "@mycompany/echo";
+
+// Correct
+type: "@user/my-model";
 ```
 
 ### "Cannot extend unregistered model type: ..."
@@ -92,9 +123,9 @@ Models directory priority:
 swamp type search --json
 
 # Check model schema
-swamp type describe myorg/my-model --json
+swamp type describe @user/my-model --json
 
 # Test the model
-swamp model create myorg/my-model test --set fieldName="test"
+swamp model create @user/my-model test --set fieldName="test"
 swamp model method run test methodName --json
 ```
