@@ -114,7 +114,7 @@ function parseCommand(command: string): string[] {
  */
 async function executeRun(
   definition: Definition,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   const attrs = AwsCliInputAttributesSchema.parse(definition.attributes);
 
@@ -179,29 +179,18 @@ async function executeRun(
       durationMs,
     };
 
-    const definitionHash = await definition.computeHash();
+    const writer = context.createDataWriter!({
+      name: `${definition.name}-data`,
+      specType: DataSpecType.create("data"),
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    });
 
-    return {
-      dataOutputs: [
-        {
-          name: `${definition.name}-data`,
-          specType: DataSpecType.create("data"),
-          content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: { type: "data" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: "run",
-            },
-          },
-        },
-      ],
-    };
+    const handle = await writer.writeText(JSON.stringify(dataAttributes));
+
+    return { dataHandles: [handle] };
   } finally {
     clearTimeout(timeoutId);
   }

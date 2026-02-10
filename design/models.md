@@ -96,17 +96,22 @@ export const model = {
   methods: {
     send: {
       description: "Send a notification",
-      execute: async (definition, _context) => {
+      execute: async (definition, context) => {
         const attrs = definition.attributes;
-        return {
-          data: {
-            attributes: {
-              sent: true,
-              content: attrs.content,
-              priority: attrs.priority,
-            },
-          },
-        };
+        const writer = context.createDataWriter!({
+          name: "result",
+          specType: "data",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
+        });
+        const handle = await writer.writeText(JSON.stringify({
+          sent: true,
+          content: attrs.content,
+          priority: attrs.priority,
+        }));
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -246,76 +251,55 @@ Files will have a data tag of 'type=file'.
 
 Files that represent external resource data will be tagged with 'type=resource'.
 
-## Method Return Formats
+## DataWriter API
 
-Methods return data through three formats. The simpler `resource` and `data`
-formats are preferred for most use cases.
+Methods write data during execution using the `DataWriter` domain service,
+accessed through `context.createDataWriter()`. Data is written directly to disk
+and the method returns lightweight `DataHandle` references.
 
-### Preferred: Simple Return Formats
-
-**Resource format** - Use for external resource state (APIs, cloud services):
+### Writing Data
 
 ```typescript
-return {
-  resource: {
-    attributes: {
-      id: "resource-123",
-      status: "created",
-    },
-  },
+execute: async (definition, context) => {
+  const writer = context.createDataWriter!({
+    name: "result",
+    specType: "data",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "data" },
+  });
+  const handle = await writer.writeText(JSON.stringify({
+    result: "processed value",
+  }));
+  return { dataHandles: [handle] };
 };
 ```
 
-**Data format** - Use for general data output:
+### Writer Methods
 
-```typescript
-return {
-  data: {
-    attributes: {
-      result: "processed value",
-    },
-    name: "result", // optional, defaults to "data"
-    tags: { category: "output" }, // optional custom tags
-  },
-};
-```
+| Method                      | Description                                      |
+| --------------------------- | ------------------------------------------------ |
+| `writeAll(content)`         | Write complete binary content (`Uint8Array`)     |
+| `writeText(text)`           | Write text content (encoded as UTF-8)            |
+| `writeLine(line)`           | Append a single line (for streaming/incremental) |
+| `writeStream(stream, opts)` | Pipe a `ReadableStream<Uint8Array>`              |
+| `getFilePath()`             | Get the file path for direct I/O                 |
+| `finalize()`                | Finalize after using `writeLine`/`getFilePath`   |
 
-Both formats automatically:
+### DataHandle
 
-- Serialize `attributes` as JSON
-- Set content type to `application/json`
-- Set lifetime to `infinite`
-- Track ownership via definition hash
+Lightweight reference to data already persisted by a `DataWriter`:
 
-### Explicit: dataOutputs Array
-
-Use `dataOutputs` for advanced cases: multiple outputs, custom content types,
-streaming, or custom lifetimes.
-
-```typescript
-return {
-  dataOutputs: [
-    {
-      name: "output-name",
-      content: "string or Uint8Array",
-      metadata: {
-        contentType: "application/json",
-        lifetime: "7d",
-        streaming: true,
-        tags: { type: "log" },
-      },
-    },
-  ],
-};
-```
-
-### When to Use Each Format
-
-| Format        | Use Case                                           |
-| ------------- | -------------------------------------------------- |
-| `resource`    | External resource state (APIs, cloud, deployments) |
-| `data`        | General data output, computation results           |
-| `dataOutputs` | Multiple outputs, custom metadata, streaming       |
+| Field      | Description                          |
+| ---------- | ------------------------------------ |
+| `name`     | Data artifact name                   |
+| `specType` | Data spec type                       |
+| `dataId`   | Unique ID for this data              |
+| `version`  | Version number of this write         |
+| `size`     | Size of the written content in bytes |
+| `tags`     | Tags from the writer options         |
+| `metadata` | Full metadata for the data artifact  |
 
 ## Output
 
