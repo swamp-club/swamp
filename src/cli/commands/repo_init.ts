@@ -35,6 +35,7 @@ export const repoInitCommand = new Command()
       initializedAt: result.initializedAt,
       skillsCopied: result.skillsCopied,
       claudeMdCreated: result.claudeMdCreated,
+      claudeSettingsCreated: result.claudeSettingsCreated,
     };
 
     renderRepoInit(data, ctx.outputMode);
@@ -61,6 +62,7 @@ export const repoUpgradeCommand = new Command()
       newVersion: result.newVersion,
       upgradedAt: result.upgradedAt,
       skillsUpdated: result.skillsUpdated,
+      claudeSettingsUpdated: result.claudeSettingsUpdated,
     };
 
     renderRepoUpgrade(data, ctx.outputMode);

@@ -24,6 +24,7 @@ export interface RepoInitResult {
   initializedAt: string;
   skillsCopied: string[];
   claudeMdCreated: boolean;
+  claudeSettingsCreated: boolean;
 }
 
 /**
@@ -35,6 +36,7 @@ export interface RepoUpgradeResult {
   newVersion: string;
   upgradedAt: string;
   skillsUpdated: string[];
+  claudeSettingsUpdated: boolean;
 }
 
 /**
@@ -102,12 +104,18 @@ export class RepoService {
     // Create CLAUDE.md if it doesn't exist
     const claudeMdCreated = await this.createClaudeMdIfNotExists(repoPath);
 
+    // Create Claude settings.local.json if it doesn't exist
+    const claudeSettingsCreated = await this.createClaudeSettingsIfNotExists(
+      repoPath,
+    );
+
     return {
       path: repoPath.value,
       version: this.currentVersion.toString(),
       initializedAt: markerData.initializedAt,
       skillsCopied,
       claudeMdCreated,
+      claudeSettingsCreated,
     };
   }
 
@@ -140,6 +148,9 @@ export class RepoService {
     await this.skillAssets.copySkillsTo(skillsDir);
     const skillsUpdated = this.skillAssets.getSkillNames();
 
+    // Update Claude settings.local.json (merge new permissions)
+    const claudeSettingsUpdated = await this.updateClaudeSettings(repoPath);
+
     // createUpgradeMarker always sets upgradedAt, but TypeScript doesn't know this
     if (!updatedMarker.upgradedAt) {
       throw new Error(
@@ -153,6 +164,7 @@ export class RepoService {
       newVersion: this.currentVersion.toString(),
       upgradedAt: updatedMarker.upgradedAt,
       skillsUpdated,
+      claudeSettingsUpdated,
     };
   }
 
@@ -194,6 +206,17 @@ export class RepoService {
 
 This repository is managed with [swamp](https://github.com/systeminit/swamp).
 
+## Skills
+
+**IMPORTANT:** Always load swamp skills, even when in plan mode. The skills provide
+essential context for working with this repository.
+
+- \`swamp-model\` - Work with swamp models (creating, editing, validating)
+- \`swamp-workflow\` - Work with workflows (creating, editing, running)
+- \`swamp-vault\` - Manage secrets and credentials
+- \`swamp-data\` - Manage model data lifecycle
+- \`swamp-repo\` - Repository management
+
 ## Getting Started
 
 Always start by using the \`swamp-model\` skill to work with swamp models.
@@ -202,6 +225,132 @@ Always start by using the \`swamp-model\` skill to work with swamp models.
 
 Use \`swamp --help\` to see available commands.
 `;
+  }
+
+  /**
+   * Gets the list of allowed swamp commands for Claude settings.
+   */
+  private getClaudeAllowedCommands(): string[] {
+    return [
+      "Bash(swamp model type search:*)",
+      "Bash(swamp model type describe:*)",
+      "Bash(swamp model search:*)",
+      "Bash(swamp model create:*)",
+      "Bash(swamp model edit:*)",
+      "Bash(swamp model delete:*)",
+      "Bash(swamp model get:*)",
+      "Bash(swamp model validate:*)",
+      "Bash(swamp model output:*)",
+      "Bash(swamp model method history:*)",
+      "Bash(swamp workflow search:*)",
+      "Bash(swamp workflow create:*)",
+      "Bash(swamp workflow edit:*)",
+      "Bash(swamp workflow delete:*)",
+      "Bash(swamp workflow get:*)",
+      "Bash(swamp workflow validate:*)",
+      "Bash(swamp workflow schema:*)",
+      "Bash(swamp workflow history:*)",
+      "Bash(swamp vault:*)",
+      "Bash(swamp data:*)",
+      "Bash(swamp repo:*)",
+      "Bash(swamp telemetry:*)",
+      "Bash(swamp init:*)",
+      "Bash(swamp version:*)",
+      "Bash(swamp completions:*)",
+    ];
+  }
+
+  /**
+   * Generates the content for settings.local.json.
+   */
+  private generateClaudeSettingsContent(): string {
+    const settings = {
+      permissions: {
+        allow: this.getClaudeAllowedCommands(),
+      },
+    };
+    return JSON.stringify(settings, null, 2) + "\n";
+  }
+
+  /**
+   * Creates settings.local.json if it doesn't already exist.
+   */
+  private async createClaudeSettingsIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const claudeDir = join(repoPath.value, ".claude");
+    const settingsPath = join(claudeDir, "settings.local.json");
+
+    try {
+      await Deno.stat(settingsPath);
+      // File exists, don't overwrite
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        // Ensure .claude directory exists
+        await ensureDir(claudeDir);
+        // Create the file
+        const content = this.generateClaudeSettingsContent();
+        await Deno.writeTextFile(settingsPath, content);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Updates settings.local.json, merging new permissions with existing ones.
+   * If the file doesn't exist, it creates it.
+   */
+  private async updateClaudeSettings(repoPath: RepoPath): Promise<boolean> {
+    const claudeDir = join(repoPath.value, ".claude");
+    const settingsPath = join(claudeDir, "settings.local.json");
+
+    // Ensure .claude directory exists
+    await ensureDir(claudeDir);
+
+    let existingSettings: { permissions?: { allow?: string[] } } = {};
+    let settingsExisted = false;
+
+    try {
+      const content = await Deno.readTextFile(settingsPath);
+      existingSettings = JSON.parse(content);
+      settingsExisted = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+      // File doesn't exist, will create new
+    }
+
+    // Get our allowed commands
+    const ourCommands = this.getClaudeAllowedCommands();
+
+    // Merge with existing permissions
+    const existingAllow = existingSettings.permissions?.allow ?? [];
+    const mergedAllow = [...new Set([...existingAllow, ...ourCommands])];
+
+    // Check if anything changed
+    const hasChanges = mergedAllow.length !== existingAllow.length ||
+      !ourCommands.every((cmd) => existingAllow.includes(cmd));
+
+    if (!hasChanges && settingsExisted) {
+      return false;
+    }
+
+    // Write merged settings
+    const newSettings = {
+      ...existingSettings,
+      permissions: {
+        ...existingSettings.permissions,
+        allow: mergedAllow,
+      },
+    };
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify(newSettings, null, 2) + "\n",
+    );
+    return true;
   }
 
   /**

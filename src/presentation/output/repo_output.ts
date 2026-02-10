@@ -12,6 +12,7 @@ export interface RepoInitData {
   initializedAt: string;
   skillsCopied: string[];
   claudeMdCreated: boolean;
+  claudeSettingsCreated: boolean;
 }
 
 /**
@@ -23,6 +24,7 @@ export interface RepoUpgradeData {
   newVersion: string;
   upgradedAt: string;
   skillsUpdated: string[];
+  claudeSettingsUpdated: boolean;
 }
 
 /**
