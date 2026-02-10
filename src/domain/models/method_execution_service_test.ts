@@ -3,16 +3,12 @@ import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
 import { echoModel } from "./echo/echo_model.ts";
-import {
-  type DataHandle,
-  DataSpecType,
-  type DataWriter,
-  type DataWriterFactory,
-  type MethodContext,
-  type MethodResult,
-  type ModelDefinition,
-  normalizeSpecType,
-  type SpecBasedWriterOptions,
+import type {
+  DataHandle,
+  DataWriter,
+  MethodContext,
+  MethodResult,
+  ModelDefinition,
 } from "./model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -29,36 +25,68 @@ interface MockWriterResult {
 }
 
 /**
- * Creates a mock DataWriterFactory that stores written content in memory.
+ * Creates mock writeResource and createFileWriter functions that store written content in memory.
  */
-function createMockDataWriterFactory(): {
-  factory: DataWriterFactory;
+function createMockWriters(): {
+  writeResource: (
+    specName: string,
+    data: Record<string, unknown>,
+  ) => Promise<DataHandle>;
+  createFileWriter: (specName: string) => DataWriter;
   getResults: () => MockWriterResult[];
 } {
   const results: MockWriterResult[] = [];
   const getResults = (): MockWriterResult[] => results;
   let nextId = 1;
 
-  const factory: DataWriterFactory = (
-    options: SpecBasedWriterOptions,
-  ): DataWriter => {
+  const writeResource = (
+    specName: string,
+    data: Record<string, unknown>,
+  ): Promise<DataHandle> => {
     const dataId = `mock-data-${nextId++}` as DataId;
-
-    const buildHandle = (content: Uint8Array): DataHandle => ({
-      name: options.name,
-      specType: normalizeSpecType(options.specType),
+    const content = new TextEncoder().encode(JSON.stringify(data));
+    const handle: DataHandle = {
+      name: specName,
+      specName,
+      kind: "resource",
       dataId,
       version: 1,
       size: content.length,
-      tags: options.tags ?? {},
+      tags: {},
       metadata: {
-        contentType: options.contentType ?? "application/json",
-        lifetime: options.lifetime ?? "infinite",
-        garbageCollection: options.garbageCollection ?? 10,
-        streaming: options.streaming ?? false,
-        tags: options.tags ?? {},
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: {},
         ownerDefinition: {
-          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    };
+    results.push({ handle, content });
+    return Promise.resolve(handle);
+  };
+
+  const createFileWriter = (specName: string): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: specName,
+      specName,
+      kind: "file",
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: {},
+      metadata: {
+        contentType: "application/octet-stream",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        streaming: false,
+        tags: {},
+        ownerDefinition: {
           ownerType: "model-method",
           ownerRef: "test",
         },
@@ -67,7 +95,7 @@ function createMockDataWriterFactory(): {
 
     return {
       dataId,
-      name: options.name,
+      name: specName,
       writeAll(content: Uint8Array): Promise<DataHandle> {
         const handle = buildHandle(content);
         results.push({ handle, content });
@@ -102,7 +130,7 @@ function createMockDataWriterFactory(): {
     } as DataWriter;
   };
 
-  return { factory, getResults };
+  return { writeResource, createFileWriter, getResults };
 }
 
 /**
@@ -155,7 +183,7 @@ function createMockDefinitionRepo(): DefinitionRepository {
 function createTestContext(
   overrides?: Partial<MethodContext>,
 ): { context: MethodContext; getResults: () => MockWriterResult[] } {
-  const { factory, getResults } = createMockDataWriterFactory();
+  const { writeResource, createFileWriter, getResults } = createMockWriters();
   const context: MethodContext = {
     repoDir: ".",
     modelType: ModelType.create("swamp/echo"),
@@ -163,7 +191,8 @@ function createTestContext(
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
-    createDataWriter: factory,
+    writeResource,
+    createFileWriter,
     ...overrides,
   };
   return { context, getResults };
@@ -263,23 +292,19 @@ Deno.test("execute error message includes Zod details", async () => {
 // ---------- Workflow Tests ----------
 
 /**
- * Helper to write data via context.createDataWriter and return a DataHandle.
+ * Helper to write data via context.writeResource and return a DataHandle.
  */
 async function writeTestData(
   context: MethodContext,
   name: string,
   attributes: Record<string, unknown>,
 ): Promise<DataHandle> {
-  const writer = context.createDataWriter!({
-    name,
-    specType: "data",
-  });
-  return await writer.writeText(JSON.stringify(attributes));
+  return await context.writeResource!(name, attributes);
 }
 
 /**
  * Creates a test model with configurable behavior for workflow testing.
- * Mock methods use context.createDataWriter to write data and return dataHandles.
+ * Mock methods use context.writeResource to write data and return dataHandles.
  */
 function createTestModel(options: {
   executeImpl?: (
@@ -301,11 +326,10 @@ function createTestModel(options: {
     type: ModelType.create("test/workflow"),
     version: "2026.02.09.1",
     inputAttributesSchema: schema,
-    dataOutputSpecs: {
+    resources: {
       "data": {
-        specType: DataSpecType.create("data"),
         description: "Test data",
-        contentType: "application/json",
+        schema: z.object({}),
         lifetime: "infinite",
         garbageCollection: 10,
         tags: { type: "data" },
@@ -571,11 +595,10 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
     type: ModelType.create("test/recursive"),
     version: "2026.02.09.1",
     inputAttributesSchema: schema,
-    dataOutputSpecs: {
+    resources: {
       "data": {
-        specType: DataSpecType.create("data"),
         description: "Test data",
-        contentType: "application/json",
+        schema: z.object({}),
         lifetime: "infinite",
         garbageCollection: 10,
         tags: { type: "data" },
@@ -653,11 +676,10 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
     type: ModelType.create("test/infinite"),
     version: "2026.02.09.1",
     inputAttributesSchema: schema,
-    dataOutputSpecs: {
+    resources: {
       "data": {
-        specType: DataSpecType.create("data"),
         description: "Test data",
-        contentType: "application/json",
+        schema: z.object({}),
         lifetime: "infinite",
         garbageCollection: 10,
         tags: { type: "data" },
@@ -715,11 +737,10 @@ Deno.test(
       type: ModelType.create("test/token-passing"),
       version: "2026.02.09.1",
       inputAttributesSchema: schema,
-      dataOutputSpecs: {
+      resources: {
         "data": {
-          specType: DataSpecType.create("data"),
           description: "Test data",
-          contentType: "application/json",
+          schema: z.object({}),
           lifetime: "infinite",
           garbageCollection: 10,
           tags: { type: "data" },
@@ -803,7 +824,6 @@ Deno.test("execute passes logger in context to method", async () => {
     type: ModelType.create("test/logger-check"),
     version: "1",
     inputAttributesSchema: schema,
-    dataOutputSpecs: {},
     methods: {
       run: {
         description: "Method that captures the logger from context",

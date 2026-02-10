@@ -1,24 +1,16 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { Data } from "./data.ts";
-import {
-  computeDefinitionHash,
-  type OwnerDefinition,
-} from "./data_metadata.ts";
+import type { OwnerDefinition } from "./data_metadata.ts";
 
-async function createTestOwner(): Promise<OwnerDefinition> {
-  const definitionHash = await computeDefinitionHash(
-    "model-method",
-    "test/model:test-method",
-  );
+function createTestOwner(): OwnerDefinition {
   return {
-    definitionHash,
     ownerType: "model-method",
     ownerRef: "test/model:test-method",
   };
 }
 
-Deno.test("Data.create generates UUID if not provided", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create generates UUID if not provided", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -31,8 +23,8 @@ Deno.test("Data.create generates UUID if not provided", async () => {
   assertEquals(data.id.length, 36);
 });
 
-Deno.test("Data.create uses provided ID", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create uses provided ID", () => {
+  const owner = createTestOwner();
   const id = "550e8400-e29b-41d4-a716-446655440001";
   const data = Data.create({
     id,
@@ -46,8 +38,8 @@ Deno.test("Data.create uses provided ID", async () => {
   assertEquals(data.id, id);
 });
 
-Deno.test("Data.create sets default version to 1", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create sets default version to 1", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -59,8 +51,8 @@ Deno.test("Data.create sets default version to 1", async () => {
   assertEquals(data.version, 1);
 });
 
-Deno.test("Data.create uses provided version", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create uses provided version", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     version: 3,
@@ -73,8 +65,8 @@ Deno.test("Data.create uses provided version", async () => {
   assertEquals(data.version, 3);
 });
 
-Deno.test("Data.create sets createdAt to now if not provided", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create sets createdAt to now if not provided", () => {
+  const owner = createTestOwner();
   const before = new Date();
   const data = Data.create({
     name: "test-data",
@@ -90,8 +82,8 @@ Deno.test("Data.create sets createdAt to now if not provided", async () => {
   assertEquals(data.createdAt <= after, true);
 });
 
-Deno.test("Data.create uses provided createdAt", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create uses provided createdAt", () => {
+  const owner = createTestOwner();
   const createdAt = new Date("2023-01-01T00:00:00Z");
   const data = Data.create({
     name: "test-data",
@@ -105,8 +97,8 @@ Deno.test("Data.create uses provided createdAt", async () => {
   assertEquals(data.createdAt.getTime(), createdAt.getTime());
 });
 
-Deno.test("Data.create requires type tag in tags", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create requires type tag in tags", () => {
+  const owner = createTestOwner();
   assertThrows(
     () =>
       Data.create({
@@ -122,8 +114,8 @@ Deno.test("Data.create requires type tag in tags", async () => {
   );
 });
 
-Deno.test("Data.create validates duration lifetime format", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create validates duration lifetime format", () => {
+  const owner = createTestOwner();
   // Valid durations should work
   const dataHours = Data.create({
     name: "test-data",
@@ -156,8 +148,8 @@ Deno.test("Data.create validates duration lifetime format", async () => {
   assertEquals(dataWeeks.lifetime, "2w");
 });
 
-Deno.test("Data.create validates special lifetime values", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create validates special lifetime values", () => {
+  const owner = createTestOwner();
 
   const dataEphemeral = Data.create({
     name: "test-data",
@@ -200,8 +192,8 @@ Deno.test("Data.create validates special lifetime values", async () => {
   assertEquals(dataWorkflow.lifetime, "workflow");
 });
 
-Deno.test("Data.create throws on invalid lifetime format", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create throws on invalid lifetime format", () => {
+  const owner = createTestOwner();
   assertThrows(
     () =>
       Data.create({
@@ -216,8 +208,8 @@ Deno.test("Data.create throws on invalid lifetime format", async () => {
   );
 });
 
-Deno.test("Data toData/fromData roundtrip", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data toData/fromData roundtrip", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "application/json",
@@ -247,8 +239,8 @@ Deno.test("Data toData/fromData roundtrip", async () => {
   assertEquals(restored.checksum, data.checksum);
 });
 
-Deno.test("Data.isOwnedBy validates definition hash", async () => {
-  const owner1 = await createTestOwner();
+Deno.test("Data.isOwnedBy validates ownerType and ownerRef", () => {
+  const owner1 = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -261,21 +253,30 @@ Deno.test("Data.isOwnedBy validates definition hash", async () => {
   // Same owner should match
   assertEquals(data.isOwnedBy(owner1), true);
 
-  // Different owner should not match
-  const differentHash = await computeDefinitionHash(
-    "model-method",
-    "other/model:other-method",
-  );
+  // Different ownerRef should not match
   const owner2: OwnerDefinition = {
-    definitionHash: differentHash,
     ownerType: "model-method",
     ownerRef: "other/model:other-method",
   };
   assertEquals(data.isOwnedBy(owner2), false);
+
+  // Different ownerType should not match
+  const owner3: OwnerDefinition = {
+    ownerType: "workflow-step",
+    ownerRef: "test/model:test-method",
+  };
+  assertEquals(data.isOwnedBy(owner3), false);
+
+  // Same ownerType + ownerRef matches even without definitionHash
+  const owner4: OwnerDefinition = {
+    ownerType: "model-method",
+    ownerRef: "test/model:test-method",
+  };
+  assertEquals(data.isOwnedBy(owner4), true);
 });
 
-Deno.test("Data.type returns type tag", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.type returns type tag", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -287,8 +288,8 @@ Deno.test("Data.type returns type tag", async () => {
   assertEquals(data.type, "resource");
 });
 
-Deno.test("Data.withNewVersion creates new version", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.withNewVersion creates new version", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -316,8 +317,8 @@ Deno.test("Data.withNewVersion creates new version", async () => {
   assertEquals(newVersion.checksum, "newchecksum");
 });
 
-Deno.test("Data.create with garbage collection as version count", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create with garbage collection as version count", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -329,8 +330,8 @@ Deno.test("Data.create with garbage collection as version count", async () => {
   assertEquals(data.garbageCollection, 5);
 });
 
-Deno.test("Data.create with garbage collection as duration", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create with garbage collection as duration", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -342,8 +343,8 @@ Deno.test("Data.create with garbage collection as duration", async () => {
   assertEquals(data.garbageCollection, "30d");
 });
 
-Deno.test("Data.create defaults streaming to false", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create defaults streaming to false", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",
@@ -355,8 +356,8 @@ Deno.test("Data.create defaults streaming to false", async () => {
   assertEquals(data.streaming, false);
 });
 
-Deno.test("Data.create uses provided streaming value", async () => {
-  const owner = await createTestOwner();
+Deno.test("Data.create uses provided streaming value", () => {
+  const owner = createTestOwner();
   const data = Data.create({
     name: "test-data",
     contentType: "text/plain",

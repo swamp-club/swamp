@@ -44,10 +44,11 @@ export type OwnerType = typeof OwnerTypes[number];
 
 /**
  * Owner definition tracks who created/owns the data.
- * The definitionHash allows ownership validation on updates.
+ * Ownership is validated by comparing ownerType + ownerRef.
+ * definitionHash is retained for backward compatibility with existing data on disk.
  */
 export const OwnerDefinitionSchema = z.object({
-  definitionHash: z.string().min(1),
+  definitionHash: z.string().min(1).optional(),
   ownerType: z.enum(OwnerTypes),
   ownerRef: z.string().min(1),
   workflowId: z.string().uuid().optional(),
@@ -79,20 +80,3 @@ export const DataMetadataSchema = z.object({
 });
 
 export type DataMetadata = z.infer<typeof DataMetadataSchema>;
-
-/**
- * Computes a hash of the owner definition for comparison.
- * This is used to verify that updates come from the same owner.
- */
-export async function computeDefinitionHash(
-  ownerType: OwnerType,
-  ownerRef: string,
-): Promise<string> {
-  const input = `${ownerType}:${ownerRef}`;
-  const data = new TextEncoder().encode(input);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = new Uint8Array(hashBuffer);
-  return Array.from(hashArray)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}

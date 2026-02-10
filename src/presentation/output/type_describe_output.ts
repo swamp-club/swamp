@@ -3,21 +3,28 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "./output.ts";
 
 /**
+ * Data structure for a data output spec in the describe output.
+ */
+export interface DataOutputSpecDescribeData {
+  specName: string;
+  kind: "resource" | "file";
+  description?: string;
+  schema?: object;
+  contentType?: string;
+  lifetime?: string;
+  garbageCollection?: number | string;
+  streaming?: boolean;
+  tags?: Record<string, string>;
+}
+
+/**
  * Data structure for a method's description.
  */
 export interface MethodDescribeData {
   name: string;
   description: string;
   inputAttributesSchema: object;
-  dataOutputSpecs?: Array<{
-    specType: string;
-    description?: string;
-    contentType?: string;
-    lifetime?: string;
-    garbageCollection?: number | string;
-    streaming?: boolean;
-    tags?: Record<string, string>;
-  }>;
+  dataOutputSpecs?: DataOutputSpecDescribeData[];
 }
 
 /**
@@ -114,7 +121,7 @@ export function renderTypeDescribe(
       if (method.dataOutputSpecs && method.dataOutputSpecs.length > 0) {
         lines.push(`    ${cyan("Data Outputs:")}`);
         for (const spec of method.dataOutputSpecs) {
-          const parts = [spec.specType];
+          const parts = [`${spec.specName} ${dim(`[${spec.kind}]`)}`];
           if (spec.description) parts.push(`${dim("-")} ${spec.description}`);
           const meta = [spec.contentType, spec.lifetime].filter(Boolean);
           if (meta.length > 0) parts.push(dim(`(${meta.join(", ")})`));

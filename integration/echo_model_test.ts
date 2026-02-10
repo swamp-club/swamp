@@ -21,7 +21,7 @@ import {
 } from "../src/domain/models/echo/echo_model.ts";
 import type { DataHandle, MethodContext } from "../src/domain/models/model.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
-import { createDataWriterFactory } from "../src/domain/models/data_writer.ts";
+import { createResourceWriter } from "../src/domain/models/data_writer.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-integration-" });
@@ -110,13 +110,12 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
       testMessage,
     );
 
-    // Create DataWriterFactory for the echo model
-    const { factory: createDataWriter } = createDataWriterFactory(
+    // Create writeResource for the echo model
+    const { writeResource } = createResourceWriter(
       dataRepo,
       modelType,
       definition.id,
-      await definition.computeHash(),
-      echoModel.dataOutputSpecs,
+      echoModel.resources ?? {},
     );
 
     // Create method context
@@ -127,7 +126,7 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
       logger: getLogger(["test"]),
       dataRepository: dataRepo,
       definitionRepository: definitionRepo,
-      createDataWriter,
+      writeResource,
     };
 
     // Execute the write method
@@ -148,10 +147,11 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
     // Verify data handle metadata
     const handle = result.dataHandles![0];
     assertEquals(
-      handle.specType.value,
+      handle.specName,
       "message",
-      "Should have message spec type",
+      "Should have message spec name",
     );
+    assertEquals(handle.kind, "resource", "Should be a resource");
     assertEquals(handle.metadata.contentType, "application/json");
 
     // Verify data content (read from disk via dataRepo)

@@ -2,7 +2,6 @@ import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import { computeChecksum } from "../../checksum.ts";
 import {
-  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -172,21 +171,12 @@ async function executeDownload(
     checksum,
   };
 
-  const metadataWriter = context.createDataWriter!({
-    name: `${definition.name}-metadata`,
-    specType: "metadata",
-  });
-
-  const fileWriter = context.createDataWriter!({
-    name: `${definition.name}-file`,
-    specType: "file",
-    contentType,
-    tags: { filename },
-  });
-
-  const metadataHandle = await metadataWriter.writeText(
-    JSON.stringify(metadataAttributes),
+  const metadataHandle = await context.writeResource!(
+    "metadata",
+    metadataAttributes,
   );
+
+  const fileWriter = context.createFileWriter!("content", { contentType });
   const fileHandle = await fileWriter.writeAll(content);
 
   return { dataHandles: [metadataHandle, fileHandle] };
@@ -206,22 +196,20 @@ export const curlModel: ModelDefinition<
   type: CURL_MODEL_TYPE,
   version: "2026.02.09.1",
   inputAttributesSchema: CurlInputAttributesSchema,
-  dataOutputSpecs: {
+  resources: {
     "metadata": {
-      specType: DataSpecType.create("metadata"),
       description: "Download metadata (URL, status, timing, checksum)",
-      contentType: "application/json",
+      schema: CurlResourceAttributesSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
-    "file": {
-      specType: DataSpecType.create("file"),
+  },
+  files: {
+    "content": {
       description: "Downloaded file content",
       contentType: "application/octet-stream",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "file" },
     },
   },
   methods: {

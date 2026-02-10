@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import {
-  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -123,10 +122,7 @@ async function readLogs(
 
   const logLines = result.stdout.split("\n").filter((line) => line.length > 0);
 
-  const writer = context.createDataWriter!({
-    name: `${definition.name}-logs`,
-    specType: "log",
-  });
+  const writer = context.createFileWriter!("log");
 
   const handle = await writer.writeText(logLines.join("\n"));
 
@@ -148,15 +144,13 @@ export const journalctlModel: ModelDefinition<
   type: JOURNALCTL_MODEL_TYPE,
   version: "2026.02.09.1",
   inputAttributesSchema: JournalctlInputAttributesSchema,
-  dataOutputSpecs: {
+  files: {
     "log": {
-      specType: DataSpecType.create("log"),
       description: "System journal logs",
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
       streaming: true,
-      tags: { type: "log" },
     },
   },
   methods: {
