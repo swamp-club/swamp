@@ -30,12 +30,18 @@ interface FileWriter {
   fd: Deno.FsFile;
   encoder: TextEncoder;
   prefix: string[];
+  /** Promise chain that serialises writes so they complete in order. */
+  writeQueue: Promise<void>;
 }
 
 /**
  * A LogTape sink that routes log records to per-run log files.
  * Registered once at startup. File targets are added/removed dynamically
  * as runs start and complete.
+ *
+ * Writes are chained through a promise queue per writer so they execute
+ * sequentially. unregister() awaits the queue before closing the fd,
+ * preventing silent data loss from in-flight writes.
  */
 export class RunFileSink {
   private writers = new Map<string, FileWriter>();
@@ -46,9 +52,10 @@ export class RunFileSink {
    */
   async register(categoryPrefix: string[], filePath: string): Promise<void> {
     const key = prefixKey(categoryPrefix);
-    // Close existing writer if any
+    // Await and close existing writer if any
     const existing = this.writers.get(key);
     if (existing) {
+      await existing.writeQueue;
       existing.fd.close();
     }
 
@@ -67,16 +74,19 @@ export class RunFileSink {
       fd,
       encoder: new TextEncoder(),
       prefix: categoryPrefix,
+      writeQueue: Promise.resolve(),
     });
   }
 
   /**
    * Unregister and close the file writer for a category prefix.
+   * Awaits any pending writes before closing the file descriptor.
    */
-  unregister(categoryPrefix: string[]): void {
+  async unregister(categoryPrefix: string[]): Promise<void> {
     const key = prefixKey(categoryPrefix);
     const writer = this.writers.get(key);
     if (writer) {
+      await writer.writeQueue;
       writer.fd.close();
       this.writers.delete(key);
     }
@@ -85,6 +95,7 @@ export class RunFileSink {
   /**
    * The sink function to pass to LogTape configure().
    * Writes to all registered prefixes that match the record's category.
+   * Each write is chained onto the writer's queue so writes are serialised.
    */
   get sink(): Sink {
     return (record: LogRecord) => {
@@ -93,18 +104,23 @@ export class RunFileSink {
 
       for (const writer of this.writers.values()) {
         if (categoryMatchesPrefix(record.category, writer.prefix)) {
-          writer.fd.write(writer.encoder.encode(line)).catch(() => {});
+          const data = writer.encoder.encode(line);
+          writer.writeQueue = writer.writeQueue
+            .then(() => writer.fd.write(data))
+            .then(() => {})
+            .catch(() => {});
         }
       }
     };
   }
 
   /**
-   * Close all open file writers.
+   * Close all open file writers. Awaits pending writes first.
    */
-  dispose(): void {
+  async dispose(): Promise<void> {
     for (const writer of this.writers.values()) {
       try {
+        await writer.writeQueue;
         writer.fd.close();
       } catch {
         // Already closed

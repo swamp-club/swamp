@@ -47,7 +47,7 @@ Deno.test("RunFileSink writes log records to registered file", async () => {
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "hello world");
 
-    sink.unregister(["model", "method", "run", "my-model"]);
+    await sink.unregister(["model", "method", "run", "my-model"]);
   });
 });
 
@@ -66,7 +66,7 @@ Deno.test("RunFileSink ignores records that don't match any prefix", async () =>
     const content = await Deno.readTextFile(logPath);
     assertEquals(content, "");
 
-    sink.unregister(["model", "method", "run", "my-model"]);
+    await sink.unregister(["model", "method", "run", "my-model"]);
   });
 });
 
@@ -95,8 +95,8 @@ Deno.test("RunFileSink writes to all matching prefixes", async () => {
     assertStringIncludes(broadContent, "broad");
     assertStringIncludes(broadContent, "specific");
 
-    sink.unregister(["model", "method", "run"]);
-    sink.unregister(["model", "method", "run", "my-model"]);
+    await sink.unregister(["model", "method", "run"]);
+    await sink.unregister(["model", "method", "run", "my-model"]);
   });
 });
 
@@ -111,7 +111,7 @@ Deno.test("RunFileSink unregister closes file and stops writing", async () => {
     sinkFn(makeRecord(["model", "method", "run", "my-model"], "before"));
     await new Promise((r) => setTimeout(r, 50));
 
-    sink.unregister(["model", "method", "run", "my-model"]);
+    await sink.unregister(["model", "method", "run", "my-model"]);
 
     // After unregister, records should not be written
     sinkFn(makeRecord(["model", "method", "run", "my-model"], "after"));
@@ -137,7 +137,7 @@ Deno.test("RunFileSink creates parent directories", async () => {
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "nested dir test");
 
-    sink.unregister(["workflow", "run"]);
+    await sink.unregister(["workflow", "run"]);
   });
 });
 
@@ -165,7 +165,7 @@ Deno.test("RunFileSink empty prefix matches all categories", async () => {
     assertStringIncludes(content, "model log");
     assertStringIncludes(content, "other log");
 
-    sink.unregister([]);
+    await sink.unregister([]);
   });
 });
 

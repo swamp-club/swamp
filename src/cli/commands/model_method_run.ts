@@ -326,7 +326,7 @@ export const modelMethodRunCommand = new Command()
       }
 
       // Unregister run file sink target
-      runFileSink.unregister(runLogCategory);
+      await runFileSink.unregister(runLogCategory);
 
       ctx.logger.debug("Method run command completed");
     },

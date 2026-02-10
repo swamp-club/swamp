@@ -675,7 +675,7 @@ export class WorkflowExecutionService {
     await this.saveRun(workflow.id, run);
 
     // Unregister workflow log file sink
-    runFileSink.unregister(workflowLogCategory);
+    await runFileSink.unregister(workflowLogCategory);
 
     return run;
   }
