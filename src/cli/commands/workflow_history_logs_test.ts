@@ -20,6 +20,6 @@ Deno.test("workflowHistoryLogsCommand has correct description", async () => {
   );
   assertEquals(
     workflowHistoryLogsCommand.getDescription(),
-    "Show logs/output for a workflow run",
+    "Show logs for a workflow run",
   );
 });

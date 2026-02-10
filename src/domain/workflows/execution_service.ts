@@ -45,7 +45,14 @@ import { UserError } from "../errors.ts";
 import {
   getRunLogger,
   getWorkflowRunLogger,
+  runFileSink,
 } from "../../infrastructure/logging/logger.ts";
+import { executeProcess } from "../../infrastructure/process/process_executor.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { join } from "@std/path";
 
 /**
  * Context for step execution.
@@ -128,133 +135,24 @@ export class DefaultStepExecutor implements StepExecutor {
   ): Promise<unknown> {
     const cwd = task.workingDir ?? ctx.repoDir;
 
-    const commandOptions: Deno.CommandOptions = {
+    const stepLogger = ctx.enableStepLogging
+      ? getWorkflowRunLogger(ctx.workflowName, ctx.jobName, ctx.stepName)
+      : undefined;
+
+    const result = await executeProcess({
+      command: task.command,
       args: task.args,
       cwd,
-      stdout: "piped",
-      stderr: "piped",
-    };
-
-    if (task.env) {
-      commandOptions.env = task.env;
-    }
-
-    const command = new Deno.Command(task.command, commandOptions);
-
-    // Use streaming if progress callbacks or step logging are enabled
-    if (
-      ctx.progress?.onStepStdout || ctx.progress?.onStepStderr ||
-      ctx.enableStepLogging
-    ) {
-      return await this.executeShellStreaming(command, ctx);
-    }
-
-    // Buffered execution (original behavior)
-    const result = await command.output();
+      env: task.env,
+      timeoutMs: task.timeout,
+      logger: stepLogger,
+    });
 
     if (!result.success) {
-      const stderr = new TextDecoder().decode(result.stderr);
-      throw new Error(`Shell command failed: ${stderr}`);
+      throw new Error(`Shell command failed: ${result.stderr}`);
     }
 
-    const stdout = new TextDecoder().decode(result.stdout);
-    return { stdout: stdout.trim(), exitCode: result.code };
-  }
-
-  private async executeShellStreaming(
-    command: Deno.Command,
-    ctx: StepExecutionContext,
-  ): Promise<unknown> {
-    const stepLogger = getWorkflowRunLogger(
-      ctx.workflowName,
-      ctx.jobName,
-      ctx.stepName,
-    );
-
-    const process = command.spawn();
-
-    const stdoutLines: string[] = [];
-    const stderrLines: string[] = [];
-
-    // Stream stdout and stderr concurrently
-    const stdoutPromise = this.streamOutput(
-      process.stdout,
-      (line) => {
-        stdoutLines.push(line);
-        stepLogger.info(line);
-        if (ctx.progress?.onStepStdout && ctx.workflowRun) {
-          ctx.progress.onStepStdout(
-            ctx.workflowRun,
-            ctx.jobName,
-            ctx.stepName,
-            line,
-          );
-        }
-      },
-    );
-
-    const stderrPromise = this.streamOutput(
-      process.stderr,
-      (line) => {
-        stderrLines.push(line);
-        stepLogger.warn(line);
-        if (ctx.progress?.onStepStderr && ctx.workflowRun) {
-          ctx.progress.onStepStderr(
-            ctx.workflowRun,
-            ctx.jobName,
-            ctx.stepName,
-            line,
-          );
-        }
-      },
-    );
-
-    // Wait for streams to complete and process to exit
-    const [, , status] = await Promise.all([
-      stdoutPromise,
-      stderrPromise,
-      process.status,
-    ]);
-
-    if (!status.success) {
-      throw new Error(`Shell command failed: ${stderrLines.join("\n")}`);
-    }
-
-    return { stdout: stdoutLines.join("\n").trim(), exitCode: status.code };
-  }
-
-  private async streamOutput(
-    stream: ReadableStream<Uint8Array>,
-    onLine: (line: string) => void,
-  ): Promise<void> {
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-
-        // Process all complete lines
-        for (let i = 0; i < lines.length - 1; i++) {
-          onLine(lines[i]);
-        }
-
-        // Keep the incomplete line in the buffer
-        buffer = lines[lines.length - 1];
-      }
-
-      // Process any remaining content
-      if (buffer) {
-        onLine(buffer);
-      }
-    } finally {
-      reader.releaseLock();
-    }
+    return { stdout: result.stdout.trim(), exitCode: result.exitCode };
   }
 
   private async executeModelMethod(
@@ -408,6 +306,10 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Mark as running and save
     output.markRunning();
+    // Reference the workflow run's log file for history access
+    if (ctx.workflowRun?.logFile) {
+      output.setLogFile(ctx.workflowRun.logFile);
+    }
     await outputRepo.save(modelType, task.methodName, output);
 
     // Track data outputs for context refresh
@@ -420,34 +322,8 @@ export class DefaultStepExecutor implements StepExecutor {
         method: task.methodName,
       });
 
-      // Build streaming callbacks — log via runLogger,
-      // and call progress callback for persistence
-      const streaming = {
-        onStdout: (line: string) => {
-          runLogger.info(line);
-          if (ctx.progress?.onStepStdout && ctx.workflowRun) {
-            ctx.progress.onStepStdout(
-              ctx.workflowRun,
-              ctx.jobName,
-              ctx.stepName,
-              line,
-            );
-          }
-        },
-        onStderr: (line: string) => {
-          runLogger.warn(line);
-          if (ctx.progress?.onStepStderr && ctx.workflowRun) {
-            ctx.progress.onStepStderr(
-              ctx.workflowRun,
-              ctx.jobName,
-              ctx.stepName,
-              line,
-            );
-          }
-        },
-      };
-
       // Execute the method with EVALUATED definition
+      // Logger handles both console and file persistence via RunFileSink
       const result = await executionService.executeWorkflow(
         evaluatedDefinition,
         modelDef,
@@ -459,7 +335,6 @@ export class DefaultStepExecutor implements StepExecutor {
           logger: runLogger,
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
-          streaming,
           modelDefinition: modelDef,
         },
       );
@@ -655,20 +530,6 @@ export interface ExecutionProgressCallback {
   onWorkflowComplete?(run: WorkflowRun): void;
   /** Called once at start with implicit dependency mappings */
   onImplicitDependencies?(implicitDeps: ImplicitDependencyMap): void;
-  /** Called for each line of stdout from shell commands */
-  onStepStdout?(
-    run: WorkflowRun,
-    jobName: string,
-    stepName: string,
-    line: string,
-  ): void;
-  /** Called for each line of stderr from shell commands */
-  onStepStderr?(
-    run: WorkflowRun,
-    jobName: string,
-    stepName: string,
-    line: string,
-  ): void;
 }
 
 /**
@@ -775,9 +636,20 @@ export class WorkflowExecutionService {
       progress?.onImplicitDependencies?.(allImplicitDeps);
     }
 
+    // Register run file sink target for the workflow log output
+    const workflowLogPath = join(
+      swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
+      workflow.id,
+      `workflow-run-${run.id}.log`,
+    );
+    const workflowLogCategory: string[] = [];
+    await runFileSink.register(workflowLogCategory, workflowLogPath);
+    run.setLogFile(workflowLogPath);
+
     // Start execution
     run.start();
     progress?.onWorkflowStart?.(run);
+
     await this.saveRun(workflow.id, run);
 
     // Sort jobs topologically
@@ -813,6 +685,9 @@ export class WorkflowExecutionService {
     progress?.onWorkflowComplete?.(run);
     await this.saveRun(workflow.id, run);
 
+    // Unregister workflow log file sink
+    runFileSink.unregister(workflowLogCategory);
+
     return run;
   }
 
@@ -847,138 +722,106 @@ export class WorkflowExecutionService {
     jobRun.start();
     progress?.onJobStart?.(run, jobName);
 
-    // Create throttled save for incremental log persistence
-    const [throttledSave, cleanupThrottledSave] = this.createThrottledSave(
-      workflow.id,
-      run,
+    // Expand forEach steps if we have expression context
+    let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
+    if (expressionContext && !lastEvaluated) {
+      expandedStepsMap = this.expandForEachSteps(job, expressionContext);
+    }
+
+    // Build step nodes with implicit dependencies from expressions
+    const { nodes: stepNodes } = await this.buildStepNodesWithImplicitDeps(
+      job,
+      workflow,
     );
 
-    // Wrap progress callbacks to persist logs incrementally
-    const streamingCallbacks: ExecutionProgressCallback = {
-      ...progress,
-      onStepStdout: (run, jobName, stepName, line) => {
-        // Call original callback if provided
-        progress?.onStepStdout?.(run, jobName, stepName, line);
-        // Append log line to step run and trigger save
-        const stepRun = run.getJob(jobName)?.getStep(stepName);
-        stepRun?.appendStdout(line);
-        throttledSave();
-      },
-      onStepStderr: (run, jobName, stepName, line) => {
-        // Call original callback if provided
-        progress?.onStepStderr?.(run, jobName, stepName, line);
-        // Append log line to step run and trigger save
-        const stepRun = run.getJob(jobName)?.getStep(stepName);
-        stepRun?.appendStderr(line);
-        throttledSave();
-      },
-    };
-
-    try {
-      // Expand forEach steps if we have expression context
-      let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
-      if (expressionContext && !lastEvaluated) {
-        expandedStepsMap = this.expandForEachSteps(job, expressionContext);
-      }
-
-      // Build step nodes with implicit dependencies from expressions
-      const { nodes: stepNodes } = await this.buildStepNodesWithImplicitDeps(
-        job,
-        workflow,
-      );
-
-      // If we have expanded steps, update the graph nodes
-      let effectiveNodes = stepNodes;
-      if (expandedStepsMap) {
-        effectiveNodes = [];
-        for (const node of stepNodes) {
-          const expanded = expandedStepsMap.get(node.name);
-          if (expanded && expanded.length > 0) {
-            // Create nodes for each expanded step
-            for (const exp of expanded) {
-              effectiveNodes.push({
-                name: exp.expandedName,
-                weight: node.weight,
-                // Map dependencies to expanded step names
-                dependencies: node.dependencies.map((dep) => {
-                  const depExpanded = expandedStepsMap!.get(dep);
-                  // For now, depend on all expansions of the dependency
-                  // (future: support forEach-aware dependency mapping)
-                  return depExpanded && depExpanded.length > 0
-                    ? depExpanded[0].expandedName
-                    : dep;
-                }),
-              });
-            }
-          } else if (!expanded || expanded.length === 0) {
-            // Skip steps that expanded to empty (e.g., empty array)
-            continue;
-          } else {
-            effectiveNodes.push(node);
+    // If we have expanded steps, update the graph nodes
+    let effectiveNodes = stepNodes;
+    if (expandedStepsMap) {
+      effectiveNodes = [];
+      for (const node of stepNodes) {
+        const expanded = expandedStepsMap.get(node.name);
+        if (expanded && expanded.length > 0) {
+          // Create nodes for each expanded step
+          for (const exp of expanded) {
+            effectiveNodes.push({
+              name: exp.expandedName,
+              weight: node.weight,
+              // Map dependencies to expanded step names
+              dependencies: node.dependencies.map((dep) => {
+                const depExpanded = expandedStepsMap!.get(dep);
+                // For now, depend on all expansions of the dependency
+                // (future: support forEach-aware dependency mapping)
+                return depExpanded && depExpanded.length > 0
+                  ? depExpanded[0].expandedName
+                  : dep;
+              }),
+            });
           }
+        } else if (!expanded || expanded.length === 0) {
+          // Skip steps that expanded to empty (e.g., empty array)
+          continue;
+        } else {
+          effectiveNodes.push(node);
         }
       }
+    }
 
-      const sortedSteps = this.sortService.sort(effectiveNodes);
+    const sortedSteps = this.sortService.sort(effectiveNodes);
 
-      // Execute steps level by level
-      let jobFailed = false;
-      for (const level of sortedSteps.levels) {
-        if (jobFailed) break;
+    // Execute steps level by level
+    let jobFailed = false;
+    for (const level of sortedSteps.levels) {
+      if (jobFailed) break;
 
-        // Execute steps in parallel within each level
-        const stepResults = await Promise.allSettled(
-          level.map((stepName) => {
-            // Find the expanded step info if applicable
-            let forEachVar: { name: string; value: unknown } | undefined;
-            let originalStep: Step | undefined;
+      // Execute steps in parallel within each level
+      const stepResults = await Promise.allSettled(
+        level.map((stepName) => {
+          // Find the expanded step info if applicable
+          let forEachVar: { name: string; value: unknown } | undefined;
+          let originalStep: Step | undefined;
 
-            if (expandedStepsMap) {
-              for (const [, expanded] of expandedStepsMap) {
-                const found = expanded.find((e) => e.expandedName === stepName);
-                if (found) {
-                  forEachVar = found.forEachVar;
-                  originalStep = found.step;
-                  break;
-                }
+          if (expandedStepsMap) {
+            for (const [, expanded] of expandedStepsMap) {
+              const found = expanded.find((e) => e.expandedName === stepName);
+              if (found) {
+                forEachVar = found.forEachVar;
+                originalStep = found.step;
+                break;
               }
             }
-
-            return this.executeExpandedStep(
-              workflow,
-              run,
-              job,
-              jobRun,
-              stepName,
-              originalStep,
-              forEachVar,
-              expressionContext,
-              streamingCallbacks,
-              enableStepLogging,
-              lastEvaluated,
-            );
-          }),
-        );
-
-        // Check for failures
-        for (const result of stepResults) {
-          if (result.status === "rejected") {
-            jobFailed = true;
           }
+
+          return this.executeExpandedStep(
+            workflow,
+            run,
+            job,
+            jobRun,
+            stepName,
+            originalStep,
+            forEachVar,
+            expressionContext,
+            progress,
+            enableStepLogging,
+            lastEvaluated,
+          );
+        }),
+      );
+
+      // Check for failures
+      for (const result of stepResults) {
+        if (result.status === "rejected") {
+          jobFailed = true;
         }
       }
-
-      // Complete job
-      if (jobFailed) {
-        jobRun.fail();
-      } else {
-        jobRun.succeed();
-      }
-      progress?.onJobComplete?.(run, jobName);
-    } finally {
-      // Clean up any pending timers
-      cleanupThrottledSave();
     }
+
+    // Complete job
+    if (jobFailed) {
+      jobRun.fail();
+    } else {
+      jobRun.succeed();
+    }
+    progress?.onJobComplete?.(run, jobName);
   }
 
   /**
@@ -1545,47 +1388,6 @@ export class WorkflowExecutionService {
     run: WorkflowRun,
   ): Promise<void> {
     await this.runRepo.save(workflowId, run);
-  }
-
-  /**
-   * Creates a throttled save function that batches saves to avoid excessive I/O.
-   * Saves at most once every 100ms.
-   * Returns a tuple of [saveFunction, cleanupFunction].
-   */
-  private createThrottledSave(
-    workflowId: WorkflowId,
-    run: WorkflowRun,
-  ): [() => void, () => void] {
-    let timer: number | null = null;
-    let pendingSave = false;
-
-    const save = () => {
-      pendingSave = true;
-      if (timer !== null) return;
-
-      timer = setTimeout(() => {
-        if (pendingSave) {
-          // Fire and forget - don't await to avoid blocking
-          this.saveRun(workflowId, run).catch((error) => {
-            console.error(
-              "Failed to save workflow run during streaming:",
-              error,
-            );
-          });
-          pendingSave = false;
-        }
-        timer = null;
-      }, 100);
-    };
-
-    const cleanup = () => {
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-    };
-
-    return [save, cleanup];
   }
 
   /**
