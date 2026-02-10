@@ -546,8 +546,16 @@ export class ModelRegistry {
 
 /**
  * Global model registry instance.
+ *
+ * Uses globalThis so that the same registry is shared across module
+ * boundaries (e.g., when a Vite bundle has its own copy of this module
+ * but extension models were loaded outside the bundle).
  */
-export const modelRegistry = new ModelRegistry();
+const MODEL_REGISTRY_KEY = "__swampModelRegistry";
+// deno-lint-ignore no-explicit-any
+export const modelRegistry: ModelRegistry = (globalThis as any)[
+  MODEL_REGISTRY_KEY
+] ??= new ModelRegistry();
 
 /**
  * Defines and registers a model with the global registry.
