@@ -18,6 +18,12 @@ interface LogStreamOverlayProps {
 /**
  * Full-screen overlay for streaming logs from workflow steps/jobs.
  * Shows real-time log output with scrolling and controls.
+ *
+ * Uses a ref-based buffer to batch log entries from the async generator.
+ * Entries yielded synchronously (e.g. the initial file read of hundreds of
+ * lines) are collected in the buffer and flushed in a single setState once
+ * the microtask queue drains, so the viewport jumps straight to the bottom
+ * instead of visibly scrolling through every intermediate position.
  */
 export function LogStreamOverlay(
   { target, logService, onClose, isActive }: LogStreamOverlayProps,
@@ -28,12 +34,20 @@ export function LogStreamOverlay(
   const [error, setError] = useState<string | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
-  const logsRef = useRef<LogEntry[]>([]);
 
-  // Update ref when logs change
-  useEffect(() => {
-    logsRef.current = logs;
-  }, [logs]);
+  // Buffer for batching log entries before flushing to state
+  const pendingRef = useRef<LogEntry[]>([]);
+  const flushScheduledRef = useRef(false);
+
+  // Flush buffered entries into state in one batch
+  const flushPending = useCallback(() => {
+    flushScheduledRef.current = false;
+    if (pendingRef.current.length > 0) {
+      const batch = pendingRef.current;
+      pendingRef.current = [];
+      setLogs((prev) => [...prev, ...batch]);
+    }
+  }, []);
 
   // Auto-scroll to bottom when new logs arrive (if auto-scroll is enabled)
   useEffect(() => {
@@ -56,14 +70,23 @@ export function LogStreamOverlay(
         setError(null);
         setIsLoading(false);
 
-        // Always use streamLogs for all steps. It handles:
-        // - Running/pending steps: continuous polling until complete
-        // - Completed steps: reads all content + a final delayed read
-        //   to catch fire-and-forget writes that haven't flushed yet
         const stream = logService.streamLogs(target);
         for await (const logEntry of stream) {
           if (!streamActive) break;
-          setLogs((prevLogs) => [...prevLogs, logEntry]);
+
+          // Buffer the entry instead of setting state directly.
+          // Schedule a macrotask flush so that synchronous bursts of yields
+          // (e.g. the initial file read) are collected into one batch.
+          pendingRef.current.push(logEntry);
+          if (!flushScheduledRef.current) {
+            flushScheduledRef.current = true;
+            setTimeout(flushPending, 0);
+          }
+        }
+
+        // Flush any remaining buffered entries after the stream ends
+        if (streamActive && pendingRef.current.length > 0) {
+          flushPending();
         }
       } catch (err) {
         if (streamActive) {
@@ -78,7 +101,7 @@ export function LogStreamOverlay(
     return () => {
       streamActive = false;
     };
-  }, [target, logService]);
+  }, [target, logService, flushPending]);
 
   const handleClose = useCallback(() => {
     onClose();
@@ -129,20 +152,6 @@ export function LogStreamOverlay(
         });
         return;
       }
-
-      // Note: Home and End keys might not be available in all terminals
-      // Commenting out for now to fix TypeScript errors
-      // if (key.home) {
-      //   setAutoScroll(false);
-      //   setScrollOffset(0);
-      //   return;
-      // }
-
-      // if (key.end) {
-      //   setAutoScroll(true);
-      //   setScrollOffset(maxOffset);
-      //   return;
-      // }
     },
     { isActive },
   );
