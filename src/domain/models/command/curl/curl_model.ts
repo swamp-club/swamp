@@ -174,20 +174,14 @@ async function executeDownload(
 
   const metadataWriter = context.createDataWriter!({
     name: `${definition.name}-metadata`,
-    specType: DataSpecType.create("metadata"),
-    contentType: "application/json",
-    lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "data" },
+    specType: "metadata",
   });
 
   const fileWriter = context.createDataWriter!({
     name: `${definition.name}-file`,
-    specType: DataSpecType.create("file"),
+    specType: "file",
     contentType,
-    lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "file", filename },
+    tags: { filename },
   });
 
   const metadataHandle = await metadataWriter.writeText(

@@ -60,11 +60,7 @@ async function executeWrite(
 
   const writer = context.createDataWriter!({
     name: `${definition.name}-message`,
-    specType: DataSpecType.create("message"),
-    contentType: "application/json",
-    lifetime: "ephemeral",
-    garbageCollection: 10,
-    tags: { type: "data" },
+    specType: "message",
   });
 
   const handle = await writer.writeText(JSON.stringify(dataAttributes));

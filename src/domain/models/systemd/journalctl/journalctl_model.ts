@@ -173,12 +173,7 @@ async function readLogs(
 
   const writer = context.createDataWriter!({
     name: `${definition.name}-logs`,
-    specType: DataSpecType.create("log"),
-    contentType: "text/plain",
-    lifetime: "infinite",
-    garbageCollection: 10,
-    streaming: true,
-    tags: { type: "log" },
+    specType: "log",
   });
 
   const handle = await writer.writeText(logLines.join("\n"));
@@ -208,6 +203,7 @@ export const journalctlModel: ModelDefinition<
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
+      streaming: true,
       tags: { type: "log" },
     },
   },

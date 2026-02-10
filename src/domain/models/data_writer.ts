@@ -4,11 +4,13 @@ import type { UnifiedDataRepository } from "../../infrastructure/persistence/uni
 import type { ModelType } from "./model_type.ts";
 import {
   type DataHandle,
+  type DataOutputSpecification,
   type DataWriter,
   type DataWriterCallbacks,
   type DataWriterFactory,
-  type DataWriterOptions,
   normalizeSpecType,
+  type ResolvedDataWriterOptions,
+  type SpecBasedWriterOptions,
 } from "./model.ts";
 import type { DataSpecType } from "./model.ts";
 
@@ -25,7 +27,7 @@ export class DefaultDataWriter implements DataWriter {
   private readonly repo: UnifiedDataRepository;
   private readonly modelType: ModelType;
   private readonly modelId: string;
-  private readonly options: DataWriterOptions;
+  private readonly options: ResolvedDataWriterOptions;
   private readonly normalizedSpecType: DataSpecType;
   private readonly callbacks: DataWriterCallbacks;
 
@@ -38,7 +40,7 @@ export class DefaultDataWriter implements DataWriter {
     repo: UnifiedDataRepository,
     modelType: ModelType,
     modelId: string,
-    options: DataWriterOptions,
+    options: ResolvedDataWriterOptions,
     callbacks: DataWriterCallbacks = {},
   ) {
     this.repo = repo;
@@ -253,10 +255,15 @@ export class DefaultDataWriter implements DataWriter {
 /**
  * Creates a DataWriterFactory bound to a specific execution context.
  *
+ * The factory resolves spec-based options against the model's declared
+ * DataOutputSpecifications, merges workflow overrides, and produces
+ * fully-resolved DefaultDataWriter instances.
+ *
  * @param repo - The unified data repository
  * @param modelType - The model type
  * @param modelId - The model ID (definition ID)
  * @param definitionHash - The definition hash for ownership
+ * @param dataOutputSpecs - The model's declared data output specifications
  * @param tagOverrides - Tags merged into every writer (e.g., workflow step tags)
  * @param dataOutputOverrides - Overrides merged into every writer's options
  * @param callbacks - Optional callbacks for streaming events
@@ -267,6 +274,7 @@ export function createDataWriterFactory(
   modelType: ModelType,
   modelId: string,
   definitionHash: string,
+  dataOutputSpecs: Record<string, DataOutputSpecification>,
   tagOverrides?: Record<string, string>,
   dataOutputOverrides?: Array<{
     specType: string;
@@ -279,28 +287,58 @@ export function createDataWriterFactory(
   const handles: DataHandle[] = [];
   const writers: DefaultDataWriter[] = [];
 
-  const factory: DataWriterFactory = (options: DataWriterOptions) => {
-    // Merge tag overrides
-    const mergedTags = {
-      ...options.tags,
-      ...(tagOverrides ?? {}),
+  const factory: DataWriterFactory = (options: SpecBasedWriterOptions) => {
+    // Look up the spec — fail fast if not declared
+    const spec = dataOutputSpecs[options.specType];
+    if (!spec) {
+      const declared = Object.keys(dataOutputSpecs).join(", ");
+      throw new Error(
+        `Undeclared spec type '${options.specType}' in model '${modelType.normalized}'. ` +
+          `Declared spec types: ${declared || "(none)"}`,
+      );
+    }
+
+    // Resolve: spec defaults -> call-site overrides
+    const resolvedTags = {
+      ...spec.tags,
+      ...(options.tags ?? {}),
     };
 
+    let resolvedOptions: ResolvedDataWriterOptions = {
+      name: options.name,
+      specType: spec.specType,
+      contentType: options.contentType ?? spec.contentType,
+      lifetime: options.lifetime ?? spec.lifetime,
+      garbageCollection: options.garbageCollection ?? spec.garbageCollection,
+      streaming: options.streaming ?? spec.streaming,
+      tags: resolvedTags,
+    };
+
+    // Apply workflow tag overrides
+    if (tagOverrides) {
+      resolvedOptions = {
+        ...resolvedOptions,
+        tags: {
+          ...resolvedOptions.tags,
+          ...tagOverrides,
+        },
+      };
+    }
+
     // Apply data output overrides for this spec type
-    let mergedOptions = { ...options, tags: mergedTags };
     if (dataOutputOverrides) {
-      const normalizedSpec = normalizeSpecType(options.specType);
+      const normalizedSpec = normalizeSpecType(resolvedOptions.specType);
       const override = dataOutputOverrides.find(
         (o) => o.specType === normalizedSpec.value,
       );
       if (override) {
-        mergedOptions = {
-          ...mergedOptions,
-          lifetime: override.lifetime ?? mergedOptions.lifetime,
+        resolvedOptions = {
+          ...resolvedOptions,
+          lifetime: override.lifetime ?? resolvedOptions.lifetime,
           garbageCollection: override.garbageCollection ??
-            mergedOptions.garbageCollection,
+            resolvedOptions.garbageCollection,
           tags: {
-            ...mergedOptions.tags,
+            ...resolvedOptions.tags,
             ...(override.tags ?? {}),
           },
         };
@@ -308,10 +346,9 @@ export function createDataWriterFactory(
     }
 
     // Set ownership from definitionHash
-    mergedOptions.ownerDefinition = {
+    resolvedOptions.ownerDefinition = {
       ownerType: "model-method",
       ownerRef: modelId,
-      ...mergedOptions.ownerDefinition,
       definitionHash,
     };
 
@@ -319,7 +356,7 @@ export function createDataWriterFactory(
       repo,
       modelType,
       modelId,
-      mergedOptions,
+      resolvedOptions,
       callbacks,
     );
     writers.push(writer);

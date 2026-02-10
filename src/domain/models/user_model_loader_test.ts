@@ -8,8 +8,8 @@ import type {
   DataHandle,
   DataWriter,
   DataWriterFactory,
-  DataWriterOptions,
   MethodContext,
+  SpecBasedWriterOptions,
 } from "./model.ts";
 import type { ModelType } from "./model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -41,7 +41,7 @@ function createMockDataWriterFactory(): {
   let nextId = 1;
 
   const factory: DataWriterFactory = (
-    options: DataWriterOptions,
+    options: SpecBasedWriterOptions,
   ): DataWriter => {
     const dataId = `mock-data-${nextId++}` as DataId;
 
@@ -51,14 +51,14 @@ function createMockDataWriterFactory(): {
       dataId,
       version: 1,
       size: content.length,
-      tags: { ...options.tags },
+      tags: { ...(options.tags ?? {}) },
       metadata: {
-        contentType: options.contentType,
-        lifetime: options.lifetime,
-        garbageCollection: options.garbageCollection,
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
         streaming: options.streaming ?? false,
-        tags: { ...options.tags },
-        ownerDefinition: options.ownerDefinition ?? {
+        tags: { ...(options.tags ?? {}) },
+        ownerDefinition: {
           definitionHash: "test-hash",
           ownerType: "model-method",
           ownerRef: "test",
@@ -201,6 +201,16 @@ export const model = {
   type: "@user/data-model-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     process: {
       description: "Process the message",
@@ -290,6 +300,16 @@ export const model = {
   type: "@user/regular-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ msg: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -324,6 +344,16 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write message",
@@ -339,6 +369,16 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.2",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -376,6 +416,16 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     create: {
       description: "Create a resource",
@@ -450,6 +500,16 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run without own schema",
@@ -484,6 +544,16 @@ export const model = {
   type: "@user/multi-a-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ a: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run A",
@@ -499,6 +569,16 @@ export const model = {
   type: "@user/multi-b-${Date.now()}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ b: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run B",
@@ -536,6 +616,16 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     execute: {
       description: "Test method that returns empty dataHandles",
@@ -586,6 +676,16 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     fetch: {
       description: "Test method that returns no dataHandles",
@@ -632,6 +732,16 @@ export const model = {
   type: "@user/nested-a-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ a: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run A",
@@ -646,6 +756,16 @@ export const model = {
   type: "@user/nested-b-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ b: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run B",
@@ -678,6 +798,16 @@ export const model = {
   type: "@user/subdir-notest-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: { description: "Run", execute: async () => ({ dataHandles: [] }) },
   },
@@ -706,6 +836,16 @@ export const model = {
   type: "@user/deep-nested-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ x: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: { description: "Run", execute: async () => ({ dataHandles: [] }) },
   },
@@ -737,6 +877,16 @@ export const model = {
   type: "@user/ext-single-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
@@ -785,6 +935,16 @@ export const model = {
   type: "@user/ext-multi-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
@@ -859,6 +1019,16 @@ export const model = {
   type: "@user/ext-conflict-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
@@ -901,6 +1071,16 @@ export const model = {
   type: "@user/ext-dup-methods-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
@@ -955,6 +1135,16 @@ export const model = {
   type: "@user/ext-inherit-schema-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
@@ -1029,6 +1219,16 @@ export const model = {
   type: "@user/multi-ext-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
@@ -1088,6 +1288,16 @@ export const model = {
   type: "@user/two-pass-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
@@ -1134,6 +1344,16 @@ export const model = {
   type: "@user/ext-execute-${ts}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     write: {
       description: "Write",
@@ -1206,10 +1426,10 @@ export const extension = {
   );
 });
 
-// --- Default dataOutputSpecs tests ---
+// --- dataOutputSpecs validation tests ---
 
-Deno.test("UserModelLoader provides default data and resource spec types", async () => {
-  const typeId = `@user/default-specs-${Date.now()}`;
+Deno.test("UserModelLoader rejects model without dataOutputSpecs", async () => {
+  const typeId = `@user/no-specs-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1226,26 +1446,17 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "default_specs.ts": modelCode }, async (dir) => {
+  await withTempModels({ "no_specs.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
-
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
-
-    // Verify default "data" spec type is present
-    assertEquals(modelDef!.dataOutputSpecs["data"] !== undefined, true);
-    assertEquals(modelDef!.dataOutputSpecs["data"].specType.value, "data");
-    assertEquals(
-      modelDef!.dataOutputSpecs["data"].contentType,
-      "application/json",
-    );
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "dataOutputSpecs");
   });
 });
 
-Deno.test("UserModelLoader user-declared dataOutputSpecs override defaults", async () => {
+Deno.test("UserModelLoader registers user-declared dataOutputSpecs", async () => {
   const typeId = `@user/custom-specs-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -1259,11 +1470,17 @@ export const model = {
       specType: "data",
       description: "Custom data spec",
       contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
     },
     "metrics": {
       specType: "metrics",
       description: "Metrics output",
       contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "metrics" },
     },
   },
   methods: {
@@ -1310,6 +1527,16 @@ export const model = {
   type: "mycompany/mymodel",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -1337,6 +1564,16 @@ export const model = {
   type: "@user",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -1364,6 +1601,16 @@ export const model = {
   type: "@adam/mymodel",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -1393,6 +1640,16 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -1423,6 +1680,16 @@ export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -1449,6 +1716,16 @@ export const model = {
   type: "swamp/mymodel",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -1476,6 +1753,16 @@ export const model = {
   type: "si/mymodel",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -1503,6 +1790,16 @@ export const model = {
   type: "@swamp/mymodel",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",
@@ -1530,6 +1827,16 @@ export const model = {
   type: "@si/mymodel",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Run",

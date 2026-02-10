@@ -72,8 +72,7 @@ const UserModelSchema = z.object({
   inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
   ),
-  dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema)
-    .optional(),
+  dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema),
   methods: z.record(z.string(), UserMethodSchema),
   upgrades: z.array(UserUpgradeSchema).optional(),
 });
@@ -349,26 +348,13 @@ export class UserModelLoader {
       };
     }
 
-    const defaultSpecs: Record<string, DataOutputSpecification> = {
-      "data": {
-        specType: DataSpecType.create("data"),
-        description: "Data output",
-        contentType: "application/json",
-        lifetime: "infinite",
-        garbageCollection: 10,
-        tags: { type: "data" },
-      },
-    };
-
     // User-declared specs need specType converted from string to DataSpecType
     const userSpecs: Record<string, DataOutputSpecification> = {};
-    if (userModel.dataOutputSpecs) {
-      for (const [key, spec] of Object.entries(userModel.dataOutputSpecs)) {
-        userSpecs[key] = {
-          ...spec,
-          specType: DataSpecType.create(String(spec.specType)),
-        };
-      }
+    for (const [key, spec] of Object.entries(userModel.dataOutputSpecs)) {
+      userSpecs[key] = {
+        ...spec,
+        specType: DataSpecType.create(String(spec.specType)),
+      };
     }
 
     // Convert user upgrades to VersionUpgrade[]
@@ -384,7 +370,7 @@ export class UserModelLoader {
       type: modelType,
       version: userModel.version,
       inputAttributesSchema: userModel.inputAttributesSchema,
-      dataOutputSpecs: { ...defaultSpecs, ...userSpecs },
+      dataOutputSpecs: { ...userSpecs },
       methods,
       ...(upgrades && upgrades.length > 0 ? { upgrades } : {}),
     };

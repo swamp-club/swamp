@@ -8,11 +8,11 @@ import {
   DataSpecType,
   type DataWriter,
   type DataWriterFactory,
-  type DataWriterOptions,
   type MethodContext,
   type MethodResult,
   type ModelDefinition,
   normalizeSpecType,
+  type SpecBasedWriterOptions,
 } from "./model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -40,7 +40,7 @@ function createMockDataWriterFactory(): {
   let nextId = 1;
 
   const factory: DataWriterFactory = (
-    options: DataWriterOptions,
+    options: SpecBasedWriterOptions,
   ): DataWriter => {
     const dataId = `mock-data-${nextId++}` as DataId;
 
@@ -50,14 +50,14 @@ function createMockDataWriterFactory(): {
       dataId,
       version: 1,
       size: content.length,
-      tags: { ...options.tags },
+      tags: options.tags ?? {},
       metadata: {
-        contentType: options.contentType,
-        lifetime: options.lifetime,
-        garbageCollection: options.garbageCollection,
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
         streaming: options.streaming ?? false,
-        tags: { ...options.tags },
-        ownerDefinition: options.ownerDefinition ?? {
+        tags: options.tags ?? {},
+        ownerDefinition: {
           definitionHash: "test-hash",
           ownerType: "model-method",
           ownerRef: "test",
@@ -272,16 +272,7 @@ async function writeTestData(
 ): Promise<DataHandle> {
   const writer = context.createDataWriter!({
     name,
-    specType: DataSpecType.create("data"),
-    contentType: "application/json",
-    lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "data" },
-    ownerDefinition: {
-      definitionHash: "test-hash",
-      ownerType: "model-method",
-      ownerRef: "test",
-    },
+    specType: "data",
   });
   return await writer.writeText(JSON.stringify(attributes));
 }
@@ -314,6 +305,10 @@ function createTestModel(options: {
       "data": {
         specType: DataSpecType.create("data"),
         description: "Test data",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
       },
     },
     methods: {
@@ -580,6 +575,10 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
       "data": {
         specType: DataSpecType.create("data"),
         description: "Test data",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
       },
     },
     methods: {
@@ -658,6 +657,10 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
       "data": {
         specType: DataSpecType.create("data"),
         description: "Test data",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
       },
     },
     methods: {
@@ -716,6 +719,10 @@ Deno.test(
         "data": {
           specType: DataSpecType.create("data"),
           description: "Test data",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "data" },
         },
       },
       methods: {

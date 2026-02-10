@@ -161,6 +161,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       context.modelType,
       context.modelId,
       definitionHash,
+      modelDef.dataOutputSpecs,
       context.tagOverrides,
       context.dataOutputOverrides,
     );

@@ -180,11 +180,7 @@ export abstract class AWSCloudControlModel<
   ): Promise<DataHandle> {
     const writer = context.createDataWriter!({
       name: `${definition.name}-data`,
-      specType: DataSpecType.create("resource"),
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      tags: { type: "resource" },
+      specType: "resource",
     });
 
     return await writer.writeText(JSON.stringify(attributes));

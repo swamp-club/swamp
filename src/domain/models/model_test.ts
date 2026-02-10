@@ -5,12 +5,12 @@ import {
   DataSpecType,
   type DataWriter,
   type DataWriterFactory,
-  type DataWriterOptions,
   defineModel,
   type MethodContext,
   type ModelDefinition,
   ModelRegistry,
   normalizeSpecType,
+  type SpecBasedWriterOptions,
 } from "./model.ts";
 import { ModelType } from "./model_type.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
@@ -39,7 +39,7 @@ function createMockDataWriterFactory(): {
   let nextId = 1;
 
   const factory: DataWriterFactory = (
-    options: DataWriterOptions,
+    options: SpecBasedWriterOptions,
   ): DataWriter => {
     const dataId = `mock-data-${nextId++}` as DataId;
 
@@ -49,14 +49,14 @@ function createMockDataWriterFactory(): {
       dataId,
       version: 1,
       size: content.length,
-      tags: { ...options.tags },
+      tags: options.tags ?? {},
       metadata: {
-        contentType: options.contentType,
-        lifetime: options.lifetime,
-        garbageCollection: options.garbageCollection,
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
         streaming: options.streaming ?? false,
-        tags: { ...options.tags },
-        ownerDefinition: options.ownerDefinition ?? {
+        tags: options.tags ?? {},
+        ownerDefinition: {
           definitionHash: "test-hash",
           ownerType: "model-method",
           ownerRef: "test",
@@ -192,6 +192,10 @@ function createTestModel(typeString: string): ModelDefinition {
       "data": {
         specType: DataSpecType.create("data"),
         description: "Test data",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: "data" },
       },
     },
     methods: {
@@ -201,16 +205,7 @@ function createTestModel(typeString: string): ModelDefinition {
         execute: async (definition: Definition, context: MethodContext) => {
           const writer = context.createDataWriter!({
             name: `${definition.name}-data`,
-            specType: DataSpecType.create("data"),
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            tags: { type: "data" },
-            ownerDefinition: {
-              definitionHash: "test-hash",
-              ownerType: "model-method",
-              ownerRef: "write",
-            },
+            specType: "data",
           });
           const handle = await writer.writeText(
             JSON.stringify({
@@ -461,16 +456,7 @@ Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
       execute: async (definition: Definition, context: MethodContext) => {
         const writer = context.createDataWriter!({
           name: "greeting",
-          specType: DataSpecType.create("data"),
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
-          ownerDefinition: {
-            definitionHash: "test-hash",
-            ownerType: "model-method",
-            ownerRef: "greet",
-          },
+          specType: "data",
         });
         const handle = await writer.writeText(
           JSON.stringify({

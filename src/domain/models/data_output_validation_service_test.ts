@@ -43,10 +43,18 @@ Deno.test("DataOutputValidationService - validate - accepts valid spec types", (
     "message": {
       specType: DataSpecType.create("message"),
       description: "Test message",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
     },
     "log": {
       specType: DataSpecType.create("log"),
       description: "Test log",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "log" },
     },
   };
 
@@ -61,13 +69,17 @@ Deno.test("DataOutputValidationService - validate - accepts valid spec types", (
   assertEquals(result.errors, []);
 });
 
-Deno.test("DataOutputValidationService - validate - detects undeclared spec type", () => {
+Deno.test("DataOutputValidationService - validate - passes for spec types not in specs (checked at writer creation)", () => {
   const service = new DataOutputValidationService();
 
   const specs: Record<string, DataOutputSpecification> = {
     "message": {
       specType: DataSpecType.create("message"),
       description: "Test message",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
     },
   };
 
@@ -77,12 +89,8 @@ Deno.test("DataOutputValidationService - validate - detects undeclared spec type
 
   const result = service.validate(dataHandles, specs, "testMethod");
 
-  assertEquals(result.valid, false);
-  assertEquals(result.errors.length, 1);
-  assertEquals(
-    result.errors[0],
-    "Data output 'foo-unknown' references undeclared spec type 'unknown' in method 'testMethod'. Declared spec types: message",
-  );
+  assertEquals(result.valid, true);
+  assertEquals(result.errors, []);
 });
 
 Deno.test("DataOutputValidationService - validate - detects duplicate instance names", () => {
@@ -92,6 +100,10 @@ Deno.test("DataOutputValidationService - validate - detects duplicate instance n
     "message": {
       specType: DataSpecType.create("message"),
       description: "Test message",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
     },
   };
 

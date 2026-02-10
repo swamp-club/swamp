@@ -15,6 +15,16 @@ export const model = {
   type: "@user/text-processor",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Processed text output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     process: {
       description: "Process text according to the specified operation",
@@ -37,10 +47,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "result",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           originalText: text,
@@ -72,6 +78,16 @@ export const model = {
   type: "@user/deployment",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "resource": {
+      specType: "resource",
+      description: "Deployment resource state",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+    },
+  },
   methods: {
     deploy: {
       description: "Deploy the application",
@@ -82,10 +98,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "resource",
           specType: "resource",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "resource" },
         });
         const handle = await writer.writeText(JSON.stringify({
           deploymentId,
@@ -107,10 +119,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "resource",
           specType: "resource",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "resource" },
         });
         const handle = await writer.writeText(JSON.stringify({
           deploymentId: `deploy-${attrs.appName}-scaled`,
@@ -140,6 +148,16 @@ export const model = {
   type: "@user/echo",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Echo output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Echo the message with timestamp",
@@ -147,10 +165,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "data",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           message: input.attributes.message,
@@ -181,6 +195,16 @@ export const model = {
   type: "@user/config-generator",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Generated configuration",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     generate: {
       description: "Generate service configuration based on environment",
@@ -201,10 +225,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "config",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           configJson: {
@@ -249,13 +269,10 @@ export const extension = {
     audit: {
       description: "Audit the echo message",
       execute: async (definition, context) => {
+        // Extensions use the target model's dataOutputSpecs
         const writer = context.createDataWriter!({
           name: "audit-result",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           audited: true,
@@ -282,10 +299,6 @@ export const extension = {
         const writer = context.createDataWriter!({
           name: "audit-result",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           audited: true,
@@ -300,10 +313,6 @@ export const extension = {
         const writer = context.createDataWriter!({
           name: "validation-result",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           valid: definition.attributes.message.length > 0,

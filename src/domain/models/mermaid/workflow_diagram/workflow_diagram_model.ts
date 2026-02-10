@@ -312,20 +312,13 @@ async function executeGenerate(
 
   const metadataWriter = context.createDataWriter!({
     name: `${definition.name}-metadata`,
-    specType: DataSpecType.create("metadata"),
-    contentType: "application/json",
-    lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "data" },
+    specType: "metadata",
   });
 
   const diagramWriter = context.createDataWriter!({
     name: `${definition.name}-diagram`,
-    specType: DataSpecType.create("file"),
-    contentType: "text/plain",
-    lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "file", filename },
+    specType: "file",
+    tags: { filename },
   });
 
   const metadataHandle = await metadataWriter.writeText(

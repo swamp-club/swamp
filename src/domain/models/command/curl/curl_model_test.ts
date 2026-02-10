@@ -14,22 +14,13 @@ import type {
   DataHandle,
   DataWriter,
   DataWriterFactory,
-  DataWriterOptions,
   MethodContext,
+  SpecBasedWriterOptions,
 } from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
-
-// Check if we have network permission for integration tests
-const hasNetworkPermission = await (async () => {
-  const status = await Deno.permissions.query({
-    name: "net",
-    host: "httpbin.org",
-  });
-  return status.state === "granted";
-})();
 
 /**
  * Stored result from mock data writer.
@@ -51,7 +42,7 @@ function createMockDataWriterFactory(): {
   let nextId = 1;
 
   const factory: DataWriterFactory = (
-    options: DataWriterOptions,
+    options: SpecBasedWriterOptions,
   ): DataWriter => {
     const dataId = `mock-data-${nextId++}` as DataId;
 
@@ -61,14 +52,14 @@ function createMockDataWriterFactory(): {
       dataId,
       version: 1,
       size: content.length,
-      tags: { ...options.tags },
+      tags: { ...(options.tags ?? {}) },
       metadata: {
-        contentType: options.contentType,
-        lifetime: options.lifetime,
-        garbageCollection: options.garbageCollection,
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
         streaming: options.streaming ?? false,
-        tags: { ...options.tags },
-        ownerDefinition: options.ownerDefinition ?? {
+        tags: { ...(options.tags ?? {}) },
+        ownerDefinition: {
           definitionHash: "test-hash",
           ownerType: "model-method",
           ownerRef: "test",
@@ -323,10 +314,17 @@ Deno.test("curlModel.methods.download validates input attributes", async () => {
   assertEquals(error !== null, true);
 });
 
-Deno.test({
-  name: "curlModel.methods.download executes correctly",
-  ignore: !hasNetworkPermission,
-  fn: async () => {
+Deno.test("curlModel.methods.download executes correctly", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+    return Promise.resolve(
+      new Response(JSON.stringify({ slideshow: { title: "Sample" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  };
+  try {
     const definition = Definition.create({
       name: "test-curl",
       attributes: { url: "https://httpbin.org/json" },
@@ -360,13 +358,22 @@ Deno.test({
     const fileContent = getFileContent(getResults());
     assertExists(fileContent);
     assertEquals(fileContent.length > 0, true);
-  },
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
-Deno.test({
-  name: "curlModel.methods.download handles custom filename",
-  ignore: !hasNetworkPermission,
-  fn: async () => {
+Deno.test("curlModel.methods.download handles custom filename", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+    return Promise.resolve(
+      new Response(JSON.stringify({ data: "test" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  };
+  try {
     const definition = Definition.create({
       name: "test-curl-filename",
       attributes: {
@@ -390,13 +397,22 @@ Deno.test({
     const metadata = getResultAttributes(getResults(), "metadata");
     assertExists(metadata);
     assertEquals(metadata.filename, "custom-response.json");
-  },
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
-Deno.test({
-  name: "curlModel.methods.download handles HTTP errors",
-  ignore: !hasNetworkPermission,
-  fn: async () => {
+Deno.test("curlModel.methods.download handles HTTP errors", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+    return Promise.resolve(
+      new Response(null, {
+        status: 404,
+        statusText: "Not Found",
+      }),
+    );
+  };
+  try {
     const definition = Definition.create({
       name: "test-curl-error",
       attributes: { url: "https://httpbin.org/status/404" },
@@ -412,5 +428,7 @@ Deno.test({
 
     assertEquals(error !== null, true);
     assertEquals(error!.message.includes("404"), true);
-  },
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

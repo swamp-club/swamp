@@ -153,21 +153,12 @@ async function executeGet(
 
     const resultWriter = context.createDataWriter!({
       name: `${definition.name}-result`,
-      specType: DataSpecType.create("result"),
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      tags: { type: "data" },
+      specType: "result",
     });
 
     const logWriter = context.createDataWriter!({
       name: `${definition.name}-audit-log`,
-      specType: DataSpecType.create("log"),
-      contentType: "text/plain",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      streaming: true,
-      tags: { type: "log" },
+      specType: "log",
     });
 
     const resultHandle = await resultWriter.writeText(
@@ -237,21 +228,12 @@ async function executePut(
 
     const resultWriter = context.createDataWriter!({
       name: `${definition.name}-result`,
-      specType: DataSpecType.create("result"),
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      tags: { type: "data" },
+      specType: "result",
     });
 
     const logWriter = context.createDataWriter!({
       name: `${definition.name}-audit-log`,
-      specType: DataSpecType.create("log"),
-      contentType: "text/plain",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      streaming: true,
-      tags: { type: "log" },
+      specType: "log",
     });
 
     const resultHandle = await resultWriter.writeText(
@@ -304,6 +286,7 @@ export const vaultModel: ModelDefinition<
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
+      streaming: true,
       tags: { type: "log" },
     },
   },

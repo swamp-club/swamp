@@ -64,6 +64,16 @@ export const model = {
   type: "@user/my-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Model output data",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Process the input message",
@@ -71,10 +81,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "result",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           message: definition.attributes.message.toUpperCase(),
@@ -89,13 +95,14 @@ export const model = {
 
 ## Model Structure
 
-| Field                   | Required | Description                          |
-| ----------------------- | -------- | ------------------------------------ |
-| `type`                  | Yes      | Unique identifier (`namespace/name`) |
-| `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)  |
-| `inputAttributesSchema` | Yes      | Zod schema for input validation      |
-| `inputsSchema`          | No       | Zod schema for runtime inputs        |
-| `methods`               | Yes      | Object of method definitions         |
+| Field                   | Required | Description                               |
+| ----------------------- | -------- | ----------------------------------------- |
+| `type`                  | Yes      | Unique identifier (`namespace/name`)      |
+| `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)       |
+| `inputAttributesSchema` | Yes      | Zod schema for input validation           |
+| `dataOutputSpecs`       | Yes      | Data output spec declarations (see below) |
+| `inputsSchema`          | No       | Zod schema for runtime inputs             |
+| `methods`               | Yes      | Object of method definitions              |
 
 ### Model-Level Inputs
 
@@ -110,6 +117,16 @@ export const model = {
     serviceName: z.string(),
     target: z.string(), // Will use ${{ inputs.environment }}
   }),
+  dataOutputSpecs: {
+    "resource": {
+      specType: "resource",
+      description: "Deployment resource state",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+    },
+  },
   inputsSchema: z.object({
     environment: z.enum(["dev", "staging", "production"]),
     dryRun: z.boolean().optional().default(false),
@@ -123,10 +140,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "resource",
           specType: "resource",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "resource" },
         });
         const handle = await writer.writeText(JSON.stringify({
           deployed: true,
@@ -148,6 +161,40 @@ swamp model method run my-deploy deploy --input '{"environment": "production"}' 
 The `inputsSchema` defines what runtime inputs are accepted. These inputs are
 available in CEL expressions via `${{ inputs.<name> }}`.
 
+## Data Output Specs
+
+Every model must declare its data output specifications in `dataOutputSpecs`.
+This is the single source of truth for what spec types a model can produce. When
+`createDataWriter` is called with a `specType`, it must match a key in
+`dataOutputSpecs` — otherwise the factory fails fast with an "undeclared spec
+type" error.
+
+Each spec entry defines defaults for `contentType`, `lifetime`,
+`garbageCollection`, and `tags`. The `createDataWriter` call only needs `name`
+and `specType`; all other fields are inherited from the spec and can be
+overridden per-write if needed.
+
+```typescript
+dataOutputSpecs: {
+  "data": {
+    specType: "data",
+    description: "Model output data",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "data" },
+  },
+  "log": {
+    specType: "log",
+    description: "Execution log",
+    contentType: "text/plain",
+    lifetime: "7d",
+    garbageCollection: 5,
+    tags: { type: "log" },
+  },
+},
+```
+
 ## Execute Function
 
 The execute function receives the definition and context. It uses the
@@ -165,14 +212,10 @@ execute: (async (definition, context) => {
   // context.createDataWriter - Factory for creating DataWriter instances
   // context.inputs        - Runtime inputs (if inputsSchema defined)
 
-  // 1. Create a DataWriter for your output
+  // 1. Create a DataWriter — specType must match a key in dataOutputSpecs
   const writer = context.createDataWriter!({
     name: "my-data",
-    specType: "data",
-    contentType: "application/json",
-    lifetime: "infinite",
-    garbageCollection: 10,
-    tags: { type: "data" },
+    specType: "data", // references "data" entry in dataOutputSpecs
   });
 
   // 2. Write content using one of the writer methods
@@ -190,17 +233,17 @@ execute: (async (definition, context) => {
 
 Create a writer with `context.createDataWriter(options)`:
 
-**DataWriterOptions:**
+**SpecBasedWriterOptions:**
 
-| Field               | Required | Description                                  |
-| ------------------- | -------- | -------------------------------------------- |
-| `name`              | Yes      | Unique name for this data artifact           |
-| `specType`          | Yes      | Data spec type (e.g., `"data"`)              |
-| `contentType`       | No       | MIME type (default: `application/json`)      |
-| `lifetime`          | No       | How long data persists (default: `infinite`) |
-| `garbageCollection` | No       | How many versions to keep (integer)          |
-| `streaming`         | No       | True for line-oriented streaming data        |
-| `tags`              | No       | Key-value pairs for categorization           |
+| Field               | Required | Description                                    |
+| ------------------- | -------- | ---------------------------------------------- |
+| `name`              | Yes      | Unique name for this data artifact             |
+| `specType`          | Yes      | Must match a key in `dataOutputSpecs`          |
+| `contentType`       | No       | Override MIME type (default from spec)         |
+| `lifetime`          | No       | Override lifetime (default from spec)          |
+| `garbageCollection` | No       | Override version retention (default from spec) |
+| `streaming`         | No       | True for line-oriented streaming data          |
+| `tags`              | No       | Override tags (default from spec)              |
 
 **Writer Methods:**
 
@@ -268,13 +311,10 @@ export const extension = {
     audit: {
       description: "Audit the echo message",
       execute: async (definition, context) => {
+        // Extensions use the target model's dataOutputSpecs
         const writer = context.createDataWriter!({
           name: "audit-result",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           audited: true,
@@ -410,6 +450,16 @@ export const model = {
   type: "@user/shell",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Command output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     run: {
       description: "Execute shell command",
@@ -422,10 +472,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "output",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           stdout: new TextDecoder().decode(output.stdout),
@@ -450,6 +496,24 @@ export const model = {
   type: "@user/search",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Search results",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+    "log": {
+      specType: "log",
+      description: "Search execution log",
+      contentType: "application/json",
+      lifetime: "7d",
+      garbageCollection: 10,
+      tags: { type: "log" },
+    },
+  },
   methods: {
     search: {
       description: "Search and store results with log",
@@ -460,10 +524,6 @@ export const model = {
         const resultsWriter = context.createDataWriter!({
           name: "results",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const resultsHandle = await resultsWriter.writeText(
           JSON.stringify({ results }),
@@ -472,11 +532,7 @@ export const model = {
         // Execution log
         const logWriter = context.createDataWriter!({
           name: "search-log",
-          specType: "data",
-          contentType: "application/json",
-          lifetime: "7d",
-          garbageCollection: 10,
-          tags: { type: "log" },
+          specType: "log",
         });
         const logHandle = await logWriter.writeText(JSON.stringify({
           query: definition.attributes.query,
@@ -505,6 +561,16 @@ export const model = {
   type: "@user/api-resource",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "resource": {
+      specType: "resource",
+      description: "API resource state",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+    },
+  },
   methods: {
     create: {
       description: "Create resource via API",
@@ -520,10 +586,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "resource",
           specType: "resource",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "resource" },
         });
         const handle = await writer.writeText(JSON.stringify({
           resourceId: data.id,
@@ -556,6 +618,24 @@ export const model = {
   type: "@user/s3-bucket",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  dataOutputSpecs: {
+    "resource": {
+      specType: "resource",
+      description: "S3 bucket resource state",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+    },
+    "data": {
+      specType: "data",
+      description: "S3 object listing",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: {
     create: {
       description: "Create an S3 bucket",
@@ -578,10 +658,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "resource",
           specType: "resource",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "resource" },
         });
         const handle = await writer.writeText(JSON.stringify({
           bucketName,
@@ -599,10 +675,6 @@ export const model = {
         const writer = context.createDataWriter!({
           name: "objects",
           specType: "data",
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          tags: { type: "data" },
         });
         const handle = await writer.writeText(JSON.stringify({
           objects: [], // Populate from API response
@@ -633,10 +705,6 @@ methods: {
       const writer = context.createDataWriter!({
         name: "resource",
         specType: "resource",
-        contentType: "application/json",
-        lifetime: "infinite",
-        garbageCollection: 10,
-        tags: { type: "resource" },
       });
       const handle = await writer.writeText(JSON.stringify({
         environment: env,

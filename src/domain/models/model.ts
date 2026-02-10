@@ -71,7 +71,8 @@ export function normalizeSpecType(
 
 /**
  * Specification for a data output spec type.
- * Value object - immutable.
+ * Value object - immutable. This is the single source of truth for how
+ * a particular category of data output should be stored.
  */
 export interface DataOutputSpecification {
   /** The spec type identifier */
@@ -80,20 +81,20 @@ export interface DataOutputSpecification {
   /** Human-readable description */
   description?: string;
 
-  /** Default content type */
-  contentType?: string;
+  /** Content type for this data output */
+  contentType: string;
 
-  /** Default lifetime policy */
-  lifetime?: Lifetime;
+  /** Lifetime policy */
+  lifetime: Lifetime;
 
-  /** Default garbage collection policy */
-  garbageCollection?: GarbageCollectionPolicy;
+  /** Garbage collection policy */
+  garbageCollection: GarbageCollectionPolicy;
 
   /** Whether this supports streaming */
   streaming?: boolean;
 
-  /** Default tags */
-  tags?: Record<string, string>;
+  /** Tags applied to this data output */
+  tags: Record<string, string>;
 }
 
 /**
@@ -102,11 +103,11 @@ export interface DataOutputSpecification {
 export const DataOutputSpecificationSchema = z.object({
   specType: z.string().min(1),
   description: z.string().optional(),
-  contentType: z.string().optional(),
-  lifetime: LifetimeSchema.optional(),
-  garbageCollection: GarbageCollectionSchema.optional(),
+  contentType: z.string(),
+  lifetime: LifetimeSchema,
+  garbageCollection: GarbageCollectionSchema,
   streaming: z.boolean().optional(),
-  tags: z.record(z.string(), z.string()).optional(),
+  tags: z.record(z.string(), z.string()),
 });
 
 /**
@@ -211,9 +212,32 @@ export interface DataHandle {
 }
 
 /**
- * Options for creating a DataWriter.
+ * Options for creating a DataWriter from a spec-based call site.
+ * Only `name` and `specType` are required — defaults come from the
+ * model's DataOutputSpecification. Optional fields override spec defaults.
  */
-export interface DataWriterOptions {
+export interface SpecBasedWriterOptions {
+  /** Unique instance name for this data artifact */
+  name: string;
+  /** Key into dataOutputSpecs — must match a declared spec type */
+  specType: string;
+  /** Override the spec's default content type */
+  contentType?: string;
+  /** Override the spec's default lifetime */
+  lifetime?: Lifetime;
+  /** Override the spec's default garbage collection policy */
+  garbageCollection?: GarbageCollectionPolicy;
+  /** Override the spec's default streaming flag */
+  streaming?: boolean;
+  /** Merged on top of spec's default tags */
+  tags?: Record<string, string>;
+}
+
+/**
+ * Fully resolved options used internally by DefaultDataWriter.
+ * All fields are required (resolved from spec + overrides).
+ */
+export interface ResolvedDataWriterOptions {
   name: string;
   specType: DataSpecType | string;
   contentType: string;
@@ -260,9 +284,11 @@ export interface DataWriterCallbacks {
 
 /**
  * Factory function for creating DataWriter instances.
+ * Accepts spec-based options — the factory resolves defaults from
+ * the model's DataOutputSpecification.
  */
 export type DataWriterFactory = (
-  options: DataWriterOptions,
+  options: SpecBasedWriterOptions,
 ) => DataWriter;
 
 /**

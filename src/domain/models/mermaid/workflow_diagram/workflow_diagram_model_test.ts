@@ -13,8 +13,8 @@ import type {
   DataHandle,
   DataWriter,
   DataWriterFactory,
-  DataWriterOptions,
   MethodContext,
+  SpecBasedWriterOptions,
 } from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
@@ -41,7 +41,7 @@ function createMockDataWriterFactory(): {
   let nextId = 1;
 
   const factory: DataWriterFactory = (
-    options: DataWriterOptions,
+    options: SpecBasedWriterOptions,
   ): DataWriter => {
     const dataId = `mock-data-${nextId++}` as DataId;
 
@@ -51,14 +51,14 @@ function createMockDataWriterFactory(): {
       dataId,
       version: 1,
       size: content.length,
-      tags: { ...options.tags },
+      tags: { ...(options.tags ?? {}) },
       metadata: {
-        contentType: options.contentType,
-        lifetime: options.lifetime,
-        garbageCollection: options.garbageCollection,
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
         streaming: options.streaming ?? false,
-        tags: { ...options.tags },
-        ownerDefinition: options.ownerDefinition ?? {
+        tags: { ...(options.tags ?? {}) },
+        ownerDefinition: {
           definitionHash: "test-hash",
           ownerType: "model-method",
           ownerRef: "test",

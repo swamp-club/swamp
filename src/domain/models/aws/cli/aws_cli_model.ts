@@ -181,11 +181,7 @@ async function executeRun(
 
     const writer = context.createDataWriter!({
       name: `${definition.name}-data`,
-      specType: DataSpecType.create("data"),
-      contentType: "application/json",
-      lifetime: "infinite",
-      garbageCollection: 10,
-      tags: { type: "data" },
+      specType: "data",
     });
 
     const handle = await writer.writeText(JSON.stringify(dataAttributes));
