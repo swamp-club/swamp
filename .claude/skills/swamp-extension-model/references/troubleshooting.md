@@ -44,44 +44,43 @@ export const model = {
 
 ### "Model type already registered"
 
-Type name conflicts with built-in or another user model. Use unique names within
-the `@user` namespace:
+Type name conflicts with built-in or another user model. Use unique namespaced
+names:
 
 ```typescript
 // Avoid
 type: "@user/echo"; // May conflict with other users
 
 // Use
-type: "@user/mycompany/echo"; // More unique
+type: "@myorg/echo"; // Use your own namespace
 ```
 
 ### "Model type must use '@' prefix"
 
-User-defined models must use the `@user` namespace:
+User-defined models must start with `@`:
 
 ```typescript
-// Wrong - missing @user namespace
+// Wrong - missing @ prefix
 type: "mycompany/echo";
 
 // Correct
+type: "@mycompany/echo";
 type: "@user/echo";
-type: "@user/mycompany/echo";
 ```
 
-### "Namespace 'X' is not allowed"
+### "Uses a reserved namespace"
 
-Only the `@user` namespace is currently allowed for user models. Reserved
-namespaces (`swamp`, `si`) are for built-in types:
+Reserved namespaces (`swamp`, `si`) are for built-in types only:
 
 ```typescript
 // Wrong - reserved namespace
 type: "swamp/my-model";
 type: "@swamp/my-model";
+type: "si/auth";
+type: "@si/auth";
 
-// Wrong - custom namespace not allowed yet
-type: "@mycompany/echo";
-
-// Correct
+// Correct - use any other namespace
+type: "@myorg/my-model";
 type: "@user/my-model";
 ```
 
@@ -133,9 +132,9 @@ Models directory priority:
 swamp type search --json
 
 # Check model schema
-swamp type describe @user/my-model --json
+swamp type describe @myorg/my-model --json
 
 # Test the model
-swamp model create @user/my-model test --set fieldName="test"
+swamp model create @myorg/my-model test --set fieldName="test"
 swamp model method run test methodName --json
 ```

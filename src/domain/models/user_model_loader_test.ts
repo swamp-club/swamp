@@ -1556,7 +1556,7 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader rejects model with only namespace segment", async () => {
+Deno.test("UserModelLoader rejects model with only namespace segment (@user)", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1593,12 +1593,12 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader rejects model with non-user namespace", async () => {
+Deno.test("UserModelLoader rejects model with only namespace segment (@myorg)", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "@adam/mymodel",
+  type: "@myorg",
   version: "2026.02.09.1",
   inputAttributesSchema: z.object({ message: z.string() }),
   dataOutputSpecs: {
@@ -1620,14 +1620,133 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "wrong_namespace.ts": modelCode }, async (dir) => {
+  await withTempModels({ "only_myorg.ts": modelCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "namespace 'adam'");
-    assertStringIncludes(result.failed[0].error, "not allowed");
+    assertStringIncludes(result.failed[0].error, "at least 2 segments");
+  });
+});
+
+Deno.test("UserModelLoader accepts model with custom namespace @adam/mymodel", async () => {
+  const typeId = `@adam/mymodel-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "custom_namespace.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+  });
+});
+
+Deno.test("UserModelLoader accepts model with custom namespace @stack72/name", async () => {
+  const typeId = `@stack72/my-model-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "stack72_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+  });
+});
+
+Deno.test("UserModelLoader accepts model with custom namespace @keeb/name", async () => {
+  const typeId = `@keeb/keyboard-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  inputAttributesSchema: z.object({ message: z.string() }),
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Data output",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "keeb_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
   });
 });
 

@@ -44,13 +44,13 @@ outputs.
 
 ## Quick Reference
 
-| Task                | Command/Action                                         |
-| ------------------- | ------------------------------------------------------ |
-| Create model file   | Create `extensions/models/my_model.ts`                 |
-| Verify registration | `swamp type search --json`                             |
-| Check schema        | `swamp type describe @user/my-model --json`            |
-| Create instance     | `swamp model create @user/my-model my-instance --json` |
-| Run method          | `swamp model method run my-instance run --json`        |
+| Task                | Command/Action                                          |
+| ------------------- | ------------------------------------------------------- |
+| Create model file   | Create `extensions/models/my_model.ts`                  |
+| Verify registration | `swamp type search --json`                              |
+| Check schema        | `swamp type describe @myorg/my-model --json`            |
+| Create instance     | `swamp model create @myorg/my-model my-instance --json` |
+| Run method          | `swamp model method run my-instance run --json`         |
 
 ## Quick Start
 
@@ -61,7 +61,7 @@ import { z } from "npm:zod@4";
 const InputSchema = z.object({ message: z.string() });
 
 export const model = {
-  type: "@user/my-model",
+  type: "@myorg/my-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   dataOutputSpecs: {
@@ -361,8 +361,8 @@ Repository models take precedence, allowing you to override built-in types.
 1. **Export**: Use `export const model = { ... }` for new types or
    `export const extension = { ... }` for extending existing types
 2. **Import**: Only `import { z } from "npm:zod@4";` is needed
-3. **Type naming**: Use `@user/<name>` format (e.g., `@user/my-model`,
-   `@user/aws/s3-bucket`). Reserved namespaces (`swamp`, `si`) are for built-in
+3. **Type naming**: Use `@<namespace>/<name>` format (e.g., `@keeb/my-model`,
+   `@stack72/deploy`). Reserved namespaces (`swamp`, `si`) are for built-in
    types only.
 4. **No type annotations**: Avoid TypeScript types in execute parameters
 5. **File naming**: Use snake_case (`my_model.ts`), test files excluded
@@ -370,19 +370,22 @@ Repository models take precedence, allowing you to override built-in types.
 
 ## Namespace Rules
 
-User-defined models **must** use the `@user` namespace:
+User-defined models can use any namespace except reserved ones (`swamp`, `si`):
 
-| Type                  | Valid? | Notes                          |
-| --------------------- | ------ | ------------------------------ |
-| `@user/my-model`      | ✅     | Required format                |
-| `@user/aws/s3-bucket` | ✅     | Nested namespaces allowed      |
-| `mycompany/model`     | ❌     | Missing `@` prefix             |
-| `@mycompany/model`    | ❌     | Only `@user` namespace allowed |
-| `swamp/my-model`      | ❌     | Reserved for built-in types    |
-| `@swamp/my-model`     | ❌     | Reserved namespace             |
-
-When authentication is added, users will be able to use their username as the
-namespace (e.g., `@adam/my-model`).
+| Type                  | Valid? | Notes                       |
+| --------------------- | ------ | --------------------------- |
+| `@user/my-model`      | ✅     | Valid namespace             |
+| `@stack72/my-model`   | ✅     | Custom namespace allowed    |
+| `@keeb/keyboard`      | ✅     | Custom namespace allowed    |
+| `@myorg/deploy`       | ✅     | Custom namespace allowed    |
+| `@user/aws/s3-bucket` | ✅     | Nested paths allowed        |
+| `@stack72/aws/s3`     | ✅     | Nested paths allowed        |
+| `mycompany/model`     | ❌     | Missing `@` prefix          |
+| `@user`               | ❌     | Needs 2+ segments           |
+| `swamp/my-model`      | ❌     | Reserved for built-in types |
+| `@swamp/my-model`     | ❌     | Reserved namespace          |
+| `si/auth`             | ❌     | Reserved namespace          |
+| `@si/auth`            | ❌     | Reserved namespace          |
 
 ## Data Ownership
 
@@ -728,7 +731,7 @@ After creating your model:
 
 ```bash
 swamp type search --json              # Model should appear
-swamp type describe @user/my-model    # Check schema
+swamp type describe @myorg/my-model   # Check schema
 ```
 
 ## When to Use Other Skills

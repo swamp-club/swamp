@@ -274,7 +274,7 @@ const InputSchema = z.object({
 });
 
 export const model = {
-  type: "myorg/system-info",
+  type: "@myorg/system-info",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
   methods: {
