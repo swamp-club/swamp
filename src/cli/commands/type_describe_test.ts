@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import type { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -7,15 +8,15 @@ import "../../domain/models/models.ts";
 // Initialize logging for tests
 await initializeLogging({});
 
-Deno.test("typeCommand module loads", async () => {
-  const { typeCommand } = await import("./type_describe.ts");
-  assertEquals(typeCommand.getName(), "type");
+Deno.test("modelTypeCommand module loads", async () => {
+  const { modelTypeCommand } = await import("./model_type.ts");
+  assertEquals(modelTypeCommand.getName(), "type");
 });
 
-Deno.test("typeDescribeCommand is registered as subcommand", async () => {
-  const { typeCommand } = await import("./type_describe.ts");
-  const commands = typeCommand.getCommands();
-  const describeCmd = commands.find((c) => c.getName() === "describe");
+Deno.test("typeDescribeCommand is registered as subcommand of modelTypeCommand", async () => {
+  const { modelTypeCommand } = await import("./model_type.ts");
+  const commands = modelTypeCommand.getCommands();
+  const describeCmd = commands.find((c: Command) => c.getName() === "describe");
   assertEquals(describeCmd !== undefined, true);
 });
 
