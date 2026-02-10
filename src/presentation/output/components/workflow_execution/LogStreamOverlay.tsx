@@ -62,12 +62,17 @@ export function LogStreamOverlay(
           setIsLoading(false);
         }
 
-        // Start streaming new logs
-        const stream = logService.streamLogs(target);
-        for await (const logEntry of stream) {
-          if (!streamActive) break;
+        // Only stream for active steps that may produce more logs
+        const shouldStream = target.stepStatus === "pending" ||
+          target.stepStatus === "running";
 
-          setLogs((prevLogs) => [...prevLogs, logEntry]);
+        if (shouldStream) {
+          const stream = logService.streamLogs(target, initialLogs.length);
+          for await (const logEntry of stream) {
+            if (!streamActive) break;
+
+            setLogs((prevLogs) => [...prevLogs, logEntry]);
+          }
         }
       } catch (err) {
         if (streamActive) {

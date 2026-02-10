@@ -3,11 +3,15 @@ import React from "react";
 import { assertStringIncludes } from "@std/assert";
 import { render } from "ink-testing-library";
 import { LogStreamOverlay } from "./LogStreamOverlay.tsx";
-import { LogStreamService, type LogStreamTarget } from "./LogStreamService.ts";
+import {
+  type LogEntry,
+  LogStreamService,
+  type LogStreamTarget,
+} from "./LogStreamService.ts";
 
 // Mock LogStreamService for testing
 class MockLogStreamService extends LogStreamService {
-  private mockLogs: Array<{ message: string; timestamp: Date }> = [];
+  private mockLogs: LogEntry[] = [];
 
   constructor(logs: Array<{ message: string; timestamp?: Date }> = []) {
     super(".");
@@ -15,6 +19,10 @@ class MockLogStreamService extends LogStreamService {
       message: log.message,
       timestamp: log.timestamp || new Date(),
     }));
+  }
+
+  override getLogs(_target: LogStreamTarget): Promise<LogEntry[]> {
+    return Promise.resolve(this.mockLogs);
   }
 
   override async *streamLogs(_target: LogStreamTarget) {

@@ -79,9 +79,12 @@ export class LogStreamService {
    * For completed steps, returns all logs immediately.
    * For pending/running steps, polls the log file for updates until completion.
    */
-  async *streamLogs(target: LogStreamTarget): AsyncIterableIterator<LogEntry> {
+  async *streamLogs(
+    target: LogStreamTarget,
+    startFrom: number = 0,
+  ): AsyncIterableIterator<LogEntry> {
     try {
-      let lastLogCount = 0;
+      let lastLogCount = startFrom;
       let lastStepStatus = target.stepStatus;
       let isComplete = false;
       let pollCount = 0;
@@ -108,7 +111,6 @@ export class LogStreamService {
         // Yield only new logs
         for (let i = lastLogCount; i < logs.length; i++) {
           yield logs[i];
-          await new Promise((resolve) => setTimeout(resolve, 50));
         }
 
         lastLogCount = logs.length;
