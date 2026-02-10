@@ -12,7 +12,6 @@ import {
   type MethodDefinition,
   modelRegistry,
 } from "../../domain/models/model.ts";
-import { typeSearchCommand } from "./type_search.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -110,12 +109,3 @@ export const typeDescribeCommand = new Command()
   .arguments("<type:model_type>")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(typeDescribeAction);
-
-export const typeCommand = new Command()
-  .name("type")
-  .description("Inspect model types")
-  .action(function () {
-    this.showHelp();
-  })
-  .command("describe", typeDescribeCommand)
-  .command("search", typeSearchCommand);

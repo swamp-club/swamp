@@ -17,6 +17,7 @@ import { modelDeleteCommand } from "./model_delete.ts";
 import { modelEditCommand } from "./model_edit.ts";
 import { modelEvaluateCommand } from "./model_evaluate.ts";
 import { modelOutputCommand } from "./model_output.ts";
+import { modelTypeCommand } from "./model_type.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -97,6 +98,7 @@ export const modelCommand = new Command()
   .command("validate", modelValidateCommand)
   .command("method", modelMethodCommand)
   .command("output", modelOutputCommand)
+  .command("type", modelTypeCommand)
   .command(
     "list",
     new Command()

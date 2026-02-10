@@ -343,7 +343,7 @@ directory.
 
 ## CLI Commands
 
-### type describe <type>
+### model type describe <type>
 
 This command describes the model as a markdown document, will all of its
 details, using code blocks as neccessary. it should syntax highlight the
@@ -351,7 +351,7 @@ markdown.
 
 when specifying json, it should have the same content.
 
-### type search <string>
+### model type search <string>
 
 When run interactively, it should show a text box that says "type to search",
 and then use the npm:fzf package to search the list of available types (by
