@@ -107,7 +107,7 @@ function extractFilename(url: string, headers: Headers): string {
  */
 async function executeDownload(
   definition: Definition,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   const attrs = CurlInputAttributesSchema.parse(definition.attributes);
   const startTime = Date.now();
@@ -160,8 +160,6 @@ async function executeDownload(
   // Compute checksum
   const checksum = await computeChecksum(content);
 
-  const definitionHash = await definition.computeHash();
-
   // Create metadata attributes
   const metadataAttributes = {
     url: attrs.url,
@@ -174,44 +172,24 @@ async function executeDownload(
     checksum,
   };
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-metadata`,
-        specType: DataSpecType.create("metadata"),
-        content: new TextEncoder().encode(JSON.stringify(metadataAttributes)),
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "data" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "download",
-          },
-        },
-      },
-      {
-        name: `${definition.name}-file`,
-        specType: DataSpecType.create("file"),
-        content,
-        metadata: {
-          contentType,
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "file", filename },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "download",
-          },
-        },
-      },
-    ],
-  };
+  const metadataWriter = context.createDataWriter!({
+    name: `${definition.name}-metadata`,
+    specType: "metadata",
+  });
+
+  const fileWriter = context.createDataWriter!({
+    name: `${definition.name}-file`,
+    specType: "file",
+    contentType,
+    tags: { filename },
+  });
+
+  const metadataHandle = await metadataWriter.writeText(
+    JSON.stringify(metadataAttributes),
+  );
+  const fileHandle = await fileWriter.writeAll(content);
+
+  return { dataHandles: [metadataHandle, fileHandle] };
 }
 
 /**

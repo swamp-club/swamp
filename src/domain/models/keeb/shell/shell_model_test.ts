@@ -9,11 +9,124 @@ import {
   ShellInputAttributesSchema,
   shellModel,
 } from "./shell_model.ts";
-import type { MethodContext } from "../../model.ts";
+import { normalizeSpecType } from "../../model.ts";
+import type {
+  DataHandle,
+  DataWriter,
+  DataWriterFactory,
+  MethodContext,
+  SpecBasedWriterOptions,
+} from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
-import { generateDataId } from "../../../data/data_id.ts";
+import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: SpecBasedWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: normalizeSpecType(options.specType),
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: { ...(options.tags ?? {}) },
+      metadata: {
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
+        streaming: options.streaming ?? false,
+        tags: { ...(options.tags ?? {}) },
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
+
+/**
+ * Helper to get parsed JSON content from mock results by name.
+ */
+function getResultAttributes(
+  results: MockWriterResult[],
+  namePart: string,
+): Record<string, unknown> | undefined {
+  const result = results.find((r) => r.handle.name.includes(namePart));
+  if (!result) return undefined;
+  return JSON.parse(new TextDecoder().decode(result.content));
+}
+
+/**
+ * Helper to get output log content as string.
+ */
+function getOutputLogContent(results: MockWriterResult[]): string {
+  const logResult = results.find((r) => r.handle.name.includes("output"));
+  if (!logResult) return "";
+  return new TextDecoder().decode(logResult.content);
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -35,6 +148,10 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -60,42 +177,22 @@ function createMockDefinitionRepo(): DefinitionRepository {
  */
 function createTestContext(
   overrides?: Partial<MethodContext>,
-): MethodContext {
-  return {
+): {
+  context: MethodContext;
+  getResults: () => MockWriterResult[];
+} {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir: "/tmp",
     modelType: SHELL_MODEL_TYPE,
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
     ...overrides,
   };
-}
-
-/**
- * Helper to get attributes from a DataOutput by name.
- */
-function getDataOutputAttributes(
-  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
-  name: string,
-): Record<string, unknown> | undefined {
-  const dataOutput = dataOutputs?.find((d) => d.name.includes(name));
-  if (!dataOutput) return undefined;
-  const content = new TextDecoder().decode(dataOutput.content);
-  const parsed = JSON.parse(content);
-  // Handle wrapped attributes format
-  return parsed.attributes ?? parsed;
-}
-
-/**
- * Helper to get output log content as string.
- */
-function getOutputLogContent(
-  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
-): string {
-  const logOutput = dataOutputs?.find((d) => d.name.includes("output"));
-  if (!logOutput) return "";
-  return new TextDecoder().decode(logOutput.content);
+  return { context, getResults };
 }
 
 Deno.test("SHELL_MODEL_TYPE has correct normalized type", () => {
@@ -208,18 +305,18 @@ Deno.test("shellModel.methods.execute runs simple command", async () => {
     attributes: { run: "echo hello" },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
   // Check data attributes
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
   assertEquals(attrs?.command, "echo hello");
   assertEquals(typeof attrs?.executedAt, "string");
   assertEquals(typeof attrs?.durationMs, "number");
 
   // Check output contains stdout
-  const logContent = getOutputLogContent(result.dataOutputs);
+  const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "hello");
 });
 
@@ -229,14 +326,14 @@ Deno.test("shellModel.methods.execute captures stderr", async () => {
     attributes: { run: "echo error >&2" },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
 
   // Check output contains stderr
-  const logContent = getOutputLogContent(result.dataOutputs);
+  const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "error");
 });
 
@@ -246,10 +343,10 @@ Deno.test("shellModel.methods.execute captures exit code", async () => {
     attributes: { run: "exit 42" },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 42);
 });
 
@@ -259,10 +356,10 @@ Deno.test("shellModel.methods.execute handles command failure gracefully", async
     attributes: { run: "false" },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 1);
 });
 
@@ -275,16 +372,16 @@ Deno.test("shellModel.methods.execute respects workingDir", async () => {
     },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
   // Use realPathSync to handle symlinks (e.g., /tmp -> /private/tmp on macOS)
   const expectedPath = Deno.realPathSync("/tmp");
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
 
   // Check output contains the working directory
-  const logContent = getOutputLogContent(result.dataOutputs);
+  const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, expectedPath);
 });
 
@@ -297,14 +394,14 @@ Deno.test("shellModel.methods.execute respects env variables", async () => {
     },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
 
   // Check output contains the env variable value
-  const logContent = getOutputLogContent(result.dataOutputs);
+  const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "test_value");
 });
 
@@ -314,14 +411,14 @@ Deno.test("shellModel.methods.execute handles pipes", async () => {
     attributes: { run: "echo 'hello world' | tr 'h' 'H'" },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
 
   // Check output contains the piped output
-  const logContent = getOutputLogContent(result.dataOutputs);
+  const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "Hello world");
 });
 
@@ -331,14 +428,14 @@ Deno.test("shellModel.methods.execute handles complex commands", async () => {
     attributes: { run: "cd /tmp && pwd" },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
 
   // Check output contains /tmp (cd /tmp && pwd outputs the logical path)
-  const logContent = getOutputLogContent(result.dataOutputs);
+  const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "/tmp");
 });
 
@@ -348,7 +445,7 @@ Deno.test("shellModel.methods.execute validates input attributes", async () => {
     attributes: { notRun: "value" },
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
   let error: Error | null = null;
   try {
     await shellModel.methods.execute.execute(definition, context);
@@ -365,7 +462,7 @@ Deno.test("shellModel.methods.execute rejects empty run command", async () => {
     attributes: { run: "" },
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
   let error: Error | null = null;
   try {
     await shellModel.methods.execute.execute(definition, context);
@@ -382,15 +479,15 @@ Deno.test("shellModel.methods.execute handles nonexistent command", async () => 
     attributes: { run: "nonexistent_command_12345" },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
   // Should return non-zero exit code and error in output
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode !== 0, true);
 
   // Check output contains error about nonexistent command
-  const logContent = getOutputLogContent(result.dataOutputs);
+  const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "nonexistent_command_12345");
 });
 
@@ -400,30 +497,30 @@ Deno.test("shellModel.methods.execute records execution duration", async () => {
     attributes: { run: "sleep 0.1" },
   });
 
-  const context = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const { context, getResults } = createTestContext();
+  await shellModel.methods.execute.execute(definition, context);
 
-  const attrs = getDataOutputAttributes(result.dataOutputs, "result");
+  const attrs = getResultAttributes(getResults(), "result");
   const durationMs = attrs?.durationMs as number;
   // Should be at least 100ms (sleep 0.1 seconds)
   assertEquals(durationMs >= 100, true);
 });
 
-Deno.test("shellModel.methods.execute returns dataOutputs", async () => {
+Deno.test("shellModel.methods.execute returns dataHandles", async () => {
   const definition = Definition.create({
     name: "test-shell",
     attributes: { run: "echo hello && echo error >&2" },
   });
 
-  const context = createTestContext();
+  const { context, getResults } = createTestContext();
   const result = await shellModel.methods.execute.execute(definition, context);
 
-  // Should have data outputs (data and output)
-  assertEquals(result.dataOutputs !== undefined, true);
-  assertEquals(result.dataOutputs!.length >= 1, true);
+  // Should have data handles (result and output)
+  assertEquals(result.dataHandles !== undefined, true);
+  assertEquals(result.dataHandles!.length >= 1, true);
 
   // Output should contain both stdout and stderr
-  const logContent = getOutputLogContent(result.dataOutputs);
+  const logContent = getOutputLogContent(getResults());
   assertStringIncludes(logContent, "hello");
   assertStringIncludes(logContent, "error");
 });
@@ -434,9 +531,9 @@ Deno.test("shellModel.methods.execute returns output for no output command", asy
     attributes: { run: "true" }, // Command with no output
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
   const result = await shellModel.methods.execute.execute(definition, context);
 
-  // Should still have data outputs
-  assertEquals(result.dataOutputs !== undefined, true);
+  // Should still have data handles
+  assertEquals(result.dataHandles !== undefined, true);
 });

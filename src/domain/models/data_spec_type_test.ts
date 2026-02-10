@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { DataSpecType } from "./model.ts";
+import { DataSpecType, normalizeSpecType } from "./model.ts";
 
 Deno.test("DataSpecType - create - trims whitespace", () => {
   const specType = DataSpecType.create("  message  ");
@@ -37,4 +37,36 @@ Deno.test("DataSpecType - equals - returns false for different value", () => {
 Deno.test("DataSpecType - toString - returns value", () => {
   const specType = DataSpecType.create("message");
   assertEquals(specType.toString(), "message");
+});
+
+Deno.test("normalizeSpecType - converts string to DataSpecType", () => {
+  const result = normalizeSpecType("data");
+  assertEquals(result.value, "data");
+});
+
+Deno.test("normalizeSpecType - passes through existing DataSpecType", () => {
+  const original = DataSpecType.create("resource");
+  const result = normalizeSpecType(original);
+  assertEquals(result, original);
+});
+
+Deno.test("normalizeSpecType - trims whitespace from string", () => {
+  const result = normalizeSpecType("  data  ");
+  assertEquals(result.value, "data");
+});
+
+Deno.test("normalizeSpecType - throws on empty string", () => {
+  assertThrows(
+    () => normalizeSpecType(""),
+    Error,
+    "Data spec type cannot be empty",
+  );
+});
+
+Deno.test("normalizeSpecType - throws on whitespace-only string", () => {
+  assertThrows(
+    () => normalizeSpecType("   "),
+    Error,
+    "Data spec type cannot be empty",
+  );
 });

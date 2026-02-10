@@ -168,29 +168,14 @@ async function executeRun(
     durationMs: result.durationMs,
   };
 
-  const definitionHash = await definition.computeHash();
+  const writer = context.createDataWriter!({
+    name: `${definition.name}-data`,
+    specType: "data",
+  });
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-data`,
-        specType: DataSpecType.create("data"),
-        content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
-        metadata: {
-          contentType: "application/json",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: false,
-          tags: { type: "data" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "run",
-          },
-        },
-      },
-    ],
-  };
+  const handle = await writer.writeText(JSON.stringify(dataAttributes));
+
+  return { dataHandles: [handle] };
 }
 
 /**

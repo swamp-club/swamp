@@ -10,11 +10,103 @@ import {
   createDefinitionId,
   Definition,
 } from "../../../../definitions/definition.ts";
-import type { MethodContext } from "../../../../models/model.ts";
+import { normalizeSpecType } from "../../../../models/model.ts";
+import type {
+  DataHandle,
+  DataWriter,
+  DataWriterFactory,
+  MethodContext,
+  SpecBasedWriterOptions,
+} from "../../../../models/model.ts";
 import type { UnifiedDataRepository } from "../../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../../definitions/repositories.ts";
-import { generateDataId } from "../../../../data/data_id.ts";
+import { type DataId, generateDataId } from "../../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: SpecBasedWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: normalizeSpecType(options.specType),
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: options.tags ?? {},
+      metadata: {
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
+        streaming: options.streaming ?? false,
+        tags: options.tags ?? {},
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -43,6 +135,10 @@ function createMockDataRepo(
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -68,29 +164,32 @@ function createMockDefinitionRepo(): DefinitionRepository {
  */
 function createTestContext(
   overrides?: Partial<MethodContext>,
-): MethodContext {
-  return {
+): { context: MethodContext; getResults: () => MockWriterResult[] } {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir: "/tmp/test-repo",
     modelType: EC2_INSTANCE_MODEL_TYPE,
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
     ...overrides,
   };
+  return { context, getResults };
 }
 
 /**
- * Helper to get attributes from a DataOutput.
+ * Helper to get attributes from mock writer results.
  */
-function getDataOutputAttributes(
-  dataOutputs: { content: Uint8Array }[] | undefined,
+function getDataHandleAttributes(
+  results: MockWriterResult[],
   index = 0,
 ): Record<string, unknown> | undefined {
-  if (!dataOutputs || dataOutputs.length <= index) {
+  if (results.length <= index) {
     return undefined;
   }
-  const content = new TextDecoder().decode(dataOutputs[index].content);
+  const content = new TextDecoder().decode(results[index].content);
   const parsed = JSON.parse(content);
   // CloudControl resources wrap in {attributes: {...}}
   return parsed.attributes ?? parsed;
@@ -192,7 +291,7 @@ Deno.test("EC2InstanceModel - sync method without RequestToken fails", async () 
     },
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
 
   await assertRejects(
     () => ec2InstanceModel.methods.sync.execute(definition, context),
@@ -210,15 +309,15 @@ Deno.test("EC2InstanceModel - delete method without data returns deleted result"
     },
   });
 
-  const context = createTestContext();
+  const { context, getResults } = createTestContext();
 
-  const result = await ec2InstanceModel.methods.delete.execute(
+  await ec2InstanceModel.methods.delete.execute(
     definition,
     context,
   );
 
-  // Should return success data output since no data exists
-  const attrs = getDataOutputAttributes(result.dataOutputs);
+  // Should return success data handle since no data exists
+  const attrs = getDataHandleAttributes(getResults());
   assertEquals(attrs?.OperationStatus, "SUCCESS");
   assertEquals(attrs?.DeletionCompleted, true);
 });
@@ -244,7 +343,7 @@ Deno.test("EC2InstanceModel - create method uses injected CloudControl client", 
       }),
   };
 
-  const context = createTestContext({
+  const { context, getResults } = createTestContext({
     cloudControlClientFactory: () =>
       mockClient as unknown as CloudControlClient,
   });
@@ -254,7 +353,7 @@ Deno.test("EC2InstanceModel - create method uses injected CloudControl client", 
     context,
   );
 
-  const attrs = getDataOutputAttributes(result.dataOutputs);
+  const attrs = getDataHandleAttributes(getResults());
   assertEquals(attrs?.RequestToken, "request-123");
   assertEquals(attrs?.OperationStatus, "IN_PROGRESS");
   assertEquals(result.followUpActions?.length, 1);
@@ -282,7 +381,7 @@ Deno.test("EC2InstanceModel - sync method treats 'not found' as deleted", async 
       }),
   };
 
-  const context = createTestContext({
+  const { context, getResults } = createTestContext({
     cloudControlClientFactory: () =>
       mockClient as unknown as CloudControlClient,
   });
@@ -292,8 +391,8 @@ Deno.test("EC2InstanceModel - sync method treats 'not found' as deleted", async 
     context,
   );
 
-  // Should return success data output
-  const attrs = getDataOutputAttributes(result.dataOutputs);
+  // Should return success data handle
+  const attrs = getDataHandleAttributes(getResults());
   assertEquals(attrs?.OperationStatus, "SUCCESS");
   assertEquals(attrs?.DeletionCompleted, true);
   assertEquals(result.followUpActions, undefined);
@@ -333,7 +432,7 @@ Deno.test("EC2InstanceModel - delete method treats 'not found' as success", asyn
     },
   };
 
-  const context = createTestContext({
+  const { context, getResults } = createTestContext({
     dataRepository: mockDataRepo,
     cloudControlClientFactory: () =>
       mockClient as unknown as CloudControlClient,
@@ -344,8 +443,8 @@ Deno.test("EC2InstanceModel - delete method treats 'not found' as success", asyn
     context,
   );
 
-  // Should return success data output
-  const attrs = getDataOutputAttributes(result.dataOutputs);
+  // Should return success data handle
+  const attrs = getDataHandleAttributes(getResults());
   assertEquals(attrs?.OperationStatus, "SUCCESS");
   assertEquals(attrs?.DeletionCompleted, true);
   assertEquals(result.followUpActions, undefined);

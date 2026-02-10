@@ -4,7 +4,7 @@ import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
 import type { Definition } from "../definitions/definition.ts";
 import {
-  type DataOutput,
+  type DataHandle,
   type DataOutputSpecification,
   DataOutputSpecificationSchema,
   DataSpecType,
@@ -18,40 +18,13 @@ import {
 
 /**
  * Plain object result returned by user methods before conversion.
+ * User models must use context.createDataWriter() to produce data.
  */
 interface UserMethodResult {
   /**
-   * Direct data outputs with explicit content and metadata.
+   * Handles for data written via context.createDataWriter() during execution.
    */
-  dataOutputs?: Array<{
-    name: string;
-    specType?: string;
-    content: Uint8Array | string;
-    metadata?: {
-      contentType?: string;
-      lifetime?: string;
-      garbageCollection?: number;
-      streaming?: boolean;
-      tags?: Record<string, string>;
-    };
-  }>;
-  /**
-   * Resource output - a simpler format that gets converted to dataOutputs.
-   * The resource attributes are serialized as JSON and tagged with type=resource.
-   */
-  resource?: {
-    id?: string;
-    attributes: Record<string, unknown>;
-  };
-  /**
-   * Data output - a simpler format that gets converted to dataOutputs.
-   * The data attributes are serialized as JSON.
-   */
-  data?: {
-    attributes: Record<string, unknown>;
-    name?: string;
-    tags?: Record<string, string>;
-  };
+  dataHandles?: DataHandle[];
   [key: string]: unknown;
 }
 
@@ -99,8 +72,7 @@ const UserModelSchema = z.object({
   inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
   ),
-  dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema)
-    .optional(),
+  dataOutputSpecs: z.record(z.string(), DataOutputSpecificationSchema),
   methods: z.record(z.string(), UserMethodSchema),
   upgrades: z.array(UserUpgradeSchema).optional(),
 });
@@ -330,7 +302,7 @@ export class UserModelLoader {
         description: method.description,
         inputAttributesSchema: method.inputAttributesSchema ??
           targetModel.inputAttributesSchema,
-        execute: this.wrapUserExecute(name, method.execute),
+        execute: this.wrapUserExecute(method.execute),
       };
     }
 
@@ -344,93 +316,16 @@ export class UserModelLoader {
   }
 
   /**
-   * Wraps a user execute function to convert UserMethodResult to MethodResult
-   * with proper DataOutput format.
+   * Wraps a user execute function to pass through dataHandles from the result.
+   * User models write data via context.createDataWriter() and return handles.
    */
   private wrapUserExecute(
-    methodName: string,
     userExecuteFn: UserExecuteFn,
   ): (definition: Definition, context: MethodContext) => Promise<MethodResult> {
     return async (definition, context): Promise<MethodResult> => {
       const userResult = await userExecuteFn(definition, context);
-      const definitionHash = await definition.computeHash();
 
-      // Convert user data outputs to proper DataOutput format
-      const dataOutputs: DataOutput[] = [];
-
-      // Handle resource output (simpler format)
-      if (userResult.resource && userResult.resource.attributes) {
-        const resourceJson = JSON.stringify(userResult.resource.attributes);
-        dataOutputs.push({
-          name: "resource",
-          specType: DataSpecType.create("resource"),
-          content: new TextEncoder().encode(resourceJson),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: { type: "resource" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: methodName,
-            },
-          },
-        });
-      }
-
-      // Handle data output (simpler format)
-      if (userResult.data && userResult.data.attributes) {
-        const dataJson = JSON.stringify(userResult.data.attributes);
-        dataOutputs.push({
-          name: userResult.data.name ?? "data",
-          specType: DataSpecType.create("data"),
-          content: new TextEncoder().encode(dataJson),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: userResult.data.tags ?? { type: "data" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: methodName,
-            },
-          },
-        });
-      }
-
-      // Handle explicit dataOutputs
-      if (userResult.dataOutputs) {
-        for (const output of userResult.dataOutputs) {
-          const content = typeof output.content === "string"
-            ? new TextEncoder().encode(output.content)
-            : output.content;
-
-          dataOutputs.push({
-            name: output.name,
-            specType: DataSpecType.create(output.specType ?? "data"),
-            content,
-            metadata: {
-              contentType: output.metadata?.contentType ??
-                "application/octet-stream",
-              lifetime: output.metadata?.lifetime ?? "infinite",
-              garbageCollection: output.metadata?.garbageCollection ?? 10,
-              streaming: output.metadata?.streaming ?? false,
-              tags: output.metadata?.tags ?? { type: "data" },
-              ownerDefinition: {
-                definitionHash,
-                ownerType: "model-method",
-                ownerRef: methodName,
-              },
-            },
-          });
-        }
-      }
-
-      return { dataOutputs };
+      return { dataHandles: userResult.dataHandles };
     };
   }
 
@@ -449,38 +344,17 @@ export class UserModelLoader {
         description: method.description,
         inputAttributesSchema: method.inputAttributesSchema ??
           userModel.inputAttributesSchema,
-        execute: this.wrapUserExecute(name, method.execute),
+        execute: this.wrapUserExecute(method.execute),
       };
     }
 
-    const defaultSpecs: Record<string, DataOutputSpecification> = {
-      "data": {
-        specType: DataSpecType.create("data"),
-        description: "Data output",
-        contentType: "application/json",
-        lifetime: "infinite",
-        garbageCollection: 10,
-        tags: { type: "data" },
-      },
-      "resource": {
-        specType: DataSpecType.create("resource"),
-        description: "Resource output",
-        contentType: "application/json",
-        lifetime: "infinite",
-        garbageCollection: 10,
-        tags: { type: "resource" },
-      },
-    };
-
     // User-declared specs need specType converted from string to DataSpecType
     const userSpecs: Record<string, DataOutputSpecification> = {};
-    if (userModel.dataOutputSpecs) {
-      for (const [key, spec] of Object.entries(userModel.dataOutputSpecs)) {
-        userSpecs[key] = {
-          ...spec,
-          specType: DataSpecType.create(String(spec.specType)),
-        };
-      }
+    for (const [key, spec] of Object.entries(userModel.dataOutputSpecs)) {
+      userSpecs[key] = {
+        ...spec,
+        specType: DataSpecType.create(String(spec.specType)),
+      };
     }
 
     // Convert user upgrades to VersionUpgrade[]
@@ -496,7 +370,7 @@ export class UserModelLoader {
       type: modelType,
       version: userModel.version,
       inputAttributesSchema: userModel.inputAttributesSchema,
-      dataOutputSpecs: { ...defaultSpecs, ...userSpecs },
+      dataOutputSpecs: { ...userSpecs },
       methods,
       ...(upgrades && upgrades.length > 0 ? { upgrades } : {}),
     };

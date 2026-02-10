@@ -123,29 +123,14 @@ async function readLogs(
 
   const logLines = result.stdout.split("\n").filter((line) => line.length > 0);
 
-  const definitionHash = await definition.computeHash();
+  const writer = context.createDataWriter!({
+    name: `${definition.name}-logs`,
+    specType: "log",
+  });
 
-  return {
-    dataOutputs: [
-      {
-        name: `${definition.name}-logs`,
-        specType: DataSpecType.create("log"),
-        content: new TextEncoder().encode(logLines.join("\n")),
-        metadata: {
-          contentType: "text/plain",
-          lifetime: "infinite",
-          garbageCollection: 10,
-          streaming: true,
-          tags: { type: "log" },
-          ownerDefinition: {
-            definitionHash,
-            ownerType: "model-method",
-            ownerRef: "read",
-          },
-        },
-      },
-    ],
-  };
+  const handle = await writer.writeText(logLines.join("\n"));
+
+  return { dataHandles: [handle] };
 }
 
 /**
@@ -170,6 +155,7 @@ export const journalctlModel: ModelDefinition<
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
+      streaming: true,
       tags: { type: "log" },
     },
   },

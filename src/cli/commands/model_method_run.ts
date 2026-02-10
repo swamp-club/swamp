@@ -231,64 +231,50 @@ export const modelMethodRunCommand = new Command()
 
         runLogger.info("Method executed");
 
-        // Handle data output persistence
-        if (execResult.dataOutputs && execResult.dataOutputs.length > 0) {
-          for (const dataOutput of execResult.dataOutputs) {
-            ctx.logger.debug`Saving data output: ${dataOutput.name}`;
-
-            // Create Data entity from DataOutput
-            const { Data } = await import("../../domain/data/mod.ts");
-            const data = Data.create({
-              name: dataOutput.name,
-              contentType: dataOutput.metadata.contentType,
-              lifetime: dataOutput.metadata.lifetime,
-              garbageCollection: dataOutput.metadata.garbageCollection,
-              streaming: dataOutput.metadata.streaming,
-              tags: dataOutput.metadata.tags,
-              ownerDefinition: dataOutput.metadata.ownerDefinition,
-            });
-
-            // Save the data
-            const saveResult = await unifiedDataRepo.save(
-              modelType,
-              definition.id,
-              data,
-              dataOutput.content,
-            );
-
+        // Data is already persisted by DataWriter — extract artifact info from handles
+        if (execResult.dataHandles && execResult.dataHandles.length > 0) {
+          for (const handle of execResult.dataHandles) {
             const dataPath = unifiedDataRepo.getPath(
               modelType,
               definition.id,
-              dataOutput.name,
-              saveResult.version,
+              handle.name,
+              handle.version,
             );
 
             runLogger.info("Data saved to {path}", {
               path: dataPath,
-              name: dataOutput.name,
+              name: handle.name,
             });
 
             // Track artifact in output
             output.addDataArtifact({
-              dataId: data.id,
-              name: dataOutput.name,
-              version: saveResult.version,
-              tags: dataOutput.metadata.tags,
+              dataId: handle.dataId,
+              name: handle.name,
+              version: handle.version,
+              tags: handle.tags,
             });
 
             // Parse content if JSON for display purposes
             let attributes: Record<string, unknown> | undefined;
-            if (dataOutput.metadata.contentType === "application/json") {
+            if (handle.metadata.contentType === "application/json") {
               try {
-                const text = new TextDecoder().decode(dataOutput.content);
-                attributes = JSON.parse(text) as Record<string, unknown>;
+                const content = await unifiedDataRepo.getContent(
+                  modelType,
+                  evaluatedDefinition.id,
+                  handle.name,
+                  handle.version,
+                );
+                if (content) {
+                  const text = new TextDecoder().decode(content);
+                  attributes = JSON.parse(text) as Record<string, unknown>;
+                }
               } catch {
                 // Not valid JSON, skip attributes
               }
             }
 
             dataArtifacts.push({
-              id: data.id,
+              id: handle.dataId,
               path: dataPath,
               attributes,
             });

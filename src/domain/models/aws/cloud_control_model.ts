@@ -8,7 +8,7 @@ import {
 } from "@aws-sdk/client-cloudcontrol";
 import type { ModelType } from "../model_type.ts";
 import {
-  type DataOutput,
+  type DataHandle,
   DataSpecType,
   defineModel,
   type FollowUpAction,
@@ -151,7 +151,8 @@ export abstract class AWSCloudControlModel<
    */
   protected async createDeletedResult(
     definition: Definition,
-    methodName: string,
+    _methodName: string,
+    context: MethodContext,
   ): Promise<MethodResult> {
     const attributes = {
       OperationStatus: "SUCCESS",
@@ -160,58 +161,29 @@ export abstract class AWSCloudControlModel<
       DeletionCompleted: true,
     };
 
-    const definitionHash = await definition.computeHash();
+    const handle = await this.writeDataHandle(
+      definition,
+      attributes,
+      context,
+    );
 
-    return {
-      dataOutputs: [
-        {
-          name: `${definition.name}-data`,
-          specType: DataSpecType.create("resource"),
-          content: new TextEncoder().encode(JSON.stringify(attributes)),
-          metadata: {
-            contentType: "application/json",
-            lifetime: "infinite",
-            garbageCollection: 10,
-            streaming: false,
-            tags: { type: "resource" },
-            ownerDefinition: {
-              definitionHash,
-              ownerType: "model-method",
-              ownerRef: methodName,
-            },
-          },
-        },
-      ],
-    };
+    return { dataHandles: [handle] };
   }
 
   /**
-   * Creates a DataOutput from attributes.
+   * Writes attributes as a DataHandle via DataWriter.
    */
-  protected async createDataOutput(
+  protected async writeDataHandle(
     definition: Definition,
-    methodName: string,
     attributes: Record<string, unknown>,
-  ): Promise<DataOutput> {
-    const definitionHash = await definition.computeHash();
-
-    return {
+    context: MethodContext,
+  ): Promise<DataHandle> {
+    const writer = context.createDataWriter!({
       name: `${definition.name}-data`,
-      specType: DataSpecType.create("resource"),
-      content: new TextEncoder().encode(JSON.stringify(attributes)),
-      metadata: {
-        contentType: "application/json",
-        lifetime: "infinite",
-        garbageCollection: 10,
-        streaming: false,
-        tags: { type: "resource" },
-        ownerDefinition: {
-          definitionHash,
-          ownerType: "model-method",
-          ownerRef: methodName,
-        },
-      },
-    };
+      specType: "resource",
+    });
+
+    return await writer.writeText(JSON.stringify(attributes));
   }
 
   /**
@@ -253,10 +225,10 @@ export abstract class AWSCloudControlModel<
       ResourceIdentifier: response.ProgressEvent.Identifier,
     };
 
-    const dataOutput = await this.createDataOutput(
+    const handle = await this.writeDataHandle(
       definition,
-      "create",
       attributes,
+      context,
     );
 
     const followUpActions: FollowUpAction[] = [
@@ -264,14 +236,13 @@ export abstract class AWSCloudControlModel<
         methodName: "sync",
         delayMs: 5000,
         maxRetries: 3,
-        continueCondition: (dataOutputs: DataOutput[]) => {
-          // Continue if we have data outputs
-          return dataOutputs.length > 0;
+        continueCondition: (dataHandles: DataHandle[]) => {
+          return dataHandles.length > 0;
         },
       },
     ];
 
-    return { dataOutputs: [dataOutput], followUpActions };
+    return { dataHandles: [handle], followUpActions };
   }
 
   /**
@@ -313,7 +284,7 @@ export abstract class AWSCloudControlModel<
 
     if (!awsResourceId) {
       // No resource exists - nothing to delete
-      return this.createDeletedResult(definition, "delete");
+      return this.createDeletedResult(definition, "delete", context);
     }
 
     const client = this.createClient(context);
@@ -346,10 +317,10 @@ export abstract class AWSCloudControlModel<
         DeletionInitiated: true,
       };
 
-      const dataOutput = await this.createDataOutput(
+      const handle = await this.writeDataHandle(
         definition,
-        "delete",
         attributes,
+        context,
       );
 
       const followUpActions: FollowUpAction[] = [
@@ -357,16 +328,16 @@ export abstract class AWSCloudControlModel<
           methodName: "sync",
           delayMs: 5000,
           maxRetries: 3,
-          continueCondition: (dataOutputs: DataOutput[]) => {
-            return dataOutputs.length > 0;
+          continueCondition: (dataHandles: DataHandle[]) => {
+            return dataHandles.length > 0;
           },
         },
       ];
 
-      return { dataOutputs: [dataOutput], followUpActions };
+      return { dataHandles: [handle], followUpActions };
     } catch (error: unknown) {
       if (isResourceNotFoundError(error)) {
-        return this.createDeletedResult(definition, "delete");
+        return this.createDeletedResult(definition, "delete", context);
       }
       throw error;
     }
@@ -443,7 +414,7 @@ export abstract class AWSCloudControlModel<
       statusResponse = await client.send(statusCommand);
     } catch (error: unknown) {
       if (isResourceNotFoundError(error)) {
-        return this.createDeletedResult(definition, "sync");
+        return this.createDeletedResult(definition, "sync", context);
       }
       throw error;
     }
@@ -463,10 +434,10 @@ export abstract class AWSCloudControlModel<
         DeletionInitiated: isDeletionContext || undefined,
       };
 
-      const dataOutput = await this.createDataOutput(
+      const handle = await this.writeDataHandle(
         definition,
-        "sync",
         attributes,
+        context,
       );
 
       const followUpActions: FollowUpAction[] = [
@@ -474,13 +445,13 @@ export abstract class AWSCloudControlModel<
           methodName: "sync",
           delayMs: 10000,
           maxRetries: 30,
-          continueCondition: (dataOutputs: DataOutput[]) => {
-            return dataOutputs.length > 0;
+          continueCondition: (dataHandles: DataHandle[]) => {
+            return dataHandles.length > 0;
           },
         },
       ];
 
-      return { dataOutputs: [dataOutput], followUpActions };
+      return { dataHandles: [handle], followUpActions };
     }
 
     if (currentStatus === "FAILED") {
@@ -488,7 +459,7 @@ export abstract class AWSCloudControlModel<
         statusMessage.includes("was not found") ||
         statusMessage.includes("does not exist")
       ) {
-        return this.createDeletedResult(definition, "sync");
+        return this.createDeletedResult(definition, "sync", context);
       }
       throw new Error(
         `CloudControl operation failed: ${statusMessage || "Unknown error"}`,
@@ -496,7 +467,7 @@ export abstract class AWSCloudControlModel<
     }
 
     if (isDeletionContext) {
-      return this.createDeletedResult(definition, "sync");
+      return this.createDeletedResult(definition, "sync", context);
     }
 
     if (!resourceIdentifier) {
@@ -531,16 +502,16 @@ export abstract class AWSCloudControlModel<
         RawProperties: rawProperties,
       };
 
-      const dataOutput = await this.createDataOutput(
+      const handle = await this.writeDataHandle(
         definition,
-        "sync",
         attributes,
+        context,
       );
 
-      return { dataOutputs: [dataOutput] };
+      return { dataHandles: [handle] };
     } catch (error: unknown) {
       if (isResourceNotFoundError(error)) {
-        return this.createDeletedResult(definition, "sync");
+        return this.createDeletedResult(definition, "sync", context);
       }
       throw error;
     }

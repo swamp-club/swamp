@@ -38,9 +38,6 @@ import {
   ModelResolver,
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
-import {
-  DataOutputValidationService,
-} from "../models/data_output_validation_service.ts";
 import { UserError } from "../errors.ts";
 import {
   getRunLogger,
@@ -328,8 +325,26 @@ export class DefaultStepExecutor implements StepExecutor {
         method: task.methodName,
       });
 
+      // Build workflow-specific tag overrides
+      const workflowTagOverrides: Record<string, string> = {
+        type: "step-output",
+        workflow: ctx.workflowName,
+        step: ctx.stepName,
+      };
+
+      // Convert step's dataOutputOverrides to the format expected by createDataWriterFactory
+      const stepDataOutputOverrides = ctx.step?.dataOutputOverrides
+        ? Array.from(ctx.step.dataOutputOverrides).map((override) => ({
+          specType: override.specType.value,
+          lifetime: override.lifetime,
+          garbageCollection: override.garbageCollection,
+          tags: override.tags,
+        }))
+        : undefined;
+
       // Execute the method with EVALUATED definition
       // Logger handles both console and file persistence via RunFileSink
+      // Data is persisted by DataWriter during execution — no double-save
       const result = await executionService.executeWorkflow(
         evaluatedDefinition,
         modelDef,
@@ -342,66 +357,25 @@ export class DefaultStepExecutor implements StepExecutor {
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
           modelDefinition: modelDef,
+          tagOverrides: workflowTagOverrides,
+          dataOutputOverrides: stepDataOutputOverrides,
         },
       );
 
-      // Apply workflow step overrides (on top of definition overrides)
-      if (ctx.step?.dataOutputOverrides && result.dataOutputs) {
-        const validationService = new DataOutputValidationService();
-        result.dataOutputs = result.dataOutputs.map((output) => {
-          const spec = modelDef.dataOutputSpecs[output.specType.value];
-          return validationService.applyDefaultsAndOverrides(
-            output,
-            spec,
-            Array.from(ctx.step!.dataOutputOverrides),
-          );
-        });
-      }
-
-      // Handle data output persistence
+      // Extract artifact info from dataHandles (already persisted by DataWriter)
       const savedArtifacts: Array<{
         dataId: string;
         name: string;
         version: number;
         tags: Record<string, string>;
       }> = [];
-      if (result.dataOutputs && result.dataOutputs.length > 0) {
-        for (const dataOutput of result.dataOutputs) {
-          // Create Data entity from DataOutput with workflow-specific tags
-          const { Data } = await import("../data/mod.ts");
-
-          // Merge workflow-specific tags with model output tags
-          const workflowTags: Record<string, string> = {
-            ...dataOutput.metadata.tags,
-            type: "step-output",
-            workflow: ctx.workflowName,
-            step: ctx.stepName,
-          };
-
-          const data = Data.create({
-            name: dataOutput.name,
-            contentType: dataOutput.metadata.contentType,
-            lifetime: dataOutput.metadata.lifetime,
-            garbageCollection: dataOutput.metadata.garbageCollection,
-            streaming: dataOutput.metadata.streaming,
-            tags: workflowTags,
-            ownerDefinition: dataOutput.metadata.ownerDefinition,
-          });
-
-          // Save the data
-          const saveResult = await unifiedDataRepo.save(
-            modelType,
-            evaluatedDefinition.id,
-            data,
-            dataOutput.content,
-          );
-
-          // Track artifact in output and for returning to step run
+      if (result.dataHandles && result.dataHandles.length > 0) {
+        for (const handle of result.dataHandles) {
           const artifactRef = {
-            dataId: data.id,
-            name: dataOutput.name,
-            version: saveResult.version,
-            tags: workflowTags,
+            dataId: handle.dataId,
+            name: handle.name,
+            version: handle.version,
+            tags: handle.tags,
           };
           output.addDataArtifact(artifactRef);
           savedArtifacts.push(artifactRef);
@@ -409,20 +383,28 @@ export class DefaultStepExecutor implements StepExecutor {
           const dataPath = unifiedDataRepo.getPath(
             modelType,
             evaluatedDefinition.id,
-            dataOutput.name,
-            saveResult.version,
+            handle.name,
+            handle.version,
           );
           runLogger.info("Data saved to {path}", { path: dataPath });
 
-          // Use first JSON data output for context refresh
+          // Use first JSON data handle for context refresh
           if (
-            !dataId && dataOutput.metadata.contentType === "application/json"
+            !dataId && handle.metadata.contentType === "application/json"
           ) {
-            dataId = data.id;
-            dataName = dataOutput.name;
+            dataId = handle.dataId;
+            dataName = handle.name;
             try {
-              const text = new TextDecoder().decode(dataOutput.content);
-              dataAttributes = JSON.parse(text) as Record<string, unknown>;
+              const content = await unifiedDataRepo.getContent(
+                modelType,
+                evaluatedDefinition.id,
+                handle.name,
+                handle.version,
+              );
+              if (content) {
+                const text = new TextDecoder().decode(content);
+                dataAttributes = JSON.parse(text) as Record<string, unknown>;
+              }
             } catch {
               // Not valid JSON, skip attributes
             }
