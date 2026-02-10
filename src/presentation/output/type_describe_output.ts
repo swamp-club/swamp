@@ -48,7 +48,7 @@ interface JsonSchemaObject {
 /**
  * Formats JSON Schema properties as human-readable attribute lines.
  */
-function formatSchemaAttributes(
+export function formatSchemaAttributes(
   schema: object,
   indent: string,
 ): string[] {
@@ -63,6 +63,39 @@ function formatSchemaAttributes(
     if (required.has(name)) parts.push(dim("*required"));
     return `${indent}${parts.join(" ")}`;
   });
+}
+
+/**
+ * Formats method descriptions as human-readable lines.
+ */
+export function formatMethodLines(methods: MethodDescribeData[]): string[] {
+  const lines: string[] = [];
+  for (const method of methods) {
+    lines.push(
+      `  ${bold(cyan(method.name))} ${dim("-")} ${method.description}`,
+    );
+
+    const methodAttrs = formatSchemaAttributes(
+      method.inputAttributesSchema,
+      "      ",
+    );
+    if (methodAttrs.length > 0) {
+      lines.push(`    ${cyan("Input Attributes:")}`);
+      lines.push(...methodAttrs);
+    }
+
+    if (method.dataOutputSpecs && method.dataOutputSpecs.length > 0) {
+      lines.push(`    ${cyan("Data Outputs:")}`);
+      for (const spec of method.dataOutputSpecs) {
+        const parts = [spec.specType];
+        if (spec.description) parts.push(`${dim("-")} ${spec.description}`);
+        const meta = [spec.contentType, spec.lifetime].filter(Boolean);
+        if (meta.length > 0) parts.push(dim(`(${meta.join(", ")})`));
+        lines.push(`      ${parts.join(" ")}`);
+      }
+    }
+  }
+  return lines;
 }
 
 /**
@@ -96,32 +129,7 @@ export function renderTypeDescribe(
   if (data.methods.length > 0) {
     lines.push("");
     lines.push(bold(cyan("Methods:")));
-    for (let i = 0; i < data.methods.length; i++) {
-      const method = data.methods[i];
-      lines.push(
-        `  ${bold(cyan(method.name))} ${dim("-")} ${method.description}`,
-      );
-
-      const methodAttrs = formatSchemaAttributes(
-        method.inputAttributesSchema,
-        "      ",
-      );
-      if (methodAttrs.length > 0) {
-        lines.push(`    ${cyan("Input Attributes:")}`);
-        lines.push(...methodAttrs);
-      }
-
-      if (method.dataOutputSpecs && method.dataOutputSpecs.length > 0) {
-        lines.push(`    ${cyan("Data Outputs:")}`);
-        for (const spec of method.dataOutputSpecs) {
-          const parts = [spec.specType];
-          if (spec.description) parts.push(`${dim("-")} ${spec.description}`);
-          const meta = [spec.contentType, spec.lifetime].filter(Boolean);
-          if (meta.length > 0) parts.push(dim(`(${meta.join(", ")})`));
-          lines.push(`      ${parts.join(" ")}`);
-        }
-      }
-    }
+    lines.push(...formatMethodLines(data.methods));
   }
 
   writeOutput(lines.join("\n"));

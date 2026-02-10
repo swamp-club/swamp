@@ -9,6 +9,7 @@ import { UserError } from "../../domain/errors.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { toMethodDescribeData, zodToJsonSchema } from "./type_describe.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
 import { modelSearchAction, modelSearchCommand } from "./model_search.ts";
@@ -77,6 +78,16 @@ export const modelCreateCommand = new Command()
       type: modelType.normalized,
       name: definition.name,
       path: definitionRepo.getPath(modelType, definition.id),
+      version: modelDef?.version,
+      inputAttributesSchema: modelDef
+        ? zodToJsonSchema(modelDef.inputAttributesSchema)
+        : undefined,
+      methods: modelDef
+        ? Object.entries(modelDef.methods).map(
+          ([name, method]) =>
+            toMethodDescribeData(name, method, modelDef.dataOutputSpecs),
+        )
+        : undefined,
     };
 
     renderModelCreate(data, ctx.outputMode);
