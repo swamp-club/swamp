@@ -9,20 +9,123 @@ import {
   curlModel,
   CurlResourceAttributesSchema,
 } from "./curl_model.ts";
-import type { MethodContext } from "../../model.ts";
+import { normalizeSpecType } from "../../model.ts";
+import type {
+  DataHandle,
+  DataWriter,
+  DataWriterFactory,
+  MethodContext,
+  SpecBasedWriterOptions,
+} from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
-import { generateDataId } from "../../../data/data_id.ts";
+import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
 
-// Check if we have network permission for integration tests
-const hasNetworkPermission = await (async () => {
-  const status = await Deno.permissions.query({
-    name: "net",
-    host: "httpbin.org",
-  });
-  return status.state === "granted";
-})();
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: SpecBasedWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: normalizeSpecType(options.specType),
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: { ...(options.tags ?? {}) },
+      metadata: {
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
+        streaming: options.streaming ?? false,
+        tags: { ...(options.tags ?? {}) },
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
+
+/**
+ * Helper to get parsed JSON content from mock results by name pattern.
+ */
+function getResultAttributes(
+  results: MockWriterResult[],
+  namePattern: string,
+): Record<string, unknown> | undefined {
+  const result = results.find((r) => r.handle.name.includes(namePattern));
+  if (!result) return undefined;
+  return JSON.parse(new TextDecoder().decode(result.content));
+}
+
+/**
+ * Helper to get file content from mock results.
+ */
+function getFileContent(results: MockWriterResult[]): Uint8Array | undefined {
+  const fileResult = results.find((r) => r.handle.name.includes("file"));
+  return fileResult?.content;
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -44,6 +147,10 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -67,38 +174,21 @@ function createMockDefinitionRepo(): DefinitionRepository {
 /**
  * Creates a test MethodContext with mocked repositories.
  */
-function createTestContext(): MethodContext {
-  return {
+function createTestContext(): {
+  context: MethodContext;
+  getResults: () => MockWriterResult[];
+} {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir: "/tmp",
     modelType: CURL_MODEL_TYPE,
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
   };
-}
-
-/**
- * Helper to get attributes from a DataOutput by name pattern.
- */
-function getDataOutputAttributes(
-  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
-  namePattern: string,
-): Record<string, unknown> | undefined {
-  const dataOutput = dataOutputs?.find((d) => d.name.includes(namePattern));
-  if (!dataOutput) return undefined;
-  const content = new TextDecoder().decode(dataOutput.content);
-  return JSON.parse(content);
-}
-
-/**
- * Helper to get file content from DataOutputs.
- */
-function getFileContent(
-  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
-): Uint8Array | undefined {
-  const fileOutput = dataOutputs?.find((d) => d.name.includes("file"));
-  return fileOutput?.content;
+  return { context, getResults };
 }
 
 Deno.test("CURL_MODEL_TYPE has correct normalized type", () => {
@@ -213,7 +303,7 @@ Deno.test("curlModel.methods.download validates input attributes", async () => {
     attributes: { notAUrl: "value" },
   });
 
-  const context = createTestContext();
+  const { context } = createTestContext();
   let error: Error | null = null;
   try {
     await curlModel.methods.download.execute(definition, context);
@@ -224,27 +314,34 @@ Deno.test("curlModel.methods.download validates input attributes", async () => {
   assertEquals(error !== null, true);
 });
 
-Deno.test({
-  name: "curlModel.methods.download executes correctly",
-  ignore: !hasNetworkPermission,
-  fn: async () => {
+Deno.test("curlModel.methods.download executes correctly", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+    return Promise.resolve(
+      new Response(JSON.stringify({ slideshow: { title: "Sample" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  };
+  try {
     const definition = Definition.create({
       name: "test-curl",
       attributes: { url: "https://httpbin.org/json" },
     });
 
-    const context = createTestContext();
+    const { context, getResults } = createTestContext();
     const result = await curlModel.methods.download.execute(
       definition,
       context,
     );
 
-    // Check data outputs were created
-    assertExists(result.dataOutputs);
-    assertEquals(result.dataOutputs.length >= 1, true);
+    // Check data handles were created
+    assertExists(result.dataHandles);
+    assertEquals(result.dataHandles.length >= 1, true);
 
     // Check metadata output
-    const metadata = getDataOutputAttributes(result.dataOutputs, "metadata");
+    const metadata = getResultAttributes(getResults(), "metadata");
     assertExists(metadata);
     assertEquals(metadata.url, "https://httpbin.org/json");
     assertEquals(metadata.statusCode, 200);
@@ -258,16 +355,25 @@ Deno.test({
     assertEquals(isNaN(downloadedAt.getTime()), false);
 
     // Check file content was included
-    const fileContent = getFileContent(result.dataOutputs);
+    const fileContent = getFileContent(getResults());
     assertExists(fileContent);
     assertEquals(fileContent.length > 0, true);
-  },
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
-Deno.test({
-  name: "curlModel.methods.download handles custom filename",
-  ignore: !hasNetworkPermission,
-  fn: async () => {
+Deno.test("curlModel.methods.download handles custom filename", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+    return Promise.resolve(
+      new Response(JSON.stringify({ data: "test" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  };
+  try {
     const definition = Definition.create({
       name: "test-curl-filename",
       attributes: {
@@ -276,34 +382,43 @@ Deno.test({
       },
     });
 
-    const context = createTestContext();
+    const { context, getResults } = createTestContext();
     const result = await curlModel.methods.download.execute(
       definition,
       context,
     );
 
-    assertExists(result.dataOutputs);
-    // The file output should exist
-    const fileOutput = result.dataOutputs.find((d) => d.name.endsWith("-file"));
-    assertExists(fileOutput);
+    assertExists(result.dataHandles);
+    // The file handle should exist
+    const fileHandle = result.dataHandles.find((h) => h.name.endsWith("-file"));
+    assertExists(fileHandle);
 
     // The metadata should contain the custom filename
-    const metadata = getDataOutputAttributes(result.dataOutputs, "metadata");
+    const metadata = getResultAttributes(getResults(), "metadata");
     assertExists(metadata);
     assertEquals(metadata.filename, "custom-response.json");
-  },
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
-Deno.test({
-  name: "curlModel.methods.download handles HTTP errors",
-  ignore: !hasNetworkPermission,
-  fn: async () => {
+Deno.test("curlModel.methods.download handles HTTP errors", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+    return Promise.resolve(
+      new Response(null, {
+        status: 404,
+        statusText: "Not Found",
+      }),
+    );
+  };
+  try {
     const definition = Definition.create({
       name: "test-curl-error",
       attributes: { url: "https://httpbin.org/status/404" },
     });
 
-    const context = createTestContext();
+    const { context } = createTestContext();
     let error: Error | null = null;
     try {
       await curlModel.methods.download.execute(definition, context);
@@ -313,5 +428,7 @@ Deno.test({
 
     assertEquals(error !== null, true);
     assertEquals(error!.message.includes("404"), true);
-  },
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

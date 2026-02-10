@@ -17,17 +17,27 @@ export const model = { ... };
 export const extension = { ... };
 ```
 
-### "Model must have at least one of resourceAttributesSchema or dataAttributesSchema"
+### "Undeclared spec type" or "dataOutputSpecs is required"
 
-Add either `dataAttributesSchema` (ephemeral) or `resourceAttributesSchema`
-(persistent):
+Every model must declare `dataOutputSpecs` listing each spec type used by
+`createDataWriter`. If a method calls `createDataWriter({ specType: "data" })`,
+the model must include a `"data"` entry in `dataOutputSpecs`:
 
 ```typescript
 export const model = {
-  type: "...",
+  type: "@user/my-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataAttributesSchema: DataSchema,  // Add this
+  dataOutputSpecs: {
+    "data": {
+      specType: "data",
+      description: "Model output data",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "data" },
+    },
+  },
   methods: { ... },
 };
 ```

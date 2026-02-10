@@ -6,29 +6,16 @@ import { CalVer } from "./calver.ts";
 import type { Definition } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import {
+  type DataId,
   type DataMetadata,
   type GarbageCollectionPolicy,
   GarbageCollectionSchema,
   type Lifetime,
   LifetimeSchema,
+  type OwnerDefinition,
 } from "../data/mod.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { OutputRepository } from "./repositories.ts";
-
-/**
- * Callbacks for streaming output from method execution.
- */
-export interface MethodStreamingCallbacks {
-  /**
-   * Called for each line of stdout.
-   */
-  onStdout?: (line: string) => void;
-
-  /**
-   * Called for each line of stderr.
-   */
-  onStderr?: (line: string) => void;
-}
 
 /**
  * Data spec type - identifies a category of data output.
@@ -55,8 +42,22 @@ export class DataSpecType {
 }
 
 /**
+ * Normalizes a specType value to a DataSpecType instance.
+ * Accepts either an existing DataSpecType or a plain string.
+ */
+export function normalizeSpecType(
+  specType: DataSpecType | string,
+): DataSpecType {
+  if (specType instanceof DataSpecType) {
+    return specType;
+  }
+  return DataSpecType.create(specType);
+}
+
+/**
  * Specification for a data output spec type.
- * Value object - immutable.
+ * Value object - immutable. This is the single source of truth for how
+ * a particular category of data output should be stored.
  */
 export interface DataOutputSpecification {
   /** The spec type identifier */
@@ -65,20 +66,20 @@ export interface DataOutputSpecification {
   /** Human-readable description */
   description?: string;
 
-  /** Default content type */
-  contentType?: string;
+  /** Content type for this data output */
+  contentType: string;
 
-  /** Default lifetime policy */
-  lifetime?: Lifetime;
+  /** Lifetime policy */
+  lifetime: Lifetime;
 
-  /** Default garbage collection policy */
-  garbageCollection?: GarbageCollectionPolicy;
+  /** Garbage collection policy */
+  garbageCollection: GarbageCollectionPolicy;
 
   /** Whether this supports streaming */
   streaming?: boolean;
 
-  /** Default tags */
-  tags?: Record<string, string>;
+  /** Tags applied to this data output */
+  tags: Record<string, string>;
 }
 
 /**
@@ -87,11 +88,11 @@ export interface DataOutputSpecification {
 export const DataOutputSpecificationSchema = z.object({
   specType: z.string().min(1),
   description: z.string().optional(),
-  contentType: z.string().optional(),
-  lifetime: LifetimeSchema.optional(),
-  garbageCollection: GarbageCollectionSchema.optional(),
+  contentType: z.string(),
+  lifetime: LifetimeSchema,
+  garbageCollection: GarbageCollectionSchema,
   streaming: z.boolean().optional(),
-  tags: z.record(z.string(), z.string()).optional(),
+  tags: z.record(z.string(), z.string()),
 });
 
 /**
@@ -139,43 +140,136 @@ export interface MethodContext {
   logger: Logger;
 
   /**
-   * Optional callbacks for streaming stdout/stderr output.
-   */
-  streaming?: MethodStreamingCallbacks;
-
-  /**
    * The model definition for validation and defaults.
    */
   modelDefinition?: ModelDefinition;
+
+  /**
+   * Factory for creating DataWriter instances to write data during execution.
+   */
+  createDataWriter?: DataWriterFactory;
+
+  /**
+   * Tags merged into every DataWriter created during execution.
+   * Used by workflow steps to inject workflow-specific tags.
+   */
+  tagOverrides?: Record<string, string>;
+
+  /**
+   * Data output overrides merged into every DataWriter's options.
+   * Used by workflow steps to override lifetime, gc, and tags per spec type.
+   */
+  dataOutputOverrides?: Array<{
+    specType: string;
+    lifetime?: Lifetime;
+    garbageCollection?: GarbageCollectionPolicy;
+    tags?: Record<string, string>;
+  }>;
 }
 
 /**
- * Data output from a method execution.
+ * Lightweight reference to data already written during method execution.
+ * Value object — the content has already been persisted by a DataWriter.
  */
-export interface DataOutput {
-  /**
-   * Unique name for this data instance.
-   */
+export interface DataHandle {
+  /** Human-readable name of this data artifact. */
   name: string;
-
-  /**
-   * Reference to the declared spec type.
-   */
+  /** Reference to the declared spec type. */
   specType: DataSpecType;
-
-  /**
-   * Content of the data artifact.
-   */
-  content: Uint8Array;
-
-  /**
-   * Metadata for the data artifact (can override spec defaults).
-   */
+  /** Unique data ID. */
+  dataId: DataId;
+  /** Version number on disk. */
+  version: number;
+  /** Size in bytes. */
+  size: number;
+  /** Tags applied to the data. */
+  tags: Record<string, string>;
+  /** Metadata excluding auto-generated fields. */
   metadata: Omit<
     DataMetadata,
     "id" | "name" | "version" | "createdAt" | "size" | "checksum"
   >;
 }
+
+/**
+ * Options for creating a DataWriter from a spec-based call site.
+ * Only `name` and `specType` are required — defaults come from the
+ * model's DataOutputSpecification. Optional fields override spec defaults.
+ */
+export interface SpecBasedWriterOptions {
+  /** Unique instance name for this data artifact */
+  name: string;
+  /** Key into dataOutputSpecs — must match a declared spec type */
+  specType: string;
+  /** Override the spec's default content type */
+  contentType?: string;
+  /** Override the spec's default lifetime */
+  lifetime?: Lifetime;
+  /** Override the spec's default garbage collection policy */
+  garbageCollection?: GarbageCollectionPolicy;
+  /** Override the spec's default streaming flag */
+  streaming?: boolean;
+  /** Merged on top of spec's default tags */
+  tags?: Record<string, string>;
+}
+
+/**
+ * Fully resolved options used internally by DefaultDataWriter.
+ * All fields are required (resolved from spec + overrides).
+ */
+export interface ResolvedDataWriterOptions {
+  name: string;
+  specType: DataSpecType | string;
+  contentType: string;
+  lifetime: Lifetime;
+  garbageCollection: GarbageCollectionPolicy;
+  streaming?: boolean;
+  tags: Record<string, string>;
+  ownerDefinition?: OwnerDefinition;
+}
+
+/**
+ * Domain service interface for writing data directly to disk during method execution.
+ */
+export interface DataWriter {
+  /** The data ID assigned to this writer. */
+  readonly dataId: DataId;
+  /** The data name. */
+  readonly name: string;
+
+  /** Write all content at once. */
+  writeAll(content: Uint8Array): Promise<DataHandle>;
+  /** Write text content (encodes to UTF-8). */
+  writeText(text: string): Promise<DataHandle>;
+  /** Append a single line (streaming). */
+  writeLine(line: string): Promise<void>;
+  /** Pipe a stream to disk with optional line-by-line callbacks. */
+  writeStream(
+    stream: ReadableStream<Uint8Array>,
+    options?: { onLine?: (line: string) => void },
+  ): Promise<DataHandle>;
+  /** Get the file path for direct I/O. */
+  getFilePath(): Promise<string>;
+  /** Finalize a writer that used writeLine/getFilePath and return the handle. */
+  finalize(): Promise<DataHandle>;
+}
+
+/**
+ * Callbacks for DataWriter events.
+ */
+export interface DataWriterCallbacks {
+  /** Called for each line written by writeLine or writeStream. */
+  onLine?: (dataName: string, line: string) => void;
+}
+
+/**
+ * Factory function for creating DataWriter instances.
+ * Accepts spec-based options — the factory resolves defaults from
+ * the model's DataOutputSpecification.
+ */
+export type DataWriterFactory = (
+  options: SpecBasedWriterOptions,
+) => DataWriter;
 
 /**
  * Follow-up action to be executed after a method completes.
@@ -199,9 +293,9 @@ export interface FollowUpAction {
   /**
    * Condition that must be met to continue with follow-up actions.
    * If this returns false, the workflow stops.
-   * Receives the data outputs from the previous method execution.
+   * Receives the data handles from the previous method execution.
    */
-  continueCondition?: (dataOutputs: DataOutput[]) => boolean;
+  continueCondition?: (dataHandles: DataHandle[]) => boolean;
 }
 
 /**
@@ -209,10 +303,9 @@ export interface FollowUpAction {
  */
 export interface MethodResult {
   /**
-   * Data outputs produced by the method.
-   * Each output will be stored as a versioned Data artifact.
+   * Data handles referencing artifacts already persisted by DataWriter.
    */
-  dataOutputs?: DataOutput[];
+  dataHandles?: DataHandle[];
 
   /**
    * Optional follow-up actions to execute.

@@ -11,7 +11,7 @@ import { Definition } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
-import { modelSearchCommand } from "./model_search.ts";
+import { modelSearchAction, modelSearchCommand } from "./model_search.ts";
 import { modelGetCommand } from "./model_get.ts";
 import { modelDeleteCommand } from "./model_delete.ts";
 import { modelEditCommand } from "./model_edit.ts";
@@ -96,4 +96,15 @@ export const modelCommand = new Command()
   .command("search", modelSearchCommand)
   .command("validate", modelValidateCommand)
   .command("method", modelMethodCommand)
-  .command("output", modelOutputCommand);
+  .command("output", modelOutputCommand)
+  .command(
+    "list",
+    new Command()
+      .description("Alias for model search")
+      .hidden()
+      .arguments("[query:string]")
+      .option("--repo-dir <dir:string>", "Repository directory", {
+        default: ".",
+      })
+      .action(modelSearchAction),
+  );

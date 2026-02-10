@@ -47,7 +47,7 @@ export const ECHO_MODEL_TYPE = ModelType.create("swamp/echo");
  */
 async function executeWrite(
   definition: Definition,
-  _context: MethodContext,
+  context: MethodContext,
 ): Promise<MethodResult> {
   // Validate definition attributes
   const attrs = EchoInputAttributesSchema.parse(definition.attributes);
@@ -58,27 +58,14 @@ async function executeWrite(
     timestamp: new Date().toISOString(),
   };
 
-  const definitionHash = await definition.computeHash();
+  const writer = context.createDataWriter!({
+    name: `${definition.name}-message`,
+    specType: "message",
+  });
 
-  return {
-    dataOutputs: [{
-      name: `${definition.name}-message`,
-      specType: DataSpecType.create("message"),
-      content: new TextEncoder().encode(JSON.stringify(dataAttributes)),
-      metadata: {
-        contentType: "application/json",
-        lifetime: "ephemeral",
-        garbageCollection: 10,
-        streaming: false,
-        tags: { type: "data" },
-        ownerDefinition: {
-          definitionHash,
-          ownerType: "model-method",
-          ownerRef: "write",
-        },
-      },
-    }],
-  };
+  const handle = await writer.writeText(JSON.stringify(dataAttributes));
+
+  return { dataHandles: [handle] };
 }
 
 /**

@@ -8,11 +8,124 @@ import {
   type MermaidWorkflowInputAttributes,
   mermaidWorkflowModel,
 } from "./workflow_diagram_model.ts";
-import type { MethodContext } from "../../model.ts";
+import { normalizeSpecType } from "../../model.ts";
+import type {
+  DataHandle,
+  DataWriter,
+  DataWriterFactory,
+  MethodContext,
+  SpecBasedWriterOptions,
+} from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
-import { generateDataId } from "../../../data/data_id.ts";
+import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+
+/**
+ * Stored result from mock data writer.
+ */
+interface MockWriterResult {
+  handle: DataHandle;
+  content: Uint8Array;
+}
+
+/**
+ * Creates a mock DataWriterFactory that stores written content in memory.
+ */
+function createMockDataWriterFactory(): {
+  factory: DataWriterFactory;
+  getResults: () => MockWriterResult[];
+} {
+  const results: MockWriterResult[] = [];
+  const getResults = (): MockWriterResult[] => results;
+  let nextId = 1;
+
+  const factory: DataWriterFactory = (
+    options: SpecBasedWriterOptions,
+  ): DataWriter => {
+    const dataId = `mock-data-${nextId++}` as DataId;
+
+    const buildHandle = (content: Uint8Array): DataHandle => ({
+      name: options.name,
+      specType: normalizeSpecType(options.specType),
+      dataId,
+      version: 1,
+      size: content.length,
+      tags: { ...(options.tags ?? {}) },
+      metadata: {
+        contentType: options.contentType ?? "application/json",
+        lifetime: options.lifetime ?? "infinite",
+        garbageCollection: options.garbageCollection ?? 10,
+        streaming: options.streaming ?? false,
+        tags: { ...(options.tags ?? {}) },
+        ownerDefinition: {
+          definitionHash: "test-hash",
+          ownerType: "model-method",
+          ownerRef: "test",
+        },
+      },
+    });
+
+    return {
+      dataId,
+      name: options.name,
+      writeAll(content: Uint8Array): Promise<DataHandle> {
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeText(text: string): Promise<DataHandle> {
+        const content = new TextEncoder().encode(text);
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      writeLine(_line: string): Promise<void> {
+        return Promise.resolve();
+      },
+      writeStream(
+        _stream: ReadableStream<Uint8Array>,
+      ): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+      getFilePath(): Promise<string> {
+        return Promise.resolve("/tmp/mock");
+      },
+      finalize(): Promise<DataHandle> {
+        const content = new Uint8Array();
+        const handle = buildHandle(content);
+        results.push({ handle, content });
+        return Promise.resolve(handle);
+      },
+    } as DataWriter;
+  };
+
+  return { factory, getResults };
+}
+
+/**
+ * Helper to get parsed JSON content from mock results by name.
+ */
+function getResultAttributes(
+  results: MockWriterResult[],
+  namePart: string,
+): Record<string, unknown> | undefined {
+  const result = results.find((r) => r.handle.name.includes(namePart));
+  if (!result) return undefined;
+  return JSON.parse(new TextDecoder().decode(result.content));
+}
+
+/**
+ * Helper to get diagram content as string.
+ */
+function getDiagramContent(results: MockWriterResult[]): string {
+  const diagramResult = results.find((r) => r.handle.name.endsWith("-diagram"));
+  if (!diagramResult) return "";
+  return new TextDecoder().decode(diagramResult.content);
+}
 
 /**
  * Creates a mock UnifiedDataRepository for testing.
@@ -34,6 +147,10 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentPath: () => "",
     collectGarbage: () =>
       Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 }),
+    allocateVersion: () =>
+      Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
+    finalizeVersion: () =>
+      Promise.resolve({ size: 0, checksum: "mock-checksum" }),
   };
 }
 
@@ -57,39 +174,21 @@ function createMockDefinitionRepo(): DefinitionRepository {
 /**
  * Creates a test MethodContext with mocked repositories.
  */
-function createTestContext(): MethodContext {
-  return {
+function createTestContext(): {
+  context: MethodContext;
+  getResults: () => MockWriterResult[];
+} {
+  const { factory, getResults } = createMockDataWriterFactory();
+  const context: MethodContext = {
     repoDir: "/tmp",
     modelType: MERMAID_WORKFLOW_MODEL_TYPE,
     modelId: crypto.randomUUID(),
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
+    createDataWriter: factory,
   };
-}
-
-/**
- * Helper to get attributes from a DataOutput by name.
- */
-function getDataOutputAttributes(
-  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
-  name: string,
-): Record<string, unknown> | undefined {
-  const dataOutput = dataOutputs?.find((d) => d.name.includes(name));
-  if (!dataOutput) return undefined;
-  const content = new TextDecoder().decode(dataOutput.content);
-  return JSON.parse(content);
-}
-
-/**
- * Helper to get diagram content as string.
- */
-function getDiagramContent(
-  dataOutputs: { name: string; content: Uint8Array }[] | undefined,
-): string {
-  const diagramOutput = dataOutputs?.find((d) => d.name.endsWith("-diagram"));
-  if (!diagramOutput) return "";
-  return new TextDecoder().decode(diagramOutput.content);
+  return { context, getResults };
 }
 
 Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple workflow", async () => {
@@ -154,24 +253,24 @@ Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple wor
     attributes: inputAttributes,
   });
 
-  const context = createTestContext();
+  const { context, getResults } = createTestContext();
   const result = await mermaidWorkflowModel.methods.generate.execute(
     definition,
     context,
   );
 
-  assertEquals(result.dataOutputs !== undefined, true);
-  assertEquals(result.dataOutputs!.length >= 1, true);
+  assertEquals(result.dataHandles !== undefined, true);
+  assertEquals(result.dataHandles!.length >= 1, true);
 
   // Verify metadata attributes
-  const attrs = getDataOutputAttributes(result.dataOutputs, "metadata");
+  const attrs = getResultAttributes(getResults(), "metadata");
   assertEquals(attrs?.workflowName, "test-workflow");
   assertEquals(attrs?.jobCount, 2);
   assertEquals(attrs?.stepCount, 2);
   assertEquals(attrs?.workflowStatus, "succeeded");
 
   // Verify diagram content contains Mermaid syntax
-  const diagramContent = getDiagramContent(result.dataOutputs);
+  const diagramContent = getDiagramContent(getResults());
   assertEquals(diagramContent.includes("graph TD"), true);
   assertEquals(diagramContent.includes("Workflow: test-workflow"), true);
   assertEquals(diagramContent.includes("Job: build"), true);
@@ -218,14 +317,14 @@ Deno.test("mermaidWorkflowModel: generate creates simple diagram without steps",
     attributes: inputAttributes,
   });
 
-  const context = createTestContext();
-  const result = await mermaidWorkflowModel.methods.generate.execute(
+  const { context, getResults } = createTestContext();
+  await mermaidWorkflowModel.methods.generate.execute(
     definition,
     context,
   );
 
   // Verify diagram content is simpler without steps
-  const diagramContent = getDiagramContent(result.dataOutputs);
+  const diagramContent = getDiagramContent(getResults());
   assertEquals(diagramContent.includes("graph TD"), true);
   assertEquals(diagramContent.includes("Job: deploy"), true);
   assertEquals(diagramContent.includes("Status: failed"), true);
@@ -324,13 +423,13 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
     attributes: inputAttributes,
   });
 
-  const context = createTestContext();
-  const result = await mermaidWorkflowModel.methods.generate.execute(
+  const { context, getResults } = createTestContext();
+  await mermaidWorkflowModel.methods.generate.execute(
     definition,
     context,
   );
 
-  const diagramContent = getDiagramContent(result.dataOutputs);
+  const diagramContent = getDiagramContent(getResults());
 
   // Verify all jobs are present
   assertEquals(diagramContent.includes("Job: setup"), true);
