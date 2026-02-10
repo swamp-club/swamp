@@ -36,6 +36,43 @@ const testData: TypeDescribeData = {
   ],
 };
 
+const testDataWithSpecs: TypeDescribeData = {
+  type: {
+    raw: "AWS::EC2::VPC",
+    normalized: "aws/ec2/vpc",
+  },
+  version: "2026.01.15.1",
+  inputAttributesSchema: {
+    type: "object",
+    properties: {
+      cidrBlock: { type: "string" },
+      enableDnsSupport: { type: "boolean" },
+    },
+    required: ["cidrBlock"],
+  },
+  methods: [
+    {
+      name: "create",
+      description: "Create a new VPC",
+      inputAttributesSchema: {
+        type: "object",
+        properties: {
+          cidrBlock: { type: "string" },
+        },
+        required: ["cidrBlock"],
+      },
+      dataOutputSpecs: [
+        {
+          specType: "vpc",
+          description: "VPC resource state",
+          contentType: "application/json",
+          lifetime: "persistent",
+        },
+      ],
+    },
+  ],
+};
+
 Deno.test("renderTypeDescribe with json mode outputs valid JSON", () => {
   const logs: string[] = [];
   const originalLog = console.log;
@@ -55,6 +92,28 @@ Deno.test("renderTypeDescribe with json mode outputs valid JSON", () => {
   }
 });
 
+Deno.test("renderTypeDescribe with log mode does not output JSON", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderTypeDescribe(testData, "log");
+    // Log mode should use the logger, not console.log
+    assertEquals(logs.length, 0);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("renderTypeDescribe with log mode does not throw", () => {
   renderTypeDescribe(testData, "log");
+});
+
+Deno.test("renderTypeDescribe log mode with different raw and normalized names", () => {
+  renderTypeDescribe(testDataWithSpecs, "log");
+});
+
+Deno.test("renderTypeDescribe log mode with data output specs", () => {
+  renderTypeDescribe(testDataWithSpecs, "log");
 });
