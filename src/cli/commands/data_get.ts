@@ -38,10 +38,11 @@ export const dataGetCommand = new Command()
 
       const workflowName = options.workflow as string | undefined;
 
-      // Validate: exactly one of model or --workflow
-      if (modelIdOrName && workflowName) {
+      // When using --workflow, positional args shift:
+      // `swamp data get --workflow <wf> <data_name>` → modelIdOrName holds the data name
+      if (workflowName && modelIdOrName && dataName) {
         throw new UserError(
-          "Cannot specify both a model and --workflow. Use one or the other.",
+          "Too many arguments. Usage: swamp data get --workflow <name> <data_name>",
         );
       }
       if (!modelIdOrName && !workflowName) {

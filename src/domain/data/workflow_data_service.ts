@@ -67,8 +67,20 @@ export class WorkflowDataService {
         if (step.dataArtifacts.length === 0) continue;
 
         for (const artifact of step.dataArtifacts) {
-          // Look up the data by its ID
-          const found = dataById.get(artifact.dataId);
+          // Look up the data by its ID first, then fall back to name matching.
+          // Data IDs change with each version, so older run artifacts may not
+          // match the current data's ID. Name matching resolves this by finding
+          // the data item across all models that shares the same name.
+          let found = dataById.get(artifact.dataId);
+          if (!found) {
+            // Try matching by name across all models
+            for (const [, item] of dataByName) {
+              if (item.data.name === artifact.name) {
+                found = item;
+                break;
+              }
+            }
+          }
           if (!found) continue; // GC'd or missing data
 
           // Resolve model name
