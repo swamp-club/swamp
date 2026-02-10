@@ -131,7 +131,7 @@ export function WorkflowHistorySearchUI(
   }, [exit, onCancel]);
 
   useInput((input, key) => {
-    if (key.escape) {
+    if (key.escape || (key.ctrl && input === "c")) {
       handleCancel();
       return;
     }
