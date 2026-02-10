@@ -265,13 +265,10 @@ function ModelOutputSearchResultItem(
         {isSelected ? "> " : "  "}
         {item.modelName ?? item.definitionId.slice(0, 8)}
       </Text>
-      <Text dimColor></Text>
-      <Text color="cyan">{item.methodName}</Text>
-      <Text dimColor></Text>
-      <Text color={getStatusColor(item.status)}>{item.status}</Text>
-      <Text dimColor></Text>
+      <Text color="cyan">{` ${item.methodName}`}</Text>
+      <Text color={getStatusColor(item.status)}>{` [${item.status}]`}</Text>
       {item.durationMs !== undefined && (
-        <Text dimColor>({formatDuration(item.durationMs)})</Text>
+        <Text dimColor>{` (${formatDuration(item.durationMs)})`}</Text>
       )}
     </Box>
   );
