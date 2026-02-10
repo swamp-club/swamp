@@ -404,9 +404,9 @@ Deno.test("LogStreamService - streamLogs reads from log file", async () => {
     await Deno.mkdir(runDir, { recursive: true });
 
     const logContent = [
-      "2024-01-01 10:00:01.000 +00:00 [INF] workflow·run·test: Line 1",
-      "2024-01-01 10:00:02.000 +00:00 [INF] workflow·run·test: Line 2",
-      "2024-01-01 10:00:03.000 +00:00 [INF] workflow·run·test: Line 3",
+      "2024-01-01 10:00:01.000 +00:00 [INF] workflow\u00B7run\u00B7test-workflow\u00B7test-job\u00B7test-step: Line 1",
+      "2024-01-01 10:00:02.000 +00:00 [INF] workflow\u00B7run\u00B7test-workflow\u00B7test-job\u00B7test-step: Line 2",
+      "2024-01-01 10:00:03.000 +00:00 [INF] workflow\u00B7run\u00B7test-workflow\u00B7test-job\u00B7test-step: Line 3",
       "",
     ].join("\n");
     await Deno.writeTextFile(

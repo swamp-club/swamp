@@ -93,6 +93,15 @@ export class LogStreamService {
       let byteOffset = 0;
       let partialLine = "";
 
+      // Build category filter for the target.
+      // LogTape text format uses · (middle dot U+00B7) as category separator.
+      // Step lines look like: "... workflow·run·wfName·jobName·stepName: message"
+      // Job lines look like:  "... workflow·run·wfName·jobName: message"
+      const MIDDLE_DOT = "\u00B7";
+      const categoryFilter = target.type === "step" && target.stepName
+        ? `${MIDDLE_DOT}${target.jobName}${MIDDLE_DOT}${target.stepName}`
+        : `${MIDDLE_DOT}${target.jobName}`;
+
       // Find the log file (retry a few times for steps that haven't started yet)
       let logFile: string | null = null;
       for (let attempt = 0; attempt < 10; attempt++) {
@@ -105,7 +114,7 @@ export class LogStreamService {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       }
 
-      // Helper: read new bytes from the log file and yield lines
+      // Helper: read new bytes from the log file and yield filtered lines
       const readNewContent = async function* (): AsyncIterableIterator<
         LogEntry
       > {
@@ -127,7 +136,7 @@ export class LogStreamService {
                 partialLine = lines.pop() ?? "";
 
                 for (const line of lines) {
-                  if (line.trim()) {
+                  if (line.trim() && line.includes(categoryFilter)) {
                     yield {
                       message: line,
                       timestamp: parseLogTimestamp(line),
@@ -274,8 +283,13 @@ export class LogStreamService {
 
     if (logFile) {
       try {
+        const MIDDLE_DOT = "\u00B7";
+        const stepCategoryFilter =
+          `${MIDDLE_DOT}${jobName}${MIDDLE_DOT}${stepName}`;
         const content = await Deno.readTextFile(logFile);
-        const lines = content.split("\n").filter((line) => line.trim());
+        const lines = content.split("\n").filter((line) =>
+          line.trim() && line.includes(stepCategoryFilter)
+        );
         entries.push({
           message: `[LOG] Streaming logs for step: ${jobName}/${stepName}`,
           timestamp: new Date(),
@@ -314,8 +328,12 @@ export class LogStreamService {
 
     if (logFile) {
       try {
+        const MIDDLE_DOT = "\u00B7";
+        const jobCategoryFilter = `${MIDDLE_DOT}${jobName}`;
         const content = await Deno.readTextFile(logFile);
-        const lines = content.split("\n").filter((line) => line.trim());
+        const lines = content.split("\n").filter((line) =>
+          line.trim() && line.includes(jobCategoryFilter)
+        );
         for (const line of lines) {
           entries.push({ message: line, timestamp: parseLogTimestamp(line) });
         }
