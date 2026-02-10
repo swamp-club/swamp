@@ -4,6 +4,8 @@ import {
   getSwampLogger,
   getWorkflowRunLogger,
   initializeLogging,
+  restoreConsoleSink,
+  suppressConsoleSink,
 } from "./logger.ts";
 
 // Note: LogTape can only be configured once per process.
@@ -88,6 +90,27 @@ Deno.test("initializeLogging accepts logLevel option", async () => {
   // logLevel should be accepted without error (idempotent, first call wins)
   await initializeLogging({ logLevel: "warning" });
   assertEquals(true, true);
+});
+
+Deno.test("suppressConsoleSink and restoreConsoleSink", async (t) => {
+  await t.step("suppressConsoleSink does not throw", () => {
+    suppressConsoleSink();
+  });
+
+  await t.step("loggers still function while console is suppressed", () => {
+    const logger = getSwampLogger(["test", "suppressed"]);
+    // Should not throw - records go to sinks but console sink is suppressed
+    logger.info("this should be suppressed");
+  });
+
+  await t.step("restoreConsoleSink does not throw", () => {
+    restoreConsoleSink();
+  });
+
+  await t.step("loggers function after restore", () => {
+    const logger = getSwampLogger(["test", "restored"]);
+    logger.info("this should work normally");
+  });
 });
 
 Deno.test("getWorkflowRunLogger", async (t) => {

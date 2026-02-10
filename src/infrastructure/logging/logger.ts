@@ -62,6 +62,34 @@ function extractStackLines(stack: string | undefined): string | undefined {
   return stackLines.length > 0 ? stackLines.join("\n") : undefined;
 }
 
+let _consoleSuppressed = false;
+
+/**
+ * Suppresses the console sink. Log records still flow to file sinks.
+ * Used during TUI rendering to prevent LogTape output from interfering with Ink.
+ */
+export function suppressConsoleSink(): void {
+  _consoleSuppressed = true;
+}
+
+/**
+ * Restores the console sink after TUI rendering completes.
+ */
+export function restoreConsoleSink(): void {
+  _consoleSuppressed = false;
+}
+
+/**
+ * Wraps a sink so it can be suppressed via suppressConsoleSink().
+ */
+function createSuppressibleSink(innerSink: Sink): Sink {
+  return (record: LogRecord) => {
+    if (!_consoleSuppressed) {
+      innerSink(record);
+    }
+  };
+}
+
 let isInitialized = false;
 
 export async function initializeLogging(
@@ -75,9 +103,11 @@ export async function initializeLogging(
   const logLevel: LogLevel = options.logLevel ?? "info";
 
   const sinks: Record<string, Sink | (Sink & Disposable)> = {
-    console: options.noColor
-      ? getConsoleSink({ formatter: getTextFormatter() })
-      : getConsoleSink(),
+    console: createSuppressibleSink(
+      options.noColor
+        ? getConsoleSink({ formatter: getTextFormatter() })
+        : getConsoleSink(),
+    ),
     runFile: runFileSink.sink,
   };
 
@@ -106,7 +136,9 @@ export async function initializeLogging(
       inspectOptions: { colors: useColors },
     });
 
-    sinks["pretty"] = getConsoleSink({ formatter: prettyFormat });
+    sinks["pretty"] = createSuppressibleSink(
+      getConsoleSink({ formatter: prettyFormat }),
+    );
   }
 
   if (options.jsonMode) {

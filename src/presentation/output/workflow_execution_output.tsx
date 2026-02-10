@@ -19,6 +19,10 @@ import {
   type ExecutionAction,
   WorkflowExecutionUI,
 } from "./components/workflow_execution/mod.ts";
+import {
+  restoreConsoleSink,
+  suppressConsoleSink,
+} from "../../infrastructure/logging/logger.ts";
 
 /**
  * Input for the workflow execution renderer.
@@ -170,6 +174,10 @@ async function renderInteractiveExecution(
   // Enter alternate screen buffer for clean fullscreen rendering
   process.stdout.write(ENTER_ALT_SCREEN);
 
+  // Suppress console sink to prevent LogTape output from interfering with Ink.
+  // File sinks (RunFileSink) continue writing so TUI can read logs from files.
+  suppressConsoleSink();
+
   const { waitUntilExit, unmount } = render(
     <WorkflowExecutionUI
       workflow={input.workflow}
@@ -188,6 +196,7 @@ async function renderInteractiveExecution(
   const cleanup = () => {
     unmount();
     process.stdout.write(EXIT_ALT_SCREEN);
+    restoreConsoleSink();
   };
 
   // Wait a tick for dispatch to be registered
@@ -214,8 +223,9 @@ async function renderInteractiveExecution(
   // Wait for user to exit (press 'q')
   await waitUntilExit();
 
-  // Exit alternate screen buffer
+  // Exit alternate screen buffer and restore console sink
   process.stdout.write(EXIT_ALT_SCREEN);
+  restoreConsoleSink();
 
   if (!finalRunData) {
     throw new Error("Workflow execution completed without run data");
