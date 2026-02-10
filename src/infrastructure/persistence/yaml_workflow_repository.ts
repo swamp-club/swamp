@@ -68,7 +68,18 @@ export class YamlWorkflowRepository implements WorkflowRepository {
             const data = parseYaml(content) as WorkflowData;
             workflows.push(Workflow.fromData(data));
           } catch (parseError) {
-            logger.warn`Skipping broken workflow file ${path}: ${parseError}`;
+            const errorMsg = parseError instanceof Error
+              ? parseError.message
+              : String(parseError);
+            const workflowName = this.tryExtractName(path);
+
+            if (errorMsg.includes('type "shell" is no longer supported')) {
+              logger
+                .warn`Skipping workflow "${workflowName}": uses deprecated 'shell' task. Delete or update to 'type: model_method' with 'keeb/shell'. File: ${path}`;
+            } else {
+              logger
+                .warn`Skipping broken workflow "${workflowName}": ${errorMsg}. File: ${path}`;
+            }
           }
         }
       }
@@ -156,5 +167,24 @@ export class YamlWorkflowRepository implements WorkflowRepository {
 
   private getWorkflowsDir(): string {
     return swampPath(this.repoDir, SWAMP_SUBDIRS.workflows);
+  }
+
+  /**
+   * Attempts to extract workflow name from a YAML file path.
+   * Falls back to the filename if parsing fails.
+   */
+  private tryExtractName(path: string): string {
+    try {
+      const content = Deno.readTextFileSync(path);
+      const data = parseYaml(content) as { name?: string };
+      if (data?.name) {
+        return data.name;
+      }
+    } catch {
+      // Ignore - fall through to filename
+    }
+    // Extract filename without extension as fallback
+    const filename = path.split("/").pop() ?? path;
+    return filename.replace(/\.yaml$/, "");
   }
 }

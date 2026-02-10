@@ -78,6 +78,98 @@ const UserModelSchema = z.object({
 });
 
 /**
+ * Formats a Zod error into a clear, actionable message.
+ */
+function formatUserModelError(error: z.ZodError): string {
+  const issues = error.issues;
+
+  // Check for missing dataOutputSpecs
+  const dataOutputSpecsIssue = issues.find(
+    (i) => i.path[0] === "dataOutputSpecs" && i.code === "invalid_type",
+  );
+  if (dataOutputSpecsIssue) {
+    return (
+      "Missing required 'dataOutputSpecs' field. " +
+      "Add dataOutputSpecs to declare what data your model produces.\n\n" +
+      "Example:\n" +
+      "  dataOutputSpecs: {\n" +
+      "    result: {\n" +
+      '      specType: "result",\n' +
+      '      contentType: "application/json",\n' +
+      '      lifetime: { type: "persistent" },\n' +
+      '      garbageCollection: { type: "keep_latest", count: 10 },\n' +
+      "      tags: {},\n" +
+      "    },\n" +
+      "  },"
+    );
+  }
+
+  // Check for missing inputAttributesSchema
+  const inputSchemaIssue = issues.find(
+    (i) => i.path[0] === "inputAttributesSchema",
+  );
+  if (inputSchemaIssue) {
+    return (
+      "Missing or invalid 'inputAttributesSchema'. " +
+      "Add a Zod schema to validate model inputs.\n\n" +
+      "Example:\n" +
+      "  inputAttributesSchema: z.object({\n" +
+      '    name: z.string().describe("Resource name"),\n' +
+      "  }),"
+    );
+  }
+
+  // Check for missing type
+  const typeIssue = issues.find((i) => i.path[0] === "type");
+  if (typeIssue) {
+    return (
+      "Missing required 'type' field. " +
+      "Add a namespaced type identifier.\n\n" +
+      "Example:\n" +
+      '  type: "@myorg/my-model",'
+    );
+  }
+
+  // Check for missing version
+  const versionIssue = issues.find((i) => i.path[0] === "version");
+  if (versionIssue) {
+    return (
+      "Missing or invalid 'version' field. " +
+      "Use CalVer format: YYYY.MM.DD.MICRO.\n\n" +
+      "Example:\n" +
+      '  version: "2026.02.10.1",'
+    );
+  }
+
+  // Check for missing methods
+  const methodsIssue = issues.find((i) => i.path[0] === "methods");
+  if (methodsIssue) {
+    return (
+      "Missing required 'methods' field. " +
+      "Add at least one method to your model.\n\n" +
+      "Example:\n" +
+      "  methods: {\n" +
+      "    run: {\n" +
+      '      description: "Execute the model",\n' +
+      "      execute: async (definition, context) => {\n" +
+      "        // Your logic here\n" +
+      "        return { dataHandles: [] };\n" +
+      "      },\n" +
+      "    },\n" +
+      "  },"
+    );
+  }
+
+  // Fallback: format all issues concisely
+  return issues
+    .map((i) => {
+      const path = i.path.join(".");
+      return `${path}: ${i.message}`;
+    })
+    .join("; ");
+}
+
+/**
  * Schema for validating user extension exports.
  */
 const UserExtensionSchema = z.object({
@@ -154,7 +246,10 @@ export class UserModelLoader {
       try {
         const parsed = UserModelSchema.safeParse(module.model);
         if (!parsed.success) {
-          result.failed.push({ file, error: parsed.error.message });
+          result.failed.push({
+            file,
+            error: formatUserModelError(parsed.error),
+          });
           continue;
         }
 
