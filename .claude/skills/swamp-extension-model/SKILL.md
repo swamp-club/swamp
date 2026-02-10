@@ -60,32 +60,31 @@ import { z } from "npm:zod@4";
 
 const InputSchema = z.object({ message: z.string() });
 
+const OutputSchema = z.object({
+  message: z.string(),
+  timestamp: z.string(),
+});
+
 export const model = {
   type: "@myorg/my-model",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "data": {
-      specType: "data",
+  resources: {
+    "result": {
       description: "Model output data",
-      contentType: "application/json",
+      schema: OutputSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: {
     run: {
       description: "Process the input message",
       execute: async (definition, context) => {
-        const writer = context.createDataWriter!({
-          name: "result",
-          specType: "data",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("result", {
           message: definition.attributes.message.toUpperCase(),
           timestamp: new Date().toISOString(),
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -95,14 +94,15 @@ export const model = {
 
 ## Model Structure
 
-| Field                   | Required | Description                               |
-| ----------------------- | -------- | ----------------------------------------- |
-| `type`                  | Yes      | Unique identifier (`namespace/name`)      |
-| `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)       |
-| `inputAttributesSchema` | Yes      | Zod schema for input validation           |
-| `dataOutputSpecs`       | Yes      | Data output spec declarations (see below) |
-| `inputsSchema`          | No       | Zod schema for runtime inputs             |
-| `methods`               | Yes      | Object of method definitions              |
+| Field                   | Required | Description                                       |
+| ----------------------- | -------- | ------------------------------------------------- |
+| `type`                  | Yes      | Unique identifier (`namespace/name`)              |
+| `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)               |
+| `inputAttributesSchema` | Yes      | Zod schema for input validation                   |
+| `resources`             | No       | Resource output specs — JSON data with Zod schema |
+| `files`                 | No       | File output specs — binary/text with content type |
+| `inputsSchema`          | No       | Zod schema for runtime inputs                     |
+| `methods`               | Yes      | Object of method definitions                      |
 
 ### Model-Level Inputs
 
@@ -117,14 +117,15 @@ export const model = {
     serviceName: z.string(),
     target: z.string(), // Will use ${{ inputs.environment }}
   }),
-  dataOutputSpecs: {
-    "resource": {
-      specType: "resource",
+  resources: {
+    "state": {
       description: "Deployment resource state",
-      contentType: "application/json",
+      schema: z.object({
+        deployed: z.boolean(),
+        target: z.string(),
+      }),
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
     },
   },
   inputsSchema: z.object({
@@ -137,14 +138,10 @@ export const model = {
       execute: async (definition, context) => {
         // Inputs are evaluated before execution, so definition.attributes
         // contains the resolved values (e.g., target = "production")
-        const writer = context.createDataWriter!({
-          name: "resource",
-          specType: "resource",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("state", {
           deployed: true,
           target: definition.attributes.target,
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -161,45 +158,73 @@ swamp model method run my-deploy deploy --input '{"environment": "production"}' 
 The `inputsSchema` defines what runtime inputs are accepted. These inputs are
 available in CEL expressions via `${{ inputs.<name> }}`.
 
-## Data Output Specs
+## Resources & Files
 
-Every model must declare its data output specifications in `dataOutputSpecs`.
-This is the single source of truth for what spec types a model can produce. When
-`createDataWriter` is called with a `specType`, it must match a key in
-`dataOutputSpecs` — otherwise the factory fails fast with an "undeclared spec
-type" error.
+Models declare their data outputs using `resources` and/or `files` on the model
+definition. These are model-level — shared across all methods. Any method can
+write to any declared spec.
 
-Each spec entry defines defaults for `contentType`, `lifetime`,
-`garbageCollection`, and `tags`. The `createDataWriter` call only needs `name`
-and `specType`; all other fields are inherited from the spec and can be
-overridden per-write if needed.
+### Resource Specs
+
+Resources are structured JSON data validated against a Zod schema:
 
 ```typescript
-dataOutputSpecs: {
-  "data": {
-    specType: "data",
-    description: "Model output data",
-    contentType: "application/json",
+resources: {
+  "state": {
+    description: "Deployment state",
+    schema: z.object({
+      status: z.string(),
+      endpoint: z.string().url(),
+    }),
     lifetime: "infinite",
     garbageCollection: 10,
-    tags: { type: "data" },
-  },
-  "log": {
-    specType: "log",
-    description: "Execution log",
-    contentType: "text/plain",
-    lifetime: "7d",
-    garbageCollection: 5,
-    tags: { type: "log" },
   },
 },
 ```
 
+| Field               | Required | Description                                   |
+| ------------------- | -------- | --------------------------------------------- |
+| `description`       | No       | Human-readable description                    |
+| `schema`            | Yes      | Zod schema for validation                     |
+| `lifetime`          | Yes      | How long data persists                        |
+| `garbageCollection` | Yes      | Version retention policy                      |
+| `tags`              | No       | Extra tags (auto-includes `type: "resource"`) |
+
+### File Specs
+
+Files are binary or text content (including logs):
+
+```typescript
+files: {
+  "log": {
+    description: "Execution log",
+    contentType: "text/plain",
+    lifetime: "7d",
+    garbageCollection: 5,
+    streaming: true,
+  },
+  "download": {
+    description: "Downloaded file",
+    contentType: "application/octet-stream",
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+},
+```
+
+| Field               | Required | Description                               |
+| ------------------- | -------- | ----------------------------------------- |
+| `description`       | No       | Human-readable description                |
+| `contentType`       | Yes      | MIME type                                 |
+| `lifetime`          | Yes      | How long data persists                    |
+| `garbageCollection` | Yes      | Version retention policy                  |
+| `streaming`         | No       | True for line-oriented streaming          |
+| `tags`              | No       | Extra tags (auto-includes `type: "file"`) |
+
 ## Execute Function
 
-The execute function receives the definition and context. It uses the
-`DataWriter` API to write data directly to disk and returns `DataHandle`
-references.
+The execute function receives the definition and context. It uses
+`writeResource` for JSON data and `createFileWriter` for binary/text content.
 
 ```typescript
 execute: (async (definition, context) => {
@@ -209,43 +234,56 @@ execute: (async (definition, context) => {
   // context.repoDir       - Repository root path
   // context.logger        - LogTape Logger for emitting log messages
   // context.dataRepository - For advanced data operations
-  // context.createDataWriter - Factory for creating DataWriter instances
+  // context.writeResource  - Write structured JSON data (validates against schema)
+  // context.createFileWriter - Create a writer for binary/text files
   // context.inputs        - Runtime inputs (if inputsSchema defined)
 
-  // 1. Create a DataWriter — specType must match a key in dataOutputSpecs
-  const writer = context.createDataWriter!({
-    name: "my-data",
-    specType: "data", // references "data" entry in dataOutputSpecs
+  // 1. Write a resource — specName must match a key in `resources`
+  const handle = await context.writeResource!("result", {
+    value: "processed",
+    timestamp: new Date().toISOString(),
   });
 
-  // 2. Write content using one of the writer methods
-  const handle = await writer.writeText(JSON.stringify({
-    result: "processed value",
-    timestamp: new Date().toISOString(),
-  }));
-
-  // 3. Return the data handles
+  // 2. Return the data handles
   return { dataHandles: [handle] };
 });
 ```
 
-### DataWriter API
+### writeResource API
 
-Create a writer with `context.createDataWriter(options)`:
+Write structured JSON data: `context.writeResource(specName, data, overrides?)`.
 
-**SpecBasedWriterOptions:**
+The `specName` must match a key in the model's `resources`. Data is validated
+against the resource's Zod schema (warns on mismatch, doesn't throw).
 
-| Field               | Required | Description                                    |
-| ------------------- | -------- | ---------------------------------------------- |
-| `name`              | Yes      | Unique name for this data artifact             |
-| `specType`          | Yes      | Must match a key in `dataOutputSpecs`          |
-| `contentType`       | No       | Override MIME type (default from spec)         |
-| `lifetime`          | No       | Override lifetime (default from spec)          |
-| `garbageCollection` | No       | Override version retention (default from spec) |
-| `streaming`         | No       | True for line-oriented streaming data          |
-| `tags`              | No       | Override tags (default from spec)              |
+**ResourceWriteOverrides** (optional):
 
-**Writer Methods:**
+| Field               | Description                                    |
+| ------------------- | ---------------------------------------------- |
+| `name`              | Override instance name (defaults to specName)  |
+| `lifetime`          | Override lifetime (default from spec)          |
+| `garbageCollection` | Override version retention (default from spec) |
+| `tags`              | Additional tags                                |
+
+### createFileWriter API
+
+Create a file writer: `context.createFileWriter(specName, overrides?)`.
+
+The `specName` must match a key in the model's `files`. Returns a `DataWriter`
+for binary/streaming content.
+
+**FileWriterOverrides** (optional):
+
+| Field               | Description                                    |
+| ------------------- | ---------------------------------------------- |
+| `name`              | Override instance name (defaults to specName)  |
+| `contentType`       | Override MIME type (default from spec)         |
+| `lifetime`          | Override lifetime (default from spec)          |
+| `garbageCollection` | Override version retention (default from spec) |
+| `streaming`         | True for line-oriented streaming               |
+| `tags`              | Additional tags                                |
+
+**DataWriter Methods:**
 
 | Method                      | Description                                      |
 | --------------------------- | ------------------------------------------------ |
@@ -256,16 +294,13 @@ Create a writer with `context.createDataWriter(options)`:
 | `getFilePath()`             | Get the file path for direct I/O                 |
 | `finalize()`                | Finalize after using `writeLine`/`getFilePath`   |
 
-All write methods that complete a data artifact return a `Promise<DataHandle>`.
-Use `writeLine` for incremental writes, then call `finalize()` to get the
-handle.
-
-**DataHandle** (returned by write methods):
+**DataHandle** (returned by `writeResource` and writer methods):
 
 | Field      | Description                          |
 | ---------- | ------------------------------------ |
 | `name`     | Data artifact name                   |
-| `specType` | Data spec type                       |
+| `specName` | The declared spec name               |
+| `kind`     | `"resource"` or `"file"`             |
 | `dataId`   | Unique ID for this data              |
 | `version`  | Version number of this write         |
 | `size`     | Size of the written content in bytes |
@@ -288,12 +323,96 @@ The execute function returns `{ dataHandles?: DataHandle[] }`.
 
 ### Standard Tags
 
-| Tag                | Use for                          |
-| ------------------ | -------------------------------- |
-| `type: "data"`     | General model data (default)     |
-| `type: "log"`      | Execution logs (streaming, text) |
-| `type: "file"`     | File artifacts                   |
-| `type: "resource"` | External resource state          |
+Tags are auto-applied based on the spec kind:
+
+| Tag                  | Applied to | Description                              |
+| -------------------- | ---------- | ---------------------------------------- |
+| `type: "resource"`   | resources  | Auto-added to all resource data outputs  |
+| `type: "file"`       | files      | Auto-added to all file data outputs      |
+| `specName: "<name>"` | both       | Auto-added with the output spec key name |
+
+## Factory Models (Dynamic Instance Names)
+
+A single method execution can produce multiple dynamically-named resources from
+the same output spec by passing a `name` override. This is useful when a model
+discovers N items and needs to emit each as a separately-addressable resource.
+
+```typescript
+// extensions/models/subnet_scanner.ts
+import { z } from "npm:zod@4";
+
+const InputSchema = z.object({ vpcId: z.string() });
+
+const SubnetSchema = z.object({
+  subnetId: z.string(),
+  cidr: z.string(),
+  az: z.string(),
+});
+
+export const model = {
+  type: "@user/subnet-scanner",
+  version: "2026.02.10.1",
+  inputAttributesSchema: InputSchema,
+  resources: {
+    "subnet": {
+      description: "Discovered subnet",
+      schema: SubnetSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    scan: {
+      description: "Scan VPC and emit each subnet as a named resource",
+      execute: async (definition, context) => {
+        // Simulated discovery — real model would call AWS API
+        const subnets = [
+          { subnetId: "subnet-aaa", cidr: "10.0.1.0/24", az: "us-east-1a" },
+          { subnetId: "subnet-bbb", cidr: "10.0.2.0/24", az: "us-east-1b" },
+        ];
+
+        const handles = [];
+        for (const subnet of subnets) {
+          // Each call uses the same "subnet" spec but a unique instance name
+          const handle = await context.writeResource!("subnet", subnet, {
+            name: subnet.subnetId,
+          });
+          handles.push(handle);
+        }
+        return { dataHandles: handles };
+      },
+    },
+  },
+};
+```
+
+### How it works
+
+- The `name` override on `writeResource` / `createFileWriter` sets the instance
+  name. Without it, the instance name defaults to the spec name.
+- Each write produces a distinct data artifact — validation passes because
+  instance names are unique.
+- A `specName` tag is auto-injected so all instances from the same spec can be
+  discovered with `data.findBySpec("model-name", "subnet")`.
+- Individual instances are addressable in CEL as
+  `model.<name>.resource.<instanceName>.attributes.<field>`.
+
+### Discovering factory outputs in CEL
+
+```yaml
+# Get all subnets produced by the scanner
+allSubnets: ${{ data.findBySpec("my-scanner", "subnet") }}
+
+# Access a specific named instance
+subnetA: ${{ model.my-scanner.resource.subnet-aaa.attributes.cidr }}
+```
+
+### Factory vs forEach
+
+| Pattern            | Use when                                         |
+| ------------------ | ------------------------------------------------ |
+| Factory model      | One execution discovers/creates N outputs        |
+| forEach (workflow) | Run the same model N times with different inputs |
 
 ## Extending Existing Model Types
 
@@ -311,15 +430,11 @@ export const extension = {
     audit: {
       description: "Audit the echo message",
       execute: async (definition, context) => {
-        // Extensions use the target model's dataOutputSpecs
-        const writer = context.createDataWriter!({
-          name: "audit-result",
-          specType: "data",
+        // Extensions use the target model's resources/files
+        const handle = await context.writeResource!("message", {
+          message: `Audited: ${definition.name}`,
+          timestamp: new Date().toISOString(),
         });
-        const handle = await writer.writeText(JSON.stringify({
-          audited: true,
-          name: definition.name,
-        }));
         return { dataHandles: [handle] };
       },
     },
@@ -458,14 +573,16 @@ export const model = {
   type: "@user/shell",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "data": {
-      specType: "data",
+  resources: {
+    "output": {
       description: "Command output",
-      contentType: "application/json",
+      schema: z.object({
+        stdout: z.string(),
+        stderr: z.string(),
+        exitCode: z.number(),
+      }),
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: {
@@ -478,15 +595,11 @@ export const model = {
           logger: context.logger,
         });
 
-        const writer = context.createDataWriter!({
-          name: "output",
-          specType: "data",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("output", {
           stdout: result.stdout,
           stderr: result.stderr,
           exitCode: result.exitCode,
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -494,7 +607,7 @@ export const model = {
 };
 ```
 
-### Model with Multiple Outputs
+### Model with Resources and Files
 
 ```typescript
 import { z } from "npm:zod@4";
@@ -505,22 +618,21 @@ export const model = {
   type: "@user/search",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "data": {
-      specType: "data",
+  resources: {
+    "results": {
       description: "Search results",
-      contentType: "application/json",
+      schema: z.object({ results: z.array(z.string()) }),
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
+  },
+  files: {
     "log": {
-      specType: "log",
       description: "Search execution log",
       contentType: "application/json",
       lifetime: "7d",
       garbageCollection: 10,
-      tags: { type: "log" },
+      streaming: true,
     },
   },
   methods: {
@@ -529,20 +641,13 @@ export const model = {
       execute: async (definition, context) => {
         const results = ["result1", "result2"];
 
-        // Primary result data
-        const resultsWriter = context.createDataWriter!({
-          name: "results",
-          specType: "data",
+        // Primary result data (resource)
+        const resultsHandle = await context.writeResource!("results", {
+          results,
         });
-        const resultsHandle = await resultsWriter.writeText(
-          JSON.stringify({ results }),
-        );
 
-        // Execution log
-        const logWriter = context.createDataWriter!({
-          name: "search-log",
-          specType: "log",
-        });
+        // Execution log (file)
+        const logWriter = context.createFileWriter!("log");
         const logHandle = await logWriter.writeText(JSON.stringify({
           query: definition.attributes.query,
           timestamp: new Date().toISOString(),
@@ -570,14 +675,16 @@ export const model = {
   type: "@user/api-resource",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "resource": {
-      specType: "resource",
+  resources: {
+    "state": {
       description: "API resource state",
-      contentType: "application/json",
+      schema: z.object({
+        resourceId: z.string(),
+        status: z.string(),
+        createdAt: z.string(),
+      }),
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
     },
   },
   methods: {
@@ -592,15 +699,11 @@ export const model = {
         });
         const data = await response.json();
 
-        const writer = context.createDataWriter!({
-          name: "resource",
-          specType: "resource",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("state", {
           resourceId: data.id,
           status: data.status,
           createdAt: new Date().toISOString(),
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -627,22 +730,25 @@ export const model = {
   type: "@user/s3-bucket",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "resource": {
-      specType: "resource",
+  resources: {
+    "bucket": {
       description: "S3 bucket resource state",
-      contentType: "application/json",
+      schema: z.object({
+        bucketName: z.string(),
+        region: z.string(),
+        arn: z.string(),
+        createdAt: z.string(),
+      }),
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
     },
-    "data": {
-      specType: "data",
+    "objects": {
       description: "S3 object listing",
-      contentType: "application/json",
+      schema: z.object({
+        objects: z.array(z.any()),
+      }),
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: {
@@ -664,16 +770,12 @@ export const model = {
           },
         );
 
-        const writer = context.createDataWriter!({
-          name: "resource",
-          specType: "resource",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("bucket", {
           bucketName,
           region,
           arn: `arn:aws:s3:::${bucketName}`,
           createdAt: new Date().toISOString(),
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -681,13 +783,9 @@ export const model = {
       description: "List objects in the bucket",
       execute: async (definition, context) => {
         // Implement S3 ListObjects API call
-        const writer = context.createDataWriter!({
-          name: "objects",
-          specType: "data",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("objects", {
           objects: [], // Populate from API response
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -711,14 +809,10 @@ methods: {
       const env = methodInput?.environment ?? "dev";
       // Use env for deployment logic...
 
-      const writer = context.createDataWriter!({
-        name: "resource",
-        specType: "resource",
-      });
-      const handle = await writer.writeText(JSON.stringify({
+      const handle = await context.writeResource!("state", {
         environment: env,
         status: "deployed",
-      }));
+      });
       return { dataHandles: [handle] };
     },
   },

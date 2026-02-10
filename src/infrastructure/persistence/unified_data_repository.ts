@@ -17,12 +17,13 @@ import { ModelType } from "../../domain/models/model_type.ts";
 export class OwnershipValidationError extends Error {
   constructor(
     readonly dataName: string,
-    readonly existingOwnerHash: string,
-    readonly newOwnerHash: string,
+    readonly existingOwner: { ownerType: string; ownerRef: string },
+    readonly newOwner: { ownerType: string; ownerRef: string },
   ) {
     super(
       `Ownership validation failed for "${dataName}": ` +
-        `existing owner hash "${existingOwnerHash}" does not match new owner hash "${newOwnerHash}"`,
+        `existing owner "${existingOwner.ownerType}:${existingOwner.ownerRef}" ` +
+        `does not match new owner "${newOwner.ownerType}:${newOwner.ownerRef}"`,
     );
     this.name = "OwnershipValidationError";
   }
@@ -519,8 +520,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (!existing.isOwnedBy(data.ownerDefinition)) {
         throw new OwnershipValidationError(
           data.name,
-          existing.ownerDefinition.definitionHash,
-          data.ownerDefinition.definitionHash,
+          existing.ownerDefinition,
+          data.ownerDefinition,
         );
       }
     }
@@ -751,8 +752,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (!existing.isOwnedBy(data.ownerDefinition)) {
         throw new OwnershipValidationError(
           data.name,
-          existing.ownerDefinition.definitionHash,
-          data.ownerDefinition.definitionHash,
+          existing.ownerDefinition,
+          data.ownerDefinition,
         );
       }
     }
@@ -1034,22 +1035,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 /**
  * Creates an OwnerDefinition for a model method.
  */
-export async function createModelMethodOwner(
+export function createModelMethodOwner(
   modelType: string,
   methodName: string,
   workflowId?: string,
   workflowRunId?: string,
-): Promise<OwnerDefinition> {
-  const ownerRef = `${modelType}:${methodName}`;
-  const { computeDefinitionHash } = await import(
-    "../../domain/data/data_metadata.ts"
-  );
-  const definitionHash = await computeDefinitionHash("model-method", ownerRef);
-
+): OwnerDefinition {
   return {
-    definitionHash,
     ownerType: "model-method",
-    ownerRef,
+    ownerRef: `${modelType}:${methodName}`,
     workflowId,
     workflowRunId,
   };
@@ -1058,22 +1052,15 @@ export async function createModelMethodOwner(
 /**
  * Creates an OwnerDefinition for a workflow step.
  */
-export async function createWorkflowStepOwner(
+export function createWorkflowStepOwner(
   workflowId: string,
   jobName: string,
   stepName: string,
   workflowRunId?: string,
-): Promise<OwnerDefinition> {
-  const ownerRef = `${workflowId}:${jobName}:${stepName}`;
-  const { computeDefinitionHash } = await import(
-    "../../domain/data/data_metadata.ts"
-  );
-  const definitionHash = await computeDefinitionHash("workflow-step", ownerRef);
-
+): OwnerDefinition {
   return {
-    definitionHash,
     ownerType: "workflow-step",
-    ownerRef,
+    ownerRef: `${workflowId}:${jobName}:${stepName}`,
     workflowId,
     workflowRunId,
   };
@@ -1082,16 +1069,10 @@ export async function createWorkflowStepOwner(
 /**
  * Creates an OwnerDefinition for manual data creation.
  */
-export async function createManualOwner(
+export function createManualOwner(
   description: string,
-): Promise<OwnerDefinition> {
-  const { computeDefinitionHash } = await import(
-    "../../domain/data/data_metadata.ts"
-  );
-  const definitionHash = await computeDefinitionHash("manual", description);
-
+): OwnerDefinition {
   return {
-    definitionHash,
     ownerType: "manual",
     ownerRef: description,
   };

@@ -11,7 +11,6 @@ import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir, existsSync } from "@std/fs";
 import { Data } from "../src/domain/data/data.ts";
-import { computeDefinitionHash } from "../src/domain/data/data_metadata.ts";
 import type { OwnerDefinition } from "../src/domain/data/data_metadata.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -33,10 +32,8 @@ async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "definitions"));
 }
 
-async function createOwner(ref: string): Promise<OwnerDefinition> {
-  const definitionHash = await computeDefinitionHash("model-method", ref);
+function createOwner(ref: string): OwnerDefinition {
   return {
-    definitionHash,
     ownerType: "model-method",
     ownerRef: ref,
   };
@@ -52,7 +49,7 @@ Deno.test("Data Versioning: write multiple versions of same data", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:versioning");
+    const owner = createOwner("test/model:versioning");
 
     const data = Data.create({
       name: "versioned-state",
@@ -102,7 +99,7 @@ Deno.test("Data Versioning: retrieve specific versions", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:retrieve");
+    const owner = createOwner("test/model:retrieve");
 
     const data = Data.create({
       name: "retrieve-test",
@@ -150,7 +147,7 @@ Deno.test("Data Versioning: latest symlink points to newest version", async () =
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:symlink");
+    const owner = createOwner("test/model:symlink");
 
     const data = Data.create({
       name: "symlink-test",
@@ -203,7 +200,7 @@ Deno.test("Data Versioning: garbage collection by version count", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:gc-count");
+    const owner = createOwner("test/model:gc-count");
 
     // Keep only 3 most recent versions
     const data = Data.create({
@@ -254,7 +251,7 @@ Deno.test("Data Versioning: garbage collection preserves minimum versions", asyn
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:gc-preserve");
+    const owner = createOwner("test/model:gc-preserve");
 
     // Keep 5 versions
     const data = Data.create({
@@ -292,7 +289,7 @@ Deno.test("Data Versioning: multiple data items with different GC policies", asy
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:multi-gc");
+    const owner = createOwner("test/model:multi-gc");
 
     // Data item with 2 version retention
     const data1 = Data.create({
@@ -363,7 +360,7 @@ Deno.test("Data Versioning: access specific version via data.version()", async (
     });
     await definitionRepo.save(type, definition);
 
-    const owner = await createOwner("test/model:version-access");
+    const owner = createOwner("test/model:version-access");
 
     // Create versioned data
     const data = Data.create({
@@ -434,7 +431,7 @@ Deno.test("Data Versioning: listVersions returns all versions in order", async (
     });
     await definitionRepo.save(type, definition);
 
-    const owner = await createOwner("test/model:list-versions");
+    const owner = createOwner("test/model:list-versions");
 
     const data = Data.create({
       name: "history",
@@ -482,7 +479,7 @@ Deno.test("Data Versioning: each version has independent content", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:content-integrity");
+    const owner = createOwner("test/model:content-integrity");
 
     const data = Data.create({
       name: "independent-content",
@@ -527,7 +524,7 @@ Deno.test("Data Versioning: version metadata is preserved", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:metadata");
+    const owner = createOwner("test/model:metadata");
 
     const data = Data.create({
       name: "metadata-test",
@@ -563,7 +560,7 @@ Deno.test("Data Versioning: non-existent version returns null", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:nonexistent");
+    const owner = createOwner("test/model:nonexistent");
 
     const data = Data.create({
       name: "sparse-versions",
@@ -597,7 +594,7 @@ Deno.test("Data Versioning: delete specific version", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:delete-version");
+    const owner = createOwner("test/model:delete-version");
 
     const data = Data.create({
       name: "delete-test",
@@ -639,7 +636,7 @@ Deno.test("Data Versioning: delete all versions", async () => {
     const repo = new FileSystemUnifiedDataRepository(repoDir);
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
-    const owner = await createOwner("test/model:delete-all");
+    const owner = createOwner("test/model:delete-all");
 
     const data = Data.create({
       name: "delete-all-test",

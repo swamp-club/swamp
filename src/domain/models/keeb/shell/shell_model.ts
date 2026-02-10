@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import {
-  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -114,19 +113,9 @@ async function executeCommand(
   }
   const outputLogContent = outputLogParts.join("\n");
 
-  const resultWriter = context.createDataWriter!({
-    name: `${definition.name}-result`,
-    specType: "result",
-  });
+  const resultHandle = await context.writeResource!("result", resultAttributes);
 
-  const logWriter = context.createDataWriter!({
-    name: `${definition.name}-output`,
-    specType: "log",
-  });
-
-  const resultHandle = await resultWriter.writeText(
-    JSON.stringify(resultAttributes),
-  );
+  const logWriter = context.createFileWriter!("log");
   const logHandle = await logWriter.writeText(outputLogContent);
 
   return { dataHandles: [resultHandle, logHandle] };
@@ -146,24 +135,22 @@ export const shellModel: ModelDefinition<
   type: SHELL_MODEL_TYPE,
   version: "2026.02.09.1",
   inputAttributesSchema: ShellInputAttributesSchema,
-  dataOutputSpecs: {
+  resources: {
     "result": {
-      specType: DataSpecType.create("result"),
       description:
         "Shell command execution result (exit code, timing, command)",
-      contentType: "application/json",
+      schema: ShellDataAttributesSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
+  },
+  files: {
     "log": {
-      specType: DataSpecType.create("log"),
       description: "Shell command output (stdout and stderr)",
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
       streaming: true,
-      tags: { type: "log" },
     },
   },
   methods: {

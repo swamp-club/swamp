@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
-  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -151,19 +150,9 @@ async function executeGet(
       success: true,
     };
 
-    const resultWriter = context.createDataWriter!({
-      name: `${definition.name}-result`,
-      specType: "result",
-    });
+    const resultHandle = await context.writeResource!("result", dataAttributes);
 
-    const logWriter = context.createDataWriter!({
-      name: `${definition.name}-audit-log`,
-      specType: "log",
-    });
-
-    const resultHandle = await resultWriter.writeText(
-      JSON.stringify(dataAttributes),
-    );
+    const logWriter = context.createFileWriter!("log");
     const logHandle = await logWriter.writeText(logLines.join("\n"));
 
     return { dataHandles: [resultHandle, logHandle] };
@@ -226,19 +215,9 @@ async function executePut(
       success: true,
     };
 
-    const resultWriter = context.createDataWriter!({
-      name: `${definition.name}-result`,
-      specType: "result",
-    });
+    const resultHandle = await context.writeResource!("result", dataAttributes);
 
-    const logWriter = context.createDataWriter!({
-      name: `${definition.name}-audit-log`,
-      specType: "log",
-    });
-
-    const resultHandle = await resultWriter.writeText(
-      JSON.stringify(dataAttributes),
-    );
+    const logWriter = context.createFileWriter!("log");
     const logHandle = await logWriter.writeText(logLines.join("\n"));
 
     return { dataHandles: [resultHandle, logHandle] };
@@ -271,23 +250,21 @@ export const vaultModel: ModelDefinition<
   type: VAULT_MODEL_TYPE,
   version: "2026.02.09.1",
   inputAttributesSchema: VaultInputAttributesSchema,
-  dataOutputSpecs: {
+  resources: {
     "result": {
-      specType: DataSpecType.create("result"),
       description: "Vault operation result (success/failure, metadata)",
-      contentType: "application/json",
+      schema: VaultDataAttributesSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
+  },
+  files: {
     "log": {
-      specType: DataSpecType.create("log"),
       description: "Vault operation audit log",
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 10,
       streaming: true,
-      tags: { type: "log" },
     },
   },
   methods: {

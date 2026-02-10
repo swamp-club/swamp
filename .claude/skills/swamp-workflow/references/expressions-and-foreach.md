@@ -100,9 +100,9 @@ Model inputs can contain CEL expressions using `${{ <expression> }}` syntax.
 
 ### Automatic Dependency Resolution
 
-Expressions that reference `model.<name>.resource.attributes.*` create implicit
-step dependencies. The workflow engine automatically ensures dependent steps run
-in the correct order.
+Expressions that reference `model.<name>.resource.<specName>.attributes.*`
+create implicit step dependencies. The workflow engine automatically ensures
+dependent steps run in the correct order.
 
 ```yaml
 jobs:
@@ -118,7 +118,7 @@ jobs:
           type: model_method
           modelIdOrName: vpc-input
           methodName: create
-# If subnet-input has: vpcId: ${{ model.vpc-input.resource.attributes.vpcId }}
+# If subnet-input has: vpcId: ${{ model.vpc-input.resource.resource.attributes.vpcId }}
 # create-vpc runs first due to implicit dependency
 ```
 
@@ -141,11 +141,12 @@ includes a `dataArtifacts` array with references to created data.
 
 Data created during workflow execution receives automatic tags:
 
-| Tag        | Value               | Description                      |
-| ---------- | ------------------- | -------------------------------- |
-| `type`     | `step-output`       | Identifies workflow-created data |
-| `workflow` | `{workflow-name}`   | Source workflow name             |
-| `step`     | `{job-name}.{step}` | Full step path                   |
+| Tag        | Value               | Description                       |
+| ---------- | ------------------- | --------------------------------- |
+| `type`     | `step-output`       | Identifies workflow-created data  |
+| `workflow` | `{workflow-name}`   | Source workflow name              |
+| `step`     | `{job-name}.{step}` | Full step path                    |
+| `specName` | `{spec-key}`        | Output spec name for `findBySpec` |
 
 ### Querying Workflow Data
 
@@ -157,4 +158,7 @@ workflowOutputs: ${{ data.findByTag("workflow", "my-deploy") }}
 
 # Find data from a specific step
 stepData: ${{ data.findByTag("step", "build.compile") }}
+
+# Find all instances from a factory model's output spec
+subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 ```
