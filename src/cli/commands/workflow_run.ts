@@ -1,5 +1,4 @@
 import { Command } from "@cliffy/command";
-import { stringify as stringifyYaml } from "@std/yaml";
 import {
   type JobRunData,
   renderWorkflowRun,
@@ -7,7 +6,6 @@ import {
   type StepRunData,
   type WorkflowRunData,
 } from "../../presentation/output/workflow_run_output.ts";
-import { renderWorkflowExecution } from "../../presentation/output/workflow_execution_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -20,10 +18,7 @@ import type {
   StepRun,
   WorkflowRun,
 } from "../../domain/workflows/workflow_run.ts";
-import {
-  createWorkflowId,
-  createWorkflowRunId,
-} from "../../domain/workflows/workflow_id.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
@@ -143,7 +138,6 @@ export const workflowRunCommand = new Command()
   .description("Execute a workflow")
   .arguments("<workflow_id_or_name:workflow_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .option("--tui", "Use interactive TUI dashboard", { default: false })
   .option(
     "--last-evaluated",
     "Skip CEL evaluation, use previously evaluated workflow and definitions",
@@ -169,7 +163,6 @@ export const workflowRunCommand = new Command()
       repoDir,
     );
 
-    const tui = options.tui as boolean;
     const lastEvaluated = options.lastEvaluated as boolean;
 
     // Parse input values
@@ -209,7 +202,7 @@ export const workflowRunCommand = new Command()
         Object.assign(inputs, inputsWithDefaults);
       }
 
-      if (ctx.outputMode === "json" && !tui) {
+      if (ctx.outputMode === "json") {
         // JSON mode: execute with debug logging, output final result
         let capturedImplicitDeps: ImplicitDependencyMap | undefined;
 
@@ -248,40 +241,6 @@ export const workflowRunCommand = new Command()
 
         // Exit with code 1 if workflow failed
         if (run.status === "failed") {
-          Deno.exit(1);
-        }
-      } else if (tui) {
-        // TUI mode: use the live Ink dashboard
-        const workflowData = workflow.toData();
-        // Remove undefined values since YAML can't stringify them
-        const cleanData = JSON.parse(JSON.stringify(workflowData));
-        const workflowYaml = stringifyYaml(
-          cleanData as Record<string, unknown>,
-        );
-
-        const executeWorkflow = async (
-          progress: ExecutionProgressCallback,
-        ): Promise<WorkflowRun> => {
-          return await executionService.execute(workflow.name, progress, {
-            lastEvaluated,
-            inputs,
-          });
-        };
-
-        const data = await renderWorkflowExecution(
-          { workflow: cleanData, workflowYaml },
-          executeWorkflow,
-          ctx.outputMode,
-        );
-
-        // Get the path for the run
-        const path = runRepo.getPath(workflow.id, createWorkflowRunId(data.id));
-        data.path = path;
-
-        ctx.logger.debug`Workflow run completed: status=${data.status}`;
-
-        // Exit with code 1 if workflow failed
-        if (data.status === "failed") {
           Deno.exit(1);
         }
       } else {

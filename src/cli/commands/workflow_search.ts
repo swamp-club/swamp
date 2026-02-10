@@ -1,5 +1,4 @@
 import { Command } from "@cliffy/command";
-import { stringify as stringifyYaml } from "@std/yaml";
 import {
   renderWorkflowSearch,
   type WorkflowSearchData,
@@ -11,19 +10,13 @@ import {
 } from "../../presentation/output/workflow_get_output.ts";
 import { renderWorkflowActionSelect } from "../../presentation/output/workflow_action_select_output.tsx";
 import { renderInputFileSelect } from "../../presentation/output/input_file_select_output.tsx";
-import { renderWorkflowExecution } from "../../presentation/output/workflow_execution_output.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
-import {
-  type ExecutionProgressCallback,
-  WorkflowExecutionService,
-} from "../../domain/workflows/execution_service.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import { createWorkflowRunId } from "../../domain/workflows/workflow_id.ts";
+import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
 import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
@@ -227,49 +220,16 @@ async function executeWorkflowFromSearch(
     repoDir,
   );
 
-  const tui = options.tui as boolean;
+  const progress = createLogProgressCallback(workflow.name);
+  const run = await executionService.execute(workflow.name, progress, {
+    enableStepLogging: true,
+    inputs,
+  });
 
-  if (tui) {
-    // TUI mode: use the live Ink dashboard
-    const workflowData = workflow.toData();
-    const cleanData = JSON.parse(JSON.stringify(workflowData));
-    const workflowYaml = stringifyYaml(cleanData as Record<string, unknown>);
+  ctx.logger.debug`Workflow run completed: status=${run.status}`;
 
-    const executeWorkflow = async (
-      progress: ExecutionProgressCallback,
-    ): Promise<WorkflowRun> => {
-      return await executionService.execute(workflow.name, progress, {
-        inputs,
-      });
-    };
-
-    const data = await renderWorkflowExecution(
-      { workflow: cleanData, workflowYaml },
-      executeWorkflow,
-      ctx.outputMode,
-    );
-
-    const path = runRepo.getPath(workflow.id, createWorkflowRunId(data.id));
-    data.path = path;
-
-    ctx.logger.debug`Workflow run completed: status=${data.status}`;
-
-    if (data.status === "failed") {
-      Deno.exit(1);
-    }
-  } else {
-    // Default: LogTape-based output with step logging
-    const progress = createLogProgressCallback(workflow.name);
-    const run = await executionService.execute(workflow.name, progress, {
-      enableStepLogging: true,
-      inputs,
-    });
-
-    ctx.logger.debug`Workflow run completed: status=${run.status}`;
-
-    if (run.status === "failed") {
-      Deno.exit(1);
-    }
+  if (run.status === "failed") {
+    Deno.exit(1);
   }
 }
 
@@ -278,9 +238,6 @@ export const workflowSearchCommand = new Command()
   .description("Search for workflows")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .option("--tui", "Use interactive TUI dashboard when running", {
-    default: false,
-  })
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
     ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
