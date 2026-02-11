@@ -1,0 +1,30 @@
+Swamp Extension and Definition Exception
+
+As an additional permission under Section 7 of the GNU Affero General
+Public License version 3 ("AGPLv3"), the copyright holders of Swamp
+grant you permission to develop, distribute, and license independent
+works that are designed to operate with an unmodified version of 
+Swamp through its officially documented extension interfaces
+("Extensions"), including but not limited to plugins, connectors,
+adapters, integrations, workflow definitions, configuration artifacts,
+and model definitions, under terms of your choice, including
+proprietary terms, without such works being subject to the
+requirements of the AGPLv3.
+
+This exception applies only to works that:
+
+1. Operate solely through Swamp’s published extension or integration
+   APIs;
+
+2. Do not incorporate, copy, or modify Swamp’s source code; and
+
+3. Do not embed, statically incorporate, or repackage Swamp as part
+   of a larger program.
+
+Modifications to Swamp itself, or works that combine Swamp with other
+code in a manner that creates a derivative work of Swamp beyond the
+permitted extension interfaces, remain subject to the terms of the
+AGPLv3.
+
+This exception does not grant permission to distribute Swamp itself
+under terms other than the AGPLv3.
