@@ -156,7 +156,7 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
         ctx: MethodContext,
       ) => {
         // This should throw because "undeclared" is not in echo model's resources
-        const handle = await ctx.writeResource!("undeclared", {
+        const handle = await ctx.writeResource!("undeclared", "undeclared", {
           test: "data",
         });
         return { dataHandles: [handle] };
@@ -227,7 +227,7 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
         ctx: MethodContext,
       ) => {
         // This should throw because echo model has no file specs
-        const writer = ctx.createFileWriter!("undeclared");
+        const writer = ctx.createFileWriter!("undeclared", "undeclared");
         const handle = await writer.writeText("test");
         return { dataHandles: [handle] };
       },

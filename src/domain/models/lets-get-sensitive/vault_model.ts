@@ -173,9 +173,13 @@ async function executeGet(
       success: true,
     };
 
-    const resultHandle = await context.writeResource!("result", dataAttributes);
+    const resultHandle = await context.writeResource!(
+      "result",
+      "result",
+      dataAttributes,
+    );
 
-    const logWriter = context.createFileWriter!("log");
+    const logWriter = context.createFileWriter!("log", "log");
     const logHandle = await logWriter.writeText(logLines.join("\n"));
 
     return { dataHandles: [resultHandle, logHandle] };
@@ -236,9 +240,13 @@ async function executePut(
       success: true,
     };
 
-    const resultHandle = await context.writeResource!("result", dataAttributes);
+    const resultHandle = await context.writeResource!(
+      "result",
+      "result",
+      dataAttributes,
+    );
 
-    const logWriter = context.createFileWriter!("log");
+    const logWriter = context.createFileWriter!("log", "log");
     const logHandle = await logWriter.writeText(logLines.join("\n"));
 
     return { dataHandles: [resultHandle, logHandle] };

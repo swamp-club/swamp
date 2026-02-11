@@ -239,16 +239,22 @@ Model inputs support CEL expressions using `${{ <expression> }}` syntax.
 
 ### Reference Types
 
-| Reference                                                | Description                       |
-| -------------------------------------------------------- | --------------------------------- |
-| `inputs.<name>`                                          | Runtime input value               |
-| `model.<name>.input.globalArguments.<field>`             | Another model's global argument   |
-| `model.<name>.resource.<specName>.attributes.<field>`    | A model's resource data field     |
-| `model.<name>.file.<specName>.{path\|size\|contentType}` | A model's file metadata           |
-| `file.contents("<modelName>", "<specName>")`             | Lazy-load file contents from disk |
-| `self.name`                                              | This model's name                 |
-| `self.version`                                           | This model's version              |
-| `self.globalArguments.<field>`                           | This model's own global argument  |
+| Reference                                                               | Description                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------- |
+| `inputs.<name>`                                                         | Runtime input value                                     |
+| `model.<name>.input.globalArguments.<field>`                            | Another model's global argument                         |
+| `model.<name>.resource.<specName>.<instanceName>.attributes.<field>`    | A model's resource data field (spec → instance → field) |
+| `model.<name>.file.<specName>.<instanceName>.{path\|size\|contentType}` | A model's file metadata (spec → instance → field)       |
+| `file.contents("<modelName>", "<specName>")`                            | Lazy-load file contents from disk                       |
+| `self.name`                                                             | This model's name                                       |
+| `self.version`                                                          | This model's version                                    |
+| `self.globalArguments.<field>`                                          | This model's own global argument                        |
+
+> **Instance name convention:** For single-instance resources (most models),
+> `instanceName` equals `specName`. For example, a model `my-echo` with resource
+> spec `message` is accessed as
+> `model.my-echo.resource.message.message.attributes.field`. Factory models use
+> distinct instance names — see the `swamp-extension-model` skill for details.
 
 ### CEL Operations
 
@@ -308,7 +314,7 @@ name: my-subnet
 version: 1
 tags: {}
 globalArguments:
-  vpcId: ${{ model.my-vpc.resource.resource.attributes.VpcId }}
+  vpcId: ${{ model.my-vpc.resource.state.state.attributes.VpcId }}
   cidrBlock: "10.0.1.0/24"
   tags:
     Name: ${{ self.name + "-subnet" }}

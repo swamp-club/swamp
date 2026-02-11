@@ -287,14 +287,14 @@ Use CEL expressions to access model data in workflows and model inputs:
 
 ```yaml
 # Access latest resource data via dot notation
-value: ${{ model.my-model.resource.output.attributes.result }}
+value: ${{ model.my-model.resource.output.output.attributes.result }}
 
 # Access specific version
 value: ${{ data.version("my-model", "output", 2).attributes.result }}
 
 # Access file metadata
-path: ${{ model.my-model.file.content.path }}
-size: ${{ model.my-model.file.content.size }}
+path: ${{ model.my-model.file.content.content.path }}
+size: ${{ model.my-model.file.content.content.size }}
 
 # Lazy-load file contents
 body: ${{ file.contents("my-model", "content") }}
@@ -347,9 +347,10 @@ subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 
 **Key rules:**
 
-- `model.<name>.resource.<specName>` accesses the latest version of a resource
-- `model.<name>.file.<specName>` accesses file metadata (path, size,
-  contentType)
+- `model.<name>.resource.<specName>.<instanceName>` accesses the latest version
+  of a resource
+- `model.<name>.file.<specName>.<instanceName>` accesses file metadata (path,
+  size, contentType)
 - Use `data.version()` function for specific versions
 - Use `data.findByTag()` to query across models
 - Resource/file expressions create implicit step dependencies in workflows

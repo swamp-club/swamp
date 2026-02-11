@@ -173,7 +173,7 @@ export abstract class AWSCloudControlModel<
     attributes: Record<string, unknown>,
     context: MethodContext,
   ): Promise<DataHandle> {
-    return await context.writeResource!("resource", attributes);
+    return await context.writeResource!("resource", "resource", attributes);
   }
 
   /**

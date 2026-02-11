@@ -109,9 +109,13 @@ async function executeCommand(
   }
   const outputLogContent = outputLogParts.join("\n");
 
-  const resultHandle = await context.writeResource!("result", resultAttributes);
+  const resultHandle = await context.writeResource!(
+    "result",
+    "result",
+    resultAttributes,
+  );
 
-  const logWriter = context.createFileWriter!("log");
+  const logWriter = context.createFileWriter!("log", "log");
   const logHandle = await logWriter.writeText(outputLogContent);
 
   return { dataHandles: [resultHandle, logHandle] };

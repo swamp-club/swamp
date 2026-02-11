@@ -431,7 +431,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         error:
           `Invalid expression "${celExpression}" at "${path}". Missing "model." prefix and path structure`,
         suggestion:
-          `Use: model.${modelName}.resource.attributes.${propertyPath} or model.${modelName}.definition.globalArguments.${propertyPath}`,
+          `Use: model.${modelName}.resource.<specName>.<instanceName>.attributes.${propertyPath} or model.${modelName}.definition.globalArguments.${propertyPath}`,
       };
     }
 
@@ -443,7 +443,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         error:
           `Invalid expression "${celExpression}" at "${path}". Expression must reference model, self, or env`,
         suggestion:
-          `Use: model.${celExpression}.resource.attributes.<property>, self.globalArguments.<property>, or env.<VARIABLE_NAME>`,
+          `Use: model.${celExpression}.resource.<specName>.<instanceName>.attributes.<property>, self.globalArguments.<property>, or env.<VARIABLE_NAME>`,
       };
     }
 
@@ -453,7 +453,7 @@ export class DefaultModelValidationService implements ModelValidationService {
       error:
         `Expression "${celExpression}" at "${path}" does not contain valid model, self, or env references`,
       suggestion:
-        "Expressions should use: model.<name>.resource.attributes.<property>, model.<name>.definition.globalArguments.<property>, self.globalArguments.<property>, or env.<VARIABLE_NAME>",
+        "Expressions should use: model.<name>.resource.<specName>.<instanceName>.attributes.<property>, model.<name>.definition.globalArguments.<property>, self.globalArguments.<property>, or env.<VARIABLE_NAME>",
     };
   }
 
@@ -497,8 +497,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // For resource namespace: model.X.resource.<specName>.<field>
-    // path[0] is the specName, path[1+] are DataRecord fields
+    // For resource namespace: model.X.resource.<specName>.<instanceName>.<field>
+    // path[0] is the specName, path[1] is the instanceName (any value valid), path[2+] are DataRecord fields
     if (ref.type === "resource") {
       const specName = firstSegment;
       const availableSpecs = targetDefinition.resources
@@ -514,9 +514,10 @@ export class DefaultModelValidationService implements ModelValidationService {
         };
       }
 
-      // Validate DataRecord fields after specName
-      if (ref.path.length > 1) {
-        const recordField = ref.path[1];
+      // path[1] is the instanceName — skip validation (any name is valid)
+      // Validate DataRecord fields after instanceName
+      if (ref.path.length > 2) {
+        const recordField = ref.path[2];
         const validRecordFields = [
           "id",
           "name",
@@ -537,11 +538,11 @@ export class DefaultModelValidationService implements ModelValidationService {
 
         // If accessing .attributes.<field>, validate against the resource schema
         if (
-          recordField === "attributes" && ref.path.length > 2 &&
+          recordField === "attributes" && ref.path.length > 3 &&
           targetDefinition.resources?.[specName]
         ) {
           const schema = targetDefinition.resources[specName].schema;
-          const pathToValidate = ref.path.slice(2);
+          const pathToValidate = ref.path.slice(3);
           const validationResult = validateSchemaPath(
             schema,
             pathToValidate,
@@ -559,8 +560,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // For file namespace: model.X.file.<specName>.<field>
-    // path[0] is the specName, path[1+] are FileDataRecord fields
+    // For file namespace: model.X.file.<specName>.<instanceName>.<field>
+    // path[0] is the specName, path[1] is the instanceName (any value valid), path[2+] are FileDataRecord fields
     if (ref.type === "file") {
       const specName = firstSegment;
       const availableSpecs = targetDefinition.files
@@ -575,8 +576,9 @@ export class DefaultModelValidationService implements ModelValidationService {
         };
       }
 
-      if (ref.path.length > 1) {
-        const fileField = ref.path[1];
+      // path[1] is the instanceName — skip validation (any name is valid)
+      if (ref.path.length > 2) {
+        const fileField = ref.path[2];
         const validFileFields = [
           "id",
           "version",

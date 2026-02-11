@@ -101,7 +101,7 @@ export const model = {
       arguments: z.object({}),
       execute: async (args, context) => {
         const globalArgs = context.globalArgs;
-        const handle = await context.writeResource("result", {
+        const handle = await context.writeResource("result", "result", {
           sent: true,
           content: globalArgs.content,
           priority: globalArgs.priority,
@@ -256,12 +256,12 @@ artifacts. Data is written directly to disk and the method returns lightweight
 
 ### Writing Resources
 
-Use `context.writeResource(specName, data, overrides?)` to write structured
+Use `context.writeResource(specName, name, data, overrides?)` to write structured
 resource data. Returns a `Promise<DataHandle>`.
 
 ```typescript
 execute: async (args, context) => {
-  const handle = await context.writeResource("result", {
+  const handle = await context.writeResource("result", "result", {
     result: "processed value",
   });
   return { dataHandles: [handle] };
@@ -270,12 +270,12 @@ execute: async (args, context) => {
 
 ### Writing Files
 
-Use `context.createFileWriter(specName, overrides?)` to get a `DataWriter` for
+Use `context.createFileWriter(specName, name, overrides?)` to get a `DataWriter` for
 file output.
 
 ```typescript
 execute: async (args, context) => {
-  const writer = context.createFileWriter("execution-log");
+  const writer = context.createFileWriter("execution-log", "execution-log");
   const handle = await writer.writeText("Step 1 completed\nStep 2 completed\n");
   return { dataHandles: [handle] };
 };

@@ -59,10 +59,10 @@ export interface ModelData {
     globalArguments: Record<string, unknown>;
     inputs?: InputsSchema;
   };
-  /** Resource data: specName → DataRecord (includes id, version, attributes, etc.) */
-  resource?: Record<string, DataRecord>;
-  /** File metadata: specName → file metadata (path, size, contentType, etc.) */
-  file?: Record<string, FileDataRecord>;
+  /** Resource data: specName → instanceName → DataRecord (includes id, version, attributes, etc.) */
+  resource?: Record<string, Record<string, DataRecord>>;
+  /** File metadata: specName → instanceName → file metadata (path, size, contentType, etc.) */
+  file?: Record<string, Record<string, FileDataRecord>>;
   execution?: {
     id: string;
     methodName: string;
@@ -489,12 +489,18 @@ export class ModelResolver {
             const dataType = latestRecord.tags["type"];
 
             if (dataType === "resource") {
-              // Populate resource context: specName → full DataRecord
+              // Populate resource context: specName → instanceName → full DataRecord
               if (!modelData.resource) modelData.resource = {};
-              modelData.resource[dataName] = latestRecord;
+              const specName = latestRecord.tags["specName"] ?? dataName;
+              if (!modelData.resource[specName]) {
+                modelData.resource[specName] = {};
+              }
+              modelData.resource[specName][dataName] = latestRecord;
             } else if (dataType === "file") {
-              // Populate file context: specName → file metadata
+              // Populate file context: specName → instanceName → file metadata
               if (!modelData.file) modelData.file = {};
+              const specName = latestRecord.tags["specName"] ?? dataName;
+              if (!modelData.file[specName]) modelData.file[specName] = {};
               const contentPath = this.dataRepo.getContentPath(
                 modelType,
                 definition.id,
@@ -503,7 +509,7 @@ export class ModelResolver {
               );
               try {
                 const stat = Deno.statSync(contentPath);
-                modelData.file[dataName] = {
+                modelData.file[specName][dataName] = {
                   id: latestRecord.id as string,
                   version: latestRecord.version as number,
                   createdAt: latestRecord.createdAt as string,
@@ -549,7 +555,11 @@ export class ModelResolver {
       contents: (modelName: string, specName: string): string | null => {
         const modelData = context.model[modelName];
         if (!modelData?.file?.[specName]) return null;
-        const filePath = modelData.file[specName].path;
+        // Get the first instance under the spec
+        const instances = modelData.file[specName];
+        const firstKey = Object.keys(instances)[0];
+        if (!firstKey) return null;
+        const filePath = instances[firstKey].path;
         try {
           return Deno.readTextFileSync(filePath);
         } catch {

@@ -53,7 +53,11 @@ async function executeWrite(
     timestamp: new Date().toISOString(),
   };
 
-  const handle = await context.writeResource!("message", dataAttributes);
+  const handle = await context.writeResource!(
+    "message",
+    "message",
+    dataAttributes,
+  );
 
   return { dataHandles: [handle] };
 }

@@ -118,7 +118,7 @@ async function readLogs(
 
   const logLines = result.stdout.split("\n").filter((line) => line.length > 0);
 
-  const writer = context.createFileWriter!("log");
+  const writer = context.createFileWriter!("log", "log");
 
   const handle = await writer.writeText(logLines.join("\n"));
 

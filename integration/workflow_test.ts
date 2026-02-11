@@ -743,7 +743,7 @@ Deno.test("CLI: workflow run fails when model has invalid expression syntax", as
       methods: {
         write: {
           arguments: {
-            // Invalid: should be ${{ model.some-vpc.resource.attributes.VpcId }}
+            // Invalid: should be ${{ model.some-vpc.resource.<specName>.<instanceName>.attributes.VpcId }}
             message: "${{some-vpc.VpcId}}",
           },
         },

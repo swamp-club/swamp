@@ -170,10 +170,13 @@ async function executeDownload(
 
   const metadataHandle = await context.writeResource!(
     "metadata",
+    "metadata",
     metadataAttributes,
   );
 
-  const fileWriter = context.createFileWriter!("content", { contentType });
+  const fileWriter = context.createFileWriter!("content", "content", {
+    contentType,
+  });
   const fileHandle = await fileWriter.writeAll(content);
 
   return { dataHandles: [metadataHandle, fileHandle] };

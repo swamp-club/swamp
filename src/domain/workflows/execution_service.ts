@@ -417,9 +417,9 @@ export class DefaultStepExecutor implements StepExecutor {
     }
     await outputRepo.save(modelType, task.methodName, output);
 
-    // Track data outputs for context refresh
-    const resources: Record<string, DataRecord> = {};
-    const files: Record<string, FileDataRecord> = {};
+    // Track data outputs for context refresh (specName → instanceName → record)
+    const resources: Record<string, Record<string, DataRecord>> = {};
+    const files: Record<string, Record<string, FileDataRecord>> = {};
 
     try {
       runLogger.info("Executing method {method}", {
@@ -498,7 +498,7 @@ export class DefaultStepExecutor implements StepExecutor {
           );
           runLogger.info("Data saved to {path}", { path: dataPath });
 
-          // Build context data from handles
+          // Build context data from handles (nested under specName → instanceName)
           if (handle.kind === "resource") {
             let attributes: Record<string, unknown> = {};
             if (handle.metadata.contentType === "application/json") {
@@ -517,7 +517,10 @@ export class DefaultStepExecutor implements StepExecutor {
                 // Not valid JSON, skip attributes
               }
             }
-            resources[handle.name] = {
+            if (!resources[handle.specName]) {
+              resources[handle.specName] = {};
+            }
+            resources[handle.specName][handle.name] = {
               id: handle.dataId,
               name: handle.name,
               version: handle.version,
@@ -534,7 +537,8 @@ export class DefaultStepExecutor implements StepExecutor {
             );
             try {
               const stat = await Deno.stat(contentPath);
-              files[handle.name] = {
+              if (!files[handle.specName]) files[handle.specName] = {};
+              files[handle.specName][handle.name] = {
                 id: handle.dataId,
                 version: handle.version,
                 createdAt: new Date().toISOString(),
@@ -1262,8 +1266,8 @@ export class WorkflowExecutionService {
       if (step.task.isModelMethod() && output && typeof output === "object") {
         const taskOutput = output as {
           model?: string;
-          resources?: Record<string, DataRecord>;
-          files?: Record<string, FileDataRecord>;
+          resources?: Record<string, Record<string, DataRecord>>;
+          files?: Record<string, Record<string, FileDataRecord>>;
           dataArtifacts?: Array<{
             dataId: string;
             name: string;
@@ -1295,22 +1299,30 @@ export class WorkflowExecutionService {
           }
           const modelData = expressionContext.model[taskOutput.model];
 
-          // Update resource context
+          // Update resource context (specName → instanceName → record)
           if (taskOutput.resources) {
             if (!modelData.resource) modelData.resource = {};
             for (
-              const [specName, record] of Object.entries(taskOutput.resources)
+              const [specName, instances] of Object.entries(
+                taskOutput.resources,
+              )
             ) {
-              modelData.resource[specName] = record;
+              if (!modelData.resource[specName]) {
+                modelData.resource[specName] = {};
+              }
+              Object.assign(modelData.resource[specName], instances);
             }
           }
-          // Update file context
+          // Update file context (specName → instanceName → record)
           if (taskOutput.files) {
             if (!modelData.file) modelData.file = {};
             for (
-              const [specName, fileData] of Object.entries(taskOutput.files)
+              const [specName, instances] of Object.entries(taskOutput.files)
             ) {
-              modelData.file[specName] = fileData;
+              if (!modelData.file[specName]) {
+                modelData.file[specName] = {};
+              }
+              Object.assign(modelData.file[specName], instances);
             }
           }
         }
@@ -1423,8 +1435,8 @@ export class WorkflowExecutionService {
       if (step.task.isModelMethod() && output && typeof output === "object") {
         const taskOutput = output as {
           model?: string;
-          resources?: Record<string, DataRecord>;
-          files?: Record<string, FileDataRecord>;
+          resources?: Record<string, Record<string, DataRecord>>;
+          files?: Record<string, Record<string, FileDataRecord>>;
           dataArtifacts?: Array<{
             dataId: string;
             name: string;
@@ -1456,22 +1468,30 @@ export class WorkflowExecutionService {
           }
           const modelData = stepExprContext.model[taskOutput.model];
 
-          // Update resource context
+          // Update resource context (specName → instanceName → record)
           if (taskOutput.resources) {
             if (!modelData.resource) modelData.resource = {};
             for (
-              const [specName, record] of Object.entries(taskOutput.resources)
+              const [specName, instances] of Object.entries(
+                taskOutput.resources,
+              )
             ) {
-              modelData.resource[specName] = record;
+              if (!modelData.resource[specName]) {
+                modelData.resource[specName] = {};
+              }
+              Object.assign(modelData.resource[specName], instances);
             }
           }
-          // Update file context
+          // Update file context (specName → instanceName → record)
           if (taskOutput.files) {
             if (!modelData.file) modelData.file = {};
             for (
-              const [specName, fileData] of Object.entries(taskOutput.files)
+              const [specName, instances] of Object.entries(taskOutput.files)
             ) {
-              modelData.file[specName] = fileData;
+              if (!modelData.file[specName]) {
+                modelData.file[specName] = {};
+              }
+              Object.assign(modelData.file[specName], instances);
             }
           }
         }

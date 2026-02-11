@@ -49,7 +49,7 @@ export const model = {
             break;
         }
 
-        const handle = await context.writeResource!("result", {
+        const handle = await context.writeResource!("result", "result", {
           originalText: text,
           processedText,
           operation,
@@ -105,7 +105,7 @@ export const model = {
         const attrs = context.globalArgs;
         const deploymentId = `deploy-${attrs.appName}-${Date.now()}`;
 
-        const handle = await context.writeResource!("state", {
+        const handle = await context.writeResource!("state", "state", {
           deploymentId,
           appName: attrs.appName,
           version: attrs.version,
@@ -123,7 +123,7 @@ export const model = {
       execute: async (args, context) => {
         const attrs = context.globalArgs;
 
-        const handle = await context.writeResource!("state", {
+        const handle = await context.writeResource!("state", "state", {
           deploymentId: `deploy-${attrs.appName}-scaled`,
           appName: attrs.appName,
           version: attrs.version,
@@ -169,7 +169,7 @@ export const model = {
       description: "Echo the message with timestamp",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("data", {
+        const handle = await context.writeResource!("data", "data", {
           message: context.globalArgs.message,
           timestamp: new Date().toISOString(),
         });
@@ -233,7 +233,7 @@ export const model = {
         const endpoint =
           `https://${serviceName}.${environment}.example.com/api`;
 
-        const handle = await context.writeResource!("config", {
+        const handle = await context.writeResource!("config", "config", {
           configJson: {
             endpoint,
             timeout: envConfig.timeout,
@@ -255,9 +255,9 @@ export const model = {
 name: my-service-client
 globalArguments:
   # Reference the generated config from another model's resource output
-  endpoint: ${{ model.api-config.resource.config.attributes.configJson.endpoint }}
-  timeout: ${{ model.api-config.resource.config.attributes.configJson.timeout }}
-  retries: ${{ model.api-config.resource.config.attributes.configJson.retries }}
+  endpoint: ${{ model.api-config.resource.config.config.attributes.configJson.endpoint }}
+  timeout: ${{ model.api-config.resource.config.config.attributes.configJson.timeout }}
+  retries: ${{ model.api-config.resource.config.config.attributes.configJson.retries }}
 ```
 
 This pattern enables dynamic configuration where one model generates values that
@@ -320,7 +320,7 @@ export const model = {
           );
         }
 
-        const handle = await context.writeResource!("output", {
+        const handle = await context.writeResource!("output", "output", {
           stdout: result.stdout,
           exitCode: result.exitCode,
           durationMs: result.durationMs,
@@ -348,7 +348,7 @@ export const extension = {
       arguments: z.object({}),
       execute: async (args, context) => {
         // Extensions use the target model's resources/files
-        const handle = await context.writeResource!("message", {
+        const handle = await context.writeResource!("message", "message", {
           message: `Audited: ${context.definition.name}`,
           timestamp: new Date().toISOString(),
         });
@@ -372,7 +372,7 @@ export const extension = {
       description: "Audit the echo message",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("message", {
+        const handle = await context.writeResource!("message", "message", {
           message: `Audited: ${context.definition.name}`,
           timestamp: new Date().toISOString(),
         });
@@ -383,7 +383,7 @@ export const extension = {
       description: "Validate the echo message format",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("message", {
+        const handle = await context.writeResource!("message", "message", {
           message: `Valid: ${context.globalArgs.message.length > 0}`,
           timestamp: new Date().toISOString(),
         });
