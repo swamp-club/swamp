@@ -91,7 +91,12 @@ async function displayModelGet(
     methods: modelDef
       ? Object.entries(modelDef.methods).map(
         ([name, method]) =>
-          toMethodDescribeData(name, method, modelDef.dataOutputSpecs),
+          toMethodDescribeData(
+            name,
+            method,
+            modelDef.resources,
+            modelDef.files,
+          ),
       )
       : undefined,
   };

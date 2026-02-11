@@ -64,7 +64,8 @@ const testDataWithSpecs: TypeDescribeData = {
       },
       dataOutputSpecs: [
         {
-          specType: "vpc",
+          specName: "resource",
+          kind: "resource" as const,
           description: "VPC resource state",
           contentType: "application/json",
           lifetime: "persistent",

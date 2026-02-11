@@ -38,7 +38,8 @@ const testDataWithTypeInfo: ModelCreateData = {
       },
       dataOutputSpecs: [
         {
-          specType: "message",
+          specName: "message",
+          kind: "resource" as const,
           description: "Echo output",
           contentType: "application/json",
           lifetime: "ephemeral",

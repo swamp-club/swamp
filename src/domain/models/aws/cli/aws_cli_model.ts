@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { ModelType } from "../../model_type.ts";
 import {
-  DataSpecType,
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -168,12 +167,7 @@ async function executeRun(
     durationMs: result.durationMs,
   };
 
-  const writer = context.createDataWriter!({
-    name: `${definition.name}-data`,
-    specType: "data",
-  });
-
-  const handle = await writer.writeText(JSON.stringify(dataAttributes));
+  const handle = await context.writeResource!("data", dataAttributes);
 
   return { dataHandles: [handle] };
 }
@@ -196,14 +190,12 @@ export const awsCliModel: ModelDefinition<
   type: AWS_CLI_MODEL_TYPE,
   version: "2026.02.09.1",
   inputAttributesSchema: AwsCliInputAttributesSchema,
-  dataOutputSpecs: {
+  resources: {
     "data": {
-      specType: DataSpecType.create("data"),
       description: "AWS CLI command output with execution metadata",
-      contentType: "application/json",
+      schema: AwsCliDataAttributesSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: {

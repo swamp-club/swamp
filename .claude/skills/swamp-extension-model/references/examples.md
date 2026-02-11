@@ -11,18 +11,23 @@ const InputSchema = z.object({
   operation: z.enum(["uppercase", "lowercase", "reverse"]),
 });
 
+const OutputSchema = z.object({
+  originalText: z.string(),
+  processedText: z.string(),
+  operation: z.string(),
+  processedAt: z.string(),
+});
+
 export const model = {
   type: "@user/text-processor",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "data": {
-      specType: "data",
+  resources: {
+    "result": {
       description: "Processed text output",
-      contentType: "application/json",
+      schema: OutputSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: {
@@ -44,16 +49,12 @@ export const model = {
             break;
         }
 
-        const writer = context.createDataWriter!({
-          name: "result",
-          specType: "data",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("result", {
           originalText: text,
           processedText,
           operation,
           processedAt: new Date().toISOString(),
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -74,18 +75,26 @@ const InputSchema = z.object({
   replicas: z.number().min(1).max(10).default(1),
 });
 
+const StateSchema = z.object({
+  deploymentId: z.string(),
+  appName: z.string(),
+  version: z.string(),
+  environment: z.string(),
+  replicas: z.number(),
+  status: z.string(),
+  deployedAt: z.string(),
+});
+
 export const model = {
   type: "@user/deployment",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "resource": {
-      specType: "resource",
+  resources: {
+    "state": {
       description: "Deployment resource state",
-      contentType: "application/json",
+      schema: StateSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
     },
   },
   methods: {
@@ -95,11 +104,7 @@ export const model = {
         const attrs = input.attributes;
         const deploymentId = `deploy-${attrs.appName}-${Date.now()}`;
 
-        const writer = context.createDataWriter!({
-          name: "resource",
-          specType: "resource",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("state", {
           deploymentId,
           appName: attrs.appName,
           version: attrs.version,
@@ -107,7 +112,7 @@ export const model = {
           replicas: attrs.replicas ?? 1,
           status: "deployed",
           deployedAt: new Date().toISOString(),
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -116,11 +121,7 @@ export const model = {
       execute: async (input, context) => {
         const attrs = input.attributes;
 
-        const writer = context.createDataWriter!({
-          name: "resource",
-          specType: "resource",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("state", {
           deploymentId: `deploy-${attrs.appName}-scaled`,
           appName: attrs.appName,
           version: attrs.version,
@@ -128,7 +129,7 @@ export const model = {
           replicas: attrs.replicas ?? 1,
           status: "deployed",
           deployedAt: new Date().toISOString(),
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -144,32 +145,31 @@ import { z } from "npm:zod@4";
 
 const InputSchema = z.object({ message: z.string() });
 
+const OutputSchema = z.object({
+  message: z.string(),
+  timestamp: z.string(),
+});
+
 export const model = {
   type: "@user/echo",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
+  resources: {
     "data": {
-      specType: "data",
       description: "Echo output",
-      contentType: "application/json",
+      schema: OutputSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: {
     run: {
       description: "Echo the message with timestamp",
       execute: async (input, context) => {
-        const writer = context.createDataWriter!({
-          name: "data",
-          specType: "data",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("data", {
           message: input.attributes.message,
           timestamp: new Date().toISOString(),
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -180,7 +180,7 @@ export const model = {
 ## Data Chaining Model
 
 Models that produce data can be chained together using CEL expressions. The
-output from one model's data can be referenced by another model.
+output from one model's resource can be referenced by another model.
 
 ```typescript
 // extensions/models/config_generator.ts
@@ -191,18 +191,25 @@ const InputSchema = z.object({
   serviceName: z.string(),
 });
 
+const ConfigSchema = z.object({
+  configJson: z.object({
+    endpoint: z.string(),
+    timeout: z.number(),
+    retries: z.number(),
+  }),
+  generatedAt: z.string(),
+});
+
 export const model = {
   type: "@user/config-generator",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
-  dataOutputSpecs: {
-    "data": {
-      specType: "data",
+  resources: {
+    "config": {
       description: "Generated configuration",
-      contentType: "application/json",
+      schema: ConfigSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "data" },
     },
   },
   methods: {
@@ -222,18 +229,14 @@ export const model = {
         const endpoint =
           `https://${serviceName}.${environment}.example.com/api`;
 
-        const writer = context.createDataWriter!({
-          name: "config",
-          specType: "data",
-        });
-        const handle = await writer.writeText(JSON.stringify({
+        const handle = await context.writeResource!("config", {
           configJson: {
             endpoint,
             timeout: envConfig.timeout,
             retries: envConfig.retries,
           },
           generatedAt: new Date().toISOString(),
-        }));
+        });
         return { dataHandles: [handle] };
       },
     },
@@ -247,10 +250,10 @@ export const model = {
 # Model input that references config-generator output
 name: my-service-client
 attributes:
-  # Reference the generated config from another model's data output
-  endpoint: ${{ model.api-config.data.attributes.configJson.endpoint }}
-  timeout: ${{ model.api-config.data.attributes.configJson.timeout }}
-  retries: ${{ model.api-config.data.attributes.configJson.retries }}
+  # Reference the generated config from another model's resource output
+  endpoint: ${{ model.api-config.resource.config.attributes.configJson.endpoint }}
+  timeout: ${{ model.api-config.resource.config.attributes.configJson.timeout }}
+  retries: ${{ model.api-config.resource.config.attributes.configJson.retries }}
 ```
 
 This pattern enables dynamic configuration where one model generates values that
@@ -273,10 +276,24 @@ const InputSchema = z.object({
   timeoutMs: z.number().optional(),
 });
 
+const OutputSchema = z.object({
+  stdout: z.string(),
+  exitCode: z.number(),
+  durationMs: z.number(),
+});
+
 export const model = {
   type: "@myorg/system-info",
   version: "2026.02.09.1",
   inputAttributesSchema: InputSchema,
+  resources: {
+    "output": {
+      description: "Command execution result",
+      schema: OutputSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
   methods: {
     run: {
       description: "Run a system command with streamed output",
@@ -298,16 +315,12 @@ export const model = {
           );
         }
 
-        return {
-          data: {
-            attributes: {
-              stdout: result.stdout,
-              exitCode: result.exitCode,
-              durationMs: result.durationMs,
-            },
-            name: "output",
-          },
-        };
+        const handle = await context.writeResource!("output", {
+          stdout: result.stdout,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+        });
+        return { dataHandles: [handle] };
       },
     },
   },
@@ -326,16 +339,11 @@ export const extension = {
     audit: {
       description: "Audit the echo message",
       execute: async (definition, context) => {
-        // Extensions use the target model's dataOutputSpecs
-        const writer = context.createDataWriter!({
-          name: "audit-result",
-          specType: "data",
+        // Extensions use the target model's resources/files
+        const handle = await context.writeResource!("message", {
+          message: `Audited: ${definition.name}`,
+          timestamp: new Date().toISOString(),
         });
-        const handle = await writer.writeText(JSON.stringify({
-          audited: true,
-          name: definition.name,
-          auditedAt: new Date().toISOString(),
-        }));
         return { dataHandles: [handle] };
       },
     },
@@ -353,28 +361,20 @@ export const extension = {
     audit: {
       description: "Audit the echo message",
       execute: async (definition, context) => {
-        const writer = context.createDataWriter!({
-          name: "audit-result",
-          specType: "data",
+        const handle = await context.writeResource!("message", {
+          message: `Audited: ${definition.name}`,
+          timestamp: new Date().toISOString(),
         });
-        const handle = await writer.writeText(JSON.stringify({
-          audited: true,
-          name: definition.name,
-        }));
         return { dataHandles: [handle] };
       },
     },
     validate: {
       description: "Validate the echo message format",
       execute: async (definition, context) => {
-        const writer = context.createDataWriter!({
-          name: "validation-result",
-          specType: "data",
+        const handle = await context.writeResource!("message", {
+          message: `Valid: ${definition.attributes.message.length > 0}`,
+          timestamp: new Date().toISOString(),
         });
-        const handle = await writer.writeText(JSON.stringify({
-          valid: definition.attributes.message.length > 0,
-          length: definition.attributes.message.length,
-        }));
         return { dataHandles: [handle] };
       },
     },

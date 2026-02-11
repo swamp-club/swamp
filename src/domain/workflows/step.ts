@@ -7,7 +7,6 @@ import {
 import { StepTask, StepTaskSchema } from "./step_task.ts";
 import { DataOutputOverrideSchema } from "../models/data_output_override.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
-import { DataSpecType } from "../models/model.ts";
 
 /**
  * Schema for step dependency with condition.
@@ -135,10 +134,10 @@ export class Step {
       condition: TriggerCondition.fromData(d.condition),
     }));
 
-    // Convert string specType to DataSpecType
+    // Convert persisted overrides to DataOutputOverride
     const dataOutputOverrides: DataOutputOverride[] =
       (validated.dataOutputOverrides ?? []).map((override) => ({
-        specType: DataSpecType.create(override.specType),
+        specName: override.specName,
         lifetime: override.lifetime,
         garbageCollection: override.garbageCollection,
         tags: override.tags,
@@ -206,7 +205,7 @@ export class Step {
       weight: this.weight,
       dataOutputOverrides: this._dataOutputOverrides.length > 0
         ? this._dataOutputOverrides.map((override) => ({
-          specType: override.specType.toString(),
+          specName: override.specName,
           lifetime: override.lifetime,
           garbageCollection: override.garbageCollection,
           tags: override.tags,
