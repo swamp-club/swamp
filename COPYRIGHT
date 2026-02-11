@@ -1,9 +1,9 @@
-Copyrights in the swamp software are retained by their contributors. No
-copyright assignment is required to contribute to swamp software.
+Swamp, an Automation Framework
 
-When we refer to the 'swamp software authors', we mean anyone who has
-contributed to this repository.
+Copyright (c) 2026, System Initiative, Inc.
 
 Unless otherwise noted, such as with a LICENSE file in a directory, or a
 specific copyright notice on a file, all files in this repository are licensed
-under the Apache 2.0 license.
+under the GNU Affero General Public License version 3 (AGPLv3) (found in the
+"COPYING" file,) with the Swamp Extension and Definition Exception (found in 
+the "COPYING-EXCEPTION" file.)
