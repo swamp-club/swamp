@@ -1677,9 +1677,9 @@ Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
     // Verify tags on the data artifact
     const artifact = stepOutput.dataArtifacts[0];
     assertEquals(
-      artifact.tags.type,
+      artifact.tags.source,
       "step-output",
-      "Tag type should be step-output",
+      "Tag source should be step-output",
     );
     assertEquals(
       artifact.tags.workflow,
@@ -1757,9 +1757,9 @@ Deno.test("CLI: workflow run persists data artifacts in workflow run record", as
 
     // Verify tags are correct
     assertEquals(
-      stepData.dataArtifacts[0].tags.type,
+      stepData.dataArtifacts[0].tags.source,
       "step-output",
-      "Tag type should be step-output",
+      "Tag source should be step-output",
     );
     assertEquals(
       stepData.dataArtifacts[0].tags.workflow,

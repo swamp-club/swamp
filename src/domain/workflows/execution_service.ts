@@ -448,8 +448,10 @@ export class DefaultStepExecutor implements StepExecutor {
       });
 
       // Build workflow-specific tag overrides
+      // Use "source" instead of "type" to preserve the original data type
+      // (resource/file) while tracking provenance for cross-workflow resolution
       const workflowTagOverrides: Record<string, string> = {
-        type: "step-output",
+        source: "step-output",
         workflow: ctx.workflowName,
         step: ctx.stepName,
       };

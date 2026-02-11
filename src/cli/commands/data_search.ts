@@ -270,7 +270,7 @@ export const dataSearchCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(
     "--type <type:string>",
-    "Filter by data type tag (log, file, resource, data, step-output)",
+    "Filter by data type tag (log, file, resource, data, output)",
   )
   .option(
     "--lifetime <lifetime:string>",
