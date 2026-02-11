@@ -99,19 +99,21 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
     });
     const context = await modelResolver.buildContext();
 
-    // Verify model.my-vpc.resource.vpc-info exists and has latest version
+    // Verify model.my-vpc.resource.vpc-info.vpc-info exists and has latest version
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
     assertExists(modelData.resource);
-    const resourceRecord = modelData.resource!["vpc-info"];
+    const resourceInstances = modelData.resource!["vpc-info"];
+    assertExists(resourceInstances);
+    const resourceRecord = resourceInstances["vpc-info"];
     assertExists(resourceRecord);
     assertEquals(resourceRecord.version, 2);
     assertEquals(resourceRecord.attributes.vpcId, "vpc-222");
 
-    // Evaluate CEL expression with new pattern: model.X.resource.specName.attributes.field
+    // Evaluate CEL expression with new pattern: model.X.resource.specName.instanceName.attributes.field
     const celEvaluator = new CelEvaluator();
     const result = celEvaluator.evaluate(
-      'model["my-vpc"].resource["vpc-info"].attributes.vpcId',
+      'model["my-vpc"].resource["vpc-info"]["vpc-info"].attributes.vpcId',
       context,
     );
     assertEquals(result, "vpc-222");
@@ -532,16 +534,19 @@ Deno.test("Integration: model can have multiple named data items with mixed type
     });
     const context = await modelResolver.buildContext();
 
-    // Resource items accessible via model.X.resource.specName
+    // Resource items accessible via model.X.resource.specName.instanceName
     const modelData = context.model["my-command"];
     assertExists(modelData);
     assertExists(modelData.resource);
     assertExists(modelData.resource!["exit-code"]);
+    assertExists(modelData.resource!["exit-code"]["exit-code"]);
 
-    // File items accessible via model.X.file.specName
+    // File items accessible via model.X.file.specName.instanceName
     assertExists(modelData.file);
     assertExists(modelData.file!["stdout"]);
+    assertExists(modelData.file!["stdout"]["stdout"]);
     assertExists(modelData.file!["stderr"]);
+    assertExists(modelData.file!["stderr"]["stderr"]);
 
     // Also via data functions
     assertExists(context.data);

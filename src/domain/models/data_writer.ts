@@ -283,6 +283,7 @@ export function createResourceWriter(
 ): {
   writeResource: (
     specName: string,
+    name: string,
     data: Record<string, unknown>,
     overrides?: ResourceWriteOverrides,
   ) => Promise<DataHandle>;
@@ -292,6 +293,7 @@ export function createResourceWriter(
 
   const writeResource = async (
     specName: string,
+    name: string,
     data: Record<string, unknown>,
     overrides?: ResourceWriteOverrides,
   ): Promise<DataHandle> => {
@@ -318,15 +320,15 @@ export function createResourceWriter(
       );
     }
 
-    // Validate override name if provided
-    if (overrides?.name !== undefined && overrides.name.trim() === "") {
+    // Validate name is non-empty
+    if (name.trim() === "") {
       throw new Error(
-        `Resource name override must be a non-empty string for spec '${specName}' ` +
+        `Resource name must be a non-empty string for spec '${specName}' ` +
           `in model '${modelType.normalized}'`,
       );
     }
 
-    const instanceName = overrides?.name ?? specName;
+    const instanceName = name;
 
     // Resolve tags: spec defaults -> overrides -> tag overrides
     const resolvedTags: Record<string, string> = {
@@ -422,6 +424,7 @@ export function createFileWriterFactory(
 ): {
   createFileWriter: (
     specName: string,
+    name: string,
     overrides?: FileWriterOverrides,
   ) => DataWriter;
   getHandles: () => DataHandle[];
@@ -431,6 +434,7 @@ export function createFileWriterFactory(
 
   const createFileWriter = (
     specName: string,
+    name: string,
     overrides?: FileWriterOverrides,
   ): DataWriter => {
     const spec = files[specName];
@@ -442,15 +446,15 @@ export function createFileWriterFactory(
       );
     }
 
-    // Validate override name if provided
-    if (overrides?.name !== undefined && overrides.name.trim() === "") {
+    // Validate name is non-empty
+    if (name.trim() === "") {
       throw new Error(
-        `File name override must be a non-empty string for spec '${specName}' ` +
+        `File name must be a non-empty string for spec '${specName}' ` +
           `in model '${modelType.normalized}'`,
       );
     }
 
-    const instanceName = overrides?.name ?? specName;
+    const instanceName = name;
 
     // Resolve tags: spec defaults -> overrides -> tag overrides
     const resolvedTags: Record<string, string> = {

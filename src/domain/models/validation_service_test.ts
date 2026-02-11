@@ -34,7 +34,7 @@ const testExprModel: ModelDefinition = defineModel({
       description: "Write test",
       arguments: z.object({ message: z.string() }),
       execute: async (_args, context) => {
-        const handle = await context.writeResource!("message", {});
+        const handle = await context.writeResource!("message", "message", {});
         return { dataHandles: [handle] };
       },
     },
@@ -538,7 +538,8 @@ Deno.test("validateModel with resource path passes for valid DataRecord field", 
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      message: "${{ model.target-model.resource.message.attributes.message }}",
+      message:
+        "${{ model.target-model.resource.message.message.attributes.message }}",
     },
   });
 
@@ -592,7 +593,8 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
     name: "test-definition",
     globalArguments: {
       // "attribute" is not a valid DataRecord field, should be "attributes"
-      message: "${{ model.target-model.resource.message.attribute.message }}",
+      message:
+        "${{ model.target-model.resource.message.message.attribute.message }}",
     },
   });
 
@@ -617,7 +619,8 @@ Deno.test("validateModel with resource path passes for nested attributes in Data
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      msg: "${{ model.target-model.resource.message.attributes.message }}",
+      msg:
+        "${{ model.target-model.resource.message.message.attributes.message }}",
     },
   });
 
@@ -665,7 +668,7 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: {
-      bad: "${{ model.target-model.resource.message.badfield }}",
+      bad: "${{ model.target-model.resource.message.message.badfield }}",
     },
   });
 

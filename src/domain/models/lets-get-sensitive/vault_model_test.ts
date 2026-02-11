@@ -28,9 +28,10 @@ interface MockWriterResult {
 function createMockWriters(): {
   writeResource: (
     specName: string,
+    name: string,
     data: Record<string, unknown>,
   ) => Promise<DataHandle>;
-  createFileWriter: (specName: string) => DataWriter;
+  createFileWriter: (specName: string, name: string) => DataWriter;
   getResults: () => MockWriterResult[];
 } {
   const results: MockWriterResult[] = [];
@@ -39,12 +40,13 @@ function createMockWriters(): {
 
   const writeResource = (
     specName: string,
+    name: string,
     data: Record<string, unknown>,
   ): Promise<DataHandle> => {
     const dataId = `mock-data-${nextId++}` as DataId;
     const content = new TextEncoder().encode(JSON.stringify(data));
     const handle: DataHandle = {
-      name: specName,
+      name,
       specName,
       kind: "resource",
       dataId,
@@ -67,11 +69,11 @@ function createMockWriters(): {
     return Promise.resolve(handle);
   };
 
-  const createFileWriter = (specName: string): DataWriter => {
+  const createFileWriter = (specName: string, name: string): DataWriter => {
     const dataId = `mock-data-${nextId++}` as DataId;
 
     const buildHandle = (content: Uint8Array): DataHandle => ({
-      name: specName,
+      name,
       specName,
       kind: "file",
       dataId,
@@ -93,7 +95,7 @@ function createMockWriters(): {
 
     return {
       dataId,
-      name: specName,
+      name,
       writeAll(content: Uint8Array): Promise<DataHandle> {
         const handle = buildHandle(content);
         results.push({ handle, content });

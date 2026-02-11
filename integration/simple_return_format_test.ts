@@ -90,7 +90,7 @@ export const model = {
 
         // Use the writeResource API
         if (context.writeResource) {
-          const handle = await context.writeResource("resource", content);
+          const handle = await context.writeResource("resource", "resource", content);
           return { dataHandles: [handle] };
         }
 

@@ -89,8 +89,6 @@ export const FileOutputSpecSchema = z.object({
  * Override spec defaults when writing a resource.
  */
 export interface ResourceWriteOverrides {
-  /** Override the instance name (defaults to specName). */
-  name?: string;
   lifetime?: Lifetime;
   garbageCollection?: GarbageCollectionPolicy;
   tags?: Record<string, string>;
@@ -100,8 +98,6 @@ export interface ResourceWriteOverrides {
  * Override spec defaults when creating a file writer.
  */
 export interface FileWriterOverrides {
-  /** Override the instance name (defaults to specName). */
-  name?: string;
   contentType?: string;
   lifetime?: Lifetime;
   garbageCollection?: GarbageCollectionPolicy;
@@ -178,6 +174,7 @@ export interface MethodContext {
    */
   writeResource?: (
     specName: string,
+    name: string,
     data: Record<string, unknown>,
     overrides?: ResourceWriteOverrides,
   ) => Promise<DataHandle>;
@@ -187,6 +184,7 @@ export interface MethodContext {
    */
   createFileWriter?: (
     specName: string,
+    name: string,
     overrides?: FileWriterOverrides,
   ) => DataWriter;
 

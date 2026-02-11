@@ -522,11 +522,13 @@ Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async 
     });
     const context = await modelResolver.buildContext();
 
-    // Access tags directly via resource namespace
+    // Access tags directly via resource namespace (specName → instanceName → record)
     const modelData = context.model["my-vpc"];
     assertExists(modelData);
     assertExists(modelData.resource);
-    const dataRecord = modelData.resource!["vpc-state"] as {
+    const resourceInstances = modelData.resource!["vpc-state"];
+    assertExists(resourceInstances);
+    const dataRecord = resourceInstances["vpc-state"] as {
       tags: Record<string, string>;
     };
     assertEquals(dataRecord.tags.type, "resource");
@@ -606,23 +608,23 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
     });
     const context = await modelResolver.buildContext();
 
-    // Access all resource data from model (resource is a map of specName -> DataRecord)
+    // Access all resource data from model (resource is a map of specName -> instanceName -> DataRecord)
     const modelData = context.model["multi-output-model"];
     assertExists(modelData);
     assertExists(modelData.resource);
     const resourceMap = modelData.resource as Record<
       string,
-      { tags: Record<string, string> }
+      Record<string, { tags: Record<string, string> }>
     >;
     assertExists(resourceMap["stdout"]);
     assertExists(resourceMap["stderr"]);
     assertExists(resourceMap["exit-code"]);
     assertExists(resourceMap["timing"]);
 
-    // Verify custom tags
-    assertEquals(resourceMap["stdout"].tags.stream, "stdout");
-    assertEquals(resourceMap["stderr"].tags.stream, "stderr");
-    assertEquals(resourceMap["timing"].tags.category, "performance");
+    // Verify custom tags (access via specName -> instanceName)
+    assertEquals(resourceMap["stdout"]["stdout"].tags.stream, "stdout");
+    assertEquals(resourceMap["stderr"]["stderr"].tags.stream, "stderr");
+    assertEquals(resourceMap["timing"]["timing"].tags.category, "performance");
 
     // Query by tags
     assertExists(context.data);

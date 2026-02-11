@@ -82,7 +82,8 @@ export const model = {
       description: "Process the input message",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("result", {
+        // writeResource(specName, instanceName, data) — for single-instance, use specName as instanceName
+        const handle = await context.writeResource!("result", "result", {
           message: context.globalArgs.message.toUpperCase(),
           timestamp: new Date().toISOString(),
         });
@@ -140,7 +141,7 @@ export const model = {
       execute: async (args, context) => {
         // Inputs are evaluated before execution, so context.globalArgs
         // contains the resolved values (e.g., target = "production")
-        const handle = await context.writeResource!("state", {
+        const handle = await context.writeResource!("state", "state", {
           deployed: true,
           target: context.globalArgs.target,
         });
@@ -243,7 +244,7 @@ execute: (async (args, context) => {
   // context.inputs         - Runtime inputs (if inputsSchema defined)
 
   // 1. Write a resource — specName must match a key in `resources`
-  const handle = await context.writeResource!("result", {
+  const handle = await context.writeResource!("result", "result", {
     value: "processed",
     timestamp: new Date().toISOString(),
   });
@@ -255,32 +256,41 @@ execute: (async (args, context) => {
 
 ### writeResource API
 
-Write structured JSON data: `context.writeResource(specName, data, overrides?)`.
+Write structured JSON data:
+`context.writeResource(specName, name, data, overrides?)`.
 
-The `specName` must match a key in the model's `resources`. Data is validated
-against the resource's Zod schema (warns on mismatch, doesn't throw).
+- `specName` — must match a key in the model's `resources`
+- `name` — the instance name (any non-empty string; use specName for
+  single-instance resources)
+
+Data is validated against the resource's Zod schema (warns on mismatch, doesn't
+throw). The `name` you pass here is the `<instanceName>` used in CEL:
+`model.<defName>.resource.<specName>.<instanceName>.attributes.<field>`.
 
 **ResourceWriteOverrides** (optional):
 
 | Field               | Description                                    |
 | ------------------- | ---------------------------------------------- |
-| `name`              | Override instance name (defaults to specName)  |
 | `lifetime`          | Override lifetime (default from spec)          |
 | `garbageCollection` | Override version retention (default from spec) |
 | `tags`              | Additional tags                                |
 
 ### createFileWriter API
 
-Create a file writer: `context.createFileWriter(specName, overrides?)`.
+Create a file writer: `context.createFileWriter(specName, name, overrides?)`.
 
-The `specName` must match a key in the model's `files`. Returns a `DataWriter`
-for binary/streaming content.
+- `specName` — must match a key in the model's `files`
+- `name` — the instance name (any non-empty string; use specName for
+  single-instance files)
+
+Returns a `DataWriter` for binary/streaming content. The `name` you pass here is
+the `<instanceName>` used in CEL:
+`model.<defName>.file.<specName>.<instanceName>.path`.
 
 **FileWriterOverrides** (optional):
 
 | Field               | Description                                    |
 | ------------------- | ---------------------------------------------- |
-| `name`              | Override instance name (defaults to specName)  |
 | `contentType`       | Override MIME type (default from spec)         |
 | `lifetime`          | Override lifetime (default from spec)          |
 | `garbageCollection` | Override version retention (default from spec) |
@@ -335,6 +345,30 @@ Tags are auto-applied based on the spec kind:
 | `type: "file"`       | files      | Auto-added to all file data outputs      |
 | `specName: "<name>"` | both       | Auto-added with the output spec key name |
 
+## Instance Names
+
+The `name` parameter (second argument) on `writeResource` and `createFileWriter`
+sets the **instance name** — this is the same identifier used in CEL expressions
+to access the data:
+
+```
+writeResource("state", "my-deploy", data)
+  → accessible as: model.<defName>.resource.state.my-deploy.attributes.<field>
+                                          ─────  ─────────
+                                        specName instanceName
+```
+
+**Convention:** For single-instance resources (most models), pass the specName
+as both arguments: `writeResource("state", "state", data)`. This produces the
+CEL path `model.<name>.resource.state.state.attributes.<field>`.
+
+**Factory models** use distinct instance names to produce multiple outputs from
+one spec — see [Factory Models](#factory-models-dynamic-instance-names) below.
+
+> **Both `specName` and `name` are required.** If you omit the `name` argument
+> (old 2-arg form), the `data` object is silently treated as the name string,
+> causing a runtime error.
+
 ## Factory Models (Dynamic Instance Names)
 
 A single method execution can produce multiple dynamically-named resources from
@@ -379,9 +413,11 @@ export const model = {
         const handles = [];
         for (const subnet of subnets) {
           // Each call uses the same "subnet" spec but a unique instance name
-          const handle = await context.writeResource!("subnet", subnet, {
-            name: subnet.subnetId,
-          });
+          const handle = await context.writeResource!(
+            "subnet",
+            subnet.subnetId,
+            subnet,
+          );
           handles.push(handle);
         }
         return { dataHandles: handles };
@@ -393,14 +429,14 @@ export const model = {
 
 ### How it works
 
-- The `name` override on `writeResource` / `createFileWriter` sets the instance
-  name. Without it, the instance name defaults to the spec name.
+- The `name` parameter (second argument) on `writeResource` / `createFileWriter`
+  sets the instance name.
 - Each write produces a distinct data artifact — validation passes because
   instance names are unique.
 - A `specName` tag is auto-injected so all instances from the same spec can be
   discovered with `data.findBySpec("model-name", "subnet")`.
 - Individual instances are addressable in CEL as
-  `model.<name>.resource.<instanceName>.attributes.<field>`.
+  `model.<name>.resource.<specName>.<instanceName>.attributes.<field>`.
 
 ### Discovering factory outputs in CEL
 
@@ -409,7 +445,7 @@ export const model = {
 allSubnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 
 # Access a specific named instance
-subnetA: ${{ model.my-scanner.resource.subnet-aaa.attributes.cidr }}
+subnetA: ${{ model.my-scanner.resource.subnet.subnet-aaa.attributes.cidr }}
 ```
 
 ### Factory vs forEach
@@ -437,7 +473,7 @@ export const extension = {
       arguments: z.object({}),
       execute: async (args, context) => {
         // Extensions use the target model's resources/files
-        const handle = await context.writeResource!("message", {
+        const handle = await context.writeResource!("message", "message", {
           message: `Audited: ${context.definition.name}`,
           timestamp: new Date().toISOString(),
         });
@@ -602,7 +638,7 @@ export const model = {
           logger: context.logger,
         });
 
-        const handle = await context.writeResource!("output", {
+        const handle = await context.writeResource!("output", "output", {
           stdout: result.stdout,
           stderr: result.stderr,
           exitCode: result.exitCode,
@@ -650,12 +686,16 @@ export const model = {
         const results = ["result1", "result2"];
 
         // Primary result data (resource)
-        const resultsHandle = await context.writeResource!("results", {
-          results,
-        });
+        const resultsHandle = await context.writeResource!(
+          "results",
+          "results",
+          {
+            results,
+          },
+        );
 
         // Execution log (file)
-        const logWriter = context.createFileWriter!("log");
+        const logWriter = context.createFileWriter!("log", "log");
         const logHandle = await logWriter.writeText(JSON.stringify({
           query: context.globalArgs.query,
           timestamp: new Date().toISOString(),
@@ -708,7 +748,7 @@ export const model = {
         });
         const data = await response.json();
 
-        const handle = await context.writeResource!("state", {
+        const handle = await context.writeResource!("state", "state", {
           resourceId: data.id,
           status: data.status,
           createdAt: new Date().toISOString(),
@@ -780,7 +820,7 @@ export const model = {
           },
         );
 
-        const handle = await context.writeResource!("bucket", {
+        const handle = await context.writeResource!("bucket", "bucket", {
           bucketName,
           region,
           arn: `arn:aws:s3:::${bucketName}`,
@@ -794,7 +834,7 @@ export const model = {
       arguments: z.object({}),
       execute: async (args, context) => {
         // Implement S3 ListObjects API call
-        const handle = await context.writeResource!("objects", {
+        const handle = await context.writeResource!("objects", "objects", {
           objects: [], // Populate from API response
         });
         return { dataHandles: [handle] };
@@ -821,7 +861,7 @@ methods: {
       const env = args.environment;
       // Use env for deployment logic...
 
-      const handle = await context.writeResource!("state", {
+      const handle = await context.writeResource!("state", "state", {
         environment: env,
         status: "deployed",
       });

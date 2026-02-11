@@ -309,10 +309,11 @@ async function executeGenerate(
 
   const metadataHandle = await context.writeResource!(
     "metadata",
+    "metadata",
     metadataAttributes,
   );
 
-  const diagramWriter = context.createFileWriter!("diagram");
+  const diagramWriter = context.createFileWriter!("diagram", "diagram");
   const diagramHandle = await diagramWriter.writeAll(content);
 
   return { dataHandles: [metadataHandle, diagramHandle] };

@@ -164,7 +164,7 @@ async function executeRun(
     durationMs: result.durationMs,
   };
 
-  const handle = await context.writeResource!("data", dataAttributes);
+  const handle = await context.writeResource!("data", "data", dataAttributes);
 
   return { dataHandles: [handle] };
 }
