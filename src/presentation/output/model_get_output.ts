@@ -25,10 +25,10 @@ export interface ModelGetData {
   type: string;
   version: number;
   tags: Record<string, string>;
-  attributes: Record<string, unknown>;
+  globalArguments: Record<string, unknown>;
   resource?: ResourceData;
   typeVersion?: string;
-  inputAttributesSchema?: object;
+  globalArgumentsSchema?: object;
   methods?: MethodDescribeData[];
 }
 
@@ -64,11 +64,11 @@ export function renderModelGet(data: ModelGetData, mode: OutputMode): void {
       lines.push(...formatRecord(data.tags, "  "));
     }
 
-    const attrEntries = Object.entries(data.attributes);
+    const attrEntries = Object.entries(data.globalArguments);
     if (attrEntries.length > 0) {
       lines.push("");
-      lines.push(bold(cyan("Attributes:")));
-      lines.push(...formatRecord(data.attributes, "  "));
+      lines.push(bold(cyan("Global Arguments:")));
+      lines.push(...formatRecord(data.globalArguments, "  "));
     }
 
     if (data.resource) {
@@ -90,14 +90,14 @@ export function renderModelGet(data: ModelGetData, mode: OutputMode): void {
       lines.push(bold(cyan("Type Version:")) + ` ${data.typeVersion}`);
     }
 
-    if (data.inputAttributesSchema) {
+    if (data.globalArgumentsSchema) {
       const schemaAttrs = formatSchemaAttributes(
-        data.inputAttributesSchema,
+        data.globalArgumentsSchema,
         "  ",
       );
       if (schemaAttrs.length > 0) {
         lines.push("");
-        lines.push(bold(cyan("Input Schema:")));
+        lines.push(bold(cyan("Global Arguments Schema:")));
         lines.push(...schemaAttrs);
       }
     }

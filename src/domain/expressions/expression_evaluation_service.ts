@@ -142,7 +142,7 @@ export class ExpressionEvaluationService {
       name: definition.name,
       version: definition.version,
       tags: definition.tags,
-      attributes: definition.attributes,
+      globalArguments: definition.globalArguments,
     };
 
     // Extract expressions from definition data
@@ -249,7 +249,7 @@ export class ExpressionEvaluationService {
             name: result.definition.name,
             version: result.definition.version,
             tags: result.definition.tags,
-            attributes: {},
+            globalArguments: {},
           },
         };
         modelData.definition = {
@@ -257,7 +257,7 @@ export class ExpressionEvaluationService {
           name: result.definition.name,
           version: result.definition.version,
           tags: result.definition.tags,
-          attributes: result.definition.attributes,
+          globalArguments: result.definition.globalArguments,
           inputs: result.definition.inputs,
         };
         context.model[name] = modelData;

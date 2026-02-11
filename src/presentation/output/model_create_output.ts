@@ -13,7 +13,7 @@ export interface ModelCreateData {
   name: string;
   path: string;
   version?: string;
-  inputAttributesSchema?: object;
+  globalArguments?: object;
   methods?: MethodDescribeData[];
 }
 
@@ -33,14 +33,14 @@ export function renderModelCreate(
       lines.push(`${bold(cyan("Version:"))} ${data.version}`);
     }
 
-    if (data.inputAttributesSchema) {
+    if (data.globalArguments) {
       const attrs = formatSchemaAttributes(
-        data.inputAttributesSchema,
+        data.globalArguments,
         "  ",
       );
       if (attrs.length > 0) {
         lines.push("");
-        lines.push(bold(cyan("Input Attributes:")));
+        lines.push(bold(cyan("Global Arguments:")));
         lines.push(...attrs);
       }
     }

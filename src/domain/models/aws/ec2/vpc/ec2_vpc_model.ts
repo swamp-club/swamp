@@ -153,7 +153,7 @@ class EC2VpcModel extends AWSCloudControlModel<
     super({
       typeName: "AWS::EC2::VPC",
       modelType: EC2_VPC_MODEL_TYPE,
-      inputAttributesSchema: EC2VpcInputAttributesSchema,
+      arguments: EC2VpcInputAttributesSchema,
       extractResourceIdentifier: (attributes) => {
         return (attributes.VpcId as string | undefined) ||
           (attributes.ResourceIdentifier as string | undefined);
@@ -186,6 +186,5 @@ const ec2VpcModelInstance = new EC2VpcModel();
  *
  * Self-registers with the global model registry when this module is imported.
  */
-export const ec2VpcModel: ModelDefinition<
-  typeof EC2VpcInputAttributesSchema
-> = ec2VpcModelInstance.defineAndRegister();
+export const ec2VpcModel: ModelDefinition = ec2VpcModelInstance
+  .defineAndRegister();

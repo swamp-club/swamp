@@ -6,7 +6,6 @@ import {
   type MethodResult,
   type ModelDefinition,
 } from "../model.ts";
-import type { Definition } from "../../definitions/definition.ts";
 import { VaultService } from "../../vaults/vault_service.ts";
 import { YamlVaultConfigRepository } from "../../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
@@ -102,26 +101,50 @@ async function createVaultService(
 }
 
 /**
+ * Schema for the "get" method arguments.
+ */
+const GetMethodArgumentsSchema = z.object({
+  vaultName: z.string().min(1),
+  secretKey: z.string().min(1),
+  operation: z.literal("get"),
+});
+
+type GetMethodArguments = z.infer<typeof GetMethodArgumentsSchema>;
+
+/**
+ * Schema for the "put" method arguments.
+ */
+const PutMethodArgumentsSchema = z.object({
+  vaultName: z.string().min(1),
+  secretKey: z.string().min(1),
+  secretValue: z.string().min(1).meta({
+    description: "Secret value to store",
+    sensitive: true,
+  }),
+  operation: z.literal("put"),
+});
+
+type PutMethodArguments = z.infer<typeof PutMethodArgumentsSchema>;
+
+/**
  * Executes the "get" method for the vault model.
  *
  * Retrieves a secret value from the specified vault.
  */
 async function executeGet(
-  definition: Definition,
+  args: GetMethodArguments,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = VaultInputAttributesSchema.parse(definition.attributes);
-
-  if (attrs.operation !== "get") {
+  if (args.operation !== "get") {
     throw new Error("Get method requires operation to be 'get'");
   }
 
   // Build log content
   const logLines: string[] = [];
   logLines.push(
-    `[vault] Starting secret retrieval from vault '${attrs.vaultName}'`,
+    `[vault] Starting secret retrieval from vault '${args.vaultName}'`,
   );
-  logLines.push(`[vault] Secret key: ${attrs.secretKey}`);
+  logLines.push(`[vault] Secret key: ${args.secretKey}`);
 
   try {
     const vaultService = await createVaultService(context);
@@ -129,10 +152,10 @@ async function executeGet(
       `[vault] Created VaultService for repository: ${context.repoDir}`,
     );
 
-    logLines.push(`[vault] Retrieving secret from vault '${attrs.vaultName}'`);
+    logLines.push(`[vault] Retrieving secret from vault '${args.vaultName}'`);
     const retrievedValue = await vaultService.get(
-      attrs.vaultName,
-      attrs.secretKey,
+      args.vaultName,
+      args.secretKey,
     );
 
     logLines.push(
@@ -140,9 +163,9 @@ async function executeGet(
     );
 
     const dataAttributes = {
-      vaultName: attrs.vaultName,
-      secretKey: attrs.secretKey,
-      operation: attrs.operation,
+      vaultName: args.vaultName,
+      secretKey: args.secretKey,
+      operation: args.operation,
       // retrievedValue is NOT stored in data attributes for security
       // Secret values should only be accessed through vault expressions
       secretLength: retrievedValue.length,
@@ -162,7 +185,7 @@ async function executeGet(
 
     // Throw exception instead of returning failed data - this will fail the workflow
     throw new Error(
-      `Failed to retrieve secret '${attrs.secretKey}' from vault '${attrs.vaultName}': ${errorMessage}`,
+      `Failed to retrieve secret '${args.secretKey}' from vault '${args.vaultName}': ${errorMessage}`,
     );
   }
 }
@@ -173,27 +196,25 @@ async function executeGet(
  * Stores a secret value in the specified vault.
  */
 async function executePut(
-  definition: Definition,
+  args: PutMethodArguments,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = VaultInputAttributesSchema.parse(definition.attributes);
-
-  if (attrs.operation !== "put") {
+  if (args.operation !== "put") {
     throw new Error("Put method requires operation to be 'put'");
   }
 
-  if (!attrs.secretValue) {
+  if (!args.secretValue) {
     throw new Error("Put method requires secretValue to be provided");
   }
 
   // Build log content
   const logLines: string[] = [];
   logLines.push(
-    `[vault] Starting secret storage in vault '${attrs.vaultName}'`,
+    `[vault] Starting secret storage in vault '${args.vaultName}'`,
   );
-  logLines.push(`[vault] Secret key: ${attrs.secretKey}`);
+  logLines.push(`[vault] Secret key: ${args.secretKey}`);
   logLines.push(
-    `[vault] Secret value length: ${attrs.secretValue.length} characters`,
+    `[vault] Secret value length: ${args.secretValue.length} characters`,
   );
 
   try {
@@ -202,15 +223,15 @@ async function executePut(
       `[vault] Created VaultService for repository: ${context.repoDir}`,
     );
 
-    logLines.push(`[vault] Storing secret in vault '${attrs.vaultName}'`);
-    await vaultService.put(attrs.vaultName, attrs.secretKey, attrs.secretValue);
+    logLines.push(`[vault] Storing secret in vault '${args.vaultName}'`);
+    await vaultService.put(args.vaultName, args.secretKey, args.secretValue);
     logLines.push(`[vault] ✅ Secret stored successfully`);
 
     const dataAttributes = {
-      vaultName: attrs.vaultName,
-      secretKey: attrs.secretKey,
-      operation: attrs.operation,
-      storedKey: attrs.secretKey,
+      vaultName: args.vaultName,
+      secretKey: args.secretKey,
+      operation: args.operation,
+      storedKey: args.secretKey,
       timestamp: new Date().toISOString(),
       success: true,
     };
@@ -227,7 +248,7 @@ async function executePut(
 
     // Throw exception instead of returning failed data - this will fail the workflow
     throw new Error(
-      `Failed to store secret '${attrs.secretKey}' in vault '${attrs.vaultName}': ${errorMessage}`,
+      `Failed to store secret '${args.secretKey}' in vault '${args.vaultName}': ${errorMessage}`,
     );
   }
 }
@@ -244,12 +265,10 @@ async function executePut(
  *
  * Self-registers with the global model registry when this module is imported.
  */
-export const vaultModel: ModelDefinition<
-  typeof VaultInputAttributesSchema
-> = defineModel({
+export const vaultModel: ModelDefinition = defineModel({
   type: VAULT_MODEL_TYPE,
   version: "2026.02.09.1",
-  inputAttributesSchema: VaultInputAttributesSchema,
+  globalArguments: VaultInputAttributesSchema,
   resources: {
     "result": {
       description: "Vault operation result (success/failure, metadata)",
@@ -270,24 +289,12 @@ export const vaultModel: ModelDefinition<
   methods: {
     get: {
       description: "Retrieve a secret value from the specified vault",
-      inputAttributesSchema: z.object({
-        vaultName: z.string().min(1),
-        secretKey: z.string().min(1),
-        operation: z.literal("get"),
-      }),
+      arguments: GetMethodArgumentsSchema,
       execute: executeGet,
     },
     put: {
       description: "Store a secret value in the specified vault",
-      inputAttributesSchema: z.object({
-        vaultName: z.string().min(1),
-        secretKey: z.string().min(1),
-        secretValue: z.string().min(1).meta({
-          description: "Secret value to store",
-          sensitive: true,
-        }),
-        operation: z.literal("put"),
-      }),
+      arguments: PutMethodArgumentsSchema,
       execute: executePut,
     },
   },

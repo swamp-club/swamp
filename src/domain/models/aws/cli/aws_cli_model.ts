@@ -6,7 +6,6 @@ import {
   type MethodResult,
   type ModelDefinition,
 } from "../../model.ts";
-import type { Definition } from "../../../definitions/definition.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 
 /**
@@ -113,28 +112,26 @@ function parseCommand(command: string): string[] {
  * Runs an AWS CLI command and captures the output as data attributes.
  */
 async function executeRun(
-  definition: Definition,
+  args: AwsCliInputAttributes,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = AwsCliInputAttributesSchema.parse(definition.attributes);
-
   // Build environment with optional overrides
   const env: Record<string, string> = { ...Deno.env.toObject() };
-  if (attrs.region) {
-    env.AWS_REGION = attrs.region;
+  if (args.region) {
+    env.AWS_REGION = args.region;
   }
-  if (attrs.profile) {
-    env.AWS_PROFILE = attrs.profile;
+  if (args.profile) {
+    env.AWS_PROFILE = args.profile;
   }
 
   // Parse command into args, handling quoted strings
-  const args = parseCommand(attrs.command);
+  const cmdArgs = parseCommand(args.command);
 
   const result = await executeProcess({
     command: "aws",
-    args,
+    args: cmdArgs,
     env,
-    timeoutMs: attrs.timeout,
+    timeoutMs: args.timeout,
     logger: context.logger,
   });
 
@@ -148,7 +145,7 @@ async function executeRun(
 
   // Optionally parse JSON output
   let json: unknown = undefined;
-  if (attrs.parseJson) {
+  if (args.parseJson) {
     const trimmedOutput = result.stdout.trim();
     if (trimmedOutput.length > 0) {
       try {
@@ -184,12 +181,10 @@ async function executeRun(
  *
  * Self-registers with the global model registry when this module is imported.
  */
-export const awsCliModel: ModelDefinition<
-  typeof AwsCliInputAttributesSchema
-> = defineModel({
+export const awsCliModel: ModelDefinition = defineModel({
   type: AWS_CLI_MODEL_TYPE,
   version: "2026.02.09.1",
-  inputAttributesSchema: AwsCliInputAttributesSchema,
+  globalArguments: AwsCliInputAttributesSchema,
   resources: {
     "data": {
       description: "AWS CLI command output with execution metadata",
@@ -202,7 +197,7 @@ export const awsCliModel: ModelDefinition<
     run: {
       description:
         "Run an AWS CLI command and capture output as data attributes",
-      inputAttributesSchema: AwsCliInputAttributesSchema,
+      arguments: AwsCliInputAttributesSchema,
       execute: executeRun,
     },
   },

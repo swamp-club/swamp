@@ -92,21 +92,32 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     method: MethodDefinition,
     context: MethodContext,
   ): Promise<MethodResult> {
-    // Validate definition attributes against method's schema
-    const validationResult = method.inputAttributesSchema.safeParse(
-      definition.attributes,
-    );
+    // Validate per-method arguments against the method's schema
+    const methodArgs = definition.getMethodArguments(context.methodName);
+    const argsResult = method.arguments.safeParse(methodArgs);
 
-    if (!validationResult.success) {
+    if (!argsResult.success) {
       throw new Error(
-        `Definition validation failed: ${
-          formatZodError(validationResult.error)
+        `Method arguments validation failed: ${
+          formatZodError(argsResult.error)
         }`,
       );
     }
 
-    // Execute the method
-    const result = await method.execute(definition, context);
+    // Populate context with global args and definition metadata
+    const enrichedContext: MethodContext = {
+      ...context,
+      globalArgs: definition.globalArguments,
+      definition: {
+        id: definition.id,
+        name: definition.name,
+        version: definition.version,
+        tags: definition.tags,
+      },
+    };
+
+    // Execute the method with pre-validated args
+    const result = await method.execute(argsResult.data, enrichedContext);
 
     // Validate data handles
     if (result.dataHandles) {
@@ -180,6 +191,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // Inject into context
     const contextWithWriters: MethodContext = {
       ...context,
+      methodName,
       writeResource,
       createFileWriter,
     };

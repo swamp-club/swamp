@@ -130,6 +130,26 @@ export interface MethodContext {
   modelId: string;
 
   /**
+   * Pre-validated global arguments from the definition.
+   */
+  globalArgs: Record<string, unknown>;
+
+  /**
+   * Definition metadata for the current execution.
+   */
+  definition: {
+    id: string;
+    name: string;
+    version: number;
+    tags: Record<string, string>;
+  };
+
+  /**
+   * The name of the method being executed.
+   */
+  methodName: string;
+
+  /**
    * Optional factory for CloudControl clients (for testing).
    */
   cloudControlClientFactory?: () => CloudControlClient;
@@ -311,7 +331,7 @@ export interface MethodResult {
  * Definition of a model method.
  */
 export interface MethodDefinition<
-  TInputAttrs extends z.ZodTypeAny = z.ZodTypeAny,
+  TArgs extends z.ZodTypeAny = z.ZodTypeAny,
 > {
   /**
    * Human-readable description of what the method does.
@@ -319,20 +339,20 @@ export interface MethodDefinition<
   description: string;
 
   /**
-   * Zod schema for validating the definition attributes required by this method.
-   * The method will only execute if the definition's attributes match this schema.
+   * Zod schema for validating per-method arguments.
+   * Arguments are validated before execute() is called.
    */
-  inputAttributesSchema: TInputAttrs;
+  arguments: TArgs;
 
   /**
-   * Executes the method with the given definition and context.
+   * Executes the method with pre-validated arguments and context.
    *
-   * @param definition - The definition containing attributes
-   * @param context - Execution context
+   * @param args - Pre-validated method arguments (matches the `arguments` schema)
+   * @param context - Execution context (includes globalArgs, definition metadata)
    * @returns The method result
    */
   execute(
-    definition: Definition,
+    args: z.infer<TArgs>,
     context: MethodContext,
   ): Promise<MethodResult>;
 }
@@ -364,7 +384,7 @@ export interface VersionUpgrade {
  * - Optional upgrade chain for migrating definitions between versions
  */
 export interface ModelDefinition<
-  TInputAttrs extends z.ZodTypeAny = z.ZodTypeAny,
+  TGlobalArgs extends z.ZodTypeAny = z.ZodTypeAny,
 > {
   /**
    * The model type.
@@ -378,9 +398,9 @@ export interface ModelDefinition<
   version: string;
 
   /**
-   * Zod schema for validating definition attributes.
+   * Optional Zod schema for validating global arguments shared across all methods.
    */
-  inputAttributesSchema: TInputAttrs;
+  globalArguments?: TGlobalArgs;
 
   /**
    * Resource output specifications — structured JSON data validated against a Zod schema.
@@ -566,10 +586,10 @@ export const modelRegistry: ModelRegistry = (globalThis as any)[
  * @returns The same model definition (for re-export)
  */
 export function defineModel<
-  TInputAttrs extends z.ZodTypeAny,
+  TGlobalArgs extends z.ZodTypeAny,
 >(
-  definition: ModelDefinition<TInputAttrs>,
-): ModelDefinition<TInputAttrs> {
+  definition: ModelDefinition<TGlobalArgs>,
+): ModelDefinition<TGlobalArgs> {
   if (!modelRegistry.has(definition.type)) {
     modelRegistry.register(definition);
   }

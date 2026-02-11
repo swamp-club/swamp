@@ -2,7 +2,6 @@ import { z } from "zod";
 import { join, resolve } from "@std/path";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
-import type { Definition } from "../definitions/definition.ts";
 import {
   type DataHandle,
   FileOutputSpecSchema,
@@ -29,10 +28,10 @@ interface UserMethodResult {
 
 /**
  * User method execute function type.
- * User models receive Definition.
+ * User models receive pre-validated args and context.
  */
 type UserExecuteFn = (
-  definition: Definition,
+  args: Record<string, unknown>,
   context: MethodContext,
 ) => Promise<UserMethodResult>;
 
@@ -41,9 +40,9 @@ type UserExecuteFn = (
  */
 const UserMethodSchema = z.object({
   description: z.string(),
-  inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
+  arguments: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
-  ).optional(),
+  ),
   execute: z.custom<UserExecuteFn>((val) => typeof val === "function"),
 }).passthrough();
 
@@ -68,9 +67,9 @@ const UserModelSchema = z.object({
   version: z.string().refine(CalVer.isValid, {
     message: "version must be valid CalVer (YYYY.MM.DD.MICRO)",
   }),
-  inputAttributesSchema: z.custom<z.ZodTypeAny>((val) =>
+  globalArguments: z.custom<z.ZodTypeAny>((val) =>
     val instanceof z.ZodType
-  ),
+  ).optional(),
   resources: z.record(z.string(), ResourceOutputSpecSchema).optional(),
   files: z.record(z.string(), FileOutputSpecSchema).optional(),
   methods: z.record(z.string(), UserMethodSchema),
@@ -104,16 +103,16 @@ function formatUserModelError(error: z.ZodError): string {
     );
   }
 
-  // Check for missing inputAttributesSchema
-  const inputSchemaIssue = issues.find(
-    (i) => i.path[0] === "inputAttributesSchema",
+  // Check for missing method arguments schema
+  const methodArgsIssue = issues.find(
+    (i) => i.path[0] === "methods" && String(i.path[2]) === "arguments",
   );
-  if (inputSchemaIssue) {
+  if (methodArgsIssue) {
     return (
-      "Missing or invalid 'inputAttributesSchema'. " +
-      "Add a Zod schema to validate model inputs.\n\n" +
+      "Missing or invalid 'arguments' on method definition. " +
+      "Add a Zod schema to validate method arguments.\n\n" +
       "Example:\n" +
-      "  inputAttributesSchema: z.object({\n" +
+      "  arguments: z.object({\n" +
       '    name: z.string().describe("Resource name"),\n' +
       "  }),"
     );
@@ -151,7 +150,8 @@ function formatUserModelError(error: z.ZodError): string {
       "  methods: {\n" +
       "    run: {\n" +
       '      description: "Execute the model",\n' +
-      "      execute: async (definition, context) => {\n" +
+      "      arguments: z.object({}),\n" +
+      "      execute: async (args, context) => {\n" +
       "        // Your logic here\n" +
       "        return { dataHandles: [] };\n" +
       "      },\n" +
@@ -366,7 +366,7 @@ export class UserModelLoader {
       }
     }
 
-    // Get the target model's inputAttributesSchema for methods without their own
+    // Get the target model for extension
     const targetModel = modelRegistry.get(ext.type);
     if (!targetModel) {
       result.failed.push({
@@ -381,8 +381,7 @@ export class UserModelLoader {
     for (const [name, method] of Object.entries(flatMethods)) {
       methods[name] = {
         description: method.description,
-        inputAttributesSchema: method.inputAttributesSchema ??
-          targetModel.inputAttributesSchema,
+        arguments: method.arguments,
         execute: this.wrapUserExecute(method.execute),
       };
     }
@@ -402,9 +401,12 @@ export class UserModelLoader {
    */
   private wrapUserExecute(
     userExecuteFn: UserExecuteFn,
-  ): (definition: Definition, context: MethodContext) => Promise<MethodResult> {
-    return async (definition, context): Promise<MethodResult> => {
-      const userResult = await userExecuteFn(definition, context);
+  ): (
+    args: Record<string, unknown>,
+    context: MethodContext,
+  ) => Promise<MethodResult> {
+    return async (args, context): Promise<MethodResult> => {
+      const userResult = await userExecuteFn(args, context);
 
       return { dataHandles: userResult.dataHandles };
     };
@@ -423,8 +425,7 @@ export class UserModelLoader {
     for (const [name, method] of Object.entries(userModel.methods)) {
       methods[name] = {
         description: method.description,
-        inputAttributesSchema: method.inputAttributesSchema ??
-          userModel.inputAttributesSchema,
+        arguments: method.arguments,
         execute: this.wrapUserExecute(method.execute),
       };
     }
@@ -441,7 +442,7 @@ export class UserModelLoader {
     return {
       type: modelType,
       version: userModel.version,
-      inputAttributesSchema: userModel.inputAttributesSchema,
+      globalArguments: userModel.globalArguments,
       resources: userModel.resources,
       files: userModel.files,
       methods,

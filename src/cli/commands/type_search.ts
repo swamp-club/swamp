@@ -58,14 +58,14 @@ function displayTypeDescribe(item: TypeSearchItem, options: AnyOptions): void {
     throw new UserError(`Type not found: ${item.normalized}`);
   }
 
-  const inputAttributesSchema = zodToJsonSchema(
-    definition.inputAttributesSchema,
-  );
+  const globalArguments = definition.globalArguments
+    ? zodToJsonSchema(definition.globalArguments)
+    : undefined;
 
   const methods = Object.entries(definition.methods).map(([name, method]) => ({
     name,
     description: method.description,
-    inputAttributesSchema: zodToJsonSchema(method.inputAttributesSchema),
+    arguments: zodToJsonSchema(method.arguments),
   }));
 
   renderTypeDescribe(
@@ -75,7 +75,7 @@ function displayTypeDescribe(item: TypeSearchItem, options: AnyOptions): void {
         normalized: modelType.normalized,
       },
       version: definition.version,
-      inputAttributesSchema,
+      globalArguments,
       methods,
     },
     ctx.outputMode,

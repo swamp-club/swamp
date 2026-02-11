@@ -1,8 +1,5 @@
 import { assertEquals } from "@std/assert";
-import {
-  createDefinitionId,
-  Definition,
-} from "../../../definitions/definition.ts";
+import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
   MERMAID_WORKFLOW_MODEL_TYPE,
   type MermaidWorkflowInputAttributes,
@@ -213,6 +210,14 @@ function createTestContext(): {
     repoDir: "/tmp",
     modelType: MERMAID_WORKFLOW_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: {
+      id: crypto.randomUUID(),
+      name: "test-definition",
+      version: 1,
+      tags: {},
+    },
+    methodName: "generate",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -280,14 +285,9 @@ Deno.test("mermaidWorkflowModel: generate creates Mermaid diagram for simple wor
     },
   };
 
-  const definition = Definition.create({
-    name: "test-diagram",
-    attributes: inputAttributes,
-  });
-
   const { context, getResults } = createTestContext();
   const result = await mermaidWorkflowModel.methods.generate.execute(
-    definition,
+    inputAttributes,
     context,
   );
 
@@ -345,14 +345,9 @@ Deno.test("mermaidWorkflowModel: generate creates simple diagram without steps",
     },
   };
 
-  const definition = Definition.create({
-    name: "simple-diagram",
-    attributes: inputAttributes,
-  });
-
   const { context, getResults } = createTestContext();
   await mermaidWorkflowModel.methods.generate.execute(
-    definition,
+    inputAttributes,
     context,
   );
 
@@ -467,14 +462,9 @@ Deno.test("mermaidWorkflowModel: generate handles complex workflow with multiple
     },
   };
 
-  const definition = Definition.create({
-    name: "complex-diagram",
-    attributes: inputAttributes,
-  });
-
   const { context, getResults } = createTestContext();
   await mermaidWorkflowModel.methods.generate.execute(
-    definition,
+    inputAttributes,
     context,
   );
 
