@@ -1,5 +1,13 @@
 # Calling Workflows from Workflows
 
+## Table of Contents
+
+- [Basic Nested Workflow](#basic-nested-workflow)
+- [Workflow Task Fields](#workflow-task-fields)
+- [Nested Workflow with forEach](#nested-workflow-with-foreach)
+- [Expression Choice for Sub-Workflows](#expression-choice-for-sub-workflows)
+- [Limitations](#limitations)
+
 Steps can invoke another workflow using `type: workflow`. The parent step waits
 for the child workflow to complete before continuing.
 
@@ -95,6 +103,16 @@ jobs:
           inputs:
             environment: ${{ self.env }}
 ```
+
+## Expression Choice for Sub-Workflows
+
+Sub-workflow model instances **must** use `data.latest()` instead of `model.*`
+to reference data produced by the parent workflow. `model.*` cannot see data
+from prior workflow steps because workflow-produced data is tagged
+`step-output`, which `buildContext()` filters out when populating
+`model.*.resource.*`. Only `data.latest()` reads persisted data regardless of
+tags. See [data-chaining.md](data-chaining.md) for the full scoping rules and a
+concrete example using a tag-networking sub-workflow.
 
 ## Limitations
 

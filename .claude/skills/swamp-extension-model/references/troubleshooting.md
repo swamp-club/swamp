@@ -1,5 +1,22 @@
 # Troubleshooting Extension Models
 
+## Table of Contents
+
+- [Common Errors](#common-errors)
+  - [No 'model' or 'extension' export found](#no-model-or-extension-export-found)
+  - [Unknown resource spec / Unknown file spec](#unknown-resource-spec-or-unknown-file-spec)
+  - [Model type already registered](#model-type-already-registered)
+  - [Model type must use '@' prefix](#model-type-must-use--prefix)
+  - [Uses a reserved namespace](#uses-a-reserved-namespace)
+  - [Cannot extend unregistered model type](#cannot-extend-unregistered-model-type)
+  - [Method already exists](#method-x-already-exists-on-model-type-y)
+  - [Duplicate method name](#duplicate-method-name-x-within-extension-methods-array)
+  - [No such key in CEL expressions](#no-such-key-specname-in-cel-expressions)
+  - [Property not found in expression path validation](#property-not-found-in-expression-path-validation)
+  - [Syntax errors on load](#syntax-errors-on-load)
+- [Configuration](#configuration)
+- [Verification Commands](#verification-commands)
+
 ## Common Errors
 
 ### "No 'model' or 'extension' export found"
@@ -100,6 +117,62 @@ method name.
 The same method name appears in multiple elements of the `methods` array within
 a single extension file. Each method name must be unique across all array
 elements.
+
+### "No such key: &lt;specName&gt;" in CEL expressions
+
+This occurs when a CEL expression like
+`model.<m>.resource.<specName>.attributes.X` can't find the resource. Common
+causes:
+
+**1. `writeResource` used a `name` override.** When you pass
+`{ name: "custom-name" }` to `writeResource`, the resource is stored under
+`"custom-name"` instead of the spec name. The CEL expression must then use the
+instance name: `model.<m>.resource.custom-name.attributes.X`. For
+single-resource models, omit the `name` override so the instance name defaults
+to the spec name.
+
+```typescript
+// Wrong — stores as "vpc-abc123", breaks model.<m>.resource.vpc
+await context.writeResource("vpc", data, { name: vpcId });
+
+// Correct — stores as "vpc", model.<m>.resource.vpc works
+await context.writeResource("vpc", data);
+```
+
+**2. Resource spec name contains hyphens.** CEL interprets hyphens as
+subtraction, so `model.<m>.resource.internet-gateway` is parsed as
+`resource.internet` minus `gateway`. Use camelCase or single words for spec
+names (e.g., `igw`, `routeTable`).
+
+**3. Model has never been executed.** The `resource` key on `model.<name>` is
+only populated if the model has produced data (a method was run that called
+`writeResource`). If no data exists, `model.<name>` has `input` and `definition`
+keys but no `resource` key. Run the create method or workflow first, or check
+with `swamp data list <model-name>` to verify data exists.
+
+**4. Cross-workflow `model.*` reference (tag mismatch).** Data written via a
+workflow step is tagged `type: "step-output"`. When a _different_ workflow run
+starts, `buildContext()` only populates `model.*.resource.*` for data tagged
+`type: "resource"` — so workflow-produced data is invisible to `model.*`
+expressions. Use `data.latest("<model-name>", "<spec>")` instead, which reads
+persisted data regardless of tags. This is the most common cause when `model.*`
+works in a create workflow but fails in a subsequent delete or tag workflow. See
+the `swamp-workflow` skill's data-chaining reference for details.
+
+### "Property not found" in expression path validation
+
+The expression path validator checks that referenced attributes exist in the
+resource's Zod schema. If you use `z.object({}).passthrough()`, the schema has
+no declared properties and the validator can't resolve paths like
+`attributes.VpcId`. Declare the properties you need to reference:
+
+```typescript
+// Wrong — validator can't resolve attributes.VpcId
+schema: z.object({}).passthrough(),
+
+// Correct — VpcId is declared, .passthrough() allows additional fields
+schema: z.object({ VpcId: z.string() }).passthrough(),
+```
 
 ### Syntax errors on load
 

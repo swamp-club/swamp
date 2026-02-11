@@ -190,6 +190,27 @@ resources: {
 | `garbageCollection` | Yes      | Version retention policy                      |
 | `tags`              | No       | Extra tags (auto-includes `type: "resource"`) |
 
+**Spec naming:** Resource spec keys must not contain hyphens (`-`). CEL
+expressions use dot-notation to access resources
+(`model.<m>.resource.<specName>.attributes.<field>`), and hyphens in spec names
+are interpreted as the subtraction operator. Use camelCase or single words
+instead (e.g., `igw` not `internet-gateway`, `routeTable` not `route-table`).
+
+**Schema and expression validation:** If your resource will be referenced by
+other models via CEL expressions, you must declare the referenced properties
+explicitly in the Zod schema. Using `z.object({}).passthrough()` allows any data
+to be stored, but the expression path validator cannot resolve attribute
+references against an empty schema. Always declare the key properties you need
+to reference:
+
+```typescript
+// Wrong — expression validator can't resolve attributes.VpcId
+schema: z.object({}).passthrough(),
+
+// Correct — VpcId is declared so expressions can reference it
+schema: z.object({ VpcId: z.string() }).passthrough(),
+```
+
 ### File Specs
 
 Files are binary or text content (including logs):
@@ -233,10 +254,12 @@ execute: (async (definition, context) => {
   // definition.attributes - Validated input data (expressions already resolved)
   // context.repoDir       - Repository root path
   // context.logger        - LogTape Logger for emitting log messages
-  // context.dataRepository - For advanced data operations
-  // context.writeResource  - Write structured JSON data (validates against schema)
+  // context.dataRepository   - For advanced data operations
+  // context.modelType        - The ModelType for this execution
+  // context.modelId          - The model instance ID (definition ID)
+  // context.writeResource    - Write structured JSON data (validates against schema)
   // context.createFileWriter - Create a writer for binary/text files
-  // context.inputs        - Runtime inputs (if inputsSchema defined)
+  // context.inputs           - Runtime inputs (if inputsSchema defined)
 
   // 1. Write a resource — specName must match a key in `resources`
   const handle = await context.writeResource!("result", {
@@ -264,6 +287,16 @@ against the resource's Zod schema (warns on mismatch, doesn't throw).
 | `lifetime`          | Override lifetime (default from spec)          |
 | `garbageCollection` | Override version retention (default from spec) |
 | `tags`              | Additional tags                                |
+
+**Important: `name` override and CEL resolution.** By default, the resource
+instance name matches the spec name, so
+`model.<m>.resource.<specName>.attributes.X` resolves correctly. If you pass a
+`name` override, the resource is stored under that custom name instead — the CEL
+expression `model.<m>.resource.<specName>` will fail with "No such key" because
+the instance name no longer matches. Only use `name` overrides for factory
+models that produce multiple resources from one spec (see Factory Models below).
+For single-resource models, omit the `name` override so the default spec name is
+used and CEL chaining works as expected.
 
 ### createFileWriter API
 
@@ -310,6 +343,38 @@ for binary/streaming content.
 **UserMethodResult:**
 
 The execute function returns `{ dataHandles?: DataHandle[] }`.
+
+### Reading Stored Data
+
+Delete and update methods need to read back previously stored resource data
+(e.g., to get a resource ID for cleanup). Use `context.dataRepository` with
+`context.modelType` and `context.modelId`:
+
+```typescript
+const content = await context.dataRepository.getContent(
+  context.modelType,
+  context.modelId,
+  "<specName>", // matches a key in resources
+);
+// Returns Uint8Array | null
+```
+
+To parse the content:
+
+```typescript
+if (!content) {
+  throw new Error("No data found - nothing to delete");
+}
+const data = JSON.parse(new TextDecoder().decode(content));
+```
+
+**Key dataRepository methods for model authors:**
+
+| Method                                          | Returns              | Description                            |
+| ----------------------------------------------- | -------------------- | -------------------------------------- |
+| `getContent(type, modelId, dataName, version?)` | `Uint8Array \| null` | Get raw content bytes                  |
+| `findByName(type, modelId, dataName, version?)` | `Data \| null`       | Get data metadata (tags, version, etc) |
+| `findAllForModel(type, modelId)`                | `Data[]`             | List all data for this model instance  |
 
 ### Lifetime Values
 
@@ -819,6 +884,25 @@ methods: {
 },
 ```
 
+### CRUD Lifecycle Model
+
+Models that manage real resources typically have `create`, `update`, and
+`delete` methods. See
+[references/examples.md](references/examples.md#crud-lifecycle-model-vpc) for a
+complete VPC example with all three methods.
+
+**Pattern summary:**
+
+- **`create`** — run a command, store the result via `writeResource()`
+- **`update`** — read stored data via `context.dataRepository.getContent()`,
+  modify the resource, write updated state via `writeResource()`
+- **`delete`** — read stored data, clean up, return `{ dataHandles: [] }`
+
+**Expression scoping:** `model.*` is intra-workflow only; `data.latest()` is
+cross-workflow only. They are not interchangeable. See the `swamp-workflow`
+skill's [data-chaining reference](../swamp-workflow/references/data-chaining.md)
+for full scoping rules.
+
 ## Verify
 
 After creating your model:
@@ -840,6 +924,11 @@ swamp model type describe @myorg/my-model   # Check schema
 
 ## References
 
+- **Examples**: See [references/examples.md](references/examples.md) for
+  complete model examples (CRUD lifecycle, data chaining, extensions, etc.)
+- **Troubleshooting**: See
+  [references/troubleshooting.md](references/troubleshooting.md) for common
+  errors and fixes
 - **Built-in example**: See `src/domain/models/echo/echo_model.ts` for reference
 - **Model loader**: See `src/domain/models/user_model_loader.ts` for API details
 - **Model design**: See [design/models.md](design/models.md) for concepts

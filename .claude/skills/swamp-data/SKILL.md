@@ -283,7 +283,12 @@ swamp data gc -f --json  # Skip confirmation prompt
 
 ## Accessing Data in Expressions
 
-Use CEL expressions to access model data in workflows and model inputs:
+Use CEL expressions to access model data in workflows and model inputs.
+
+**Note:** `model.<name>.resource.<spec>` requires the model to have previously
+produced data (a method was run that called `writeResource`). If no data exists
+yet, accessing `.resource` will fail with "No such key". Use
+`swamp data list <model-name>` to verify data exists.
 
 ```yaml
 # Access latest resource data via dot notation
@@ -347,12 +352,21 @@ subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 
 **Key rules:**
 
-- `model.<name>.resource.<specName>` accesses the latest version of a resource
+- `model.<name>.resource.<specName>` — **intra-workflow only**. Sees data
+  written by earlier steps in the current run (in-memory context updates). Does
+  NOT see data from prior workflow runs (filtered by `type: "resource"` tag,
+  missing workflow-produced `step-output` data). Creates implicit step
+  dependencies in workflows.
 - `model.<name>.file.<specName>` accesses file metadata (path, size,
-  contentType)
+  contentType). Same intra-workflow scope as `model.*.resource.*`.
+- `data.latest(modelName, dataName)` — **cross-workflow only**. Reads persisted
+  data regardless of tags. Does NOT see data written earlier in the same
+  workflow run. Does not create implicit step dependencies.
 - Use `data.version()` function for specific versions
 - Use `data.findByTag()` to query across models
-- Resource/file expressions create implicit step dependencies in workflows
+- Use separate model instances for different lifecycle phases: `model.*` for
+  create workflows, `data.latest()` for tag/delete workflows. See the
+  `swamp-workflow` skill's data-chaining reference for full details.
 
 ## Data Ownership
 

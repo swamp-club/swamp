@@ -1,5 +1,19 @@
 # Expressions, forEach, and Data Tracking
 
+## Table of Contents
+
+- [forEach Iteration](#foreach-iteration)
+  - [Iterate Over Array](#iterate-over-array)
+  - [Iterate Over Object](#iterate-over-object)
+  - [forEach Variables](#foreach-variables)
+- [Step Task Inputs](#step-task-inputs)
+- [Expressions in Workflows](#expressions-in-workflows)
+  - [Automatic Dependency Resolution](#automatic-dependency-resolution)
+  - [Environment Variables](#environment-variables)
+- [Data Artifact Tracking](#data-artifact-tracking)
+  - [Automatic Tagging](#automatic-tagging)
+  - [Querying Workflow Data](#querying-workflow-data)
+
 ## forEach Iteration
 
 Steps can iterate over arrays or objects using `forEach`. Each iteration creates
@@ -121,6 +135,14 @@ jobs:
 # If subnet-input has: vpcId: ${{ model.vpc-input.resource.resource.attributes.vpcId }}
 # create-vpc runs first due to implicit dependency
 ```
+
+**Important:** `model.*` is **intra-workflow only** — it sees data from earlier
+steps in the current run but NOT data from prior workflow runs
+(workflow-produced data is tagged `step-output`, which `buildContext()` filters
+out). For cross-workflow references (tag, delete, or sub-workflows), use
+`data.latest()`. `model.*` also creates implicit dependencies that cause cyclic
+errors if reused in reversed-order workflows. See
+[data-chaining.md](data-chaining.md) for the full scoping rules.
 
 ### Environment Variables
 
