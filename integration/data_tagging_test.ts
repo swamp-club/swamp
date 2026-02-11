@@ -179,7 +179,7 @@ Deno.test("Data Tagging: findByTag returns matching records", async () => {
       const definition = Definition.create({
         name: model.name,
         tags: {},
-        attributes: {},
+        globalArguments: {},
       });
       await definitionRepo.save(type, definition);
 
@@ -245,7 +245,7 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
       const definition = Definition.create({
         name: `${env}-model`,
         tags: {},
-        attributes: {},
+        globalArguments: {},
       });
       await definitionRepo.save(type, definition);
 
@@ -300,7 +300,7 @@ Deno.test("Data Tagging: findByTag returns all versions with matching tag", asyn
     const definition = Definition.create({
       name: "versioned-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -367,7 +367,7 @@ Deno.test("Data Tagging: different type categories", async () => {
       const definition = Definition.create({
         name: `${category.name}-model`,
         tags: {},
-        attributes: {},
+        globalArguments: {},
       });
       await definitionRepo.save(type, definition);
 
@@ -424,7 +424,7 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
         const definition = Definition.create({
           name: `${wf.workflow}-${step}`,
           tags: {},
-          attributes: {},
+          globalArguments: {},
         });
         await definitionRepo.save(type, definition);
 
@@ -492,7 +492,7 @@ Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async 
     const definition = Definition.create({
       name: "my-vpc",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -550,7 +550,7 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
     const definition = Definition.create({
       name: "multi-output-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -670,7 +670,7 @@ Deno.test("Data Tagging: special characters in tag values", async () => {
     const definition = Definition.create({
       name: "special-tags-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 

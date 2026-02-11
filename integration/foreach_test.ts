@@ -73,8 +73,13 @@ async function createEchoModel(repoDir: string, name: string): Promise<void> {
     name,
     version: 1,
     tags: {},
-    attributes: {
-      message: "default",
+    globalArguments: {},
+    methods: {
+      write: {
+        arguments: {
+          message: "default",
+        },
+      },
     },
   };
 

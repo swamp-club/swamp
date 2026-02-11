@@ -89,8 +89,13 @@ async function createEchoModelWithInputs(
       },
       required: ["environment"],
     },
-    attributes: {
-      message: "${{ inputs.environment }}",
+    globalArguments: {},
+    methods: {
+      write: {
+        arguments: {
+          message: "${{ inputs.environment }}",
+        },
+      },
     },
   };
 
@@ -326,7 +331,14 @@ Deno.test("CLI: workflow run with input-file works", async () => {
       name: "test-model",
       version: 1,
       tags: {},
-      attributes: { message: "hello" },
+      globalArguments: {},
+      methods: {
+        write: {
+          arguments: {
+            message: "hello",
+          },
+        },
+      },
     };
     const modelDir = join(repoDir, ".swamp/definitions/swamp/echo");
     await ensureDir(modelDir);
@@ -420,8 +432,13 @@ Deno.test("CLI: input validation reports type mismatch", async () => {
         },
         required: ["name"],
       },
-      attributes: {
-        message: "${{ inputs.name }}",
+      globalArguments: {},
+      methods: {
+        write: {
+          arguments: {
+            message: "${{ inputs.name }}",
+          },
+        },
       },
     };
 
@@ -472,8 +489,13 @@ Deno.test("CLI: input validation reports multiple errors", async () => {
         },
         required: ["name", "count"],
       },
-      attributes: {
-        message: "${{ inputs.name }}",
+      globalArguments: {},
+      methods: {
+        write: {
+          arguments: {
+            message: "${{ inputs.name }}",
+          },
+        },
       },
     };
 

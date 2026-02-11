@@ -1,12 +1,45 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { z } from "zod";
 import {
   DefaultModelValidationService,
   ValidationResult,
 } from "./validation_service.ts";
 import { Definition, type DefinitionId } from "../definitions/definition.ts";
 import { echoModel } from "./echo/echo_model.ts";
+import { defineModel, type ModelDefinition } from "./model.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "./model_type.ts";
+
+/**
+ * Test model with globalArguments schema for expression path validation tests.
+ */
+const TestGlobalArgsSchema = z.object({
+  message: z.string(),
+});
+const TEST_EXPR_MODEL_TYPE = ModelType.create("test/expr-validation");
+const testExprModel: ModelDefinition = defineModel({
+  type: TEST_EXPR_MODEL_TYPE,
+  version: "2026.02.09.1",
+  globalArguments: TestGlobalArgsSchema,
+  resources: {
+    "message": {
+      description: "Test output",
+      schema: z.object({ message: z.string() }),
+      lifetime: "ephemeral",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    write: {
+      description: "Write test",
+      arguments: z.object({ message: z.string() }),
+      execute: async (_args, context) => {
+        const handle = await context.writeResource!("message", {});
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+});
 
 /**
  * Creates a mock definition repository for testing expression path validation.
@@ -93,59 +126,65 @@ Deno.test("ValidationResult.equals returns false for different errors", () => {
 
 // DefaultModelValidationService tests
 
-Deno.test("validateModel with valid definition returns 2 passing results", async () => {
+Deno.test("validateModel with valid definition returns 3 passing results", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
+    methods: { write: { arguments: { message: "hello" } } },
   });
 
   const results = await service.validateModel(definition, echoModel);
 
-  assertEquals(results.length, 2);
+  assertEquals(results.length, 3);
   assertEquals(results[0].name, "Definition schema");
   assertEquals(results[0].passed, true);
-  assertEquals(results[1].name, "Definition attributes");
+  assertEquals(results[1].name, "Global arguments");
   assertEquals(results[1].passed, true);
+  assertEquals(results[2].name, "Method arguments");
+  assertEquals(results[2].passed, true);
 });
 
-Deno.test("validateModel with invalid definition attributes returns failing result", async () => {
+Deno.test("validateModel with invalid method arguments returns failing result", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { wrongAttribute: "hello" }, // Missing required 'message'
+    globalArguments: { wrongAttribute: "hello" },
+    methods: { write: { arguments: { wrongAttribute: "hello" } } }, // Missing required 'message'
   });
 
   const results = await service.validateModel(definition, echoModel);
 
-  assertEquals(results.length, 2);
+  assertEquals(results.length, 3);
   assertEquals(results[0].name, "Definition schema");
   assertEquals(results[0].passed, true);
-  assertEquals(results[1].name, "Definition attributes");
-  assertEquals(results[1].passed, false);
-  assertEquals(typeof results[1].error, "string");
+  assertEquals(results[2].name, "Method arguments");
+  assertEquals(results[2].passed, false);
+  assertEquals(typeof results[2].error, "string");
 });
 
 Deno.test("validateModel with empty message returns failing result", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "" }, // Empty message fails min(1) validation
+    globalArguments: { message: "" },
+    methods: { write: { arguments: { message: "" } } }, // Empty message fails min(1) validation
   });
 
   const results = await service.validateModel(definition, echoModel);
 
-  assertEquals(results.length, 2);
+  assertEquals(results.length, 3);
   assertEquals(results[0].passed, true);
-  assertEquals(results[1].passed, false);
-  assertEquals(results[1].error !== undefined, true);
+  assertEquals(results[2].passed, false);
+  assertEquals(results[2].error !== undefined, true);
 });
 
 Deno.test("validateModel runs validations in parallel", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
+    methods: { write: { arguments: { message: "hello" } } },
   });
 
   // Run multiple times to verify parallel execution doesn't cause issues
@@ -157,7 +196,7 @@ Deno.test("validateModel runs validations in parallel", async () => {
   const allResults = await Promise.all(promises);
 
   for (const results of allResults) {
-    assertEquals(results.length, 2);
+    assertEquals(results.length, 3);
     assertEquals(results.every((r) => r.passed), true);
   }
 });
@@ -168,21 +207,29 @@ Deno.test("validateModel with expression paths passes for valid path", async () 
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
-      message: "${{ model.target-model.input.attributes.message }}",
+    globalArguments: {
+      message: "${{ model.target-model.input.globalArguments.message }}",
     },
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -192,21 +239,29 @@ Deno.test("validateModel with expression paths fails for invalid attribute", asy
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
-      message: "${{ model.target-model.input.attributes.nonExistent }}",
+    globalArguments: {
+      message: "${{ model.target-model.input.globalArguments.nonExistent }}",
     },
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -218,8 +273,8 @@ Deno.test("validateModel with expression paths fails for non-existent model", as
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
-      message: "${{ model.missing-model.input.attributes.message }}",
+    globalArguments: {
+      message: "${{ model.missing-model.input.globalArguments.message }}",
     },
   });
 
@@ -239,7 +294,7 @@ Deno.test("validateModel with expression paths validates self references", async
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "${{ self.name }}" },
+    globalArguments: { message: "${{ self.name }}" },
   });
 
   const mockRepo = createMockDefinitionRepo([
@@ -256,14 +311,18 @@ Deno.test("validateModel with expression paths fails for invalid self attribute"
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "${{ self.attributes.nonExistent }}" },
+    globalArguments: { message: "${{ self.globalArguments.nonExistent }}" },
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -274,7 +333,7 @@ Deno.test("validateModel with expression paths fails for invalid self segment", 
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "${{ self.wrongSegment }}" },
+    globalArguments: { message: "${{ self.wrongSegment }}" },
   });
 
   const mockRepo = createMockDefinitionRepo([
@@ -292,22 +351,30 @@ Deno.test("validateModel with expression paths provides typo suggestion", async 
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // "mesage" is a typo for "message"
-      message: "${{ model.target-model.input.attributes.mesage }}",
+      message: "${{ model.target-model.input.globalArguments.mesage }}",
     },
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -318,8 +385,8 @@ Deno.test("validateModel without definitionRepo skips expression validation", as
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
-      message: "${{ model.missing.input.attributes.foo }}",
+    globalArguments: {
+      message: "${{ model.missing.input.globalArguments.foo }}",
     },
   });
 
@@ -327,7 +394,7 @@ Deno.test("validateModel without definitionRepo skips expression validation", as
   const results = await service.validateModel(definition, echoModel);
 
   // Should only have definition schema and definition attributes validations
-  assertEquals(results.length, 2);
+  assertEquals(results.length, 3);
   assertEquals(results.every((r) => r.name !== "Expression paths"), true);
 });
 
@@ -335,7 +402,7 @@ Deno.test("validateModel with no expressions passes validation", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "plain string with no expressions" },
+    globalArguments: { message: "plain string with no expressions" },
   });
 
   const mockRepo = createMockDefinitionRepo([
@@ -354,7 +421,7 @@ Deno.test("validateModel detects malformed expression with missing $ prefix", as
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // Missing $ prefix - should be ${{ ... }}
       message: "{{my-vpc.VpcId}}",
     },
@@ -376,7 +443,7 @@ Deno.test("validateModel detects malformed expression with single braces", async
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // Single braces - should be ${{ ... }}
       message: "${model.my-vpc.resource.attributes.VpcId}",
     },
@@ -398,7 +465,7 @@ Deno.test("validateModel detects malformed expression in nested attributes", asy
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       message: "valid",
       nested: {
         value: "{{invalid-expression}}",
@@ -421,7 +488,7 @@ Deno.test("validateModel detects incomplete model reference like my-vpc.VpcId", 
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // Missing "model." prefix and ".resource.attributes" path
       message: "${{my-vpc.VpcId}}",
     },
@@ -443,7 +510,7 @@ Deno.test("validateModel detects simple identifier expression", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // Just a model name without any path
       message: "${{ my-vpc }}",
     },
@@ -466,11 +533,11 @@ Deno.test("validateModel with resource path passes for valid DataRecord field", 
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       message: "${{ model.target-model.resource.message.attributes.message }}",
     },
   });
@@ -492,11 +559,11 @@ Deno.test("validateModel fails for missing .attributes segment", async () => {
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // Missing .attributes - directly accessing .message
       message: "${{ model.target-model.input.message }}",
     },
@@ -519,11 +586,11 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // "attribute" is not a valid DataRecord field, should be "attributes"
       message: "${{ model.target-model.resource.message.attribute.message }}",
     },
@@ -545,11 +612,11 @@ Deno.test("validateModel with resource path passes for nested attributes in Data
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       msg: "${{ model.target-model.resource.message.attributes.message }}",
     },
   });
@@ -569,11 +636,11 @@ Deno.test("validateModel with resource path passes for scalar DataRecord field",
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       allData: "${{ model.target-model.resource.message.id }}",
     },
   });
@@ -593,11 +660,11 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
   const service = new DefaultModelValidationService();
   const targetDefinition = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       bad: "${{ model.target-model.resource.message.badfield }}",
     },
   });
@@ -620,27 +687,31 @@ Deno.test("validateModel validates multiple model references in same expression"
   const service = new DefaultModelValidationService();
   const model1 = Definition.create({
     name: "model-1",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const model2 = Definition.create({
     name: "model-2",
-    attributes: { message: "world" },
+    globalArguments: { message: "world" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       message:
-        "${{ model.model-1.input.attributes.message + model.model-2.input.attributes.message }}",
+        "${{ model.model-1.input.globalArguments.message + model.model-2.input.globalArguments.message }}",
     },
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "model-1", type: "swamp/echo", definition: model1 },
-    { name: "model-2", type: "swamp/echo", definition: model2 },
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "model-1", type: "test/expr-validation", definition: model1 },
+    { name: "model-2", type: "test/expr-validation", definition: model2 },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -650,23 +721,27 @@ Deno.test("validateModel fails when one of multiple model references is invalid"
   const service = new DefaultModelValidationService();
   const model1 = Definition.create({
     name: "model-1",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // model-1 is valid, model-2 doesn't exist
       message:
-        "${{ model.model-1.input.attributes.message + model.model-2.input.attributes.message }}",
+        "${{ model.model-1.input.globalArguments.message + model.model-2.input.globalArguments.message }}",
     },
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "model-1", type: "swamp/echo", definition: model1 },
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "model-1", type: "test/expr-validation", definition: model1 },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -678,21 +753,30 @@ Deno.test("validateModel validates mixed model and self references", async () =>
   const service = new DefaultModelValidationService();
   const targetModel = Definition.create({
     name: "target-model",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
-      message: "${{ model.target-model.input.attributes.message + self.name }}",
+    globalArguments: {
+      message:
+        "${{ model.target-model.input.globalArguments.message + self.name }}",
     },
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetModel },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetModel,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -704,7 +788,7 @@ Deno.test("validateModel passes for CEL literal expressions", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       // Valid CEL literal - should not be flagged as invalid
       message: "${{ 'hello world' }}",
     },
@@ -724,7 +808,7 @@ Deno.test("validateModel passes for CEL numeric expressions", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       message: "${{ 42 }}",
     },
   });
@@ -745,7 +829,7 @@ Deno.test("validateModel passes for file.contents expression", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       message: "${{ file.contents('my-model', 'report') }}",
     },
   });
@@ -764,7 +848,7 @@ Deno.test("validateModel passes for data.latest expression", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {
+    globalArguments: {
       message: "${{ data.latest('my-model', 'output').attributes.id }}",
     },
   });

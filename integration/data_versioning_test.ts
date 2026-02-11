@@ -356,7 +356,7 @@ Deno.test("Data Versioning: access specific version via data.version()", async (
     const definition = Definition.create({
       name: "version-access-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -427,7 +427,7 @@ Deno.test("Data Versioning: listVersions returns all versions in order", async (
     const definition = Definition.create({
       name: "list-versions-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 

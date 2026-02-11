@@ -209,6 +209,9 @@ function createTestContext(): {
     repoDir: "/tmp",
     modelType: CURL_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "download",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -327,13 +330,16 @@ Deno.test("curlModel has download method", () => {
 Deno.test("curlModel.methods.download validates input attributes", async () => {
   const definition = Definition.create({
     name: "test-curl",
-    attributes: { notAUrl: "value" },
+    globalArguments: { notAUrl: "value" },
   });
 
   const { context } = createTestContext();
   let error: Error | null = null;
   try {
-    await curlModel.methods.download.execute(definition, context);
+    await curlModel.methods.download.execute(
+      definition.globalArguments,
+      context,
+    );
   } catch (e) {
     error = e as Error;
   }
@@ -354,12 +360,12 @@ Deno.test("curlModel.methods.download executes correctly", async () => {
   try {
     const definition = Definition.create({
       name: "test-curl",
-      attributes: { url: "https://httpbin.org/json" },
+      globalArguments: { url: "https://httpbin.org/json" },
     });
 
     const { context, getResults } = createTestContext();
     const result = await curlModel.methods.download.execute(
-      definition,
+      definition.globalArguments,
       context,
     );
 
@@ -403,7 +409,7 @@ Deno.test("curlModel.methods.download handles custom filename", async () => {
   try {
     const definition = Definition.create({
       name: "test-curl-filename",
-      attributes: {
+      globalArguments: {
         url: "https://httpbin.org/json",
         outputFilename: "custom-response.json",
       },
@@ -411,7 +417,7 @@ Deno.test("curlModel.methods.download handles custom filename", async () => {
 
     const { context, getResults } = createTestContext();
     const result = await curlModel.methods.download.execute(
-      definition,
+      definition.globalArguments,
       context,
     );
 
@@ -442,13 +448,16 @@ Deno.test("curlModel.methods.download handles HTTP errors", async () => {
   try {
     const definition = Definition.create({
       name: "test-curl-error",
-      attributes: { url: "https://httpbin.org/status/404" },
+      globalArguments: { url: "https://httpbin.org/status/404" },
     });
 
     const { context } = createTestContext();
     let error: Error | null = null;
     try {
-      await curlModel.methods.download.execute(definition, context);
+      await curlModel.methods.download.execute(
+        definition.globalArguments,
+        context,
+      );
     } catch (e) {
       error = e as Error;
     }

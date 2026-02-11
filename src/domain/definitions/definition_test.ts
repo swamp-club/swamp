@@ -34,24 +34,30 @@ Deno.test("Definition.create uses provided tags", () => {
   assertEquals(definition.tags, tags);
 });
 
-Deno.test("Definition.create sets empty attributes by default", () => {
+Deno.test("Definition.create sets empty globalArguments by default", () => {
   const definition = Definition.create({ name: "test-definition" });
-  assertEquals(definition.attributes, {});
+  assertEquals(definition.globalArguments, {});
 });
 
-Deno.test("Definition.create uses provided attributes", () => {
-  const attributes = { message: "hello", count: 42 };
-  const definition = Definition.create({ name: "test-definition", attributes });
-  assertEquals(definition.attributes, attributes);
+Deno.test("Definition.create uses provided globalArguments", () => {
+  const globalArguments = { message: "hello", count: 42 };
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments,
+  });
+  assertEquals(definition.globalArguments, globalArguments);
 });
 
-Deno.test("Definition.create supports attributes with CEL expressions", () => {
-  const attributes = {
+Deno.test("Definition.create supports globalArguments with CEL expressions", () => {
+  const globalArguments = {
     message: "${{ model.other.input.attributes.greeting }}",
     computed: "${{ inputs.value * 2 }}",
   };
-  const definition = Definition.create({ name: "test-definition", attributes });
-  assertEquals(definition.attributes, attributes);
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments,
+  });
+  assertEquals(definition.globalArguments, globalArguments);
 });
 
 Deno.test("Definition.create sets undefined inputs by default", () => {
@@ -106,21 +112,21 @@ Deno.test("Definition.removeTag removes tags", () => {
   assertEquals(definition.tags.env, undefined);
 });
 
-Deno.test("Definition.setAttribute adds/updates attributes", () => {
+Deno.test("Definition.setGlobalArgument adds/updates globalArguments", () => {
   const definition = Definition.create({ name: "test-definition" });
-  definition.setAttribute("message", "hello");
-  assertEquals(definition.attributes.message, "hello");
+  definition.setGlobalArgument("message", "hello");
+  assertEquals(definition.globalArguments.message, "hello");
 });
 
-Deno.test("Definition.removeAttribute removes attributes", () => {
+Deno.test("Definition.removeGlobalArgument removes globalArguments", () => {
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
-  assertEquals(definition.attributes.message, "hello");
+  assertEquals(definition.globalArguments.message, "hello");
 
-  definition.removeAttribute("message");
-  assertEquals(definition.attributes.message, undefined);
+  definition.removeGlobalArgument("message");
+  assertEquals(definition.globalArguments.message, undefined);
 });
 
 Deno.test("Definition.setInputs sets inputs schema", () => {
@@ -148,7 +154,7 @@ Deno.test("Definition.toData returns correct structure", () => {
     name: "test-definition",
     version: 2,
     tags: { env: "prod" },
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
     inputs: {
       type: "object" as const,
       properties: { name: { type: "string" as const } },
@@ -163,7 +169,8 @@ Deno.test("Definition.toData returns correct structure", () => {
     name: "test-definition",
     version: 2,
     tags: { env: "prod" },
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
+    methods: {},
     inputs: {
       type: "object",
       properties: { name: { type: "string" } },
@@ -177,7 +184,8 @@ Deno.test("Definition.fromData reconstructs definition correctly", () => {
     name: "test-definition",
     version: 2,
     tags: { env: "prod" },
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
+    methods: {},
     inputs: {
       type: "object" as const,
       properties: { name: { type: "string" as const } },
@@ -189,7 +197,7 @@ Deno.test("Definition.fromData reconstructs definition correctly", () => {
   assertEquals(definition.name, data.name);
   assertEquals(definition.version, data.version);
   assertEquals(definition.tags, data.tags);
-  assertEquals(definition.attributes, data.attributes);
+  assertEquals(definition.globalArguments, data.globalArguments);
   assertEquals(definition.inputs, data.inputs);
 });
 
@@ -203,14 +211,14 @@ Deno.test("Definition.tags returns a copy, not the original", () => {
   assertEquals(definition.tags.b, undefined);
 });
 
-Deno.test("Definition.attributes returns a copy, not the original", () => {
+Deno.test("Definition.globalArguments returns a copy, not the original", () => {
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { a: 1 },
+    globalArguments: { a: 1 },
   });
-  const attrs = definition.attributes;
+  const attrs = definition.globalArguments;
   attrs.b = 2;
-  assertEquals(definition.attributes.b, undefined);
+  assertEquals(definition.globalArguments.b, undefined);
 });
 
 Deno.test("Definition.inputs returns a copy, not the original", () => {
@@ -228,8 +236,8 @@ Deno.test("Definition.inputs returns a copy, not the original", () => {
   assertEquals(definition.inputs?.properties?.b, undefined);
 });
 
-Deno.test("Definition.attributes handles deep nesting", () => {
-  const attributes = {
+Deno.test("Definition.globalArguments handles deep nesting", () => {
+  const globalArguments = {
     nested: {
       deep: {
         value: "${{ model.foo.input.attributes.bar }}",
@@ -239,14 +247,14 @@ Deno.test("Definition.attributes handles deep nesting", () => {
   };
   const definition = Definition.create({
     name: "test-definition",
-    attributes,
+    globalArguments,
   });
 
-  // Modifying the returned attributes shouldn't affect the original
-  const attrs = definition.attributes;
+  // Modifying the returned globalArguments shouldn't affect the original
+  const attrs = definition.globalArguments;
   (attrs.nested as Record<string, unknown>).deep = "modified";
   assertEquals(
-    (definition.attributes.nested as Record<string, unknown>).deep,
+    (definition.globalArguments.nested as Record<string, unknown>).deep,
     {
       value: "${{ model.foo.input.attributes.bar }}",
       list: [1, 2, "${{ inputs.count }}"],
@@ -265,14 +273,14 @@ Deno.test("Definition.computeHash returns consistent hash", async () => {
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-definition",
     version: 1,
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const definition2 = Definition.create({
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-definition",
     version: 1,
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const hash1 = await definition1.computeHash();
@@ -285,12 +293,12 @@ Deno.test("Definition.computeHash returns consistent hash", async () => {
 Deno.test("Definition.computeHash returns different hash for different content", async () => {
   const definition1 = Definition.create({
     name: "test-definition",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const definition2 = Definition.create({
     name: "test-definition",
-    attributes: { message: "world" },
+    globalArguments: { message: "world" },
   });
 
   const hash1 = await definition1.computeHash();
@@ -349,14 +357,14 @@ Deno.test("Definition.computeHash is stable regardless of type/typeVersion", asy
     id,
     name: "test-definition",
     version: 1,
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const defWith = Definition.create({
     id,
     name: "test-definition",
     version: 1,
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
     type: "swamp/echo",
     typeVersion: "2026.02.09.1",
   });
@@ -367,19 +375,19 @@ Deno.test("Definition.computeHash is stable regardless of type/typeVersion", asy
   assertEquals(hash1, hash2);
 });
 
-// --- withUpgradedAttributes tests ---
+// --- withUpgradedGlobalArguments tests ---
 
-Deno.test("Definition.withUpgradedAttributes preserves id, name, tags", () => {
+Deno.test("Definition.withUpgradedGlobalArguments preserves id, name, tags", () => {
   const original = Definition.create({
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "my-definition",
     type: "swamp/echo",
     typeVersion: "2025.01.15.1",
     tags: { env: "prod" },
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
-  const upgraded = Definition.withUpgradedAttributes(
+  const upgraded = Definition.withUpgradedGlobalArguments(
     original,
     { content: "hello", priority: "medium" },
     "2026.02.09.1",
@@ -392,24 +400,24 @@ Deno.test("Definition.withUpgradedAttributes preserves id, name, tags", () => {
   assertEquals(upgraded.version, 1);
 });
 
-Deno.test("Definition.withUpgradedAttributes updates attributes and typeVersion", () => {
+Deno.test("Definition.withUpgradedGlobalArguments updates globalArguments and typeVersion", () => {
   const original = Definition.create({
     name: "test-def",
     type: "swamp/echo",
     typeVersion: "2025.01.15.1",
-    attributes: { message: "old" },
+    globalArguments: { message: "old" },
   });
 
-  const upgraded = Definition.withUpgradedAttributes(
+  const upgraded = Definition.withUpgradedGlobalArguments(
     original,
     { content: "new", priority: "high" },
     "2026.02.09.1",
   );
 
-  assertEquals(upgraded.attributes, { content: "new", priority: "high" });
+  assertEquals(upgraded.globalArguments, { content: "new", priority: "high" });
   assertEquals(upgraded.typeVersion, "2026.02.09.1");
   // Original should be unchanged
-  assertEquals(original.attributes, { message: "old" });
+  assertEquals(original.globalArguments, { message: "old" });
   assertEquals(original.typeVersion, "2025.01.15.1");
 });
 
@@ -421,7 +429,8 @@ Deno.test("Legacy numeric typeVersion coerced to undefined", () => {
     type: "swamp/echo",
     typeVersion: 1 as unknown as string,
     tags: {},
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
+    methods: {},
     inputs: undefined,
   });
 

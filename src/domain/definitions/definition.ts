@@ -91,6 +91,13 @@ export const InputsSchemaSchema: z.ZodType<InputsSchema | undefined> = z
  * pre-CalVer definitions stored on disk) are coerced to `undefined` so
  * the upgrade chain treats them as "oldest version, needs full upgrade".
  */
+/**
+ * Zod schema for per-method arguments stored in a definition.
+ */
+export const MethodDataSchema = z.object({
+  arguments: z.record(z.string(), z.unknown()).optional(),
+});
+
 export const DefinitionSchema = z.object({
   type: z.string().optional(),
   typeVersion: z.preprocess(
@@ -101,7 +108,8 @@ export const DefinitionSchema = z.object({
   name: z.string().min(1),
   version: z.number().int().positive(),
   tags: z.record(z.string(), z.string()).default({}),
-  attributes: z.record(z.string(), z.unknown()).default({}),
+  globalArguments: z.record(z.string(), z.unknown()).default({}),
+  methods: z.record(z.string(), MethodDataSchema).default({}),
   inputs: InputsSchemaSchema,
 });
 
@@ -113,6 +121,14 @@ export type DefinitionData = z.infer<typeof DefinitionSchema>;
 /**
  * Properties required to create a new Definition.
  */
+/**
+ * Per-method data stored in a definition.
+ */
+export type MethodData = z.infer<typeof MethodDataSchema>;
+
+/**
+ * Properties required to create a new Definition.
+ */
 export interface CreateDefinitionProps {
   type?: string;
   typeVersion?: string;
@@ -120,7 +136,8 @@ export interface CreateDefinitionProps {
   name: string;
   version?: number;
   tags?: Record<string, string>;
-  attributes?: Record<string, unknown>;
+  globalArguments?: Record<string, unknown>;
+  methods?: Record<string, MethodData>;
   inputs?: InputsSchema;
 }
 
@@ -141,7 +158,8 @@ export class Definition {
     readonly name: string,
     readonly version: number,
     private _tags: Record<string, string>,
-    private _attributes: Record<string, unknown>,
+    private _globalArguments: Record<string, unknown>,
+    private _methods: Record<string, MethodData>,
     private _inputs: InputsSchema | undefined,
   ) {}
 
@@ -162,7 +180,8 @@ export class Definition {
       name: props.name,
       version,
       tags: props.tags ?? {},
-      attributes: props.attributes ?? {},
+      globalArguments: props.globalArguments ?? {},
+      methods: props.methods ?? {},
       inputs: props.inputs,
     });
 
@@ -173,7 +192,8 @@ export class Definition {
       validated.name,
       validated.version,
       validated.tags,
-      validated.attributes,
+      validated.globalArguments,
+      validated.methods,
       validated.inputs,
     );
   }
@@ -193,7 +213,8 @@ export class Definition {
       validated.name,
       validated.version,
       validated.tags,
-      validated.attributes,
+      validated.globalArguments,
+      validated.methods,
       validated.inputs,
     );
   }
@@ -207,9 +228,9 @@ export class Definition {
    * @param newTypeVersion - The CalVer version after upgrade
    * @returns A new Definition with upgraded attributes
    */
-  static withUpgradedAttributes(
+  static withUpgradedGlobalArguments(
     original: Definition,
-    newAttributes: Record<string, unknown>,
+    newGlobalArguments: Record<string, unknown>,
     newTypeVersion: string,
   ): Definition {
     return new Definition(
@@ -219,7 +240,8 @@ export class Definition {
       original.name,
       original.version,
       { ...original._tags },
-      structuredClone(newAttributes),
+      structuredClone(newGlobalArguments),
+      structuredClone(original._methods),
       original._inputs ? structuredClone(original._inputs) : undefined,
     );
   }
@@ -232,10 +254,17 @@ export class Definition {
   }
 
   /**
-   * Returns a copy of the attributes.
+   * Returns a copy of the global arguments.
    */
-  get attributes(): Record<string, unknown> {
-    return structuredClone(this._attributes);
+  get globalArguments(): Record<string, unknown> {
+    return structuredClone(this._globalArguments);
+  }
+
+  /**
+   * Returns a copy of the per-method data.
+   */
+  get methodData(): Record<string, MethodData> {
+    return structuredClone(this._methods);
   }
 
   /**
@@ -260,17 +289,50 @@ export class Definition {
   }
 
   /**
-   * Sets an attribute value.
+   * Sets a global argument value.
    */
-  setAttribute(key: string, value: unknown): void {
-    this._attributes[key] = value;
+  setGlobalArgument(key: string, value: unknown): void {
+    this._globalArguments[key] = value;
   }
 
   /**
-   * Removes an attribute.
+   * Removes a global argument.
    */
-  removeAttribute(key: string): void {
-    delete this._attributes[key];
+  removeGlobalArgument(key: string): void {
+    delete this._globalArguments[key];
+  }
+
+  /**
+   * Gets the arguments for a specific method.
+   */
+  getMethodArguments(methodName: string): Record<string, unknown> {
+    return structuredClone(this._methods[methodName]?.arguments ?? {});
+  }
+
+  /**
+   * Sets a single argument for a specific method.
+   */
+  setMethodArgument(methodName: string, key: string, value: unknown): void {
+    if (!this._methods[methodName]) {
+      this._methods[methodName] = {};
+    }
+    if (!this._methods[methodName].arguments) {
+      this._methods[methodName].arguments = {};
+    }
+    this._methods[methodName].arguments![key] = value;
+  }
+
+  /**
+   * Sets all arguments for a specific method.
+   */
+  setMethodArguments(
+    methodName: string,
+    args: Record<string, unknown>,
+  ): void {
+    if (!this._methods[methodName]) {
+      this._methods[methodName] = {};
+    }
+    this._methods[methodName].arguments = structuredClone(args);
   }
 
   /**
@@ -291,7 +353,8 @@ export class Definition {
       name: this.name,
       version: this.version,
       tags: { ...this._tags },
-      attributes: structuredClone(this._attributes),
+      globalArguments: structuredClone(this._globalArguments),
+      methods: structuredClone(this._methods),
       inputs: this._inputs ? structuredClone(this._inputs) : undefined,
     };
   }

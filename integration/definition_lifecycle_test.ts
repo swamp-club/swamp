@@ -2,7 +2,7 @@
  * Integration tests for the Definition entity lifecycle.
  *
  * Tests the full flow:
- * 1. Create definitions with static attributes
+ * 1. Create definitions with static global arguments
  * 2. Create definitions with JsonSchema inputs
  * 3. Create definitions with CEL expressions referencing other models
  * 4. Run methods, verify Data created with correct metadata
@@ -90,7 +90,7 @@ Deno.test("Definition Lifecycle: create with static attributes", async () => {
       name: "static-attrs-model",
       version: 1,
       tags: { environment: "test", tier: "standard" },
-      attributes: {
+      globalArguments: {
         message: "Hello, World!",
         count: 42,
         enabled: true,
@@ -110,11 +110,11 @@ Deno.test("Definition Lifecycle: create with static attributes", async () => {
     assertEquals(loaded.version, 1);
     assertEquals(loaded.tags.environment, "test");
     assertEquals(loaded.tags.tier, "standard");
-    assertEquals(loaded.attributes.message, "Hello, World!");
-    assertEquals(loaded.attributes.count, 42);
-    assertEquals(loaded.attributes.enabled, true);
+    assertEquals(loaded.globalArguments.message, "Hello, World!");
+    assertEquals(loaded.globalArguments.count, 42);
+    assertEquals(loaded.globalArguments.enabled, true);
     assertEquals(
-      (loaded.attributes.config as Record<string, unknown>).nested,
+      (loaded.globalArguments.config as Record<string, unknown>).nested,
       "value",
     );
   });
@@ -129,15 +129,15 @@ Deno.test("Definition Lifecycle: create and retrieve by name", async () => {
     // Create multiple definitions
     const def1 = Definition.create({
       name: "first-definition",
-      attributes: { key: "value1" },
+      globalArguments: { key: "value1" },
     });
     const def2 = Definition.create({
       name: "second-definition",
-      attributes: { key: "value2" },
+      globalArguments: { key: "value2" },
     });
     const def3 = Definition.create({
       name: "third-definition",
-      attributes: { key: "value3" },
+      globalArguments: { key: "value3" },
     });
 
     await definitionRepo.save(modelType, def1);
@@ -152,7 +152,7 @@ Deno.test("Definition Lifecycle: create and retrieve by name", async () => {
     assertExists(found);
     assertEquals(found.name, "second-definition");
     assertEquals(found.id, def2.id);
-    assertEquals(found.attributes.key, "value2");
+    assertEquals(found.globalArguments.key, "value2");
   });
 });
 
@@ -166,7 +166,7 @@ Deno.test("Definition Lifecycle: global name uniqueness enforced", async () => {
     // Create definition in first type
     const def1 = Definition.create({
       name: "unique-name",
-      attributes: { x: 1 },
+      globalArguments: { x: 1 },
     });
     await definitionRepo.save(type1, def1);
 
@@ -180,7 +180,7 @@ Deno.test("Definition Lifecycle: global name uniqueness enforced", async () => {
     // when we try to find it globally (uniqueness is enforced at query time)
     const def2 = Definition.create({
       name: "other-name",
-      attributes: { y: 2 },
+      globalArguments: { y: 2 },
     });
     await definitionRepo.save(type2, def2);
 
@@ -202,7 +202,7 @@ Deno.test("Definition Lifecycle: create with JsonSchema inputs", async () => {
 
     const definition = Definition.create({
       name: "schema-inputs-model",
-      attributes: {
+      globalArguments: {
         message: "${{ inputs.greeting }}",
         fullMessage: '${{ inputs.greeting + " " + inputs.name }}',
       },
@@ -258,7 +258,7 @@ Deno.test("Definition Lifecycle: evaluate with input values", async () => {
 
     const definition = Definition.create({
       name: "eval-inputs-model",
-      attributes: {
+      globalArguments: {
         greeting: "${{ inputs.salutation }}",
         target: "${{ inputs.name }}",
         combined: '${{ inputs.salutation + ", " + inputs.name + "!" }}',
@@ -292,10 +292,10 @@ Deno.test("Definition Lifecycle: evaluate with input values", async () => {
     );
 
     assertEquals(result.hadExpressions, true);
-    assertEquals(result.definition.attributes.greeting, "Good morning");
-    assertEquals(result.definition.attributes.target, "Developer");
+    assertEquals(result.definition.globalArguments.greeting, "Good morning");
+    assertEquals(result.definition.globalArguments.target, "Developer");
     assertEquals(
-      result.definition.attributes.combined,
+      result.definition.globalArguments.combined,
       "Good morning, Developer!",
     );
   });
@@ -309,7 +309,7 @@ Deno.test("Definition Lifecycle: nested JsonSchema inputs", async () => {
 
     const definition = Definition.create({
       name: "nested-inputs-model",
-      attributes: {
+      globalArguments: {
         hostname: "${{ inputs.server.host }}",
         port: "${{ inputs.server.port }}",
         timeout: "${{ inputs.options.timeout }}",
@@ -355,9 +355,9 @@ Deno.test("Definition Lifecycle: nested JsonSchema inputs", async () => {
       inputValues,
     );
 
-    assertEquals(result.definition.attributes.hostname, "localhost");
-    assertEquals(result.definition.attributes.port, 8080);
-    assertEquals(result.definition.attributes.timeout, 60);
+    assertEquals(result.definition.globalArguments.hostname, "localhost");
+    assertEquals(result.definition.globalArguments.port, 8080);
+    assertEquals(result.definition.globalArguments.timeout, 60);
   });
 });
 
@@ -374,7 +374,7 @@ Deno.test("Definition Lifecycle: CEL expression references other model input", a
     // Create source model
     const sourceModel = Definition.create({
       name: "source_model",
-      attributes: {
+      globalArguments: {
         api_endpoint: "https://api.example.com",
         api_version: "v2",
       },
@@ -384,10 +384,11 @@ Deno.test("Definition Lifecycle: CEL expression references other model input", a
     // Create dependent model that references source
     const dependentModel = Definition.create({
       name: "dependent_model",
-      attributes: {
-        base_url: "${{ model.source_model.input.attributes.api_endpoint }}",
+      globalArguments: {
+        base_url:
+          "${{ model.source_model.input.globalArguments.api_endpoint }}",
         full_url:
-          '${{ model.source_model.input.attributes.api_endpoint + "/" + model.source_model.input.attributes.api_version }}',
+          '${{ model.source_model.input.globalArguments.api_endpoint + "/" + model.source_model.input.globalArguments.api_version }}',
       },
     });
     await definitionRepo.save(modelType, dependentModel);
@@ -404,11 +405,11 @@ Deno.test("Definition Lifecycle: CEL expression references other model input", a
 
     assertEquals(result.hadExpressions, true);
     assertEquals(
-      result.definition.attributes.base_url,
+      result.definition.globalArguments.base_url,
       "https://api.example.com",
     );
     assertEquals(
-      result.definition.attributes.full_url,
+      result.definition.globalArguments.full_url,
       "https://api.example.com/v2",
     );
   });
@@ -424,7 +425,7 @@ Deno.test("Definition Lifecycle: CEL expression self-reference", async () => {
       name: "self-ref-model",
       version: 42,
       tags: { env: "production" },
-      attributes: {
+      globalArguments: {
         nameRef: "${{ self.name }}",
         versionRef: "${{ self.version }}",
         envRef: "${{ self.tags.env }}",
@@ -442,11 +443,11 @@ Deno.test("Definition Lifecycle: CEL expression self-reference", async () => {
     const result = await evalService.evaluateDefinition(definition, modelType);
 
     assertEquals(result.hadExpressions, true);
-    assertEquals(result.definition.attributes.nameRef, "self-ref-model");
-    assertEquals(result.definition.attributes.versionRef, 42);
-    assertEquals(result.definition.attributes.envRef, "production");
+    assertEquals(result.definition.globalArguments.nameRef, "self-ref-model");
+    assertEquals(result.definition.globalArguments.versionRef, 42);
+    assertEquals(result.definition.globalArguments.envRef, "production");
     assertEquals(
-      result.definition.attributes.combined,
+      result.definition.globalArguments.combined,
       "self-ref-model-production",
     );
   });
@@ -460,7 +461,7 @@ Deno.test("Definition Lifecycle: CEL expression with arithmetic", async () => {
 
     const sourceModel = Definition.create({
       name: "config_model",
-      attributes: {
+      globalArguments: {
         base_port: 8000,
         instance_count: 3,
       },
@@ -469,13 +470,13 @@ Deno.test("Definition Lifecycle: CEL expression with arithmetic", async () => {
 
     const computedModel = Definition.create({
       name: "computed_model",
-      attributes: {
+      globalArguments: {
         port_offset:
-          "${{ model.config_model.input.attributes.base_port + 100 }}",
+          "${{ model.config_model.input.globalArguments.base_port + 100 }}",
         scaled_count:
-          "${{ model.config_model.input.attributes.instance_count * 2 }}",
+          "${{ model.config_model.input.globalArguments.instance_count * 2 }}",
         calculated:
-          "${{ model.config_model.input.attributes.base_port + model.config_model.input.attributes.instance_count }}",
+          "${{ model.config_model.input.globalArguments.base_port + model.config_model.input.globalArguments.instance_count }}",
       },
     });
     await definitionRepo.save(modelType, computedModel);
@@ -490,9 +491,9 @@ Deno.test("Definition Lifecycle: CEL expression with arithmetic", async () => {
       modelType,
     );
 
-    assertEquals(result.definition.attributes.port_offset, 8100);
-    assertEquals(result.definition.attributes.scaled_count, 6);
-    assertEquals(result.definition.attributes.calculated, 8003);
+    assertEquals(result.definition.globalArguments.port_offset, 8100);
+    assertEquals(result.definition.globalArguments.scaled_count, 6);
+    assertEquals(result.definition.globalArguments.calculated, 8003);
   });
 });
 
@@ -511,7 +512,7 @@ Deno.test("CLI: model method run creates Data with correct metadata", async () =
 
     const definition = Definition.create({
       name: "data-test-model",
-      attributes: { message: "Test data creation" },
+      methods: { write: { arguments: { message: "Test data creation" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -562,7 +563,7 @@ Deno.test("CLI: model method run creates versioned Data on subsequent calls", as
 
     const definition = Definition.create({
       name: "versioned-data-model",
-      attributes: { message: "Versioning test" },
+      methods: { write: { arguments: { message: "Versioning test" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -611,22 +612,22 @@ Deno.test("Definition Lifecycle: evaluate all definitions in topological order",
     // Create a chain of dependent models
     const baseModel = Definition.create({
       name: "base_model",
-      attributes: {
+      globalArguments: {
         value: 10,
       },
     });
 
     const middleModel = Definition.create({
       name: "middle_model",
-      attributes: {
-        derived: "${{ model.base_model.input.attributes.value * 2 }}",
+      globalArguments: {
+        derived: "${{ model.base_model.input.globalArguments.value * 2 }}",
       },
     });
 
     const topModel = Definition.create({
       name: "top_model",
-      attributes: {
-        final: "${{ model.middle_model.input.attributes.derived + 5 }}",
+      globalArguments: {
+        final: "${{ model.middle_model.input.globalArguments.derived + 5 }}",
       },
     });
 
@@ -644,7 +645,7 @@ Deno.test("Definition Lifecycle: evaluate all definitions in topological order",
       middleModel,
       modelType,
     );
-    assertEquals(middleResult.definition.attributes.derived, 20);
+    assertEquals(middleResult.definition.globalArguments.derived, 20);
 
     // Note: top_model references middle_model.input.attributes which is the original
     // definition attributes, not the evaluated ones. This is by design.
@@ -663,7 +664,7 @@ Deno.test("Definition Lifecycle: definition without expressions has hadExpressio
 
     const definition = Definition.create({
       name: "no-expressions-model",
-      attributes: {
+      globalArguments: {
         static1: "value1",
         static2: 123,
         static3: true,
@@ -680,9 +681,9 @@ Deno.test("Definition Lifecycle: definition without expressions has hadExpressio
     const result = await evalService.evaluateDefinition(definition, modelType);
 
     assertEquals(result.hadExpressions, false);
-    assertEquals(result.definition.attributes.static1, "value1");
-    assertEquals(result.definition.attributes.static2, 123);
-    assertEquals(result.definition.attributes.static3, true);
+    assertEquals(result.definition.globalArguments.static1, "value1");
+    assertEquals(result.definition.globalArguments.static2, 123);
+    assertEquals(result.definition.globalArguments.static3, true);
   });
 });
 
@@ -694,7 +695,7 @@ Deno.test("Definition Lifecycle: handles inputs with conditional expression", as
 
     const definition = Definition.create({
       name: "conditional-inputs-model",
-      attributes: {
+      globalArguments: {
         required_val: "${{ inputs.required }}",
         // Use a simple conditional expression
         computed_val: '${{ inputs.required == "provided" ? "yes" : "no" }}',
@@ -719,8 +720,8 @@ Deno.test("Definition Lifecycle: handles inputs with conditional expression", as
       required: "provided",
     });
 
-    assertEquals(result.definition.attributes.required_val, "provided");
-    assertEquals(result.definition.attributes.computed_val, "yes");
+    assertEquals(result.definition.globalArguments.required_val, "provided");
+    assertEquals(result.definition.globalArguments.computed_val, "yes");
   });
 });
 
@@ -736,7 +737,7 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
     try {
       const definition = Definition.create({
         name: "env-var-model",
-        attributes: {
+        globalArguments: {
           from_env: "${{ env.TEST_ENV_VAR }}",
         },
       });
@@ -753,7 +754,7 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
         modelType,
       );
 
-      assertEquals(result.definition.attributes.from_env, "env-value-123");
+      assertEquals(result.definition.globalArguments.from_env, "env-value-123");
     } finally {
       Deno.env.delete("TEST_ENV_VAR");
     }
@@ -768,7 +769,8 @@ Deno.test("Model creation with attributes via repository", async () => {
 
     const definition = Definition.create({
       name: "repo-attrs-model",
-      attributes: { message: "Hello from repository", count: 42 },
+      globalArguments: { count: 42 },
+      methods: { write: { arguments: { message: "Hello from repository" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -776,7 +778,10 @@ Deno.test("Model creation with attributes via repository", async () => {
     const loaded = await definitionRepo.findById(modelType, definition.id);
     assertExists(loaded);
     assertEquals(loaded.name, "repo-attrs-model");
-    assertEquals(loaded.attributes.message, "Hello from repository");
-    assertEquals(loaded.attributes.count, 42);
+    assertEquals(
+      loaded.getMethodArguments("write").message,
+      "Hello from repository",
+    );
+    assertEquals(loaded.globalArguments.count, 42);
   });
 });

@@ -59,7 +59,7 @@ Deno.test("CEL Data Access: reference model input attributes by name", async () 
     // Create source model
     const sourceModel = Definition.create({
       name: "config_model",
-      attributes: {
+      globalArguments: {
         database_host: "db.example.com",
         database_port: "5432",
         connection_pool_size: 10,
@@ -70,11 +70,11 @@ Deno.test("CEL Data Access: reference model input attributes by name", async () 
     // Create dependent model
     const dependentModel = Definition.create({
       name: "app_model",
-      attributes: {
+      globalArguments: {
         db_url:
-          '${{ "postgres://" + model.config_model.input.attributes.database_host + ":" + model.config_model.input.attributes.database_port }}',
+          '${{ "postgres://" + model.config_model.input.globalArguments.database_host + ":" + model.config_model.input.globalArguments.database_port }}',
         pool_size:
-          "${{ model.config_model.input.attributes.connection_pool_size }}",
+          "${{ model.config_model.input.globalArguments.connection_pool_size }}",
       },
     });
     await definitionRepo.save(type, dependentModel);
@@ -91,10 +91,10 @@ Deno.test("CEL Data Access: reference model input attributes by name", async () 
 
     assertEquals(result.hadExpressions, true);
     assertEquals(
-      result.definition.attributes.db_url,
+      result.definition.globalArguments.db_url,
       "postgres://db.example.com:5432",
     );
-    assertEquals(result.definition.attributes.pool_size, 10);
+    assertEquals(result.definition.globalArguments.pool_size, 10);
   });
 });
 
@@ -107,7 +107,7 @@ Deno.test("CEL Data Access: reference model by UUID", async () => {
     // Create source model
     const sourceModel = Definition.create({
       name: "source_by_id",
-      attributes: {
+      globalArguments: {
         value: "accessed-by-id",
       },
     });
@@ -123,11 +123,11 @@ Deno.test("CEL Data Access: reference model by UUID", async () => {
 
     // Both should have the same data
     assertEquals(
-      context.model["source_by_id"].input.attributes.value,
+      context.model["source_by_id"].input.globalArguments.value,
       "accessed-by-id",
     );
     assertEquals(
-      context.model[sourceModel.id].input.attributes.value,
+      context.model[sourceModel.id].input.globalArguments.value,
       "accessed-by-id",
     );
   });
@@ -142,7 +142,7 @@ Deno.test("CEL Data Access: reference hyphenated model name", async () => {
     // Create model with hyphenated name
     const hyphenModel = Definition.create({
       name: "my-hyphenated-model",
-      attributes: {
+      globalArguments: {
         vpc_id: "vpc-12345",
       },
     });
@@ -155,14 +155,14 @@ Deno.test("CEL Data Access: reference hyphenated model name", async () => {
     // Should be accessible by name
     assertExists(context.model["my-hyphenated-model"]);
     assertEquals(
-      context.model["my-hyphenated-model"].input.attributes.vpc_id,
+      context.model["my-hyphenated-model"].input.globalArguments.vpc_id,
       "vpc-12345",
     );
 
     // Test CEL evaluation with bracket notation
     const celEvaluator = new CelEvaluator();
     const result = celEvaluator.evaluate(
-      'model["my-hyphenated-model"].input.attributes.vpc_id',
+      'model["my-hyphenated-model"].input.globalArguments.vpc_id',
       context,
     );
     assertEquals(result, "vpc-12345");
@@ -184,7 +184,7 @@ Deno.test("CEL Data Access: access latest resource via model.X.resource.specName
     // Create model
     const sourceModel = Definition.create({
       name: "data_source",
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, sourceModel);
 
@@ -240,7 +240,7 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
     // Create model
     const model = Definition.create({
       name: "versioned_model",
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, model);
 
@@ -306,7 +306,7 @@ Deno.test("CEL Data Access: access data via data.latest()", async () => {
 
     const model = Definition.create({
       name: "latest_test",
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, model);
 
@@ -354,7 +354,7 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
 
     const model = Definition.create({
       name: "list_versions_model",
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, model);
 
@@ -405,7 +405,7 @@ Deno.test("CEL Data Access: reference resource from dependent model", async () =
     // Create VPC model with resource data
     const vpcModel = Definition.create({
       name: "my_vpc",
-      attributes: { cidr: "10.0.0.0/16" },
+      globalArguments: { cidr: "10.0.0.0/16" },
     });
     await definitionRepo.save(type, vpcModel);
 
@@ -432,7 +432,7 @@ Deno.test("CEL Data Access: reference resource from dependent model", async () =
     // Create subnet model that references VPC resource data via new pattern
     const subnetModel = Definition.create({
       name: "my_subnet",
-      attributes: {
+      globalArguments: {
         // New pattern: model.X.resource.specName.attributes.field
         vpc_id_ref: "${{ model.my_vpc.resource.resource.attributes.vpcId }}",
         vpc_state_ref: "${{ model.my_vpc.resource.resource.attributes.state }}",
@@ -450,8 +450,8 @@ Deno.test("CEL Data Access: reference resource from dependent model", async () =
     const result = await evalService.evaluateDefinition(subnetModel, type);
 
     assertEquals(result.hadExpressions, true);
-    assertEquals(result.definition.attributes.vpc_id_ref, "vpc-12345");
-    assertEquals(result.definition.attributes.vpc_state_ref, "available");
+    assertEquals(result.definition.globalArguments.vpc_id_ref, "vpc-12345");
+    assertEquals(result.definition.globalArguments.vpc_state_ref, "available");
   });
 });
 
@@ -466,7 +466,7 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
     // Model A - base config
     const modelA = Definition.create({
       name: "model_a",
-      attributes: { base_value: 100 },
+      globalArguments: { base_value: 100 },
     });
     await definitionRepo.save(type, modelA);
 
@@ -489,7 +489,7 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
     // Model B - uses A
     const modelB = Definition.create({
       name: "model_b",
-      attributes: { multiplier: 2 },
+      globalArguments: { multiplier: 2 },
     });
     await definitionRepo.save(type, modelB);
 
@@ -512,7 +512,7 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
     // Model C - references both A and B resource data via new pattern
     const modelC = Definition.create({
       name: "model_c",
-      attributes: {
+      globalArguments: {
         from_a: "${{ model.model_a.resource.result.attributes.computed }}",
         from_b: "${{ model.model_b.resource.result.attributes.computed }}",
         sum:
@@ -529,9 +529,9 @@ Deno.test("CEL Data Access: chain data references across multiple models", async
 
     const result = await evalService.evaluateDefinition(modelC, type);
 
-    assertEquals(result.definition.attributes.from_a, 100);
-    assertEquals(result.definition.attributes.from_b, 200);
-    assertEquals(result.definition.attributes.sum, 300);
+    assertEquals(result.definition.globalArguments.from_a, 100);
+    assertEquals(result.definition.globalArguments.from_b, 200);
+    assertEquals(result.definition.globalArguments.sum, 300);
   });
 });
 
@@ -552,7 +552,7 @@ Deno.test("CEL Data Access: access environment variables", async () => {
     try {
       const model = Definition.create({
         name: "env_model",
-        attributes: {
+        globalArguments: {
           from_env: "${{ env.CEL_TEST_VAR }}",
           number_as_string: "${{ env.CEL_TEST_NUMBER }}",
         },
@@ -566,8 +566,8 @@ Deno.test("CEL Data Access: access environment variables", async () => {
 
       const result = await evalService.evaluateDefinition(model, type);
 
-      assertEquals(result.definition.attributes.from_env, "test-value");
-      assertEquals(result.definition.attributes.number_as_string, "42");
+      assertEquals(result.definition.globalArguments.from_env, "test-value");
+      assertEquals(result.definition.globalArguments.number_as_string, "42");
     } finally {
       Deno.env.delete("CEL_TEST_VAR");
       Deno.env.delete("CEL_TEST_NUMBER");
@@ -587,7 +587,7 @@ Deno.test("CEL Data Access: conditional expressions", async () => {
 
     const configModel = Definition.create({
       name: "config",
-      attributes: {
+      globalArguments: {
         environment: "production",
         debug: false,
       },
@@ -596,10 +596,11 @@ Deno.test("CEL Data Access: conditional expressions", async () => {
 
     const appModel = Definition.create({
       name: "app",
-      attributes: {
+      globalArguments: {
         log_level:
-          '${{ model.config.input.attributes.environment == "production" ? "warn" : "debug" }}',
-        verbose: "${{ model.config.input.attributes.debug ? true : false }}",
+          '${{ model.config.input.globalArguments.environment == "production" ? "warn" : "debug" }}',
+        verbose:
+          "${{ model.config.input.globalArguments.debug ? true : false }}",
       },
     });
     await definitionRepo.save(type, appModel);
@@ -611,8 +612,8 @@ Deno.test("CEL Data Access: conditional expressions", async () => {
 
     const result = await evalService.evaluateDefinition(appModel, type);
 
-    assertEquals(result.definition.attributes.log_level, "warn");
-    assertEquals(result.definition.attributes.verbose, false);
+    assertEquals(result.definition.globalArguments.log_level, "warn");
+    assertEquals(result.definition.globalArguments.verbose, false);
   });
 });
 
@@ -624,7 +625,7 @@ Deno.test("CEL Data Access: string concatenation and formatting", async () => {
 
     const baseModel = Definition.create({
       name: "base",
-      attributes: {
+      globalArguments: {
         prefix: "app",
         version: "1.2.3",
         region: "us-east-1",
@@ -634,11 +635,11 @@ Deno.test("CEL Data Access: string concatenation and formatting", async () => {
 
     const derivedModel = Definition.create({
       name: "derived",
-      attributes: {
+      globalArguments: {
         full_name:
-          '${{ model.base.input.attributes.prefix + "-" + model.base.input.attributes.version }}',
+          '${{ model.base.input.globalArguments.prefix + "-" + model.base.input.globalArguments.version }}',
         resource_arn:
-          '${{ "arn:aws:" + model.base.input.attributes.region + ":resource:" + model.base.input.attributes.prefix }}',
+          '${{ "arn:aws:" + model.base.input.globalArguments.region + ":resource:" + model.base.input.globalArguments.prefix }}',
       },
     });
     await definitionRepo.save(type, derivedModel);
@@ -650,9 +651,9 @@ Deno.test("CEL Data Access: string concatenation and formatting", async () => {
 
     const result = await evalService.evaluateDefinition(derivedModel, type);
 
-    assertEquals(result.definition.attributes.full_name, "app-1.2.3");
+    assertEquals(result.definition.globalArguments.full_name, "app-1.2.3");
     assertEquals(
-      result.definition.attributes.resource_arn,
+      result.definition.globalArguments.resource_arn,
       "arn:aws:us-east-1:resource:app",
     );
   });
@@ -694,7 +695,7 @@ Deno.test("CEL Data Access: handle missing data gracefully", async () => {
     // Create model without any data
     const model = Definition.create({
       name: "no_data_model",
-      attributes: { value: 1 },
+      globalArguments: { value: 1 },
     });
     await definitionRepo.save(type, model);
 
@@ -727,7 +728,7 @@ Deno.test("CEL Data Access: multiple resource items from same model", async () =
 
     const model = Definition.create({
       name: "multi_data_model",
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, model);
 

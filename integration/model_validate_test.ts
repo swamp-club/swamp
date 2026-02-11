@@ -68,7 +68,7 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
     // Create a valid echo model definition
     const definition = Definition.create({
       name: "valid-echo-definition",
-      attributes: { message: "Hello, world!" },
+      methods: { write: { arguments: { message: "Hello, world!" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -96,7 +96,7 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
     assertEquals(output.modelName, "valid-echo-definition");
     assertEquals(output.type, "swamp/echo");
     assertEquals(output.passed, true);
-    assertEquals(output.validations.length, 3); // Definition schema + Definition attributes + Expression paths
+    assertEquals(output.validations.length, 4); // Definition schema + Global arguments + Method arguments + Expression paths
     assertEquals(
       output.validations.every((v: { passed: boolean }) => v.passed),
       true,
@@ -113,7 +113,7 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
     // Create a valid echo model definition
     const definition = Definition.create({
       name: "echo-with-data",
-      attributes: { message: "Hello, world!" },
+      methods: { write: { arguments: { message: "Hello, world!" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -139,8 +139,8 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
     // Parse and verify JSON output
     const output = JSON.parse(result.stdout);
     assertEquals(output.passed, true);
-    // Echo model validates: Definition schema, Definition attributes, Expression paths
-    assertEquals(output.validations.length, 3);
+    // Echo model validates: Definition schema, Global arguments, Method arguments, Expression paths
+    assertEquals(output.validations.length, 4);
   });
 });
 
@@ -150,10 +150,10 @@ Deno.test("CLI: model validate fails for invalid definition attributes", async (
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const modelType = ECHO_MODEL_TYPE;
 
-    // Create an echo model definition with invalid attributes (missing message)
+    // Create an echo model definition with invalid method arguments (missing message)
     const definition = Definition.create({
       name: "invalid-echo-definition",
-      attributes: { wrongField: "oops" },
+      methods: { write: { arguments: { wrongField: "oops" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -184,7 +184,7 @@ Deno.test("CLI: model validate fails for invalid definition attributes", async (
     const failedValidation = output.validations.find(
       (v: { passed: boolean }) => !v.passed,
     );
-    assertEquals(failedValidation.name, "Definition attributes");
+    assertEquals(failedValidation.name, "Method arguments");
     assertEquals(typeof failedValidation.error, "string");
   });
 });
@@ -202,7 +202,7 @@ Deno.test("CLI: model validate can look up by UUID", async () => {
     // Create a valid echo model definition
     const definition = Definition.create({
       name: "uuid-lookup-test",
-      attributes: { message: "Hello" },
+      methods: { write: { arguments: { message: "Hello" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -267,7 +267,7 @@ Deno.test("CLI: model validate with --json outputs JSON", async () => {
     // Create a valid echo model definition
     const definition = Definition.create({
       name: "interactive-test",
-      attributes: { message: "Hello" },
+      methods: { write: { arguments: { message: "Hello" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -308,11 +308,11 @@ Deno.test("CLI: model validate with no args validates all models", async () => {
     // Create multiple valid echo model definitions
     const definition1 = Definition.create({
       name: "all-test-1",
-      attributes: { message: "Hello 1" },
+      methods: { write: { arguments: { message: "Hello 1" } } },
     });
     const definition2 = Definition.create({
       name: "all-test-2",
-      attributes: { message: "Hello 2" },
+      methods: { write: { arguments: { message: "Hello 2" } } },
     });
     await definitionRepo.save(modelType, definition1);
     await definitionRepo.save(modelType, definition2);
@@ -360,11 +360,11 @@ Deno.test("CLI: model validate with no args exits 1 when any model fails", async
     // Create one valid and one invalid model
     const validDefinition = Definition.create({
       name: "valid-model",
-      attributes: { message: "Hello" },
+      methods: { write: { arguments: { message: "Hello" } } },
     });
     const invalidDefinition = Definition.create({
       name: "invalid-model",
-      attributes: { wrongField: "oops" },
+      methods: { write: { arguments: { wrongField: "oops" } } },
     });
     await definitionRepo.save(modelType, validDefinition);
     await definitionRepo.save(modelType, invalidDefinition);
@@ -430,11 +430,11 @@ Deno.test("CLI: model validate with no args and --json outputs JSON", async () =
     // Create multiple valid echo model definitions
     const definition1 = Definition.create({
       name: "interactive-all-1",
-      attributes: { message: "Hello 1" },
+      methods: { write: { arguments: { message: "Hello 1" } } },
     });
     const definition2 = Definition.create({
       name: "interactive-all-2",
-      attributes: { message: "Hello 2" },
+      methods: { write: { arguments: { message: "Hello 2" } } },
     });
     await definitionRepo.save(modelType, definition1);
     await definitionRepo.save(modelType, definition2);

@@ -49,14 +49,14 @@ export interface ModelData {
     name: string;
     version: number;
     tags: Record<string, string>;
-    attributes: Record<string, unknown>;
+    globalArguments: Record<string, unknown>;
   };
   definition?: {
     id: string;
     name: string;
     version: number;
     tags: Record<string, string>;
-    attributes: Record<string, unknown>;
+    globalArguments: Record<string, unknown>;
     inputs?: InputsSchema;
   };
   /** Resource data: specName → DataRecord (includes id, version, attributes, etc.) */
@@ -156,7 +156,7 @@ export interface ExpressionContext {
     name: string;
     version: number;
     tags: Record<string, string>;
-    attributes: Record<string, unknown>;
+    globalArguments: Record<string, unknown>;
     /** Index signature to allow forEach variables like self.env, self.tag */
     [key: string]: unknown;
   };
@@ -396,14 +396,14 @@ export class ModelResolver {
           name: definition.name,
           version: definition.version,
           tags: definition.tags,
-          attributes: definition.attributes,
+          globalArguments: definition.globalArguments,
         },
         definition: {
           id: definition.id,
           name: definition.name,
           version: definition.version,
           tags: definition.tags,
-          attributes: definition.attributes,
+          globalArguments: definition.globalArguments,
           inputs: definition.inputs,
         },
       };
@@ -565,7 +565,7 @@ export class ModelResolver {
         name: selfDefinition.name,
         version: selfDefinition.version,
         tags: selfDefinition.tags,
-        attributes: selfDefinition.attributes,
+        globalArguments: selfDefinition.globalArguments,
       };
     }
 
@@ -648,7 +648,7 @@ export class ModelResolver {
         name: definition.name,
         version: definition.version,
         tags: definition.tags,
-        attributes: definition.attributes,
+        globalArguments: definition.globalArguments,
         inputs: definition.inputs,
       };
     }

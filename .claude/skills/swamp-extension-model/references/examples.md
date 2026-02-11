@@ -21,7 +21,6 @@ const OutputSchema = z.object({
 export const model = {
   type: "@user/text-processor",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
   resources: {
     "result": {
       description: "Processed text output",
@@ -33,8 +32,9 @@ export const model = {
   methods: {
     process: {
       description: "Process text according to the specified operation",
-      execute: async (input, context) => {
-        const { text, operation } = input.attributes;
+      arguments: InputSchema,
+      execute: async (args, context) => {
+        const { text, operation } = args;
 
         let processedText: string;
         switch (operation) {
@@ -88,7 +88,7 @@ const StateSchema = z.object({
 export const model = {
   type: "@user/deployment",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "state": {
       description: "Deployment resource state",
@@ -100,8 +100,9 @@ export const model = {
   methods: {
     deploy: {
       description: "Deploy the application",
-      execute: async (input, context) => {
-        const attrs = input.attributes;
+      arguments: z.object({}),
+      execute: async (args, context) => {
+        const attrs = context.globalArgs;
         const deploymentId = `deploy-${attrs.appName}-${Date.now()}`;
 
         const handle = await context.writeResource!("state", {
@@ -118,8 +119,9 @@ export const model = {
     },
     scale: {
       description: "Scale the deployment replicas",
-      execute: async (input, context) => {
-        const attrs = input.attributes;
+      arguments: z.object({}),
+      execute: async (args, context) => {
+        const attrs = context.globalArgs;
 
         const handle = await context.writeResource!("state", {
           deploymentId: `deploy-${attrs.appName}-scaled`,
@@ -153,7 +155,7 @@ const OutputSchema = z.object({
 export const model = {
   type: "@user/echo",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "data": {
       description: "Echo output",
@@ -165,9 +167,10 @@ export const model = {
   methods: {
     run: {
       description: "Echo the message with timestamp",
-      execute: async (input, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         const handle = await context.writeResource!("data", {
-          message: input.attributes.message,
+          message: context.globalArgs.message,
           timestamp: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
@@ -203,7 +206,7 @@ const ConfigSchema = z.object({
 export const model = {
   type: "@user/config-generator",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "config": {
       description: "Generated configuration",
@@ -215,8 +218,9 @@ export const model = {
   methods: {
     generate: {
       description: "Generate service configuration based on environment",
-      execute: async (input, context) => {
-        const { environment, serviceName } = input.attributes;
+      arguments: z.object({}),
+      execute: async (args, context) => {
+        const { environment, serviceName } = context.globalArgs;
 
         // Generate environment-specific configuration
         const configs = {
@@ -249,7 +253,7 @@ export const model = {
 ```yaml
 # Model input that references config-generator output
 name: my-service-client
-attributes:
+globalArguments:
   # Reference the generated config from another model's resource output
   endpoint: ${{ model.api-config.resource.config.attributes.configJson.endpoint }}
   timeout: ${{ model.api-config.resource.config.attributes.configJson.timeout }}
@@ -285,7 +289,7 @@ const OutputSchema = z.object({
 export const model = {
   type: "@myorg/system-info",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "output": {
       description: "Command execution result",
@@ -297,8 +301,9 @@ export const model = {
   methods: {
     run: {
       description: "Run a system command with streamed output",
-      execute: async (definition, context) => {
-        const attrs = definition.attributes;
+      arguments: z.object({}),
+      execute: async (args, context) => {
+        const attrs = context.globalArgs;
 
         // executeProcess streams stdout (info) and stderr (warn) through
         // context.logger, which routes to console + run log file.
@@ -333,15 +338,18 @@ export const model = {
 
 ```typescript
 // extensions/models/echo_audit.ts
+import { z } from "npm:zod@4";
+
 export const extension = {
   type: "swamp/echo",
   methods: [{
     audit: {
       description: "Audit the echo message",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         // Extensions use the target model's resources/files
         const handle = await context.writeResource!("message", {
-          message: `Audited: ${definition.name}`,
+          message: `Audited: ${context.definition.name}`,
           timestamp: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
@@ -355,14 +363,17 @@ export const extension = {
 
 ```typescript
 // extensions/models/echo_extras.ts
+import { z } from "npm:zod@4";
+
 export const extension = {
   type: "swamp/echo",
   methods: [{
     audit: {
       description: "Audit the echo message",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         const handle = await context.writeResource!("message", {
-          message: `Audited: ${definition.name}`,
+          message: `Audited: ${context.definition.name}`,
           timestamp: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
@@ -370,9 +381,10 @@ export const extension = {
     },
     validate: {
       description: "Validate the echo message format",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         const handle = await context.writeResource!("message", {
-          message: `Valid: ${definition.attributes.message.length > 0}`,
+          message: `Valid: ${context.globalArgs.message.length > 0}`,
           timestamp: new Date().toISOString(),
         });
         return { dataHandles: [handle] };

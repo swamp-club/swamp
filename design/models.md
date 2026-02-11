@@ -1,9 +1,11 @@
 # Models
 
 A model in swamp is defined by a _type_. They are instantiated by creating a
-_definition_, whose attributes can be set statically or dynamically through
-_inputs_. An instantiated _model_ can be used through calling _methods_, which
-_output_ their results and can store _resources_ and _files_. Resources are
+_definition_, whose global arguments can be set statically or dynamically
+through _inputs_. An instantiated _model_ can be used through calling _methods_,
+which _output_ their results and can store _resources_ and _files_. Each method
+also declares its own _arguments_ schema, and at execution time receives the
+merged set of global arguments and per-method arguments. Resources are
 structured data with a schema, and files are raw content with a content type.
 Both are immutable, have a _lifetime_, can be _tagged_ with capabilities, and
 store the _definition_ that created it (so the model can be instantiated from
@@ -49,7 +51,7 @@ A model can migrate its definitions from one version to the next using **upgrade
 functions**. Each model declares an ordered list of `VersionUpgrade` entries,
 one per version transition. When a definition's `typeVersion` is behind the
 model's current `version`, the upgrade chain runs all applicable upgrades in
-order, transforming attributes at each step.
+order, transforming global arguments at each step.
 
 Upgrades are **lazy** — they run at method execution time in
 `executeWorkflow()`, not at load time. The upgraded definition is persisted so
@@ -59,13 +61,13 @@ the upgrade only runs once.
 
 - Upgrades must be ordered chronologically by `toVersion`
 - The last upgrade's `toVersion` must equal the model's current `version`
-- Upgrade functions are pure attribute transforms (old attrs → new attrs)
+- Upgrade functions are pure global argument transforms (old args → new args)
 - Upgrades are forward-only; there is no downgrade path
 
 ### Example
 
-A model starts at version `"2025.01.15.1"` with just a `message` attribute. On
-`"2025.06.01.1"`, a `priority` field is added with a default. On
+A model starts at version `"2025.01.15.1"` with just a `message` global
+argument. On `"2025.06.01.1"`, a `priority` field is added with a default. On
 `"2026.02.09.1"`, the `message` field is renamed to `content`:
 
 ```typescript
@@ -74,7 +76,7 @@ import { z } from "zod";
 export const model = {
   type: "acme/notifier",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({
+  globalArguments: z.object({
     content: z.string().min(1),
     priority: z.enum(["low", "medium", "high"]),
   }),
@@ -82,12 +84,12 @@ export const model = {
     {
       toVersion: "2025.06.01.1",
       description: "Add priority field with default 'medium'",
-      upgradeAttributes: (old) => ({ ...old, priority: "medium" }),
+      upgradeGlobalArguments: (old) => ({ ...old, priority: "medium" }),
     },
     {
       toVersion: "2026.02.09.1",
       description: "Rename 'message' to 'content'",
-      upgradeAttributes: (old) => {
+      upgradeGlobalArguments: (old) => {
         const { message, ...rest } = old;
         return { ...rest, content: message };
       },
@@ -96,12 +98,13 @@ export const model = {
   methods: {
     send: {
       description: "Send a notification",
-      execute: async (definition, context) => {
-        const attrs = definition.attributes;
+      arguments: z.object({}),
+      execute: async (args, context) => {
+        const globalArgs = context.globalArgs;
         const handle = await context.writeResource("result", {
           sent: true,
-          content: attrs.content,
-          priority: attrs.priority,
+          content: globalArgs.content,
+          priority: globalArgs.priority,
         });
         return { dataHandles: [handle] };
       },
@@ -115,8 +118,9 @@ the model is now at `"2026.02.09.1"`, running a method will:
 
 1. Apply upgrade to `"2025.06.01.1"`: `{ message: "hello", priority: "medium" }`
 2. Apply upgrade to `"2026.02.09.1"`: `{ content: "hello", priority: "medium" }`
-3. Persist the definition with `typeVersion: "2026.02.09.1"` and new attributes
-4. Execute the method with the upgraded definition
+3. Persist the definition with `typeVersion: "2026.02.09.1"` and new global
+   arguments
+4. Execute the method with the merged arguments (global + per-method)
 
 ### Backwards Compatibility
 
@@ -140,17 +144,17 @@ Each definition has the following core properties:
 - id: the models unique id
 - name: a unique human readable name
 - tags: string based key value pairs
-- attributes: domain specific data for the input (for example, the specific
-  properties of a VPC from above).
+- globalArguments: domain specific data shared across all methods (for example,
+  the specific properties of a VPC from above).
 
 ### Input
 
 A definition file can also specify custom inputs as JsonSchema serialized to
 yaml. By default, every definition has optional inputs that map to the full set
-of defined attributes of the definition. If a type specifies that a particular
-attribute is required, but it is not present in the static definition, then it
-is a required input. If it is present in the definition, than it will be
-optional (and can be over-ridden by an input.)
+of defined global arguments of the definition. If a type specifies that a
+particular global argument is required, but it is not present in the static
+definition, then it is a required input. If it is present in the definition,
+then it will be optional (and can be over-ridden by an input.)
 
 Custom input values can be accessed through CEL expressions.
 
@@ -165,12 +169,15 @@ We call this an instance of a model.
 
 ## Methods
 
-Methods can be called on instantiated models, taking the definition as an input.
-They can extract data from the definition for use the in the method using a
-MethodInput zod schmea to validate the shape.
+Methods can be called on instantiated models. Each method declares a required
+`arguments` Zod schema for its per-method arguments. At execution time, the
+method's `execute` function receives the merged arguments (global arguments from
+the definition combined with per-method arguments) as its first parameter, and a
+`MethodContext` as its second. The `MethodContext` includes `globalArgs`,
+`definition` metadata (id, name, version, tags), and `methodName`.
 
 Methods can write data, which is tracked by the method invocation and the
-definiton requried to re-instantiate the object.
+definition required to re-instantiate the object.
 
 Each method invocation records its status in an output, which records any data
 that was written in the invocation, status, and information about how it was
@@ -253,7 +260,7 @@ Use `context.writeResource(specName, data, overrides?)` to write structured
 resource data. Returns a `Promise<DataHandle>`.
 
 ```typescript
-execute: async (definition, context) => {
+execute: async (args, context) => {
   const handle = await context.writeResource("result", {
     result: "processed value",
   });
@@ -267,7 +274,7 @@ Use `context.createFileWriter(specName, overrides?)` to get a `DataWriter` for
 file output.
 
 ```typescript
-execute: async (definition, context) => {
+execute: async (args, context) => {
   const writer = context.createFileWriter("execution-log");
   const handle = await writer.writeText("Step 1 completed\nStep 2 completed\n");
   return { dataHandles: [handle] };

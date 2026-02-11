@@ -7,7 +7,7 @@ export interface ModelEvaluateItemData {
   type: string;
   hadExpressions: boolean;
   outputPath?: string;
-  attributes?: Record<string, unknown>;
+  globalArguments?: Record<string, unknown>;
 }
 
 export interface ModelEvaluateData {

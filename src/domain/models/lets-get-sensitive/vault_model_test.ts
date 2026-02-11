@@ -199,6 +199,9 @@ function createTestContext(repoDir: string): {
     repoDir,
     modelType: VAULT_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "get",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -269,7 +272,7 @@ Deno.test("Vault Model - Get Operation", async () => {
     // First store a secret
     const putDefinition = Definition.create({
       name: "test-vault-put-setup",
-      attributes: {
+      globalArguments: {
         vaultName: "test-vault",
         secretKey: "test-secret-key",
         secretValue: "test-secret-value",
@@ -278,12 +281,15 @@ Deno.test("Vault Model - Get Operation", async () => {
     });
 
     const { context: putContext } = createTestContext(repoDir);
-    await vaultModel.methods.put.execute(putDefinition, putContext);
+    await vaultModel.methods.put.execute(
+      putDefinition.globalArguments,
+      putContext,
+    );
 
     // Now test getting the secret
     const getDefinition = Definition.create({
       name: "test-vault-get",
-      attributes: {
+      globalArguments: {
         vaultName: "test-vault",
         secretKey: "test-secret-key",
         operation: "get",
@@ -291,7 +297,10 @@ Deno.test("Vault Model - Get Operation", async () => {
     });
 
     const { context, getResults } = createTestContext(repoDir);
-    await vaultModel.methods.get.execute(getDefinition, context);
+    await vaultModel.methods.get.execute(
+      getDefinition.globalArguments,
+      context,
+    );
 
     const attrs = getResultAttributes(getResults());
     assertEquals(attrs !== undefined, true);
@@ -307,7 +316,7 @@ Deno.test("Vault Model - Put Operation", async () => {
   await withTestRepo(async (repoDir) => {
     const definition = Definition.create({
       name: "test-vault-put",
-      attributes: {
+      globalArguments: {
         vaultName: "test-vault",
         secretKey: "test-secret-key",
         secretValue: "test-secret-value",
@@ -316,7 +325,7 @@ Deno.test("Vault Model - Put Operation", async () => {
     });
 
     const { context, getResults } = createTestContext(repoDir);
-    await vaultModel.methods.put.execute(definition, context);
+    await vaultModel.methods.put.execute(definition.globalArguments, context);
 
     const attrs = getResultAttributes(getResults());
     assertEquals(attrs !== undefined, true);
@@ -331,7 +340,7 @@ Deno.test("Vault Model - Put Operation", async () => {
 Deno.test("Vault Model - Get with wrong operation fails", async () => {
   const definition = Definition.create({
     name: "test-vault-wrong-op",
-    attributes: {
+    globalArguments: {
       vaultName: "aws",
       secretKey: "test-secret-key",
       operation: "put", // Wrong operation for get method
@@ -341,7 +350,7 @@ Deno.test("Vault Model - Get with wrong operation fails", async () => {
   const { context } = createTestContext("/tmp/test");
 
   try {
-    await vaultModel.methods.get.execute(definition, context);
+    await vaultModel.methods.get.execute(definition.globalArguments, context);
     assertEquals(true, false, "Expected error for wrong operation");
   } catch (error) {
     assertStringIncludes(
@@ -354,7 +363,7 @@ Deno.test("Vault Model - Get with wrong operation fails", async () => {
 Deno.test("Vault Model - Put without secretValue fails", async () => {
   const definition = Definition.create({
     name: "test-vault-no-value",
-    attributes: {
+    globalArguments: {
       vaultName: "aws",
       secretKey: "test-secret-key",
       operation: "put",
@@ -365,7 +374,7 @@ Deno.test("Vault Model - Put without secretValue fails", async () => {
   const { context } = createTestContext("/tmp/test");
 
   try {
-    await vaultModel.methods.put.execute(definition, context);
+    await vaultModel.methods.put.execute(definition.globalArguments, context);
     assertEquals(true, false, "Expected error for missing secretValue");
   } catch (error) {
     assertStringIncludes(

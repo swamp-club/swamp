@@ -68,7 +68,7 @@ export function toMethodDescribeData(
   return {
     name,
     description: method.description,
-    inputAttributesSchema: zodToJsonSchema(method.inputAttributesSchema),
+    arguments: zodToJsonSchema(method.arguments),
     dataOutputSpecs: dataOutputSpecs.length > 0 ? dataOutputSpecs : undefined,
   };
 }
@@ -98,9 +98,9 @@ function typeDescribeAction(options: AnyOptions, typeArg: string): void {
   }
 
   // Convert Zod schemas to JSON Schema
-  const inputAttributesSchema = zodToJsonSchema(
-    definition.inputAttributesSchema,
-  );
+  const globalArguments = definition.globalArguments
+    ? zodToJsonSchema(definition.globalArguments)
+    : undefined;
 
   // Build method descriptions
   const methods: MethodDescribeData[] = Object.entries(definition.methods)
@@ -121,7 +121,7 @@ function typeDescribeAction(options: AnyOptions, typeArg: string): void {
       normalized: modelType.normalized,
     },
     version: definition.version,
-    inputAttributesSchema,
+    globalArguments,
     methods,
   };
 

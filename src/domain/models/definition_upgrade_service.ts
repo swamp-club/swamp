@@ -64,15 +64,15 @@ export class DefinitionUpgradeService {
     }
 
     // Apply upgrades in order
-    let currentAttributes = definition.attributes;
+    let currentArgs = definition.globalArguments;
     for (const upgrade of applicableUpgrades) {
-      currentAttributes = upgrade.upgradeAttributes(currentAttributes);
+      currentArgs = upgrade.upgradeAttributes(currentArgs);
     }
 
-    // Create a new definition with the upgraded attributes
-    const upgradedDefinition = Definition.withUpgradedAttributes(
+    // Create a new definition with the upgraded global arguments
+    const upgradedDefinition = Definition.withUpgradedGlobalArguments(
       definition,
-      currentAttributes,
+      currentArgs,
       toVersion,
     );
 

@@ -202,6 +202,9 @@ function createTestContext(
     repoDir: "/tmp/test-repo",
     modelType: EC2_SUBNET_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "create",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -384,7 +387,7 @@ Deno.test("EC2SubnetModel - resource schema with all attributes", () => {
 Deno.test("EC2SubnetModel - sync method without RequestToken fails", async () => {
   const definition = Definition.create({
     name: "test-subnet",
-    attributes: {
+    globalArguments: {
       VpcId: "vpc-12345678",
       CidrBlock: "10.0.1.0/24",
     },
@@ -393,7 +396,8 @@ Deno.test("EC2SubnetModel - sync method without RequestToken fails", async () =>
   const { context } = createTestContext();
 
   await assertRejects(
-    () => ec2SubnetModel.methods.sync.execute(definition, context),
+    () =>
+      ec2SubnetModel.methods.sync.execute(definition.globalArguments, context),
     Error,
     "AWS::EC2::Subnet sync failed: no RequestToken found",
   );
@@ -402,7 +406,7 @@ Deno.test("EC2SubnetModel - sync method without RequestToken fails", async () =>
 Deno.test("EC2SubnetModel - delete method without data returns deleted result", async () => {
   const definition = Definition.create({
     name: "test-subnet",
-    attributes: {
+    globalArguments: {
       VpcId: "vpc-12345678",
       CidrBlock: "10.0.1.0/24",
     },
@@ -411,7 +415,7 @@ Deno.test("EC2SubnetModel - delete method without data returns deleted result", 
   const { context, getResults } = createTestContext();
 
   await ec2SubnetModel.methods.delete.execute(
-    definition,
+    definition.globalArguments,
     context,
   );
 
@@ -424,7 +428,7 @@ Deno.test("EC2SubnetModel - delete method without data returns deleted result", 
 Deno.test("EC2SubnetModel - create method uses injected CloudControl client", async () => {
   const definition = Definition.create({
     name: "test-subnet",
-    attributes: {
+    globalArguments: {
       VpcId: "vpc-12345678",
       CidrBlock: "10.0.1.0/24",
       AvailabilityZone: "us-east-1a",
@@ -448,7 +452,7 @@ Deno.test("EC2SubnetModel - create method uses injected CloudControl client", as
   });
 
   const result = await ec2SubnetModel.methods.create.execute(
-    definition,
+    definition.globalArguments,
     context,
   );
 
@@ -462,7 +466,7 @@ Deno.test("EC2SubnetModel - create method uses injected CloudControl client", as
 Deno.test("EC2SubnetModel - sync method treats 'not found' as deleted", async () => {
   const definition = Definition.create({
     name: "test-subnet",
-    attributes: {
+    globalArguments: {
       RequestToken: "request-123",
       ResourceIdentifier: "subnet-12345678",
     },
@@ -484,7 +488,10 @@ Deno.test("EC2SubnetModel - sync method treats 'not found' as deleted", async ()
       mockClient as unknown as CloudControlClient,
   });
 
-  const result = await ec2SubnetModel.methods.sync.execute(definition, context);
+  const result = await ec2SubnetModel.methods.sync.execute(
+    definition.globalArguments,
+    context,
+  );
 
   const attrs = getDataHandleAttributes(getResults());
   assertEquals(attrs?.OperationStatus, "SUCCESS");
@@ -495,7 +502,7 @@ Deno.test("EC2SubnetModel - sync method treats 'not found' as deleted", async ()
 Deno.test("EC2SubnetModel - delete method treats 'not found' as success", async () => {
   const definition = Definition.create({
     name: "test-subnet",
-    attributes: {
+    globalArguments: {
       VpcId: "vpc-12345678",
       CidrBlock: "10.0.1.0/24",
     },
@@ -533,7 +540,7 @@ Deno.test("EC2SubnetModel - delete method treats 'not found' as success", async 
   });
 
   const result = await ec2SubnetModel.methods.delete.execute(
-    definition,
+    definition.globalArguments,
     context,
   );
 

@@ -199,7 +199,8 @@ export class DefaultModelValidationService implements ModelValidationService {
   ): Promise<ValidationResult[]> {
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
-      this.validateDefinitionAttributes(definition, modelDef),
+      this.validateGlobalArguments(definition, modelDef),
+      this.validateMethodArguments(definition, modelDef),
     ];
 
     // Add expression path validation if definitionRepo is provided
@@ -235,29 +236,71 @@ export class DefaultModelValidationService implements ModelValidationService {
     );
   }
 
-  private validateDefinitionAttributes(
+  private validateGlobalArguments(
     definition: Definition,
     modelDef: ModelDefinition,
   ): Promise<ValidationResult> {
+    // Skip if model has no globalArguments schema
+    if (!modelDef.globalArguments) {
+      return Promise.resolve(ValidationResult.pass("Global arguments"));
+    }
+
     // Strip fields that contain expressions - they will be validated after evaluation.
     // Only validate the static (non-expression) fields against the schema.
-    const staticAttributes = stripExpressionFields(definition.attributes);
+    const staticArgs = stripExpressionFields(definition.globalArguments);
 
     // If any fields were stripped (contain expressions), skip schema validation entirely.
     // Expression paths are validated separately, and full schema validation will happen
     // at runtime when the evaluated definition is executed.
-    const totalFields = Object.keys(definition.attributes).length;
-    const staticFields = Object.keys(staticAttributes).length;
+    const totalFields = Object.keys(definition.globalArguments).length;
+    const staticFields = Object.keys(staticArgs).length;
     if (staticFields < totalFields) {
       // Some fields contain expressions - skip schema validation
-      return Promise.resolve(ValidationResult.pass("Definition attributes"));
+      return Promise.resolve(ValidationResult.pass("Global arguments"));
     }
 
     // All fields are static, validate normally
     return this.validateWithSchema(
-      "Definition attributes",
-      modelDef.inputAttributesSchema,
-      staticAttributes,
+      "Global arguments",
+      modelDef.globalArguments,
+      staticArgs,
+    );
+  }
+
+  private validateMethodArguments(
+    definition: Definition,
+    modelDef: ModelDefinition,
+  ): Promise<ValidationResult> {
+    const errors: string[] = [];
+    const methodData = definition.methodData;
+
+    for (const [methodName, methodDef] of Object.entries(modelDef.methods)) {
+      const args = methodData[methodName]?.arguments;
+      if (!args) continue;
+
+      // Strip fields that contain expressions
+      const staticArgs = stripExpressionFields(args);
+      const totalFields = Object.keys(args).length;
+      const staticFields = Object.keys(staticArgs).length;
+      if (staticFields < totalFields) {
+        // Some fields contain expressions - skip validation for this method
+        continue;
+      }
+
+      const result = methodDef.arguments.safeParse(staticArgs);
+      if (!result.success) {
+        errors.push(
+          `Method "${methodName}": ${formatZodError(result.error)}`,
+        );
+      }
+    }
+
+    if (errors.length === 0) {
+      return Promise.resolve(ValidationResult.pass("Method arguments"));
+    }
+
+    return Promise.resolve(
+      ValidationResult.fail("Method arguments", errors.join("; ")),
     );
   }
 
@@ -275,8 +318,11 @@ export class DefaultModelValidationService implements ModelValidationService {
   ): Promise<ValidationResult> {
     const errors: ExpressionPathError[] = [];
 
-    // First, check for malformed expressions
-    const malformedErrors = findMalformedExpressions(definition.attributes).map(
+    // First, check for malformed expressions in globalArguments and methods
+    const malformedErrors = [
+      ...findMalformedExpressions(definition.globalArguments),
+      ...findMalformedExpressions(definition.methodData),
+    ].map(
       (m) => ({
         expression: m.raw,
         error: `${m.issue} at "${m.path}"`,
@@ -285,8 +331,12 @@ export class DefaultModelValidationService implements ModelValidationService {
     );
     errors.push(...malformedErrors);
 
-    // Extract and validate all expressions from definition attributes
-    for (const exprLocation of extractExpressions(definition.attributes)) {
+    // Extract and validate all expressions from definition data
+    const allExpressionData = {
+      globalArguments: definition.globalArguments,
+      methods: definition.methodData,
+    };
+    for (const exprLocation of extractExpressions(allExpressionData)) {
       const { celExpression, raw, path } = exprLocation;
 
       // Validate model references
@@ -381,7 +431,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         error:
           `Invalid expression "${celExpression}" at "${path}". Missing "model." prefix and path structure`,
         suggestion:
-          `Use: model.${modelName}.resource.attributes.${propertyPath} or model.${modelName}.input.attributes.${propertyPath}`,
+          `Use: model.${modelName}.resource.attributes.${propertyPath} or model.${modelName}.definition.globalArguments.${propertyPath}`,
       };
     }
 
@@ -393,7 +443,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         error:
           `Invalid expression "${celExpression}" at "${path}". Expression must reference model, self, or env`,
         suggestion:
-          `Use: model.${celExpression}.resource.attributes.<property>, self.attributes.<property>, or env.<VARIABLE_NAME>`,
+          `Use: model.${celExpression}.resource.attributes.<property>, self.globalArguments.<property>, or env.<VARIABLE_NAME>`,
       };
     }
 
@@ -403,7 +453,7 @@ export class DefaultModelValidationService implements ModelValidationService {
       error:
         `Expression "${celExpression}" at "${path}" does not contain valid model, self, or env references`,
       suggestion:
-        "Expressions should use: model.<name>.resource.attributes.<property>, model.<name>.input.attributes.<property>, self.attributes.<property>, or env.<VARIABLE_NAME>",
+        "Expressions should use: model.<name>.resource.attributes.<property>, model.<name>.definition.globalArguments.<property>, self.globalArguments.<property>, or env.<VARIABLE_NAME>",
     };
   }
 
@@ -566,31 +616,34 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // For input (definition) type, validate attributes path
-    if (firstSegment !== "attributes") {
-      // For now, we only support .attributes paths
-      // Other valid paths like .id could be added later
+    // For definition type, validate globalArguments path
+    if (firstSegment !== "globalArguments") {
       return {
         expression: ref.rawExpression,
-        error: `Invalid path segment "${firstSegment}". Expected "attributes"`,
-        suggestion: firstSegment === "attribute"
-          ? 'Did you mean "attributes" instead of "attribute"?'
+        error:
+          `Invalid path segment "${firstSegment}". Expected "globalArguments"`,
+        suggestion: firstSegment === "attributes"
+          ? 'Did you mean "globalArguments" instead of "attributes"?'
           : undefined,
       };
     }
 
-    // Skip the "attributes" segment and validate the rest against the schema
+    // Skip the "globalArguments" segment and validate the rest against the schema
     const pathToValidate = ref.path.slice(1);
     if (pathToValidate.length === 0) {
-      // Just ".attributes" is valid
+      // Just ".globalArguments" is valid
       return null;
     }
 
-    // Validate against the input attributes schema
-    const schema = targetDefinition.inputAttributesSchema;
+    // Validate against the global arguments schema
+    if (!targetDefinition.globalArguments) {
+      return null;
+    }
 
-    // Validate the path against the schema
-    const validationResult = validateSchemaPath(schema, pathToValidate);
+    const validationResult = validateSchemaPath(
+      targetDefinition.globalArguments,
+      pathToValidate,
+    );
     if (!validationResult.valid && validationResult.error) {
       return {
         expression: ref.rawExpression,
@@ -621,11 +674,11 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    if (firstSegment !== "attributes") {
+    if (firstSegment !== "globalArguments") {
       return {
         expression: ref.rawExpression,
         error:
-          `Invalid self reference segment "${firstSegment}". Valid segments: name, version, tags, attributes`,
+          `Invalid self reference segment "${firstSegment}". Valid segments: name, version, tags, globalArguments`,
       };
     }
 
@@ -633,8 +686,12 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
+    if (!definition.globalArguments) {
+      return null;
+    }
+
     const validationResult = validateSchemaPath(
-      definition.inputAttributesSchema,
+      definition.globalArguments,
       remainingPath,
     );
     if (!validationResult.valid && validationResult.error) {

@@ -64,7 +64,6 @@ const ResourceSchema = z.object({
 export const model = {
   type: "@user/datawriter-model",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
   resources: {
     "resource": {
       description: "Resource output",
@@ -76,13 +75,14 @@ export const model = {
   methods: {
     provision: {
       description: "Provision a cloud resource and return its state",
-      execute: async (definition, context) => {
+      arguments: InputSchema,
+      execute: async (args, context) => {
         const resourceId = "res-" + Date.now().toString(36);
 
         const content = {
           id: resourceId,
-          name: definition.attributes.resourceName,
-          region: definition.attributes.region,
+          name: args.resourceName,
+          region: args.region,
           status: "active",
           endpoint: "https://api.example.com/" + resourceId,
           createdAt: new Date().toISOString(),
@@ -160,11 +160,11 @@ const InputSchema = z.object({
 export const model = {
   type: "@user/expression-model",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
   methods: {
     process: {
       description: "Process with expression support",
-      execute: async (definition, _context) => {
+      arguments: InputSchema,
+      execute: async (_args, _context) => {
         return { dataHandles: [] };
       },
     },
@@ -200,9 +200,13 @@ Deno.test("Integration: expression-aware validation allows expressions in requir
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "test-expression",
-      attributes: {
-        value: "${{ inputs.someValue }}", // Expression instead of literal
-        count: "${{ inputs.count }}", // Expression for number field
+      methods: {
+        process: {
+          arguments: {
+            value: "${{ inputs.someValue }}", // Expression instead of literal
+            count: "${{ inputs.count }}", // Expression for number field
+          },
+        },
       },
     });
 
@@ -213,7 +217,7 @@ Deno.test("Integration: expression-aware validation allows expressions in requir
     const loaded = await definitionRepo.findById(modelType, definition.id);
     assertEquals(loaded !== null, true, "Definition should be loaded");
     assertEquals(
-      loaded!.attributes.value,
+      loaded!.getMethodArguments("process").value,
       "${{ inputs.someValue }}",
       "Expression should be preserved",
     );

@@ -67,8 +67,8 @@ Deno.test("Data output specs - echo model execution produces valid resource hand
     // Create echo definition
     const definition = Definition.create({
       name: "test-echo",
-      attributes: {
-        message: "Hello, data specs!",
+      methods: {
+        write: { arguments: { message: "Hello, data specs!" } },
       },
     });
 
@@ -94,6 +94,14 @@ Deno.test("Data output specs - echo model execution produces valid resource hand
         repoDir,
         modelType,
         modelId: definition.id,
+        globalArgs: definition.globalArguments,
+        definition: {
+          id: definition.id,
+          name: definition.name,
+          version: definition.version,
+          tags: definition.tags,
+        },
+        methodName: "write",
         logger: getLogger(["test"]),
         dataRepository: dataRepo,
         definitionRepository: definitionRepo,
@@ -128,7 +136,7 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
 
     const definition = Definition.create({
       name: "test-echo",
-      attributes: { message: "Test" },
+      methods: { write: { arguments: { message: "Test" } } },
     });
 
     // Create writeResource with the echo model's resources (which only has "message" spec)
@@ -142,9 +150,9 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
     // Create a method that tries to use an undeclared spec name
     const badMethod = {
       description: "Bad method",
-      inputAttributesSchema: model!.inputAttributesSchema,
+      arguments: model!.methods.write.arguments,
       execute: async (
-        _def: Definition,
+        _args: Record<string, unknown>,
         ctx: MethodContext,
       ) => {
         // This should throw because "undeclared" is not in echo model's resources
@@ -164,6 +172,14 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
           repoDir,
           modelType: echoModelType,
           modelId: definition.id,
+          globalArgs: definition.globalArguments,
+          definition: {
+            id: definition.id,
+            name: definition.name,
+            version: definition.version,
+            tags: definition.tags,
+          },
+          methodName: "write",
           logger: getLogger(["test"]),
           dataRepository: dataRepo,
           definitionRepository: definitionRepo,
@@ -191,7 +207,7 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
 
     const definition = Definition.create({
       name: "test-echo",
-      attributes: { message: "Test" },
+      methods: { write: { arguments: { message: "Test" } } },
     });
 
     // Create createFileWriter with the echo model's files (empty)
@@ -205,9 +221,9 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
     // Create a method that tries to use an undeclared file spec
     const badMethod = {
       description: "Bad method",
-      inputAttributesSchema: model!.inputAttributesSchema,
+      arguments: model!.methods.write.arguments,
       execute: async (
-        _def: Definition,
+        _args: Record<string, unknown>,
         ctx: MethodContext,
       ) => {
         // This should throw because echo model has no file specs
@@ -226,6 +242,14 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
           repoDir,
           modelType: echoModelType,
           modelId: definition.id,
+          globalArgs: definition.globalArguments,
+          definition: {
+            id: definition.id,
+            name: definition.name,
+            version: definition.version,
+            tags: definition.tags,
+          },
+          methodName: "write",
           logger: getLogger(["test"]),
           dataRepository: dataRepo,
           definitionRepository: definitionRepo,

@@ -14,7 +14,7 @@ const testData: TypeDescribeData = {
     normalized: "swamp/echo",
   },
   version: "2026.02.09.1",
-  inputAttributesSchema: {
+  globalArguments: {
     type: "object",
     properties: {
       message: { type: "string", minLength: 1 },
@@ -26,7 +26,7 @@ const testData: TypeDescribeData = {
       name: "write",
       description:
         "Write the definition message to a data artifact with a timestamp",
-      inputAttributesSchema: {
+      arguments: {
         type: "object",
         properties: {
           message: { type: "string", minLength: 1 },
@@ -43,7 +43,7 @@ const testDataWithSpecs: TypeDescribeData = {
     normalized: "aws/ec2/vpc",
   },
   version: "2026.01.15.1",
-  inputAttributesSchema: {
+  globalArguments: {
     type: "object",
     properties: {
       cidrBlock: { type: "string" },
@@ -55,7 +55,7 @@ const testDataWithSpecs: TypeDescribeData = {
     {
       name: "create",
       description: "Create a new VPC",
-      inputAttributesSchema: {
+      arguments: {
         type: "object",
         properties: {
           cidrBlock: { type: "string" },

@@ -79,13 +79,13 @@ swamp model type describe swamp/echo --json
 {
   "type": { "raw": "swamp/echo", "normalized": "swamp/echo" },
   "version": "2026.02.09.1",
-  "inputAttributesSchema": {/* JSON Schema */},
+  "globalArguments": {/* JSON Schema */},
   "resourceAttributesSchema": {/* JSON Schema */},
   "methods": [
     {
       "name": "write",
       "description": "Write the input message to a resource with a timestamp",
-      "inputAttributesSchema": {/* JSON Schema */}
+      "arguments": {/* JSON Schema */}
     }
   ]
 }
@@ -93,8 +93,8 @@ swamp model type describe swamp/echo --json
 
 **Key fields:**
 
-- `inputAttributesSchema` - JSON Schema for input YAML `attributes` section
-- `methods` - Available operations with their input schemas
+- `globalArguments` - JSON Schema for input YAML `globalArguments` section
+- `methods` - Available operations with their per-method `arguments` schemas
 
 ## Create Model Inputs
 
@@ -112,8 +112,9 @@ swamp model create swamp/echo my-echo --json
 }
 ```
 
-After creation, edit the YAML file to set attributes according to
-`inputAttributesSchema` from `type describe`.
+After creation, edit the YAML file to set `globalArguments` according to the
+`globalArguments` schema from `type describe`, and per-method `arguments` in the
+`methods` section.
 
 **Example input file:**
 
@@ -122,8 +123,11 @@ id: 550e8400-e29b-41d4-a716-446655440000
 name: my-echo
 version: 1
 tags: {}
-attributes:
+globalArguments:
   message: "Hello, world!"
+methods:
+  write:
+    arguments: {}
 ```
 
 ### Model Inputs Schema
@@ -145,13 +149,16 @@ inputs:
       type: boolean
       default: false
   required: ["environment"]
-attributes:
+globalArguments:
   target: ${{ inputs.environment }}
   simulate: ${{ inputs.dryRun }}
+methods:
+  deploy:
+    arguments: {}
 ```
 
 Inputs are provided at runtime with `--input` or `--input-file` and referenced
-in attributes using `${{ inputs.<name> }}` expressions.
+in globalArguments using `${{ inputs.<name> }}` expressions.
 
 ## Edit a Model
 
@@ -205,8 +212,8 @@ swamp model validate --json  # Validate all models
   "modelName": "my-echo",
   "type": "swamp/echo",
   "validations": [
-    { "name": "Input schema validation", "passed": true },
-    { "name": "Required attributes present", "passed": true },
+    { "name": "Global arguments schema validation", "passed": true },
+    { "name": "Required global arguments present", "passed": true },
     { "name": "Expression syntax valid", "passed": true }
   ],
   "passed": true
@@ -235,19 +242,19 @@ Model inputs support CEL expressions using `${{ <expression> }}` syntax.
 | Reference                                                | Description                       |
 | -------------------------------------------------------- | --------------------------------- |
 | `inputs.<name>`                                          | Runtime input value               |
-| `model.<name>.input.attributes.<field>`                  | Another model's input attribute   |
+| `model.<name>.input.globalArguments.<field>`             | Another model's global argument   |
 | `model.<name>.resource.<specName>.attributes.<field>`    | A model's resource data field     |
 | `model.<name>.file.<specName>.{path\|size\|contentType}` | A model's file metadata           |
 | `file.contents("<modelName>", "<specName>")`             | Lazy-load file contents from disk |
 | `self.name`                                              | This model's name                 |
 | `self.version`                                           | This model's version              |
-| `self.attributes.<field>`                                | This model's own input attribute  |
+| `self.globalArguments.<field>`                           | This model's own global argument  |
 
 ### CEL Operations
 
 - **String concatenation:** `self.name + "-suffix"`
-- **Arithmetic:** `self.attributes.count * 2`
-- **Conditionals:** `self.attributes.enabled ? "yes" : "no"`
+- **Arithmetic:** `self.globalArguments.count * 2`
+- **Conditionals:** `self.globalArguments.enabled ? "yes" : "no"`
 
 ### Data Versioning Functions
 
@@ -300,11 +307,14 @@ id: 550e8400-e29b-41d4-a716-446655440001
 name: my-subnet
 version: 1
 tags: {}
-attributes:
+globalArguments:
   vpcId: ${{ model.my-vpc.resource.resource.attributes.VpcId }}
   cidrBlock: "10.0.1.0/24"
   tags:
     Name: ${{ self.name + "-subnet" }}
+methods:
+  create:
+    arguments: {}
 ```
 
 ## Evaluate Model Inputs
@@ -463,7 +473,7 @@ swamp model output data output-789 --json
 2. **Describe** to understand the schema:
    `swamp model type describe swamp/echo --json`
 3. **Create** an input file: `swamp model create swamp/echo my-message --json`
-4. **Edit** the YAML file to set `attributes.message`
+4. **Edit** the YAML file to set `globalArguments.message`
 5. **Validate** the model: `swamp model validate my-message --json`
 6. **Run** the method: `swamp model method run my-message write --json`
 7. **View** the output: `swamp model output get my-message --json`

@@ -71,7 +71,7 @@ Deno.test("SymlinkRepoIndexService.handleModelCreated creates model directory", 
       name: "my-test-model",
       version: 1,
       tags: {},
-      attributes: { message: "hello" },
+      globalArguments: { message: "hello" },
     });
     await definitionRepo.save(type, definition);
 
@@ -98,7 +98,7 @@ Deno.test("SymlinkRepoIndexService.handleModelCreated creates definition.yaml sy
       name: "my-definition-model",
       version: 1,
       tags: {},
-      attributes: { message: "hello" },
+      globalArguments: { message: "hello" },
     });
     await definitionRepo.save(type, definition);
 
@@ -134,7 +134,7 @@ Deno.test("SymlinkRepoIndexService.handleModelDeleted removes model directory", 
       name: "delete-me",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -183,13 +183,13 @@ Deno.test("SymlinkRepoIndexService.rebuildAll indexes all definitions", async ()
       name: "def-one",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     const def2 = Definition.create({
       name: "def-two",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, def1);
     await definitionRepo.save(type, def2);
@@ -228,7 +228,7 @@ Deno.test("SymlinkRepoIndexService.rebuildAll removes stale indexes", async () =
       name: "my-model",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -296,7 +296,7 @@ Deno.test("SymlinkRepoIndexService.verify returns valid for good symlinks", asyn
       name: "good-model",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 

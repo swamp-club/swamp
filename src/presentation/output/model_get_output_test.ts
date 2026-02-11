@@ -11,7 +11,7 @@ const testDataWithoutResource: ModelGetData = {
   type: "swamp/echo",
   version: 1,
   tags: { env: "test", project: "demo" },
-  attributes: { message: "Hello World" },
+  globalArguments: { message: "Hello World" },
 };
 
 const testDataWithResource: ModelGetData = {
@@ -66,7 +66,7 @@ Deno.test("renderModelGet JSON includes tags and attributes", () => {
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.tags.env, "test");
     assertEquals(parsed.tags.project, "demo");
-    assertEquals(parsed.attributes.message, "Hello World");
+    assertEquals(parsed.globalArguments.message, "Hello World");
   } finally {
     console.log = originalLog;
   }
@@ -89,7 +89,7 @@ Deno.test("renderModelGet log mode shows model details", () => {
     assertStringIncludes(combined, "(swamp/echo)");
     assertStringIncludes(combined, "Tags:");
     assertStringIncludes(combined, "env:");
-    assertStringIncludes(combined, "Attributes:");
+    assertStringIncludes(combined, "Global Arguments:");
     assertStringIncludes(combined, "message:");
   } finally {
     console.log = originalLog;

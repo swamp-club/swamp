@@ -75,7 +75,7 @@ Deno.test("Integration: definition create via repository context creates index s
       name: "auto-indexed-model",
       version: 1,
       tags: {},
-      attributes: { message: "hello" },
+      methods: { write: { arguments: { message: "hello" } } },
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -117,7 +117,7 @@ Deno.test("Integration: definition delete via repository context removes index s
       name: "delete-indexed-model",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -149,19 +149,19 @@ Deno.test("Integration: multiple definitions create separate index directories",
       name: "model-alpha",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     const def2 = Definition.create({
       name: "model-beta",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     const def3 = Definition.create({
       name: "model-gamma",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
 
     await ctx.definitionRepo.save(type, def1);
@@ -291,13 +291,13 @@ Deno.test("Integration: repo index rebuild indexes existing definitions", async 
       name: "rebuild-model-1",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     const def2 = Definition.create({
       name: "rebuild-model-2",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await ctxNoIndex.definitionRepo.save(type, def1);
     await ctxNoIndex.definitionRepo.save(type, def2);
@@ -329,7 +329,7 @@ Deno.test("Integration: repo index rebuild removes stale indexes", async () => {
       name: "existing-model",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -442,7 +442,7 @@ Deno.test("CLI: repo index rebuilds index", async () => {
       name: "cli-rebuild-test",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -484,7 +484,7 @@ Deno.test("CLI: repo index --verify checks integrity", async () => {
       name: "verify-test",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -583,7 +583,7 @@ Deno.test("Integration: definition create via repository context creates definit
       name: "definition-indexed-model",
       version: 1,
       tags: { env: "test" },
-      attributes: { message: "hello" },
+      methods: { write: { arguments: { message: "hello" } } },
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -630,7 +630,7 @@ Deno.test("Integration: definition update via repository context updates logical
       name: "update-test-model",
       version: 1,
       tags: {},
-      attributes: { value: "original" },
+      globalArguments: { value: "original" },
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -654,7 +654,7 @@ Deno.test("Integration: definition update via repository context updates logical
       name: "update-test-model",
       version: 2,
       tags: {},
-      attributes: { value: "updated" },
+      globalArguments: { value: "updated" },
     });
     await ctx.definitionRepo.save(type, updatedDefinition);
 
@@ -685,7 +685,7 @@ Deno.test("Integration: definition delete via repository context removes logical
       name: "delete-definition-model",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -720,13 +720,13 @@ Deno.test("Integration: repo index rebuild indexes definitions with type/ direct
       name: "rebuild-def-1",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     const def2 = Definition.create({
       name: "rebuild-def-2",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await ctxNoIndex.definitionRepo.save(type, def1);
     await ctxNoIndex.definitionRepo.save(type, def2);

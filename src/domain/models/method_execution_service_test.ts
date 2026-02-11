@@ -189,6 +189,9 @@ function createTestContext(
     repoDir: ".",
     modelType: ModelType.create("swamp/echo"),
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "write",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -203,7 +206,8 @@ Deno.test("execute with valid definition returns method result", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "Hello, world!" },
+    globalArguments: { message: "Hello, world!" },
+    methods: { write: { arguments: { message: "Hello, world!" } } },
   });
 
   const { context, getResults } = createTestContext();
@@ -230,14 +234,15 @@ Deno.test("execute with missing required attribute throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: {}, // Missing required 'message'
+    globalArguments: {},
+    methods: { write: { arguments: {} } }, // Missing required 'message'
   });
 
   const { context } = createTestContext();
   await assertRejects(
     () => service.execute(definition, echoModel.methods.write, context),
     Error,
-    "Definition validation failed",
+    "Method arguments validation failed",
   );
 });
 
@@ -245,14 +250,15 @@ Deno.test("execute with invalid attribute type throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: 123 }, // Should be string
+    globalArguments: { message: 123 },
+    methods: { write: { arguments: { message: 123 } } }, // Should be string
   });
 
   const { context } = createTestContext();
   await assertRejects(
     () => service.execute(definition, echoModel.methods.write, context),
     Error,
-    "Definition validation failed",
+    "Method arguments validation failed",
   );
 });
 
@@ -260,14 +266,15 @@ Deno.test("execute with empty message throws error", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { message: "" }, // Empty message fails min(1) validation
+    globalArguments: { message: "" },
+    methods: { write: { arguments: { message: "" } } }, // Empty message fails min(1) validation
   });
 
   const { context } = createTestContext();
   await assertRejects(
     () => service.execute(definition, echoModel.methods.write, context),
     Error,
-    "Definition validation failed",
+    "Method arguments validation failed",
   );
 });
 
@@ -275,7 +282,8 @@ Deno.test("execute error message includes Zod details", async () => {
   const service = new DefaultMethodExecutionService();
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { wrongField: "value" },
+    globalArguments: { wrongField: "value" },
+    methods: { write: { arguments: { wrongField: "value" } } },
   });
 
   const { context } = createTestContext();
@@ -284,7 +292,10 @@ Deno.test("execute error message includes Zod details", async () => {
     throw new Error("Expected error to be thrown");
   } catch (error) {
     const message = (error as Error).message;
-    assertEquals(message.startsWith("Definition validation failed:"), true);
+    assertEquals(
+      message.startsWith("Method arguments validation failed:"),
+      true,
+    );
     // Should mention the missing 'message' field
     assertEquals(message.includes("message"), true);
   }
@@ -309,11 +320,11 @@ async function writeTestData(
  */
 function createTestModel(options: {
   executeImpl?: (
-    definition: Definition,
+    args: Record<string, unknown>,
     context: MethodContext,
   ) => Promise<MethodResult>;
   followUpImpl?: (
-    definition: Definition,
+    args: Record<string, unknown>,
     context: MethodContext,
   ) => Promise<MethodResult>;
 }): ModelDefinition {
@@ -326,7 +337,7 @@ function createTestModel(options: {
   return {
     type: ModelType.create("test/workflow"),
     version: "2026.02.09.1",
-    inputAttributesSchema: schema,
+    globalArguments: schema,
     resources: {
       "data": {
         description: "Test data",
@@ -339,9 +350,9 @@ function createTestModel(options: {
     methods: {
       start: {
         description: "Start method for testing",
-        inputAttributesSchema: schema,
+        arguments: schema,
         execute: options.executeImpl ??
-          (async (_definition, context) => {
+          (async (_args, context) => {
             const handle = await writeTestData(context, "data", {
               value: "started",
             });
@@ -350,9 +361,9 @@ function createTestModel(options: {
       },
       followUp: {
         description: "Follow-up method for testing",
-        inputAttributesSchema: schema,
+        arguments: schema,
         execute: options.followUpImpl ??
-          (async (_definition, context) => {
+          (async (_args, context) => {
             const handle = await writeTestData(context, "data", {
               value: "followed-up",
             });
@@ -371,7 +382,7 @@ Deno.test(
 
     const definition = Definition.create({
       name: "test-definition",
-      attributes: { value: "test" },
+      globalArguments: { value: "test" },
     });
 
     const { context } = createTestContext({
@@ -395,7 +406,7 @@ Deno.test("executeWorkflow - throws error for unknown method", async () => {
 
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { value: "test" },
+    globalArguments: { value: "test" },
   });
 
   const { context } = createTestContext({
@@ -413,7 +424,7 @@ Deno.test("executeWorkflow - processes follow-up actions", async () => {
   const service = new DefaultMethodExecutionService();
 
   const model = createTestModel({
-    executeImpl: async (_definition, context) => {
+    executeImpl: async (_args, context) => {
       const handle = await writeTestData(context, "data", {
         value: "started",
         counter: 1,
@@ -423,7 +434,7 @@ Deno.test("executeWorkflow - processes follow-up actions", async () => {
         followUpActions: [{ methodName: "followUp" }],
       };
     },
-    followUpImpl: async (_definition, context) => {
+    followUpImpl: async (_args, context) => {
       const handle = await writeTestData(context, "data", {
         value: "completed",
         counter: 2,
@@ -434,7 +445,7 @@ Deno.test("executeWorkflow - processes follow-up actions", async () => {
 
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { value: "test" },
+    globalArguments: { value: "test" },
   });
 
   const { context } = createTestContext({
@@ -456,7 +467,7 @@ Deno.test("executeWorkflow - respects continueCondition", async () => {
   let followUpCallCount = 0;
 
   const model = createTestModel({
-    executeImpl: async (_definition, context) => {
+    executeImpl: async (_args, context) => {
       const handle = await writeTestData(context, "data", {
         value: "started",
         counter: 0,
@@ -474,7 +485,7 @@ Deno.test("executeWorkflow - respects continueCondition", async () => {
         ],
       };
     },
-    followUpImpl: async (_definition, context) => {
+    followUpImpl: async (_args, context) => {
       followUpCallCount++;
       const handle = await writeTestData(context, "data", {
         value: "should-not-reach",
@@ -485,7 +496,7 @@ Deno.test("executeWorkflow - respects continueCondition", async () => {
 
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { value: "test" },
+    globalArguments: { value: "test" },
   });
 
   const { context } = createTestContext({
@@ -508,7 +519,7 @@ Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
   let attemptCount = 0;
 
   const model = createTestModel({
-    executeImpl: async (_definition, context) => {
+    executeImpl: async (_args, context) => {
       const handle = await writeTestData(context, "data", {
         value: "started",
       });
@@ -517,7 +528,7 @@ Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
         followUpActions: [{ methodName: "followUp", maxRetries: 2 }],
       };
     },
-    followUpImpl: async (_definition, context) => {
+    followUpImpl: async (_args, context) => {
       attemptCount++;
       if (attemptCount < 3) {
         return Promise.reject(new Error("Simulated failure"));
@@ -531,7 +542,7 @@ Deno.test("executeWorkflow - retries on failure with maxRetries", async () => {
 
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { value: "test" },
+    globalArguments: { value: "test" },
   });
 
   const { context } = createTestContext({
@@ -553,7 +564,7 @@ Deno.test("executeWorkflow - fails after exhausting maxRetries", async () => {
   const service = new DefaultMethodExecutionService();
 
   const model = createTestModel({
-    executeImpl: async (_definition, context) => {
+    executeImpl: async (_args, context) => {
       const handle = await writeTestData(context, "data", {
         value: "started",
       });
@@ -567,7 +578,7 @@ Deno.test("executeWorkflow - fails after exhausting maxRetries", async () => {
 
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { value: "test" },
+    globalArguments: { value: "test" },
   });
 
   const { context } = createTestContext({
@@ -595,7 +606,7 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
   const model: ModelDefinition = {
     type: ModelType.create("test/recursive"),
     version: "2026.02.09.1",
-    inputAttributesSchema: schema,
+    globalArguments: schema,
     resources: {
       "data": {
         description: "Test data",
@@ -608,8 +619,8 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
     methods: {
       start: {
         description: "Start method",
-        inputAttributesSchema: schema,
-        execute: async (_definition, context) => {
+        arguments: schema,
+        execute: async (_args, context) => {
           callSequence.push("start");
           currentStep = 1;
           const handle = await writeTestData(context, "data", { step: 1 });
@@ -621,8 +632,8 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
       },
       increment: {
         description: "Increment method that may recurse",
-        inputAttributesSchema: schema,
-        execute: async (_definition, context) => {
+        arguments: schema,
+        execute: async (_args, context) => {
           callSequence.push(`increment-${currentStep}`);
 
           currentStep++;
@@ -649,7 +660,7 @@ Deno.test("executeWorkflow - handles recursive follow-up actions", async () => {
 
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { step: 0 },
+    globalArguments: { step: 0 },
   });
 
   const { context } = createTestContext({
@@ -676,7 +687,7 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
   const model: ModelDefinition = {
     type: ModelType.create("test/infinite"),
     version: "2026.02.09.1",
-    inputAttributesSchema: schema,
+    globalArguments: schema,
     resources: {
       "data": {
         description: "Test data",
@@ -689,8 +700,8 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
     methods: {
       start: {
         description: "Start infinite loop",
-        inputAttributesSchema: schema,
-        execute: async (_definition, context) => {
+        arguments: schema,
+        execute: async (_args, context) => {
           counter++;
           const handle = await writeTestData(context, "data", { counter });
           return {
@@ -704,7 +715,7 @@ Deno.test("executeWorkflow - throws on max depth exceeded", async () => {
 
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { counter: 0 },
+    globalArguments: { counter: 0 },
   });
 
   const { context } = createTestContext({
@@ -737,7 +748,7 @@ Deno.test(
     const model: ModelDefinition = {
       type: ModelType.create("test/token-passing"),
       version: "2026.02.09.1",
-      inputAttributesSchema: schema,
+      globalArguments: schema,
       resources: {
         "data": {
           description: "Test data",
@@ -750,8 +761,8 @@ Deno.test(
       methods: {
         create: {
           description: "Create method that returns RequestToken in data handle",
-          inputAttributesSchema: schema,
-          execute: async (_definition, context) => {
+          arguments: schema,
+          execute: async (_args, context) => {
             const handle = await writeTestData(context, "data", {
               RequestToken: "test-request-token-123",
               OperationStatus: "IN_PROGRESS",
@@ -772,10 +783,10 @@ Deno.test(
         },
         sync: {
           description: "Sync method that uses definition",
-          inputAttributesSchema: schema,
-          execute: async (definition, context) => {
+          arguments: schema,
+          execute: async (_args, context) => {
             // Capture the definition name to verify it's the same definition
-            receivedDefinitionName = definition.name;
+            receivedDefinitionName = context.definition.name;
 
             const handle = await writeTestData(context, "data", {
               RequestToken: "test-request-token-123",
@@ -789,7 +800,7 @@ Deno.test(
 
     const definition = Definition.create({
       name: "test-definition",
-      attributes: { OriginalValue: "from-yaml" },
+      globalArguments: { OriginalValue: "from-yaml" },
     });
 
     const { context } = createTestContext({
@@ -824,12 +835,12 @@ Deno.test("execute passes logger in context to method", async () => {
   const model: ModelDefinition = {
     type: ModelType.create("test/logger-check"),
     version: "1",
-    inputAttributesSchema: schema,
+    globalArguments: schema,
     methods: {
       run: {
         description: "Method that captures the logger from context",
-        inputAttributesSchema: schema,
-        execute: (_definition, context) => {
+        arguments: schema,
+        execute: (_args, context) => {
           capturedLogger = context.logger;
           // Verify logger methods are callable (no-op in test env)
           context.logger.trace`trace message`;
@@ -846,7 +857,7 @@ Deno.test("execute passes logger in context to method", async () => {
 
   const definition = Definition.create({
     name: "test-definition",
-    attributes: { value: "test" },
+    globalArguments: { value: "test" },
   });
 
   const { context } = createTestContext({ modelType: model.type });

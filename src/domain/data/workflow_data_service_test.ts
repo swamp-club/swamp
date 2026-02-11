@@ -226,7 +226,8 @@ Deno.test("WorkflowDataService.findAllForWorkflowRun resolves model names", asyn
       name: "my-vpc",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
+      methods: {},
       inputs: undefined,
     }),
   );

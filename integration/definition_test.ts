@@ -35,7 +35,7 @@ Deno.test("Definition: create and save definition with static attributes", async
       name: "my-echo",
       version: 1,
       tags: { env: "test" },
-      attributes: {
+      globalArguments: {
         message: "Hello, World!",
         count: 42,
       },
@@ -57,7 +57,7 @@ Deno.test("Definition: create and save definition with static attributes", async
     assertEquals(data.version, 1);
     assertEquals((data.tags as Record<string, string>).env, "test");
     assertEquals(
-      (data.attributes as Record<string, unknown>).message,
+      (data.globalArguments as Record<string, unknown>).message,
       "Hello, World!",
     );
   });
@@ -71,8 +71,8 @@ Deno.test("Definition: definition with CEL expression is preserved on save", asy
     // Create a definition with CEL expressions
     const definition = Definition.create({
       name: "my-echo-with-expression",
-      attributes: {
-        message: "${{ model.other.input.attributes.greeting }}",
+      globalArguments: {
+        message: "${{ model.other.input.globalArguments.greeting }}",
         computed: "${{ self.name + '-suffix' }}",
       },
     });
@@ -86,11 +86,11 @@ Deno.test("Definition: definition with CEL expression is preserved on save", asy
 
     // Verify CEL expressions are preserved (not evaluated)
     assertEquals(
-      loaded!.attributes.message,
-      "${{ model.other.input.attributes.greeting }}",
+      loaded!.globalArguments.message,
+      "${{ model.other.input.globalArguments.greeting }}",
     );
     assertEquals(
-      loaded!.attributes.computed,
+      loaded!.globalArguments.computed,
       "${{ self.name + '-suffix' }}",
     );
   });
@@ -106,7 +106,7 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing self
       name: "self-reference-test",
       version: 1,
       tags: { env: "test" },
-      attributes: {
+      globalArguments: {
         selfName: "${{ self.name }}",
         tagValue: "${{ self.tags.env }}",
       },
@@ -128,10 +128,10 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing self
 
     assertEquals(result.hadExpressions, true);
     assertEquals(
-      result.definition.attributes.selfName,
+      result.definition.globalArguments.selfName,
       "self-reference-test",
     );
-    assertEquals(result.definition.attributes.tagValue, "test");
+    assertEquals(result.definition.globalArguments.tagValue, "test");
   });
 });
 
@@ -146,7 +146,7 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing othe
       name: "source_model",
       version: 1,
       tags: {},
-      attributes: {
+      globalArguments: {
         greeting: "Hello from source!",
         count: 10,
       },
@@ -156,9 +156,11 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing othe
     // Create a definition that references the other model
     const definition = Definition.create({
       name: "referencing_definition",
-      attributes: {
-        message: "${{ model.source_model.definition.attributes.greeting }}",
-        doubled: "${{ model.source_model.definition.attributes.count * 2 }}",
+      globalArguments: {
+        message:
+          "${{ model.source_model.definition.globalArguments.greeting }}",
+        doubled:
+          "${{ model.source_model.definition.globalArguments.count * 2 }}",
       },
     });
     await definitionRepo.save(modelType, definition);
@@ -177,10 +179,10 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing othe
 
     assertEquals(result.hadExpressions, true);
     assertEquals(
-      result.definition.attributes.message,
+      result.definition.globalArguments.message,
       "Hello from source!",
     );
-    assertEquals(result.definition.attributes.doubled, 20);
+    assertEquals(result.definition.globalArguments.doubled, 20);
   });
 });
 
@@ -192,7 +194,7 @@ Deno.test("Definition: evaluate definition with inputs parameter", async () => {
     // Create a definition with inputs schema and expression
     const definition = Definition.create({
       name: "parameterized-definition",
-      attributes: {
+      globalArguments: {
         message: "${{ inputs.greeting }}",
         fullMessage: '${{ inputs.greeting + " " + inputs.name + "!" }}',
       },
@@ -226,8 +228,8 @@ Deno.test("Definition: evaluate definition with inputs parameter", async () => {
     );
 
     assertEquals(result.hadExpressions, true);
-    assertEquals(result.definition.attributes.message, "Hello");
-    assertEquals(result.definition.attributes.fullMessage, "Hello World!");
+    assertEquals(result.definition.globalArguments.message, "Hello");
+    assertEquals(result.definition.globalArguments.fullMessage, "Hello World!");
   });
 });
 
@@ -240,7 +242,7 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
     // Create a definition with CEL expression
     const definition = Definition.create({
       name: "to-be-evaluated",
-      attributes: {
+      globalArguments: {
         computed: "${{ 1 + 2 + 3 }}",
       },
     });
@@ -263,12 +265,12 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
     // Load the evaluated definition
     const loaded = await evaluatedRepo.findById(modelType, definition.id);
     assertEquals(loaded !== null, true, "Evaluated definition should exist");
-    assertEquals(loaded!.attributes.computed, 6);
+    assertEquals(loaded!.globalArguments.computed, 6);
 
     // Verify the original is unchanged
     const original = await definitionRepo.findById(modelType, definition.id);
     assertEquals(
-      original!.attributes.computed,
+      original!.globalArguments.computed,
       "${{ 1 + 2 + 3 }}",
       "Original should preserve expression",
     );
@@ -283,7 +285,7 @@ Deno.test("Definition: definition without expressions returns hadExpressions=fal
     // Create a definition without any expressions
     const definition = Definition.create({
       name: "static-only",
-      attributes: {
+      globalArguments: {
         message: "Just a static string",
         count: 42,
       },
@@ -301,7 +303,10 @@ Deno.test("Definition: definition without expressions returns hadExpressions=fal
     );
 
     assertEquals(result.hadExpressions, false);
-    assertEquals(result.definition.attributes.message, "Just a static string");
+    assertEquals(
+      result.definition.globalArguments.message,
+      "Just a static string",
+    );
   });
 });
 
@@ -311,10 +316,13 @@ Deno.test("Definition: findByName works correctly", async () => {
     const modelType = ModelType.create("swamp/echo");
 
     // Create multiple definitions
-    const def1 = Definition.create({ name: "first-def", attributes: { a: 1 } });
+    const def1 = Definition.create({
+      name: "first-def",
+      globalArguments: { a: 1 },
+    });
     const def2 = Definition.create({
       name: "second-def",
-      attributes: { b: 2 },
+      globalArguments: { b: 2 },
     });
 
     await definitionRepo.save(modelType, def1);
@@ -324,7 +332,7 @@ Deno.test("Definition: findByName works correctly", async () => {
     const found = await definitionRepo.findByName(modelType, "second-def");
     assertEquals(found !== null, true);
     assertEquals(found!.name, "second-def");
-    assertEquals(found!.attributes.b, 2);
+    assertEquals(found!.globalArguments.b, 2);
 
     // Find non-existent
     const notFound = await definitionRepo.findByName(modelType, "no-such-def");
@@ -341,11 +349,11 @@ Deno.test("Definition: findByNameGlobal works across types", async () => {
     // Create definitions in different types
     const def1 = Definition.create({
       name: "unique-name",
-      attributes: { x: 1 },
+      globalArguments: { x: 1 },
     });
     const def2 = Definition.create({
       name: "another-name",
-      attributes: { y: 2 },
+      globalArguments: { y: 2 },
     });
 
     await definitionRepo.save(type1, def1);
@@ -371,12 +379,12 @@ Deno.test("Definition: hasDefinitionExpressions detects expressions correctly", 
 
     const withExpr = Definition.create({
       name: "with-expr",
-      attributes: { value: "${{ 1 + 1 }}" },
+      globalArguments: { value: "${{ 1 + 1 }}" },
     });
 
     const withoutExpr = Definition.create({
       name: "without-expr",
-      attributes: { value: "static" },
+      globalArguments: { value: "static" },
     });
 
     assertEquals(evalService.hasDefinitionExpressions(withExpr), true);

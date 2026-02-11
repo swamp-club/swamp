@@ -95,8 +95,8 @@ export const modelEvaluateCommand = new Command()
         type: type.normalized,
         hadExpressions: result.hadExpressions,
         outputPath: undefined, // Definitions don't use evaluated repo
-        // Include evaluated attributes for JSON output
-        attributes: result.definition.attributes,
+        // Include evaluated globalArguments for JSON output
+        globalArguments: result.definition.globalArguments,
       };
 
       renderModelEvaluateSingle(item, ctx.outputMode);

@@ -202,6 +202,9 @@ function createTestContext(
     repoDir: "/tmp/test-repo",
     modelType: EC2_INSTANCE_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "create",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -318,7 +321,7 @@ Deno.test("EC2InstanceModel - resource schema validation", () => {
 Deno.test("EC2InstanceModel - sync method without RequestToken fails", async () => {
   const definition = Definition.create({
     name: "test-instance",
-    attributes: {
+    globalArguments: {
       ImageId: "ami-12345678",
       InstanceType: "t2.micro",
     },
@@ -327,7 +330,11 @@ Deno.test("EC2InstanceModel - sync method without RequestToken fails", async () 
   const { context } = createTestContext();
 
   await assertRejects(
-    () => ec2InstanceModel.methods.sync.execute(definition, context),
+    () =>
+      ec2InstanceModel.methods.sync.execute(
+        definition.globalArguments,
+        context,
+      ),
     Error,
     "AWS::EC2::Instance sync failed: no RequestToken found",
   );
@@ -336,7 +343,7 @@ Deno.test("EC2InstanceModel - sync method without RequestToken fails", async () 
 Deno.test("EC2InstanceModel - delete method without data returns deleted result", async () => {
   const definition = Definition.create({
     name: "test-instance",
-    attributes: {
+    globalArguments: {
       ImageId: "ami-12345678",
       InstanceType: "t2.micro",
     },
@@ -345,7 +352,7 @@ Deno.test("EC2InstanceModel - delete method without data returns deleted result"
   const { context, getResults } = createTestContext();
 
   await ec2InstanceModel.methods.delete.execute(
-    definition,
+    definition.globalArguments,
     context,
   );
 
@@ -358,7 +365,7 @@ Deno.test("EC2InstanceModel - delete method without data returns deleted result"
 Deno.test("EC2InstanceModel - create method uses injected CloudControl client", async () => {
   const definition = Definition.create({
     name: "test-instance",
-    attributes: {
+    globalArguments: {
       ImageId: "ami-12345678",
       InstanceType: "t2.micro",
     },
@@ -382,7 +389,7 @@ Deno.test("EC2InstanceModel - create method uses injected CloudControl client", 
   });
 
   const result = await ec2InstanceModel.methods.create.execute(
-    definition,
+    definition.globalArguments,
     context,
   );
 
@@ -396,7 +403,7 @@ Deno.test("EC2InstanceModel - create method uses injected CloudControl client", 
 Deno.test("EC2InstanceModel - sync method treats 'not found' as deleted", async () => {
   const definition = Definition.create({
     name: "test-instance",
-    attributes: {
+    globalArguments: {
       RequestToken: "request-123",
       ResourceIdentifier: "i-1234567890abcdef0",
     },
@@ -420,7 +427,7 @@ Deno.test("EC2InstanceModel - sync method treats 'not found' as deleted", async 
   });
 
   const result = await ec2InstanceModel.methods.sync.execute(
-    definition,
+    definition.globalArguments,
     context,
   );
 
@@ -434,7 +441,7 @@ Deno.test("EC2InstanceModel - sync method treats 'not found' as deleted", async 
 Deno.test("EC2InstanceModel - delete method treats 'not found' as success", async () => {
   const definition = Definition.create({
     name: "test-instance",
-    attributes: {
+    globalArguments: {
       ImageId: "ami-12345678",
       InstanceType: "t2.micro",
     },
@@ -472,7 +479,7 @@ Deno.test("EC2InstanceModel - delete method treats 'not found' as success", asyn
   });
 
   const result = await ec2InstanceModel.methods.delete.execute(
-    definition,
+    definition.globalArguments,
     context,
   );
 

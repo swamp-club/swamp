@@ -18,7 +18,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 function createTestDefinition(name: string): Definition {
   return Definition.create({
     name,
-    attributes: { key: "value" },
+    globalArguments: { key: "value" },
   });
 }
 
