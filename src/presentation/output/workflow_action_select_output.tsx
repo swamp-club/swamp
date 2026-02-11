@@ -94,8 +94,8 @@ export function WorkflowActionSelectUI(
 
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  useInput((_input, key) => {
-    if (key.escape) {
+  useInput((input, key) => {
+    if (key.escape || (key.ctrl && input === "c")) {
       exit();
       onCancel();
       return;
