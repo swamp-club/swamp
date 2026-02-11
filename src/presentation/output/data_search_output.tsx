@@ -22,6 +22,7 @@ export interface DataSearchItem {
   streaming: boolean;
   size?: number;
   createdAt: string;
+  tags: Record<string, string>;
   workflowTag?: string;
   stepTag?: string;
 }
@@ -143,7 +144,9 @@ export function DataSearchUI(props: DataSearchUIProps): React.ReactElement {
         selector: (item) =>
           `${item.name} ${item.modelName} ${item.modelType} ${item.type} ${
             item.workflowTag ?? ""
-          } ${item.stepTag ?? ""}`,
+          } ${item.stepTag ?? ""} ${
+            Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(" ")
+          }`,
       }),
     [items],
   );

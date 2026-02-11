@@ -36,6 +36,7 @@ export interface DataSearchFilterOptions {
   output?: string;
   run?: string;
   streaming?: boolean;
+  tags?: Record<string, string>;
   query?: string;
 }
 
@@ -72,6 +73,24 @@ export function parseDuration(duration: string): number {
 }
 
 /**
+ * Parses an array of "KEY=VALUE" strings into a Record<string, string>.
+ * Throws UserError on invalid format (missing key or missing `=`).
+ */
+export function parseTags(raw: string[]): Record<string, string> {
+  const tags: Record<string, string> = {};
+  for (const entry of raw) {
+    const eqIdx = entry.indexOf("=");
+    if (eqIdx < 1) {
+      throw new UserError(
+        `Invalid tag format: "${entry}". Expected KEY=VALUE`,
+      );
+    }
+    tags[entry.slice(0, eqIdx)] = entry.slice(eqIdx + 1);
+  }
+  return tags;
+}
+
+/**
  * Converts raw repository data to DataSearchItem array.
  */
 async function toDataSearchItems(
@@ -105,6 +124,7 @@ async function toDataSearchItems(
       streaming: data.streaming,
       size: data.size,
       createdAt: data.createdAt.toISOString(),
+      tags: data.tags,
       workflowTag: data.tags.workflow,
       stepTag: data.tags.step,
     });
@@ -157,6 +177,12 @@ export function filterData(
   if (opts.run) {
     const runId = opts.run;
     result = result.filter((i) => i.ownerRef.includes(runId));
+  }
+  if (opts.tags) {
+    const tagEntries = Object.entries(opts.tags);
+    result = result.filter((i) =>
+      tagEntries.every(([k, v]) => i.tags[k] === v)
+    );
   }
 
   if (opts.query) {
@@ -287,6 +313,11 @@ export const dataSearchCommand = new Command()
     "--run <run_id:string>",
     "Data from a specific workflow run (by run ID)",
   )
+  .option(
+    "--tag <tag:string>",
+    "Filter by tag (KEY=VALUE, repeatable)",
+    { collect: true },
+  )
   .option("--streaming", "Only show streaming data")
   .option("--limit <n:number>", "Max results", { default: 50 })
   .action(async function (options: AnyOptions, query?: string) {
@@ -315,6 +346,11 @@ export const dataSearchCommand = new Command()
     const allResults = await dataRepo.findAllGlobal();
     const allItems = await toDataSearchItems(allResults, definitionRepo);
 
+    // Parse --tag values into Record<string, string>
+    const parsedTags = options.tag
+      ? parseTags(options.tag as string[])
+      : undefined;
+
     // Build filter options
     const filterOpts: DataSearchFilterOptions = {
       type: options.type as string | undefined,
@@ -327,6 +363,7 @@ export const dataSearchCommand = new Command()
       output: options.output as string | undefined,
       run: options.run as string | undefined,
       streaming: options.streaming as boolean | undefined,
+      tags: parsedTags,
       query,
     };
 
@@ -359,6 +396,11 @@ export const dataSearchCommand = new Command()
     if (options.output) filters.output = options.output as string;
     if (options.run) filters.run = options.run as string;
     if (options.streaming) filters.streaming = "true";
+    if (parsedTags) {
+      for (const [k, v] of Object.entries(parsedTags)) {
+        filters[`tag:${k}`] = v;
+      }
+    }
 
     const data: DataSearchData = {
       query: query ?? "",

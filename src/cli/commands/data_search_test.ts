@@ -1,7 +1,8 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { filterData, parseDuration } from "./data_search.ts";
+import { filterData, parseDuration, parseTags } from "./data_search.ts";
 import type { DataSearchItem } from "../../presentation/output/data_search_output.tsx";
+import { UserError } from "../../domain/errors.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -27,6 +28,7 @@ function createTestItem(
     streaming: false,
     size: 1024,
     createdAt: new Date().toISOString(),
+    tags: { type: "resource" },
     ...overrides,
   };
 }
@@ -298,4 +300,193 @@ Deno.test("parseDuration throws on invalid format", () => {
     threw = true;
   }
   assertEquals(threw, true);
+});
+
+Deno.test("filterData by single tag", () => {
+  const items = [
+    createTestItem({ tags: { env: "prod", team: "platform" } }),
+    createTestItem({ tags: { env: "dev", team: "platform" } }),
+    createTestItem({ tags: { env: "prod", team: "infra" } }),
+  ];
+
+  const result = filterData(items, { tags: { env: "prod" } });
+  assertEquals(result.length, 2);
+});
+
+Deno.test("filterData by multiple tags (AND logic)", () => {
+  const items = [
+    createTestItem({ tags: { env: "prod", team: "platform" } }),
+    createTestItem({ tags: { env: "dev", team: "platform" } }),
+    createTestItem({ tags: { env: "prod", team: "infra" } }),
+  ];
+
+  const result = filterData(items, { tags: { env: "prod", team: "platform" } });
+  assertEquals(result.length, 1);
+  assertEquals(result[0].tags.env, "prod");
+  assertEquals(result[0].tags.team, "platform");
+});
+
+Deno.test("filterData by tag that matches nothing", () => {
+  const items = [
+    createTestItem({ tags: { env: "prod" } }),
+    createTestItem({ tags: { env: "dev" } }),
+  ];
+
+  const result = filterData(items, { tags: { env: "staging" } });
+  assertEquals(result.length, 0);
+});
+
+Deno.test("filterData by tag combined with type filter", () => {
+  const items = [
+    createTestItem({ tags: { env: "prod" }, type: "resource" }),
+    createTestItem({ tags: { env: "prod" }, type: "log" }),
+    createTestItem({ tags: { env: "dev" }, type: "resource" }),
+  ];
+
+  const result = filterData(items, { tags: { env: "prod" }, type: "resource" });
+  assertEquals(result.length, 1);
+  assertEquals(result[0].tags.env, "prod");
+  assertEquals(result[0].type, "resource");
+});
+
+Deno.test("filterData by tag when item lacks the tag key", () => {
+  const items = [
+    createTestItem({ tags: { env: "prod" } }),
+    createTestItem({ tags: { team: "platform" } }), // no "env" key
+    createTestItem({ tags: {} }), // empty tags
+  ];
+
+  const result = filterData(items, { tags: { env: "prod" } });
+  assertEquals(result.length, 1);
+  assertEquals(result[0].tags.env, "prod");
+});
+
+Deno.test("filterData by tag with empty tags on item filters it out", () => {
+  const items = [
+    createTestItem({ tags: {} }),
+    createTestItem({ tags: {} }),
+  ];
+
+  const result = filterData(items, { tags: { env: "prod" } });
+  assertEquals(result.length, 0);
+});
+
+Deno.test("filterData by tag combined with query filter", () => {
+  const items = [
+    createTestItem({
+      tags: { env: "prod" },
+      name: "vpc-state",
+      modelName: "a",
+      ownerRef: "a:b",
+    }),
+    createTestItem({
+      tags: { env: "prod" },
+      name: "subnet-data",
+      modelName: "b",
+      ownerRef: "c:d",
+    }),
+    createTestItem({
+      tags: { env: "dev" },
+      name: "vpc-log",
+      modelName: "c",
+      ownerRef: "e:f",
+    }),
+  ];
+
+  const result = filterData(items, { tags: { env: "prod" }, query: "vpc" });
+  assertEquals(result.length, 1);
+  assertEquals(result[0].name, "vpc-state");
+});
+
+Deno.test("filterData by tag combined with multiple structured filters", () => {
+  const items = [
+    createTestItem({
+      tags: { env: "prod" },
+      type: "resource",
+      lifetime: "infinite",
+    }),
+    createTestItem({
+      tags: { env: "prod" },
+      type: "resource",
+      lifetime: "ephemeral",
+    }),
+    createTestItem({
+      tags: { env: "prod" },
+      type: "log",
+      lifetime: "infinite",
+    }),
+    createTestItem({
+      tags: { env: "dev" },
+      type: "resource",
+      lifetime: "infinite",
+    }),
+  ];
+
+  const result = filterData(items, {
+    tags: { env: "prod" },
+    type: "resource",
+    lifetime: "infinite",
+  });
+  assertEquals(result.length, 1);
+  assertEquals(result[0].tags.env, "prod");
+  assertEquals(result[0].type, "resource");
+  assertEquals(result[0].lifetime, "infinite");
+});
+
+Deno.test("filterData by tag does not partial-match values", () => {
+  const items = [
+    createTestItem({ tags: { env: "production" } }),
+    createTestItem({ tags: { env: "prod" } }),
+  ];
+
+  const result = filterData(items, { tags: { env: "prod" } });
+  assertEquals(result.length, 1);
+  assertEquals(result[0].tags.env, "prod");
+});
+
+// ----- parseTags tests -----
+
+Deno.test("parseTags parses single KEY=VALUE", () => {
+  const result = parseTags(["env=prod"]);
+  assertEquals(result, { env: "prod" });
+});
+
+Deno.test("parseTags parses multiple KEY=VALUE entries", () => {
+  const result = parseTags(["env=prod", "team=platform", "region=us-east-1"]);
+  assertEquals(result, {
+    env: "prod",
+    team: "platform",
+    region: "us-east-1",
+  });
+});
+
+Deno.test("parseTags preserves value containing equals sign", () => {
+  const result = parseTags(["expr=a=b=c"]);
+  assertEquals(result, { expr: "a=b=c" });
+});
+
+Deno.test("parseTags throws on missing equals sign", () => {
+  assertThrows(
+    () => parseTags(["badformat"]),
+    UserError,
+    'Invalid tag format: "badformat". Expected KEY=VALUE',
+  );
+});
+
+Deno.test("parseTags throws on empty key (=value)", () => {
+  assertThrows(
+    () => parseTags(["=value"]),
+    UserError,
+    'Invalid tag format: "=value". Expected KEY=VALUE',
+  );
+});
+
+Deno.test("parseTags allows empty value (key=)", () => {
+  const result = parseTags(["key="]);
+  assertEquals(result, { key: "" });
+});
+
+Deno.test("parseTags last value wins for duplicate keys", () => {
+  const result = parseTags(["env=prod", "env=dev"]);
+  assertEquals(result, { env: "dev" });
 });
