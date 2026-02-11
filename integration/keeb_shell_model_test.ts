@@ -75,9 +75,13 @@ Deno.test("CLI: keeb/shell model executes simple shell commands", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "simple-shell",
-      attributes: {
-        run: "echo 'Hello from shell'",
-        workingDir: "/tmp",
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo 'Hello from shell'",
+            workingDir: "/tmp",
+          },
+        },
       },
     });
     await definitionRepo.save(SHELL_MODEL_TYPE, definition);
@@ -117,9 +121,13 @@ Deno.test("CLI: keeb/shell model handles failing commands", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "failing-shell",
-      attributes: {
-        run: "false", // Command that always fails
-        workingDir: "/tmp",
+      methods: {
+        execute: {
+          arguments: {
+            run: "false", // Command that always fails
+            workingDir: "/tmp",
+          },
+        },
       },
     });
     await definitionRepo.save(SHELL_MODEL_TYPE, definition);
@@ -160,9 +168,13 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
     // Create first model that creates a file
     const downloadModel = Definition.create({
       name: "download-data",
-      attributes: {
-        run: "echo 'Downloaded data' > /tmp/data.txt",
-        workingDir: "/tmp",
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo 'Downloaded data' > /tmp/data.txt",
+            workingDir: "/tmp",
+          },
+        },
       },
     });
     await definitionRepo.save(SHELL_MODEL_TYPE, downloadModel);
@@ -170,9 +182,13 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
     // Create second model that processes the file
     const processModel = Definition.create({
       name: "process-data",
-      attributes: {
-        run: "echo 'Processing: $(cat /tmp/data.txt)' > /tmp/processed.txt",
-        workingDir: "/tmp",
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo 'Processing: $(cat /tmp/data.txt)' > /tmp/processed.txt",
+            workingDir: "/tmp",
+          },
+        },
       },
     });
     await definitionRepo.save(SHELL_MODEL_TYPE, processModel);
@@ -248,12 +264,20 @@ Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-    // Create source model
+    // Create source model (globalArguments also set so cross-model expressions can access them)
     const sourceModel = Definition.create({
       name: "source-shell",
-      attributes: {
+      globalArguments: {
         run: "echo 'Source command executed'",
         workingDir: "/tmp",
+      },
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo 'Source command executed'",
+            workingDir: "/tmp",
+          },
+        },
       },
     });
     await definitionRepo.save(SHELL_MODEL_TYPE, sourceModel);
@@ -261,10 +285,14 @@ Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
     // Create dependent model that references the source model
     const dependentModel = Definition.create({
       name: "dependent-shell",
-      attributes: {
-        run:
-          "echo 'Referencing: ${{ model.source-shell.input.attributes.run }}'",
-        workingDir: "/tmp",
+      methods: {
+        execute: {
+          arguments: {
+            run:
+              "echo 'Referencing: ${{ model.source-shell.input.globalArguments.run }}'",
+            workingDir: "/tmp",
+          },
+        },
       },
     });
     await definitionRepo.save(SHELL_MODEL_TYPE, dependentModel);
@@ -332,9 +360,13 @@ Deno.test("CLI: keeb/shell model with self-reference expressions", async () => {
     // Create model that references its own name
     const selfRefModel = Definition.create({
       name: "self-ref-shell",
-      attributes: {
-        run: "echo 'My name is ${{ self.name }}'",
-        workingDir: "/tmp",
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo 'My name is ${{ self.name }}'",
+            workingDir: "/tmp",
+          },
+        },
       },
     });
     await definitionRepo.save(SHELL_MODEL_TYPE, selfRefModel);

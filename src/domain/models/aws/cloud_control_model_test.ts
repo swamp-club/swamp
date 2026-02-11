@@ -16,7 +16,7 @@ class TestCloudControlModel
     super({
       typeName,
       modelType: ModelType.create(typeName),
-      inputAttributesSchema: TestInputSchema,
+      arguments: TestInputSchema,
       extractResourceIdentifier: (attrs) => attrs.ResourceId as string,
     });
   }
@@ -48,7 +48,7 @@ Deno.test("AWSCloudControlModel.defineAndRegister returns valid ModelDefinition"
   assertEquals(typeof definition.methods.create, "object");
   assertEquals(typeof definition.methods.delete, "object");
   assertEquals(typeof definition.methods.sync, "object");
-  assertEquals(definition.inputAttributesSchema, TestInputSchema);
+  assertEquals(definition.globalArguments, TestInputSchema);
 });
 
 Deno.test("AWSCloudControlModel.defineAndRegister is idempotent", () => {

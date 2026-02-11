@@ -84,7 +84,7 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
     const testMessage = "Hello, Swamp!";
     const definition = Definition.create({
       name: "test-echo-definition",
-      attributes: { message: testMessage },
+      methods: { write: { arguments: { message: testMessage } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -106,7 +106,8 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
     assertEquals(definitionData.typeVersion, "2026.02.09.1");
     assertEquals(definitionData.name, "test-echo-definition");
     assertEquals(
-      (definitionData.attributes as Record<string, unknown>).message,
+      ((definitionData.methods as Record<string, Record<string, unknown>>).write
+        .arguments as Record<string, unknown>).message,
       testMessage,
     );
 
@@ -123,6 +124,14 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
       repoDir,
       modelType,
       modelId: definition.id,
+      globalArgs: { message: testMessage },
+      definition: {
+        id: definition.id,
+        name: definition.name,
+        version: definition.version,
+        tags: definition.tags,
+      },
+      methodName: "write",
       logger: getLogger(["test"]),
       dataRepository: dataRepo,
       definitionRepository: definitionRepo,
@@ -130,7 +139,10 @@ Deno.test("Echo model: full flow - create definition, execute write, verify data
     };
 
     // Execute the write method
-    const result = await echoModel.methods.write.execute(definition, context);
+    const result = await echoModel.methods.write.execute(
+      { message: testMessage },
+      context,
+    );
 
     // Verify dataHandles exists (new API)
     assertEquals(
@@ -189,7 +201,7 @@ Deno.test("Echo model: directory structure is correct", async () => {
 
     const definition = Definition.create({
       name: "test-structure",
-      attributes: { message: "test" },
+      methods: { write: { arguments: { message: "test" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -216,7 +228,7 @@ Deno.test("Echo model: multiple definitions", async () => {
     for (let i = 0; i < messages.length; i++) {
       const definition = Definition.create({
         name: `test-definition-${i}`,
-        attributes: { message: messages[i] },
+        methods: { write: { arguments: { message: messages[i] } } },
       });
       await definitionRepo.save(modelType, definition);
       definitions.push(definition);
@@ -371,7 +383,7 @@ Deno.test("CLI: model method run creates data", async () => {
       "method-run-test",
     );
     assertEquals(definition !== null, true, "Definition should exist");
-    definition!.setAttribute("message", "Hello from CLI!");
+    definition!.setMethodArgument("write", "message", "Hello from CLI!");
     await definitionRepo.save(ECHO_MODEL_TYPE, definition!);
 
     // Run the method
@@ -429,7 +441,7 @@ Deno.test("CLI: model method run by model ID", async () => {
       ECHO_MODEL_TYPE,
       "run-by-id-test",
     );
-    definition!.setAttribute("message", "Using ID");
+    definition!.setMethodArgument("write", "message", "Using ID");
     await definitionRepo.save(ECHO_MODEL_TYPE, definition!);
 
     // Run method using model ID instead of name
@@ -685,6 +697,6 @@ Deno.test("CLI: model search with single match returns full details in JSON mode
     assertEquals(output.id, createOutput.id);
     assertEquals(output.type, "swamp/echo");
     assertEquals(typeof output.version, "number");
-    assertEquals(typeof output.attributes, "object");
+    assertEquals(typeof output.globalArguments, "object");
   });
 });

@@ -115,7 +115,7 @@ Deno.test("Vault CEL: access vault secrets in expressions", async () => {
     // Create model that uses vault expression
     const model = Definition.create({
       name: "api-client",
-      attributes: {
+      globalArguments: {
         api_key: "${{ vault.get(secrets-vault, API_KEY) }}",
         endpoint: "https://api.example.com",
       },
@@ -140,9 +140,9 @@ Deno.test("Vault CEL: access vault secrets in expressions", async () => {
     );
 
     assertEquals(result.hadExpressions, true);
-    assertEquals(resolved.attributes.api_key, "super-secret-api-key");
+    assertEquals(resolved.globalArguments.api_key, "super-secret-api-key");
     assertEquals(
-      result.definition.attributes.endpoint,
+      result.definition.globalArguments.endpoint,
       "https://api.example.com",
     );
   });
@@ -197,7 +197,7 @@ Deno.test("Vault CEL: access multiple secrets in same definition", async () => {
     // Create model with multiple vault references
     const model = Definition.create({
       name: "database-config",
-      attributes: {
+      globalArguments: {
         host: "${{ vault.get(multi-secrets, DB_HOST) }}",
         user: "${{ vault.get(multi-secrets, DB_USER) }}",
         password: "${{ vault.get(multi-secrets, DB_PASSWORD) }}",
@@ -222,11 +222,11 @@ Deno.test("Vault CEL: access multiple secrets in same definition", async () => {
       result.definition,
     );
 
-    assertEquals(resolved.attributes.host, "localhost");
-    assertEquals(resolved.attributes.user, "admin");
-    assertEquals(resolved.attributes.password, "secret123");
+    assertEquals(resolved.globalArguments.host, "localhost");
+    assertEquals(resolved.globalArguments.user, "admin");
+    assertEquals(resolved.globalArguments.password, "secret123");
     assertEquals(
-      resolved.attributes.connection_string,
+      resolved.globalArguments.connection_string,
       "postgresql://admin:secret123@localhost",
     );
   });
@@ -262,7 +262,7 @@ Deno.test("Vault CEL: combine vault secrets with other expressions", async () =>
     // Create config model
     const configModel = Definition.create({
       name: "config",
-      attributes: {
+      globalArguments: {
         base_url: "https://api.example.com",
         version: "v2",
       },
@@ -271,17 +271,17 @@ Deno.test("Vault CEL: combine vault secrets with other expressions", async () =>
 
     // Create model that uses vault expressions with string concatenation
     // Note: Expressions that mix vault.get() with model references (like
-    // `model.config.input.attributes.base_url + vault.get(...)`) are not
+    // `model.config.input.globalArguments.base_url + vault.get(...)`) are not
     // supported because evaluateDefinition skips vault expressions entirely
     // and resolveVaultExpressionsInDefinition doesn't have model context.
     const apiModel = Definition.create({
       name: "api-model",
-      attributes: {
+      globalArguments: {
         // Vault secret with string concatenation (no model references)
         auth_header: '${{ "Bearer " + vault.get(combined-vault, TOKEN) }}',
         // Pure model reference (no vault) - evaluated in first pass
         endpoint:
-          '${{ model.config.input.attributes.base_url + "/" + model.config.input.attributes.version }}',
+          '${{ model.config.input.globalArguments.base_url + "/" + model.config.input.globalArguments.version }}',
         // Vault-only expression with string interpolation
         combined_vault:
           '${{ "Token: " + vault.get(combined-vault, TOKEN) + " - ready" }}',
@@ -301,7 +301,7 @@ Deno.test("Vault CEL: combine vault secrets with other expressions", async () =>
 
     // endpoint should be resolved (no vault references)
     assertEquals(
-      result.definition.attributes.endpoint,
+      result.definition.globalArguments.endpoint,
       "https://api.example.com/v2",
     );
 
@@ -311,11 +311,11 @@ Deno.test("Vault CEL: combine vault secrets with other expressions", async () =>
     );
 
     assertEquals(
-      resolved.attributes.auth_header,
+      resolved.globalArguments.auth_header,
       "Bearer secret-token-123",
     );
     assertEquals(
-      resolved.attributes.combined_vault,
+      resolved.globalArguments.combined_vault,
       "Token: secret-token-123 - ready",
     );
   });
@@ -356,7 +356,7 @@ Deno.test("Vault CEL: original definition preserves expression (not secret value
     // Create and save model with vault expression
     const model = Definition.create({
       name: "sensitive-model",
-      attributes: {
+      globalArguments: {
         password: "${{ vault.get(preserve-vault, SECRET) }}",
       },
     });
@@ -368,7 +368,7 @@ Deno.test("Vault CEL: original definition preserves expression (not secret value
 
     // Original should have the expression, not the secret value
     assertEquals(
-      loaded.attributes.password,
+      loaded.globalArguments.password,
       "${{ vault.get(preserve-vault, SECRET) }}",
     );
 
@@ -480,8 +480,12 @@ Deno.test("Vault CEL: definition files don't leak secrets via model evaluate", a
     const modelType = ModelType.create("swamp/echo");
     const definition = Definition.create({
       name: "leak-test-model",
-      attributes: {
-        message: "${{ vault.get(leak-test-vault, SENSITIVE) }}",
+      methods: {
+        write: {
+          arguments: {
+            message: "${{ vault.get(leak-test-vault, SENSITIVE) }}",
+          },
+        },
       },
     });
     await definitionRepo.save(modelType, definition);
@@ -553,8 +557,12 @@ Deno.test("Vault CEL: secrets accessible in workflow execution", async () => {
     const modelType = ModelType.create("swamp/echo");
     const definition = Definition.create({
       name: "vault-workflow-model",
-      attributes: {
-        message: "${{ vault.get(workflow-vault, WORKFLOW_SECRET) }}",
+      methods: {
+        write: {
+          arguments: {
+            message: "${{ vault.get(workflow-vault, WORKFLOW_SECRET) }}",
+          },
+        },
       },
     });
     await definitionRepo.save(modelType, definition);
@@ -606,7 +614,7 @@ Deno.test("Vault CEL: handle missing vault gracefully", async () => {
     // Create model referencing non-existent vault
     const model = Definition.create({
       name: "missing-vault-model",
-      attributes: {
+      globalArguments: {
         secret: "${{ vault.get(nonexistent-vault, KEY) }}",
       },
     });
@@ -652,7 +660,7 @@ Deno.test("Vault CEL: handle missing secret gracefully", async () => {
     // Create model referencing non-existent secret
     const model = Definition.create({
       name: "missing-secret-model",
-      attributes: {
+      globalArguments: {
         secret: "${{ vault.get(empty-vault, NONEXISTENT) }}",
       },
     });
@@ -712,7 +720,7 @@ Deno.test("Vault CEL: handles secrets with special characters", async () => {
     // Create model using vault expression
     const model = Definition.create({
       name: "special-chars-model",
-      attributes: {
+      globalArguments: {
         password: "${{ vault.get(special-chars-vault, SPECIAL) }}",
       },
     });
@@ -733,7 +741,7 @@ Deno.test("Vault CEL: handles secrets with special characters", async () => {
       result.definition,
     );
 
-    assertEquals(resolved.attributes.password, specialSecret);
+    assertEquals(resolved.globalArguments.password, specialSecret);
   });
 });
 
@@ -768,7 +776,7 @@ Deno.test("Vault CEL: handles long secrets", async () => {
     // Create model
     const model = Definition.create({
       name: "long-secret-model",
-      attributes: {
+      globalArguments: {
         token: "${{ vault.get(long-secret-vault, JWT_TOKEN) }}",
       },
     });
@@ -789,6 +797,6 @@ Deno.test("Vault CEL: handles long secrets", async () => {
       result.definition,
     );
 
-    assertEquals(resolved.attributes.token, longSecret);
+    assertEquals(resolved.globalArguments.token, longSecret);
   });
 });

@@ -202,6 +202,9 @@ function createTestContext(
     repoDir: "/tmp/test-repo",
     modelType: EC2_VPC_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "create",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -320,7 +323,7 @@ Deno.test("EC2VpcModel - resource schema with IPv6", () => {
 Deno.test("EC2VpcModel - sync method without RequestToken fails", async () => {
   const definition = Definition.create({
     name: "test-vpc",
-    attributes: {
+    globalArguments: {
       CidrBlock: "10.0.0.0/16",
     },
   });
@@ -328,7 +331,7 @@ Deno.test("EC2VpcModel - sync method without RequestToken fails", async () => {
   const { context } = createTestContext();
 
   await assertRejects(
-    () => ec2VpcModel.methods.sync.execute(definition, context),
+    () => ec2VpcModel.methods.sync.execute(definition.globalArguments, context),
     Error,
     "AWS::EC2::VPC sync failed: no RequestToken found",
   );
@@ -337,14 +340,14 @@ Deno.test("EC2VpcModel - sync method without RequestToken fails", async () => {
 Deno.test("EC2VpcModel - delete method without data returns deleted result", async () => {
   const definition = Definition.create({
     name: "test-vpc",
-    attributes: {
+    globalArguments: {
       CidrBlock: "10.0.0.0/16",
     },
   });
 
   const { context, getResults } = createTestContext();
 
-  await ec2VpcModel.methods.delete.execute(definition, context);
+  await ec2VpcModel.methods.delete.execute(definition.globalArguments, context);
 
   // Should return success data handle since no data exists
   const attrs = getDataHandleAttributes(getResults());
@@ -355,7 +358,7 @@ Deno.test("EC2VpcModel - delete method without data returns deleted result", asy
 Deno.test("EC2VpcModel - create method uses injected CloudControl client", async () => {
   const definition = Definition.create({
     name: "test-vpc",
-    attributes: {
+    globalArguments: {
       CidrBlock: "10.0.0.0/16",
       EnableDnsHostnames: true,
       EnableDnsSupport: true,
@@ -378,7 +381,10 @@ Deno.test("EC2VpcModel - create method uses injected CloudControl client", async
       mockClient as unknown as CloudControlClient,
   });
 
-  const result = await ec2VpcModel.methods.create.execute(definition, context);
+  const result = await ec2VpcModel.methods.create.execute(
+    definition.globalArguments,
+    context,
+  );
 
   const attrs = getDataHandleAttributes(getResults());
   assertEquals(attrs?.RequestToken, "request-123");
@@ -390,7 +396,7 @@ Deno.test("EC2VpcModel - create method uses injected CloudControl client", async
 Deno.test("EC2VpcModel - sync method treats 'not found' as deleted", async () => {
   const definition = Definition.create({
     name: "test-vpc",
-    attributes: {
+    globalArguments: {
       RequestToken: "request-123",
       ResourceIdentifier: "vpc-12345678",
     },
@@ -412,7 +418,10 @@ Deno.test("EC2VpcModel - sync method treats 'not found' as deleted", async () =>
       mockClient as unknown as CloudControlClient,
   });
 
-  const result = await ec2VpcModel.methods.sync.execute(definition, context);
+  const result = await ec2VpcModel.methods.sync.execute(
+    definition.globalArguments,
+    context,
+  );
 
   const attrs = getDataHandleAttributes(getResults());
   assertEquals(attrs?.OperationStatus, "SUCCESS");
@@ -423,7 +432,7 @@ Deno.test("EC2VpcModel - sync method treats 'not found' as deleted", async () =>
 Deno.test("EC2VpcModel - delete method treats 'not found' as success", async () => {
   const definition = Definition.create({
     name: "test-vpc",
-    attributes: {
+    globalArguments: {
       CidrBlock: "10.0.0.0/16",
     },
   });
@@ -459,7 +468,10 @@ Deno.test("EC2VpcModel - delete method treats 'not found' as success", async () 
       mockClient as unknown as CloudControlClient,
   });
 
-  const result = await ec2VpcModel.methods.delete.execute(definition, context);
+  const result = await ec2VpcModel.methods.delete.execute(
+    definition.globalArguments,
+    context,
+  );
 
   const attrs = getDataHandleAttributes(getResults());
   assertEquals(attrs?.OperationStatus, "SUCCESS");

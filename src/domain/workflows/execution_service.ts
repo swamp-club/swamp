@@ -45,7 +45,6 @@ import {
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { UserError } from "../errors.ts";
-import { InputOverrideValidationService } from "../inputs/mod.ts";
 import {
   getRunLogger,
   runFileSink,
@@ -317,7 +316,7 @@ export class DefaultStepExecutor implements StepExecutor {
         name: originalDefinition.name,
         version: originalDefinition.version,
         tags: originalDefinition.tags,
-        attributes: originalDefinition.attributes,
+        globalArguments: originalDefinition.globalArguments,
         ...forEachVars,
       };
 
@@ -345,9 +344,8 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.repoDir,
       );
 
-      // Validate and apply step inputs as attribute overrides (implicit inputs)
-      // But only for keys that aren't defined in the definition's inputs schema
-      // (those are handled by expression evaluation via ${{ inputs.X }})
+      // Merge step inputs directly into method arguments
+      // Step inputs that aren't definition-level inputs override method arguments
       const definitionInputKeys = originalDefinition.inputs
         ? Object.keys(
           (originalDefinition.inputs as {
@@ -362,31 +360,12 @@ export class DefaultStepExecutor implements StepExecutor {
         ),
       );
       if (Object.keys(overrideInputs).length > 0) {
-        const method = modelDef.methods[task.methodName];
-        if (method) {
-          const overrideValidationService =
-            new InputOverrideValidationService();
-          const overrideResult = overrideValidationService.validate(
-            overrideInputs,
-            method.inputAttributesSchema,
-          );
-          if (!overrideResult.valid) {
-            const errorMessages = overrideResult.errors
-              .map((e) => {
-                let msg = `  ${e.key}: ${e.message}`;
-                if (e.suggestion) {
-                  msg += ` (${e.suggestion})`;
-                }
-                return msg;
-              })
-              .join("\n");
-            throw new UserError(
-              `Invalid step input overrides in "${ctx.stepName}":\n${errorMessages}`,
-            );
-          }
-        }
         for (const [key, value] of Object.entries(overrideInputs)) {
-          evaluatedDefinition.setAttribute(key, value);
+          evaluatedDefinition.setMethodArgument(
+            task.methodName,
+            key,
+            value,
+          );
         }
       }
     }
@@ -475,6 +454,14 @@ export class DefaultStepExecutor implements StepExecutor {
           repoDir: ctx.repoDir,
           modelType,
           modelId: evaluatedDefinition.id,
+          globalArgs: evaluatedDefinition.globalArguments,
+          definition: {
+            id: evaluatedDefinition.id,
+            name: evaluatedDefinition.name,
+            version: evaluatedDefinition.version,
+            tags: evaluatedDefinition.tags,
+          },
+          methodName: task.methodName,
           logger: runLogger,
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
@@ -1300,7 +1287,7 @@ export class WorkflowExecutionService {
                 name: taskOutput.model,
                 version: 1,
                 tags: {},
-                attributes: {},
+                globalArguments: {},
               },
             };
           }
@@ -1399,7 +1386,7 @@ export class WorkflowExecutionService {
           name: "",
           version: 1,
           tags: {},
-          attributes: {},
+          globalArguments: {},
         };
         stepExprContext = {
           ...expressionContext,
@@ -1461,7 +1448,7 @@ export class WorkflowExecutionService {
                 name: taskOutput.model,
                 version: 1,
                 tags: {},
-                attributes: {},
+                globalArguments: {},
               },
             };
           }

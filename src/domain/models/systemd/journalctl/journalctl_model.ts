@@ -6,7 +6,6 @@ import {
   type MethodResult,
   type ModelDefinition,
 } from "../../model.ts";
-import type { Definition } from "../../../definitions/definition.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 
 /**
@@ -102,17 +101,14 @@ export function buildJournalctlArgs(
  * Reads system logs via journalctl and returns them as log entries.
  */
 async function readLogs(
-  definition: Definition,
+  args: JournalctlInputAttributes,
   context: MethodContext,
 ): Promise<MethodResult> {
-  // Validate definition attributes
-  const attrs = JournalctlInputAttributesSchema.parse(definition.attributes);
-
-  const args = buildJournalctlArgs(attrs);
+  const journalctlArgs = buildJournalctlArgs(args);
 
   const result = await executeProcess({
     command: "journalctl",
-    args,
+    args: journalctlArgs,
     logger: context.logger,
   });
 
@@ -138,12 +134,10 @@ async function readLogs(
  *
  * Self-registers with the global model registry when this module is imported.
  */
-export const journalctlModel: ModelDefinition<
-  typeof JournalctlInputAttributesSchema
-> = defineModel({
+export const journalctlModel: ModelDefinition = defineModel({
   type: JOURNALCTL_MODEL_TYPE,
   version: "2026.02.09.1",
-  inputAttributesSchema: JournalctlInputAttributesSchema,
+  globalArguments: JournalctlInputAttributesSchema,
   files: {
     "log": {
       description: "System journal logs",
@@ -157,7 +151,7 @@ export const journalctlModel: ModelDefinition<
     read: {
       description:
         "Read system logs via journalctl with optional filters. Returns logs only.",
-      inputAttributesSchema: JournalctlInputAttributesSchema,
+      arguments: JournalctlInputAttributesSchema,
       execute: readLogs,
     },
   },

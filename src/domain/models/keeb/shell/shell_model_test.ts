@@ -1,11 +1,9 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import {
-  createDefinitionId,
-  Definition,
-} from "../../../definitions/definition.ts";
+import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
   SHELL_MODEL_TYPE,
   ShellDataAttributesSchema,
+  type ShellInputAttributes,
   ShellInputAttributesSchema,
   shellModel,
 } from "./shell_model.ts";
@@ -216,6 +214,14 @@ function createTestContext(
     repoDir: "/tmp",
     modelType: SHELL_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: {
+      id: crypto.randomUUID(),
+      name: "test-shell",
+      version: 1,
+      tags: {},
+    },
+    methodName: "execute",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -331,13 +337,10 @@ Deno.test("shellModel has execute method", () => {
 
 // Execute method tests
 Deno.test("shellModel.methods.execute runs simple command", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "echo hello" },
-  });
+  const args: ShellInputAttributes = { run: "echo hello" };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   // Check data attributes
   const attrs = getResultAttributes(getResults(), "result");
@@ -352,13 +355,10 @@ Deno.test("shellModel.methods.execute runs simple command", async () => {
 });
 
 Deno.test("shellModel.methods.execute captures stderr", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "echo error >&2" },
-  });
+  const args: ShellInputAttributes = { run: "echo error >&2" };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
@@ -369,42 +369,33 @@ Deno.test("shellModel.methods.execute captures stderr", async () => {
 });
 
 Deno.test("shellModel.methods.execute captures exit code", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "exit 42" },
-  });
+  const args: ShellInputAttributes = { run: "exit 42" };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 42);
 });
 
 Deno.test("shellModel.methods.execute handles command failure gracefully", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "false" },
-  });
+  const args: ShellInputAttributes = { run: "false" };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 1);
 });
 
 Deno.test("shellModel.methods.execute respects workingDir", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: {
-      run: "pwd",
-      workingDir: "/tmp",
-    },
-  });
+  const args: ShellInputAttributes = {
+    run: "pwd",
+    workingDir: "/tmp",
+  };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   // Use realPathSync to handle symlinks (e.g., /tmp -> /private/tmp on macOS)
   const expectedPath = Deno.realPathSync("/tmp");
@@ -417,16 +408,13 @@ Deno.test("shellModel.methods.execute respects workingDir", async () => {
 });
 
 Deno.test("shellModel.methods.execute respects env variables", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: {
-      run: "echo $MY_TEST_VAR",
-      env: { MY_TEST_VAR: "test_value" },
-    },
-  });
+  const args: ShellInputAttributes = {
+    run: "echo $MY_TEST_VAR",
+    env: { MY_TEST_VAR: "test_value" },
+  };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
@@ -437,13 +425,10 @@ Deno.test("shellModel.methods.execute respects env variables", async () => {
 });
 
 Deno.test("shellModel.methods.execute handles pipes", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "echo 'hello world' | tr 'h' 'H'" },
-  });
+  const args: ShellInputAttributes = { run: "echo 'hello world' | tr 'h' 'H'" };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
@@ -454,13 +439,10 @@ Deno.test("shellModel.methods.execute handles pipes", async () => {
 });
 
 Deno.test("shellModel.methods.execute handles complex commands", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "cd /tmp && pwd" },
-  });
+  const args: ShellInputAttributes = { run: "cd /tmp && pwd" };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   const attrs = getResultAttributes(getResults(), "result");
   assertEquals(attrs?.exitCode, 0);
@@ -470,48 +452,21 @@ Deno.test("shellModel.methods.execute handles complex commands", async () => {
   assertStringIncludes(logContent, "/tmp");
 });
 
-Deno.test("shellModel.methods.execute validates input attributes", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { notRun: "value" },
-  });
-
-  const { context } = createTestContext();
-  let error: Error | null = null;
-  try {
-    await shellModel.methods.execute.execute(definition, context);
-  } catch (e) {
-    error = e as Error;
-  }
-
-  assertEquals(error !== null, true);
+Deno.test("ShellInputAttributesSchema rejects invalid attributes", () => {
+  const result = ShellInputAttributesSchema.safeParse({ notRun: "value" });
+  assertEquals(result.success, false);
 });
 
-Deno.test("shellModel.methods.execute rejects empty run command", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "" },
-  });
-
-  const { context } = createTestContext();
-  let error: Error | null = null;
-  try {
-    await shellModel.methods.execute.execute(definition, context);
-  } catch (e) {
-    error = e as Error;
-  }
-
-  assertEquals(error !== null, true);
+Deno.test("ShellInputAttributesSchema rejects empty run command via schema", () => {
+  const result = ShellInputAttributesSchema.safeParse({ run: "" });
+  assertEquals(result.success, false);
 });
 
 Deno.test("shellModel.methods.execute handles nonexistent command", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "nonexistent_command_12345" },
-  });
+  const args: ShellInputAttributes = { run: "nonexistent_command_12345" };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   // Should return non-zero exit code and error in output
   const attrs = getResultAttributes(getResults(), "result");
@@ -523,13 +478,10 @@ Deno.test("shellModel.methods.execute handles nonexistent command", async () => 
 });
 
 Deno.test("shellModel.methods.execute records execution duration", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "sleep 0.1" },
-  });
+  const args: ShellInputAttributes = { run: "sleep 0.1" };
 
   const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(definition, context);
+  await shellModel.methods.execute.execute(args, context);
 
   const attrs = getResultAttributes(getResults(), "result");
   const durationMs = attrs?.durationMs as number;
@@ -538,13 +490,10 @@ Deno.test("shellModel.methods.execute records execution duration", async () => {
 });
 
 Deno.test("shellModel.methods.execute returns dataHandles", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "echo hello && echo error >&2" },
-  });
+  const args: ShellInputAttributes = { run: "echo hello && echo error >&2" };
 
   const { context, getResults } = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const result = await shellModel.methods.execute.execute(args, context);
 
   // Should have data handles (result and output)
   assertEquals(result.dataHandles !== undefined, true);
@@ -557,13 +506,10 @@ Deno.test("shellModel.methods.execute returns dataHandles", async () => {
 });
 
 Deno.test("shellModel.methods.execute returns output for no output command", async () => {
-  const definition = Definition.create({
-    name: "test-shell",
-    attributes: { run: "true" }, // Command with no output
-  });
+  const args: ShellInputAttributes = { run: "true" }; // Command with no output
 
   const { context } = createTestContext();
-  const result = await shellModel.methods.execute.execute(definition, context);
+  const result = await shellModel.methods.execute.execute(args, context);
 
   // Should still have data handles
   assertEquals(result.dataHandles !== undefined, true);

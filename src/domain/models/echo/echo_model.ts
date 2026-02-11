@@ -6,19 +6,18 @@ import {
   type MethodResult,
   type ModelDefinition,
 } from "../model.ts";
-import type { Definition } from "../../definitions/definition.ts";
 
 /**
- * Schema for echo model input attributes.
+ * Schema for echo model method arguments.
  */
-export const EchoInputAttributesSchema = z.object({
+export const EchoArgumentsSchema = z.object({
   message: z.string().min(1),
 });
 
 /**
- * Type for echo model input attributes.
+ * Type for echo model method arguments.
  */
-export type EchoInputAttributes = z.infer<typeof EchoInputAttributesSchema>;
+export type EchoArguments = z.infer<typeof EchoArgumentsSchema>;
 
 /**
  * Schema for echo model data attributes.
@@ -45,15 +44,12 @@ export const ECHO_MODEL_TYPE = ModelType.create("swamp/echo");
  * along with a timestamp.
  */
 async function executeWrite(
-  definition: Definition,
+  args: EchoArguments,
   context: MethodContext,
 ): Promise<MethodResult> {
-  // Validate definition attributes
-  const attrs = EchoInputAttributesSchema.parse(definition.attributes);
-
   // Create the data attributes with message and timestamp
   const dataAttributes = {
-    message: attrs.message,
+    message: args.message,
     timestamp: new Date().toISOString(),
   };
 
@@ -70,12 +66,9 @@ async function executeWrite(
  *
  * Self-registers with the global model registry when this module is imported.
  */
-export const echoModel: ModelDefinition<
-  typeof EchoInputAttributesSchema
-> = defineModel({
+export const echoModel: ModelDefinition = defineModel({
   type: ECHO_MODEL_TYPE,
   version: "2026.02.09.1",
-  inputAttributesSchema: EchoInputAttributesSchema,
   resources: {
     "message": {
       description: "Echo message with timestamp",
@@ -88,7 +81,7 @@ export const echoModel: ModelDefinition<
     write: {
       description:
         "Write the definition message to a data artifact with a timestamp",
-      inputAttributesSchema: EchoInputAttributesSchema,
+      arguments: EchoArgumentsSchema,
       execute: executeWrite,
     },
   },

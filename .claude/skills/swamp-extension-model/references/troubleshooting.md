@@ -27,7 +27,6 @@ Declare specs on the model definition:
 export const model = {
   type: "@user/my-model",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
   resources: {
     "result": {
       description: "Model output data",
@@ -36,7 +35,13 @@ export const model = {
       garbageCollection: 10,
     },
   },
-  methods: { ... },
+  methods: {
+    run: {
+      description: "Run the model",
+      arguments: InputSchema,
+      execute: async (args, context) => { ... },
+    },
+  },
 };
 ```
 
@@ -107,10 +112,10 @@ Avoid inline TypeScript type annotations in execute parameters:
 
 ```typescript
 // Wrong - causes syntax error
-execute: async (input: { id: string }, context: any) => { ... }
+execute: async (args: { id: string }, context: any) => { ... }
 
 // Correct
-execute: async (input, _context) => { ... }
+execute: async (args, _context) => { ... }
 ```
 
 ## Configuration

@@ -5,8 +5,8 @@ import {
 } from "../../definitions/definition.ts";
 import {
   ECHO_MODEL_TYPE,
+  EchoArgumentsSchema,
   EchoDataAttributesSchema,
-  EchoInputAttributesSchema,
   echoModel,
 } from "./echo_model.ts";
 import type { DataHandle, DataWriter, MethodContext } from "../model.ts";
@@ -203,6 +203,9 @@ function createTestContext(): {
     repoDir: "/tmp",
     modelType: ECHO_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "write",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -224,21 +227,21 @@ Deno.test("echoModel.type equals ECHO_MODEL_TYPE", () => {
   assertEquals(echoModel.type.equals(ECHO_MODEL_TYPE), true);
 });
 
-Deno.test("EchoInputAttributesSchema validates message", () => {
-  const result = EchoInputAttributesSchema.safeParse({ message: "hello" });
+Deno.test("EchoArgumentsSchema validates message", () => {
+  const result = EchoArgumentsSchema.safeParse({ message: "hello" });
   assertEquals(result.success, true);
   if (result.success) {
     assertEquals(result.data.message, "hello");
   }
 });
 
-Deno.test("EchoInputAttributesSchema rejects empty message", () => {
-  const result = EchoInputAttributesSchema.safeParse({ message: "" });
+Deno.test("EchoArgumentsSchema rejects empty message", () => {
+  const result = EchoArgumentsSchema.safeParse({ message: "" });
   assertEquals(result.success, false);
 });
 
-Deno.test("EchoInputAttributesSchema rejects missing message", () => {
-  const result = EchoInputAttributesSchema.safeParse({});
+Deno.test("EchoArgumentsSchema rejects missing message", () => {
+  const result = EchoArgumentsSchema.safeParse({});
   assertEquals(result.success, false);
 });
 
@@ -269,11 +272,14 @@ Deno.test("echoModel has write method", () => {
 Deno.test("echoModel.methods.write executes correctly", async () => {
   const definition = Definition.create({
     name: "test-echo",
-    attributes: { message: "hello world" },
+    globalArguments: { message: "hello world" },
   });
 
   const { context, getResults } = createTestContext();
-  const result = await echoModel.methods.write.execute(definition, context);
+  const result = await echoModel.methods.write.execute(
+    definition.globalArguments,
+    context,
+  );
 
   assertEquals(result.dataHandles !== undefined, true);
   assertEquals(result.dataHandles!.length, 1);
@@ -287,36 +293,12 @@ Deno.test("echoModel.methods.write executes correctly", async () => {
   assertEquals(isNaN(timestamp.getTime()), false);
 });
 
-Deno.test("echoModel.methods.write validates input attributes", async () => {
-  const definition = Definition.create({
-    name: "test-echo",
-    attributes: { notAMessage: "value" },
-  });
-
-  const { context } = createTestContext();
-  let error: Error | null = null;
-  try {
-    await echoModel.methods.write.execute(definition, context);
-  } catch (e) {
-    error = e as Error;
-  }
-
-  assertEquals(error !== null, true);
+Deno.test("echoModel.methods.write arguments schema rejects missing message", () => {
+  const result = EchoArgumentsSchema.safeParse({ notAMessage: "value" });
+  assertEquals(result.success, false);
 });
 
-Deno.test("echoModel.methods.write rejects empty message", async () => {
-  const definition = Definition.create({
-    name: "test-echo",
-    attributes: { message: "" },
-  });
-
-  const { context } = createTestContext();
-  let error: Error | null = null;
-  try {
-    await echoModel.methods.write.execute(definition, context);
-  } catch (e) {
-    error = e as Error;
-  }
-
-  assertEquals(error !== null, true);
+Deno.test("echoModel.methods.write arguments schema rejects empty message", () => {
+  const result = EchoArgumentsSchema.safeParse({ message: "" });
+  assertEquals(result.success, false);
 });

@@ -55,7 +55,7 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
     const definition = Definition.create({
       name: "my-vpc",
       tags: {},
-      attributes: { cidr: "10.0.0.0/16" },
+      globalArguments: { cidr: "10.0.0.0/16" },
     });
     await definitionRepo.save(type, definition);
 
@@ -133,7 +133,7 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
     const definition = Definition.create({
       name: "my-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -198,7 +198,7 @@ Deno.test("Integration: data.version() returns null for missing version", async 
     const definition = Definition.create({
       name: "my-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -246,7 +246,7 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
     const definition = Definition.create({
       name: "my-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -298,7 +298,7 @@ Deno.test("Integration: data.listVersions() returns sorted version numbers", asy
     const definition = Definition.create({
       name: "my-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -344,7 +344,7 @@ Deno.test("Integration: data.listVersions() returns empty array for missing data
     const definition = Definition.create({
       name: "my-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -375,12 +375,12 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
     const modelA = Definition.create({
       name: "model-a",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     const modelB = Definition.create({
       name: "model-b",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, modelA);
     await definitionRepo.save(type, modelB);
@@ -473,7 +473,7 @@ Deno.test("Integration: model can have multiple named data items with mixed type
     const definition = Definition.create({
       name: "my-command",
       tags: {},
-      attributes: { cmd: "echo hello" },
+      globalArguments: { cmd: "echo hello" },
     });
     await definitionRepo.save(type, definition);
 
@@ -565,7 +565,7 @@ Deno.test("Integration: handles hyphenated model names in data expressions", asy
     const definition = Definition.create({
       name: "my-hyphenated-model",
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await definitionRepo.save(type, definition);
 
@@ -615,7 +615,7 @@ Deno.test("Integration: buildContext works without dataRepo", async () => {
     const definition = Definition.create({
       name: "my-model",
       tags: {},
-      attributes: { key: "value" },
+      globalArguments: { key: "value" },
     });
     await definitionRepo.save(type, definition);
 

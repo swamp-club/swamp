@@ -51,10 +51,10 @@ export const modelGetCommand = new Command()
       type: modelType.normalized,
       version: definition.version,
       tags: definition.tags,
-      attributes: definition.attributes,
+      globalArguments: definition.globalArguments,
       typeVersion: modelDef?.version,
-      inputAttributesSchema: modelDef
-        ? zodToJsonSchema(modelDef.inputAttributesSchema)
+      globalArgumentsSchema: modelDef?.globalArguments
+        ? zodToJsonSchema(modelDef.globalArguments)
         : undefined,
       methods: modelDef
         ? Object.entries(modelDef.methods).map(

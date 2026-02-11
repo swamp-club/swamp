@@ -114,8 +114,12 @@ Deno.test("Model Method Run: resolves vault expressions before execution", async
     const modelType = ModelType.create("swamp/echo");
     const definition = Definition.create({
       name: "vault-test-model",
-      attributes: {
-        message: "${{ vault.get(test-vault, API_KEY) }}",
+      methods: {
+        write: {
+          arguments: {
+            message: "${{ vault.get(test-vault, API_KEY) }}",
+          },
+        },
       },
     });
     await definitionRepo.save(modelType, definition);
@@ -208,9 +212,13 @@ Deno.test("Model Method Run: resolves multiple vault expressions", async () => {
     const modelType = ModelType.create("swamp/echo");
     const definition = Definition.create({
       name: "multi-vault-model",
-      attributes: {
-        message:
-          '${{ vault.get(multi-vault, USERNAME) + ":" + vault.get(multi-vault, PASSWORD) }}',
+      methods: {
+        write: {
+          arguments: {
+            message:
+              '${{ vault.get(multi-vault, USERNAME) + ":" + vault.get(multi-vault, PASSWORD) }}',
+          },
+        },
       },
     });
     await definitionRepo.save(modelType, definition);
@@ -254,8 +262,12 @@ Deno.test("Model Method Run: handles missing vault gracefully with error", async
     const modelType = ModelType.create("swamp/echo");
     const definition = Definition.create({
       name: "missing-vault-model",
-      attributes: {
-        message: "${{ vault.get(nonexistent-vault, SECRET) }}",
+      methods: {
+        write: {
+          arguments: {
+            message: "${{ vault.get(nonexistent-vault, SECRET) }}",
+          },
+        },
       },
     });
     await definitionRepo.save(modelType, definition);
@@ -293,8 +305,12 @@ Deno.test("Model Method Run: model without expressions works normally", async ()
     const modelType = ModelType.create("swamp/echo");
     const definition = Definition.create({
       name: "plain-model",
-      attributes: {
-        message: "Hello World",
+      methods: {
+        write: {
+          arguments: {
+            message: "Hello World",
+          },
+        },
       },
     });
     await definitionRepo.save(modelType, definition);

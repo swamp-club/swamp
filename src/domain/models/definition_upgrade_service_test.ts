@@ -1,5 +1,4 @@
 import { assertEquals } from "@std/assert";
-import { z } from "zod";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import { Definition } from "../definitions/definition.ts";
 import type { ModelDefinition, VersionUpgrade } from "./model.ts";
@@ -12,7 +11,6 @@ function createModelDef(
   return {
     type: ModelType.create("test/upgradeable"),
     version,
-    inputAttributesSchema: z.object({}),
     methods: {},
     upgrades,
   };
@@ -24,7 +22,7 @@ Deno.test("DefinitionUpgradeService - no upgrade needed when versions match", ()
     name: "test-def",
     type: "test/upgradeable",
     typeVersion: "2025.06.01.1",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const modelDef = createModelDef("2025.06.01.1", [
@@ -38,8 +36,8 @@ Deno.test("DefinitionUpgradeService - no upgrade needed when versions match", ()
   const result = service.upgrade(definition, modelDef);
 
   assertEquals(result.upgraded, false);
-  assertEquals(result.definition.attributes.message, "hello");
-  assertEquals(result.definition.attributes.added, undefined);
+  assertEquals(result.definition.globalArguments.message, "hello");
+  assertEquals(result.definition.globalArguments.added, undefined);
 });
 
 Deno.test("DefinitionUpgradeService - no upgrade needed when no upgrades defined", () => {
@@ -48,7 +46,7 @@ Deno.test("DefinitionUpgradeService - no upgrade needed when no upgrades defined
     name: "test-def",
     type: "test/upgradeable",
     typeVersion: "2025.01.15.1",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const modelDef = createModelDef("2025.06.01.1");
@@ -64,7 +62,7 @@ Deno.test("DefinitionUpgradeService - single-step upgrade", () => {
     name: "test-def",
     type: "test/upgradeable",
     typeVersion: "2025.01.15.1",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const modelDef = createModelDef("2025.06.01.1", [
@@ -78,8 +76,8 @@ Deno.test("DefinitionUpgradeService - single-step upgrade", () => {
   const result = service.upgrade(definition, modelDef);
 
   assertEquals(result.upgraded, true);
-  assertEquals(result.definition.attributes.message, "hello");
-  assertEquals(result.definition.attributes.priority, "medium");
+  assertEquals(result.definition.globalArguments.message, "hello");
+  assertEquals(result.definition.globalArguments.priority, "medium");
   assertEquals(result.definition.typeVersion, "2025.06.01.1");
   assertEquals(result.fromVersion, "2025.01.15.1");
   assertEquals(result.toVersion, "2025.06.01.1");
@@ -91,7 +89,7 @@ Deno.test("DefinitionUpgradeService - multi-step upgrade chain", () => {
     name: "test-def",
     type: "test/upgradeable",
     typeVersion: "2025.01.15.1",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const modelDef = createModelDef("2026.02.09.1", [
@@ -113,9 +111,9 @@ Deno.test("DefinitionUpgradeService - multi-step upgrade chain", () => {
   const result = service.upgrade(definition, modelDef);
 
   assertEquals(result.upgraded, true);
-  assertEquals(result.definition.attributes.content, "hello");
-  assertEquals(result.definition.attributes.priority, "medium");
-  assertEquals(result.definition.attributes.message, undefined);
+  assertEquals(result.definition.globalArguments.content, "hello");
+  assertEquals(result.definition.globalArguments.priority, "medium");
+  assertEquals(result.definition.globalArguments.message, undefined);
   assertEquals(result.definition.typeVersion, "2026.02.09.1");
 });
 
@@ -124,7 +122,7 @@ Deno.test("DefinitionUpgradeService - undefined typeVersion triggers full upgrad
   const definition = Definition.create({
     name: "test-def",
     type: "test/upgradeable",
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   // typeVersion is undefined (legacy pre-CalVer definition)
@@ -149,8 +147,8 @@ Deno.test("DefinitionUpgradeService - undefined typeVersion triggers full upgrad
   const result = service.upgrade(definition, modelDef);
 
   assertEquals(result.upgraded, true);
-  assertEquals(result.definition.attributes.content, "hello");
-  assertEquals(result.definition.attributes.priority, "medium");
+  assertEquals(result.definition.globalArguments.content, "hello");
+  assertEquals(result.definition.globalArguments.priority, "medium");
   assertEquals(result.definition.typeVersion, "2026.02.09.1");
   assertEquals(result.fromVersion, undefined);
 });
@@ -161,7 +159,7 @@ Deno.test("DefinitionUpgradeService - partial upgrade (skip already applied)", (
     name: "test-def",
     type: "test/upgradeable",
     typeVersion: "2025.06.01.1",
-    attributes: { message: "hello", priority: "medium" },
+    globalArguments: { message: "hello", priority: "medium" },
   });
 
   const modelDef = createModelDef("2026.02.09.1", [
@@ -184,9 +182,9 @@ Deno.test("DefinitionUpgradeService - partial upgrade (skip already applied)", (
 
   assertEquals(result.upgraded, true);
   // Only the second upgrade should have been applied
-  assertEquals(result.definition.attributes.content, "hello");
-  assertEquals(result.definition.attributes.priority, "medium");
-  assertEquals(result.definition.attributes.message, undefined);
+  assertEquals(result.definition.globalArguments.content, "hello");
+  assertEquals(result.definition.globalArguments.priority, "medium");
+  assertEquals(result.definition.globalArguments.message, undefined);
   assertEquals(result.definition.typeVersion, "2026.02.09.1");
 });
 
@@ -198,7 +196,7 @@ Deno.test("DefinitionUpgradeService - preserves id, name, tags", () => {
     type: "test/upgradeable",
     typeVersion: "2025.01.15.1",
     tags: { env: "prod", team: "platform" },
-    attributes: { message: "hello" },
+    globalArguments: { message: "hello" },
   });
 
   const modelDef = createModelDef("2025.06.01.1", [
@@ -228,7 +226,8 @@ Deno.test("DefinitionUpgradeService - legacy numeric typeVersion coerced to unde
     type: "test/upgradeable",
     typeVersion: 1 as unknown as string, // numeric typeVersion from disk
     tags: {},
-    attributes: { message: "old" },
+    globalArguments: { message: "old" },
+    methods: {},
     inputs: undefined,
   });
 
@@ -246,6 +245,6 @@ Deno.test("DefinitionUpgradeService - legacy numeric typeVersion coerced to unde
   const result = service.upgrade(definition, modelDef);
 
   assertEquals(result.upgraded, true);
-  assertEquals(result.definition.attributes.priority, "low");
+  assertEquals(result.definition.globalArguments.priority, "low");
   assertEquals(result.definition.typeVersion, "2025.06.01.1");
 });

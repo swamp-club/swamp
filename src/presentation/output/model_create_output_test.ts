@@ -18,7 +18,7 @@ const testData: ModelCreateData = {
 const testDataWithTypeInfo: ModelCreateData = {
   ...testData,
   version: "2026.02.09.1",
-  inputAttributesSchema: {
+  globalArguments: {
     type: "object",
     properties: {
       message: { type: "string" },
@@ -29,7 +29,7 @@ const testDataWithTypeInfo: ModelCreateData = {
     {
       name: "write",
       description: "Write a message",
-      inputAttributesSchema: {
+      arguments: {
         type: "object",
         properties: {
           message: { type: "string" },
@@ -80,7 +80,7 @@ Deno.test("renderModelCreate with log mode shows type info when provided", () =>
     renderModelCreate(testDataWithTypeInfo, "log");
     const combined = stripAnsiCode(logs.join("\n"));
     assertStringIncludes(combined, "Version:");
-    assertStringIncludes(combined, "Input Attributes:");
+    assertStringIncludes(combined, "Global Arguments:");
     assertStringIncludes(combined, "message");
     assertStringIncludes(combined, "Methods:");
     assertStringIncludes(combined, "write");

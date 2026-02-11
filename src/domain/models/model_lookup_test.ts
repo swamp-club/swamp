@@ -173,7 +173,7 @@ Deno.test("findDefinitionByIdOrName finds definition by name", async () => {
       name: "my-model",
       version: 1,
       tags: {},
-      attributes: { message: "hello" },
+      globalArguments: { message: "hello" },
     });
     await repo.save(type, definition);
 
@@ -193,7 +193,7 @@ Deno.test("findDefinitionByIdOrName finds definition by UUID", async () => {
       name: "my-model",
       version: 1,
       tags: {},
-      attributes: { message: "hello" },
+      globalArguments: { message: "hello" },
     });
     await repo.save(type, definition);
 
@@ -225,13 +225,13 @@ Deno.test("findDefinitionByIdOrName prefers name match over ID", async () => {
       name: "abc123",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     const def2 = Definition.create({
       name: "other-model",
       version: 1,
       tags: {},
-      attributes: {},
+      globalArguments: {},
     });
     await repo.save(type, def1);
     await repo.save(type, def2);

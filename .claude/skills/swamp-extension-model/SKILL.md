@@ -58,7 +58,7 @@ outputs.
 // extensions/models/my_model.ts
 import { z } from "npm:zod@4";
 
-const InputSchema = z.object({ message: z.string() });
+const GlobalArgsSchema = z.object({ message: z.string() });
 
 const OutputSchema = z.object({
   message: z.string(),
@@ -68,7 +68,7 @@ const OutputSchema = z.object({
 export const model = {
   type: "@myorg/my-model",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: GlobalArgsSchema,
   resources: {
     "result": {
       description: "Model output data",
@@ -80,9 +80,10 @@ export const model = {
   methods: {
     run: {
       description: "Process the input message",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         const handle = await context.writeResource!("result", {
-          message: definition.attributes.message.toUpperCase(),
+          message: context.globalArgs.message.toUpperCase(),
           timestamp: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
@@ -94,15 +95,15 @@ export const model = {
 
 ## Model Structure
 
-| Field                   | Required | Description                                       |
-| ----------------------- | -------- | ------------------------------------------------- |
-| `type`                  | Yes      | Unique identifier (`namespace/name`)              |
-| `version`               | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)               |
-| `inputAttributesSchema` | Yes      | Zod schema for input validation                   |
-| `resources`             | No       | Resource output specs — JSON data with Zod schema |
-| `files`                 | No       | File output specs — binary/text with content type |
-| `inputsSchema`          | No       | Zod schema for runtime inputs                     |
-| `methods`               | Yes      | Object of method definitions                      |
+| Field             | Required | Description                                                              |
+| ----------------- | -------- | ------------------------------------------------------------------------ |
+| `type`            | Yes      | Unique identifier (`namespace/name`)                                     |
+| `version`         | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)                                      |
+| `globalArguments` | No       | Zod schema for global arguments validation                               |
+| `resources`       | No       | Resource output specs — JSON data with Zod schema                        |
+| `files`           | No       | File output specs — binary/text with content type                        |
+| `inputsSchema`    | No       | Zod schema for runtime inputs                                            |
+| `methods`         | Yes      | Object of method definitions (each with required `arguments` Zod schema) |
 
 ### Model-Level Inputs
 
@@ -113,7 +114,7 @@ are provided via `--input` or `--input-file` when running methods:
 export const model = {
   type: "@user/deploy",
   version: 1,
-  inputAttributesSchema: z.object({
+  globalArguments: z.object({
     serviceName: z.string(),
     target: z.string(), // Will use ${{ inputs.environment }}
   }),
@@ -135,12 +136,13 @@ export const model = {
   methods: {
     deploy: {
       description: "Deploy the service",
-      execute: async (definition, context) => {
-        // Inputs are evaluated before execution, so definition.attributes
+      arguments: z.object({}),
+      execute: async (args, context) => {
+        // Inputs are evaluated before execution, so context.globalArgs
         // contains the resolved values (e.g., target = "production")
         const handle = await context.writeResource!("state", {
           deployed: true,
-          target: definition.attributes.target,
+          target: context.globalArgs.target,
         });
         return { dataHandles: [handle] };
       },
@@ -223,20 +225,22 @@ files: {
 
 ## Execute Function
 
-The execute function receives the definition and context. It uses
-`writeResource` for JSON data and `createFileWriter` for binary/text content.
+The execute function receives pre-validated `args` (from the method's
+`arguments` Zod schema) and a `context` object. It uses `writeResource` for JSON
+data and `createFileWriter` for binary/text content.
 
 ```typescript
-execute: (async (definition, context) => {
-  // definition.id         - UUID
-  // definition.name       - User-provided name
-  // definition.attributes - Validated input data (expressions already resolved)
-  // context.repoDir       - Repository root path
-  // context.logger        - LogTape Logger for emitting log messages
+execute: (async (args, context) => {
+  // args                   - Pre-validated against the method's `arguments` Zod schema
+  // context.globalArgs     - Global arguments (validated against model's `globalArguments` schema)
+  // context.definition     - { id, name, version, tags } of the current definition
+  // context.methodName     - Name of the executing method
+  // context.repoDir        - Repository root path
+  // context.logger         - LogTape Logger for emitting log messages
   // context.dataRepository - For advanced data operations
   // context.writeResource  - Write structured JSON data (validates against schema)
   // context.createFileWriter - Create a writer for binary/text files
-  // context.inputs        - Runtime inputs (if inputsSchema defined)
+  // context.inputs         - Runtime inputs (if inputsSchema defined)
 
   // 1. Write a resource — specName must match a key in `resources`
   const handle = await context.writeResource!("result", {
@@ -341,7 +345,7 @@ discovers N items and needs to emit each as a separately-addressable resource.
 // extensions/models/subnet_scanner.ts
 import { z } from "npm:zod@4";
 
-const InputSchema = z.object({ vpcId: z.string() });
+const GlobalArgsSchema = z.object({ vpcId: z.string() });
 
 const SubnetSchema = z.object({
   subnetId: z.string(),
@@ -352,7 +356,7 @@ const SubnetSchema = z.object({
 export const model = {
   type: "@user/subnet-scanner",
   version: "2026.02.10.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: GlobalArgsSchema,
   resources: {
     "subnet": {
       description: "Discovered subnet",
@@ -364,7 +368,8 @@ export const model = {
   methods: {
     scan: {
       description: "Scan VPC and emit each subnet as a named resource",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         // Simulated discovery — real model would call AWS API
         const subnets = [
           { subnetId: "subnet-aaa", cidr: "10.0.1.0/24", az: "us-east-1a" },
@@ -429,10 +434,11 @@ export const extension = {
   methods: [{
     audit: {
       description: "Audit the echo message",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         // Extensions use the target model's resources/files
         const handle = await context.writeResource!("message", {
-          message: `Audited: ${definition.name}`,
+          message: `Audited: ${context.definition.name}`,
           timestamp: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
@@ -454,7 +460,7 @@ export const extension = {
 - `methods` is always an array of `Record<string, MethodDef>` objects
 - One file can contain one method or many methods
 - Multiple extension files can target the same type
-- Extension methods without `inputAttributesSchema` inherit the target model's
+- Extension methods must define their own `arguments` Zod schema
 - Models are loaded first, then extensions (two-pass loading)
 
 ## Model Discovery
@@ -528,7 +534,7 @@ From low to high severity: `trace`, `debug`, `info`, `warning`, `error`,
 Use named `{placeholder}` tokens with a properties object:
 
 ```typescript
-context.logger.info("Processing {name}", { name: definition.name });
+context.logger.info("Processing {name}", { name: context.definition.name });
 context.logger.error("Request failed: {error}", { error: err.message });
 ```
 
@@ -564,7 +570,7 @@ display + file persistence via RunFileSink).
 import { z } from "npm:zod@4";
 import { executeProcess } from "../../../../src/infrastructure/process/process_executor.ts";
 
-const InputSchema = z.object({
+const GlobalArgsSchema = z.object({
   command: z.string(),
   args: z.array(z.string()).optional(),
 });
@@ -572,7 +578,7 @@ const InputSchema = z.object({
 export const model = {
   type: "@user/shell",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: GlobalArgsSchema,
   resources: {
     "output": {
       description: "Command output",
@@ -588,10 +594,11 @@ export const model = {
   methods: {
     run: {
       description: "Execute shell command",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         const result = await executeProcess({
-          command: definition.attributes.command,
-          args: definition.attributes.args,
+          command: context.globalArgs.command,
+          args: context.globalArgs.args,
           logger: context.logger,
         });
 
@@ -612,12 +619,12 @@ export const model = {
 ```typescript
 import { z } from "npm:zod@4";
 
-const InputSchema = z.object({ query: z.string() });
+const GlobalArgsSchema = z.object({ query: z.string() });
 
 export const model = {
   type: "@user/search",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: GlobalArgsSchema,
   resources: {
     "results": {
       description: "Search results",
@@ -638,7 +645,8 @@ export const model = {
   methods: {
     search: {
       description: "Search and store results with log",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         const results = ["result1", "result2"];
 
         // Primary result data (resource)
@@ -649,7 +657,7 @@ export const model = {
         // Execution log (file)
         const logWriter = context.createFileWriter!("log");
         const logHandle = await logWriter.writeText(JSON.stringify({
-          query: definition.attributes.query,
+          query: context.globalArgs.query,
           timestamp: new Date().toISOString(),
           resultCount: results.length,
         }));
@@ -666,7 +674,7 @@ export const model = {
 ```typescript
 import { z } from "npm:zod@4";
 
-const InputSchema = z.object({
+const GlobalArgsSchema = z.object({
   endpoint: z.string().url(),
   apiKey: z.string(), // Use vault expression: ${{ vault.get(my-vault, API_KEY) }}
 });
@@ -674,7 +682,7 @@ const InputSchema = z.object({
 export const model = {
   type: "@user/api-resource",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: GlobalArgsSchema,
   resources: {
     "state": {
       description: "API resource state",
@@ -690,11 +698,12 @@ export const model = {
   methods: {
     create: {
       description: "Create resource via API",
-      execute: async (definition, context) => {
-        const response = await fetch(definition.attributes.endpoint, {
+      arguments: z.object({}),
+      execute: async (args, context) => {
+        const response = await fetch(context.globalArgs.endpoint, {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${definition.attributes.apiKey}`,
+            Authorization: `Bearer ${context.globalArgs.apiKey}`,
           },
         });
         const data = await response.json();
@@ -719,7 +728,7 @@ When a built-in type doesn't exist, create your own:
 // extensions/models/s3_bucket.ts
 import { z } from "npm:zod@4";
 
-const InputSchema = z.object({
+const GlobalArgsSchema = z.object({
   bucketName: z.string(),
   region: z.string().default("us-east-1"),
   accessKeyId: z.string(), // Use: ${{ vault.get(aws-vault, ACCESS_KEY_ID) }}
@@ -729,7 +738,7 @@ const InputSchema = z.object({
 export const model = {
   type: "@user/s3-bucket",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: GlobalArgsSchema,
   resources: {
     "bucket": {
       description: "S3 bucket resource state",
@@ -754,9 +763,10 @@ export const model = {
   methods: {
     create: {
       description: "Create an S3 bucket",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         const { bucketName, region, accessKeyId, secretAccessKey } =
-          definition.attributes;
+          context.globalArgs;
 
         // Use AWS SDK or direct API calls
         const response = await fetch(
@@ -781,7 +791,8 @@ export const model = {
     },
     list: {
       description: "List objects in the bucket",
-      execute: async (definition, context) => {
+      arguments: z.object({}),
+      execute: async (args, context) => {
         // Implement S3 ListObjects API call
         const handle = await context.writeResource!("objects", {
           objects: [], // Populate from API response
@@ -793,20 +804,21 @@ export const model = {
 };
 ```
 
-### Method with Input Schema
+### Method with Arguments
 
-Methods can define their own input schema for runtime parameters:
+Each method defines its own `arguments` Zod schema for per-method parameters.
+These are pre-validated and passed as the first argument to `execute`:
 
 ```typescript
 methods: {
   deploy: {
     description: "Deploy with environment-specific config",
-    inputAttributesSchema: z.object({
+    arguments: z.object({
       environment: z.enum(["dev", "staging", "prod"]),
       dryRun: z.boolean().optional(),
     }),
-    execute: async (definition, context, methodInput) => {
-      const env = methodInput?.environment ?? "dev";
+    execute: async (args, context) => {
+      const env = args.environment;
       // Use env for deployment logic...
 
       const handle = await context.writeResource!("state", {

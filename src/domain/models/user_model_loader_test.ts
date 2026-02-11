@@ -2,7 +2,6 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { UserModelLoader } from "./user_model_loader.ts";
 import { modelRegistry } from "./model.ts";
-import { Definition } from "../definitions/definition.ts";
 import type { DataHandle, DataWriter, MethodContext } from "./model.ts";
 import type { ModelType } from "./model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -187,6 +186,9 @@ function createTestContext(
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "execute",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -227,7 +229,7 @@ const InputSchema = z.object({
 export const model = {
   type: "@user/data-model-${Date.now()}",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "data": {
       description: "Data output",
@@ -239,9 +241,10 @@ export const model = {
   methods: {
     process: {
       description: "Process the message",
-      execute: async (definition, context) => {
+      arguments: InputSchema,
+      execute: async (args, context) => {
         const handle = await context.writeResource("data", {
-          message: definition.attributes.message,
+          message: args.message,
           processedAt: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
@@ -316,7 +319,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/regular-${Date.now()}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ msg: z.string() }),
+  globalArguments: z.object({ msg: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -328,6 +331,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -358,7 +362,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -370,6 +374,7 @@ export const model = {
   methods: {
     write: {
       description: "Write message",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -381,7 +386,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.2",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -393,6 +398,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -426,7 +432,7 @@ const InputSchema = z.object({
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "data": {
       description: "Data output",
@@ -438,7 +444,8 @@ export const model = {
   methods: {
     create: {
       description: "Create a resource",
-      execute: async (definition, context) => {
+      arguments: InputSchema,
+      execute: async (args, context) => {
         const handle = await context.writeResource("data", {
           id: "resource-123",
           status: "created",
@@ -460,14 +467,9 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    const definition = Definition.create({
-      name: "test-input",
-      attributes: { name: "test" },
-    });
-
     const { context, getResults } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.create.execute(
-      definition,
+      { name: "test" },
       context,
     );
 
@@ -487,7 +489,7 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader uses model inputAttributesSchema when method lacks one", async () => {
+Deno.test("UserModelLoader uses model globalArguments when method lacks own arguments schema", async () => {
   const typeId = `@user/method-inherits-schema-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -499,7 +501,7 @@ const InputSchema = z.object({
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "data": {
       description: "Data output",
@@ -511,7 +513,7 @@ export const model = {
   methods: {
     run: {
       description: "Run without own schema",
-      // No inputAttributesSchema here - should inherit from model
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -527,9 +529,9 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    // Verify the method has an inputAttributesSchema (inherited from model)
+    // Verify the method has an arguments schema (inherited from model)
     assertEquals(
-      modelDef!.methods.run.inputAttributesSchema !== undefined,
+      modelDef!.methods.run.arguments !== undefined,
       true,
     );
   });
@@ -541,7 +543,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/multi-a-${Date.now()}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ a: z.string() }),
+  globalArguments: z.object({ a: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -553,6 +555,7 @@ export const model = {
   methods: {
     run: {
       description: "Run A",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -564,7 +567,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/multi-b-${Date.now()}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ b: z.string() }),
+  globalArguments: z.object({ b: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -576,6 +579,7 @@ export const model = {
   methods: {
     run: {
       description: "Run B",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -609,7 +613,7 @@ const InputSchema = z.object({
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "data": {
       description: "Data output",
@@ -621,7 +625,8 @@ export const model = {
   methods: {
     execute: {
       description: "Test method that returns empty dataHandles",
-      execute: async (_definition, _context) => {
+      arguments: InputSchema,
+      execute: async (_args, _context) => {
         return { dataHandles: [] };
       },
     },
@@ -638,14 +643,9 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    const definition = Definition.create({
-      name: "test-resource",
-      attributes: { testInput: "Hello World" },
-    });
-
     const { context } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.execute.execute(
-      definition,
+      { testInput: "Hello World" },
       context,
     );
 
@@ -667,7 +667,7 @@ const InputSchema = z.object({
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: InputSchema,
+  globalArguments: InputSchema,
   resources: {
     "data": {
       description: "Data output",
@@ -679,7 +679,8 @@ export const model = {
   methods: {
     fetch: {
       description: "Test method that returns no dataHandles",
-      execute: async (_definition, _context) => {
+      arguments: InputSchema,
+      execute: async (_args, _context) => {
         return {};
       },
     },
@@ -696,14 +697,9 @@ export const model = {
     const modelDef = modelRegistry.get(typeId);
     assertEquals(modelDef !== undefined, true);
 
-    const definition = Definition.create({
-      name: "test-data",
-      attributes: { query: "SELECT *" },
-    });
-
     const { context } = createTestContext(modelDef!.type);
     const methodResult = await modelDef!.methods.fetch.execute(
-      definition,
+      { query: "SELECT *" },
       context,
     );
 
@@ -721,7 +717,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/nested-a-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ a: z.string() }),
+  globalArguments: z.object({ a: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -733,6 +729,7 @@ export const model = {
   methods: {
     run: {
       description: "Run A",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -743,7 +740,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/nested-b-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ b: z.string() }),
+  globalArguments: z.object({ b: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -755,6 +752,7 @@ export const model = {
   methods: {
     run: {
       description: "Run B",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -783,7 +781,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/subdir-notest-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ x: z.string() }),
+  globalArguments: z.object({ x: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -793,7 +791,7 @@ export const model = {
     },
   },
   methods: {
-    run: { description: "Run", execute: async () => ({ dataHandles: [] }) },
+    run: { description: "Run", arguments: z.object({}), execute: async () => ({ dataHandles: [] }) },
   },
 };
 `;
@@ -819,7 +817,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/deep-nested-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ x: z.string() }),
+  globalArguments: z.object({ x: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -829,7 +827,7 @@ export const model = {
     },
   },
   methods: {
-    run: { description: "Run", execute: async () => ({ dataHandles: [] }) },
+    run: { description: "Run", arguments: z.object({}), execute: async () => ({ dataHandles: [] }) },
   },
 };
 `;
@@ -858,7 +856,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-single-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -870,17 +868,20 @@ export const model = {
   methods: {
     write: {
       description: "Write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-single-${ts}",
   methods: [{
     audit: {
       description: "Audit the echo message",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
@@ -914,7 +915,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-multi-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -926,21 +927,25 @@ export const model = {
   methods: {
     write: {
       description: "Write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-multi-${ts}",
   methods: [{
     audit: {
       description: "Audit",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
     verify: {
       description: "Verify",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
@@ -967,11 +972,13 @@ export const extension = {
 Deno.test("UserModelLoader extension targeting unregistered type fails gracefully", async () => {
   const ts = Date.now();
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/nonexistent-${ts}",
   methods: [{
     audit: {
       description: "Audit",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
@@ -996,7 +1003,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-conflict-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1008,17 +1015,20 @@ export const model = {
   methods: {
     write: {
       description: "Write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-conflict-${ts}",
   methods: [{
     write: {
       description: "Duplicate write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
@@ -1046,7 +1056,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-dup-methods-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1058,6 +1068,7 @@ export const model = {
   methods: {
     write: {
       description: "Write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1065,18 +1076,21 @@ export const model = {
 `;
   // Two array elements with same method name
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-dup-methods-${ts}",
   methods: [
     {
       audit: {
         description: "Audit v1",
+        arguments: z.object({}),
         execute: async () => ({ dataHandles: [] }),
       },
     },
     {
       audit: {
         description: "Audit v2",
+        arguments: z.object({}),
         execute: async () => ({ dataHandles: [] }),
       },
     },
@@ -1101,14 +1115,14 @@ export const extension = {
   );
 });
 
-Deno.test("UserModelLoader extension methods inherit target model's inputAttributesSchema", async () => {
+Deno.test("UserModelLoader extension methods inherit target model's arguments schema", async () => {
   const ts = Date.now();
   const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-inherit-schema-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1120,17 +1134,20 @@ export const model = {
   methods: {
     write: {
       description: "Write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-inherit-schema-${ts}",
   methods: [{
     audit: {
       description: "Audit without own schema",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
@@ -1146,9 +1163,9 @@ export const extension = {
       assertEquals(result.extended.length, 1);
 
       const modelDef = modelRegistry.get(`@user/ext-inherit-schema-${ts}`);
-      // Extension method should have inputAttributesSchema inherited from target model
+      // Extension method should have arguments schema inherited from target model
       assertEquals(
-        modelDef!.methods.audit.inputAttributesSchema !== undefined,
+        modelDef!.methods.audit.arguments !== undefined,
         true,
       );
     },
@@ -1158,11 +1175,13 @@ export const extension = {
 Deno.test("UserModelLoader extension of built-in swamp/echo type works", async () => {
   // swamp/echo is registered via the models barrel import at the top
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "swamp/echo",
   methods: [{
     audit_ext_test_${Date.now()}: {
       description: "Audit the echo",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
@@ -1190,7 +1209,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/multi-ext-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1202,28 +1221,33 @@ export const model = {
   methods: {
     write: {
       description: "Write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const ext1 = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/multi-ext-${ts}",
   methods: [{
     audit: {
       description: "Audit",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
 };
 `;
   const ext2 = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/multi-ext-${ts}",
   methods: [{
     verify: {
       description: "Verify",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
@@ -1257,7 +1281,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/two-pass-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1269,17 +1293,20 @@ export const model = {
   methods: {
     write: {
       description: "Write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/two-pass-${ts}",
   methods: [{
     audit: {
       description: "Audit",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   }],
@@ -1311,7 +1338,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-execute-${ts}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1323,21 +1350,24 @@ export const model = {
   methods: {
     write: {
       description: "Write",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
 };
 `;
   const extCode = `
+import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-execute-${ts}",
   methods: [{
     audit: {
       description: "Audit",
-      execute: async (definition, context) => {
+      arguments: z.object({ message: z.string() }),
+      execute: async (args, context) => {
         const handle = await context.writeResource("data", {
           audited: true,
-          msg: definition.attributes.message,
+          msg: args.message,
         });
         return { dataHandles: [handle] };
       },
@@ -1355,14 +1385,10 @@ export const extension = {
       assertEquals(result.extended.length, 1);
 
       const modelDef = modelRegistry.get(`@user/ext-execute-${ts}`);
-      const definition = Definition.create({
-        name: "test-audit",
-        attributes: { message: "hello" },
-      });
       const { context, getResults } = createTestContext(modelDef!.type);
 
       const methodResult = await modelDef!.methods.audit.execute(
-        definition,
+        { message: "hello" },
         context,
       );
 
@@ -1394,7 +1420,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Custom data spec",
@@ -1414,6 +1440,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1451,7 +1478,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "mycompany/mymodel",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1463,6 +1490,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1486,7 +1514,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@user",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1498,6 +1526,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1521,7 +1550,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@myorg",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1533,6 +1562,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1557,7 +1587,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1569,6 +1599,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1595,7 +1626,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1607,6 +1638,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1633,7 +1665,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1645,6 +1677,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1671,7 +1704,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1683,6 +1716,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1709,7 +1743,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "${typeId}",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1721,6 +1755,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1743,7 +1778,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "swamp/mymodel",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1755,6 +1790,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1778,7 +1814,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "si/mymodel",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1790,6 +1826,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1813,7 +1850,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@swamp/mymodel",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1825,6 +1862,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },
@@ -1848,7 +1886,7 @@ import { z } from "npm:zod@4";
 export const model = {
   type: "@si/mymodel",
   version: "2026.02.09.1",
-  inputAttributesSchema: z.object({ message: z.string() }),
+  globalArguments: z.object({ message: z.string() }),
   resources: {
     "data": {
       description: "Data output",
@@ -1860,6 +1898,7 @@ export const model = {
   methods: {
     run: {
       description: "Run",
+      arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
   },

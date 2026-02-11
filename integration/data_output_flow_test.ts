@@ -86,7 +86,7 @@ Deno.test("Integration: full flow - create definition, run method, verify output
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "e2e-echo-model",
-      attributes: { message: "Hello from E2E test!" },
+      methods: { write: { arguments: { message: "Hello from E2E test!" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, definition);
 
@@ -219,7 +219,7 @@ Deno.test("Integration: data commands work with model data artifacts", async () 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "data-cmd-test-model",
-      attributes: { message: "Data command test" },
+      methods: { write: { arguments: { message: "Data command test" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, definition);
 
@@ -351,7 +351,7 @@ Deno.test("Integration: output search with partial ID matching", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "partial-id-model",
-      attributes: { message: "Partial ID test" },
+      methods: { write: { arguments: { message: "Partial ID test" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, definition);
 
@@ -423,7 +423,7 @@ Deno.test("Integration: output data with field extraction", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "field-extract-model",
-      attributes: { message: "Extract specific field" },
+      methods: { write: { arguments: { message: "Extract specific field" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, definition);
 
@@ -499,7 +499,7 @@ Deno.test("Integration: multiple method runs create separate outputs", async () 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "multi-run-model",
-      attributes: { message: "Multi-run test" },
+      methods: { write: { arguments: { message: "Multi-run test" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, definition);
 
@@ -576,7 +576,7 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     let definition = Definition.create({
       name: "version-test-model",
-      attributes: { message: "Version 1" },
+      methods: { write: { arguments: { message: "Version 1" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, definition);
 
@@ -598,7 +598,7 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
     // Update message and run again
     definition =
       (await definitionRepo.findByName(ECHO_MODEL_TYPE, "version-test-model"))!;
-    definition.setAttribute("message", "Version 2");
+    definition.setMethodArgument("write", "message", "Version 2");
     await definitionRepo.save(ECHO_MODEL_TYPE, definition);
 
     await runCliCommand(
@@ -790,7 +790,7 @@ Deno.test("Integration: output data fails for non-existent field", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "field-error-model",
-      attributes: { message: "Field error test" },
+      methods: { write: { arguments: { message: "Field error test" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, definition);
 

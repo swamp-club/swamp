@@ -23,7 +23,7 @@ export interface DataOutputSpecDescribeData {
 export interface MethodDescribeData {
   name: string;
   description: string;
-  inputAttributesSchema: object;
+  arguments: object;
   dataOutputSpecs?: DataOutputSpecDescribeData[];
 }
 
@@ -36,7 +36,7 @@ export interface TypeDescribeData {
     normalized: string;
   };
   version: string;
-  inputAttributesSchema: object;
+  globalArguments?: object;
   methods: MethodDescribeData[];
 }
 
@@ -83,11 +83,11 @@ export function formatMethodLines(methods: MethodDescribeData[]): string[] {
     );
 
     const methodAttrs = formatSchemaAttributes(
-      method.inputAttributesSchema,
+      method.arguments,
       "      ",
     );
     if (methodAttrs.length > 0) {
-      lines.push(`    ${cyan("Input Attributes:")}`);
+      lines.push(`    ${cyan("Arguments:")}`);
       lines.push(...methodAttrs);
     }
 
@@ -126,11 +126,13 @@ export function renderTypeDescribe(
   lines.push(`${bold(cyan("Type:"))} ${typeName}`);
   lines.push(`${bold(cyan("Version:"))} ${data.version}`);
 
-  const attrs = formatSchemaAttributes(data.inputAttributesSchema, "  ");
-  if (attrs.length > 0) {
-    lines.push("");
-    lines.push(bold(cyan("Input Attributes:")));
-    lines.push(...attrs);
+  if (data.globalArguments) {
+    const attrs = formatSchemaAttributes(data.globalArguments, "  ");
+    if (attrs.length > 0) {
+      lines.push("");
+      lines.push(bold(cyan("Global Arguments:")));
+      lines.push(...attrs);
+    }
   }
 
   if (data.methods.length > 0) {

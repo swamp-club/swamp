@@ -5,9 +5,7 @@ import {
   defineModel,
   type MethodContext,
   type MethodResult,
-  type ModelDefinition,
 } from "../../model.ts";
-import type { Definition } from "../../../definitions/definition.ts";
 
 /**
  * Schema for curl model input attributes.
@@ -105,35 +103,34 @@ function extractFilename(url: string, headers: Headers): string {
  * Downloads the URL and returns both metadata and file content as data outputs.
  */
 async function executeDownload(
-  definition: Definition,
+  args: CurlInputAttributes,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = CurlInputAttributesSchema.parse(definition.attributes);
   const startTime = Date.now();
 
   // Build fetch options
   const fetchOptions: RequestInit = {
-    method: attrs.method,
-    redirect: attrs.followRedirects ? "follow" : "manual",
+    method: args.method,
+    redirect: args.followRedirects ? "follow" : "manual",
   };
 
   // Add headers if provided
-  if (attrs.headers) {
+  if (args.headers) {
     fetchOptions.headers = new Headers(
-      Object.entries(attrs.headers) as [string, string][],
+      Object.entries(args.headers) as [string, string][],
     );
   }
 
   // Add timeout via AbortController if specified
   let abortController: AbortController | undefined;
-  if (attrs.timeout) {
+  if (args.timeout) {
     abortController = new AbortController();
     fetchOptions.signal = abortController.signal;
-    setTimeout(() => abortController?.abort(), attrs.timeout);
+    setTimeout(() => abortController?.abort(), args.timeout);
   }
 
   // Perform the fetch
-  const response = await fetch(attrs.url, fetchOptions);
+  const response = await fetch(args.url, fetchOptions);
 
   if (!response.ok) {
     // Consume the response body to avoid resource leak
@@ -149,8 +146,8 @@ async function executeDownload(
   const durationMs = endTime - startTime;
 
   // Determine filename
-  const filename = attrs.outputFilename ??
-    extractFilename(attrs.url, response.headers);
+  const filename = args.outputFilename ??
+    extractFilename(args.url, response.headers);
 
   // Get content type
   const contentType = response.headers.get("content-type") ??
@@ -161,7 +158,7 @@ async function executeDownload(
 
   // Create metadata attributes
   const metadataAttributes = {
-    url: attrs.url,
+    url: args.url,
     statusCode: response.status,
     contentType,
     contentLength: content.length,
@@ -190,12 +187,10 @@ async function executeDownload(
  *
  * Self-registers with the global model registry when this module is imported.
  */
-export const curlModel: ModelDefinition<
-  typeof CurlInputAttributesSchema
-> = defineModel({
+export const curlModel = defineModel({
   type: CURL_MODEL_TYPE,
   version: "2026.02.09.1",
-  inputAttributesSchema: CurlInputAttributesSchema,
+  globalArguments: CurlInputAttributesSchema,
   resources: {
     "metadata": {
       description: "Download metadata (URL, status, timing, checksum)",
@@ -216,7 +211,7 @@ export const curlModel: ModelDefinition<
     download: {
       description:
         "Download a file from the URL and store it as a data artifact",
-      inputAttributesSchema: CurlInputAttributesSchema,
+      arguments: CurlInputAttributesSchema,
       execute: executeDownload,
     },
   },

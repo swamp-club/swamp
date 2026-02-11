@@ -507,7 +507,7 @@ Deno.test("CLI: workflow run executes simple workflow", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const testModel = Definition.create({
       name: "test-model",
-      attributes: { message: "hello" },
+      methods: { write: { arguments: { message: "hello" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
 
@@ -563,7 +563,7 @@ Deno.test("CLI: workflow run executes workflow with dependencies", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const testModel = Definition.create({
       name: "test-model",
-      attributes: { message: "hello" },
+      methods: { write: { arguments: { message: "hello" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
 
@@ -740,9 +740,13 @@ Deno.test("CLI: workflow run fails when model has invalid expression syntax", as
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
       name: "invalid-expr-model",
-      attributes: {
-        // Invalid: should be ${{ model.some-vpc.resource.attributes.VpcId }}
-        message: "${{some-vpc.VpcId}}",
+      methods: {
+        write: {
+          arguments: {
+            // Invalid: should be ${{ model.some-vpc.resource.attributes.VpcId }}
+            message: "${{some-vpc.VpcId}}",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, input);
@@ -796,9 +800,13 @@ Deno.test("CLI: workflow run fails when model has malformed expression", async (
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
       name: "malformed-expr-model",
-      attributes: {
-        // Malformed: missing $ prefix
-        message: "{{some-vpc.VpcId}}",
+      methods: {
+        write: {
+          arguments: {
+            // Malformed: missing $ prefix
+            message: "{{some-vpc.VpcId}}",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, input);
@@ -853,17 +861,28 @@ Deno.test("CLI: workflow run succeeds with valid model expressions", async () =>
 
     const sourceModel = Definition.create({
       name: "source-model",
-      attributes: {
+      globalArguments: {
         message: "Hello from source",
+      },
+      methods: {
+        write: {
+          arguments: {
+            message: "Hello from source",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, sourceModel);
 
     const dependentModel = Definition.create({
       name: "dependent-model",
-      attributes: {
-        // Valid expression referencing source-model's input attribute
-        message: "${{ model.source-model.input.attributes.message }}",
+      methods: {
+        write: {
+          arguments: {
+            // Valid expression referencing source-model's globalArgument
+            message: "${{ model.source-model.input.globalArguments.message }}",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, dependentModel);
@@ -929,9 +948,13 @@ Deno.test("CLI: workflow run succeeds with self reference expressions", async ()
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
       name: "self-ref-model",
-      attributes: {
-        // Valid self reference
-        message: "${{ self.name }}",
+      methods: {
+        write: {
+          arguments: {
+            // Valid self reference
+            message: "${{ self.name }}",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, input);
@@ -1109,8 +1132,12 @@ Deno.test("CLI: model delete blocked when referenced by workflow using model ID"
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
       name: "id-ref-model",
-      attributes: {
-        message: "test message",
+      methods: {
+        write: {
+          arguments: {
+            message: "test message",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, input);
@@ -1310,7 +1337,7 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const testModel = Definition.create({
       name: "test-model",
-      attributes: { message: "hello" },
+      methods: { write: { arguments: { message: "hello" } } },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
 
@@ -1398,9 +1425,13 @@ Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
       name: "env-test-model",
-      attributes: {
-        // Use env variable expression
-        message: "${{ env.SWAMP_TEST_VAR }}",
+      methods: {
+        write: {
+          arguments: {
+            // Use env variable expression
+            message: "${{ env.SWAMP_TEST_VAR }}",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, input);
@@ -1457,9 +1488,13 @@ Deno.test("CLI: workflow run evaluates inline env expression with surrounding te
 
     const inlineEnvModel = Definition.create({
       name: "inline-env-model",
-      attributes: {
-        // Inline env expression with surrounding text
-        message: "prefix-${{ env.SWAMP_VAR }}-suffix",
+      methods: {
+        write: {
+          arguments: {
+            // Inline env expression with surrounding text
+            message: "prefix-${{ env.SWAMP_VAR }}-suffix",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, inlineEnvModel);
@@ -1555,9 +1590,13 @@ Deno.test("CLI: workflow run resolves vault expressions in model inputs", async 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
       name: "vault-model",
-      attributes: {
-        // Use vault expression to get the secret
-        message: "${{ vault.get(workflow-vault, API_KEY) }}",
+      methods: {
+        write: {
+          arguments: {
+            // Use vault expression to get the secret
+            message: "${{ vault.get(workflow-vault, API_KEY) }}",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, input);
@@ -1614,8 +1653,12 @@ Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
       name: "data-tag-test-model",
-      attributes: {
-        message: "test message for data tags",
+      methods: {
+        write: {
+          arguments: {
+            message: "test message for data tags",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, input);
@@ -1701,8 +1744,12 @@ Deno.test("CLI: workflow run persists data artifacts in workflow run record", as
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const input = Definition.create({
       name: "persist-test-model",
-      attributes: {
-        message: "test message for persistence",
+      methods: {
+        write: {
+          arguments: {
+            message: "test message for persistence",
+          },
+        },
       },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, input);
@@ -1785,13 +1832,17 @@ Deno.test("CLI: workflow run executes nested workflow via type: workflow", async
     // Create echo model definitions
     const childEcho = Definition.create({
       name: "child-echo",
-      attributes: { message: "Hello from child workflow" },
+      methods: {
+        write: { arguments: { message: "Hello from child workflow" } },
+      },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, childEcho);
 
     const parentEcho = Definition.create({
       name: "parent-echo",
-      attributes: { message: "Hello from parent workflow" },
+      methods: {
+        write: { arguments: { message: "Hello from parent workflow" } },
+      },
     });
     await definitionRepo.save(ECHO_MODEL_TYPE, parentEcho);
 

@@ -801,11 +801,14 @@ id: ${putDefinitionId}
 name: store-secret
 version: 1
 tags: {}
-attributes:
-  vaultName: e2e-test-vault
-  secretKey: api-key
-  secretValue: "${secretValue}"
-  operation: put
+globalArguments: {}
+methods:
+  put:
+    arguments:
+      vaultName: e2e-test-vault
+      secretKey: api-key
+      secretValue: "${secretValue}"
+      operation: put
 `;
     const vaultDefinitionDir = join(
       repoDir,
@@ -843,8 +846,11 @@ id: ${echoDefinitionId}
 name: echo-with-vault
 version: 1
 tags: {}
-attributes:
-  message: "\${{ vault.get(e2e-test-vault, api-key) }}"
+globalArguments: {}
+methods:
+  write:
+    arguments:
+      message: "\${{ vault.get(e2e-test-vault, api-key) }}"
 `;
     const echoDefinitionDir = join(
       repoDir,

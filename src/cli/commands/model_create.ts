@@ -79,8 +79,8 @@ export const modelCreateCommand = new Command()
       name: definition.name,
       path: definitionRepo.getPath(modelType, definition.id),
       version: modelDef?.version,
-      inputAttributesSchema: modelDef
-        ? zodToJsonSchema(modelDef.inputAttributesSchema)
+      globalArguments: modelDef?.globalArguments
+        ? zodToJsonSchema(modelDef.globalArguments)
         : undefined,
       methods: modelDef
         ? Object.entries(modelDef.methods).map(

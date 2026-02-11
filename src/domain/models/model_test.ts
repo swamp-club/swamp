@@ -9,7 +9,7 @@ import {
   ModelRegistry,
 } from "./model.ts";
 import { ModelType } from "./model_type.ts";
-import { createDefinitionId, Definition } from "../definitions/definition.ts";
+import { createDefinitionId } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
@@ -189,6 +189,9 @@ function createTestContext(modelType: ModelType): {
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "write",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -217,7 +220,7 @@ function createTestModel(typeString: string): ModelDefinition {
   return {
     type,
     version: "2026.02.09.1",
-    inputAttributesSchema: z.object({ message: z.string() }),
+    globalArguments: z.object({ message: z.string() }),
     resources: {
       "data": {
         description: "Test data",
@@ -233,10 +236,10 @@ function createTestModel(typeString: string): ModelDefinition {
     methods: {
       write: {
         description: "Write message to data",
-        inputAttributesSchema: z.object({ message: z.string() }),
-        execute: async (definition: Definition, context: MethodContext) => {
+        arguments: z.object({ message: z.string() }),
+        execute: async (args: { message: string }, context: MethodContext) => {
           const handle = await context.writeResource!("data", {
-            message: definition.attributes.message,
+            message: args.message,
             timestamp: new Date().toISOString(),
           });
           return { dataHandles: [handle] };
@@ -344,13 +347,12 @@ Deno.test("ModelRegistry.types returns empty array when no models", () => {
 
 Deno.test("ModelDefinition method can execute", async () => {
   const model = createTestModel("swamp/echo");
-  const definition = Definition.create({
-    name: "test",
-    attributes: { message: "hello world" },
-  });
 
   const { context, getResults } = createTestContext(model.type);
-  const result = await model.methods.write.execute(definition, context);
+  const result = await model.methods.write.execute(
+    { message: "hello world" },
+    context,
+  );
 
   assertEquals(result.dataHandles !== undefined, true);
   assertEquals(result.dataHandles!.length, 1);
@@ -402,7 +404,7 @@ Deno.test("ModelRegistry.extend adds methods to existing model", () => {
   registry.extend("swamp/extend-test", {
     read: {
       description: "Read the data",
-      inputAttributesSchema: z.object({ message: z.string() }),
+      arguments: z.object({ message: z.string() }),
       execute: () => Promise.resolve({ dataHandles: [] }),
     },
   });
@@ -421,7 +423,7 @@ Deno.test("ModelRegistry.extend throws on unregistered type", () => {
       registry.extend("swamp/nonexistent", {
         read: {
           description: "Read",
-          inputAttributesSchema: z.object({}),
+          arguments: z.object({}),
           execute: () => Promise.resolve({ dataHandles: [] }),
         },
       }),
@@ -440,7 +442,7 @@ Deno.test("ModelRegistry.extend throws on method name conflict", () => {
       registry.extend("swamp/conflict-test", {
         write: {
           description: "Duplicate write",
-          inputAttributesSchema: z.object({}),
+          arguments: z.object({}),
           execute: () => Promise.resolve({ dataHandles: [] }),
         },
       }),
@@ -454,18 +456,18 @@ Deno.test("ModelRegistry.extend preserves original methods and schema", () => {
   const model = createTestModel("swamp/preserve-test");
   registry.register(model);
 
-  const originalSchema = model.inputAttributesSchema;
+  const originalSchema = model.globalArguments;
 
   registry.extend("swamp/preserve-test", {
     read: {
       description: "Read the data",
-      inputAttributesSchema: z.object({}),
+      arguments: z.object({}),
       execute: () => Promise.resolve({ dataHandles: [] }),
     },
   });
 
   const extended = registry.get("swamp/preserve-test");
-  assertEquals(extended!.inputAttributesSchema, originalSchema);
+  assertEquals(extended!.globalArguments, originalSchema);
   assertEquals(extended!.version, "2026.02.09.1");
   assertEquals(extended!.methods.write.description, "Write message to data");
 });
@@ -478,10 +480,10 @@ Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
   registry.extend("swamp/callable-test", {
     greet: {
       description: "Greet",
-      inputAttributesSchema: z.object({ message: z.string() }),
-      execute: async (definition: Definition, context: MethodContext) => {
+      arguments: z.object({ message: z.string() }),
+      execute: async (args: { message: string }, context: MethodContext) => {
         const handle = await context.writeResource!("data", {
-          greeting: `Hello, ${definition.attributes.message}`,
+          greeting: `Hello, ${args.message}`,
         });
         return { dataHandles: [handle] };
       },
@@ -489,13 +491,12 @@ Deno.test("ModelRegistry.extend - extended methods are callable", async () => {
   });
 
   const extended = registry.get("swamp/callable-test")!;
-  const definition = Definition.create({
-    name: "test",
-    attributes: { message: "world" },
-  });
   const { context, getResults } = createTestContext(extended.type);
 
-  const result = await extended.methods.greet.execute(definition, context);
+  const result = await extended.methods.greet.execute(
+    { message: "world" },
+    context,
+  );
   assertEquals(result.dataHandles !== undefined, true);
   assertEquals(result.dataHandles!.length, 1);
 
@@ -510,7 +511,6 @@ Deno.test("ModelRegistry.register rejects non-CalVer version string", () => {
   const model: ModelDefinition = {
     type: ModelType.create("test/invalid-version"),
     version: "not-a-calver",
-    inputAttributesSchema: z.object({}),
     methods: {},
   };
 
@@ -526,7 +526,6 @@ Deno.test("ModelRegistry.register accepts model with CalVer version and valid up
   const model: ModelDefinition = {
     type: ModelType.create("test/with-upgrades"),
     version: "2026.02.09.1",
-    inputAttributesSchema: z.object({}),
     methods: {},
     upgrades: [
       {
@@ -551,7 +550,6 @@ Deno.test("ModelRegistry.register rejects upgrades not in chronological order", 
   const model: ModelDefinition = {
     type: ModelType.create("test/bad-order"),
     version: "2026.02.09.1",
-    inputAttributesSchema: z.object({}),
     methods: {},
     upgrades: [
       {
@@ -579,7 +577,6 @@ Deno.test("ModelRegistry.register rejects when last upgrade toVersion doesn't ma
   const model: ModelDefinition = {
     type: ModelType.create("test/mismatch-version"),
     version: "2026.02.09.1",
-    inputAttributesSchema: z.object({}),
     methods: {},
     upgrades: [
       {
@@ -602,7 +599,6 @@ Deno.test("ModelRegistry.register accepts model with no upgrades", () => {
   const model: ModelDefinition = {
     type: ModelType.create("test/no-upgrades"),
     version: "2026.02.09.1",
-    inputAttributesSchema: z.object({}),
     methods: {},
   };
 

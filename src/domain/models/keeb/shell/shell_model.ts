@@ -6,7 +6,6 @@ import {
   type MethodResult,
   type ModelDefinition,
 } from "../../model.ts";
-import type { Definition } from "../../../definitions/definition.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
 
 /**
@@ -62,12 +61,9 @@ export const SHELL_MODEL_TYPE = ModelType.create("keeb/shell");
  * Executes a shell command and captures the output.
  */
 async function executeCommand(
-  definition: Definition,
+  args: ShellInputAttributes,
   context: MethodContext,
 ): Promise<MethodResult> {
-  // Validate definition attributes
-  const attrs = ShellInputAttributesSchema.parse(definition.attributes);
-
   let stdout = "";
   let stderr = "";
   let exitCode = 0;
@@ -76,10 +72,10 @@ async function executeCommand(
   try {
     const result = await executeProcess({
       command: "sh",
-      args: ["-c", attrs.run],
-      cwd: attrs.workingDir,
-      env: attrs.env,
-      timeoutMs: attrs.timeout,
+      args: ["-c", args.run],
+      cwd: args.workingDir,
+      env: args.env,
+      timeoutMs: args.timeout,
       logger: context.logger,
     });
 
@@ -97,7 +93,7 @@ async function executeCommand(
   const resultAttributes = {
     exitCode,
     executedAt: new Date().toISOString(),
-    command: attrs.run,
+    command: args.run,
     durationMs,
     stdout,
     stderr,
@@ -129,12 +125,9 @@ async function executeCommand(
  *
  * Self-registers with the global model registry when this module is imported.
  */
-export const shellModel: ModelDefinition<
-  typeof ShellInputAttributesSchema
-> = defineModel({
+export const shellModel: ModelDefinition = defineModel({
   type: SHELL_MODEL_TYPE,
   version: "2026.02.09.1",
-  inputAttributesSchema: ShellInputAttributesSchema,
   resources: {
     "result": {
       description:
@@ -157,7 +150,7 @@ export const shellModel: ModelDefinition<
     execute: {
       description:
         "Execute the shell command and capture stdout, stderr, and exit code",
-      inputAttributesSchema: ShellInputAttributesSchema,
+      arguments: ShellInputAttributesSchema,
       execute: executeCommand,
     },
   },

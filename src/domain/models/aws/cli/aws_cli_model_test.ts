@@ -69,6 +69,9 @@ function createTestContext(): MethodContext {
     repoDir: "/tmp",
     modelType: AWS_CLI_MODEL_TYPE,
     modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    methodName: "run",
     logger: getLogger(["test"]),
     dataRepository: createMockDataRepo(),
     definitionRepository: createMockDefinitionRepo(),
@@ -252,14 +255,17 @@ Deno.test("parseCommand handles complex AWS CLI command", () => {
 Deno.test("awsCliModel.methods.run validates input attributes", async () => {
   const definition = Definition.create({
     name: "test-aws-cli",
-    attributes: { notACommand: "value" },
+    globalArguments: { notACommand: "value" },
   });
 
   const context = createTestContext();
 
   await assertRejects(
     async () => {
-      await awsCliModel.methods.run.execute(definition, context);
+      await awsCliModel.methods.run.execute(
+        definition.globalArguments,
+        context,
+      );
     },
     Error,
   );

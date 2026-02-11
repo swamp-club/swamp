@@ -5,9 +5,7 @@ import {
   defineModel,
   type MethodContext,
   type MethodResult,
-  type ModelDefinition,
 } from "../../model.ts";
-import type { Definition } from "../../../definitions/definition.ts";
 
 /**
  * Schema for workflow execution data that will be converted to Mermaid diagram.
@@ -273,12 +271,10 @@ function generateMermaidDiagram(
  * Executes the "generate" method for the mermaid workflow diagram model.
  */
 async function executeGenerate(
-  definition: Definition,
+  args: MermaidWorkflowInputAttributes,
   context: MethodContext,
 ): Promise<MethodResult> {
-  const attrs = MermaidWorkflowInputAttributesSchema.parse(
-    definition.attributes,
-  );
+  const attrs = args;
 
   // Generate the Mermaid diagram
   const diagramContent = generateMermaidDiagram(attrs.workflowExecution, {
@@ -330,12 +326,9 @@ async function executeGenerate(
  *
  * Self-registers with the global model registry when this module is imported.
  */
-export const mermaidWorkflowModel: ModelDefinition<
-  typeof MermaidWorkflowInputAttributesSchema
-> = defineModel({
+export const mermaidWorkflowModel = defineModel({
   type: MERMAID_WORKFLOW_MODEL_TYPE,
   version: "2026.02.09.1",
-  inputAttributesSchema: MermaidWorkflowInputAttributesSchema,
   resources: {
     "metadata": {
       description: "Workflow diagram metadata (job count, step count, status)",
@@ -355,7 +348,7 @@ export const mermaidWorkflowModel: ModelDefinition<
   methods: {
     generate: {
       description: "Generate a Mermaid diagram from workflow execution data",
-      inputAttributesSchema: MermaidWorkflowInputAttributesSchema,
+      arguments: MermaidWorkflowInputAttributesSchema,
       execute: executeGenerate,
     },
   },

@@ -1,6 +1,6 @@
 # Inputs
 
-Both workflows and models support *inputs*. These are defined using json-schema, expressed as yaml in a definition file or a workflow file. These are specified as a top level attribute of both model definitions and workflow definitions.
+Both workflows and models support *inputs*. These are defined using json-schema, expressed as yaml in a definition file or a workflow file. These are specified as a top level field of both model definitions and workflow definitions.
 
 For example, an input for an environment can be specified as:
 
@@ -30,7 +30,7 @@ inputs:
     type: string
     enum: ["dev", "staging", "production"]
     description: "Target environment for deployment"
-attributes:
+globalArguments:
   message: ${{ inputs.environment }}
 ```
 
@@ -117,7 +117,7 @@ This would require the workflow to specify a '--inputs environment-one=dev' in o
 
 ## Iteration
 
-An input can be specified as an array or a hash, and then a user can use a CEL expression to specify that a step, job, or model attributes can be set via iteration.
+An input can be specified as an array or a hash, and then a user can use a CEL expression to specify that a step, job, or model global arguments can be set via iteration.
 
 ```yaml
 id: abc123
