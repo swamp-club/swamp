@@ -100,8 +100,17 @@ swamp data search --owner-type workflow-step --json
 # Free-text search
 swamp data search vpc --json
 
+# Filter by arbitrary tag
+swamp data search --tag env=prod --json
+
+# Multiple tags (AND logic)
+swamp data search --tag env=prod --tag team=platform --json
+
 # Combined filters (AND logic)
 swamp data search --type resource --since 1d --workflow deploy --json
+
+# Tags with other filters
+swamp data search --tag env=staging --type resource --since 1d --json
 
 # Limit results
 swamp data search --limit 10 --json
@@ -120,6 +129,7 @@ swamp data search --limit 10 --json
 | `--since`        | Duration (1h, 1d, 7d, 1w, 1mo)                          |
 | `--output`       | Model output ID                                         |
 | `--run`          | Workflow run ID                                         |
+| `--tag`          | Arbitrary tag (KEY=VALUE, repeatable, AND logic)        |
 | `--streaming`    | Only streaming data                                     |
 | `--limit`        | Max results (default: 50)                               |
 
