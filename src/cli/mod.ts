@@ -26,6 +26,7 @@ import {
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
+import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
 import {
   extractCommandInfo,
   isTelemetryDisabled,
@@ -97,10 +98,21 @@ async function loadUserModels(): Promise<void> {
   }
 }
 
+/** Default telemetry endpoint */
+const DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.swamp.club";
+
+interface TelemetryContext {
+  service: TelemetryService;
+  repoId: string;
+  telemetryEndpoint: string;
+  keepFlushed: boolean;
+}
+
 /**
  * Initialize telemetry service if in a swamp repository.
+ * Lazy-migrates repoId if missing from marker file.
  */
-async function initTelemetryService(): Promise<TelemetryService | null> {
+async function initTelemetryService(): Promise<TelemetryContext | null> {
   try {
     const cwd = Deno.cwd();
     const markerRepo = new RepoMarkerRepository();
@@ -111,8 +123,22 @@ async function initTelemetryService(): Promise<TelemetryService | null> {
       return null; // Not in a swamp repo
     }
 
+    // Lazy-migrate repoId if missing
+    let repoId = marker.repoId;
+    if (!repoId) {
+      repoId = crypto.randomUUID();
+      marker.repoId = repoId;
+      await markerRepo.write(repoPath, marker);
+    }
+
     const repository = new JsonTelemetryRepository(cwd);
-    return new TelemetryService(repository, VERSION);
+    const service = new TelemetryService(repository, VERSION);
+    const telemetryEndpoint = marker.telemetryEndpoint ??
+      DEFAULT_TELEMETRY_ENDPOINT;
+
+    const keepFlushed = marker.telemetryKeepFlushed ?? false;
+
+    return { service, repoId, telemetryEndpoint, keepFlushed };
   } catch {
     // Not in a swamp repo or other error
     return null;
@@ -130,9 +156,9 @@ export async function runCli(args: string[]): Promise<void> {
   const commandInfo = extractCommandInfo(args);
 
   // Initialize telemetry service (only if in a swamp repo)
-  let telemetryService: TelemetryService | null = null;
+  let telemetryCtx: TelemetryContext | null = null;
   if (!telemetryDisabled) {
-    telemetryService = await initTelemetryService();
+    telemetryCtx = await initTelemetryService();
   }
 
   // Load user models before setting up CLI
@@ -202,15 +228,24 @@ export async function runCli(args: string[]): Promise<void> {
     await cli.parse(args);
 
     // Record successful invocation
-    if (telemetryService) {
-      await telemetryService.recordSuccess(commandInfo, startTime);
+    if (telemetryCtx) {
+      await telemetryCtx.service.recordSuccess(commandInfo, startTime);
+
+      // Flush unflushed telemetry to remote endpoint (fire-and-forget)
+      const sender = new HttpTelemetrySender(telemetryCtx.telemetryEndpoint);
+      telemetryCtx.service.flushTelemetry({
+        sender,
+        distinctId: telemetryCtx.repoId,
+        keepFlushed: telemetryCtx.keepFlushed,
+      });
+
       // Trigger cleanup asynchronously (fire-and-forget)
-      telemetryService.cleanupOldTelemetry();
+      telemetryCtx.service.cleanupOldTelemetry();
     }
   } catch (error) {
     // Record error invocation before re-throwing
-    if (telemetryService && error instanceof Error) {
-      await telemetryService.recordError(commandInfo, startTime, error);
+    if (telemetryCtx && error instanceof Error) {
+      await telemetryCtx.service.recordError(commandInfo, startTime, error);
     }
     throw error;
   }

@@ -29,4 +29,9 @@ export {
 
 export type { TelemetryRepository } from "./repositories.ts";
 
-export { TelemetryService } from "./telemetry_service.ts";
+export type { TelemetrySender } from "./telemetry_sender.ts";
+
+export {
+  type TelemetryFlushConfig,
+  TelemetryService,
+} from "./telemetry_service.ts";

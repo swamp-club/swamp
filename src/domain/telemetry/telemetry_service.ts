@@ -1,4 +1,5 @@
 import type { TelemetryRepository } from "./repositories.ts";
+import type { TelemetrySender } from "./telemetry_sender.ts";
 import { TelemetryEntry } from "./telemetry_entry.ts";
 import type { CommandInvocationData } from "./command_invocation.ts";
 import {
@@ -7,6 +8,19 @@ import {
   type InvocationResultData,
 } from "./invocation_result.ts";
 import { UserError } from "../errors.ts";
+
+/** Default flush batch size */
+const DEFAULT_FLUSH_BATCH_SIZE = 25;
+
+/**
+ * Configuration for flushing telemetry to a remote endpoint.
+ */
+export interface TelemetryFlushConfig {
+  sender: TelemetrySender;
+  distinctId: string;
+  batchSize?: number;
+  keepFlushed?: boolean;
+}
 
 /**
  * Aggregated telemetry statistics.
@@ -117,6 +131,44 @@ export class TelemetryService {
         console.error("[Telemetry] Cleanup failed:", error);
       }
     });
+  }
+
+  /**
+   * Flushes unflushed telemetry entries to a remote endpoint.
+   * Fire-and-forget: errors are logged but never propagated.
+   *
+   * @param config - Flush configuration with sender and distinctId
+   */
+  flushTelemetry(config: TelemetryFlushConfig): void {
+    const batchSize = config.batchSize ?? DEFAULT_FLUSH_BATCH_SIZE;
+    const keepFlushed = config.keepFlushed ?? false;
+
+    // Fire-and-forget: don't await, don't let errors propagate
+    this.doFlush(config.sender, config.distinctId, batchSize, keepFlushed)
+      .catch(
+        (error) => {
+          if (Deno.env.get("SWAMP_DEBUG")) {
+            console.error("[Telemetry] Flush failed:", error);
+          }
+        },
+      );
+  }
+
+  private async doFlush(
+    sender: TelemetrySender,
+    distinctId: string,
+    batchSize: number,
+    keepFlushed: boolean,
+  ): Promise<void> {
+    const entries = await this.repository.findUnflushed(batchSize);
+    if (entries.length === 0) return;
+
+    const success = await sender.sendBatch(entries, distinctId);
+    if (success) {
+      for (const entry of entries) {
+        await this.repository.markFlushed(entry, keepFlushed);
+      }
+    }
   }
 
   /**

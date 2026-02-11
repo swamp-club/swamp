@@ -1,12 +1,15 @@
 import { assertEquals } from "@std/assert";
 import { TelemetryService } from "./telemetry_service.ts";
 import type { TelemetryRepository } from "./repositories.ts";
+import type { TelemetrySender } from "./telemetry_sender.ts";
 import { TelemetryEntry, type TelemetryEntryData } from "./telemetry_entry.ts";
 
 /** Mock repository for testing */
 class MockTelemetryRepository implements TelemetryRepository {
   savedEntries: TelemetryEntry[] = [];
   mockEntries: TelemetryEntry[] = [];
+  mockUnflushedEntries: TelemetryEntry[] = [];
+  flushedEntries: TelemetryEntry[] = [];
   deletedBefore: Date | null = null;
 
   save(entry: TelemetryEntry): Promise<void> {
@@ -28,6 +31,29 @@ class MockTelemetryRepository implements TelemetryRepository {
   deleteOlderThan(date: Date): Promise<number> {
     this.deletedBefore = date;
     return Promise.resolve(5); // Mock deleted count
+  }
+
+  findUnflushed(_limit: number): Promise<TelemetryEntry[]> {
+    return Promise.resolve(this.mockUnflushedEntries);
+  }
+
+  markFlushed(entry: TelemetryEntry, _keepFlushed?: boolean): Promise<void> {
+    this.flushedEntries.push(entry);
+    return Promise.resolve();
+  }
+}
+
+/** Mock sender for testing */
+class MockTelemetrySender implements TelemetrySender {
+  sentBatches: Array<{ entries: TelemetryEntry[]; distinctId: string }> = [];
+  shouldSucceed = true;
+
+  sendBatch(
+    entries: TelemetryEntry[],
+    distinctId: string,
+  ): Promise<boolean> {
+    this.sentBatches.push({ entries, distinctId });
+    return Promise.resolve(this.shouldSucceed);
   }
 }
 
@@ -183,4 +209,86 @@ Deno.test("TelemetryService.getStats returns empty stats for no entries", async 
   assertEquals(stats.successRate, 0);
   assertEquals(stats.errorRate, 0);
   assertEquals(Object.keys(stats.commandFrequency).length, 0);
+});
+
+function createFlushTestEntry(id: string, date: Date): TelemetryEntry {
+  return TelemetryEntry.create({
+    id,
+    invocation: {
+      command: "model",
+      subcommand: "create",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: date,
+    completedAt: new Date(date.getTime() + 100),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  });
+}
+
+Deno.test("TelemetryService.flushTelemetry sends unflushed entries and marks them flushed", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const entry1 = createFlushTestEntry(
+    "uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+  const entry2 = createFlushTestEntry(
+    "uuid-2",
+    new Date("2024-03-10T11:00:00Z"),
+  );
+  repo.mockUnflushedEntries = [entry1, entry2];
+
+  service.flushTelemetry({ sender, distinctId: "repo-uuid" });
+
+  // Wait for fire-and-forget to settle
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(sender.sentBatches.length, 1);
+  assertEquals(sender.sentBatches[0].entries.length, 2);
+  assertEquals(sender.sentBatches[0].distinctId, "repo-uuid");
+  assertEquals(repo.flushedEntries.length, 2);
+});
+
+Deno.test("TelemetryService.flushTelemetry does not mark flushed on send failure", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  sender.shouldSucceed = false;
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const entry = createFlushTestEntry(
+    "uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+  repo.mockUnflushedEntries = [entry];
+
+  service.flushTelemetry({ sender, distinctId: "repo-uuid" });
+
+  // Wait for fire-and-forget to settle
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(sender.sentBatches.length, 1);
+  assertEquals(repo.flushedEntries.length, 0);
+});
+
+Deno.test("TelemetryService.flushTelemetry is a no-op when no unflushed entries", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  repo.mockUnflushedEntries = [];
+
+  service.flushTelemetry({ sender, distinctId: "repo-uuid" });
+
+  // Wait for fire-and-forget to settle
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(sender.sentBatches.length, 0);
+  assertEquals(repo.flushedEntries.length, 0);
 });

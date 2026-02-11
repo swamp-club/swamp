@@ -11,6 +11,9 @@ export interface RepoMarkerData {
   initializedAt: string;
   upgradedAt?: string;
   modelsDir?: string;
+  repoId?: string;
+  telemetryEndpoint?: string;
+  telemetryKeepFlushed?: boolean;
 }
 
 /**
@@ -76,6 +79,7 @@ export class RepoMarkerRepository {
     return {
       swampVersion: version.toString(),
       initializedAt: new Date().toISOString(),
+      repoId: crypto.randomUUID(),
     };
   }
 

@@ -150,6 +150,72 @@ export class JsonTelemetryRepository implements TelemetryRepository {
     return deletedCount;
   }
 
+  /**
+   * Finds unflushed telemetry entries, sorted oldest first.
+   */
+  async findUnflushed(limit: number): Promise<TelemetryEntry[]> {
+    const entries: Array<{ entry: TelemetryEntry; startedAt: Date }> = [];
+
+    try {
+      const telemetryDir = this.getTelemetryDir();
+
+      for await (const dirEntry of Deno.readDir(telemetryDir)) {
+        if (
+          dirEntry.isFile &&
+          dirEntry.name.startsWith("telemetry-") &&
+          dirEntry.name.endsWith(".json") &&
+          !dirEntry.name.endsWith(".flushed.json")
+        ) {
+          try {
+            const path = join(telemetryDir, dirEntry.name);
+            const content = await Deno.readTextFile(path);
+            const data = JSON.parse(content) as TelemetryEntryData;
+            const entry = TelemetryEntry.fromData(data);
+            entries.push({ entry, startedAt: entry.startedAt });
+          } catch {
+            // Skip files that can't be parsed
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    // Sort oldest first by startedAt
+    entries.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime());
+
+    return entries.slice(0, limit).map((e) => e.entry);
+  }
+
+  /**
+   * Marks a telemetry entry as flushed.
+   * By default, deletes the file. If keepFlushed is true, renames to .flushed.json.
+   */
+  async markFlushed(
+    entry: TelemetryEntry,
+    keepFlushed?: boolean,
+  ): Promise<void> {
+    try {
+      const telemetryDir = this.getTelemetryDir();
+      const date = entry.startedAt.toISOString().split("T")[0];
+      const filename = `telemetry-${date}-${entry.id}.json`;
+      const filePath = join(telemetryDir, filename);
+
+      if (keepFlushed) {
+        const flushedFilename = `telemetry-${date}-${entry.id}.flushed.json`;
+        const flushedPath = join(telemetryDir, flushedFilename);
+        await Deno.rename(filePath, flushedPath);
+      } else {
+        await Deno.remove(filePath);
+      }
+    } catch {
+      // Silent failure
+    }
+  }
+
   private getTelemetryDir(): string {
     return swampPath(this.repoDir, SWAMP_SUBDIRS.telemetry);
   }

@@ -37,4 +37,22 @@ export interface TelemetryRepository {
    * @returns The number of entries deleted
    */
   deleteOlderThan(date: Date): Promise<number>;
+
+  /**
+   * Finds unflushed telemetry entries, sorted oldest first.
+   * "Unflushed" entries are those that have not been sent to the remote endpoint.
+   *
+   * @param limit - Maximum number of entries to return
+   * @returns Array of unflushed telemetry entries (oldest first)
+   */
+  findUnflushed(limit: number): Promise<TelemetryEntry[]>;
+
+  /**
+   * Marks a telemetry entry as flushed (sent to remote endpoint).
+   * By default, deletes the file. If keepFlushed is true, renames to .flushed.json.
+   *
+   * @param entry - The entry to mark as flushed
+   * @param keepFlushed - If true, rename instead of delete
+   */
+  markFlushed(entry: TelemetryEntry, keepFlushed?: boolean): Promise<void>;
 }

@@ -305,3 +305,175 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan returns 0 if directory doesn'
     assertEquals(deletedCount, 0);
   });
 });
+
+Deno.test("JsonTelemetryRepository.findUnflushed returns only unflushed entries", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+
+    // Create two entries
+    const entry1 = createTestEntry({
+      id: "unflushed-uuid-1",
+      date: new Date("2024-03-10T10:00:00Z"),
+    });
+    const entry2 = createTestEntry({
+      id: "unflushed-uuid-2",
+      date: new Date("2024-03-10T11:00:00Z"),
+    });
+    await repo.save(entry1);
+    await repo.save(entry2);
+
+    // Mark entry1 as flushed with keepFlushed so .flushed.json remains
+    await repo.markFlushed(entry1, true);
+
+    const unflushed = await repo.findUnflushed(25);
+    assertEquals(unflushed.length, 1);
+    assertEquals(unflushed[0].id, "unflushed-uuid-2");
+  });
+});
+
+Deno.test("JsonTelemetryRepository.findUnflushed returns oldest first", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+
+    const newer = createTestEntry({
+      id: "newer-uuid",
+      date: new Date("2024-03-12T10:00:00Z"),
+    });
+    const older = createTestEntry({
+      id: "older-uuid",
+      date: new Date("2024-03-10T10:00:00Z"),
+    });
+    // Save in reverse order to test sorting
+    await repo.save(newer);
+    await repo.save(older);
+
+    const unflushed = await repo.findUnflushed(25);
+    assertEquals(unflushed.length, 2);
+    assertEquals(unflushed[0].id, "older-uuid");
+    assertEquals(unflushed[1].id, "newer-uuid");
+  });
+});
+
+Deno.test("JsonTelemetryRepository.findUnflushed respects limit", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+
+    for (let i = 0; i < 5; i++) {
+      const entry = createTestEntry({
+        id: `limit-uuid-${i}`,
+        date: new Date(`2024-03-${10 + i}T10:00:00Z`),
+      });
+      await repo.save(entry);
+    }
+
+    const unflushed = await repo.findUnflushed(3);
+    assertEquals(unflushed.length, 3);
+    // Should be the 3 oldest
+    assertEquals(unflushed[0].id, "limit-uuid-0");
+    assertEquals(unflushed[1].id, "limit-uuid-1");
+    assertEquals(unflushed[2].id, "limit-uuid-2");
+  });
+});
+
+Deno.test("JsonTelemetryRepository.findUnflushed returns empty array when directory doesn't exist", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const unflushed = await repo.findUnflushed(25);
+    assertEquals(unflushed, []);
+  });
+});
+
+Deno.test("JsonTelemetryRepository.markFlushed deletes file by default", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const entry = createTestEntry({
+      id: "flush-uuid",
+      date: new Date("2024-03-10T10:00:00Z"),
+    });
+    await repo.save(entry);
+
+    await repo.markFlushed(entry);
+
+    const telemetryDir = join(dir, ".swamp", "telemetry");
+    const files: string[] = [];
+    for await (const f of Deno.readDir(telemetryDir)) {
+      files.push(f.name);
+    }
+    assertEquals(files.length, 0);
+  });
+});
+
+Deno.test("JsonTelemetryRepository.markFlushed renames file when keepFlushed is true", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const entry = createTestEntry({
+      id: "flush-uuid",
+      date: new Date("2024-03-10T10:00:00Z"),
+    });
+    await repo.save(entry);
+
+    await repo.markFlushed(entry, true);
+
+    const telemetryDir = join(dir, ".swamp", "telemetry");
+    const files: string[] = [];
+    for await (const f of Deno.readDir(telemetryDir)) {
+      files.push(f.name);
+    }
+    assertEquals(files.length, 1);
+    assertEquals(files[0], "telemetry-2024-03-10-flush-uuid.flushed.json");
+  });
+});
+
+Deno.test("JsonTelemetryRepository.markFlushed does not throw on non-existent file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const entry = createTestEntry({
+      id: "nonexistent-uuid",
+      date: new Date("2024-03-10T10:00:00Z"),
+    });
+    // Should not throw
+    await repo.markFlushed(entry);
+  });
+});
+
+Deno.test("JsonTelemetryRepository.deleteOlderThan cleans up both flushed and unflushed files", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+
+    const unflushedEntry = createTestEntry({
+      id: "unflushed-old-uuid",
+      date: new Date("2024-01-01T10:00:00Z"),
+    });
+    const flushedEntry = createTestEntry({
+      id: "flushed-old-uuid",
+      date: new Date("2024-01-02T10:00:00Z"),
+    });
+    const recentEntry = createTestEntry({
+      id: "recent-uuid",
+      date: new Date("2024-06-15T10:00:00Z"),
+    });
+
+    await repo.save(unflushedEntry);
+    await repo.save(flushedEntry);
+    await repo.save(recentEntry);
+
+    // Mark one as flushed with keepFlushed to create .flushed.json
+    await repo.markFlushed(flushedEntry, true);
+
+    // Delete entries older than June 1st
+    const deletedCount = await repo.deleteOlderThan(new Date("2024-06-01"));
+    assertEquals(deletedCount, 2);
+
+    // Only recent entry should remain
+    const telemetryDir = join(dir, ".swamp", "telemetry");
+    const files: string[] = [];
+    for await (const f of Deno.readDir(telemetryDir)) {
+      files.push(f.name);
+    }
+    assertEquals(files.length, 1);
+    assertEquals(
+      files[0],
+      "telemetry-2024-06-15-recent-uuid.json",
+    );
+  });
+});
