@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Calculates visible window for a scrollable list.
@@ -98,37 +98,56 @@ export function useScrollableList<T>(
   resetDeps: unknown[] = [],
 ): UseScrollableListResult<T> {
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [scrollOffset, setScrollOffset] = useState(0);
-
-  // Adjust scroll offset to keep selected item visible
-  useEffect(() => {
-    if (selectedIndex < scrollOffset) {
-      setScrollOffset(selectedIndex);
-    } else if (selectedIndex >= scrollOffset + maxVisible) {
-      setScrollOffset(selectedIndex - maxVisible + 1);
-    }
-  }, [selectedIndex, scrollOffset, maxVisible]);
+  // Use ref to track scroll offset for "sticky" scrolling behavior
+  // (viewport only moves when selected item would go off-screen)
+  const scrollOffsetRef = useRef(0);
 
   // Reset selection and scroll when dependencies change (e.g., query)
   useEffect(() => {
     setSelectedIndex(0);
-    setScrollOffset(0);
+    scrollOffsetRef.current = 0;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, resetDeps);
 
-  const visibleItems = items.slice(scrollOffset, scrollOffset + maxVisible);
+  // Compute effective scroll offset synchronously during render
+  // This ensures the selected item is always visible without render lag
+  let effectiveScrollOffset = scrollOffsetRef.current;
+
+  // If selected item is above the visible window, scroll up
+  if (selectedIndex < effectiveScrollOffset) {
+    effectiveScrollOffset = selectedIndex;
+  } // If selected item is below the visible window, scroll down
+  else if (selectedIndex >= effectiveScrollOffset + maxVisible) {
+    effectiveScrollOffset = selectedIndex - maxVisible + 1;
+  }
+
+  // Clamp scroll offset to valid bounds (handles case where items array shrinks)
+  const maxScrollOffset = Math.max(0, items.length - maxVisible);
+  effectiveScrollOffset = Math.min(effectiveScrollOffset, maxScrollOffset);
+  effectiveScrollOffset = Math.max(0, effectiveScrollOffset);
+
+  // Update ref for next render's "sticky" behavior
+  scrollOffsetRef.current = effectiveScrollOffset;
+
+  const visibleItems = items.slice(
+    effectiveScrollOffset,
+    effectiveScrollOffset + maxVisible,
+  );
 
   const scrollMetrics: ScrollMetrics = {
-    hasMoreAbove: scrollOffset > 0,
-    hasMoreBelow: scrollOffset + maxVisible < items.length,
-    moreAboveCount: scrollOffset,
-    moreBelowCount: Math.max(0, items.length - scrollOffset - maxVisible),
+    hasMoreAbove: effectiveScrollOffset > 0,
+    hasMoreBelow: effectiveScrollOffset + maxVisible < items.length,
+    moreAboveCount: effectiveScrollOffset,
+    moreBelowCount: Math.max(
+      0,
+      items.length - effectiveScrollOffset - maxVisible,
+    ),
   };
 
   return {
     selectedIndex,
     setSelectedIndex,
-    scrollOffset,
+    scrollOffset: effectiveScrollOffset,
     visibleItems,
     scrollMetrics,
   };
