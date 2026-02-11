@@ -143,16 +143,22 @@ Data created during workflow execution receives automatic tags:
 
 | Tag        | Value               | Description                       |
 | ---------- | ------------------- | --------------------------------- |
-| `type`     | `step-output`       | Identifies workflow-created data  |
+| `source`   | `step-output`       | Identifies workflow-created data  |
 | `workflow` | `{workflow-name}`   | Source workflow name              |
 | `step`     | `{job-name}.{step}` | Full step path                    |
 | `specName` | `{spec-key}`        | Output spec name for `findBySpec` |
+
+Note: The original `type` tag (`resource` or `file`) is preserved so that
+`model.*` expressions can resolve workflow-produced data across workflows.
 
 ### Querying Workflow Data
 
 Use CEL expressions to find data from workflows:
 
 ```yaml
+# Find all workflow-produced data
+allStepOutputs: ${{ data.findByTag("source", "step-output") }}
+
 # Find all data from a specific workflow
 workflowOutputs: ${{ data.findByTag("workflow", "my-deploy") }}
 

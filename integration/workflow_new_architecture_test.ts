@@ -262,7 +262,7 @@ Deno.test("Workflow Architecture: step creates Data artifact", async () => {
     assertExists(artifact.dataId);
     assertExists(artifact.version);
     assertExists(artifact.tags);
-    assertEquals(artifact.tags.type, "step-output");
+    assertEquals(artifact.tags.source, "step-output");
     assertEquals(artifact.tags.workflow, "data-artifact-workflow");
     assertEquals(artifact.tags.step, "write-data");
   });

@@ -360,7 +360,6 @@ Deno.test("Data Tagging: different type categories", async () => {
       { name: "state", description: "State data" },
       { name: "config", description: "Configuration" },
       { name: "output", description: "Model outputs" },
-      { name: "step-output", description: "Workflow step outputs" },
     ];
 
     for (const category of categories) {
@@ -434,7 +433,8 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
           lifetime: "infinite",
           garbageCollection: 5,
           tags: {
-            type: "step-output",
+            type: "resource",
+            source: "step-output",
             workflow: wf.workflow,
             step: step,
           },
@@ -461,7 +461,7 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
     assertExists(context.data);
 
     // Find all step outputs
-    const allStepOutputs = context.data.findByTag("type", "step-output");
+    const allStepOutputs = context.data.findByTag("source", "step-output");
     assertEquals(allStepOutputs.length, 5);
 
     // Find by workflow

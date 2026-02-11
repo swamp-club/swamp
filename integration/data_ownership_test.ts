@@ -104,7 +104,7 @@ Deno.test("Data Ownership: create data with workflow-step owner", async () => {
       contentType: "application/json",
       lifetime: "workflow",
       garbageCollection: 5,
-      tags: { type: "step-output" },
+      tags: { type: "resource", source: "step-output" },
       ownerDefinition: owner,
     });
 
@@ -415,7 +415,7 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "step-output" },
+      tags: { type: "resource", source: "step-output" },
       ownerDefinition: owner3,
     });
 
