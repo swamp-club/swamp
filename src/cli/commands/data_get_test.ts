@@ -46,3 +46,10 @@ Deno.test("dataGetCommand accepts optional model argument", async () => {
   const args = dataGetCommand.getArguments();
   assertEquals(args.length > 0, true);
 });
+
+Deno.test("dataGetCommand has --no-content option", async () => {
+  const { dataGetCommand } = await import("./data_get.ts");
+  const options = dataGetCommand.getOptions();
+  const contentOpt = options.find((o) => o.name === "no-content");
+  assertEquals(contentOpt !== undefined, true);
+});

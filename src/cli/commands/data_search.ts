@@ -249,30 +249,18 @@ async function displayDataDetail(
     contentPath,
   };
 
-  renderDataGet(output, outputMode);
-
-  // Display raw content
-  const content = await dataRepo.getContent(
+  // Fetch raw content for display
+  const rawContent = await dataRepo.getContent(
     modelType,
     item.modelId,
     item.name,
     data.version,
   );
-
-  if (content) {
-    console.log();
-    if (data.contentType === "application/json") {
-      try {
-        const text = new TextDecoder().decode(content);
-        const parsed = JSON.parse(text);
-        console.log(JSON.stringify(parsed, null, 2));
-      } catch {
-        console.log(new TextDecoder().decode(content));
-      }
-    } else {
-      console.log(new TextDecoder().decode(content));
-    }
+  if (rawContent) {
+    output.content = new TextDecoder().decode(rawContent);
   }
+
+  renderDataGet(output, outputMode);
 }
 
 export const dataSearchCommand = new Command()

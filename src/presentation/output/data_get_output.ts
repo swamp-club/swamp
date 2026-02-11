@@ -26,6 +26,7 @@ export interface DataGetData {
   size?: number;
   checksum?: string;
   contentPath: string;
+  content?: string;
 }
 
 /**
@@ -43,7 +44,16 @@ function formatSize(bytes?: number): string {
  */
 export function renderDataGet(data: DataGetData, mode: OutputMode): void {
   if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
+    const jsonOutput: Record<string, unknown> = { ...data };
+    // Parse JSON content inline for structured output
+    if (data.content && data.contentType === "application/json") {
+      try {
+        jsonOutput.content = JSON.parse(data.content);
+      } catch {
+        // Leave as string if not valid JSON
+      }
+    }
+    console.log(JSON.stringify(jsonOutput, null, 2));
   } else {
     console.log(`Data: ${data.name} (v${data.version})`);
     console.log(`Model: ${data.modelName} (${data.modelType})`);
@@ -61,5 +71,19 @@ export function renderDataGet(data: DataGetData, mode: OutputMode): void {
     );
     console.log(`Created: ${data.createdAt}`);
     console.log(`Path: ${data.contentPath}`);
+
+    if (data.content !== undefined) {
+      console.log();
+      if (data.contentType === "application/json") {
+        try {
+          const parsed = JSON.parse(data.content);
+          console.log(JSON.stringify(parsed, null, 2));
+        } catch {
+          console.log(data.content);
+        }
+      } else {
+        console.log(data.content);
+      }
+    }
   }
 }

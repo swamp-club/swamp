@@ -27,6 +27,10 @@ export const dataGetCommand = new Command()
     "--run <run_id:string>",
     "Specific workflow run ID (defaults to latest)",
   )
+  .option(
+    "--no-content",
+    "Show metadata only, without content",
+  )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -138,6 +142,18 @@ export const dataGetCommand = new Command()
           contentPath: item.contentPath,
         };
 
+        if (options.content !== false) {
+          const rawContent = await dataRepo.getContent(
+            item.modelType,
+            item.modelId,
+            item.data.name,
+            item.data.version,
+          );
+          if (rawContent) {
+            output.content = new TextDecoder().decode(rawContent);
+          }
+        }
+
         renderDataGet(output, ctx.outputMode);
       } else {
         // Model-scoped data get (original behavior)
@@ -205,6 +221,18 @@ export const dataGetCommand = new Command()
           checksum: data.checksum,
           contentPath,
         };
+
+        if (options.content !== false) {
+          const rawContent = await dataRepo.getContent(
+            modelType,
+            definition.id,
+            dataName,
+            data.version,
+          );
+          if (rawContent) {
+            output.content = new TextDecoder().decode(rawContent);
+          }
+        }
 
         renderDataGet(output, ctx.outputMode);
       }
