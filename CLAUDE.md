@@ -15,6 +15,9 @@ architecture.
 - All code must pass type checking with `deno check`
 - All code must pass `deno lint`
 - Format all code with `deno fmt`
+- All `.ts` and `.tsx` files must include the AGPLv3 copyright header from
+  `FILE-LICENSE-TEMPLATE.md` at the top of the file (as `//` comments). Run
+  `deno run license-headers` to add headers to any new files.
 
 ## Commands
 
