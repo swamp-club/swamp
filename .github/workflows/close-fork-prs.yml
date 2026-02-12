@@ -21,11 +21,15 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: `Thank you for your interest in contributing to this project!
+              body: `Thank you for your interest in contributing to swamp!
 
-            Unfortunately, we are not accepting pull requests from forks at this time. This repository uses automated workflows that require write access to the repository, which is not available for fork-based PRs.
+            Unfortunately, we are not accepting pull requests from external contributors. Only employees of System Initiative, Inc. are allowed to contribute code to this repository. There are no exceptions.
 
-            If you'd like to contribute, please reach out to the maintainers to discuss alternative approaches.
+            **However, we welcome your bug reports and feature requests!** If you've found a bug or have an idea for a feature, please [file an issue](https://github.com/${context.repo.owner}/${context.repo.repo}/issues) instead. We will review and, at our discretion, implement it for you using our internal development process.
+
+            If you include source code in a bug report or feature request, you grant a full copyright license to System Initiative, Inc. We are also happy to include you as a co-author on any pull request we generate from your request.
+
+            For more details, please see our [CONTRIBUTING.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md).
 
             This PR has been automatically closed.`
             });
