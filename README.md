@@ -37,8 +37,6 @@ Just ask:
   anything without a cost-center tag"_
 - _"Set up a workflow to check my bare metal Minecraft servers are online and
   under 80% memory"_
-- _"Create a model for our internal deploy API and wire it into a release
-  workflow"_
 - _"Audit our DNS records and compare them against what's actually running"_
 - _"Build a workflow that rotates database credentials and stores them in the
   vault"_
