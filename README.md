@@ -2,13 +2,14 @@
   <img src="logo.png" alt="swamp logo" width="200">
 </p>
 
-# swamp
+# Swamp
 
 AI Native Automation, built for agents.
 
-Swamp gives AI agents (and humans) a structured way to manage infrastructure,
-run automation workflows, and track the data they produce — all stored as plain
-YAML in a Git repository.
+Swamp is a CLI-based agent interface that superpowers AI agents to create
+operational workflows that are reviewable, shareable, and accurate. Built for
+agents, supercharging a human's ability to deliver safely and quickly. All the
+data is available to you, in the `.swamp/`. Welcome to the swamp.
 
 > **Open Alpha** — Swamp is under active development. Expect breaking changes,
 > rough edges, and rapid iteration. We're here to support you — file
@@ -17,22 +18,9 @@ YAML in a Git repository.
 
 ## Getting Started
 
-### Install
-
-Download the latest binary for your platform:
-
-**macOS (Apple Silicon):**
-
 ```bash
-curl -fsSL "$(gh release view --repo systeminit/swamp --json assets --jq '.assets[] | select(.name == "swamp-darwin-aarch64") | .url')" -o swamp
-chmod +x swamp && sudo mv swamp /usr/local/bin/
+curl -fsSL https://artifacts.systeminit.com/install.sh | sh
 ```
-
-Or grab it directly from the
-[latest release](https://github.com/systeminit/swamp/releases/latest).
-
-Binaries are available for macOS (Apple Silicon, Intel) and Linux (x86_64,
-aarch64).
 
 ### Quick Start
 
