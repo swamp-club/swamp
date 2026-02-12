@@ -32,6 +32,7 @@ export interface RepoInitData {
   skillsCopied: string[];
   claudeMdCreated: boolean;
   claudeSettingsCreated: boolean;
+  gitignoreCreated: boolean;
 }
 
 /**

@@ -400,3 +400,69 @@ Deno.test("RepoService.init generates CLAUDE.md with skills section", async () =
     assertStringIncludes(content, "plan mode");
   });
 });
+
+Deno.test("RepoService.init creates .gitignore", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath);
+
+    assertEquals(result.gitignoreCreated, true);
+
+    // Check .gitignore exists and has expected content
+    const gitignorePath = join(tempDir, ".gitignore");
+    const content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(content, ".swamp/telemetry/");
+    assertStringIncludes(content, ".swamp/secrets/keyfile");
+    assertStringIncludes(content, ".claude/");
+  });
+});
+
+Deno.test("RepoService.init does not overwrite existing .gitignore", async () => {
+  await withTempDir(async (tempDir) => {
+    // Create existing .gitignore
+    const gitignorePath = join(tempDir, ".gitignore");
+    await Deno.writeTextFile(
+      gitignorePath,
+      "# My existing gitignore\nnode_modules/\n",
+    );
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath);
+
+    assertEquals(result.gitignoreCreated, false);
+
+    // Check content is unchanged
+    const content = await Deno.readTextFile(gitignorePath);
+    assertEquals(content, "# My existing gitignore\nnode_modules/\n");
+  });
+});
+
+Deno.test("RepoService.init with force does not overwrite existing .gitignore", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // First init
+    await service.init(repoPath);
+
+    // Modify .gitignore with custom content
+    const gitignorePath = join(tempDir, ".gitignore");
+    await Deno.writeTextFile(
+      gitignorePath,
+      "# Custom gitignore\nmy-custom-file.txt\n",
+    );
+
+    // Second init with force
+    const result = await service.init(repoPath, { force: true });
+
+    assertEquals(result.gitignoreCreated, false);
+
+    // Check content is unchanged
+    const content = await Deno.readTextFile(gitignorePath);
+    assertEquals(content, "# Custom gitignore\nmy-custom-file.txt\n");
+  });
+});

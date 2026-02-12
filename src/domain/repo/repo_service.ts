@@ -33,6 +33,7 @@ import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { UserError } from "../errors.ts";
 
 const CLAUDE_MD_FILENAME = "CLAUDE.md";
+const GITIGNORE_FILENAME = ".gitignore";
 
 /**
  * Result of a repository initialization operation.
@@ -44,6 +45,7 @@ export interface RepoInitResult {
   skillsCopied: string[];
   claudeMdCreated: boolean;
   claudeSettingsCreated: boolean;
+  gitignoreCreated: boolean;
 }
 
 /**
@@ -128,6 +130,9 @@ export class RepoService {
       repoPath,
     );
 
+    // Create .gitignore if it doesn't exist
+    const gitignoreCreated = await this.createGitignoreIfNotExists(repoPath);
+
     return {
       path: repoPath.value,
       version: this.currentVersion.toString(),
@@ -135,6 +140,7 @@ export class RepoService {
       skillsCopied,
       claudeMdCreated,
       claudeSettingsCreated,
+      gitignoreCreated,
     };
   }
 
@@ -244,6 +250,47 @@ Always start by using the \`swamp-model\` skill to work with swamp models.
 ## Commands
 
 Use \`swamp --help\` to see available commands.
+`;
+  }
+
+  /**
+   * Creates .gitignore if it doesn't already exist.
+   */
+  private async createGitignoreIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const gitignorePath = join(repoPath.value, GITIGNORE_FILENAME);
+
+    try {
+      await Deno.stat(gitignorePath);
+      // File exists, don't overwrite
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        // Create the file
+        const content = this.generateGitignoreContent();
+        await Deno.writeTextFile(gitignorePath, content);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Generates the content for .gitignore.
+   */
+  private generateGitignoreContent(): string {
+    return `# Swamp managed defaults
+# Feel free to modify this file to suit your needs
+
+# Local telemetry (not needed for reconstruction)
+.swamp/telemetry/
+
+# Encryption keyfile (NEVER commit - allows decrypting secrets)
+.swamp/secrets/keyfile
+
+# Claude Code configuration (managed by swamp)
+.claude/
 `;
   }
 

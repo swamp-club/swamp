@@ -55,6 +55,7 @@ export const repoInitCommand = new Command()
       skillsCopied: result.skillsCopied,
       claudeMdCreated: result.claudeMdCreated,
       claudeSettingsCreated: result.claudeSettingsCreated,
+      gitignoreCreated: result.gitignoreCreated,
     };
 
     renderRepoInit(data, ctx.outputMode);
