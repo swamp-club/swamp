@@ -22,6 +22,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
+import { suppressInkTtyErrors } from "./ink_lifecycle.ts";
 import { useScrollableList } from "./hooks/mod.ts";
 import { join, relative } from "@std/path";
 
@@ -77,7 +78,7 @@ function renderInteractiveInputFileSelect(
   data: InputFileSelectData,
 ): Promise<InputFileSelection | undefined> {
   return new Promise<InputFileSelection | undefined>((resolve) => {
-    let result: InputFileSelection | undefined;
+    const cleanupTty = suppressInkTtyErrors();
     const { waitUntilExit } = render(
       <InputFileSelectUI
         workflowName={data.workflowName}
@@ -85,15 +86,16 @@ function renderInteractiveInputFileSelect(
         hasDefaults={data.hasDefaults}
         searchDir={data.searchDir}
         onSelect={(selection) => {
-          result = selection;
+          cleanupTty();
+          resolve(selection);
         }}
-        onCancel={() => {}}
+        onCancel={() => {
+          cleanupTty();
+          resolve(undefined);
+        }}
       />,
     );
-    waitUntilExit().then(
-      () => resolve(result),
-      () => resolve(result),
-    );
+    waitUntilExit().catch(() => {});
   });
 }
 

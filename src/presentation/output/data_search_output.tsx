@@ -22,6 +22,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
+import { suppressInkTtyErrors } from "./ink_lifecycle.ts";
 
 /**
  * Represents a single data search result item.
@@ -127,21 +128,22 @@ function renderInteractiveDataSearch(
   data: DataSearchData,
 ): Promise<DataSearchItem | undefined> {
   return new Promise<DataSearchItem | undefined>((resolve) => {
-    let result: DataSearchItem | undefined;
+    const cleanupTty = suppressInkTtyErrors();
     const { waitUntilExit } = render(
       <DataSearchUI
         items={data.results}
         initialQuery={data.query}
         onSelect={(item) => {
-          result = item;
+          cleanupTty();
+          resolve(item);
         }}
-        onCancel={() => {}}
+        onCancel={() => {
+          cleanupTty();
+          resolve(undefined);
+        }}
       />,
     );
-    waitUntilExit().then(
-      () => resolve(result),
-      () => resolve(result),
-    );
+    waitUntilExit().catch(() => {});
   });
 }
 

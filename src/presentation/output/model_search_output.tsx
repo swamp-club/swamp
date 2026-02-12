@@ -22,6 +22,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
+import { suppressInkTtyErrors } from "./ink_lifecycle.ts";
 import { useScrollableList } from "./hooks/mod.ts";
 
 /**
@@ -77,21 +78,22 @@ export function renderInteractiveModelSearch(
   data: ModelSearchData,
 ): Promise<ModelSearchItem | undefined> {
   return new Promise<ModelSearchItem | undefined>((resolve) => {
-    let result: ModelSearchItem | undefined;
+    const cleanupTty = suppressInkTtyErrors();
     const { waitUntilExit } = render(
       <ModelSearchUI
         models={data.results}
         initialQuery={data.query}
         onSelect={(item) => {
-          result = item;
+          cleanupTty();
+          resolve(item);
         }}
-        onCancel={() => {}}
+        onCancel={() => {
+          cleanupTty();
+          resolve(undefined);
+        }}
       />,
     );
-    waitUntilExit().then(
-      () => resolve(result),
-      () => resolve(result),
-    );
+    waitUntilExit().catch(() => {});
   });
 }
 

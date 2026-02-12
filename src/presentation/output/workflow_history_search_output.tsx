@@ -22,6 +22,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
+import { suppressInkTtyErrors } from "./ink_lifecycle.ts";
 import { useScrollableList } from "./hooks/mod.ts";
 
 /**
@@ -83,21 +84,22 @@ export function renderInteractiveWorkflowHistorySearch(
   data: WorkflowHistorySearchData,
 ): Promise<WorkflowHistorySearchItem | undefined> {
   return new Promise<WorkflowHistorySearchItem | undefined>((resolve) => {
-    let result: WorkflowHistorySearchItem | undefined;
+    const cleanupTty = suppressInkTtyErrors();
     const { waitUntilExit } = render(
       <WorkflowHistorySearchUI
         runs={data.results}
         initialQuery={data.query}
         onSelect={(item) => {
-          result = item;
+          cleanupTty();
+          resolve(item);
         }}
-        onCancel={() => {}}
+        onCancel={() => {
+          cleanupTty();
+          resolve(undefined);
+        }}
       />,
     );
-    waitUntilExit().then(
-      () => resolve(result),
-      () => resolve(result),
-    );
+    waitUntilExit().catch(() => {});
   });
 }
 
