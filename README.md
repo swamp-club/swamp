@@ -46,6 +46,26 @@ Just ask:
 The agent will create models, wire up workflows, and run them — all reviewable
 in `.swamp/` before anything touches production.
 
+## Core Concepts
+
+- **Models** — Typed representations of external systems (cloud resources, CLI
+  tools, APIs). Each model type defines metadata, attributes, methods, and
+  inputs.
+- **Definitions** — YAML files that instantiate a model type with specific
+  configuration. Support CEL expressions for dynamic values and cross-model
+  references.
+- **Workflows** — Orchestrate model method executions across parallel jobs and
+  steps, with dependency ordering and trigger conditions.
+- **Data** — Versioned, immutable artifacts (resources, logs, files) produced by
+  method runs. Searchable by tags.
+- **Vaults** — Secure storage for secrets and credentials, referenced in
+  definitions via CEL expressions.
+- **Tags** — Key-value labels on definitions, workflows, and data. Flow from
+  definitions to produced data, overridable at runtime with `--tag`.
+
+Everything lives in a `.swamp/` directory inside a Git repository, with
+human-friendly symlink views under `/models/` and `/workflows/`.
+
 ---
 
 ### Update
@@ -78,26 +98,6 @@ swamp completions fish > ~/.config/fish/completions/swamp.fish
 
 Completions are directory-dependent — they return names from the current
 directory's swamp repository.
-
-## Core Concepts
-
-- **Models** — Typed representations of external systems (cloud resources, CLI
-  tools, APIs). Each model type defines metadata, attributes, methods, and
-  inputs.
-- **Definitions** — YAML files that instantiate a model type with specific
-  configuration. Support CEL expressions for dynamic values and cross-model
-  references.
-- **Workflows** — Orchestrate model method executions across parallel jobs and
-  steps, with dependency ordering and trigger conditions.
-- **Data** — Versioned, immutable artifacts (resources, logs, files) produced by
-  method runs. Searchable by tags.
-- **Vaults** — Secure storage for secrets and credentials, referenced in
-  definitions via CEL expressions.
-- **Tags** — Key-value labels on definitions, workflows, and data. Flow from
-  definitions to produced data, overridable at runtime with `--tag`.
-
-Everything lives in a `.swamp/` directory inside a Git repository, with
-human-friendly symlink views under `/models/` and `/workflows/`.
 
 ## Using Swamp with AI Agents
 
