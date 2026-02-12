@@ -4,151 +4,155 @@
 
 # swamp
 
-Deno-based CLI for AI Native Automation.
+AI Native Automation, built for agents.
 
-## Installation
+Swamp gives AI agents (and humans) a structured way to manage infrastructure,
+run automation workflows, and track the data they produce — all stored as plain
+YAML in a Git repository.
 
-```bash
-deno install -A --name swamp main.ts
-```
+> **Open Alpha** — Swamp is under active development. Expect breaking changes,
+> rough edges, and rapid iteration. We're here to support you — file
+> [bug reports and feature requests](https://github.com/systeminit/swamp/issues)
+> and we'll take care of the rest. Have fun with it.
 
-## Usage
+## Getting Started
 
-```bash
-# Run the CLI
-deno run dev
+### Install
 
-# Show version
-swamp version
-```
+Download the latest binary for your platform:
 
-## Architecture Overview
-
-Swamp uses a model-driven architecture with the following key concepts:
-
-- **Models**: Define automation tasks with typed inputs and methods
-- **Definitions**: YAML configurations that instantiate models
-- **Workflows**: Orchestrate model executions with dependencies and triggers
-- **Data**: Versioned, immutable artifacts produced by model methods
-- **Vaults**: Secure storage for sensitive data (secrets, credentials)
-- **Expressions**: CEL expressions for dynamic values and cross-model references
-
-All data is stored in the `.swamp/` directory:
-
-```
-.swamp/
-├── definitions/       # Model definitions by type
-├── definitions-evaluated/  # Evaluated definitions (with expressions resolved)
-├── workflows/         # Workflow definitions
-├── workflows-evaluated/    # Evaluated workflows
-├── workflow-runs/     # Execution history
-├── data/              # Versioned data artifacts
-├── outputs/           # Method execution outputs
-├── vault/             # Vault configurations
-├── secrets/           # Encrypted secrets (local vaults)
-└── logs/              # Execution logs
-```
-
-Logical views (`/models/`, `/workflows/`, `/vaults/`) provide symlinks for
-human-friendly exploration of the repository.
-
-### Example: Shell Model Workflow
-
-The `command/shell` model demonstrates the basic model lifecycle.
+**macOS (Apple Silicon):**
 
 ```bash
-# 1. Initialize a swamp repository (if not already done)
+curl -fsSL "$(gh release view --repo systeminit/swamp --json assets --jq '.assets[] | select(.name == "swamp-darwin-aarch64") | .url')" -o swamp
+chmod +x swamp && sudo mv swamp /usr/local/bin/
+```
+
+Or grab it directly from the
+[latest release](https://github.com/systeminit/swamp/releases/latest).
+
+Binaries are available for macOS (Apple Silicon, Intel) and Linux (x86_64,
+aarch64).
+
+### Quick Start
+
+```bash
+# Initialize a swamp repo in the current directory
 swamp repo init
 
-# 2. Create a new shell model definition
-swamp model create command/shell my-shell
+# Create a model definition
+swamp model create command/shell my-server-check
 
-# 3. Edit the definition file to add the required 'run' argument
-#    The file is created at: .swamp/definitions/command/shell/<id>.yaml
-#    Add under methods.execute.arguments:
-#      run: "echo 'Hello, world!'"
+# Edit the definition to configure it
+# (the file path is printed by the create command)
+swamp model edit my-server-check
 
-# 4. Validate the model definition
-swamp model validate my-shell
+# Validate your definition
+swamp model validate my-server-check
 
-# 5. Execute the execute method to run the command
-swamp model method run my-shell execute
+# Run a method
+swamp model method run my-server-check execute
 
-# 6. View the output
-swamp model output search my-shell
+# See what data was produced
+swamp model output search my-server-check
 ```
 
-Model definitions are stored in `.swamp/definitions/command/shell/` and data
-artifacts are written to `.swamp/data/command/shell/`.
+### Update
 
-## Shell Completions
-
-Generate shell completions for tab-completion of commands, model names, and
-workflow names.
-
-### Bash
-
-Add to your `~/.bashrc`:
+Swamp can update itself:
 
 ```bash
+swamp update
+```
+
+### Shell Completions
+
+Tab-completion for commands, model names, and workflow names:
+
+```bash
+# Bash — add to ~/.bashrc
 eval "$(swamp completions bash)"
-```
 
-### Zsh with oh-my-zsh
-
-Save the completion script to oh-my-zsh's completions directory:
-
-```bash
+# Zsh with oh-my-zsh
 mkdir -p ~/.oh-my-zsh/completions
 swamp completions zsh > ~/.oh-my-zsh/completions/_swamp
 rm -f ~/.zcompdump* && exec zsh
-```
 
-### Zsh without oh-my-zsh
-
-Add to your `~/.zshrc`:
-
-```bash
+# Zsh without oh-my-zsh — add to ~/.zshrc
 eval "$(swamp completions zsh)"
-```
 
-### Fish
-
-Save the completion script to fish's completions directory:
-
-```bash
+# Fish
 swamp completions fish > ~/.config/fish/completions/swamp.fish
 ```
 
-### Note
+Completions are directory-dependent — they return names from the current
+directory's swamp repository.
 
-Model and workflow name completions are directory-dependent. They return names
-from the current working directory's swamp repository.
+## Core Concepts
 
-## User-Defined Models
+- **Models** — Typed representations of external systems (cloud resources, CLI
+  tools, APIs). Each model type defines metadata, attributes, methods, and
+  inputs.
+- **Definitions** — YAML files that instantiate a model type with specific
+  configuration. Support CEL expressions for dynamic values and cross-model
+  references.
+- **Workflows** — Orchestrate model method executions across parallel jobs and
+  steps, with dependency ordering and trigger conditions.
+- **Data** — Versioned, immutable artifacts (resources, logs, files) produced by
+  method runs. Searchable by tags.
+- **Vaults** — Secure storage for secrets and credentials, referenced in
+  definitions via CEL expressions.
+- **Tags** — Key-value labels on definitions, workflows, and data. Flow from
+  definitions to produced data, overridable at runtime with `--tag`.
 
-You can extend swamp with custom TypeScript models. Place your models in the
-`extensions/models/` directory (or configure via `SWAMP_MODELS_DIR` environment
-variable or `.swamp.yaml`).
+Everything lives in a `.swamp/` directory inside a Git repository, with
+human-friendly symlink views under `/models/` and `/workflows/`.
 
-For detailed instructions on creating user-defined models, see the
-[swamp-extension-model skill documentation](.claude/skills/swamp-extension-model/SKILL.md).
+## Using Swamp with AI Agents
 
-## Development
+Swamp is designed to be driven by AI agents. We currently ship
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) skills that teach
+Claude how to work with swamp — search for models, create definitions, run
+workflows, manage vaults, and more.
+
+The skills live in `.claude/skills/` and are bundled into the swamp binary. Run
+`swamp` inside a Claude Code session and Claude will discover them
+automatically.
+
+While Claude Code is our primary supported agent today, the patterns are
+transferable to any AI agent or automation platform. The skills are plain
+markdown — read them, adapt them, bring them to your preferred tools.
+
+### User-Defined Models
+
+Extend swamp with custom TypeScript models. Place them in `extensions/models/`
+(or configure via `SWAMP_MODELS_DIR` or `.swamp.yaml`).
+
+See the [extension model guide](.claude/skills/swamp-extension-model/SKILL.md)
+for details.
+
+## Developer Guide
+
+### Prerequisites
+
+- [Deno](https://deno.land/) (latest)
+
+### Commands
 
 ```bash
-# Run tests
-deno run test
-
-# Type check
-deno check
-
-# Lint
-deno lint
-
-# Format
-deno fmt
+deno run dev          # Run the CLI from source
+deno run test         # Run the test suite
+deno check            # Type-check
+deno lint             # Lint
+deno fmt              # Format
+deno run compile      # Compile the binary
 ```
+
+### Contributing
+
+Only employees of System Initiative, Inc. contribute code to Swamp. We welcome
+bug reports and feature requests — see [CONTRIBUTING.md](CONTRIBUTING.md) for
+details.
 
 ## License
 
