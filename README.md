@@ -24,25 +24,27 @@ curl -fsSL https://artifacts.systeminit.com/install.sh | sh
 ### Quick Start
 
 ```bash
-# Initialize a swamp repo in the current directory
 swamp repo init
-
-# Create a model definition
-swamp model create command/shell my-server-check
-
-# Edit the definition to configure it
-# (the file path is printed by the create command)
-swamp model edit my-server-check
-
-# Validate your definition
-swamp model validate my-server-check
-
-# Run a method
-swamp model method run my-server-check execute
-
-# See what data was produced
-swamp model output search my-server-check
 ```
+
+Start Claude Code in the repo and tell it what you want to do. Swamp executes
+locally, so it picks up the environment variables from the shell you run it in —
+your AWS credentials, your SSH keys, your kubeconfig, all of it.
+
+Just ask:
+
+- _"Manage my EC2 fleet — inventory every instance across all regions and flag
+  anything without a cost-center tag"_
+- _"Set up a workflow to check my bare metal Minecraft servers are online and
+  under 80% memory"_
+- _"Create a model for our internal deploy API and wire it into a release
+  workflow"_
+- _"Audit our DNS records and compare them against what's actually running"_
+- _"Build a workflow that rotates database credentials and stores them in the
+  vault"_
+
+The agent will create models, wire up workflows, and run them — all reviewable
+in `.swamp/` before anything touches production.
 
 ### Update
 
