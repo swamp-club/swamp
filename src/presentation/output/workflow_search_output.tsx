@@ -78,15 +78,21 @@ export function renderInteractiveWorkflowSearch(
   data: WorkflowSearchData,
 ): Promise<WorkflowSearchItem | undefined> {
   return new Promise<WorkflowSearchItem | undefined>((resolve) => {
+    let result: WorkflowSearchItem | undefined;
     const { waitUntilExit } = render(
       <WorkflowSearchUI
         workflows={data.results}
         initialQuery={data.query}
-        onSelect={(item) => resolve(item)}
-        onCancel={() => resolve(undefined)}
+        onSelect={(item) => {
+          result = item;
+        }}
+        onCancel={() => {}}
       />,
     );
-    waitUntilExit();
+    waitUntilExit().then(
+      () => resolve(result),
+      () => resolve(result),
+    );
   });
 }
 

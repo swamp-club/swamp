@@ -77,17 +77,23 @@ function renderInteractiveInputFileSelect(
   data: InputFileSelectData,
 ): Promise<InputFileSelection | undefined> {
   return new Promise<InputFileSelection | undefined>((resolve) => {
+    let result: InputFileSelection | undefined;
     const { waitUntilExit } = render(
       <InputFileSelectUI
         workflowName={data.workflowName}
         requiredInputs={data.requiredInputs}
         hasDefaults={data.hasDefaults}
         searchDir={data.searchDir}
-        onSelect={(selection) => resolve(selection)}
-        onCancel={() => resolve(undefined)}
+        onSelect={(selection) => {
+          result = selection;
+        }}
+        onCancel={() => {}}
       />,
     );
-    waitUntilExit();
+    waitUntilExit().then(
+      () => resolve(result),
+      () => resolve(result),
+    );
   });
 }
 

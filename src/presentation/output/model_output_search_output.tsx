@@ -82,15 +82,21 @@ export function renderInteractiveModelOutputSearch(
   data: ModelOutputSearchData,
 ): Promise<ModelOutputSearchItem | undefined> {
   return new Promise<ModelOutputSearchItem | undefined>((resolve) => {
+    let result: ModelOutputSearchItem | undefined;
     const { waitUntilExit } = render(
       <ModelOutputSearchUI
         outputs={data.results}
         initialQuery={data.query}
-        onSelect={(item) => resolve(item)}
-        onCancel={() => resolve(undefined)}
+        onSelect={(item) => {
+          result = item;
+        }}
+        onCancel={() => {}}
       />,
     );
-    waitUntilExit();
+    waitUntilExit().then(
+      () => resolve(result),
+      () => resolve(result),
+    );
   });
 }
 

@@ -83,15 +83,21 @@ export function renderInteractiveWorkflowHistorySearch(
   data: WorkflowHistorySearchData,
 ): Promise<WorkflowHistorySearchItem | undefined> {
   return new Promise<WorkflowHistorySearchItem | undefined>((resolve) => {
+    let result: WorkflowHistorySearchItem | undefined;
     const { waitUntilExit } = render(
       <WorkflowHistorySearchUI
         runs={data.results}
         initialQuery={data.query}
-        onSelect={(item) => resolve(item)}
-        onCancel={() => resolve(undefined)}
+        onSelect={(item) => {
+          result = item;
+        }}
+        onCancel={() => {}}
       />,
     );
-    waitUntilExit();
+    waitUntilExit().then(
+      () => resolve(result),
+      () => resolve(result),
+    );
   });
 }
 

@@ -127,15 +127,21 @@ function renderInteractiveDataSearch(
   data: DataSearchData,
 ): Promise<DataSearchItem | undefined> {
   return new Promise<DataSearchItem | undefined>((resolve) => {
+    let result: DataSearchItem | undefined;
     const { waitUntilExit } = render(
       <DataSearchUI
         items={data.results}
         initialQuery={data.query}
-        onSelect={(item) => resolve(item)}
-        onCancel={() => resolve(undefined)}
+        onSelect={(item) => {
+          result = item;
+        }}
+        onCancel={() => {}}
       />,
     );
-    waitUntilExit();
+    waitUntilExit().then(
+      () => resolve(result),
+      () => resolve(result),
+    );
   });
 }
 

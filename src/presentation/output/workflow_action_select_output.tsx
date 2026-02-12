@@ -81,16 +81,22 @@ function renderInteractiveWorkflowActionSelect(
   data: WorkflowActionSelectData,
 ): Promise<WorkflowAction | undefined> {
   return new Promise<WorkflowAction | undefined>((resolve) => {
+    let result: WorkflowAction | undefined;
     const { waitUntilExit } = render(
       <WorkflowActionSelectUI
         workflowName={data.workflowName}
         workflowDescription={data.workflowDescription}
         hasInputs={data.hasInputs}
-        onSelect={(action) => resolve(action)}
-        onCancel={() => resolve(undefined)}
+        onSelect={(action) => {
+          result = action;
+        }}
+        onCancel={() => {}}
       />,
     );
-    waitUntilExit();
+    waitUntilExit().then(
+      () => resolve(result),
+      () => resolve(result),
+    );
   });
 }
 

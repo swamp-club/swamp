@@ -91,15 +91,21 @@ export function renderInteractiveVaultSearch(
   data: VaultSearchData,
 ): Promise<VaultSearchItem | undefined> {
   return new Promise<VaultSearchItem | undefined>((resolve) => {
+    let result: VaultSearchItem | undefined;
     const { waitUntilExit } = render(
       <VaultSearchUI
         vaults={data.results}
         initialQuery={data.query}
-        onSelect={(item) => resolve(item)}
-        onCancel={() => resolve(undefined)}
+        onSelect={(item) => {
+          result = item;
+        }}
+        onCancel={() => {}}
       />,
     );
-    waitUntilExit();
+    waitUntilExit().then(
+      () => resolve(result),
+      () => resolve(result),
+    );
   });
 }
 

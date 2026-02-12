@@ -76,15 +76,21 @@ export function renderInteractiveTypeSearch(
   data: TypeSearchData,
 ): Promise<TypeSearchItem | undefined> {
   return new Promise<TypeSearchItem | undefined>((resolve) => {
+    let result: TypeSearchItem | undefined;
     const { waitUntilExit } = render(
       <TypeSearchUI
         types={data.results}
         initialQuery={data.query}
-        onSelect={(item) => resolve(item)}
-        onCancel={() => resolve(undefined)}
+        onSelect={(item) => {
+          result = item;
+        }}
+        onCancel={() => {}}
       />,
     );
-    waitUntilExit();
+    waitUntilExit().then(
+      () => resolve(result),
+      () => resolve(result),
+    );
   });
 }
 
