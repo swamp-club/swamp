@@ -6,9 +6,9 @@
 
 AI Native Automation, built for agents - Welcome to the Swamp.
 
-Swamp is a CLI-based agent interface that superpowers AI agents to create
-operational workflows that are reviewable, shareable, and accurate. Built for
-agents, supercharge humans. All the data lives in the `.swamp/`.
+Swamp is a CLI that superpowers AI agents to create operational workflows that
+are reviewable, shareable, and accurate. Built for agents, supercharge humans.
+All the data lives in the `.swamp/`.
 
 > **Open Alpha** — Swamp is under active development. Expect breaking changes,
 > rough edges, and rapid iteration. We're here to support you — file
