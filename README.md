@@ -152,6 +152,6 @@ deno fmt
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE),
-[COPYRIGHT](COPYRIGHT), [CONTRIBUTORS.md](CONTRIBUTORS.md), and [NOTICE](NOTICE)
-for details.
+Swamp is licensed under the [GNU Affero General Public License v3.0](COPYING)
+with the [Swamp Extension and Definition Exception](COPYING-EXCEPTION). See
+[COPYRIGHT](COPYRIGHT) and [CONTRIBUTING.md](CONTRIBUTING.md) for details.
