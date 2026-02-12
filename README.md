@@ -27,11 +27,7 @@ curl -fsSL https://swamp.club/install.sh | sh
 swamp repo init
 ```
 
-Start Claude Code in the repo and tell it what you want to do. Swamp executes
-locally, so it picks up the environment variables from the shell you run it in —
-your AWS credentials, your SSH keys, your kubeconfig, all of it.
-
-Just ask:
+Start Claude Code in the repo and tell it what you want to do. Just ask:
 
 - _"Manage my EC2 fleet — inventory every instance across all regions and flag
   anything without a cost-center tag"_
@@ -63,6 +59,13 @@ in `.swamp/` before anything touches production.
 
 Everything lives in a `.swamp/` directory inside a Git repository, with
 human-friendly symlink views under `/models/` and `/workflows/`.
+
+### Local Execution
+
+Swamp runs entirely on your machine. It picks up the environment variables from
+the shell you run it in — your AWS credentials, SSH keys, kubeconfig, whatever
+the task needs. No credentials leave your laptop unless a model explicitly calls
+an external API.
 
 ---
 
