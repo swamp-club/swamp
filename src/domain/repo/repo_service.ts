@@ -235,6 +235,7 @@ essential context for working with this repository.
 - \`swamp-vault\` - Manage secrets and credentials
 - \`swamp-data\` - Manage model data lifecycle
 - \`swamp-repo\` - Repository management
+- \`swamp-issue\` - Submit bug reports and feature requests
 
 ## Getting Started
 
@@ -276,6 +277,7 @@ Use \`swamp --help\` to see available commands.
       "Bash(swamp init:*)",
       "Bash(swamp version:*)",
       "Bash(swamp completions:*)",
+      "Bash(swamp issue:*)",
     ];
   }
 
