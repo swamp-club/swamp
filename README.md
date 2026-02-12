@@ -150,9 +150,29 @@ deno run compile      # Compile the binary
 
 ### Contributing
 
-Only employees of System Initiative, Inc. contribute code to Swamp. We welcome
-bug reports and feature requests — see [CONTRIBUTING.md](CONTRIBUTING.md) for
-details.
+Swamp uses an **issue-driven contribution model**. We don't accept pull requests
+from external contributors — fork PRs are automatically closed. This isn't about
+gatekeeping; it's about supply chain security in the age of AI-generated code.
+When AI agents can produce large, plausible-looking changes, the only way to
+maintain quality and security is to tightly control the inputs to the
+development process.
+
+**Here's how it works:**
+
+1. **You file an issue** —
+   [bug reports and feature requests](https://github.com/systeminit/swamp/issues)
+   are very welcome. Be as detailed as you like.
+2. **We plan it** — A maintainer comments `/plan` on the issue and Claude
+   generates a detailed implementation plan, right there in the issue thread.
+   Maintainers can iterate on the plan with `/plan-update` and feedback.
+3. **We build it** — System Initiative engineers (with AI agents under our
+   direct control) implement the plan, with full test coverage and code review.
+4. **You get credit** — We're happy to include you as a co-author on any PR
+   generated from your request.
+
+This means you get the feature you asked for, maintained over time, without
+having to worry about keeping a fork in sync. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full details.
 
 ## License
 
