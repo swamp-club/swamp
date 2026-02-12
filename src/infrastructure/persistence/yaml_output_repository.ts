@@ -21,7 +21,12 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+  toAbsolutePath,
+  toRelativePath,
+} from "./paths.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -56,6 +61,10 @@ export class YamlOutputRepository implements OutputRepository {
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as ModelOutputData;
           if (data.id === id) {
+            // Convert logFile back to absolute path
+            if (data.logFile) {
+              data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+            }
             return ModelOutput.fromData(data);
           }
         }
@@ -106,6 +115,10 @@ export class YamlOutputRepository implements OutputRepository {
               const path = join(methodDir, entry.name);
               const content = await Deno.readTextFile(path);
               const data = parseYaml(content) as ModelOutputData;
+              // Convert logFile back to absolute path
+              if (data.logFile) {
+                data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+              }
               outputs.push(ModelOutput.fromData(data));
             }
           }
@@ -152,6 +165,10 @@ export class YamlOutputRepository implements OutputRepository {
 
     const path = this.getPath(type, method, output);
     const data = output.toData();
+    // Convert logFile to relative path for storage
+    if (data.logFile) {
+      data.logFile = toRelativePath(this.repoDir, data.logFile);
+    }
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);

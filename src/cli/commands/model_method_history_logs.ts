@@ -32,6 +32,7 @@ import {
   readLogFile,
   renderLogFile,
 } from "../../presentation/output/log_file_reader.ts";
+import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -51,7 +52,7 @@ export const modelMethodHistoryLogsCommand = new Command()
     ]);
     ctx.logger.debug`Getting logs for method run: ${outputIdOrModelName}`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoDir, repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });
@@ -145,13 +146,17 @@ export const modelMethodHistoryLogsCommand = new Command()
     const tail = options.tail as number | undefined;
     const logData = await readLogFile(output.logFile, { tail });
 
+    // Use relative path for display
+    const displayPath = toRelativePath(repoDir, output.logFile);
+    const logDataWithRelativePath = { ...logData, path: displayPath };
+
     if (logData.lines.length === 0) {
       if (ctx.outputMode === "json") {
         console.log(JSON.stringify(
           {
             outputId: output.id,
             methodName: output.methodName,
-            path: output.logFile,
+            path: displayPath,
             lines: [],
             lineCount: 0,
           },
@@ -159,12 +164,12 @@ export const modelMethodHistoryLogsCommand = new Command()
           2,
         ));
       } else {
-        console.log(`Log file not found or empty: ${output.logFile}`);
+        console.log(`Log file not found or empty: ${displayPath}`);
       }
       return;
     }
 
-    renderLogFile(logData, ctx.outputMode);
+    renderLogFile(logDataWithRelativePath, ctx.outputMode);
 
     ctx.logger.debug("Model method history logs command completed");
   });

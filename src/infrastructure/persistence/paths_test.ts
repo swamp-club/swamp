@@ -24,6 +24,8 @@ import {
   SWAMP_SUBDIRS,
   swampMarkerPath,
   swampPath,
+  toAbsolutePath,
+  toRelativePath,
 } from "./paths.ts";
 
 Deno.test("SWAMP_DATA_DIR is .swamp", () => {
@@ -80,4 +82,71 @@ Deno.test("swampPath with SWAMP_SUBDIRS constants", () => {
     swampPath("/repo", SWAMP_SUBDIRS.workflowRuns, "workflow-123"),
     "/repo/.swamp/workflow-runs/workflow-123",
   );
+});
+
+Deno.test("toRelativePath - converts absolute path inside repo to relative", () => {
+  const repoDir = "/Users/john/repo";
+  const absolutePath = "/Users/john/repo/.swamp/outputs/aws/cli/run.log";
+
+  const result = toRelativePath(repoDir, absolutePath);
+
+  assertEquals(result, ".swamp/outputs/aws/cli/run.log");
+});
+
+Deno.test("toRelativePath - returns already relative path unchanged", () => {
+  const repoDir = "/Users/john/repo";
+  const relativePath = ".swamp/outputs/aws/cli/run.log";
+
+  const result = toRelativePath(repoDir, relativePath);
+
+  assertEquals(result, ".swamp/outputs/aws/cli/run.log");
+});
+
+Deno.test("toRelativePath - handles path at repo root", () => {
+  const repoDir = "/Users/john/repo";
+  const absolutePath = "/Users/john/repo/file.txt";
+
+  const result = toRelativePath(repoDir, absolutePath);
+
+  assertEquals(result, "file.txt");
+});
+
+Deno.test("toAbsolutePath - converts relative path to absolute", () => {
+  const repoDir = "/Users/john/repo";
+  const relativePath = ".swamp/outputs/aws/cli/run.log";
+
+  const result = toAbsolutePath(repoDir, relativePath);
+
+  assertEquals(result, "/Users/john/repo/.swamp/outputs/aws/cli/run.log");
+});
+
+Deno.test("toAbsolutePath - returns already absolute path unchanged (backwards compat)", () => {
+  const repoDir = "/Users/john/repo";
+  const absolutePath = "/Users/john/repo/.swamp/outputs/aws/cli/run.log";
+
+  const result = toAbsolutePath(repoDir, absolutePath);
+
+  assertEquals(result, "/Users/john/repo/.swamp/outputs/aws/cli/run.log");
+});
+
+Deno.test("toAbsolutePath - handles different repo directory", () => {
+  const repoDir = "/home/alice/projects/infra";
+  const relativePath = ".swamp/workflow-runs/my-workflow/run.yaml";
+
+  const result = toAbsolutePath(repoDir, relativePath);
+
+  assertEquals(
+    result,
+    "/home/alice/projects/infra/.swamp/workflow-runs/my-workflow/run.yaml",
+  );
+});
+
+Deno.test("toRelativePath and toAbsolutePath - round trip", () => {
+  const repoDir = "/Users/john/repo";
+  const originalAbsolute = "/Users/john/repo/.swamp/outputs/test.log";
+
+  const relative = toRelativePath(repoDir, originalAbsolute);
+  const backToAbsolute = toAbsolutePath(repoDir, relative);
+
+  assertEquals(backToAbsolute, originalAbsolute);
 });

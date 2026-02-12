@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { isAbsolute, join, relative } from "@std/path";
 
 /**
  * Central constants for swamp data storage paths.
@@ -91,4 +91,39 @@ export function swampPath(repoDir: string, ...segments: string[]): string {
  */
 export function swampMarkerPath(repoDir: string): string {
   return join(repoDir, SWAMP_MARKER_FILE);
+}
+
+/**
+ * Converts an absolute path to a relative path from the repository root.
+ *
+ * Used when persisting paths to YAML files so they work across different
+ * users and machines. If the path is already relative, returns it unchanged.
+ *
+ * @param repoDir - The repository root directory
+ * @param absolutePath - The absolute path to convert
+ * @returns The relative path from repoDir
+ */
+export function toRelativePath(repoDir: string, absolutePath: string): string {
+  if (!isAbsolute(absolutePath)) {
+    return absolutePath; // Already relative
+  }
+  return relative(repoDir, absolutePath);
+}
+
+/**
+ * Converts a relative path to an absolute path from the repository root.
+ *
+ * Used when loading paths from YAML files to reconstruct the full path
+ * for the current machine. If the path is already absolute, returns it
+ * unchanged for backwards compatibility with existing data.
+ *
+ * @param repoDir - The repository root directory
+ * @param relativePath - The relative path to convert
+ * @returns The absolute path
+ */
+export function toAbsolutePath(repoDir: string, relativePath: string): string {
+  if (isAbsolute(relativePath)) {
+    return relativePath; // Backwards compat: already absolute
+  }
+  return join(repoDir, relativePath);
 }

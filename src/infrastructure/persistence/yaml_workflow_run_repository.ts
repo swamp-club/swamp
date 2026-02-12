@@ -21,7 +21,12 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
-import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+  toAbsolutePath,
+  toRelativePath,
+} from "./paths.ts";
 import {
   createWorkflowRunId,
   type WorkflowId,
@@ -66,6 +71,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as WorkflowRunData;
           if (data.id === runId) {
+            // Convert logFile back to absolute path
+            if (data.logFile) {
+              data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+            }
             return WorkflowRun.fromData(data);
           }
         }
@@ -93,6 +102,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           const path = join(dir, entry.name);
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as WorkflowRunData;
+          // Convert logFile back to absolute path
+          if (data.logFile) {
+            data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+          }
           runs.push(WorkflowRun.fromData(data));
         }
       }
@@ -168,6 +181,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     }
 
     const data = run.toData();
+    // Convert logFile to relative path for storage
+    if (data.logFile) {
+      data.logFile = toRelativePath(this.repoDir, data.logFile);
+    }
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);

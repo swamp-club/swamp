@@ -31,6 +31,7 @@ import {
   readLogFile,
   renderLogFile,
 } from "../../presentation/output/log_file_reader.ts";
+import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -51,7 +52,7 @@ export const workflowHistoryLogsCommand = new Command()
     );
     ctx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoDir, repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });
@@ -126,13 +127,17 @@ export const workflowHistoryLogsCommand = new Command()
     const tail = options.tail as number | undefined;
     const logData = await readLogFile(run.logFile, { tail });
 
+    // Use relative path for display
+    const displayPath = toRelativePath(repoDir, run.logFile);
+    const logDataWithRelativePath = { ...logData, path: displayPath };
+
     if (logData.lines.length === 0) {
       if (ctx.outputMode === "json") {
         console.log(JSON.stringify(
           {
             runId: run.id,
             workflowName: run.workflowName,
-            path: run.logFile,
+            path: displayPath,
             lines: [],
             lineCount: 0,
           },
@@ -140,12 +145,12 @@ export const workflowHistoryLogsCommand = new Command()
           2,
         ));
       } else {
-        console.log(`Log file not found or empty: ${run.logFile}`);
+        console.log(`Log file not found or empty: ${displayPath}`);
       }
       return;
     }
 
-    renderLogFile(logData, ctx.outputMode);
+    renderLogFile(logDataWithRelativePath, ctx.outputMode);
 
     ctx.logger.debug("Workflow history logs command completed");
   });
