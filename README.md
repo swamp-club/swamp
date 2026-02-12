@@ -18,7 +18,7 @@ agents, supercharge humans. All the data lives in the `.swamp/`.
 ## Getting Started
 
 ```bash
-curl -fsSL https://artifacts.systeminit.com/install.sh | sh
+curl -fsSL https://swamp.club/install.sh | sh
 ```
 
 ### Quick Start
