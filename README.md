@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="swamp logo" width="200">
+  <img src="banner.png" alt="Swamp — AI Automation for Hackers">
 </p>
 
 # Swamp
