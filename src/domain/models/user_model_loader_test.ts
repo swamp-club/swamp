@@ -29,7 +29,7 @@ import { type DataId, generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import { getLogger } from "@logtape/logtape";
 
-// Import models barrel to ensure swamp/echo is registered for duplicate test
+// Import models barrel to ensure command/shell is registered for extension test
 import "./models.ts";
 
 /**
@@ -1190,15 +1190,15 @@ export const extension = {
   );
 });
 
-Deno.test("UserModelLoader extension of built-in swamp/echo type works", async () => {
-  // swamp/echo is registered via the models barrel import at the top
+Deno.test("UserModelLoader extension of built-in command/shell type works", async () => {
+  // command/shell is registered via the models barrel import at the top
   const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
-  type: "swamp/echo",
+  type: "command/shell",
   methods: [{
     audit_ext_test_${Date.now()}: {
-      description: "Audit the echo",
+      description: "Audit the shell command",
       arguments: z.object({}),
       execute: async () => ({ dataHandles: [] }),
     },
@@ -1206,17 +1206,17 @@ export const extension = {
 };
 `;
 
-  await withTempModels({ "echo_ext.ts": extCode }, async (dir) => {
+  await withTempModels({ "shell_ext.ts": extCode }, async (dir) => {
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.extended.length, 1);
     assertEquals(result.failed.length, 0);
 
-    // The built-in swamp/echo should still have its original methods
-    const echoDef = modelRegistry.get("swamp/echo");
-    assertEquals(echoDef !== undefined, true);
-    assertEquals("write" in echoDef!.methods, true);
+    // The built-in command/shell should still have its original methods
+    const shellDef = modelRegistry.get("command/shell");
+    assertEquals(shellDef !== undefined, true);
+    assertEquals("execute" in shellDef!.methods, true);
   });
 });
 

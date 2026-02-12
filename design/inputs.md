@@ -19,10 +19,10 @@ This would make the model have an 'environment' input, that must be a string, an
 Models can reference their inputs:
 
 ```input yaml
-type: swamp/echo
+type: command/shell
 typeVersion: 1
 id: b015aac3-fdc6-41c5-9d91-b130fb65e78d
-name: echo-env
+name: shell-env
 version: 1
 tags: {}
 inputs:
@@ -30,8 +30,10 @@ inputs:
     type: string
     enum: ["dev", "staging", "production"]
     description: "Target environment for deployment"
-globalArguments:
-  message: ${{ inputs.environment }}
+methods:
+  execute:
+    arguments:
+      run: echo "Deploying to ${{ inputs.environment }}"
 ```
 
 Then, from a workflow file:
@@ -40,15 +42,15 @@ Then, from a workflow file:
 id: abc123
 name: deploy-application
 jobs:
-  - name: echo-environments
-    description: echo a bunch of environments
+  - name: shell-environments
+    description: run shell commands for environments
     steps:
       - name: first-env
         description: the first env
         task:
           type: model_method
-          modelIdOrName: echo-env
-          methodName: write
+          modelIdOrName: shell-env
+          methodName: execute
           inputs:
             environment: "dev"
         dependsOn: []
@@ -57,8 +59,8 @@ jobs:
         description: the second env
         task:
           type: model_method
-          modelIdOrName: breakdown-line1
-          methodName: write
+          modelIdOrName: shell-env
+          methodName: execute
           inputs:
             environment: "qa"
         dependsOn:
@@ -69,7 +71,7 @@ jobs:
         weight: 0
 ```
 
-Which would have the models message output be "dev" and "qa", respecitvely. If the user passed the 'boo' environment input, the model should fail validation, and report the input as required.
+Which would run shell commands for "dev" and "qa" environments respectively. If the user passed the 'boo' environment input, the model should fail validation, and report the input as required.
 
 ## Workflow Example
 
@@ -84,15 +86,15 @@ inputs:
     enum: ["dev", "staging", "production"]
     description: "Target environment for deployment"
 jobs:
-  - name: echo-environments
-    description: echo a bunch of environments
+  - name: shell-environments
+    description: run shell commands for environments
     steps:
       - name: first-env
         description: the first env
         task:
           type: model_method
-          modelIdOrName: echo-env
-          methodName: write
+          modelIdOrName: shell-env
+          methodName: execute
           inputs:
             environment: ${{ inputs.environment-one }}
         dependsOn: []
@@ -101,8 +103,8 @@ jobs:
         description: the second env
         task:
           type: model_method
-          modelIdOrName: breakdown-line1
-          methodName: write
+          modelIdOrName: shell-env
+          methodName: execute
           inputs:
             environment: "qa"
         dependsOn:
@@ -130,20 +132,20 @@ inputs:
       enum: ["dev", "staging", "production"]
     minItems: 1
     uniqueItems: true
-    description: "Target environments for deployment
+    description: "Target environments for deployment"
 jobs:
-  - name: echo-environments
-    description: echo a bunch of environments
+  - name: shell-environments
+    description: run shell commands for environments
     steps:
-      - name: echo-env-${{self.env}}
+      - name: shell-env-${{self.env}}
         description: Deploy to environment
         forEach:
           item: env
           in: ${{ inputs.environments }}
         task:
           type: model_method
-          modelIdOrName: echo-env
-          methodName: write
+          modelIdOrName: shell-env
+          methodName: execute
           inputs:
             environment: ${{ self.env }}
 ```
@@ -167,8 +169,8 @@ jobs:
           in: ${{ inputs.tags }}
         task:
           type: model_method
-          modelIdOrName: echo-env
-          methodName: write
+          modelIdOrName: shell-env
+          methodName: execute
           inputs:
             key: ${{ self.tag.key }}
             value: ${{ self.tag.value }}

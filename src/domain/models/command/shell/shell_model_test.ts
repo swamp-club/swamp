@@ -254,7 +254,7 @@ function createTestContext(
 }
 
 Deno.test("SHELL_MODEL_TYPE has correct normalized type", () => {
-  assertEquals(SHELL_MODEL_TYPE.normalized, "keeb/shell");
+  assertEquals(SHELL_MODEL_TYPE.normalized, "command/shell");
 });
 
 Deno.test("shellModel has correct version", () => {

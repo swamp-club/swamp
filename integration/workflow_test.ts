@@ -33,7 +33,7 @@ import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
-import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
+import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-workflow-" });
@@ -101,7 +101,7 @@ function createTestWorkflow(name: string): Workflow {
         steps: [
           Step.create({
             name: "compile",
-            task: StepTask.model("test-model", "write"),
+            task: StepTask.model("test-model", "execute"),
           }),
         ],
       }),
@@ -111,7 +111,7 @@ function createTestWorkflow(name: string): Workflow {
         steps: [
           Step.create({
             name: "unit",
-            task: StepTask.model("test-model", "write"),
+            task: StepTask.model("test-model", "execute"),
           }),
         ],
         dependsOn: [
@@ -526,20 +526,20 @@ Deno.test("CLI: workflow run executes simple workflow", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const testModel = Definition.create({
       name: "test-model",
-      methods: { write: { arguments: { message: "hello" } } },
+      methods: { execute: { arguments: { run: "echo hello" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, testModel);
 
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = Workflow.create({
       name: "simple-run",
       jobs: [
         Job.create({
-          name: "echo-job",
+          name: "shell-job",
           steps: [
             Step.create({
-              name: "echo-step",
-              task: StepTask.model("test-model", "write"),
+              name: "shell-step",
+              task: StepTask.model("test-model", "execute"),
             }),
           ],
         }),
@@ -569,7 +569,7 @@ Deno.test("CLI: workflow run executes simple workflow", async () => {
     assertEquals(output.workflowName, "simple-run");
     assertEquals(output.status, "succeeded");
     assertEquals(output.jobs.length, 1);
-    assertEquals(output.jobs[0].name, "echo-job");
+    assertEquals(output.jobs[0].name, "shell-job");
     assertEquals(output.jobs[0].status, "succeeded");
   });
 });
@@ -582,9 +582,9 @@ Deno.test("CLI: workflow run executes workflow with dependencies", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const testModel = Definition.create({
       name: "test-model",
-      methods: { write: { arguments: { message: "hello" } } },
+      methods: { execute: { arguments: { run: "echo hello" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, testModel);
 
     const repo = new YamlWorkflowRepository(repoDir);
     const workflow = createTestWorkflow("dep-run");
@@ -760,15 +760,15 @@ Deno.test("CLI: workflow run fails when model has invalid expression syntax", as
     const input = Definition.create({
       name: "invalid-expr-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
             // Invalid: should be ${{ model.some-vpc.resource.<specName>.<instanceName>.attributes.VpcId }}
-            message: "${{some-vpc.VpcId}}",
+            run: "${{some-vpc.VpcId}}",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, input);
 
     // Create a workflow that references this model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -779,8 +779,8 @@ Deno.test("CLI: workflow run fails when model has invalid expression syntax", as
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-echo",
-              task: StepTask.model("invalid-expr-model", "write"),
+              name: "run-shell",
+              task: StepTask.model("invalid-expr-model", "execute"),
             }),
           ],
         }),
@@ -820,15 +820,15 @@ Deno.test("CLI: workflow run fails when model has malformed expression", async (
     const input = Definition.create({
       name: "malformed-expr-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
             // Malformed: missing $ prefix
-            message: "{{some-vpc.VpcId}}",
+            run: "{{some-vpc.VpcId}}",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, input);
 
     // Create a workflow that references this model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -839,8 +839,8 @@ Deno.test("CLI: workflow run fails when model has malformed expression", async (
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-echo",
-              task: StepTask.model("malformed-expr-model", "write"),
+              name: "run-shell",
+              task: StepTask.model("malformed-expr-model", "execute"),
             }),
           ],
         }),
@@ -881,30 +881,30 @@ Deno.test("CLI: workflow run succeeds with valid model expressions", async () =>
     const sourceModel = Definition.create({
       name: "source-model",
       globalArguments: {
-        message: "Hello from source",
+        run: "echo 'Hello from source'",
       },
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "Hello from source",
+            run: "echo 'Hello from source'",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, sourceModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, sourceModel);
 
     const dependentModel = Definition.create({
       name: "dependent-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
             // Valid expression referencing source-model's globalArgument
-            message: "${{ model.source-model.input.globalArguments.message }}",
+            run: "${{ model.source-model.input.globalArguments.run }}",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, dependentModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, dependentModel);
 
     // Create a workflow that runs both models
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -915,15 +915,15 @@ Deno.test("CLI: workflow run succeeds with valid model expressions", async () =>
           name: "run-models",
           steps: [
             Step.create({
-              name: "write-source",
-              task: StepTask.model("source-model", "write"),
+              name: "run-source",
+              task: StepTask.model("source-model", "execute"),
             }),
             Step.create({
-              name: "write-dependent",
-              task: StepTask.model("dependent-model", "write"),
+              name: "run-dependent",
+              task: StepTask.model("dependent-model", "execute"),
               dependsOn: [
                 {
-                  step: "write-source",
+                  step: "run-source",
                   condition: TriggerCondition.succeeded(),
                 },
               ],
@@ -968,15 +968,15 @@ Deno.test("CLI: workflow run succeeds with self reference expressions", async ()
     const input = Definition.create({
       name: "self-ref-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
             // Valid self reference
-            message: "${{ self.name }}",
+            run: "echo ${{ self.name }}",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, input);
 
     // Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -987,8 +987,8 @@ Deno.test("CLI: workflow run succeeds with self reference expressions", async ()
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-echo",
-              task: StepTask.model("self-ref-model", "write"),
+              name: "run-shell",
+              task: StepTask.model("self-ref-model", "execute"),
             }),
           ],
         }),
@@ -1030,7 +1030,7 @@ Deno.test("CLI: model delete blocked when referenced by workflow, succeeds after
       [
         "model",
         "create",
-        "swamp/echo",
+        "command/shell",
         "my-test-model",
         "--repo-dir",
         repoDir,
@@ -1058,8 +1058,8 @@ Deno.test("CLI: model delete blocked when referenced by workflow, succeeds after
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-echo",
-              task: StepTask.model("my-test-model", "write"),
+              name: "run-shell",
+              task: StepTask.model("my-test-model", "execute"),
             }),
           ],
         }),
@@ -1152,14 +1152,14 @@ Deno.test("CLI: model delete blocked when referenced by workflow using model ID"
     const input = Definition.create({
       name: "id-ref-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "test message",
+            run: "echo test",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, input);
 
     // Create a workflow that references the model by ID (not name)
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1170,9 +1170,9 @@ Deno.test("CLI: model delete blocked when referenced by workflow using model ID"
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-echo",
+              name: "run-shell",
               // Reference by ID instead of name
-              task: StepTask.model(input.id, "write"),
+              task: StepTask.model(input.id, "execute"),
             }),
           ],
         }),
@@ -1214,7 +1214,7 @@ Deno.test("CLI: model delete succeeds when not referenced by any workflow", asyn
       [
         "model",
         "create",
-        "swamp/echo",
+        "command/shell",
         "standalone-model",
         "--repo-dir",
         repoDir,
@@ -1276,7 +1276,7 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
       [
         "model",
         "create",
-        "swamp/echo",
+        "command/shell",
         "cleanup-test-model",
         "--repo-dir",
         repoDir,
@@ -1289,7 +1289,7 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
 
     // Verify the directory structure was created
     const definitionsDir = `${repoDir}/.swamp/definitions`;
-    const echoDir = `${definitionsDir}/swamp/echo`;
+    const echoDir = `${definitionsDir}/command/shell`;
     const swampDir = `${definitionsDir}/swamp`;
 
     // Check that directories exist using Deno.stat
@@ -1297,7 +1297,7 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
     assertEquals(
       echoStatBefore !== null && echoStatBefore.isDirectory,
       true,
-      "swamp/echo directory should exist before delete",
+      "command/shell directory should exist before delete",
     );
 
     // Delete the model
@@ -1320,12 +1320,12 @@ Deno.test("CLI: model delete cleans up empty type directories", async () => {
       `Model delete should succeed. stderr: ${deleteResult.stderr}`,
     );
 
-    // Verify the swamp/echo directory was cleaned up (should not exist)
+    // Verify the command/shell directory was cleaned up (should not exist)
     const echoStatAfter = await Deno.stat(echoDir).catch(() => null);
     assertEquals(
       echoStatAfter,
       null,
-      "swamp/echo directory should be cleaned up",
+      "command/shell directory should be cleaned up",
     );
 
     // Verify the swamp directory was also cleaned up
@@ -1356,9 +1356,9 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const testModel = Definition.create({
       name: "test-model",
-      methods: { write: { arguments: { message: "hello" } } },
+      methods: { execute: { arguments: { run: "echo hello" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, testModel);
 
     // Create a workflow
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1366,11 +1366,11 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
       name: "delete-test-workflow",
       jobs: [
         Job.create({
-          name: "echo-job",
+          name: "shell-job",
           steps: [
             Step.create({
-              name: "echo-step",
-              task: StepTask.model("test-model", "write"),
+              name: "shell-step",
+              task: StepTask.model("test-model", "execute"),
             }),
           ],
         }),
@@ -1445,15 +1445,15 @@ Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
     const input = Definition.create({
       name: "env-test-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
             // Use env variable expression
-            message: "${{ env.SWAMP_TEST_VAR }}",
+            run: "echo ${{ env.SWAMP_TEST_VAR }}",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, input);
 
     // Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1464,8 +1464,8 @@ Deno.test("CLI: workflow run evaluates env variable expressions", async () => {
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-echo",
-              task: StepTask.model("env-test-model", "write"),
+              name: "run-shell",
+              task: StepTask.model("env-test-model", "execute"),
             }),
           ],
         }),
@@ -1508,15 +1508,15 @@ Deno.test("CLI: workflow run evaluates inline env expression with surrounding te
     const inlineEnvModel = Definition.create({
       name: "inline-env-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
             // Inline env expression with surrounding text
-            message: "prefix-${{ env.SWAMP_VAR }}-suffix",
+            run: "echo prefix-${{ env.SWAMP_VAR }}-suffix",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, inlineEnvModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, inlineEnvModel);
 
     // Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1527,8 +1527,8 @@ Deno.test("CLI: workflow run evaluates inline env expression with surrounding te
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-inline",
-              task: StepTask.model("inline-env-model", "write"),
+              name: "run-inline",
+              task: StepTask.model("inline-env-model", "execute"),
             }),
           ],
         }),
@@ -1610,15 +1610,15 @@ Deno.test("CLI: workflow run resolves vault expressions in model inputs", async 
     const input = Definition.create({
       name: "vault-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
             // Use vault expression to get the secret
-            message: "${{ vault.get(workflow-vault, API_KEY) }}",
+            run: "echo ${{ vault.get(workflow-vault, API_KEY) }}",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, input);
 
     // 4. Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1629,8 +1629,8 @@ Deno.test("CLI: workflow run resolves vault expressions in model inputs", async 
           name: "run-vault-model",
           steps: [
             Step.create({
-              name: "write-echo",
-              task: StepTask.model("vault-model", "write"),
+              name: "run-shell",
+              task: StepTask.model("vault-model", "execute"),
             }),
           ],
         }),
@@ -1673,14 +1673,14 @@ Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
     const input = Definition.create({
       name: "data-tag-test-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "test message for data tags",
+            run: "echo 'test message for data tags'",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, input);
 
     // Create a workflow that runs the model
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1691,8 +1691,8 @@ Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
           name: "data-job",
           steps: [
             Step.create({
-              name: "write-data",
-              task: StepTask.model("data-tag-test-model", "write"),
+              name: "run-data",
+              task: StepTask.model("data-tag-test-model", "execute"),
             }),
           ],
         }),
@@ -1750,7 +1750,7 @@ Deno.test("CLI: workflow run creates Data with step-output tags", async () => {
     );
     assertEquals(
       artifact.tags.step,
-      "write-data",
+      "run-data",
       "Tag step should match step name",
     );
   });
@@ -1764,14 +1764,14 @@ Deno.test("CLI: workflow run persists data artifacts in workflow run record", as
     const input = Definition.create({
       name: "persist-test-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "test message for persistence",
+            run: "echo 'test message for persistence'",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, input);
+    await definitionRepo.save(SHELL_MODEL_TYPE, input);
 
     // Create a workflow
     const workflowRepo = new YamlWorkflowRepository(repoDir);
@@ -1782,8 +1782,8 @@ Deno.test("CLI: workflow run persists data artifacts in workflow run record", as
           name: "persist-job",
           steps: [
             Step.create({
-              name: "write-persist",
-              task: StepTask.model("persist-test-model", "write"),
+              name: "run-persist",
+              task: StepTask.model("persist-test-model", "execute"),
             }),
           ],
         }),
@@ -1834,7 +1834,7 @@ Deno.test("CLI: workflow run persists data artifacts in workflow run record", as
     );
     assertEquals(
       stepData.dataArtifacts[0].tags.step,
-      "write-persist",
+      "run-persist",
       "Tag step should match",
     );
   });
@@ -1848,22 +1848,22 @@ Deno.test("CLI: workflow run executes nested workflow via type: workflow", async
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const workflowRepo = new YamlWorkflowRepository(repoDir);
 
-    // Create echo model definitions
-    const childEcho = Definition.create({
-      name: "child-echo",
+    // Create shell model definitions
+    const childShell = Definition.create({
+      name: "child-shell",
       methods: {
-        write: { arguments: { message: "Hello from child workflow" } },
+        execute: { arguments: { run: "echo 'Hello from child workflow'" } },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, childEcho);
+    await definitionRepo.save(SHELL_MODEL_TYPE, childShell);
 
-    const parentEcho = Definition.create({
-      name: "parent-echo",
+    const parentShell = Definition.create({
+      name: "parent-shell",
       methods: {
-        write: { arguments: { message: "Hello from parent workflow" } },
+        execute: { arguments: { run: "echo 'Hello from parent workflow'" } },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, parentEcho);
+    await definitionRepo.save(SHELL_MODEL_TYPE, parentShell);
 
     // Create the child workflow
     const childWorkflow = Workflow.create({
@@ -1873,8 +1873,8 @@ Deno.test("CLI: workflow run executes nested workflow via type: workflow", async
           name: "child-job",
           steps: [
             Step.create({
-              name: "child-echo-step",
-              task: StepTask.model("child-echo", "write"),
+              name: "child-shell-step",
+              task: StepTask.model("child-shell", "execute"),
             }),
           ],
         }),
@@ -1887,11 +1887,11 @@ Deno.test("CLI: workflow run executes nested workflow via type: workflow", async
       name: "parent-workflow",
       jobs: [
         Job.create({
-          name: "parent-echo-job",
+          name: "parent-shell-job",
           steps: [
             Step.create({
-              name: "parent-echo-step",
-              task: StepTask.model("parent-echo", "write"),
+              name: "parent-shell-step",
+              task: StepTask.model("parent-shell", "execute"),
             }),
           ],
         }),
@@ -1905,7 +1905,7 @@ Deno.test("CLI: workflow run executes nested workflow via type: workflow", async
           ],
           dependsOn: [
             {
-              job: "parent-echo-job",
+              job: "parent-shell-job",
               condition: TriggerCondition.succeeded(),
             },
           ],
@@ -1937,9 +1937,9 @@ Deno.test("CLI: workflow run executes nested workflow via type: workflow", async
     assertEquals(output.status, "succeeded");
     assertEquals(output.workflowName, "parent-workflow");
 
-    // Verify parent echo job succeeded
+    // Verify parent shell job succeeded
     const parentJob = output.jobs.find(
-      (j: { name: string }) => j.name === "parent-echo-job",
+      (j: { name: string }) => j.name === "parent-shell-job",
     );
     assertEquals(parentJob?.status, "succeeded");
     assertEquals(parentJob?.steps[0]?.status, "succeeded");

@@ -528,20 +528,21 @@ export const model = {
 ### Single Method Extension
 
 ```typescript
-// extensions/models/echo_audit.ts
+// extensions/models/shell_audit.ts
 import { z } from "npm:zod@4";
 
 export const extension = {
-  type: "swamp/echo",
+  type: "command/shell",
   methods: [{
     audit: {
-      description: "Audit the echo message",
+      description: "Audit the shell command execution",
       arguments: z.object({}),
       execute: async (args, context) => {
         // Extensions use the target model's resources/files
-        const handle = await context.writeResource!("message", "message", {
-          message: `Audited: ${context.definition.name}`,
-          timestamp: new Date().toISOString(),
+        const handle = await context.writeResource!("result", "result", {
+          exitCode: 0,
+          command: `audit: ${context.definition.name}`,
+          executedAt: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
       },
@@ -553,30 +554,32 @@ export const extension = {
 ### Multiple Methods in One Extension File
 
 ```typescript
-// extensions/models/echo_extras.ts
+// extensions/models/shell_extras.ts
 import { z } from "npm:zod@4";
 
 export const extension = {
-  type: "swamp/echo",
+  type: "command/shell",
   methods: [{
     audit: {
-      description: "Audit the echo message",
+      description: "Audit the shell command execution",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("message", "message", {
-          message: `Audited: ${context.definition.name}`,
-          timestamp: new Date().toISOString(),
+        const handle = await context.writeResource!("result", "result", {
+          exitCode: 0,
+          command: `audit: ${context.definition.name}`,
+          executedAt: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
       },
     },
     validate: {
-      description: "Validate the echo message format",
+      description: "Validate the shell command format",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("message", "message", {
-          message: `Valid: ${context.globalArgs.message.length > 0}`,
-          timestamp: new Date().toISOString(),
+        const handle = await context.writeResource!("result", "result", {
+          exitCode: 0,
+          command: `valid: ${context.globalArgs.run?.length > 0}`,
+          executedAt: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
       },
@@ -596,5 +599,5 @@ extensions/models/
     s3_audit.ts           # export const extension (extends aws s3)
   monitoring/
     health_check.ts       # export const model (new type)
-  echo_audit.ts           # export const extension (extends swamp/echo)
+  shell_audit.ts          # export const extension (extends command/shell)
 ```

@@ -86,13 +86,13 @@ async function runCliCommand(
   };
 }
 
-async function createEchoModelWithInputs(
+async function createShellModelWithInputs(
   repoDir: string,
   name: string,
 ): Promise<void> {
   // Create model with inputs schema
   const modelData = {
-    type: "swamp/echo",
+    type: "command/shell",
     typeVersion: 1,
     id: crypto.randomUUID(),
     name,
@@ -110,15 +110,15 @@ async function createEchoModelWithInputs(
     },
     globalArguments: {},
     methods: {
-      write: {
+      execute: {
         arguments: {
-          message: "${{ inputs.environment }}",
+          run: "echo '${{ inputs.environment }}'",
         },
       },
     },
   };
 
-  const modelDir = join(repoDir, ".swamp/definitions/swamp/echo");
+  const modelDir = join(repoDir, ".swamp/definitions/command/shell");
   await ensureDir(modelDir);
   await Deno.writeTextFile(
     join(modelDir, `${modelData.id}.yaml`),
@@ -131,15 +131,15 @@ async function createEchoModelWithInputs(
 Deno.test("CLI: model method run with valid input succeeds", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModelWithInputs(repoDir, "echo-env");
+    await createShellModelWithInputs(repoDir, "shell-env");
 
     const result = await runCliCommand(
       [
         "model",
         "method",
         "run",
-        "echo-env",
-        "write",
+        "shell-env",
+        "execute",
         "--repo-dir",
         repoDir,
         "--input",
@@ -151,22 +151,22 @@ Deno.test("CLI: model method run with valid input succeeds", async () => {
 
     assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
     const output = JSON.parse(result.stdout);
-    assertEquals(output.modelName, "echo-env");
+    assertEquals(output.modelName, "shell-env");
   });
 });
 
 Deno.test("CLI: model method run with invalid enum value fails", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModelWithInputs(repoDir, "echo-env-enum");
+    await createShellModelWithInputs(repoDir, "shell-env-enum");
 
     const result = await runCliCommand(
       [
         "model",
         "method",
         "run",
-        "echo-env-enum",
-        "write",
+        "shell-env-enum",
+        "execute",
         "--repo-dir",
         repoDir,
         "--input",
@@ -184,15 +184,15 @@ Deno.test("CLI: model method run with invalid enum value fails", async () => {
 Deno.test("CLI: model method run with missing required input fails", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModelWithInputs(repoDir, "echo-env-missing");
+    await createShellModelWithInputs(repoDir, "shell-env-missing");
 
     const result = await runCliCommand(
       [
         "model",
         "method",
         "run",
-        "echo-env-missing",
-        "write",
+        "shell-env-missing",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -210,7 +210,7 @@ Deno.test("CLI: model method run with missing required input fails", async () =>
 Deno.test("CLI: workflow run with valid input succeeds", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModelWithInputs(repoDir, "echo-model");
+    await createShellModelWithInputs(repoDir, "echo-model");
 
     // Create workflow with inputs
     const workflowData = {
@@ -236,7 +236,7 @@ Deno.test("CLI: workflow run with valid input succeeds", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "echo-model",
-                methodName: "write",
+                methodName: "execute",
                 inputs: {
                   environment: '${{ inputs["environment-one"] }}',
                 },
@@ -344,7 +344,7 @@ Deno.test("CLI: workflow run with input-file works", async () => {
 
     // Create model definition so the step can execute
     const modelData = {
-      type: "swamp/echo",
+      type: "command/shell",
       typeVersion: 1,
       id: crypto.randomUUID(),
       name: "test-model",
@@ -352,14 +352,14 @@ Deno.test("CLI: workflow run with input-file works", async () => {
       tags: {},
       globalArguments: {},
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "hello",
+            run: "echo 'hello'",
           },
         },
       },
     };
-    const modelDir = join(repoDir, ".swamp/definitions/swamp/echo");
+    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -373,9 +373,9 @@ Deno.test("CLI: workflow run with input-file works", async () => {
       version: 1,
       inputs: {
         properties: {
-          message: { type: "string" },
+          run: { type: "string" },
         },
-        required: ["message"],
+        required: ["run"],
       },
       jobs: [
         {
@@ -386,7 +386,7 @@ Deno.test("CLI: workflow run with input-file works", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [],
               weight: 0,
@@ -406,7 +406,7 @@ Deno.test("CLI: workflow run with input-file works", async () => {
     );
 
     // Create input file
-    const inputData = { message: "hello from file" };
+    const inputData = { run: "echo 'hello from file'" };
     const inputFilePath = join(repoDir, "inputs.yaml");
     await Deno.writeTextFile(
       inputFilePath,
@@ -439,7 +439,7 @@ Deno.test("CLI: input validation reports type mismatch", async () => {
 
     // Create model with string type input
     const modelData = {
-      type: "swamp/echo",
+      type: "command/shell",
       typeVersion: 1,
       id: crypto.randomUUID(),
       name: "type-check-model",
@@ -453,15 +453,15 @@ Deno.test("CLI: input validation reports type mismatch", async () => {
       },
       globalArguments: {},
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "${{ inputs.name }}",
+            run: "echo '${{ inputs.name }}'",
           },
         },
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/swamp/echo");
+    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -474,7 +474,7 @@ Deno.test("CLI: input validation reports type mismatch", async () => {
         "method",
         "run",
         "type-check-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--input",
@@ -495,7 +495,7 @@ Deno.test("CLI: input validation reports multiple errors", async () => {
 
     // Create model with multiple inputs
     const modelData = {
-      type: "swamp/echo",
+      type: "command/shell",
       typeVersion: 1,
       id: crypto.randomUUID(),
       name: "multi-error-model",
@@ -510,15 +510,15 @@ Deno.test("CLI: input validation reports multiple errors", async () => {
       },
       globalArguments: {},
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "${{ inputs.name }}",
+            run: "echo '${{ inputs.name }}'",
           },
         },
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/swamp/echo");
+    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -531,7 +531,7 @@ Deno.test("CLI: input validation reports multiple errors", async () => {
         "method",
         "run",
         "multi-error-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--input",

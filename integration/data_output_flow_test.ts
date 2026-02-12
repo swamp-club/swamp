@@ -36,7 +36,7 @@ import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
-import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
+import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-data-output-flow-" });
@@ -105,9 +105,11 @@ Deno.test("Integration: full flow - create definition, run method, verify output
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "e2e-echo-model",
-      methods: { write: { arguments: { message: "Hello from E2E test!" } } },
+      methods: {
+        execute: { arguments: { run: "echo 'Hello from E2E test'" } },
+      },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, definition);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     // 2. Run the method to produce output
     const runResult = await runCliCommand(
@@ -116,7 +118,7 @@ Deno.test("Integration: full flow - create definition, run method, verify output
         "method",
         "run",
         "e2e-echo-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -132,7 +134,7 @@ Deno.test("Integration: full flow - create definition, run method, verify output
 
     const runOutput = JSON.parse(runResult.stdout);
     assertEquals(runOutput.modelName, "e2e-echo-model");
-    assertEquals(runOutput.methodName, "write");
+    assertEquals(runOutput.methodName, "execute");
     assertEquals(runOutput.data !== undefined, true, "Should have data output");
 
     // 3. List outputs and verify our execution appears
@@ -170,7 +172,7 @@ Deno.test("Integration: full flow - create definition, run method, verify output
       true,
       "Should find our model's output",
     );
-    assertEquals(ourOutput.methodName, "write");
+    assertEquals(ourOutput.methodName, "execute");
     assertEquals(ourOutput.status, "succeeded");
 
     // 4. Get output details by ID
@@ -222,10 +224,9 @@ Deno.test("Integration: full flow - create definition, run method, verify output
     const dataOutput = JSON.parse(outputDataResult.stdout);
     assertEquals(dataOutput.outputId, ourOutput.id);
     assertEquals(typeof dataOutput.data, "object");
-    assertEquals(dataOutput.data.message, "Hello from E2E test!");
-
-    // Note: Echo model doesn't produce log artifacts, so we skip log testing here
-    // Log testing would require a model that produces logs (e.g., shell model)
+    // Shell model produces result with exitCode
+    assertEquals(dataOutput.data.exitCode, 0);
+    assertEquals(typeof dataOutput.data.command, "string");
   });
 });
 
@@ -238,9 +239,9 @@ Deno.test("Integration: data commands work with model data artifacts", async () 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "data-cmd-test-model",
-      methods: { write: { arguments: { message: "Data command test" } } },
+      methods: { execute: { arguments: { run: "echo 'Data command test'" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, definition);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     const runResult = await runCliCommand(
       [
@@ -248,7 +249,7 @@ Deno.test("Integration: data commands work with model data artifacts", async () 
         "method",
         "run",
         "data-cmd-test-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -331,7 +332,9 @@ Deno.test("Integration: data commands work with model data artifacts", async () 
     // Read the content file to verify the data
     const content = await Deno.readTextFile(getOutput.contentPath);
     const parsedContent = JSON.parse(content);
-    assertEquals(parsedContent.message, "Data command test");
+    // Shell model produces result with exitCode and command
+    assertEquals(parsedContent.exitCode, 0);
+    assertEquals(typeof parsedContent.command, "string");
 
     // 4. Get data versions
     const dataVersionsResult = await runCliCommand(
@@ -370,9 +373,9 @@ Deno.test("Integration: output search with partial ID matching", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "partial-id-model",
-      methods: { write: { arguments: { message: "Partial ID test" } } },
+      methods: { execute: { arguments: { run: "echo 'Partial ID test'" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, definition);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     await runCliCommand(
       [
@@ -380,7 +383,7 @@ Deno.test("Integration: output search with partial ID matching", async () => {
         "method",
         "run",
         "partial-id-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -442,9 +445,11 @@ Deno.test("Integration: output data with field extraction", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "field-extract-model",
-      methods: { write: { arguments: { message: "Extract specific field" } } },
+      methods: {
+        execute: { arguments: { run: "echo 'Extract specific field'" } },
+      },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, definition);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     await runCliCommand(
       [
@@ -452,7 +457,7 @@ Deno.test("Integration: output data with field extraction", async () => {
         "method",
         "run",
         "field-extract-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -478,7 +483,7 @@ Deno.test("Integration: output data with field extraction", async () => {
       (o: { modelName: string }) => o.modelName === "field-extract-model",
     );
 
-    // Get specific field from data
+    // Get specific field from data (shell model produces exitCode)
     const fieldResult = await runCliCommand(
       [
         "model",
@@ -486,7 +491,7 @@ Deno.test("Integration: output data with field extraction", async () => {
         "data",
         output.id,
         "--field",
-        "message",
+        "exitCode",
         "--repo-dir",
         repoDir,
         "--json",
@@ -501,13 +506,13 @@ Deno.test("Integration: output data with field extraction", async () => {
     );
 
     const fieldOutput = JSON.parse(fieldResult.stdout);
-    assertEquals(fieldOutput.field, "message");
-    assertEquals(fieldOutput.data, "Extract specific field");
+    assertEquals(fieldOutput.field, "exitCode");
+    assertEquals(fieldOutput.data, 0);
   });
 });
 
-// Note: Log tests are skipped because echo model doesn't produce log artifacts.
-// Log testing would require a model that produces logs (e.g., keeb/shell model).
+// Note: Log tests are skipped because shell model produces log artifacts differently.
+// Log testing would require a model that produces logs (e.g., command/shell model).
 
 Deno.test("Integration: multiple method runs create separate outputs", async () => {
   await withTempDir(async (repoDir) => {
@@ -518,9 +523,9 @@ Deno.test("Integration: multiple method runs create separate outputs", async () 
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "multi-run-model",
-      methods: { write: { arguments: { message: "Multi-run test" } } },
+      methods: { execute: { arguments: { run: "echo 'Multi-run test'" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, definition);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     // Run the method twice
     await runCliCommand(
@@ -529,7 +534,7 @@ Deno.test("Integration: multiple method runs create separate outputs", async () 
         "method",
         "run",
         "multi-run-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -543,7 +548,7 @@ Deno.test("Integration: multiple method runs create separate outputs", async () 
         "method",
         "run",
         "multi-run-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -595,9 +600,9 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     let definition = Definition.create({
       name: "version-test-model",
-      methods: { write: { arguments: { message: "Version 1" } } },
+      methods: { execute: { arguments: { run: "echo 'Version 1'" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, definition);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     // Run first time
     await runCliCommand(
@@ -606,7 +611,7 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
         "method",
         "run",
         "version-test-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -614,11 +619,13 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
       Deno.cwd(),
     );
 
-    // Update message and run again
-    definition =
-      (await definitionRepo.findByName(ECHO_MODEL_TYPE, "version-test-model"))!;
-    definition.setMethodArgument("write", "message", "Version 2");
-    await definitionRepo.save(ECHO_MODEL_TYPE, definition);
+    // Update run command and run again
+    definition = (await definitionRepo.findByName(
+      SHELL_MODEL_TYPE,
+      "version-test-model",
+    ))!;
+    definition.setMethodArgument("execute", "run", "echo 'Version 2'");
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     await runCliCommand(
       [
@@ -626,7 +633,7 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
         "method",
         "run",
         "version-test-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -708,10 +715,10 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
     const v1Output = JSON.parse(v1Result.stdout);
     assertEquals(v1Output.version, 1);
 
-    // Read content from file path
+    // Read content from file path - shell model produces exitCode
     const v1Content = await Deno.readTextFile(v1Output.contentPath);
     const v1Parsed = JSON.parse(v1Content);
-    assertEquals(v1Parsed.message, "Version 1");
+    assertEquals(v1Parsed.exitCode, 0);
 
     // Get latest (should be version 2 or higher)
     const latestResult = await runCliCommand(
@@ -740,10 +747,10 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
       "Latest should be version 2 or higher",
     );
 
-    // Read content from file path
+    // Read content from file path - shell model produces exitCode
     const latestContent = await Deno.readTextFile(latestOutput.contentPath);
     const latestParsed = JSON.parse(latestContent);
-    assertEquals(latestParsed.message, "Version 2");
+    assertEquals(latestParsed.exitCode, 0);
   });
 });
 
@@ -809,9 +816,9 @@ Deno.test("Integration: output data fails for non-existent field", async () => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const definition = Definition.create({
       name: "field-error-model",
-      methods: { write: { arguments: { message: "Field error test" } } },
+      methods: { execute: { arguments: { run: "echo 'Field error test'" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, definition);
+    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
     await runCliCommand(
       [
@@ -819,7 +826,7 @@ Deno.test("Integration: output data fails for non-existent field", async () => {
         "method",
         "run",
         "field-error-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",

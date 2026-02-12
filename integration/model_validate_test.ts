@@ -27,7 +27,7 @@ import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
-import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
+import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-validate-" });
@@ -82,12 +82,12 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
+    const modelType = SHELL_MODEL_TYPE;
 
     // Create a valid echo model definition
     const definition = Definition.create({
       name: "valid-echo-definition",
-      methods: { write: { arguments: { message: "Hello, world!" } } },
+      methods: { execute: { arguments: { run: "Hello, world!" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -113,7 +113,7 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
     // Parse and verify JSON output
     const output = JSON.parse(result.stdout);
     assertEquals(output.modelName, "valid-echo-definition");
-    assertEquals(output.type, "swamp/echo");
+    assertEquals(output.type, "command/shell");
     assertEquals(output.passed, true);
     assertEquals(output.validations.length, 4); // Definition schema + Global arguments + Method arguments + Expression paths
     assertEquals(
@@ -127,12 +127,12 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
+    const modelType = SHELL_MODEL_TYPE;
 
     // Create a valid echo model definition
     const definition = Definition.create({
       name: "echo-with-data",
-      methods: { write: { arguments: { message: "Hello, world!" } } },
+      methods: { execute: { arguments: { run: "Hello, world!" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -167,12 +167,12 @@ Deno.test("CLI: model validate fails for invalid definition attributes", async (
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
+    const modelType = SHELL_MODEL_TYPE;
 
-    // Create an echo model definition with invalid method arguments (missing message)
+    // Create a shell model definition with invalid method arguments (shell requires 'run')
     const definition = Definition.create({
       name: "invalid-echo-definition",
-      methods: { write: { arguments: { wrongField: "oops" } } },
+      methods: { execute: { arguments: { wrongField: "oops" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -216,12 +216,12 @@ Deno.test("CLI: model validate can look up by UUID", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
+    const modelType = SHELL_MODEL_TYPE;
 
     // Create a valid echo model definition
     const definition = Definition.create({
       name: "uuid-lookup-test",
-      methods: { write: { arguments: { message: "Hello" } } },
+      methods: { execute: { arguments: { run: "Hello" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -281,12 +281,12 @@ Deno.test("CLI: model validate with --json outputs JSON", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
+    const modelType = SHELL_MODEL_TYPE;
 
     // Create a valid echo model definition
     const definition = Definition.create({
       name: "interactive-test",
-      methods: { write: { arguments: { message: "Hello" } } },
+      methods: { execute: { arguments: { run: "Hello" } } },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -311,7 +311,7 @@ Deno.test("CLI: model validate with --json outputs JSON", async () => {
     // Verify JSON output is produced due to auto-detection
     const output = JSON.parse(result.stdout);
     assertEquals(output.modelName, "interactive-test");
-    assertEquals(output.type, "swamp/echo");
+    assertEquals(output.type, "command/shell");
     assertEquals(output.passed, true);
   });
 });
@@ -322,16 +322,16 @@ Deno.test("CLI: model validate with no args validates all models", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
+    const modelType = SHELL_MODEL_TYPE;
 
     // Create multiple valid echo model definitions
     const definition1 = Definition.create({
       name: "all-test-1",
-      methods: { write: { arguments: { message: "Hello 1" } } },
+      methods: { execute: { arguments: { run: "Hello 1" } } },
     });
     const definition2 = Definition.create({
       name: "all-test-2",
-      methods: { write: { arguments: { message: "Hello 2" } } },
+      methods: { execute: { arguments: { run: "Hello 2" } } },
     });
     await definitionRepo.save(modelType, definition1);
     await definitionRepo.save(modelType, definition2);
@@ -374,16 +374,16 @@ Deno.test("CLI: model validate with no args exits 1 when any model fails", async
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
+    const modelType = SHELL_MODEL_TYPE;
 
     // Create one valid and one invalid model
     const validDefinition = Definition.create({
       name: "valid-model",
-      methods: { write: { arguments: { message: "Hello" } } },
+      methods: { execute: { arguments: { run: "Hello" } } },
     });
     const invalidDefinition = Definition.create({
       name: "invalid-model",
-      methods: { write: { arguments: { wrongField: "oops" } } },
+      methods: { execute: { arguments: { wrongField: "oops" } } },
     });
     await definitionRepo.save(modelType, validDefinition);
     await definitionRepo.save(modelType, invalidDefinition);
@@ -444,16 +444,16 @@ Deno.test("CLI: model validate with no args and --json outputs JSON", async () =
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ECHO_MODEL_TYPE;
+    const modelType = SHELL_MODEL_TYPE;
 
     // Create multiple valid echo model definitions
     const definition1 = Definition.create({
       name: "interactive-all-1",
-      methods: { write: { arguments: { message: "Hello 1" } } },
+      methods: { execute: { arguments: { run: "Hello 1" } } },
     });
     const definition2 = Definition.create({
       name: "interactive-all-2",
-      methods: { write: { arguments: { message: "Hello 2" } } },
+      methods: { execute: { arguments: { run: "Hello 2" } } },
     });
     await definitionRepo.save(modelType, definition1);
     await definitionRepo.save(modelType, definition2);

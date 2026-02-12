@@ -47,7 +47,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 Deno.test("Definition: create and save definition with static attributes", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     // Create a definition with static attributes
     const definition = Definition.create({
@@ -70,7 +70,7 @@ Deno.test("Definition: create and save definition with static attributes", async
     // Verify the content
     const content = await Deno.readTextFile(path);
     const data = parseYaml(content) as Record<string, unknown>;
-    assertEquals(data.type, "swamp/echo");
+    assertEquals(data.type, "command/shell");
     assertEquals(data.typeVersion, undefined);
     assertEquals(data.name, "my-echo");
     assertEquals(data.version, 1);
@@ -85,7 +85,7 @@ Deno.test("Definition: create and save definition with static attributes", async
 Deno.test("Definition: definition with CEL expression is preserved on save", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     // Create a definition with CEL expressions
     const definition = Definition.create({
@@ -118,7 +118,7 @@ Deno.test("Definition: definition with CEL expression is preserved on save", asy
 Deno.test("Definition: evaluate definition with CEL expressions referencing self", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     // Create a definition with self-referencing CEL expression
     const definition = Definition.create({
@@ -157,7 +157,7 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing self
 Deno.test("Definition: evaluate definition with CEL expressions referencing other models", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     // Create a source definition that will be referenced
     // Note: Using underscore instead of hyphen because CEL interprets hyphens as subtraction
@@ -208,7 +208,7 @@ Deno.test("Definition: evaluate definition with CEL expressions referencing othe
 Deno.test("Definition: evaluate definition with inputs parameter", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     // Create a definition with inputs schema and expression
     const definition = Definition.create({
@@ -256,7 +256,7 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const evaluatedRepo = new YamlEvaluatedDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     // Create a definition with CEL expression
     const definition = Definition.create({
@@ -299,7 +299,7 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
 Deno.test("Definition: definition without expressions returns hadExpressions=false", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     // Create a definition without any expressions
     const definition = Definition.create({
@@ -332,7 +332,7 @@ Deno.test("Definition: definition without expressions returns hadExpressions=fal
 Deno.test("Definition: findByName works correctly", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     // Create multiple definitions
     const def1 = Definition.create({
@@ -362,7 +362,7 @@ Deno.test("Definition: findByName works correctly", async () => {
 Deno.test("Definition: findByNameGlobal works across types", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const type1 = ModelType.create("swamp/echo");
+    const type1 = ModelType.create("command/shell");
     const type2 = ModelType.create("aws/ec2/vpc");
 
     // Create definitions in different types

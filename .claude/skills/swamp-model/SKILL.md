@@ -60,7 +60,7 @@ swamp model type search "echo" --json
 {
   "query": "",
   "results": [
-    { "raw": "swamp/echo", "normalized": "swamp/echo" }
+    { "raw": "command/shell", "normalized": "command/shell" }
   ]
 }
 ```
@@ -70,21 +70,21 @@ swamp model type search "echo" --json
 Get the full schema and available methods for a type.
 
 ```bash
-swamp model type describe swamp/echo --json
+swamp model type describe command/shell --json
 ```
 
 **Output shape:**
 
 ```json
 {
-  "type": { "raw": "swamp/echo", "normalized": "swamp/echo" },
+  "type": { "raw": "command/shell", "normalized": "command/shell" },
   "version": "2026.02.09.1",
   "globalArguments": {/* JSON Schema */},
   "resourceAttributesSchema": {/* JSON Schema */},
   "methods": [
     {
-      "name": "write",
-      "description": "Write the input message to a resource with a timestamp",
+      "name": "execute",
+      "description": "Execute a shell command and capture output",
       "arguments": {/* JSON Schema */}
     }
   ]
@@ -99,35 +99,33 @@ swamp model type describe swamp/echo --json
 ## Create Model Inputs
 
 ```bash
-swamp model create swamp/echo my-echo --json
+swamp model create command/shell my-shell --json
 ```
 
 **Output shape:**
 
 ```json
 {
-  "path": "definitions/swamp/echo/my-echo.yaml",
-  "type": "swamp/echo",
-  "name": "my-echo"
+  "path": "definitions/command/shell/my-shell.yaml",
+  "type": "command/shell",
+  "name": "my-shell"
 }
 ```
 
-After creation, edit the YAML file to set `globalArguments` according to the
-`globalArguments` schema from `type describe`, and per-method `arguments` in the
+After creation, edit the YAML file to set per-method `arguments` in the
 `methods` section.
 
 **Example input file:**
 
 ```yaml
 id: 550e8400-e29b-41d4-a716-446655440000
-name: my-echo
+name: my-shell
 version: 1
 tags: {}
-globalArguments:
-  message: "Hello, world!"
 methods:
-  write:
-    arguments: {}
+  execute:
+    arguments:
+      run: "echo 'Hello, world!'"
 ```
 
 ### Model Inputs Schema
@@ -168,8 +166,8 @@ edit directly with the Edit tool, then validate with
 
 **Alternative methods:**
 
-- Interactive: `swamp model edit my-echo` (opens in system editor)
-- Stdin: `cat updated.yaml | swamp model edit my-echo --json`
+- Interactive: `swamp model edit my-shell` (opens in system editor)
+- Stdin: `cat updated.yaml | swamp model edit my-shell --json`
 
 Run `swamp repo index` if search results seem stale after editing.
 
@@ -178,7 +176,7 @@ Run `swamp repo index` if search results seem stale after editing.
 Delete a model and all related artifacts (data, outputs, logs).
 
 ```bash
-swamp model delete my-echo --json
+swamp model delete my-shell --json
 ```
 
 **Output shape:**
@@ -187,7 +185,7 @@ swamp model delete my-echo --json
 {
   "deleted": true,
   "modelId": "abc-123",
-  "modelName": "my-echo",
+  "modelName": "my-shell",
   "artifactsDeleted": {
     "outputs": 5,
     "dataItems": 3
@@ -200,7 +198,7 @@ swamp model delete my-echo --json
 Validate a model definition against its type schema.
 
 ```bash
-swamp model validate my-echo --json
+swamp model validate my-shell --json
 swamp model validate --json  # Validate all models
 ```
 
@@ -209,11 +207,11 @@ swamp model validate --json  # Validate all models
 ```json
 {
   "modelId": "abc-123",
-  "modelName": "my-echo",
-  "type": "swamp/echo",
+  "modelName": "my-shell",
+  "type": "command/shell",
   "validations": [
-    { "name": "Global arguments schema validation", "passed": true },
-    { "name": "Required global arguments present", "passed": true },
+    { "name": "Definition schema validation", "passed": true },
+    { "name": "Method arguments validation", "passed": true },
     { "name": "Expression syntax valid", "passed": true }
   ],
   "passed": true
@@ -225,7 +223,7 @@ swamp model validate --json  # Validate all models
 ```json
 {
   "models": [
-    { "modelId": "abc-123", "modelName": "my-echo", "validations": [...], "passed": true }
+    { "modelId": "abc-123", "modelName": "my-shell", "validations": [...], "passed": true }
   ],
   "totalPassed": 5,
   "totalFailed": 1,
@@ -251,10 +249,11 @@ Model inputs support CEL expressions using `${{ <expression> }}` syntax.
 | `self.globalArguments.<field>`                                          | This model's own global argument                        |
 
 > **Instance name convention:** For single-instance resources (most models),
-> `instanceName` equals `specName`. For example, a model `my-echo` with resource
-> spec `message` is accessed as
-> `model.my-echo.resource.message.message.attributes.field`. Factory models use
-> distinct instance names — see the `swamp-extension-model` skill for details.
+> `instanceName` equals `specName`. For example, a model `my-shell` with
+> resource spec `result` is accessed as
+> `model.my-shell.resource.result.result.attributes.exitCode`. Factory models
+> use distinct instance names — see the `swamp-extension-model` skill for
+> details.
 
 ### CEL Operations
 
@@ -351,7 +350,7 @@ swamp model evaluate --all --json
 Execute a method on a model input.
 
 ```bash
-swamp model method run my-echo write --json
+swamp model method run my-shell execute --json
 swamp model method run my-deploy create --input '{"environment": "prod"}' --json
 swamp model method run my-deploy create --input-file inputs.yaml --json
 swamp model method run my-deploy create --last-evaluated --json
@@ -371,12 +370,12 @@ swamp model method run my-deploy create --last-evaluated --json
 {
   "outputId": "output-789",
   "modelId": "abc-123",
-  "modelName": "my-echo",
-  "method": "write",
+  "modelName": "my-shell",
+  "method": "execute",
   "status": "succeeded",
   "duration": 150,
   "artifacts": {
-    "resource": ".swamp/data/swamp/echo/abc-123/message/1/raw"
+    "resource": ".swamp/data/command/shell/abc-123/result/1/raw"
   }
 }
 ```
@@ -389,7 +388,7 @@ Find method execution outputs.
 
 ```bash
 swamp model output search --json
-swamp model output search "my-echo" --json
+swamp model output search "my-shell" --json
 ```
 
 **Output shape:**
@@ -400,8 +399,8 @@ swamp model output search "my-echo" --json
   "results": [
     {
       "outputId": "output-789",
-      "modelName": "my-echo",
-      "method": "write",
+      "modelName": "my-shell",
+      "method": "execute",
       "status": "succeeded",
       "createdAt": "2025-01-15T10:30:00Z"
     }
@@ -415,7 +414,7 @@ Get full details of a specific output or latest output for a model.
 
 ```bash
 swamp model output get output-789 --json
-swamp model output get my-echo --json  # Latest output for model
+swamp model output get my-shell --json  # Latest output for model
 ```
 
 **Output shape:**
@@ -424,9 +423,9 @@ swamp model output get my-echo --json  # Latest output for model
 {
   "outputId": "output-789",
   "modelId": "abc-123",
-  "modelName": "my-echo",
-  "type": "swamp/echo",
-  "method": "write",
+  "modelName": "my-shell",
+  "type": "command/shell",
+  "method": "execute",
   "status": "succeeded",
   "startedAt": "2025-01-15T10:30:00Z",
   "completedAt": "2025-01-15T10:30:00.150Z",
@@ -449,7 +448,7 @@ swamp model output logs output-789 --json
 ```json
 {
   "outputId": "output-789",
-  "logs": "Executing write method...\nMessage written successfully."
+  "logs": "Executing shell command...\nHello, world!\nCommand completed successfully."
 }
 ```
 
@@ -467,22 +466,23 @@ swamp model output data output-789 --json
 {
   "outputId": "output-789",
   "data": {
-    "message": "Hello, world!",
-    "timestamp": "2025-01-15T10:30:00Z"
+    "exitCode": 0,
+    "command": "echo 'Hello, world!'",
+    "executedAt": "2025-01-15T10:30:00Z"
   }
 }
 ```
 
 ## Workflow Example
 
-1. **Search** for the right type: `swamp model type search "echo" --json`
+1. **Search** for the right type: `swamp model type search "shell" --json`
 2. **Describe** to understand the schema:
-   `swamp model type describe swamp/echo --json`
-3. **Create** an input file: `swamp model create swamp/echo my-message --json`
-4. **Edit** the YAML file to set `globalArguments.message`
-5. **Validate** the model: `swamp model validate my-message --json`
-6. **Run** the method: `swamp model method run my-message write --json`
-7. **View** the output: `swamp model output get my-message --json`
+   `swamp model type describe command/shell --json`
+3. **Create** an input file: `swamp model create command/shell my-shell --json`
+4. **Edit** the YAML file to set `methods.execute.arguments.run`
+5. **Validate** the model: `swamp model validate my-shell --json`
+6. **Run** the method: `swamp model method run my-shell execute --json`
+7. **View** the output: `swamp model output get my-shell --json`
 
 ## Data Ownership
 

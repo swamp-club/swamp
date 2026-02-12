@@ -41,7 +41,7 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
-import { ECHO_MODEL_TYPE } from "../src/domain/models/echo/echo_model.ts";
+import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-workflow-arch-" });
@@ -105,10 +105,10 @@ Deno.test("Workflow Architecture: workflow references model by name", async () =
 
     // Create model definition
     const model = Definition.create({
-      name: "my-echo-model",
-      methods: { write: { arguments: { message: "Hello from model" } } },
+      name: "my-shell-model",
+      methods: { execute: { arguments: { run: "Hello from model" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     // Create workflow that references the model
     const workflow = Workflow.create({
@@ -118,8 +118,8 @@ Deno.test("Workflow Architecture: workflow references model by name", async () =
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-echo",
-              task: StepTask.model("my-echo-model", "write"),
+              name: "run-shell",
+              task: StepTask.model("my-shell-model", "execute"),
             }),
           ],
         }),
@@ -162,9 +162,9 @@ Deno.test("Workflow Architecture: workflow references model by UUID", async () =
     // Create model definition
     const model = Definition.create({
       name: "uuid-ref-model",
-      methods: { write: { arguments: { message: "Referenced by UUID" } } },
+      methods: { execute: { arguments: { run: "Referenced by UUID" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     // Create workflow that references model by UUID
     const workflow = Workflow.create({
@@ -174,8 +174,8 @@ Deno.test("Workflow Architecture: workflow references model by UUID", async () =
           name: "run-model",
           steps: [
             Step.create({
-              name: "write-echo",
-              task: StepTask.model(model.id, "write"),
+              name: "run-shell",
+              task: StepTask.model(model.id, "execute"),
             }),
           ],
         }),
@@ -214,9 +214,9 @@ Deno.test("Workflow Architecture: step creates Data artifact", async () => {
     // Create model
     const model = Definition.create({
       name: "data-creator-model",
-      methods: { write: { arguments: { message: "Creating data artifact" } } },
+      methods: { execute: { arguments: { run: "Creating data artifact" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     // Create workflow
     const workflow = Workflow.create({
@@ -226,8 +226,8 @@ Deno.test("Workflow Architecture: step creates Data artifact", async () => {
           name: "create-data",
           steps: [
             Step.create({
-              name: "write-data",
-              task: StepTask.model("data-creator-model", "write"),
+              name: "run-data",
+              task: StepTask.model("data-creator-model", "execute"),
             }),
           ],
         }),
@@ -283,7 +283,7 @@ Deno.test("Workflow Architecture: step creates Data artifact", async () => {
     assertExists(artifact.tags);
     assertEquals(artifact.tags.source, "step-output");
     assertEquals(artifact.tags.workflow, "data-artifact-workflow");
-    assertEquals(artifact.tags.step, "write-data");
+    assertEquals(artifact.tags.step, "run-data");
   });
 });
 
@@ -296,14 +296,14 @@ Deno.test("Workflow Architecture: multiple steps create multiple Data artifacts"
     // Create multiple models
     const model1 = Definition.create({
       name: "model-one",
-      methods: { write: { arguments: { message: "First model" } } },
+      methods: { execute: { arguments: { run: "First model" } } },
     });
     const model2 = Definition.create({
       name: "model-two",
-      methods: { write: { arguments: { message: "Second model" } } },
+      methods: { execute: { arguments: { run: "Second model" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model1);
-    await definitionRepo.save(ECHO_MODEL_TYPE, model2);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model1);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model2);
 
     // Create workflow with multiple steps
     const workflow = Workflow.create({
@@ -314,11 +314,11 @@ Deno.test("Workflow Architecture: multiple steps create multiple Data artifacts"
           steps: [
             Step.create({
               name: "step-one",
-              task: StepTask.model("model-one", "write"),
+              task: StepTask.model("model-one", "execute"),
             }),
             Step.create({
               name: "step-two",
-              task: StepTask.model("model-two", "write"),
+              task: StepTask.model("model-two", "execute"),
               dependsOn: [
                 {
                   step: "step-one",
@@ -383,9 +383,9 @@ Deno.test("Workflow Architecture: workflow run is persisted", async () => {
     // Create model and workflow
     const model = Definition.create({
       name: "tracked-model",
-      methods: { write: { arguments: { message: "Tracked execution" } } },
+      methods: { execute: { arguments: { run: "Tracked execution" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     const workflow = Workflow.create({
       name: "tracked-workflow",
@@ -395,7 +395,7 @@ Deno.test("Workflow Architecture: workflow run is persisted", async () => {
           steps: [
             Step.create({
               name: "tracked-step",
-              task: StepTask.model("tracked-model", "write"),
+              task: StepTask.model("tracked-model", "execute"),
             }),
           ],
         }),
@@ -440,9 +440,9 @@ Deno.test("Workflow Architecture: workflow run history", async () => {
 
     const model = Definition.create({
       name: "history-model",
-      methods: { write: { arguments: { message: "History test" } } },
+      methods: { execute: { arguments: { run: "History test" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     const workflow = Workflow.create({
       name: "history-workflow",
@@ -452,7 +452,7 @@ Deno.test("Workflow Architecture: workflow run history", async () => {
           steps: [
             Step.create({
               name: "history-step",
-              task: StepTask.model("history-model", "write"),
+              task: StepTask.model("history-model", "execute"),
             }),
           ],
         }),
@@ -495,9 +495,9 @@ Deno.test("Workflow Architecture: step execution duration is tracked", async () 
 
     const model = Definition.create({
       name: "timing-model",
-      methods: { write: { arguments: { message: "Timing test" } } },
+      methods: { execute: { arguments: { run: "Timing test" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     const workflow = Workflow.create({
       name: "timing-workflow",
@@ -507,7 +507,7 @@ Deno.test("Workflow Architecture: step execution duration is tracked", async () 
           steps: [
             Step.create({
               name: "timing-step",
-              task: StepTask.model("timing-model", "write"),
+              task: StepTask.model("timing-model", "execute"),
             }),
           ],
         }),
@@ -576,7 +576,7 @@ Deno.test("Workflow Architecture: fails for non-existent model", async () => {
           steps: [
             Step.create({
               name: "missing-step",
-              task: StepTask.model("nonexistent-model", "write"),
+              task: StepTask.model("nonexistent-model", "execute"),
             }),
           ],
         }),
@@ -614,15 +614,15 @@ Deno.test("Workflow Architecture: fails for invalid expression", async () => {
     const model = Definition.create({
       name: "invalid-expr-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
             // Invalid expression syntax
-            message: "${{invalid.syntax.here}}",
+            run: "${{invalid.syntax.here}}",
           },
         },
       },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     const workflow = Workflow.create({
       name: "invalid-expr-workflow",
@@ -632,7 +632,7 @@ Deno.test("Workflow Architecture: fails for invalid expression", async () => {
           steps: [
             Step.create({
               name: "invalid-step",
-              task: StepTask.model("invalid-expr-model", "write"),
+              task: StepTask.model("invalid-expr-model", "execute"),
             }),
           ],
         }),
@@ -709,9 +709,9 @@ Deno.test("Workflow Architecture: dependent step skipped on failure", async () =
 
     const model = Definition.create({
       name: "skip-test-model",
-      methods: { write: { arguments: { message: "Should be skipped" } } },
+      methods: { execute: { arguments: { run: "Should be skipped" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     const workflow = Workflow.create({
       name: "skip-on-failure-workflow",
@@ -725,7 +725,7 @@ Deno.test("Workflow Architecture: dependent step skipped on failure", async () =
             }),
             Step.create({
               name: "dependent-step",
-              task: StepTask.model("skip-test-model", "write"),
+              task: StepTask.model("skip-test-model", "execute"),
               dependsOn: [
                 {
                   step: "failing-step",
@@ -793,9 +793,9 @@ Deno.test("Workflow Architecture: data persists after workflow completion", asyn
 
     const model = Definition.create({
       name: "persist-data-model",
-      methods: { write: { arguments: { message: "Persistent data" } } },
+      methods: { execute: { arguments: { run: "Persistent data" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, model);
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
 
     const workflow = Workflow.create({
       name: "persist-data-workflow",
@@ -805,7 +805,7 @@ Deno.test("Workflow Architecture: data persists after workflow completion", asyn
           steps: [
             Step.create({
               name: "persist-step",
-              task: StepTask.model("persist-data-model", "write"),
+              task: StepTask.model("persist-data-model", "execute"),
             }),
           ],
         }),
@@ -833,7 +833,7 @@ Deno.test("Workflow Architecture: data persists after workflow completion", asyn
     assertExists(artifactRef);
 
     // Load data from repository
-    const allData = await dataRepo.findAllForModel(ECHO_MODEL_TYPE, model.id);
+    const allData = await dataRepo.findAllForModel(SHELL_MODEL_TYPE, model.id);
     assertEquals(allData.length > 0, true, "Data should be persisted");
   });
 });
@@ -855,20 +855,20 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
     // Create models for different stages
     const buildModel = Definition.create({
       name: "build-model",
-      methods: { write: { arguments: { message: "Building..." } } },
+      methods: { execute: { arguments: { run: "Building..." } } },
     });
     const testModel = Definition.create({
       name: "test-model",
-      methods: { write: { arguments: { message: "Testing..." } } },
+      methods: { execute: { arguments: { run: "Testing..." } } },
     });
     const deployModel = Definition.create({
       name: "deploy-model",
-      methods: { write: { arguments: { message: "Deploying..." } } },
+      methods: { execute: { arguments: { run: "Deploying..." } } },
     });
 
-    await definitionRepo.save(ECHO_MODEL_TYPE, buildModel);
-    await definitionRepo.save(ECHO_MODEL_TYPE, testModel);
-    await definitionRepo.save(ECHO_MODEL_TYPE, deployModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, buildModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, testModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, deployModel);
 
     const workflow = Workflow.create({
       name: "multi-job-workflow",
@@ -878,7 +878,7 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
           steps: [
             Step.create({
               name: "compile",
-              task: StepTask.model("build-model", "write"),
+              task: StepTask.model("build-model", "execute"),
             }),
           ],
         }),
@@ -887,7 +887,7 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
           steps: [
             Step.create({
               name: "unit-tests",
-              task: StepTask.model("test-model", "write"),
+              task: StepTask.model("test-model", "execute"),
             }),
           ],
           dependsOn: [
@@ -899,7 +899,7 @@ Deno.test("Workflow Architecture: multi-job workflow with dependencies", async (
           steps: [
             Step.create({
               name: "deploy-step",
-              task: StepTask.model("deploy-model", "write"),
+              task: StepTask.model("deploy-model", "execute"),
             }),
           ],
           dependsOn: [
@@ -950,21 +950,21 @@ Deno.test("Workflow Architecture: mixed model steps", async () => {
 
     const shellModel = Definition.create({
       name: "shell-model",
-      methods: { write: { arguments: { message: "Shell step replacement" } } },
+      methods: { execute: { arguments: { run: "Shell step replacement" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, shellModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, shellModel);
 
     const mixedModel = Definition.create({
       name: "mixed-model",
-      methods: { write: { arguments: { message: "Model step" } } },
+      methods: { execute: { arguments: { run: "Model step" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, mixedModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, mixedModel);
 
     const finalModel = Definition.create({
       name: "final-model",
-      methods: { write: { arguments: { message: "Final step" } } },
+      methods: { execute: { arguments: { run: "Final step" } } },
     });
-    await definitionRepo.save(ECHO_MODEL_TYPE, finalModel);
+    await definitionRepo.save(SHELL_MODEL_TYPE, finalModel);
 
     const workflow = Workflow.create({
       name: "mixed-steps-workflow",
@@ -974,11 +974,11 @@ Deno.test("Workflow Architecture: mixed model steps", async () => {
           steps: [
             Step.create({
               name: "shell-step",
-              task: StepTask.model("shell-model", "write"),
+              task: StepTask.model("shell-model", "execute"),
             }),
             Step.create({
               name: "model-step",
-              task: StepTask.model("mixed-model", "write"),
+              task: StepTask.model("mixed-model", "execute"),
               dependsOn: [
                 {
                   step: "shell-step",
@@ -988,7 +988,7 @@ Deno.test("Workflow Architecture: mixed model steps", async () => {
             }),
             Step.create({
               name: "final-shell",
-              task: StepTask.model("final-model", "write"),
+              task: StepTask.model("final-model", "execute"),
               dependsOn: [
                 {
                   step: "model-step",

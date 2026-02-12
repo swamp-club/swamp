@@ -87,14 +87,14 @@ Deno.test("Integration: definition create via repository context creates index s
 
     // Create repository context with indexing enabled
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     // Create and save a definition
     const definition = Definition.create({
       name: "auto-indexed-model",
       version: 1,
       tags: {},
-      methods: { write: { arguments: { message: "hello" } } },
+      methods: { execute: { arguments: { run: "echo 'hello'" } } },
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -129,7 +129,7 @@ Deno.test("Integration: definition delete via repository context removes index s
     await setupRepoDir(repoDir);
 
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     // Create a definition
     const definition = Definition.create({
@@ -161,7 +161,7 @@ Deno.test("Integration: multiple definitions create separate index directories",
     await setupRepoDir(repoDir);
 
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     // Create multiple definitions
     const def1 = Definition.create({
@@ -304,7 +304,7 @@ Deno.test("Integration: repo index rebuild indexes existing definitions", async 
       repoDir,
       enableIndexing: false,
     });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     const def1 = Definition.create({
       name: "rebuild-model-1",
@@ -342,7 +342,7 @@ Deno.test("Integration: repo index rebuild removes stale indexes", async () => {
 
     // Create a definition with indexing
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     const definition = Definition.create({
       name: "existing-model",
@@ -456,7 +456,7 @@ Deno.test("CLI: repo index rebuilds index", async () => {
 
     // Create a definition without indexing
     const ctx = createRepositoryContext({ repoDir, enableIndexing: false });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
     const definition = Definition.create({
       name: "cli-rebuild-test",
       version: 1,
@@ -498,7 +498,7 @@ Deno.test("CLI: repo index --verify checks integrity", async () => {
 
     // Create a definition with valid index
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
     const definition = Definition.create({
       name: "verify-test",
       version: 1,
@@ -595,14 +595,14 @@ Deno.test("Integration: definition create via repository context creates definit
 
     // Create repository context with indexing enabled
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     // Create and save a definition
     const definition = Definition.create({
       name: "definition-indexed-model",
       version: 1,
       tags: { env: "test" },
-      methods: { write: { arguments: { message: "hello" } } },
+      methods: { execute: { arguments: { run: "echo 'hello'" } } },
     });
     await ctx.definitionRepo.save(type, definition);
 
@@ -630,7 +630,7 @@ Deno.test("Integration: definition create via repository context creates definit
       "Should be able to read definition name through symlink",
     );
     assertEquals(
-      content.includes("message"),
+      content.includes("run"),
       true,
       "Should be able to read attributes through symlink",
     );
@@ -642,7 +642,7 @@ Deno.test("Integration: definition update via repository context updates logical
     await setupRepoDir(repoDir);
 
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     // Create initial definition
     const definition = Definition.create({
@@ -697,7 +697,7 @@ Deno.test("Integration: definition delete via repository context removes logical
     await setupRepoDir(repoDir);
 
     const ctx = createRepositoryContext({ repoDir, enableIndexing: true });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     // Create a definition
     const definition = Definition.create({
@@ -733,7 +733,7 @@ Deno.test("Integration: repo index rebuild indexes definitions with type/ direct
       repoDir,
       enableIndexing: false,
     });
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     const def1 = Definition.create({
       name: "rebuild-def-1",

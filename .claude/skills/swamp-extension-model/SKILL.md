@@ -541,18 +541,19 @@ without changing their schema. Use `export const extension` instead of
 ### Extension Structure
 
 ```typescript
-// extensions/models/echo_audit.ts
+// extensions/models/shell_audit.ts
 export const extension = {
-  type: "swamp/echo", // target type to extend
+  type: "command/shell", // target type to extend
   methods: [{
     audit: {
-      description: "Audit the echo message",
+      description: "Audit the shell command execution",
       arguments: z.object({}),
       execute: async (args, context) => {
         // Extensions use the target model's resources/files
-        const handle = await context.writeResource!("message", "message", {
-          message: `Audited: ${context.definition.name}`,
-          timestamp: new Date().toISOString(),
+        const handle = await context.writeResource!("result", "result", {
+          exitCode: 0,
+          command: `audit: ${context.definition.name}`,
+          executedAt: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
       },

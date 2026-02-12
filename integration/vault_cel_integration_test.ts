@@ -496,13 +496,13 @@ Deno.test("Vault CEL: definition files don't leak secrets via model evaluate", a
 
     // Create model via repository (with vault expression attribute)
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
     const definition = Definition.create({
       name: "leak-test-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "${{ vault.get(leak-test-vault, SENSITIVE) }}",
+            run: "echo '${{ vault.get(leak-test-vault, SENSITIVE) }}'",
           },
         },
       },
@@ -573,13 +573,13 @@ Deno.test("Vault CEL: secrets accessible in workflow execution", async () => {
 
     // Create a model that uses vault expression via repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
     const definition = Definition.create({
       name: "vault-workflow-model",
       methods: {
-        write: {
+        execute: {
           arguments: {
-            message: "${{ vault.get(workflow-vault, WORKFLOW_SECRET) }}",
+            run: "echo '${{ vault.get(workflow-vault, WORKFLOW_SECRET) }}'",
           },
         },
       },
@@ -602,7 +602,7 @@ Deno.test("Vault CEL: secrets accessible in workflow execution", async () => {
       "method",
       "run",
       "vault-workflow-model",
-      "write",
+      "execute",
       "--repo-dir",
       repoDir,
       "--json",

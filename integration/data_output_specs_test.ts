@@ -37,9 +37,8 @@ import {
   createFileWriterFactory,
   createResourceWriter,
 } from "../src/domain/models/data_writer.ts";
-// Import specific models to trigger registration (without AWS models that require env access)
-import "../src/domain/models/echo/echo_model.ts";
-import "../src/domain/models/command/curl/curl_model.ts";
+// Import shell model to trigger registration
+import "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-integration-" });
@@ -50,44 +49,45 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-Deno.test("Data output specs - echo model declares message resource spec", () => {
-  const echoModelType = ModelType.create("swamp/echo");
-  const model = modelRegistry.get(echoModelType);
+Deno.test("Data output specs - shell model declares result resource spec", () => {
+  const shellModelType = ModelType.create("command/shell");
+  const model = modelRegistry.get(shellModelType);
 
   assertEquals(model !== undefined, true);
   assertEquals(model!.resources !== undefined, true);
-  assertEquals(Object.keys(model!.resources!).length, 1);
-  assertEquals(model!.resources!["message"] !== undefined, true);
+  assertEquals(model!.resources!["result"] !== undefined, true);
   assertEquals(
-    model!.resources!["message"].description,
-    "Echo message with timestamp",
+    model!.resources!["result"].description,
+    "Shell command execution result (exit code, timing, command)",
   );
 });
 
-Deno.test("Data output specs - curl model declares metadata and file specs", () => {
-  const curlModelType = ModelType.create("command/curl");
-  const model = modelRegistry.get(curlModelType);
+Deno.test("Data output specs - shell model declares log file spec", () => {
+  const shellModelType = ModelType.create("command/shell");
+  const model = modelRegistry.get(shellModelType);
 
   assertEquals(model !== undefined, true);
-  // Curl model should have resources and/or files
-  const totalSpecs = Object.keys(model!.resources ?? {}).length +
-    Object.keys(model!.files ?? {}).length;
-  assertEquals(totalSpecs, 2);
+  assertEquals(model!.files !== undefined, true);
+  assertEquals(model!.files!["log"] !== undefined, true);
+  assertEquals(
+    model!.files!["log"].description,
+    "Shell command output (stdout and stderr)",
+  );
 });
 
-Deno.test("Data output specs - echo model execution produces valid resource handle", async () => {
+Deno.test("Data output specs - shell model execution produces valid resource handle", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const executionService = new DefaultMethodExecutionService();
 
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
-    // Create echo definition
+    // Create shell definition
     const definition = Definition.create({
-      name: "test-echo",
+      name: "test-shell",
       methods: {
-        write: { arguments: { message: "Hello, data specs!" } },
+        execute: { arguments: { run: "echo 'Hello, data specs!'" } },
       },
     });
 
@@ -95,7 +95,7 @@ Deno.test("Data output specs - echo model execution produces valid resource hand
 
     // Get model definition
     const model = modelRegistry.get(modelType);
-    const writeMethod = model!.methods.write;
+    const executeMethod = model!.methods.execute;
 
     // Create writeResource and createFileWriter for the context
     const { writeResource } = createResourceWriter(
@@ -104,11 +104,17 @@ Deno.test("Data output specs - echo model execution produces valid resource hand
       definition.id,
       model!.resources ?? {},
     );
+    const { createFileWriter } = createFileWriterFactory(
+      dataRepo,
+      modelType,
+      definition.id,
+      model!.files ?? {},
+    );
 
     // Execute the method
     const result = await executionService.execute(
       definition,
-      writeMethod,
+      executeMethod,
       {
         repoDir,
         modelType,
@@ -120,27 +126,35 @@ Deno.test("Data output specs - echo model execution produces valid resource hand
           version: definition.version,
           tags: definition.tags,
         },
-        methodName: "write",
+        methodName: "execute",
         logger: getLogger(["test"]),
         dataRepository: dataRepo,
         definitionRepository: definitionRepo,
         writeResource,
+        createFileWriter,
       },
     );
 
-    // Verify data output has correct spec name and kind
-    assertEquals(result.dataHandles?.length, 1);
-    assertEquals(result.dataHandles![0].specName, "message");
-    assertEquals(result.dataHandles![0].kind, "resource");
-    assertEquals(result.dataHandles![0].name, "message");
+    // Verify data output has correct spec names and kinds
+    assertEquals(result.dataHandles?.length, 2); // result resource + log file
+
+    const resultHandle = result.dataHandles!.find((h) =>
+      h.specName === "result"
+    );
+    const logHandle = result.dataHandles!.find((h) => h.specName === "log");
+
+    assertEquals(resultHandle !== undefined, true);
+    assertEquals(resultHandle!.kind, "resource");
+    assertEquals(resultHandle!.name, "result");
+
+    assertEquals(logHandle !== undefined, true);
+    assertEquals(logHandle!.kind, "file");
+    assertEquals(logHandle!.name, "log");
 
     // Verify defaults were applied
-    assertEquals(
-      result.dataHandles![0].metadata.contentType,
-      "application/json",
-    );
-    assertEquals(result.dataHandles![0].metadata.lifetime, "ephemeral");
-    assertEquals(result.dataHandles![0].metadata.garbageCollection, 10);
+    assertEquals(resultHandle!.metadata.contentType, "application/json");
+    assertEquals(resultHandle!.metadata.lifetime, "infinite");
+    assertEquals(resultHandle!.metadata.garbageCollection, 10);
   });
 });
 
@@ -150,18 +164,18 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const executionService = new DefaultMethodExecutionService();
 
-    const echoModelType = ModelType.create("swamp/echo");
-    const model = modelRegistry.get(echoModelType);
+    const shellModelType = ModelType.create("command/shell");
+    const model = modelRegistry.get(shellModelType);
 
     const definition = Definition.create({
-      name: "test-echo",
-      methods: { write: { arguments: { message: "Test" } } },
+      name: "test-shell",
+      methods: { execute: { arguments: { run: "echo test" } } },
     });
 
-    // Create writeResource with the echo model's resources (which only has "message" spec)
+    // Create writeResource with the shell model's resources
     const { writeResource } = createResourceWriter(
       dataRepo,
-      echoModelType,
+      shellModelType,
       definition.id,
       model!.resources ?? {},
     );
@@ -169,12 +183,12 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
     // Create a method that tries to use an undeclared spec name
     const badMethod = {
       description: "Bad method",
-      arguments: model!.methods.write.arguments,
+      arguments: model!.methods.execute.arguments,
       execute: async (
         _args: Record<string, unknown>,
         ctx: MethodContext,
       ) => {
-        // This should throw because "undeclared" is not in echo model's resources
+        // This should throw because "undeclared" is not in shell model's resources
         const handle = await ctx.writeResource!("undeclared", "undeclared", {
           test: "data",
         });
@@ -189,7 +203,7 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
         badMethod,
         {
           repoDir,
-          modelType: echoModelType,
+          modelType: shellModelType,
           modelId: definition.id,
           globalArgs: definition.globalArguments,
           definition: {
@@ -198,7 +212,7 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
             version: definition.version,
             tags: definition.tags,
           },
-          methodName: "write",
+          methodName: "execute",
           logger: getLogger(["test"]),
           dataRepository: dataRepo,
           definitionRepository: definitionRepo,
@@ -211,7 +225,7 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
 
     // The error should come from the writeResource function
     assertStringIncludes(errorMessage, "Undeclared resource spec 'undeclared'");
-    assertStringIncludes(errorMessage, "Declared resource specs: message");
+    assertStringIncludes(errorMessage, "Declared resource specs: result");
   });
 });
 
@@ -221,18 +235,18 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     const executionService = new DefaultMethodExecutionService();
 
-    const echoModelType = ModelType.create("swamp/echo");
-    const model = modelRegistry.get(echoModelType);
+    const shellModelType = ModelType.create("command/shell");
+    const model = modelRegistry.get(shellModelType);
 
     const definition = Definition.create({
-      name: "test-echo",
-      methods: { write: { arguments: { message: "Test" } } },
+      name: "test-shell",
+      methods: { execute: { arguments: { run: "echo test" } } },
     });
 
-    // Create createFileWriter with the echo model's files (empty)
+    // Create createFileWriter with the shell model's files
     const { createFileWriter } = createFileWriterFactory(
       dataRepo,
-      echoModelType,
+      shellModelType,
       definition.id,
       model!.files ?? {},
     );
@@ -240,12 +254,12 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
     // Create a method that tries to use an undeclared file spec
     const badMethod = {
       description: "Bad method",
-      arguments: model!.methods.write.arguments,
+      arguments: model!.methods.execute.arguments,
       execute: async (
         _args: Record<string, unknown>,
         ctx: MethodContext,
       ) => {
-        // This should throw because echo model has no file specs
+        // This should throw because "undeclared" is not in shell model's files
         const writer = ctx.createFileWriter!("undeclared", "undeclared");
         const handle = await writer.writeText("test");
         return { dataHandles: [handle] };
@@ -259,7 +273,7 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
         badMethod,
         {
           repoDir,
-          modelType: echoModelType,
+          modelType: shellModelType,
           modelId: definition.id,
           globalArgs: definition.globalArguments,
           definition: {
@@ -268,7 +282,7 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
             version: definition.version,
             tags: definition.tags,
           },
-          methodName: "write",
+          methodName: "execute",
           logger: getLogger(["test"]),
           dataRepository: dataRepo,
           definitionRepository: definitionRepo,

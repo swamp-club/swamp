@@ -52,34 +52,34 @@ All data is stored in the `.swamp/` directory:
 Logical views (`/models/`, `/workflows/`, `/vaults/`) provide symlinks for
 human-friendly exploration of the repository.
 
-### Example: Echo Model Workflow
+### Example: Shell Model Workflow
 
-The `swamp/echo` model demonstrates the basic model lifecycle.
+The `command/shell` model demonstrates the basic model lifecycle.
 
 ```bash
 # 1. Initialize a swamp repository (if not already done)
 swamp repo init
 
-# 2. Create a new echo model definition
-swamp model create swamp/echo my-echo
+# 2. Create a new shell model definition
+swamp model create command/shell my-shell
 
-# 3. Edit the definition file to add the required 'message' attribute
-#    The file is created at: .swamp/definitions/swamp/echo/<id>.yaml
-#    Add under attributes:
-#      message: "Hello, world!"
+# 3. Edit the definition file to add the required 'run' argument
+#    The file is created at: .swamp/definitions/command/shell/<id>.yaml
+#    Add under methods.execute.arguments:
+#      run: "echo 'Hello, world!'"
 
 # 4. Validate the model definition
-swamp model validate my-echo
+swamp model validate my-shell
 
-# 5. Execute the write method to generate data
-swamp model method run my-echo write
+# 5. Execute the execute method to run the command
+swamp model method run my-shell execute
 
 # 6. View the output
-swamp model output search my-echo
+swamp model output search my-shell
 ```
 
-Model definitions are stored in `.swamp/definitions/swamp/echo/` and data
-artifacts are written to `.swamp/data/swamp/echo/`.
+Model definitions are stored in `.swamp/definitions/command/shell/` and data
+artifacts are written to `.swamp/data/command/shell/`.
 
 ## Shell Completions
 

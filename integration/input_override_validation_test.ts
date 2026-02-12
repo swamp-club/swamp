@@ -88,13 +88,13 @@ async function runCliCommand(
   };
 }
 
-async function createEchoModel(
+async function createShellModel(
   repoDir: string,
   name: string,
-  methodArguments: Record<string, unknown> = { message: "default" },
+  methodArguments: Record<string, unknown> = { run: "echo 'default'" },
 ): Promise<string> {
   const modelData = {
-    type: "swamp/echo",
+    type: "command/shell",
     typeVersion: "2026.02.09.1",
     id: crypto.randomUUID(),
     name,
@@ -102,13 +102,13 @@ async function createEchoModel(
     tags: {},
     globalArguments: {},
     methods: {
-      write: {
+      execute: {
         arguments: methodArguments,
       },
     },
   };
 
-  const modelDir = join(repoDir, ".swamp/definitions/swamp/echo");
+  const modelDir = join(repoDir, ".swamp/definitions/command/shell");
   await ensureDir(modelDir);
   await Deno.writeTextFile(
     join(modelDir, `${modelData.id}.yaml`),
@@ -125,22 +125,22 @@ async function createEchoModel(
 Deno.test("CLI: model method run with valid input override succeeds", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "echo-valid-override", {
-      message: "original",
+    await createShellModel(repoDir, "shell-valid-override", {
+      run: "echo 'original'",
     });
 
-    // Override the message method argument with a valid string value
+    // Override the run method argument with a valid string value
     const result = await runCliCommand(
       [
         "model",
         "method",
         "run",
-        "echo-valid-override",
-        "write",
+        "shell-valid-override",
+        "execute",
         "--repo-dir",
         repoDir,
         "--input",
-        '{"message": "overridden"}',
+        '{"run": "echo \\"overridden\\""}',
         "--json",
       ],
       Deno.cwd(),
@@ -148,14 +148,16 @@ Deno.test("CLI: model method run with valid input override succeeds", async () =
 
     assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
     const output = JSON.parse(result.stdout);
-    assertEquals(output.modelName, "echo-valid-override");
+    assertEquals(output.modelName, "shell-valid-override");
   });
 });
 
 Deno.test("CLI: model method run with type mismatch fails - number instead of string", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "echo-type-mismatch", { message: "test" });
+    await createShellModel(repoDir, "shell-type-mismatch", {
+      run: "echo 'test'",
+    });
 
     // Try to override string field with a number - Zod schema rejects this
     const result = await runCliCommand(
@@ -163,12 +165,12 @@ Deno.test("CLI: model method run with type mismatch fails - number instead of st
         "model",
         "method",
         "run",
-        "echo-type-mismatch",
-        "write",
+        "shell-type-mismatch",
+        "execute",
         "--repo-dir",
         repoDir,
         "--input",
-        '{"message": 123}',
+        '{"run": 123}',
         "--json",
       ],
       Deno.cwd(),
@@ -190,8 +192,8 @@ Deno.test("CLI: model method run with type mismatch fails - number instead of st
 Deno.test("Workflow: step with valid input override succeeds", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "echo-workflow-valid", {
-      message: "original",
+    await createShellModel(repoDir, "shell-workflow-valid", {
+      run: "echo 'original'",
     });
 
     // Create workflow that overrides the message method argument
@@ -207,10 +209,10 @@ Deno.test("Workflow: step with valid input override succeeds", async () => {
               name: "override-step",
               task: {
                 type: "model_method",
-                modelIdOrName: "echo-workflow-valid",
-                methodName: "write",
+                modelIdOrName: "shell-workflow-valid",
+                methodName: "execute",
                 inputs: {
-                  message: "overridden via workflow",
+                  run: "echo 'overridden'",
                 },
               },
               dependsOn: [],
@@ -249,7 +251,9 @@ Deno.test("Workflow: step with valid input override succeeds", async () => {
 Deno.test("Workflow: step with type mismatch fails", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "echo-workflow-type", { message: "test" });
+    await createShellModel(repoDir, "shell-workflow-type", {
+      run: "echo 'test'",
+    });
 
     // Create workflow with wrong type for input
     const workflowData = {
@@ -264,10 +268,10 @@ Deno.test("Workflow: step with type mismatch fails", async () => {
               name: "type-mismatch-step",
               task: {
                 type: "model_method",
-                modelIdOrName: "echo-workflow-type",
-                methodName: "write",
+                modelIdOrName: "shell-workflow-type",
+                methodName: "execute",
                 inputs: {
-                  message: 12345,
+                  run: 12345,
                 },
               },
               dependsOn: [],
@@ -312,7 +316,9 @@ Deno.test("Workflow: step with type mismatch fails", async () => {
 Deno.test("Workflow: step input override with CEL expression preserves type", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "echo-cel-type", { message: "original" });
+    await createShellModel(repoDir, "shell-cel-type", {
+      run: "echo 'original'",
+    });
 
     // Create workflow that uses a CEL expression for the input
     const workflowData = {
@@ -333,10 +339,10 @@ Deno.test("Workflow: step input override with CEL expression preserves type", as
               name: "cel-step",
               task: {
                 type: "model_method",
-                modelIdOrName: "echo-cel-type",
-                methodName: "write",
+                modelIdOrName: "shell-cel-type",
+                methodName: "execute",
                 inputs: {
-                  message: "${{ inputs.customMessage }}",
+                  run: "${{ inputs.customMessage }}",
                 },
               },
               dependsOn: [],

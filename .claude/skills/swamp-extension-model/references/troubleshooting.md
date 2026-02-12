@@ -107,9 +107,9 @@ type: "@user/my-model";
 ### "Cannot extend unregistered model type: ..."
 
 The extension targets a model type that isn't registered. Ensure the type string
-matches exactly (e.g., `"swamp/echo"`, not `"echo"`). If extending a user model,
-both files must be in the same models directory — models are loaded before
-extensions automatically.
+matches exactly (e.g., `"command/shell"`, not `"shell"`). If extending a user
+model, both files must be in the same models directory — models are loaded
+before extensions automatically.
 
 ### "Method 'X' already exists on model type 'Y'"
 

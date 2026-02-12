@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Integration tests for keeb/shell models with workflow execution.
+ * Integration tests for command/shell models with workflow execution.
  */
 
 import { assertEquals } from "@std/assert";
@@ -33,7 +33,7 @@ import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
-import { SHELL_MODEL_TYPE } from "../src/domain/models/keeb/shell/shell_model.ts";
+import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-keeb-shell-" });
@@ -86,7 +86,7 @@ async function runCliCommand(
   };
 }
 
-Deno.test("CLI: keeb/shell model executes simple shell commands", async () => {
+Deno.test("CLI: command/shell model executes simple shell commands", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
@@ -132,7 +132,7 @@ Deno.test("CLI: keeb/shell model executes simple shell commands", async () => {
   });
 });
 
-Deno.test("CLI: keeb/shell model handles failing commands", async () => {
+Deno.test("CLI: command/shell model handles failing commands", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
@@ -178,7 +178,7 @@ Deno.test("CLI: keeb/shell model handles failing commands", async () => {
   });
 });
 
-Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
+Deno.test("CLI: workflow with command/shell models and dependencies", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
@@ -216,7 +216,7 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
     const workflowRepo = new YamlWorkflowRepository(repoDir);
     const workflow = Workflow.create({
       name: "shell-workflow",
-      description: "Test workflow with keeb/shell models",
+      description: "Test workflow with command/shell models",
       jobs: [
         Job.create({
           name: "download",
@@ -277,7 +277,7 @@ Deno.test("CLI: workflow with keeb/shell models and dependencies", async () => {
   });
 });
 
-Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
+Deno.test("CLI: command/shell model with cross-model expressions", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
@@ -370,7 +370,7 @@ Deno.test("CLI: keeb/shell model with cross-model expressions", async () => {
   });
 });
 
-Deno.test("CLI: keeb/shell model with self-reference expressions", async () => {
+Deno.test("CLI: command/shell model with self-reference expressions", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 

@@ -110,16 +110,13 @@ Deno.test("ModelTypeType.complete returns registered model types", () => {
   assertEquals(Array.isArray(result), true);
 
   // Should include known registered types
-  assertEquals(result.includes("swamp/echo"), true);
-  assertEquals(result.includes("keeb/shell"), true);
+  assertEquals(result.includes("command/shell"), true);
 });
 
-Deno.test("ModelTypeType.complete returns all AWS EC2 types", () => {
+Deno.test("ModelTypeType.complete returns registered types", () => {
   const type = new ModelTypeType();
   const result = type.complete();
 
-  // Should include AWS EC2 types
-  assertEquals(result.includes("aws/ec2/instance"), true);
-  assertEquals(result.includes("aws/ec2/subnet"), true);
-  assertEquals(result.includes("aws/ec2/vpc"), true);
+  // Should include registered types (command/shell is built-in)
+  assertEquals(result.includes("command/shell"), true);
 });

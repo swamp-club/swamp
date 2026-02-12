@@ -74,7 +74,7 @@ export type ShellDataAttributes = z.infer<typeof ShellDataAttributesSchema>;
 /**
  * The shell model type identifier.
  */
-export const SHELL_MODEL_TYPE = ModelType.create("keeb/shell");
+export const SHELL_MODEL_TYPE = ModelType.create("command/shell");
 
 /**
  * Executes a shell command and captures the output.
