@@ -108,8 +108,6 @@ attributes:
   result: ${{ data.latest('my-model', 'output').attributes.value }}
 ```
 
-This is equivalent to using the implicit `model.X.data.Y` syntax.
-
 ### data.version(modelName, dataName, version)
 
 Returns a specific version of a data artifact:
@@ -166,13 +164,6 @@ tags: {}
 attributes:
   keyData: ${{ vault.get(aws, machineKeyData) }}
 ```
-
-## Workflow dependency and lazy evaluation
-
-When a model is referenced in a workflow step, any CEL expressions that
-reference other models should create an implicit dependency on the evaluation of
-that workflow. This ensures that data in a resource, for example, will be
-available when the later data is evaluatedd.
 
 ## Extensibility
 

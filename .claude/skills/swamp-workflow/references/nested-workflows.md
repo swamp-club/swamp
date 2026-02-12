@@ -148,7 +148,7 @@ attributes:
 ```
 
 See [data-chaining.md](data-chaining.md) for more details on expression choice
-and implicit dependency behavior.
+and data chaining patterns.
 
 ## Limitations
 

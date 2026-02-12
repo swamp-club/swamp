@@ -71,8 +71,6 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { join } from "@std/path";
-import { buildStepNodesWithImplicitDeps } from "./implicit_dependency_service.ts";
-
 /**
  * Context for step execution.
  */
@@ -649,11 +647,6 @@ export class DefaultStepExecutor implements StepExecutor {
 }
 
 /**
- * Implicit dependency mapping: jobName -> stepName -> implicitDeps[]
- */
-export type ImplicitDependencyMap = Map<string, Map<string, string[]>>;
-
-/**
  * Progress callback for workflow execution.
  */
 export interface ExecutionProgressCallback {
@@ -671,8 +664,6 @@ export interface ExecutionProgressCallback {
     error: string,
   ): void;
   onWorkflowComplete?(run: WorkflowRun): void;
-  /** Called once at start with implicit dependency mappings */
-  onImplicitDependencies?(implicitDeps: ImplicitDependencyMap): void;
 }
 
 /**
@@ -765,23 +756,6 @@ export class WorkflowExecutionService {
 
     // Create workflow run
     const run = WorkflowRun.create(workflow);
-
-    // Build implicit dependencies for all jobs upfront
-    const allImplicitDeps: ImplicitDependencyMap = new Map();
-    for (const job of workflow.jobs) {
-      const { implicitDeps } = await buildStepNodesWithImplicitDeps(
-        job,
-        this.definitionRepo,
-      );
-      if (implicitDeps.size > 0) {
-        allImplicitDeps.set(job.name, implicitDeps);
-      }
-    }
-
-    // Report implicit dependencies before execution starts
-    if (allImplicitDeps.size > 0) {
-      progress?.onImplicitDependencies?.(allImplicitDeps);
-    }
 
     // Register run file sink target for the workflow log output
     const workflowLogPath = join(
@@ -879,11 +853,12 @@ export class WorkflowExecutionService {
       expandedStepsMap = this.expandForEachSteps(job, expressionContext);
     }
 
-    // Build step nodes with implicit dependencies from expressions
-    const { nodes: stepNodes } = await buildStepNodesWithImplicitDeps(
-      job,
-      this.definitionRepo,
-    );
+    // Build step graph nodes from explicit dependencies
+    const stepNodes: GraphNode[] = job.steps.map((step) => ({
+      name: step.name,
+      weight: step.weight,
+      dependencies: step.getDependencyNames(),
+    }));
 
     // If we have expanded steps, update the graph nodes
     let effectiveNodes = stepNodes;

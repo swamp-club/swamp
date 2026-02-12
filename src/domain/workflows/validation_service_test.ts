@@ -18,17 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
 import { DefaultWorkflowValidationService } from "./validation_service.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
-import { Definition } from "../definitions/definition.ts";
-import { ECHO_MODEL_TYPE } from "../models/echo/echo_model.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 
 const service = new DefaultWorkflowValidationService();
 
@@ -49,9 +44,9 @@ function createSimpleWorkflow(): Workflow {
   });
 }
 
-Deno.test("validates simple valid workflow", async () => {
+Deno.test("validates simple valid workflow", () => {
   const workflow = createSimpleWorkflow();
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
 
   const failed = results.filter((r) => !r.passed);
   assertEquals(
@@ -61,7 +56,7 @@ Deno.test("validates simple valid workflow", async () => {
   );
 });
 
-Deno.test("validates workflow with job dependencies", async () => {
+Deno.test("validates workflow with job dependencies", () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [
@@ -89,12 +84,12 @@ Deno.test("validates workflow with job dependencies", async () => {
     ],
   });
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const failed = results.filter((r) => !r.passed);
   assertEquals(failed.length, 0);
 });
 
-Deno.test("validates workflow with step dependencies", async () => {
+Deno.test("validates workflow with step dependencies", () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [
@@ -117,12 +112,12 @@ Deno.test("validates workflow with step dependencies", async () => {
     ],
   });
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const failed = results.filter((r) => !r.passed);
   assertEquals(failed.length, 0);
 });
 
-Deno.test("fails on duplicate job names", async () => {
+Deno.test("fails on duplicate job names", () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [],
@@ -145,7 +140,7 @@ Deno.test("fails on duplicate job names", async () => {
   // Access private _jobs directly for test purposes
   (workflow as unknown as { _jobs: Job[] })._jobs = [job1, job2];
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const uniqueJobNamesResult = results.find((r) =>
     r.name === "Unique job names"
   );
@@ -153,7 +148,7 @@ Deno.test("fails on duplicate job names", async () => {
   assertEquals(uniqueJobNamesResult?.error?.includes("build"), true);
 });
 
-Deno.test("fails on duplicate step names within job", async () => {
+Deno.test("fails on duplicate step names within job", () => {
   const step1 = Step.create({
     name: "compile",
     task: StepTask.model("test-model", "run"),
@@ -176,7 +171,7 @@ Deno.test("fails on duplicate step names within job", async () => {
     jobs: [job],
   });
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const stepNamesResult = results.find((r) =>
     r.name.includes("Unique step names")
   );
@@ -184,7 +179,7 @@ Deno.test("fails on duplicate step names within job", async () => {
   assertEquals(stepNamesResult?.error?.includes("compile"), true);
 });
 
-Deno.test("fails on invalid job dependency reference", async () => {
+Deno.test("fails on invalid job dependency reference", () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [
@@ -203,7 +198,7 @@ Deno.test("fails on invalid job dependency reference", async () => {
     ],
   });
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const jobRefsResult = results.find((r) =>
     r.name === "Valid job dependency references"
   );
@@ -211,7 +206,7 @@ Deno.test("fails on invalid job dependency reference", async () => {
   assertEquals(jobRefsResult?.error?.includes("nonexistent"), true);
 });
 
-Deno.test("fails on invalid step dependency reference", async () => {
+Deno.test("fails on invalid step dependency reference", () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [
@@ -230,7 +225,7 @@ Deno.test("fails on invalid step dependency reference", async () => {
     ],
   });
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const stepRefsResult = results.find((r) =>
     r.name.includes("Valid step dependency references")
   );
@@ -238,7 +233,7 @@ Deno.test("fails on invalid step dependency reference", async () => {
   assertEquals(stepRefsResult?.error?.includes("nonexistent"), true);
 });
 
-Deno.test("fails on cyclic job dependencies", async () => {
+Deno.test("fails on cyclic job dependencies", () => {
   const jobA = Job.create({
     name: "a",
     steps: [
@@ -269,7 +264,7 @@ Deno.test("fails on cyclic job dependencies", async () => {
     jobs: [jobA, jobB],
   });
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const cycleResult = results.find((r) =>
     r.name === "No cyclic job dependencies"
   );
@@ -277,7 +272,7 @@ Deno.test("fails on cyclic job dependencies", async () => {
   assertEquals(cycleResult?.error?.includes("Cyclic"), true);
 });
 
-Deno.test("fails on cyclic step dependencies", async () => {
+Deno.test("fails on cyclic step dependencies", () => {
   const stepA = Step.create({
     name: "a",
     task: StepTask.model("test-model", "run"),
@@ -309,7 +304,7 @@ Deno.test("fails on cyclic step dependencies", async () => {
     ],
   });
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const cycleResult = results.find((r) =>
     r.name.includes("No cyclic step dependencies")
   );
@@ -317,7 +312,7 @@ Deno.test("fails on cyclic step dependencies", async () => {
   assertEquals(cycleResult?.error?.includes("Cyclic"), true);
 });
 
-Deno.test("passes all validations for complex valid workflow", async () => {
+Deno.test("passes all validations for complex valid workflow", () => {
   const workflow = Workflow.create({
     name: "ci-pipeline",
     description: "Complete CI pipeline",
@@ -388,7 +383,7 @@ Deno.test("passes all validations for complex valid workflow", async () => {
     version: 1,
   });
 
-  const results = await service.validate(workflow);
+  const results = service.validate(workflow);
   const failed = results.filter((r) => !r.passed);
   assertEquals(
     failed.length,
@@ -397,185 +392,113 @@ Deno.test("passes all validations for complex valid workflow", async () => {
   );
 });
 
-Deno.test("validation results have equals method", async () => {
+Deno.test("validate returns synchronously", () => {
   const workflow = createSimpleWorkflow();
-  const results = await service.validate(workflow);
+  // validate() is not async — calling it without await should return results directly
+  const results = service.validate(workflow);
+  assertEquals(Array.isArray(results), true);
+  assertEquals(results.length > 0, true);
+});
+
+Deno.test("does not produce implicit dependency validation results", () => {
+  // Regression: implicit CEL dependency checks were removed.
+  // No validation result should mention "implicit".
+  const workflow = Workflow.create({
+    name: "multi-model-workflow",
+    jobs: [
+      Job.create({
+        name: "infra",
+        steps: [
+          Step.create({
+            name: "step-a",
+            task: StepTask.model("model-a", "write"),
+          }),
+          Step.create({
+            name: "step-b",
+            task: StepTask.model("model-b", "write"),
+            dependsOn: [
+              { step: "step-a", condition: TriggerCondition.succeeded() },
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = service.validate(workflow);
+  const implicitResults = results.filter((r) => r.name.includes("implicit"));
+  assertEquals(implicitResults.length, 0);
+});
+
+Deno.test("passes validation for linear chain that old implicit system would reject", () => {
+  // Regression test for the proxmox-manager stop-allthemons failure.
+  // A valid linear chain (auth → lookup → warn → stop-minecraft → stop-vm)
+  // where multiple steps reference the same model should not create false cycles.
+  const workflow = Workflow.create({
+    name: "stop-allthemons",
+    jobs: [
+      Job.create({
+        name: "shutdown",
+        steps: [
+          Step.create({
+            name: "auth",
+            task: StepTask.model("proxmox-auth", "run"),
+          }),
+          Step.create({
+            name: "lookup",
+            task: StepTask.model("fleet", "read"),
+            dependsOn: [
+              { step: "auth", condition: TriggerCondition.succeeded() },
+            ],
+          }),
+          Step.create({
+            name: "warn-players",
+            task: StepTask.model("allthemonsMinecraft", "warn"),
+            dependsOn: [
+              { step: "lookup", condition: TriggerCondition.succeeded() },
+            ],
+          }),
+          Step.create({
+            name: "stop-minecraft",
+            task: StepTask.model("allthemonsMinecraft", "stop"),
+            dependsOn: [
+              {
+                step: "warn-players",
+                condition: TriggerCondition.succeeded(),
+              },
+            ],
+          }),
+          Step.create({
+            name: "stop-vm",
+            task: StepTask.model("fleet", "stop"),
+            dependsOn: [
+              {
+                step: "stop-minecraft",
+                condition: TriggerCondition.succeeded(),
+              },
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = service.validate(workflow);
+  const failed = results.filter((r) => !r.passed);
+  assertEquals(
+    failed.length,
+    0,
+    `Should pass but failed: ${
+      failed.map((r) => `${r.name}: ${r.error}`).join("; ")
+    }`,
+  );
+});
+
+Deno.test("validation results have equals method", () => {
+  const workflow = createSimpleWorkflow();
+  const results = service.validate(workflow);
 
   const result1 = results[0];
   const result2 = results[0];
   assertEquals(result1.equals(result2), true);
-});
-
-// Implicit CEL dependency tests
-
-async function withTempRepo(
-  fn: (repo: YamlDefinitionRepository) => Promise<void>,
-): Promise<void> {
-  const dir = await Deno.makeTempDir({ prefix: "swamp-validation-" });
-  try {
-    await ensureDir(join(dir, ".swamp/definitions"));
-    const repo = new YamlDefinitionRepository(dir);
-    await fn(repo);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-}
-
-Deno.test("detects cycle from implicit CEL deps", async () => {
-  await withTempRepo(async (repo) => {
-    // model-a references model-b's resource
-    const modelA = Definition.create({
-      name: "model-a",
-      methods: {
-        write: {
-          arguments: {
-            value: "${{ model.model-b.resource.aws_thing.main.attributes.Id }}",
-          },
-        },
-      },
-    });
-    // model-b is clean
-    const modelB = Definition.create({
-      name: "model-b",
-      methods: { write: { arguments: { value: "hello" } } },
-    });
-    await repo.save(ECHO_MODEL_TYPE, modelA);
-    await repo.save(ECHO_MODEL_TYPE, modelB);
-
-    // Workflow has explicit dep: step-b depends on step-a
-    // Implicit dep: step-a depends on step-b (from CEL expression)
-    // This creates a cycle: step-a -> step-b -> step-a
-    const workflow = Workflow.create({
-      name: "cycle-workflow",
-      jobs: [
-        Job.create({
-          name: "infra-job",
-          steps: [
-            Step.create({
-              name: "step-a",
-              task: StepTask.model("model-a", "write"),
-            }),
-            Step.create({
-              name: "step-b",
-              task: StepTask.model("model-b", "write"),
-              dependsOn: [
-                { step: "step-a", condition: TriggerCondition.succeeded() },
-              ],
-            }),
-          ],
-        }),
-      ],
-    });
-
-    const implicitService = new DefaultWorkflowValidationService(repo);
-    const results = await implicitService.validate(workflow);
-
-    const implicitCycleResult = results.find((r) =>
-      r.name.includes("including implicit")
-    );
-    assertEquals(implicitCycleResult?.passed, false);
-    assertEquals(implicitCycleResult?.error?.includes("Cyclic"), true);
-    assertEquals(
-      implicitCycleResult?.error?.includes("implicit dependencies from CEL"),
-      true,
-    );
-  });
-});
-
-Deno.test("passes when implicit deps exist but no cycle", async () => {
-  await withTempRepo(async (repo) => {
-    const vpcModel = Definition.create({
-      name: "networking-vpc",
-      methods: { write: { arguments: { cidr: "10.0.0.0/16" } } },
-    });
-    const routeTableModel = Definition.create({
-      name: "route-table",
-      methods: {
-        write: {
-          arguments: {
-            vpcId:
-              "${{ model.networking-vpc.resource.aws_vpc.main.attributes.VpcId }}",
-          },
-        },
-      },
-    });
-    await repo.save(ECHO_MODEL_TYPE, vpcModel);
-    await repo.save(ECHO_MODEL_TYPE, routeTableModel);
-
-    // Implicit dep: route-table -> vpc (same direction, no cycle)
-    const workflow = Workflow.create({
-      name: "no-cycle-workflow",
-      jobs: [
-        Job.create({
-          name: "infra-job",
-          steps: [
-            Step.create({
-              name: "create-vpc",
-              task: StepTask.model("networking-vpc", "write"),
-            }),
-            Step.create({
-              name: "create-route-table",
-              task: StepTask.model("route-table", "write"),
-            }),
-          ],
-        }),
-      ],
-    });
-
-    const implicitService = new DefaultWorkflowValidationService(repo);
-    const results = await implicitService.validate(workflow);
-
-    const implicitResult = results.find((r) =>
-      r.name.includes("including implicit")
-    );
-    assertEquals(implicitResult?.passed, true);
-  });
-});
-
-Deno.test("graceful when no definition repo provided (skips implicit check)", async () => {
-  const workflow = createSimpleWorkflow();
-  const noRepoService = new DefaultWorkflowValidationService();
-  const results = await noRepoService.validate(workflow);
-
-  // Should not have any implicit cycle check results
-  const implicitResults = results.filter((r) =>
-    r.name.includes("including implicit")
-  );
-  assertEquals(implicitResults.length, 0);
-});
-
-Deno.test("graceful when model definitions are missing", async () => {
-  await withTempRepo(async (repo) => {
-    // Don't save any definitions — models won't be found
-    const workflow = Workflow.create({
-      name: "missing-models-workflow",
-      jobs: [
-        Job.create({
-          name: "test-job",
-          steps: [
-            Step.create({
-              name: "step-a",
-              task: StepTask.model("nonexistent-a", "write"),
-            }),
-            Step.create({
-              name: "step-b",
-              task: StepTask.model("nonexistent-b", "write"),
-              dependsOn: [
-                { step: "step-a", condition: TriggerCondition.succeeded() },
-              ],
-            }),
-          ],
-        }),
-      ],
-    });
-
-    const implicitService = new DefaultWorkflowValidationService(repo);
-    const results = await implicitService.validate(workflow);
-
-    // Should still pass — missing models just means no implicit deps found
-    const implicitResult = results.find((r) =>
-      r.name.includes("including implicit")
-    );
-    assertEquals(implicitResult?.passed, true);
-  });
 });

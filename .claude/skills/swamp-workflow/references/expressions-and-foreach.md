@@ -98,31 +98,6 @@ schema, enabling dynamic configuration at workflow runtime.
 
 Model inputs can contain CEL expressions using `${{ <expression> }}` syntax.
 
-### Automatic Dependency Resolution
-
-Expressions that reference
-`model.<name>.resource.<specName>.<instanceName>.attributes.*` create implicit
-step dependencies. The workflow engine automatically ensures dependent steps run
-in the correct order.
-
-```yaml
-jobs:
-  - name: main
-    steps:
-      - name: create-subnet # Runs second (depends on vpc)
-        task:
-          type: model_method
-          modelIdOrName: subnet-input
-          methodName: create
-      - name: create-vpc # Runs first
-        task:
-          type: model_method
-          modelIdOrName: vpc-input
-          methodName: create
-# If subnet-input has: vpcId: ${{ model.vpc-input.resource.resource.resource.attributes.vpcId }}
-# create-vpc runs first due to implicit dependency
-```
-
 ### Environment Variables
 
 Access environment variables using the `env` namespace:
