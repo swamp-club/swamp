@@ -285,7 +285,7 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader handles missing model export", async () => {
+Deno.test("UserModelLoader silently skips files without model or extension export", async () => {
   const modelCode = `
 export const notAModel = { foo: "bar" };
 `;
@@ -294,13 +294,10 @@ export const notAModel = { foo: "bar" };
     const loader = new UserModelLoader();
     const result = await loader.loadModels(dir);
 
+    // Files without model/extension exports are now silently skipped
     assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertEquals(result.failed[0].file, "no_export.ts");
-    assertEquals(
-      result.failed[0].error,
-      "No 'model' or 'extension' export found",
-    );
+    assertEquals(result.extended.length, 0);
+    assertEquals(result.failed.length, 0);
   });
 });
 
@@ -1933,5 +1930,51 @@ export const model = {
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
     assertStringIncludes(result.failed[0].error, "reserved namespace");
+  });
+});
+
+Deno.test("UserModelLoader silently skips library files without model exports", async () => {
+  const validModelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@test/skip-test-${Date.now()}",
+  version: "2026.02.11.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const libCode = `
+// Library file with no model or extension export
+export function sshConnect(host: string) {
+  return \`ssh \${host}\`;
+}
+
+export class ProxmoxClient {
+  constructor(public url: string) {}
+}
+`;
+
+  await withTempModels({
+    "models/server.ts": validModelCode,
+    "lib/ssh.ts": libCode,
+    "lib/proxmox.ts": libCode,
+    "utils/helpers.ts": libCode,
+  }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    // Should load only the valid model
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.loaded[0], join("models", "server.ts"));
+
+    // Library files should be silently skipped (not in failed list)
+    assertEquals(result.failed.length, 0);
   });
 });

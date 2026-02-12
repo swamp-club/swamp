@@ -303,13 +303,8 @@ export class UserModelLoader {
       }
     }
 
-    // Files with neither export
-    for (const file of unknownFiles) {
-      result.failed.push({
-        file,
-        error: "No 'model' or 'extension' export found",
-      });
-    }
+    // Files with neither 'model' nor 'extension' export are silently skipped
+    // (they are likely library/utility files imported by actual model files)
 
     return result;
   }
