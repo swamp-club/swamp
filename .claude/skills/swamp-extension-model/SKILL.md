@@ -193,6 +193,28 @@ resources: {
 | `garbageCollection` | Yes      | Version retention policy                      |
 | `tags`              | No       | Extra tags (auto-includes `type: "resource"`) |
 
+**Spec naming:** Resource spec keys must not contain hyphens (`-`). CEL
+expressions use dot-notation to access resources
+(`model.<m>.resource.<specName>.<instanceName>.attributes.<field>`), and hyphens
+in spec names are interpreted as the subtraction operator. Use camelCase or
+single words instead (e.g., `igw` not `internet-gateway`, `routeTable` not
+`route-table`).
+
+**Schema and expression validation:** If your resource will be referenced by
+other models via CEL expressions, you must declare the referenced properties
+explicitly in the Zod schema. Using `z.object({}).passthrough()` allows any data
+to be stored, but the expression path validator cannot resolve attribute
+references against an empty schema. Always declare the key properties you need
+to reference:
+
+```typescript
+// Wrong — expression validator can't resolve attributes.VpcId
+schema: z.object({}).passthrough(),
+
+// Correct — VpcId is declared so expressions can reference it
+schema: z.object({ VpcId: z.string() }).passthrough(),
+```
+
 ### File Specs
 
 Files are binary or text content (including logs):
@@ -325,6 +347,39 @@ the `<instanceName>` used in CEL:
 
 The execute function returns `{ dataHandles?: DataHandle[] }`.
 
+### Reading Stored Data
+
+Delete and update methods need to read back previously stored resource data
+(e.g., to get a resource ID for cleanup). Use `context.dataRepository` with
+`context.modelType` and `context.modelId`:
+
+```typescript
+const content = await context.dataRepository.getContent(
+  context.modelType,
+  context.modelId,
+  "<specName>", // matches a key in resources
+  "<instanceName>", // instance name used when writing
+);
+// Returns Uint8Array | null
+```
+
+To parse the content:
+
+```typescript
+if (!content) {
+  throw new Error("No data found - nothing to delete");
+}
+const data = JSON.parse(new TextDecoder().decode(content));
+```
+
+**Key dataRepository methods for model authors:**
+
+| Method                                                    | Returns              | Description                            |
+| --------------------------------------------------------- | -------------------- | -------------------------------------- |
+| `getContent(type, modelId, dataName, instanceName, ver?)` | `Uint8Array \| null` | Get raw content bytes                  |
+| `findByName(type, modelId, dataName, instanceName, ver?)` | `Data \| null`       | Get data metadata (tags, version, etc) |
+| `findAllForModel(type, modelId)`                          | `Data[]`             | List all data for this model instance  |
+
 ### Lifetime Values
 
 | Value       | Behavior                                     |
@@ -454,6 +509,29 @@ subnetA: ${{ model.my-scanner.resource.subnet.subnet-aaa.attributes.cidr }}
 | ------------------ | ------------------------------------------------ |
 | Factory model      | One execution discovers/creates N outputs        |
 | forEach (workflow) | Run the same model N times with different inputs |
+
+## CRUD Lifecycle Models
+
+Models that manage real resources typically have `create`, `update`, and
+`delete` methods. See
+[references/examples.md](references/examples.md#crud-lifecycle-model-vpc) for a
+complete VPC example with all three methods.
+
+**Pattern summary:**
+
+- **`create`** — run a command/API call, store the result via `writeResource()`
+- **`update`** — read stored data via `context.dataRepository.getContent()`,
+  modify the resource, write updated state via `writeResource()` (new version)
+- **`delete`** — read stored data, clean up the resource, return
+  `{ dataHandles: [] }`
+
+**Delete workflow ordering:** Delete workflows require **explicit `dependsOn`**
+in reverse dependency order. Unlike create workflows where CEL expressions
+create implicit dependencies, delete methods read their own stored data via
+`context.dataRepository` — not other models' data via expressions. See the
+`swamp-workflow` skill's
+[data-chaining reference](../swamp-workflow/references/data-chaining.md) for
+delete workflow examples.
 
 ## Extending Existing Model Types
 
@@ -892,6 +970,11 @@ swamp model type describe @myorg/my-model   # Check schema
 
 ## References
 
+- **Examples**: See [references/examples.md](references/examples.md) for
+  complete model examples (CRUD lifecycle, data chaining, extensions, etc.)
+- **Troubleshooting**: See
+  [references/troubleshooting.md](references/troubleshooting.md) for common
+  errors and fixes
 - **Built-in example**: See `src/domain/models/echo/echo_model.ts` for reference
 - **Model loader**: See `src/domain/models/user_model_loader.ts` for API details
 - **Model design**: See [design/models.md](design/models.md) for concepts

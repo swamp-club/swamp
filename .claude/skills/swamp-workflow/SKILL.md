@@ -432,6 +432,7 @@ End-to-end workflow creation:
   [references/expressions-and-foreach.md](references/expressions-and-foreach.md)
   for forEach iteration patterns, CEL expressions, implicit dependency
   resolution, environment variables, and data artifact tagging
-- **Data chaining**: See
-  [references/data-chaining.md](references/data-chaining.md) for aws/cli model
-  workflow examples and chaining patterns
+- **Data chaining and lifecycle workflows**: See
+  [references/data-chaining.md](references/data-chaining.md) for `model.*` vs
+  `data.latest()` expression guidance, delete/update workflow ordering, and
+  aws/cli chaining examples

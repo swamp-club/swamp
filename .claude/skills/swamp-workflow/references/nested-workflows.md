@@ -1,5 +1,13 @@
 # Calling Workflows from Workflows
 
+## Table of Contents
+
+- [Basic Nested Workflow](#basic-nested-workflow)
+- [Workflow Task Fields](#workflow-task-fields)
+- [Nested Workflow with forEach](#nested-workflow-with-foreach)
+- [Data Access in Sub-Workflows](#data-access-in-sub-workflows)
+- [Limitations](#limitations)
+
 Steps can invoke another workflow using `type: workflow`. The parent step waits
 for the child workflow to complete before continuing.
 
@@ -95,6 +103,52 @@ jobs:
           inputs:
             environment: ${{ self.env }}
 ```
+
+## Data Access in Sub-Workflows
+
+Sub-workflow model instances can access data produced by the parent workflow
+using either `model.*` or `data.latest()` expressions. Both work for
+cross-workflow data access since `type: "resource"` is preserved on
+workflow-produced data.
+
+**Example: Parent workflow creates resources, sub-workflow tags them**
+
+```yaml
+# create-networking workflow (parent)
+jobs:
+  - name: create
+    steps:
+      - name: create-vpc
+        task:
+          type: model_method
+          modelIdOrName: networking-vpc
+          methodName: create
+  - name: tag
+    dependsOn:
+      - job: create
+        condition:
+          type: succeeded
+    steps:
+      - name: tag-resources
+        task:
+          type: workflow
+          workflowIdOrName: tag-networking
+```
+
+The `tag-networking` sub-workflow's model instances can reference the VPC data:
+
+```yaml
+# tag-vpc model instance (used by tag-networking workflow)
+name: tag-vpc
+attributes:
+  region: us-east-1
+  resourceId: ${{ model.networking-vpc.resource.vpc.vpc.attributes.VpcId }}
+  tagKey: ManagedBy
+  tagValue: Swamp
+```
+
+See [data-chaining.md](data-chaining.md) for more details on expression choice
+and implicit dependency behavior.
 
 ## Limitations
 

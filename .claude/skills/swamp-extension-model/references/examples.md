@@ -1,5 +1,196 @@
 # Extension Model Examples
 
+## Table of Contents
+
+- [CRUD Lifecycle Model (VPC)](#crud-lifecycle-model-vpc)
+- [Text Processor Model](#text-processor-model)
+- [Deployment Model](#deployment-model)
+- [Minimal Echo Model](#minimal-echo-model)
+- [Data Chaining Model](#data-chaining-model)
+- [Shell Command with Streamed Logging](#shell-command-with-streamed-logging)
+- [Extending Existing Model Types](#extending-existing-model-types)
+
+## CRUD Lifecycle Model (VPC)
+
+Models that manage real resources typically have `create`, `update`, and
+`delete` methods. Each method follows a distinct pattern:
+
+- **`create`** — runs a command, stores the result via `writeResource()`
+- **`update`** — reads stored data to get the resource ID, modifies the
+  resource, writes updated state via `writeResource()` (creates a new version)
+- **`delete`** — reads stored data to get the resource ID, cleans up, returns
+  `{ dataHandles: [] }`
+
+```typescript
+// extensions/models/vpc.ts
+import { z } from "npm:zod@4";
+
+const GlobalArgsSchema = z.object({
+  cidrBlock: z.string(),
+  region: z.string().default("us-east-1"),
+});
+
+const VpcSchema = z.object({
+  VpcId: z.string(),
+}).passthrough();
+
+export const model = {
+  type: "@user/vpc",
+  version: "2026.02.10.1",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    "vpc": {
+      description: "VPC resource state",
+      schema: VpcSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    create: {
+      description: "Create a VPC",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const { cidrBlock, region } = context.globalArgs;
+
+        const cmd = new Deno.Command("aws", {
+          args: [
+            "ec2",
+            "create-vpc",
+            "--cidr-block",
+            cidrBlock,
+            "--region",
+            region,
+            "--output",
+            "json",
+          ],
+          stdout: "piped",
+          stderr: "piped",
+        });
+        const output = await cmd.output();
+        const vpcData = JSON.parse(new TextDecoder().decode(output.stdout)).Vpc;
+
+        const handle = await context.writeResource!("vpc", "vpc", vpcData);
+        return { dataHandles: [handle] };
+      },
+    },
+    update: {
+      description: "Update VPC attributes (e.g., enable DNS support)",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const region = context.globalArgs.region;
+
+        // 1. Read stored data to get the resource ID
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "vpc",
+          "vpc",
+        );
+
+        if (!content) {
+          throw new Error("No VPC data found - run create first");
+        }
+
+        const existingData = JSON.parse(new TextDecoder().decode(content));
+        const vpcId = existingData.VpcId;
+
+        // 2. Modify the resource
+        const modifyCmd = new Deno.Command("aws", {
+          args: [
+            "ec2",
+            "modify-vpc-attribute",
+            "--vpc-id",
+            vpcId,
+            "--enable-dns-support",
+            '{"Value": true}',
+            "--region",
+            region,
+          ],
+          stdout: "piped",
+          stderr: "piped",
+        });
+        await modifyCmd.output();
+
+        // 3. Describe to get current state
+        const describeCmd = new Deno.Command("aws", {
+          args: [
+            "ec2",
+            "describe-vpcs",
+            "--vpc-ids",
+            vpcId,
+            "--region",
+            region,
+            "--output",
+            "json",
+          ],
+          stdout: "piped",
+          stderr: "piped",
+        });
+        const describeOutput = await describeCmd.output();
+        const updatedData = JSON.parse(
+          new TextDecoder().decode(describeOutput.stdout),
+        ).Vpcs[0];
+
+        // 4. Write updated state — creates a new version of the resource
+        const handle = await context.writeResource!("vpc", "vpc", updatedData);
+        return { dataHandles: [handle] };
+      },
+    },
+    delete: {
+      description: "Delete the VPC",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const region = context.globalArgs.region;
+
+        // Read back stored data to get the VPC ID
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "vpc",
+          "vpc",
+        );
+
+        if (!content) {
+          throw new Error("No VPC data found - nothing to delete");
+        }
+
+        const vpcData = JSON.parse(new TextDecoder().decode(content));
+        const vpcId = vpcData.VpcId;
+
+        const cmd = new Deno.Command("aws", {
+          args: [
+            "ec2",
+            "delete-vpc",
+            "--vpc-id",
+            vpcId,
+            "--region",
+            region,
+          ],
+          stdout: "piped",
+          stderr: "piped",
+        });
+        await cmd.output();
+
+        // Return empty dataHandles — resource is gone
+        return { dataHandles: [] };
+      },
+    },
+  },
+};
+```
+
+**Key points:**
+
+- `create` stores data via `writeResource` — makes it available to other models
+  via CEL expressions and to update/delete methods via `dataRepository`
+- `update` reads stored data, modifies the resource, writes updated state via
+  `writeResource` (creates a new version)
+- `delete` reads stored data via `context.dataRepository.getContent()` using
+  `context.modelType` and `context.modelId` to locate the model's own data
+- `delete` returns `{ dataHandles: [] }` since no new data is produced
+- Always check for `null` content — the model may not have been created yet
+
 ## Text Processor Model
 
 ```typescript
