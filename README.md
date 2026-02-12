@@ -46,6 +46,8 @@ Just ask:
 The agent will create models, wire up workflows, and run them — all reviewable
 in `.swamp/` before anything touches production.
 
+---
+
 ### Update
 
 Swamp can update itself:
