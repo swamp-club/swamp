@@ -18,12 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
 import { DefaultWorkflowValidationService } from "./validation_service.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
+import { Definition } from "../definitions/definition.ts";
+import { ECHO_MODEL_TYPE } from "../models/echo/echo_model.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 
 const service = new DefaultWorkflowValidationService();
 
@@ -399,4 +404,178 @@ Deno.test("validation results have equals method", async () => {
   const result1 = results[0];
   const result2 = results[0];
   assertEquals(result1.equals(result2), true);
+});
+
+// Implicit CEL dependency tests
+
+async function withTempRepo(
+  fn: (repo: YamlDefinitionRepository) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-validation-" });
+  try {
+    await ensureDir(join(dir, ".swamp/definitions"));
+    const repo = new YamlDefinitionRepository(dir);
+    await fn(repo);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("detects cycle from implicit CEL deps", async () => {
+  await withTempRepo(async (repo) => {
+    // model-a references model-b's resource
+    const modelA = Definition.create({
+      name: "model-a",
+      methods: {
+        write: {
+          arguments: {
+            value: "${{ model.model-b.resource.aws_thing.main.attributes.Id }}",
+          },
+        },
+      },
+    });
+    // model-b is clean
+    const modelB = Definition.create({
+      name: "model-b",
+      methods: { write: { arguments: { value: "hello" } } },
+    });
+    await repo.save(ECHO_MODEL_TYPE, modelA);
+    await repo.save(ECHO_MODEL_TYPE, modelB);
+
+    // Workflow has explicit dep: step-b depends on step-a
+    // Implicit dep: step-a depends on step-b (from CEL expression)
+    // This creates a cycle: step-a -> step-b -> step-a
+    const workflow = Workflow.create({
+      name: "cycle-workflow",
+      jobs: [
+        Job.create({
+          name: "infra-job",
+          steps: [
+            Step.create({
+              name: "step-a",
+              task: StepTask.model("model-a", "write"),
+            }),
+            Step.create({
+              name: "step-b",
+              task: StepTask.model("model-b", "write"),
+              dependsOn: [
+                { step: "step-a", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const implicitService = new DefaultWorkflowValidationService(repo);
+    const results = await implicitService.validate(workflow);
+
+    const implicitCycleResult = results.find((r) =>
+      r.name.includes("including implicit")
+    );
+    assertEquals(implicitCycleResult?.passed, false);
+    assertEquals(implicitCycleResult?.error?.includes("Cyclic"), true);
+    assertEquals(
+      implicitCycleResult?.error?.includes("implicit dependencies from CEL"),
+      true,
+    );
+  });
+});
+
+Deno.test("passes when implicit deps exist but no cycle", async () => {
+  await withTempRepo(async (repo) => {
+    const vpcModel = Definition.create({
+      name: "networking-vpc",
+      methods: { write: { arguments: { cidr: "10.0.0.0/16" } } },
+    });
+    const routeTableModel = Definition.create({
+      name: "route-table",
+      methods: {
+        write: {
+          arguments: {
+            vpcId:
+              "${{ model.networking-vpc.resource.aws_vpc.main.attributes.VpcId }}",
+          },
+        },
+      },
+    });
+    await repo.save(ECHO_MODEL_TYPE, vpcModel);
+    await repo.save(ECHO_MODEL_TYPE, routeTableModel);
+
+    // Implicit dep: route-table -> vpc (same direction, no cycle)
+    const workflow = Workflow.create({
+      name: "no-cycle-workflow",
+      jobs: [
+        Job.create({
+          name: "infra-job",
+          steps: [
+            Step.create({
+              name: "create-vpc",
+              task: StepTask.model("networking-vpc", "write"),
+            }),
+            Step.create({
+              name: "create-route-table",
+              task: StepTask.model("route-table", "write"),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const implicitService = new DefaultWorkflowValidationService(repo);
+    const results = await implicitService.validate(workflow);
+
+    const implicitResult = results.find((r) =>
+      r.name.includes("including implicit")
+    );
+    assertEquals(implicitResult?.passed, true);
+  });
+});
+
+Deno.test("graceful when no definition repo provided (skips implicit check)", async () => {
+  const workflow = createSimpleWorkflow();
+  const noRepoService = new DefaultWorkflowValidationService();
+  const results = await noRepoService.validate(workflow);
+
+  // Should not have any implicit cycle check results
+  const implicitResults = results.filter((r) =>
+    r.name.includes("including implicit")
+  );
+  assertEquals(implicitResults.length, 0);
+});
+
+Deno.test("graceful when model definitions are missing", async () => {
+  await withTempRepo(async (repo) => {
+    // Don't save any definitions — models won't be found
+    const workflow = Workflow.create({
+      name: "missing-models-workflow",
+      jobs: [
+        Job.create({
+          name: "test-job",
+          steps: [
+            Step.create({
+              name: "step-a",
+              task: StepTask.model("nonexistent-a", "write"),
+            }),
+            Step.create({
+              name: "step-b",
+              task: StepTask.model("nonexistent-b", "write"),
+              dependsOn: [
+                { step: "step-a", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const implicitService = new DefaultWorkflowValidationService(repo);
+    const results = await implicitService.validate(workflow);
+
+    // Should still pass — missing models just means no implicit deps found
+    const implicitResult = results.find((r) =>
+      r.name.includes("including implicit")
+    );
+    assertEquals(implicitResult?.passed, true);
+  });
 });

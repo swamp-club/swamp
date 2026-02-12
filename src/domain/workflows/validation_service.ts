@@ -24,6 +24,8 @@ import {
   type GraphNode,
   TopologicalSortService,
 } from "./topological_sort_service.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { buildStepNodesWithImplicitDeps } from "./implicit_dependency_service.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -72,6 +74,7 @@ export class WorkflowValidationResult {
  * 5. Valid step dependency references
  * 6. No cyclic dependencies between jobs
  * 7. No cyclic dependencies between steps within jobs
+ * 8. No cyclic dependencies between steps (including implicit CEL deps)
  */
 export interface WorkflowValidationService {
   /**
@@ -80,17 +83,25 @@ export interface WorkflowValidationService {
    * @param workflow The workflow to validate
    * @returns Array of validation results
    */
-  validate(workflow: Workflow): WorkflowValidationResult[];
+  validate(workflow: Workflow): Promise<WorkflowValidationResult[]>;
 }
 
 /**
  * Default implementation of workflow validation service.
+ *
+ * Optionally accepts a DefinitionRepository to detect implicit CEL
+ * dependencies when checking for step cycles.
  */
 export class DefaultWorkflowValidationService
   implements WorkflowValidationService {
   private readonly sortService = new TopologicalSortService();
+  private readonly definitionRepo?: YamlDefinitionRepository;
 
-  validate(workflow: Workflow): WorkflowValidationResult[] {
+  constructor(definitionRepo?: YamlDefinitionRepository) {
+    this.definitionRepo = definitionRepo;
+  }
+
+  async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
     const results: WorkflowValidationResult[] = [];
 
     // 1. Schema validation
@@ -113,6 +124,13 @@ export class DefaultWorkflowValidationService
 
     // 7. No cyclic step dependencies within jobs
     results.push(...this.validateNoStepCycles(workflow));
+
+    // 8. No cyclic step dependencies (including implicit CEL deps)
+    if (this.definitionRepo) {
+      results.push(
+        ...await this.validateNoStepCyclesWithImplicit(workflow),
+      );
+    }
 
     return results;
   }
@@ -305,6 +323,75 @@ export class DefaultWorkflowValidationService
         } else {
           throw error;
         }
+      }
+    }
+
+    return results;
+  }
+
+  private async validateNoStepCyclesWithImplicit(
+    workflow: Workflow,
+  ): Promise<WorkflowValidationResult[]> {
+    const results: WorkflowValidationResult[] = [];
+
+    for (const job of workflow.jobs) {
+      if (job.steps.length === 0) {
+        results.push(
+          WorkflowValidationResult.pass(
+            `No cyclic step dependencies (including implicit) in job '${job.name}'`,
+          ),
+        );
+        continue;
+      }
+
+      try {
+        const { nodes, implicitDeps } = await buildStepNodesWithImplicitDeps(
+          job,
+          this.definitionRepo!,
+        );
+
+        try {
+          this.sortService.sort(nodes);
+          results.push(
+            WorkflowValidationResult.pass(
+              `No cyclic step dependencies (including implicit) in job '${job.name}'`,
+            ),
+          );
+        } catch (error) {
+          if (error instanceof CyclicDependencyError) {
+            // Annotate the error message with which edges are implicit
+            const implicitEdges: string[] = [];
+            for (const [step, deps] of implicitDeps) {
+              for (const dep of deps) {
+                implicitEdges.push(`${step} -> ${dep}`);
+              }
+            }
+            const implicitNote = implicitEdges.length > 0
+              ? ` (implicit dependencies from CEL expressions: ${
+                implicitEdges.join(", ")
+              })`
+              : "";
+
+            results.push(
+              WorkflowValidationResult.fail(
+                `No cyclic step dependencies (including implicit) in job '${job.name}'`,
+                `${error.message}${implicitNote}`,
+              ),
+            );
+          } else {
+            throw error;
+          }
+        }
+      } catch (error) {
+        if (error instanceof CyclicDependencyError) {
+          throw error;
+        }
+        // If we fail to resolve definitions (e.g., missing models), skip gracefully
+        results.push(
+          WorkflowValidationResult.pass(
+            `No cyclic step dependencies (including implicit) in job '${job.name}'`,
+          ),
+        );
       }
     }
 

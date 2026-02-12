@@ -81,7 +81,9 @@ export const workflowValidateCommand = new Command()
       outputMode: ctx.outputMode,
     });
     const repo = repoContext.workflowRepo;
-    const validationService = new DefaultWorkflowValidationService();
+    const validationService = new DefaultWorkflowValidationService(
+      repoContext.definitionRepo,
+    );
 
     // If no argument provided, validate all workflows
     if (!workflowIdOrName) {
@@ -94,7 +96,7 @@ export const workflowValidateCommand = new Command()
 
       const results: WorkflowValidateData[] = [];
       for (const workflow of allWorkflows) {
-        const validationResults = validationService.validate(workflow);
+        const validationResults = await validationService.validate(workflow);
         const validations = toValidationItemData(validationResults);
         const allPassed = validationResults.every((r) => r.passed);
 
@@ -139,7 +141,7 @@ export const workflowValidateCommand = new Command()
     ctx.logger.debug`Found workflow: id=${workflow.id}, name=${workflow.name}`;
 
     // Run validations
-    const results = validationService.validate(workflow);
+    const results = await validationService.validate(workflow);
     const validations = toValidationItemData(results);
     const allPassed = results.every((r) => r.passed);
 

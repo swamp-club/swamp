@@ -1995,3 +1995,98 @@ Deno.test("CLI: workflow run detects direct workflow cycle", async () => {
     );
   });
 });
+
+// Implicit CEL dependency cycle detection in workflow validate
+
+Deno.test("CLI: workflow validate detects cycle from implicit CEL dependencies", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+
+    // networking-vpc has no expressions — it's clean
+    const vpcModel = Definition.create({
+      name: "networking-vpc",
+      methods: {
+        write: { arguments: { cidr: "10.0.0.0/16" } },
+      },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, vpcModel);
+
+    // public-route-table references networking-vpc's resource (implicit dep)
+    const routeTableModel = Definition.create({
+      name: "public-route-table",
+      methods: {
+        write: {
+          arguments: {
+            vpcId:
+              "${{ model.networking-vpc.resource.aws_vpc.main.attributes.VpcId }}",
+          },
+        },
+      },
+    });
+    await definitionRepo.save(ECHO_MODEL_TYPE, routeTableModel);
+
+    // Workflow has explicit dep: vpc depends on route-table (reversed order)
+    // Implicit dep: route-table depends on vpc (from CEL expression)
+    // This creates a cycle: vpc -> route-table -> vpc
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "implicit-cycle-workflow",
+      jobs: [
+        Job.create({
+          name: "infra-job",
+          steps: [
+            Step.create({
+              name: "create-route-table",
+              task: StepTask.model("public-route-table", "write"),
+            }),
+            Step.create({
+              name: "create-vpc",
+              task: StepTask.model("networking-vpc", "write"),
+              dependsOn: [
+                {
+                  step: "create-route-table",
+                  condition: TriggerCondition.succeeded(),
+                },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "validate",
+        "implicit-cycle-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      1,
+      `Command should fail with exit code 1. stderr: ${result.stderr}, stdout: ${result.stdout}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.passed, false);
+
+    // Find the implicit cycle validation result
+    const implicitValidation = output.validations.find(
+      (v: { name: string }) => v.name.includes("including implicit"),
+    );
+    assertEquals(implicitValidation?.passed, false);
+    assertStringIncludes(implicitValidation?.error ?? "", "Cyclic");
+    assertStringIncludes(
+      implicitValidation?.error ?? "",
+      "implicit dependencies from CEL",
+    );
+  });
+});
