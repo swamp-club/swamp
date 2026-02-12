@@ -45,8 +45,6 @@ export interface StepRunData {
   status: "pending" | "running" | "succeeded" | "failed" | "skipped";
   error?: string;
   duration?: number;
-  /** Dependencies inferred from ${{ }} expressions */
-  implicitDependencies?: string[];
   /** Output ID if this step produced an output (for model methods) */
   outputId?: string;
   /** Step artifacts included when --verbose is set */

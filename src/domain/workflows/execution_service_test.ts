@@ -1047,6 +1047,125 @@ Deno.test("updates both resource and file context when step produces both", asyn
   });
 });
 
+Deno.test("executes linear chain where multiple steps reference same model", async () => {
+  // Regression: the old implicit dependency system would create false cycles
+  // when multiple steps referenced the same model (last-writer-wins in modelToStep map).
+  // With explicit-only deps, this linear chain should execute correctly.
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "linear-chain",
+      jobs: [
+        Job.create({
+          name: "shutdown",
+          steps: [
+            Step.create({
+              name: "auth",
+              task: StepTask.model("proxmox-auth", "run"),
+            }),
+            Step.create({
+              name: "lookup",
+              task: StepTask.model("fleet", "read"),
+              dependsOn: [
+                { step: "auth", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+            Step.create({
+              name: "warn-players",
+              task: StepTask.model("minecraft", "warn"),
+              dependsOn: [
+                { step: "lookup", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+            Step.create({
+              name: "stop-minecraft",
+              task: StepTask.model("minecraft", "stop"),
+              dependsOn: [
+                {
+                  step: "warn-players",
+                  condition: TriggerCondition.succeeded(),
+                },
+              ],
+            }),
+            Step.create({
+              name: "stop-vm",
+              task: StepTask.model("fleet", "stop"),
+              dependsOn: [
+                {
+                  step: "stop-minecraft",
+                  condition: TriggerCondition.succeeded(),
+                },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps, [
+      "shutdown/auth",
+      "shutdown/lookup",
+      "shutdown/warn-players",
+      "shutdown/stop-minecraft",
+      "shutdown/stop-vm",
+    ]);
+  });
+});
+
+Deno.test("progress callback does not include onImplicitDependencies", async () => {
+  // Regression: onImplicitDependencies was removed from ExecutionProgressCallback.
+  // Verify it's not called even when provided (proves the field was removed from the interface).
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    let implicitDepsCalled = false;
+    const events: string[] = [];
+
+    await service.execute(workflow.name, {
+      onWorkflowStart: () => events.push("workflow-start"),
+      onWorkflowComplete: () => events.push("workflow-complete"),
+      // This callback no longer exists on the interface, but if somehow
+      // called, we'd detect it
+      ...({
+        onImplicitDependencies: () => {
+          implicitDepsCalled = true;
+        },
+      }),
+    });
+
+    assertEquals(events.includes("workflow-start"), true);
+    assertEquals(events.includes("workflow-complete"), true);
+    assertEquals(implicitDepsCalled, false);
+  });
+});
+
 // --- Workflow nesting and cycle detection tests ---
 
 Deno.test("DefaultStepExecutor rejects workflow task when nesting depth exceeded", async () => {

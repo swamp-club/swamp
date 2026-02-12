@@ -526,8 +526,7 @@ complete VPC example with all three methods.
   `{ dataHandles: [] }`
 
 **Delete workflow ordering:** Delete workflows require **explicit `dependsOn`**
-in reverse dependency order. Unlike create workflows where CEL expressions
-create implicit dependencies, delete methods read their own stored data via
+in reverse dependency order. Delete methods read their own stored data via
 `context.dataRepository` — not other models' data via expressions. See the
 `swamp-workflow` skill's
 [data-chaining reference](../swamp-workflow/references/data-chaining.md) for

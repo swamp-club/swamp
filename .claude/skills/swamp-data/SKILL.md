@@ -354,13 +354,11 @@ subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 
 - `model.<name>.resource.<specName>.<instanceName>` — accesses the latest
   version of a resource. Works both within a workflow run (in-memory updates)
-  and across workflow runs (persisted data). Creates implicit step dependencies
-  in workflows.
+  and across workflow runs (persisted data).
 - `model.<name>.file.<specName>.<instanceName>` — accesses file metadata (path,
   size, contentType). Same behavior as resource expressions.
 - `data.latest(modelName, dataName)` — reads persisted data snapshot taken at
-  workflow start. Does not create implicit step dependencies. Useful when you
-  want explicit control over execution ordering.
+  workflow start.
 - Use `data.version()` function for specific versions
 - Use `data.findByTag()` to query across models
 - See the `swamp-workflow` skill's

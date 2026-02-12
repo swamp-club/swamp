@@ -30,7 +30,6 @@ import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   type ExecutionProgressCallback,
-  type ImplicitDependencyMap,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import type {
@@ -92,7 +91,6 @@ function extractStepArtifacts(step: StepRun): StepArtifactsData | undefined {
 function toRunData(
   run: WorkflowRun,
   path?: string,
-  implicitDeps?: ImplicitDependencyMap,
   verbose?: boolean,
 ): WorkflowRunData {
   const startTime = run.startedAt?.getTime();
@@ -106,7 +104,6 @@ function toRunData(
     jobs: run.jobs.map((job): JobRunData => {
       const jobStart = job.startedAt?.getTime();
       const jobEnd = job.completedAt?.getTime();
-      const jobImplicitDeps = implicitDeps?.get(job.jobName);
 
       return {
         name: job.jobName,
@@ -114,14 +111,12 @@ function toRunData(
         steps: job.steps.map((step): StepRunData => {
           const stepStart = step.startedAt?.getTime();
           const stepEnd = step.completedAt?.getTime();
-          const stepImplicitDeps = jobImplicitDeps?.get(step.stepName);
 
           const stepData: StepRunData = {
             name: step.stepName,
             status: step.status,
             error: step.error,
             duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
-            implicitDependencies: stepImplicitDeps,
           };
 
           // Include artifacts in verbose mode
@@ -223,12 +218,7 @@ export const workflowRunCommand = new Command()
 
       if (ctx.outputMode === "json") {
         // JSON mode: execute with debug logging, output final result
-        let capturedImplicitDeps: ImplicitDependencyMap | undefined;
-
         const progress: ExecutionProgressCallback = {
-          onImplicitDependencies: (deps) => {
-            capturedImplicitDeps = deps;
-          },
           onJobStart: (_run, jobName) => {
             ctx.logger.debug`Job started: ${jobName}`;
           },
@@ -251,7 +241,6 @@ export const workflowRunCommand = new Command()
         const data = toRunData(
           run,
           path,
-          capturedImplicitDeps,
           ctx.verbosity === "verbose",
         );
         renderWorkflowRun(data, ctx.outputMode);

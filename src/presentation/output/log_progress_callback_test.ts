@@ -66,7 +66,6 @@ Deno.test("createLogProgressCallback returns all lifecycle callbacks", () => {
   assertEquals(typeof callback.onStepSkip, "function");
   assertEquals(typeof callback.onStepFail, "function");
   assertEquals(typeof callback.onWorkflowComplete, "function");
-  assertEquals(typeof callback.onImplicitDependencies, "function");
 });
 
 Deno.test("createLogProgressCallback does not include stdout/stderr callbacks", () => {
@@ -97,15 +96,4 @@ Deno.test("createLogProgressCallback lifecycle callbacks do not throw", () => {
   run.start();
   run.complete();
   callback.onWorkflowComplete?.(run);
-});
-
-Deno.test("createLogProgressCallback onImplicitDependencies does not throw", () => {
-  const callback = createLogProgressCallback("test-workflow");
-
-  const deps = new Map<string, Map<string, string[]>>();
-  const stepDeps = new Map<string, string[]>();
-  stepDeps.set("step-b", ["step-a"]);
-  deps.set("test-job", stepDeps);
-
-  callback.onImplicitDependencies?.(deps);
 });

@@ -18,10 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getWorkflowRunLogger } from "../../infrastructure/logging/logger.ts";
-import type {
-  ExecutionProgressCallback,
-  ImplicitDependencyMap,
-} from "../../domain/workflows/execution_service.ts";
+import type { ExecutionProgressCallback } from "../../domain/workflows/execution_service.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 
 /**
@@ -100,17 +97,6 @@ export function createLogProgressCallback(
         wfLogger.with({ summary: true }).info("Workflow {status}", {
           status: run.status,
         });
-      }
-    },
-
-    onImplicitDependencies: (deps: ImplicitDependencyMap) => {
-      for (const [jobName, stepDeps] of deps) {
-        for (const [stepName, depList] of stepDeps) {
-          getWorkflowRunLogger(workflowName, jobName, stepName)
-            .info("Implicit dependencies: {deps}", {
-              deps: depList.join(", "),
-            });
-        }
       }
     },
   };
