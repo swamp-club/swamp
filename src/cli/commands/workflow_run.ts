@@ -39,6 +39,7 @@ import type {
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
 import { parseInputs } from "../input_parser.ts";
+import { parseTags } from "./data_search.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -159,6 +160,11 @@ export const workflowRunCommand = new Command()
   )
   .option("--input <json:string>", "Input values as JSON")
   .option("--input-file <file:string>", "Input values from YAML file")
+  .option(
+    "--tag <tag:string>",
+    "Add tag to produced data (KEY=VALUE, repeatable)",
+    { collect: true },
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
@@ -184,6 +190,11 @@ export const workflowRunCommand = new Command()
       input: options.input as string | undefined,
       inputFile: options.inputFile as string | undefined,
     });
+
+    // Parse runtime tags
+    const runtimeTags = options.tag
+      ? parseTags(options.tag as string[])
+      : undefined;
 
     try {
       // Look up workflow first to get its data
@@ -233,6 +244,7 @@ export const workflowRunCommand = new Command()
         const run = await executionService.execute(workflow.name, progress, {
           lastEvaluated,
           inputs,
+          runtimeTags,
         });
 
         // Get the path for the run
@@ -258,6 +270,7 @@ export const workflowRunCommand = new Command()
           enableStepLogging: true,
           lastEvaluated,
           inputs,
+          runtimeTags,
         });
 
         ctx.logger.debug`Workflow run completed: status=${run.status}`;

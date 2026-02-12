@@ -214,6 +214,12 @@ export interface MethodContext {
   tagOverrides?: Record<string, string>;
 
   /**
+   * Runtime tags from --tag CLI flags.
+   * Applied after specName and tagOverrides, before data output overrides.
+   */
+  runtimeTags?: Record<string, string>;
+
+  /**
    * Data output overrides merged into every writer's options.
    * Used by workflow steps to override lifetime, gc, and tags per spec name.
    */
