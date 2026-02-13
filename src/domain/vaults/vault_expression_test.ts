@@ -234,6 +234,84 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
     assertStringIncludes(error.message, "vault.get(test-vault, missing-key)");
   });
 
+  await t.step(
+    "should preserve $& pattern in secret values",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "dollar-amp": "my$&secret",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get(test-vault, dollar-amp)",
+      );
+      assertEquals(result, '"my$&secret"');
+    },
+  );
+
+  await t.step(
+    "should preserve $` pattern in secret values",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "dollar-backtick": "prefix$`suffix",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get(test-vault, dollar-backtick)",
+      );
+      assertEquals(result, '"prefix$`suffix"');
+    },
+  );
+
+  await t.step(
+    "should preserve $' pattern in secret values",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "dollar-quote": "prefix$'suffix",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get(test-vault, dollar-quote)",
+      );
+      assertEquals(result, '"prefix$\'suffix"');
+    },
+  );
+
+  await t.step(
+    "should preserve $$ pattern in secret values",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "dollar-dollar": "cost: $$100",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get(test-vault, dollar-dollar)",
+      );
+      assertEquals(result, '"cost: $$100"');
+    },
+  );
+
+  await t.step(
+    "should preserve numbered capture group patterns in secret values",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "dollar-numbers": "$1$2$3",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get(test-vault, dollar-numbers)",
+      );
+      assertEquals(result, '"$1$2$3"');
+    },
+  );
+
+  await t.step(
+    "should preserve multiple dollar patterns in same secret",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "multi-dollar": "a]$&b$`c$'d$$e$1f",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get(test-vault, multi-dollar)",
+      );
+      assertEquals(result, '"a]$&b$`c$\'d$$e$1f"');
+    },
+  );
+
   // Cleanup
   await Deno.remove(tempDir, { recursive: true });
 });

@@ -717,7 +717,9 @@ export class ModelResolver {
           .replace(/\r/g, "\\r")
           .replace(/\t/g, "\\t");
         // Replace the entire vault.get(...) call with the escaped secret value wrapped in quotes for CEL
-        resolvedValue = resolvedValue.replace(fullMatch, `"${escapedValue}"`);
+        resolvedValue = resolvedValue.split(fullMatch).join(
+          `"${escapedValue}"`,
+        );
       } catch (error) {
         throw new Error(
           `Failed to resolve vault expression ${fullMatch}: ${
