@@ -34,12 +34,13 @@ export class HttpSourceDownloader implements SourceDownloader {
    * For "main", uses heads/main.tar.gz
    * For version tags, uses tags/{version}.tar.gz
    */
-  private getArchiveUrl(version: string): string {
+  protected getArchiveUrl(version: string): string {
     if (version === "main") {
       return `${HttpSourceDownloader.GITHUB_BASE}/heads/main.tar.gz`;
     }
-    // For version tags (e.g., "v1.2.3" or "20260101.123456.0-sha.abc123")
-    return `${HttpSourceDownloader.GITHUB_BASE}/tags/${version}.tar.gz`;
+    // GitHub tags have a "v" prefix; add it if not already present
+    const tag = version.startsWith("v") ? version : `v${version}`;
+    return `${HttpSourceDownloader.GITHUB_BASE}/tags/${tag}.tar.gz`;
   }
 
   /**
@@ -144,7 +145,10 @@ export class HttpSourceDownloader implements SourceDownloader {
       const sourcePath = join(sourceDir, entry.name);
       const targetPath = join(targetDir, entry.name);
 
-      if (entry.isDirectory) {
+      if (entry.isSymlink) {
+        const linkTarget = await Deno.readLink(sourcePath);
+        await Deno.symlink(linkTarget, targetPath);
+      } else if (entry.isDirectory) {
         await ensureDir(targetPath);
         fileCount += await this.moveContents(sourcePath, targetPath);
       } else {
