@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertFalse, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { HttpSourceDownloader } from "./http_source_downloader.ts";
@@ -243,6 +243,141 @@ Deno.test("downloadAndExtract throws on download failure", async () => {
       () => testDownloader.downloadAndExtract("main", targetDir),
       UserError,
       "Download failed:",
+    );
+
+    await server.shutdown();
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("downloadAndExtract skips symlinks escaping via relative path", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const archiveRoot = join(tempDir, "archive");
+    const innerDir = join(archiveRoot, "swamp-main");
+    await ensureDir(innerDir);
+    await Deno.writeTextFile(join(innerDir, "safe.txt"), "safe");
+    // Create a symlink that escapes via relative path
+    await Deno.symlink("../../etc/passwd", join(innerDir, "escape-link"));
+
+    const tarball = join(tempDir, "test.tar.gz");
+    const tar = new Deno.Command("tar", {
+      args: ["-czf", tarball, "-C", archiveRoot, "swamp-main"],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const tarResult = await tar.output();
+    assert(tarResult.success, "tar creation should succeed");
+
+    const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+      const body = Deno.readFileSync(tarball);
+      return new Response(body, {
+        headers: { "content-type": "application/gzip" },
+      });
+    });
+
+    const port = server.addr.port;
+
+    const TestDownloader = class extends HttpSourceDownloader {
+      protected override getArchiveUrl(_version: string): string {
+        return `http://localhost:${port}/test.tar.gz`;
+      }
+    };
+
+    const testDownloader = new TestDownloader();
+    const targetDir = join(tempDir, "target");
+    await ensureDir(targetDir);
+
+    const fileCount = await testDownloader.downloadAndExtract(
+      "main",
+      targetDir,
+    );
+
+    assertEquals(fileCount, 1);
+    assertEquals(
+      await Deno.readTextFile(join(targetDir, "safe.txt")),
+      "safe",
+    );
+
+    // The escaping symlink should NOT have been created
+    let exists = true;
+    try {
+      await Deno.lstat(join(targetDir, "escape-link"));
+    } catch (e) {
+      if (e instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertFalse(exists, "symlink escaping via relative path should be skipped");
+
+    await server.shutdown();
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("downloadAndExtract skips symlinks escaping via absolute path", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const archiveRoot = join(tempDir, "archive");
+    const innerDir = join(archiveRoot, "swamp-main");
+    await ensureDir(innerDir);
+    await Deno.writeTextFile(join(innerDir, "safe.txt"), "safe");
+    // Create a symlink with an absolute path outside the target
+    await Deno.symlink("/etc/passwd", join(innerDir, "abs-escape-link"));
+
+    const tarball = join(tempDir, "test.tar.gz");
+    const tar = new Deno.Command("tar", {
+      args: ["-czf", tarball, "-C", archiveRoot, "swamp-main"],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const tarResult = await tar.output();
+    assert(tarResult.success, "tar creation should succeed");
+
+    const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+      const body = Deno.readFileSync(tarball);
+      return new Response(body, {
+        headers: { "content-type": "application/gzip" },
+      });
+    });
+
+    const port = server.addr.port;
+
+    const TestDownloader = class extends HttpSourceDownloader {
+      protected override getArchiveUrl(_version: string): string {
+        return `http://localhost:${port}/test.tar.gz`;
+      }
+    };
+
+    const testDownloader = new TestDownloader();
+    const targetDir = join(tempDir, "target");
+    await ensureDir(targetDir);
+
+    const fileCount = await testDownloader.downloadAndExtract(
+      "main",
+      targetDir,
+    );
+
+    assertEquals(fileCount, 1);
+    assertEquals(
+      await Deno.readTextFile(join(targetDir, "safe.txt")),
+      "safe",
+    );
+
+    // The escaping symlink should NOT have been created
+    let exists = true;
+    try {
+      await Deno.lstat(join(targetDir, "abs-escape-link"));
+    } catch (e) {
+      if (e instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertFalse(
+      exists,
+      "symlink escaping via absolute path should be skipped",
     );
 
     await server.shutdown();

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import type { SourceDownloader } from "../../domain/source/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -147,11 +147,16 @@ export class HttpSourceDownloader implements SourceDownloader {
   /**
    * Recursively move contents from source to target directory.
    * Returns the count of files moved.
+   *
+   * @param rootTargetDir The root extraction directory used to validate symlink
+   *   targets. Defaults to `targetDir` on the first (non-recursive) call.
    */
   private async moveContents(
     sourceDir: string,
     targetDir: string,
+    rootTargetDir?: string,
   ): Promise<number> {
+    const effectiveRoot = resolve(rootTargetDir ?? targetDir);
     let fileCount = 0;
 
     for await (const entry of Deno.readDir(sourceDir)) {
@@ -160,10 +165,20 @@ export class HttpSourceDownloader implements SourceDownloader {
 
       if (entry.isSymlink) {
         const linkTarget = await Deno.readLink(sourcePath);
-        await Deno.symlink(linkTarget, targetPath);
+        const resolvedTarget = resolve(dirname(targetPath), linkTarget);
+        if (
+          resolvedTarget === effectiveRoot ||
+          resolvedTarget.startsWith(effectiveRoot + "/")
+        ) {
+          await Deno.symlink(linkTarget, targetPath);
+        }
       } else if (entry.isDirectory) {
         await ensureDir(targetPath);
-        fileCount += await this.moveContents(sourcePath, targetPath);
+        fileCount += await this.moveContents(
+          sourcePath,
+          targetPath,
+          effectiveRoot,
+        );
       } else {
         await Deno.copyFile(sourcePath, targetPath);
         fileCount++;
