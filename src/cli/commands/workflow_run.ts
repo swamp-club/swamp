@@ -41,6 +41,7 @@ import { createLogProgressCallback } from "../../presentation/output/log_progres
 import { parseInputs } from "../input_parser.ts";
 import { parseTags } from "./data_search.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
+import { workflowRunSearchCommand } from "./workflow_run_search.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -287,4 +288,5 @@ export const workflowRunCommand = new Command()
       const message = error instanceof Error ? error.message : String(error);
       throw new UserError(`Workflow execution failed: ${message}`);
     }
-  });
+  })
+  .command("search", workflowRunSearchCommand);
