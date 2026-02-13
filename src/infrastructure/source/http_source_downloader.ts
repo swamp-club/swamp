@@ -61,7 +61,13 @@ export class HttpSourceDownloader implements SourceDownloader {
       const tarballPath = join(tempDir, "source.tar.gz");
 
       // Download the tarball
-      const response = await fetch(url);
+      let response: Response;
+      try {
+        response = await fetch(url);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(`Download failed: ${message}`);
+      }
       if (!response.ok) {
         if (response.status === 404) {
           throw new UserError(
@@ -82,8 +88,15 @@ export class HttpSourceDownloader implements SourceDownloader {
       });
       try {
         await response.body.pipeTo(file.writable);
-      } catch {
-        // writable stream may already be closed by pipeTo, that's fine
+      } catch (error: unknown) {
+        // Clean up partial download
+        try {
+          await Deno.remove(tarballPath);
+        } catch {
+          // Best-effort cleanup
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(`Download failed: ${message}`);
       }
 
       // Extract the tarball to temp directory first

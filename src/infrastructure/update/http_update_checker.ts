@@ -91,7 +91,13 @@ export class HttpUpdateChecker implements UpdateChecker {
       const tarballPath = `${tempDir}/swamp.tar.gz`;
 
       // Download the tarball
-      const response = await fetch(url);
+      let response: Response;
+      try {
+        response = await fetch(url);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(`Download failed: ${message}`);
+      }
       if (!response.ok) {
         throw new UserError(
           `Failed to download update: HTTP ${response.status}`,
@@ -107,8 +113,15 @@ export class HttpUpdateChecker implements UpdateChecker {
       });
       try {
         await response.body.pipeTo(file.writable);
-      } catch {
-        // writable stream may already be closed by pipeTo, that's fine
+      } catch (error: unknown) {
+        // Clean up partial download
+        try {
+          await Deno.remove(tarballPath);
+        } catch {
+          // Best-effort cleanup
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(`Download failed: ${message}`);
       }
 
       // Extract the tarball

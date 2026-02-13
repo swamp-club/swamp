@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { HttpSourceDownloader } from "./http_source_downloader.ts";
+import { UserError } from "../../domain/errors.ts";
 
 Deno.test("downloadAndExtract copies regular files", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -199,6 +200,49 @@ Deno.test("downloadAndExtract copies nested directories", async () => {
     assertEquals(
       await Deno.readTextFile(join(targetDir, "a", "b", "deep.txt")),
       "deep content",
+    );
+
+    await server.shutdown();
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("downloadAndExtract throws on download failure", async () => {
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    // Serve a response that aborts mid-stream
+    const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(4096));
+        },
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          controller.error(new Error("Connection reset"));
+        },
+      });
+      return new Response(stream, {
+        headers: { "content-type": "application/gzip" },
+      });
+    });
+
+    const port = server.addr.port;
+
+    const TestDownloader = class extends HttpSourceDownloader {
+      protected override getArchiveUrl(_version: string): string {
+        return `http://localhost:${port}/test.tar.gz`;
+      }
+    };
+
+    const testDownloader = new TestDownloader();
+    const targetDir = join(tempDir, "target");
+    await ensureDir(targetDir);
+
+    await assertRejects(
+      () => testDownloader.downloadAndExtract("main", targetDir),
+      UserError,
+      "Download failed:",
     );
 
     await server.shutdown();
