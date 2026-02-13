@@ -21,11 +21,17 @@ import { UserError } from "../../domain/errors.ts";
 
 /**
  * Result of creating a GitHub issue.
+ * Discriminated union: "created" when gh CLI was used, "url" when falling back to a browser URL.
  */
-export interface GitHubIssueResult {
-  url: string;
-  number: number;
-}
+export type GitHubIssueResult =
+  | { method: "created"; url: string; number: number }
+  | {
+    method: "url";
+    url: string;
+    title: string;
+    body: string;
+    labels: string[];
+  };
 
 /**
  * Options for creating a GitHub issue.
@@ -45,9 +51,9 @@ export class GitHubIssueService {
 
   /**
    * Checks if the gh CLI is installed and authenticated.
+   * Returns true if available, false otherwise.
    */
-  async checkGhCli(): Promise<void> {
-    // Check if gh is installed
+  async isAvailable(): Promise<boolean> {
     const whichCommand = new Deno.Command("which", {
       args: ["gh"],
       stdout: "null",
@@ -55,33 +61,54 @@ export class GitHubIssueService {
     });
     const { success: ghInstalled } = await whichCommand.output();
     if (!ghInstalled) {
-      throw new UserError(
-        "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/",
-      );
+      return false;
     }
 
-    // Check if gh is authenticated
     const authCommand = new Deno.Command("gh", {
       args: ["auth", "status"],
       stdout: "null",
       stderr: "null",
     });
     const { success: ghAuthenticated } = await authCommand.output();
-    if (!ghAuthenticated) {
-      throw new UserError(
-        "GitHub CLI is not authenticated. Run 'gh auth login' to authenticate.",
-      );
+    return ghAuthenticated;
+  }
+
+  /**
+   * Returns a GitHub "new issue" URL with labels pre-filled.
+   */
+  getNewIssueUrl(options: { repo?: string; labels: string[] }): string {
+    const repo = options.repo ?? this.defaultRepo;
+    const params = new URLSearchParams();
+    if (options.labels.length > 0) {
+      params.set("labels", options.labels.join(","));
     }
+    const query = params.toString();
+    return query
+      ? `https://github.com/${repo}/issues/new?${query}`
+      : `https://github.com/${repo}/issues/new`;
   }
 
   /**
    * Creates a GitHub issue using the gh CLI.
+   * Falls back to returning a pre-filled URL if the gh CLI is unavailable.
    *
    * @param options - The issue creation options
-   * @returns The URL and number of the created issue
+   * @returns The result, either a created issue or a fallback URL
    */
   async createIssue(options: CreateIssueOptions): Promise<GitHubIssueResult> {
-    await this.checkGhCli();
+    const available = await this.isAvailable();
+    if (!available) {
+      return {
+        method: "url",
+        url: this.getNewIssueUrl({
+          repo: options.repo,
+          labels: options.labels,
+        }),
+        title: options.title,
+        body: options.body,
+        labels: options.labels,
+      };
+    }
 
     const repo = options.repo ?? this.defaultRepo;
 
@@ -121,6 +148,6 @@ export class GitHubIssueService {
     const match = url.match(/\/issues\/(\d+)$/);
     const number = match ? parseInt(match[1], 10) : 0;
 
-    return { url, number };
+    return { method: "created", url, number };
   }
 }

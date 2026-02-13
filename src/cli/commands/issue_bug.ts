@@ -184,12 +184,22 @@ export const issueBugCommand = new Command()
       labels: ["bug", "external"],
     });
 
-    const data: IssueCreateData = {
-      url: result.url,
-      number: result.number,
-      type: "bug",
-      title,
-    };
+    const data: IssueCreateData = result.method === "created"
+      ? {
+        method: "created",
+        url: result.url,
+        number: result.number,
+        type: "bug",
+        title,
+      }
+      : {
+        method: "url",
+        url: result.url,
+        type: "bug",
+        title,
+        body: result.body,
+        labels: result.labels,
+      };
 
     renderIssueCreate(data, ctx.outputMode);
     ctx.logger.debug("Bug report submitted successfully");

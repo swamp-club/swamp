@@ -183,12 +183,22 @@ export const issueFeatureCommand = new Command()
       labels: ["enhancement", "external"],
     });
 
-    const data: IssueCreateData = {
-      url: result.url,
-      number: result.number,
-      type: "feature",
-      title,
-    };
+    const data: IssueCreateData = result.method === "created"
+      ? {
+        method: "created",
+        url: result.url,
+        number: result.number,
+        type: "feature",
+        title,
+      }
+      : {
+        method: "url",
+        url: result.url,
+        type: "feature",
+        title,
+        body: result.body,
+        labels: result.labels,
+      };
 
     renderIssueCreate(data, ctx.outputMode);
     ctx.logger.debug("Feature request submitted successfully");

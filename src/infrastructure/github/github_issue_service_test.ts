@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { GitHubIssueService } from "./github_issue_service.ts";
 
 Deno.test("issue URL parsing extracts issue number", () => {
   const url = "https://github.com/systeminit/swamp/issues/123";
@@ -38,4 +39,31 @@ Deno.test("issue URL parsing returns 0 for invalid URL", () => {
   const match = url.match(/\/issues\/(\d+)$/);
   const number = match ? parseInt(match[1], 10) : 0;
   assertEquals(number, 0);
+});
+
+Deno.test("getNewIssueUrl uses default repo with labels", () => {
+  const service = new GitHubIssueService();
+  const url = service.getNewIssueUrl({ labels: ["bug", "external"] });
+  assertEquals(
+    url,
+    "https://github.com/systeminit/swamp/issues/new?labels=bug%2Cexternal",
+  );
+});
+
+Deno.test("getNewIssueUrl uses custom repo", () => {
+  const service = new GitHubIssueService();
+  const url = service.getNewIssueUrl({
+    repo: "owner/other-repo",
+    labels: ["enhancement"],
+  });
+  assertEquals(
+    url,
+    "https://github.com/owner/other-repo/issues/new?labels=enhancement",
+  );
+});
+
+Deno.test("getNewIssueUrl with no labels omits query string", () => {
+  const service = new GitHubIssueService();
+  const url = service.getNewIssueUrl({ labels: [] });
+  assertEquals(url, "https://github.com/systeminit/swamp/issues/new");
 });
