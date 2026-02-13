@@ -28,6 +28,7 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -142,6 +143,7 @@ export const dataGetCommand = new Command()
           );
         }
 
+        const repoDir = options.repoDir ?? ".";
         const output: DataGetData = {
           id: item.data.id,
           name: item.data.name,
@@ -158,7 +160,7 @@ export const dataGetCommand = new Command()
           createdAt: item.data.createdAt.toISOString(),
           size: item.data.size,
           checksum: item.data.checksum,
-          contentPath: item.contentPath,
+          contentPath: toRelativePath(repoDir, item.contentPath),
         };
 
         if (options.content !== false) {
@@ -215,7 +217,8 @@ export const dataGetCommand = new Command()
           );
         }
 
-        const contentPath = dataRepo.getContentPath(
+        const repoDir = options.repoDir ?? ".";
+        const absoluteContentPath = dataRepo.getContentPath(
           modelType,
           definition.id,
           dataName,
@@ -238,7 +241,7 @@ export const dataGetCommand = new Command()
           createdAt: data.createdAt.toISOString(),
           size: data.size,
           checksum: data.checksum,
-          contentPath,
+          contentPath: toRelativePath(repoDir, absoluteContentPath),
         };
 
         if (options.content !== false) {

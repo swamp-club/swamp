@@ -231,9 +231,9 @@ export class RepoService {
 
 This repository is managed with [swamp](https://github.com/systeminit/swamp).
 
-## The Commandments
+## Rules
 
-1. **Models over shell commands.** Never drop to \`curl\`, \`ssh\`, or raw API calls. If the model doesn't have the method you need, add it to the extension.
+1. **Extension models for service integrations.** When automating AWS, APIs, or any external service, ALWAYS create an extension model in \`extensions/models/\`. Use the \`swamp-extension-model\` skill for guidance. The \`command/shell\` model is ONLY for ad-hoc one-off shell commands, NEVER for wrapping CLI tools or building integrations.
 2. **Extend, don't be clever.** Don't work around a missing capability with shell scripts or multi-step hacks. Add a method to the extension model. One method, one purpose.
 3. **Use the data model.** Once data exists in a model (via \`lookup\`, \`start\`, \`sync\`, etc.), reference it with CEL expressions. Don't re-fetch data that's already available.
 4. **CEL expressions everywhere.** Wire models together with \`model.*\` expressions. Always prefer \`model.<name>.resource.<spec>.<instance>.attributes.<field>\` over \`data.latest()\`.

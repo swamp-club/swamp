@@ -528,7 +528,7 @@ This ensures data integrity when multiple models reference the same data names.
 - **Scenarios**: See [references/scenarios.md](references/scenarios.md) for
   end-to-end scenarios (shell commands, chained lookups, runtime inputs)
 - **Data chaining**: See
-  [references/data-chaining.md](references/data-chaining.md) for aws/cli model
-  examples and chaining patterns
+  [references/data-chaining.md](references/data-chaining.md) for command/shell
+  model examples and chaining patterns
 - **Model design**: See [design/models.md](design/models.md) for data structures
   and concepts

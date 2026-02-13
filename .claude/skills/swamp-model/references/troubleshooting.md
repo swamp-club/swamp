@@ -225,7 +225,6 @@ model.my-vpc.resource.vpc.main.attributes.VpcId
 | Model Type    | Spec     | Instance | Expression Pattern                                           |
 | ------------- | -------- | -------- | ------------------------------------------------------------ |
 | command/shell | result   | result   | `model.<name>.resource.result.result.attributes.stdout`      |
-| aws/cli       | data     | output   | `model.<name>.resource.data.output.attributes.json.<field>`  |
 | Custom model  | (varies) | (varies) | `model.<name>.resource.<spec>.<instance>.attributes.<field>` |
 
 ## Method Execution Issues

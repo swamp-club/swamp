@@ -14,7 +14,7 @@
 | Expression Pattern                                           | Description                                | Example Value                 |
 | ------------------------------------------------------------ | ------------------------------------------ | ----------------------------- |
 | `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource reference (PREFERRED) | VPC ID, subnet CIDR, etc.     |
-| `model.<name>.resource.data.output.attributes.json.<field>`  | aws/cli with parseJson: true               | AMI ID from describe-images   |
+| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout                       | AMI ID from aws cli command   |
 | `model.<name>.file.<spec>.<instance>.path`                   | File path from another model               | `/path/to/file.txt`           |
 | `self.name`                                                  | Current model's name                       | `my-vpc`                      |
 | `self.version`                                               | Current model's version                    | `1`                           |
@@ -29,13 +29,12 @@
 
 ### CEL Path Patterns by Model Type
 
-| Model Type      | Resource Spec | Instance    | CEL Path Example                                                |
-| --------------- | ------------- | ----------- | --------------------------------------------------------------- |
-| `command/shell` | `result`      | `result`    | `model.my-shell.resource.result.result.attributes.stdout`       |
-| `aws/cli`       | `data`        | `output`    | `model.ami-lookup.resource.data.output.attributes.json.ImageId` |
-| `@user/vpc`     | `vpc`         | `main`      | `model.my-vpc.resource.vpc.main.attributes.VpcId`               |
-| `@user/subnet`  | `subnet`      | `primary`   | `model.my-subnet.resource.subnet.primary.attributes.SubnetId`   |
-| Factory model   | `<spec>`      | `<dynamic>` | `model.scanner.resource.subnet.subnet-aaa.attributes.cidr`      |
+| Model Type      | Resource Spec | Instance    | CEL Path Example                                              |
+| --------------- | ------------- | ----------- | ------------------------------------------------------------- |
+| `command/shell` | `result`      | `result`    | `model.my-shell.resource.result.result.attributes.stdout`     |
+| `@user/vpc`     | `vpc`         | `main`      | `model.my-vpc.resource.vpc.main.attributes.VpcId`             |
+| `@user/subnet`  | `subnet`      | `primary`   | `model.my-subnet.resource.subnet.primary.attributes.SubnetId` |
+| Factory model   | `<spec>`      | `<dynamic>` | `model.scanner.resource.subnet.subnet-aaa.attributes.cidr`    |
 
 ## Decision Tree: What to Build
 
@@ -43,7 +42,7 @@
 What does the user want to accomplish?
 │
 ├── Run a single command or API call
-│   └── Create a swamp model (command/shell, aws/cli, or @user/custom)
+│   └── Create a swamp model (command/shell or @user/custom)
 │
 ├── Orchestrate multiple steps in order
 │   └── Create a swamp workflow with jobs and steps
@@ -91,7 +90,7 @@ swamp model method run my-shell execute --json
 **Step 1: VPC Lookup**
 
 ```bash
-swamp model create aws/cli vpc-lookup --json
+swamp model create command/shell vpc-lookup --json
 ```
 
 ```yaml
@@ -99,21 +98,22 @@ swamp model create aws/cli vpc-lookup --json
 name: vpc-lookup
 version: 1
 tags: {}
-globalArguments:
-  command: >-
-    ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query "Vpcs[0]"
-  region: us-east-1
-  parseJson: true
+methods:
+  execute:
+    arguments:
+      run: >-
+        aws ec2 describe-vpcs --filters "Name=isDefault,Values=true"
+        --query "Vpcs[0].VpcId" --output text
 ```
 
 ```bash
-swamp model method run vpc-lookup run --json
+swamp model method run vpc-lookup execute --json
 ```
 
 **Step 2: Subnet Lookup (references VPC)**
 
 ```bash
-swamp model create aws/cli subnet-lookup --json
+swamp model create command/shell subnet-lookup --json
 ```
 
 ```yaml
@@ -121,13 +121,13 @@ swamp model create aws/cli subnet-lookup --json
 name: subnet-lookup
 version: 1
 tags: {}
-globalArguments:
-  command: >-
-    ec2 describe-subnets
-    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}"
-    --query "Subnets[0]"
-  region: us-east-1
-  parseJson: true
+methods:
+  execute:
+    arguments:
+      run: >-
+        aws ec2 describe-subnets
+        --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.result.result.attributes.stdout }}"
+        --query "Subnets[0].SubnetId" --output text
 ```
 
 **Step 3: Instance (references both)**
@@ -142,8 +142,8 @@ name: my-instance
 version: 1
 tags: {}
 globalArguments:
-  vpcId: ${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}
-  subnetId: ${{ model.subnet-lookup.resource.data.output.attributes.json.SubnetId }}
+  vpcId: ${{ model.vpc-lookup.resource.result.result.attributes.stdout }}
+  subnetId: ${{ model.subnet-lookup.resource.result.result.attributes.stdout }}
   instanceType: t3.micro
   tags:
     Name: ${{ self.name }}
@@ -151,11 +151,11 @@ globalArguments:
 
 ### Key CEL Paths Used
 
-| Model         | Expression                                                          | Value             |
-| ------------- | ------------------------------------------------------------------- | ----------------- |
-| vpc-lookup    | `model.vpc-lookup.resource.data.output.attributes.json.VpcId`       | `vpc-12345678`    |
-| subnet-lookup | `model.subnet-lookup.resource.data.output.attributes.json.SubnetId` | `subnet-abcd1234` |
-| my-instance   | `self.name`                                                         | `my-instance`     |
+| Model         | Expression                                                     | Value             |
+| ------------- | -------------------------------------------------------------- | ----------------- |
+| vpc-lookup    | `model.vpc-lookup.resource.result.result.attributes.stdout`    | `vpc-12345678`    |
+| subnet-lookup | `model.subnet-lookup.resource.result.result.attributes.stdout` | `subnet-abcd1234` |
+| my-instance   | `self.name`                                                    | `my-instance`     |
 
 ## Model with Runtime Inputs
 

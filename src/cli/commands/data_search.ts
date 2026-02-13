@@ -37,6 +37,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -224,6 +225,7 @@ export function filterData(
 async function displayDataDetail(
   item: DataSearchItem,
   dataRepo: FileSystemUnifiedDataRepository,
+  repoDir: string,
   outputMode: OutputMode,
 ): Promise<void> {
   const modelType = ModelType.create(item.modelType);
@@ -241,7 +243,7 @@ async function displayDataDetail(
     );
   }
 
-  const contentPath = dataRepo.getContentPath(
+  const absoluteContentPath = dataRepo.getContentPath(
     modelType,
     item.modelId,
     item.name,
@@ -265,7 +267,7 @@ async function displayDataDetail(
     createdAt: data.createdAt.toISOString(),
     size: data.size,
     checksum: data.checksum,
-    contentPath,
+    contentPath: toRelativePath(repoDir, absoluteContentPath),
   };
 
   // Fetch raw content for display
@@ -420,7 +422,8 @@ export const dataSearchCommand = new Command()
     const selected = await renderDataSearch(data, ctx.outputMode);
 
     if (selected) {
-      await displayDataDetail(selected, dataRepo, ctx.outputMode);
+      const repoDir = options.repoDir ?? ".";
+      await displayDataDetail(selected, dataRepo, repoDir, ctx.outputMode);
     }
 
     ctx.logger.debug("Data search command completed");

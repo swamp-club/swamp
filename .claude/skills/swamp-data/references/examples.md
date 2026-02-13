@@ -15,7 +15,7 @@
 | Expression Pattern                                           | Description                                 |
 | ------------------------------------------------------------ | ------------------------------------------- |
 | `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource reference (PREFERRED)  |
-| `model.<name>.resource.data.output.attributes.json.<field>`  | aws/cli with parseJson: true                |
+| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout                        |
 | `model.<name>.file.<spec>.<instance>.path`                   | File path reference                         |
 | `self.name`                                                  | Current model's name                        |
 | `inputs.<name>`                                              | Workflow or model runtime input             |
@@ -31,7 +31,6 @@
 | Model Type      | CEL Path                                                             | Notes                              |
 | --------------- | -------------------------------------------------------------------- | ---------------------------------- |
 | `command/shell` | `model.<name>.resource.result.result.attributes.stdout`              | Built-in uses `result` for both    |
-| `aws/cli`       | `model.<name>.resource.data.output.attributes.json.<field>`          | spec=`data`, instance=`output`     |
 | `@user/custom`  | `model.<name>.resource.<spec>.<instance>.attributes.<field>`         | You choose both names              |
 | Factory models  | `model.<name>.resource.<spec>.<dynamic-instance>.attributes.<field>` | Instance varies (e.g., `vpc-1234`) |
 
@@ -52,9 +51,9 @@ globalArguments:
   vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
   subnetId: ${{ model.public-subnet.resource.subnet.primary.attributes.SubnetId }}
 
-# For aws/cli models with parseJson: true
+# For command/shell models
 globalArguments:
-  imageId: ${{ model.ami-lookup.resource.data.output.attributes.json.ImageId }}
+  imageId: ${{ model.ami-lookup.resource.result.result.attributes.stdout }}
 ```
 
 ### When to Use data.latest()

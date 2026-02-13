@@ -28,10 +28,10 @@ doesn't exist. Extension models let you:
 3. Solution: Create extensions/models/s3_bucket.ts with the S3 logic you need
 ```
 
-**Important:** Do not default to generic CLI types (like `aws/cli`) for specific
-service integrations. If the user wants to manage S3 buckets, EC2 instances, or
-other resources, create a dedicated model for that service rather than wrapping
-CLI commands.
+**Important:** Do not default to generic CLI types (like `command/shell`) for
+specific service integrations. If the user wants to manage S3 buckets, EC2
+instances, or other resources, create a dedicated model for that service rather
+than wrapping CLI commands.
 
 ## Quick Reference
 

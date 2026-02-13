@@ -28,11 +28,23 @@ Deno.test("repoCommand module loads", async () => {
   assertEquals(repoCommand.getName(), "repo");
 });
 
-Deno.test("repoInitCommand is registered as subcommand", async () => {
+Deno.test("repoInitCommand is registered as hidden subcommand", async () => {
   const { repoCommand } = await import("./repo_init.ts");
-  const commands = repoCommand.getCommands();
-  const initCmd = commands.find((c) => c.getName() === "init");
-  assertEquals(initCmd !== undefined, true);
+  // getCommand with second arg true includes hidden commands
+  const initCmd = repoCommand.getCommand("init", true);
+  assertEquals(
+    initCmd !== undefined,
+    true,
+    "init command should be registered",
+  );
+  // Verify it's hidden: not in getCommands() (which excludes hidden)
+  const visibleCommands = repoCommand.getCommands();
+  const visibleInit = visibleCommands.find((c) => c.getName() === "init");
+  assertEquals(
+    visibleInit,
+    undefined,
+    "init should not appear in visible commands",
+  );
 });
 
 Deno.test("repoUpgradeCommand is registered as subcommand", async () => {

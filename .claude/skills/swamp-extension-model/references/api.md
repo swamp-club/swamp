@@ -150,7 +150,6 @@ Delete and update methods need to read back previously stored resource data
 const content = await context.dataRepository.getContent(
   context.modelType,
   context.modelId,
-  "<specName>", // matches a key in resources
   "<instanceName>", // instance name used when writing
 );
 // Returns Uint8Array | null
@@ -167,11 +166,11 @@ const data = JSON.parse(new TextDecoder().decode(content));
 
 **Key dataRepository methods for model authors:**
 
-| Method                                                    | Returns              | Description                            |
-| --------------------------------------------------------- | -------------------- | -------------------------------------- |
-| `getContent(type, modelId, dataName, instanceName, ver?)` | `Uint8Array \| null` | Get raw content bytes                  |
-| `findByName(type, modelId, dataName, instanceName, ver?)` | `Data \| null`       | Get data metadata (tags, version, etc) |
-| `findAllForModel(type, modelId)`                          | `Data[]`             | List all data for this model instance  |
+| Method                                      | Returns              | Description                            |
+| ------------------------------------------- | -------------------- | -------------------------------------- |
+| `getContent(type, modelId, dataName, ver?)` | `Uint8Array \| null` | Get raw content bytes                  |
+| `findByName(type, modelId, dataName, ver?)` | `Data \| null`       | Get data metadata (tags, version, etc) |
+| `findAllForModel(type, modelId)`            | `Data[]`             | List all data for this model instance  |
 
 ---
 

@@ -152,9 +152,9 @@ No data dependencies between them → Run in parallel automatically
 **1. Create independent lookup models**
 
 ```bash
-swamp model create aws/cli ami-lookup --json
-swamp model create aws/cli vpc-lookup --json
-swamp model create aws/cli sg-lookup --json
+swamp model create command/shell ami-lookup --json
+swamp model create command/shell vpc-lookup --json
+swamp model create command/shell sg-lookup --json
 ```
 
 **2. Create parallel workflow**
@@ -173,19 +173,19 @@ jobs:
         task:
           type: model_method
           modelIdOrName: ami-lookup
-          methodName: run
+          methodName: execute
 
       - name: vpc
         task:
           type: model_method
           modelIdOrName: vpc-lookup
-          methodName: run
+          methodName: execute
 
       - name: sg
         task:
           type: model_method
           modelIdOrName: sg-lookup
-          methodName: run
+          methodName: execute
 
   - name: use-results
     description: Use all lookup results
@@ -208,9 +208,9 @@ jobs:
 name: my-instance
 version: 1
 globalArguments:
-  imageId: ${{ model.ami-lookup.resource.data.output.attributes.json.ImageId }}
-  vpcId: ${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}
-  securityGroupId: ${{ model.sg-lookup.resource.data.output.attributes.json.GroupId }}
+  imageId: ${{ model.ami-lookup.resource.result.result.attributes.stdout }}
+  vpcId: ${{ model.vpc-lookup.resource.result.result.attributes.stdout }}
+  securityGroupId: ${{ model.sg-lookup.resource.result.result.attributes.stdout }}
 ```
 
 ---
@@ -403,7 +403,6 @@ methods: {
       const content = await context.dataRepository.getContent(
         context.modelType,
         context.modelId,
-        "vpc",
         "vpc",
       );
 

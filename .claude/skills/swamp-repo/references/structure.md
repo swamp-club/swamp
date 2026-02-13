@@ -17,9 +17,6 @@ my-swamp-repo/
 │   │   ├── command/
 │   │   │   └── shell/
 │   │   │       └── {model-id}.yaml
-│   │   ├── aws/
-│   │   │   └── cli/
-│   │   │       └── {model-id}.yaml
 │   │   └── @user/
 │   │       └── my-type/
 │   │           └── {model-id}.yaml
@@ -165,7 +162,7 @@ methods:
 
 **Path pattern**: `.swamp/definitions/{normalized-type}/{model-id}.yaml`
 
-- `normalized-type`: e.g., `command/shell`, `aws/cli`, `@user/my-type`
+- `normalized-type`: e.g., `command/shell`, `@user/my-type`
 - `model-id`: UUID assigned at creation
 
 ### Model Data (.swamp/data/)

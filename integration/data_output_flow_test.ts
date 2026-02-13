@@ -329,8 +329,10 @@ Deno.test("Integration: data commands work with model data artifacts", async () 
     assertEquals(typeof getOutput.contentPath, "string");
     assertEquals(getOutput.contentType, "application/json");
 
-    // Read the content file to verify the data
-    const content = await Deno.readTextFile(getOutput.contentPath);
+    // Read the content file to verify the data (contentPath is now relative)
+    const content = await Deno.readTextFile(
+      join(repoDir, getOutput.contentPath),
+    );
     const parsedContent = JSON.parse(content);
     // Shell model produces result with exitCode and command
     assertEquals(parsedContent.exitCode, 0);
@@ -715,8 +717,10 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
     const v1Output = JSON.parse(v1Result.stdout);
     assertEquals(v1Output.version, 1);
 
-    // Read content from file path - shell model produces exitCode
-    const v1Content = await Deno.readTextFile(v1Output.contentPath);
+    // Read content from file path - shell model produces exitCode (contentPath is relative)
+    const v1Content = await Deno.readTextFile(
+      join(repoDir, v1Output.contentPath),
+    );
     const v1Parsed = JSON.parse(v1Content);
     assertEquals(v1Parsed.exitCode, 0);
 
@@ -747,8 +751,10 @@ Deno.test("Integration: data versioning across multiple runs", async () => {
       "Latest should be version 2 or higher",
     );
 
-    // Read content from file path - shell model produces exitCode
-    const latestContent = await Deno.readTextFile(latestOutput.contentPath);
+    // Read content from file path - shell model produces exitCode (contentPath is relative)
+    const latestContent = await Deno.readTextFile(
+      join(repoDir, latestOutput.contentPath),
+    );
     const latestParsed = JSON.parse(latestContent);
     assertEquals(latestParsed.exitCode, 0);
   });

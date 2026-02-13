@@ -85,7 +85,6 @@ export const model = {
           context.modelType,
           context.modelId,
           "vpc",
-          "vpc",
         );
 
         if (!content) {
@@ -147,7 +146,6 @@ export const model = {
         const content = await context.dataRepository.getContent(
           context.modelType,
           context.modelId,
-          "vpc",
           "vpc",
         );
 

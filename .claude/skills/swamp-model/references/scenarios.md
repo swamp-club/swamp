@@ -94,15 +94,15 @@ swamp data get my-shell result --json
 ### What You'll Build
 
 - 3 models:
-  - `vpc-lookup` (aws/cli) — find the default VPC
-  - `subnet-lookup` (aws/cli) — find a subnet in that VPC
+  - `vpc-lookup` (command/shell) — find the default VPC
+  - `subnet-lookup` (command/shell) — find a subnet in that VPC
   - `my-instance` (@user/ec2-instance or similar) — uses both
 
 ### Decision Tree
 
 ```
 User wants to chain multiple lookups → Multiple models with CEL references
-Each lookup is a command → aws/cli model
+Each lookup is a command → command/shell model
 Final resource needs custom logic → Extension model (or use existing type)
 ```
 
@@ -111,7 +111,7 @@ Final resource needs custom logic → Extension model (or use existing type)
 **1. Create VPC lookup model**
 
 ```bash
-swamp model create aws/cli vpc-lookup --json
+swamp model create command/shell vpc-lookup --json
 ```
 
 Edit `models/vpc-lookup/input.yaml`:
@@ -120,25 +120,25 @@ Edit `models/vpc-lookup/input.yaml`:
 name: vpc-lookup
 version: 1
 tags: {}
-globalArguments:
-  command: >-
-    ec2 describe-vpcs
-    --filters "Name=isDefault,Values=true"
-    --query "Vpcs[0]"
-  region: us-east-1
-  parseJson: true
+methods:
+  execute:
+    arguments:
+      run: >-
+        aws ec2 describe-vpcs
+        --filters "Name=isDefault,Values=true"
+        --query "Vpcs[0].VpcId" --output text
 ```
 
 Run it:
 
 ```bash
-swamp model method run vpc-lookup run --json
+swamp model method run vpc-lookup execute --json
 ```
 
 **2. Create subnet lookup model (references VPC)**
 
 ```bash
-swamp model create aws/cli subnet-lookup --json
+swamp model create command/shell subnet-lookup --json
 ```
 
 Edit `models/subnet-lookup/input.yaml`:
@@ -147,20 +147,20 @@ Edit `models/subnet-lookup/input.yaml`:
 name: subnet-lookup
 version: 1
 tags: {}
-globalArguments:
-  command: >-
-    ec2 describe-subnets
-    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}"
-    --query "Subnets[0]"
-  region: us-east-1
-  parseJson: true
+methods:
+  execute:
+    arguments:
+      run: >-
+        aws ec2 describe-subnets
+        --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.result.result.attributes.stdout }}"
+        --query "Subnets[0].SubnetId" --output text
 ```
 
 Validate and run:
 
 ```bash
 swamp model validate subnet-lookup --json
-swamp model method run subnet-lookup run --json
+swamp model method run subnet-lookup execute --json
 ```
 
 **3. Create instance model (references both)**
@@ -176,8 +176,8 @@ name: my-instance
 version: 1
 tags: {}
 globalArguments:
-  vpcId: ${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}
-  subnetId: ${{ model.subnet-lookup.resource.data.output.attributes.json.SubnetId }}
+  vpcId: ${{ model.vpc-lookup.resource.result.result.attributes.stdout }}
+  subnetId: ${{ model.subnet-lookup.resource.result.result.attributes.stdout }}
   instanceType: t3.micro
   tags:
     Name: ${{ self.name }}
@@ -192,13 +192,11 @@ swamp model validate my-instance --json
 
 ### CEL Paths Used
 
-| Model         | Expression                                                                  | Description |
-| ------------- | --------------------------------------------------------------------------- | ----------- |
-| vpc-lookup    | `model.vpc-lookup.resource.data.output.attributes.json.VpcId`               | VPC ID      |
-| vpc-lookup    | `model.vpc-lookup.resource.data.output.attributes.json.CidrBlock`           | VPC CIDR    |
-| subnet-lookup | `model.subnet-lookup.resource.data.output.attributes.json.SubnetId`         | Subnet ID   |
-| subnet-lookup | `model.subnet-lookup.resource.data.output.attributes.json.AvailabilityZone` | AZ          |
-| my-instance   | `self.name`                                                                 | Model name  |
+| Model         | Expression                                                     | Description |
+| ------------- | -------------------------------------------------------------- | ----------- |
+| vpc-lookup    | `model.vpc-lookup.resource.result.result.attributes.stdout`    | VPC ID      |
+| subnet-lookup | `model.subnet-lookup.resource.result.result.attributes.stdout` | Subnet ID   |
+| my-instance   | `self.name`                                                    | Model name  |
 
 ---
 

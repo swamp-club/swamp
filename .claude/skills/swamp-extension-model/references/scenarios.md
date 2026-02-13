@@ -46,7 +46,7 @@ const GlobalArgsSchema = z.object({
 const CreateArgsSchema = z.object({
   email: z.string().email(),
   name: z.string(),
-  metadata: z.record(z.string()).optional(),
+  metadata: z.record(z.string(), z.string()).optional(),
 });
 
 const CustomerSchema = z.object({
@@ -109,7 +109,6 @@ export const model = {
         const content = await context.dataRepository.getContent(
           context.modelType,
           context.modelId,
-          "customer",
           "primary",
         );
 
@@ -297,7 +296,6 @@ export const model = {
         const content = await context.dataRepository.getContent(
           context.modelType,
           context.modelId,
-          "bucket",
           "main",
         );
 
@@ -345,7 +343,6 @@ export const model = {
         const content = await context.dataRepository.getContent(
           context.modelType,
           context.modelId,
-          "bucket",
           "main",
         );
 
