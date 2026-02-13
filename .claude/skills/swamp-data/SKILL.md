@@ -292,14 +292,14 @@ yet, accessing `.resource` will fail with "No such key". Use
 
 ```yaml
 # Access latest resource data via dot notation
-value: ${{ model.my-model.resource.output.output.attributes.result }}
+value: ${{ model.my-model.resource.output.main.attributes.result }}
 
 # Access specific version
-value: ${{ data.version("my-model", "output", 2).attributes.result }}
+value: ${{ data.version("my-model", "main", 2).attributes.result }}
 
 # Access file metadata
-path: ${{ model.my-model.file.content.content.path }}
-size: ${{ model.my-model.file.content.content.size }}
+path: ${{ model.my-model.file.content.primary.path }}
+size: ${{ model.my-model.file.content.primary.size }}
 
 # Lazy-load file contents
 body: ${{ file.contents("my-model", "content") }}
@@ -439,6 +439,11 @@ Data is stored in the `.swamp/data/` directory:
 
 ## References
 
+- **Examples**: See [references/examples.md](references/examples.md) for data
+  query patterns, CEL expressions, and GC scenarios
+- **Troubleshooting**: See
+  [references/troubleshooting.md](references/troubleshooting.md) for common
+  errors and fixes
 - **Data design**: See [design/models.md](design/models.md) for data lifecycle
   details
 - **Expressions**: See [design/expressions.md](design/expressions.md) for CEL

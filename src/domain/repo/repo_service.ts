@@ -33,6 +33,7 @@ import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { UserError } from "../errors.ts";
 
 const CLAUDE_MD_FILENAME = "CLAUDE.md";
+const GITIGNORE_FILENAME = ".gitignore";
 
 /**
  * Result of a repository initialization operation.
@@ -44,6 +45,7 @@ export interface RepoInitResult {
   skillsCopied: string[];
   claudeMdCreated: boolean;
   claudeSettingsCreated: boolean;
+  gitignoreCreated: boolean;
 }
 
 /**
@@ -128,6 +130,9 @@ export class RepoService {
       repoPath,
     );
 
+    // Create .gitignore if it doesn't exist
+    const gitignoreCreated = await this.createGitignoreIfNotExists(repoPath);
+
     return {
       path: repoPath.value,
       version: this.currentVersion.toString(),
@@ -135,6 +140,7 @@ export class RepoService {
       skillsCopied,
       claudeMdCreated,
       claudeSettingsCreated,
+      gitignoreCreated,
     };
   }
 
@@ -225,6 +231,14 @@ export class RepoService {
 
 This repository is managed with [swamp](https://github.com/systeminit/swamp).
 
+## Rules
+
+1. **Extension models for service integrations.** When automating AWS, APIs, or any external service, ALWAYS create an extension model in \`extensions/models/\`. Use the \`swamp-extension-model\` skill for guidance. The \`command/shell\` model is ONLY for ad-hoc one-off shell commands, NEVER for wrapping CLI tools or building integrations.
+2. **Extend, don't be clever.** Don't work around a missing capability with shell scripts or multi-step hacks. Add a method to the extension model. One method, one purpose.
+3. **Use the data model.** Once data exists in a model (via \`lookup\`, \`start\`, \`sync\`, etc.), reference it with CEL expressions. Don't re-fetch data that's already available.
+4. **CEL expressions everywhere.** Wire models together with \`model.*\` expressions. Always prefer \`model.<name>.resource.<spec>.<instance>.attributes.<field>\` over \`data.latest()\`.
+5. **Verify before destructive operations.** Always \`swamp model get <name> --json\` and verify resource IDs before running delete/stop/destroy methods.
+
 ## Skills
 
 **IMPORTANT:** Always load swamp skills, even when in plan mode. The skills provide
@@ -235,7 +249,9 @@ essential context for working with this repository.
 - \`swamp-vault\` - Manage secrets and credentials
 - \`swamp-data\` - Manage model data lifecycle
 - \`swamp-repo\` - Repository management
+- \`swamp-extension-model\` - Create custom TypeScript models
 - \`swamp-issue\` - Submit bug reports and feature requests
+- \`swamp-troubleshooting\` - Debug and diagnose swamp issues
 
 ## Getting Started
 
@@ -244,6 +260,47 @@ Always start by using the \`swamp-model\` skill to work with swamp models.
 ## Commands
 
 Use \`swamp --help\` to see available commands.
+`;
+  }
+
+  /**
+   * Creates .gitignore if it doesn't already exist.
+   */
+  private async createGitignoreIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const gitignorePath = join(repoPath.value, GITIGNORE_FILENAME);
+
+    try {
+      await Deno.stat(gitignorePath);
+      // File exists, don't overwrite
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        // Create the file
+        const content = this.generateGitignoreContent();
+        await Deno.writeTextFile(gitignorePath, content);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Generates the content for .gitignore.
+   */
+  private generateGitignoreContent(): string {
+    return `# Swamp managed defaults
+# Feel free to modify this file to suit your needs
+
+# Local telemetry (not needed for reconstruction)
+.swamp/telemetry/
+
+# Encryption keyfile (NEVER commit - allows decrypting secrets)
+.swamp/secrets/keyfile
+
+# Claude Code configuration (managed by swamp)
+.claude/
 `;
   }
 

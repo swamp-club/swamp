@@ -22,6 +22,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
+import { suppressInkTtyErrors } from "./ink_lifecycle.ts";
 import type { VaultTypeInfo } from "../../domain/vaults/vault_types.ts";
 import { useScrollableList } from "./hooks/mod.ts";
 
@@ -91,21 +92,22 @@ export function renderInteractiveVaultTypeSearch(
   data: VaultTypeSearchData,
 ): Promise<VaultTypeSearchItem | undefined> {
   return new Promise<VaultTypeSearchItem | undefined>((resolve) => {
-    let result: VaultTypeSearchItem | undefined;
+    const cleanupTty = suppressInkTtyErrors();
     const { waitUntilExit } = render(
       <VaultTypeSearchUI
         vaultTypes={data.results}
         initialQuery={data.query}
         onSelect={(item) => {
-          result = item;
+          cleanupTty();
+          resolve(item);
         }}
-        onCancel={() => {}}
+        onCancel={() => {
+          cleanupTty();
+          resolve(undefined);
+        }}
       />,
     );
-    waitUntilExit().then(
-      () => resolve(result),
-      () => resolve(result),
-    );
+    waitUntilExit().catch(() => {});
   });
 }
 

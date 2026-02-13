@@ -129,6 +129,7 @@ Deno.test("Workflow.fromData reconstructs workflow correctly", () => {
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-workflow",
     description: "Test description",
+    tags: {},
     inputs: undefined,
     jobs: [
       {
@@ -264,6 +265,7 @@ Deno.test("Workflow.fromData reconstructs workflow with inputs correctly", () =>
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-workflow-inputs",
     description: "Test with inputs",
+    tags: {},
     inputs: {
       properties: {
         message: {
@@ -354,4 +356,84 @@ Deno.test("Workflow.fromData and toData roundtrip with inputs", () => {
   ]);
   assertEquals(restored.inputs?.properties?.replicas?.default, 3);
   assertEquals(restored.inputs?.required, ["environment"]);
+});
+
+// Tags field tests
+
+Deno.test("Workflow.create creates workflow with tags", () => {
+  const workflow = Workflow.create({
+    name: "tagged-workflow",
+    tags: { env: "dev", team: "platform" },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(workflow.tags, { env: "dev", team: "platform" });
+});
+
+Deno.test("Workflow.create defaults tags to empty object", () => {
+  const workflow = Workflow.create({
+    name: "no-tags-workflow",
+  });
+
+  assertEquals(workflow.tags, {});
+});
+
+Deno.test("Workflow.toData includes tags in output", () => {
+  const workflow = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    tags: { project: "alpha" },
+    jobs: [createTestJob("job1")],
+  });
+
+  const data = workflow.toData();
+  assertEquals(data.tags, { project: "alpha" });
+});
+
+Deno.test("Workflow.fromData and toData roundtrip with tags", () => {
+  const original = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "roundtrip-tags",
+    tags: { env: "prod", region: "us-east-1" },
+    jobs: [createTestJob("deploy")],
+  });
+
+  const data = original.toData();
+  const restored = Workflow.fromData(data);
+
+  assertEquals(restored.tags, { env: "prod", region: "us-east-1" });
+});
+
+Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
+  // Simulate legacy data without tags field — Zod .default({}) fills it in
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "legacy-workflow",
+    jobs: [
+      {
+        name: "job1",
+        steps: [
+          {
+            name: "step1",
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
+            dependsOn: [],
+            weight: 0,
+          },
+        ],
+        dependsOn: [],
+        weight: 0,
+      },
+    ],
+    version: 1,
+  };
+
+  // Cast to bypass TypeScript requiring tags — tests runtime backward compat
+  const workflow = Workflow.fromData(
+    data as unknown as import("./workflow.ts").WorkflowData,
+  );
+  assertEquals(workflow.tags, {});
 });

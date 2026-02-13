@@ -127,3 +127,26 @@ export function toAbsolutePath(repoDir: string, relativePath: string): string {
   }
   return join(repoDir, relativePath);
 }
+
+/**
+ * Returns the user-level swamp configuration directory.
+ *
+ * Follows the XDG Base Directory specification:
+ * - Uses `$XDG_CONFIG_HOME/swamp/` if `XDG_CONFIG_HOME` is set
+ * - Falls back to `~/.config/swamp/`
+ *
+ * @returns The absolute path to the swamp config directory
+ * @throws Error if HOME environment variable is not set
+ */
+export function getSwampConfigDir(): string {
+  const xdgConfigHome = Deno.env.get("XDG_CONFIG_HOME");
+  if (xdgConfigHome) {
+    return join(xdgConfigHome, "swamp");
+  }
+
+  const home = Deno.env.get("HOME");
+  if (!home) {
+    throw new Error("HOME environment variable is not set");
+  }
+  return join(home, ".config", "swamp");
+}

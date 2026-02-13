@@ -99,6 +99,10 @@ export interface StepExecutionContext {
   workflowNestingDepth?: number;
   /** Set of ancestor workflow IDs for cycle detection */
   ancestorWorkflowIds?: Set<string>;
+  /** Tags from the workflow definition, merged into data writer tag overrides */
+  workflowTags?: Record<string, string>;
+  /** Runtime tags from --tag CLI flags, passed to method execution context */
+  runtimeTags?: Record<string, string>;
 }
 
 /**
@@ -446,6 +450,7 @@ export class DefaultStepExecutor implements StepExecutor {
       // Use "source" instead of "type" to preserve the original data type
       // (resource/file) while tracking provenance for cross-workflow resolution
       const workflowTagOverrides: Record<string, string> = {
+        ...(ctx.workflowTags ?? {}),
         source: "step-output",
         workflow: ctx.workflowName,
         step: ctx.stepName,
@@ -484,6 +489,7 @@ export class DefaultStepExecutor implements StepExecutor {
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
           tagOverrides: workflowTagOverrides,
+          runtimeTags: ctx.runtimeTags,
           dataOutputOverrides: stepDataOutputOverrides,
         },
       );
@@ -706,6 +712,7 @@ export class WorkflowExecutionService {
       enableStepLogging?: boolean;
       lastEvaluated?: boolean;
       inputs?: Record<string, unknown>;
+      runtimeTags?: Record<string, string>;
       workflowNestingDepth?: number;
       ancestorWorkflowIds?: Set<string>;
     },
@@ -797,6 +804,8 @@ export class WorkflowExecutionService {
             options?.lastEvaluated,
             options?.workflowNestingDepth,
             options?.ancestorWorkflowIds,
+            workflow.tags,
+            options?.runtimeTags,
           )
         ),
       );
@@ -824,6 +833,8 @@ export class WorkflowExecutionService {
     lastEvaluated?: boolean,
     workflowNestingDepth?: number,
     ancestorWorkflowIds?: Set<string>,
+    workflowTags?: Record<string, string>,
+    runtimeTags?: Record<string, string>,
   ): Promise<void> {
     const job = workflow.getJob(jobName);
     if (!job) {
@@ -931,6 +942,8 @@ export class WorkflowExecutionService {
             lastEvaluated,
             workflowNestingDepth,
             ancestorWorkflowIds,
+            workflowTags,
+            runtimeTags,
           );
         }),
       );
@@ -1223,6 +1236,8 @@ export class WorkflowExecutionService {
     lastEvaluated?: boolean,
     workflowNestingDepth?: number,
     ancestorWorkflowIds?: Set<string>,
+    workflowTags?: Record<string, string>,
+    runtimeTags?: Record<string, string>,
   ): Promise<void> {
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
@@ -1292,6 +1307,8 @@ export class WorkflowExecutionService {
         forEachVariable: forEachVar,
         workflowNestingDepth,
         ancestorWorkflowIds,
+        workflowTags,
+        runtimeTags,
       };
 
       const output = await this.executor.execute(step, ctx);

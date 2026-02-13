@@ -527,22 +527,22 @@ Deno.test("CLI: model method run creates Data with correct metadata", async () =
 
     // Create a model definition using repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     const definition = Definition.create({
       name: "data-test-model",
-      methods: { write: { arguments: { message: "Test data creation" } } },
+      methods: { execute: { arguments: { run: "echo 'Test data creation'" } } },
     });
     await definitionRepo.save(modelType, definition);
 
-    // Run the write method via CLI
+    // Run the execute method via CLI
     const result = await runCliCommand(
       [
         "model",
         "method",
         "run",
         "data-test-model",
-        "write",
+        "execute",
         "--repo-dir",
         repoDir,
         "--json",
@@ -557,17 +557,18 @@ Deno.test("CLI: model method run creates Data with correct metadata", async () =
     );
 
     const output = JSON.parse(result.stdout);
-    assertEquals(output.methodName, "write");
+    assertEquals(output.methodName, "execute");
     assertEquals(output.modelName, "data-test-model");
-    assertEquals(output.type, "swamp/echo");
+    assertEquals(output.type, "command/shell");
 
-    // Verify data artifact was created
+    // Verify result artifact was created (shell model produces result with exitCode, command, etc.)
     assertExists(output.data);
     assertExists(output.data.id);
     assertExists(output.data.path);
     assertExists(output.data.attributes);
-    assertEquals(output.data.attributes.message, "Test data creation");
-    assertExists(output.data.attributes.timestamp);
+    assertEquals(output.data.attributes.exitCode, 0);
+    assertExists(output.data.attributes.command);
+    assertExists(output.data.attributes.executedAt);
   });
 });
 
@@ -578,15 +579,15 @@ Deno.test("CLI: model method run creates versioned Data on subsequent calls", as
 
     // Create a model definition using repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     const definition = Definition.create({
       name: "versioned-data-model",
-      methods: { write: { arguments: { message: "Versioning test" } } },
+      methods: { execute: { arguments: { run: "echo 'Versioning test'" } } },
     });
     await definitionRepo.save(modelType, definition);
 
-    // Run the write method multiple times
+    // Run the execute method multiple times
     const paths: string[] = [];
     for (let i = 0; i < 3; i++) {
       const result = await runCliCommand(
@@ -595,7 +596,7 @@ Deno.test("CLI: model method run creates versioned Data on subsequent calls", as
           "method",
           "run",
           "versioned-data-model",
-          "write",
+          "execute",
           "--repo-dir",
           repoDir,
           "--json",
@@ -784,12 +785,14 @@ Deno.test("Model creation with attributes via repository", async () => {
   await withTempDir(async (repoDir) => {
     // Model creation with attributes must be done via repository
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const modelType = ModelType.create("swamp/echo");
+    const modelType = ModelType.create("command/shell");
 
     const definition = Definition.create({
       name: "repo-attrs-model",
       globalArguments: { count: 42 },
-      methods: { write: { arguments: { message: "Hello from repository" } } },
+      methods: {
+        execute: { arguments: { run: "echo 'Hello from repository'" } },
+      },
     });
     await definitionRepo.save(modelType, definition);
 
@@ -798,8 +801,8 @@ Deno.test("Model creation with attributes via repository", async () => {
     assertExists(loaded);
     assertEquals(loaded.name, "repo-attrs-model");
     assertEquals(
-      loaded.getMethodArguments("write").message,
-      "Hello from repository",
+      loaded.getMethodArguments("execute").run,
+      "echo 'Hello from repository'",
     );
     assertEquals(loaded.globalArguments.count, 42);
   });

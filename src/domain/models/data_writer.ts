@@ -299,6 +299,8 @@ export function createResourceWriter(
     garbageCollection?: GarbageCollectionPolicy;
     tags?: Record<string, string>;
   }>,
+  definitionTags?: Record<string, string>,
+  runtimeTags?: Record<string, string>,
 ): {
   writeResource: (
     specName: string,
@@ -349,9 +351,13 @@ export function createResourceWriter(
 
     const instanceName = name;
 
-    // Resolve tags: spec defaults -> overrides -> tag overrides
+    // Resolve tags with full resolution chain:
+    // 1. type auto-tag → 2. definition tags → 3. spec defaults →
+    // 4. method overrides → 5. specName auto-tag → 6. workflow/tag overrides →
+    // 7. runtime tags → 8. data output overrides
     const resolvedTags: Record<string, string> = {
       type: "resource",
+      ...(definitionTags ?? {}),
       ...(spec.tags ?? {}),
       ...(overrides?.tags ?? {}),
     };
@@ -359,9 +365,14 @@ export function createResourceWriter(
     // Auto-inject specName tag for findBySpec discovery
     resolvedTags["specName"] = specName;
 
-    // Apply global tag overrides
+    // Apply global tag overrides (workflow step tags)
     if (tagOverrides) {
       Object.assign(resolvedTags, tagOverrides);
+    }
+
+    // Apply runtime tags (--tag flags)
+    if (runtimeTags) {
+      Object.assign(resolvedTags, runtimeTags);
     }
 
     // Resolve lifetime and gc with overrides
@@ -440,6 +451,8 @@ export function createFileWriterFactory(
     tags?: Record<string, string>;
   }>,
   callbacks?: DataWriterCallbacks,
+  definitionTags?: Record<string, string>,
+  runtimeTags?: Record<string, string>,
 ): {
   createFileWriter: (
     specName: string,
@@ -475,9 +488,13 @@ export function createFileWriterFactory(
 
     const instanceName = name;
 
-    // Resolve tags: spec defaults -> overrides -> tag overrides
+    // Resolve tags with full resolution chain:
+    // 1. type auto-tag → 2. definition tags → 3. spec defaults →
+    // 4. method overrides → 5. specName auto-tag → 6. workflow/tag overrides →
+    // 7. runtime tags → 8. data output overrides
     const resolvedTags: Record<string, string> = {
       type: "file",
+      ...(definitionTags ?? {}),
       ...(spec.tags ?? {}),
       ...(overrides?.tags ?? {}),
     };
@@ -485,9 +502,14 @@ export function createFileWriterFactory(
     // Auto-inject specName tag for findBySpec discovery
     resolvedTags["specName"] = specName;
 
-    // Apply global tag overrides
+    // Apply global tag overrides (workflow step tags)
     if (tagOverrides) {
       Object.assign(resolvedTags, tagOverrides);
+    }
+
+    // Apply runtime tags (--tag flags)
+    if (runtimeTags) {
+      Object.assign(resolvedTags, runtimeTags);
     }
 
     // Resolve options with overrides

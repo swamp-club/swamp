@@ -31,13 +31,7 @@
  */
 
 // Import all model files to trigger registration
-import "./echo/echo_model.ts";
-import "./keeb/shell/shell_model.ts";
-import "./systemd/journalctl/journalctl_model.ts";
-import "./command/curl/curl_model.ts";
-import "./aws/cli/aws_cli_model.ts";
-import "./mermaid/workflow_diagram/workflow_diagram_model.ts";
-import "./lets-get-sensitive/vault_model.ts";
+import "./command/shell/shell_model.ts";
 
 // Import all of the AWS models - the models in this file are created by the clover pipeline
 import "./aws/aws_models.ts";

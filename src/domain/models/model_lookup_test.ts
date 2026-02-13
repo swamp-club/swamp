@@ -187,7 +187,7 @@ Deno.test("matchByPartialId matches full UUID", () => {
 Deno.test("findDefinitionByIdOrName finds definition by name", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
     const definition = Definition.create({
       name: "my-model",
       version: 1,
@@ -200,14 +200,14 @@ Deno.test("findDefinitionByIdOrName finds definition by name", async () => {
 
     assertEquals(result?.definition.id, definition.id);
     assertEquals(result?.definition.name, "my-model");
-    assertEquals(result?.type.normalized, "swamp/echo");
+    assertEquals(result?.type.normalized, "command/shell");
   });
 });
 
 Deno.test("findDefinitionByIdOrName finds definition by UUID", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
     const definition = Definition.create({
       name: "my-model",
       version: 1,
@@ -220,7 +220,7 @@ Deno.test("findDefinitionByIdOrName finds definition by UUID", async () => {
 
     assertEquals(result?.definition.id, definition.id);
     assertEquals(result?.definition.name, "my-model");
-    assertEquals(result?.type.normalized, "swamp/echo");
+    assertEquals(result?.type.normalized, "command/shell");
   });
 });
 
@@ -237,7 +237,7 @@ Deno.test("findDefinitionByIdOrName returns null when not found", async () => {
 Deno.test("findDefinitionByIdOrName prefers name match over ID", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
-    const type = ModelType.create("swamp/echo");
+    const type = ModelType.create("command/shell");
 
     // Create two definitions - one with a name that happens to be a UUID-like string
     const def1 = Definition.create({

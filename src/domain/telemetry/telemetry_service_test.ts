@@ -64,14 +64,19 @@ class MockTelemetryRepository implements TelemetryRepository {
 
 /** Mock sender for testing */
 class MockTelemetrySender implements TelemetrySender {
-  sentBatches: Array<{ entries: TelemetryEntry[]; distinctId: string }> = [];
+  sentBatches: Array<{
+    entries: TelemetryEntry[];
+    distinctId: string;
+    repoId?: string;
+  }> = [];
   shouldSucceed = true;
 
   sendBatch(
     entries: TelemetryEntry[],
     distinctId: string,
+    repoId?: string,
   ): Promise<boolean> {
-    this.sentBatches.push({ entries, distinctId });
+    this.sentBatches.push({ entries, distinctId, repoId });
     return Promise.resolve(this.shouldSucceed);
   }
 }
@@ -310,4 +315,29 @@ Deno.test("TelemetryService.flushTelemetry is a no-op when no unflushed entries"
 
   assertEquals(sender.sentBatches.length, 0);
   assertEquals(repo.flushedEntries.length, 0);
+});
+
+Deno.test("TelemetryService.flushTelemetry passes repoId to sender", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const entry = createFlushTestEntry(
+    "uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+  repo.mockUnflushedEntries = [entry];
+
+  service.flushTelemetry({
+    sender,
+    distinctId: "user-uuid",
+    repoId: "repo-uuid-456",
+  });
+
+  // Wait for fire-and-forget to settle
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(sender.sentBatches.length, 1);
+  assertEquals(sender.sentBatches[0].distinctId, "user-uuid");
+  assertEquals(sender.sentBatches[0].repoId, "repo-uuid-456");
 });

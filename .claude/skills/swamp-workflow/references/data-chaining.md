@@ -9,9 +9,9 @@
 - [Delete Workflow Ordering](#delete-workflow-ordering)
 - [Update Workflow Ordering](#update-workflow-ordering)
 
-The `aws/cli` model enables powerful data chaining in workflows by running AWS
-CLI commands and making the output available to other models. This is useful for
-dynamic lookups like finding the latest AMI, checking resource state, or
+The `command/shell` model enables powerful data chaining in workflows by running
+shell commands and making the output available to other models. This is useful
+for dynamic lookups like finding the latest AMI, checking resource state, or
 querying AWS for configuration values.
 
 ## Example: Dynamic AMI Lookup Workflow
@@ -30,7 +30,7 @@ jobs:
         task:
           type: model_method
           modelIdOrName: latest-ami
-          methodName: run
+          methodName: execute
       - name: create-instance
         description: Create EC2 instance using looked-up AMI
         task:
@@ -42,22 +42,27 @@ jobs:
 ### Model Inputs
 
 ```yaml
-# latest-ami input (aws/cli model)
+# latest-ami input (command/shell model)
 name: latest-ami
-attributes:
-  command: >-
-    ec2 describe-images --owners amazon
-    --filters "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2"
-    --query "sort_by(Images,&CreationDate)[-1]"
-  region: us-east-1
-  parseJson: true
+version: 1
+tags: {}
+methods:
+  execute:
+    arguments:
+      run: >-
+        aws ec2 describe-images --owners amazon
+        --filters "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2"
+        --query "sort_by(Images,&CreationDate)[-1].ImageId"
+        --output text
 ```
 
 ```yaml
-# my-instance input (references aws/cli output)
+# my-instance input (references command/shell output)
 name: my-instance
-attributes:
-  imageId: ${{ model.latest-ami.resource.data.data.attributes.json.ImageId }}
+version: 1
+tags: {}
+globalArguments:
+  imageId: ${{ model.latest-ami.resource.result.result.attributes.stdout }}
   instanceType: t3.micro
 ```
 
@@ -104,12 +109,12 @@ jobs:
         task:
           type: model_method
           modelIdOrName: vpc-lookup
-          methodName: run
+          methodName: execute
       - name: find-subnet
         task:
           type: model_method
           modelIdOrName: subnet-lookup
-          methodName: run
+          methodName: execute
   - name: provision
     description: Create resources using lookup results
     dependsOn:
@@ -132,29 +137,39 @@ jobs:
 ### Model Inputs for Multi-Step Workflow
 
 ```yaml
-# vpc-lookup (aws/cli)
+# vpc-lookup (command/shell)
 name: vpc-lookup
-attributes:
-  command: ec2 describe-vpcs --filters "Name=isDefault,Values=true" --query "Vpcs[0]"
-  parseJson: true
+version: 1
+tags: {}
+methods:
+  execute:
+    arguments:
+      run: >-
+        aws ec2 describe-vpcs --filters "Name=isDefault,Values=true"
+        --query "Vpcs[0].VpcId" --output text
 ```
 
 ```yaml
-# subnet-lookup (aws/cli) - chains from vpc-lookup
+# subnet-lookup (command/shell) - chains from vpc-lookup
 name: subnet-lookup
-attributes:
-  command: >-
-    ec2 describe-subnets
-    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}"
-    --query "Subnets[0]"
-  parseJson: true
+version: 1
+tags: {}
+methods:
+  execute:
+    arguments:
+      run: >-
+        aws ec2 describe-subnets
+        --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.result.result.attributes.stdout }}"
+        --query "Subnets[0].SubnetId" --output text
 ```
 
 ```yaml
 # app-security-group - chains from vpc-lookup
 name: app-security-group
-attributes:
-  vpcId: ${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}
+version: 1
+tags: {}
+globalArguments:
+  vpcId: ${{ model.vpc-lookup.resource.result.result.attributes.stdout }}
   groupName: app-sg
   description: Security group for application
 ```
@@ -162,11 +177,13 @@ attributes:
 ```yaml
 # app-server - chains from multiple lookups
 name: app-server
-attributes:
-  imageId: ${{ model.latest-ami.resource.data.data.attributes.json.ImageId }}
-  subnetId: ${{ model.subnet-lookup.resource.data.data.attributes.json.SubnetId }}
+version: 1
+tags: {}
+globalArguments:
+  imageId: ${{ model.latest-ami.resource.result.result.attributes.stdout }}
+  subnetId: ${{ model.subnet-lookup.resource.result.result.attributes.stdout }}
   securityGroupIds:
-    - ${{ model.app-security-group.resource.resource.resource.attributes.groupId }}
+    - ${{ model.app-security-group.resource.resource.main.attributes.groupId }}
   instanceType: t3.micro
 ```
 
@@ -175,11 +192,11 @@ attributes:
 All model data outputs are accessed via
 `model.<name>.resource.<specName>.<instanceName>.attributes.<field>`:
 
-| Model Type    | Spec Name  | Example                                                       |
-| ------------- | ---------- | ------------------------------------------------------------- |
-| aws/cli       | `data`     | `model.ami-lookup.resource.data.data.attributes.json.ImageId` |
-| Cloud Control | `resource` | `model.my-vpc.resource.resource.resource.attributes.VpcId`    |
-| Custom models | (varies)   | `model.my-deploy.resource.state.state.attributes.endpoint`    |
+| Model Type    | Spec Name  | Example                                                      |
+| ------------- | ---------- | ------------------------------------------------------------ |
+| command/shell | `result`   | `model.ami-lookup.resource.result.result.attributes.stdout`  |
+| Cloud Control | `resource` | `model.my-vpc.resource.resource.main.attributes.VpcId`       |
+| Custom models | (varies)   | `model.my-deploy.resource.state.current.attributes.endpoint` |
 
 ## Delete Workflow Ordering
 

@@ -121,3 +121,59 @@ Deno.test("HttpTelemetrySender.sendBatch returns false on network error", async 
   const result = await sender.sendBatch([entry], "repo-uuid");
   assertEquals(result, false);
 });
+
+Deno.test("HttpTelemetrySender.sendBatch includes $repo_id when provided", async () => {
+  let capturedBody: string | undefined;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedBody = await req.text();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry = createTestEntry(
+    "test-uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+
+  const result = await sender.sendBatch(
+    [entry],
+    "user-uuid-123",
+    "repo-uuid-456",
+  );
+
+  assertEquals(result, true);
+
+  const parsed = JSON.parse(capturedBody!);
+  assertEquals(parsed.distinct_id, "user-uuid-123");
+  assertEquals(parsed.properties.$repo_id, "repo-uuid-456");
+
+  await server.shutdown();
+});
+
+Deno.test("HttpTelemetrySender.sendBatch omits $repo_id when not provided", async () => {
+  let capturedBody: string | undefined;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedBody = await req.text();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry = createTestEntry(
+    "test-uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+
+  const result = await sender.sendBatch([entry], "user-uuid-123");
+
+  assertEquals(result, true);
+
+  const parsed = JSON.parse(capturedBody!);
+  assertEquals(parsed.distinct_id, "user-uuid-123");
+  assertEquals(parsed.properties.$repo_id, undefined);
+
+  await server.shutdown();
+});

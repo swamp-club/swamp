@@ -21,6 +21,7 @@
 import React, { useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import type { OutputMode } from "./output.ts";
+import { suppressInkTtyErrors } from "./ink_lifecycle.ts";
 
 /**
  * Available actions after selecting a workflow from search.
@@ -81,22 +82,23 @@ function renderInteractiveWorkflowActionSelect(
   data: WorkflowActionSelectData,
 ): Promise<WorkflowAction | undefined> {
   return new Promise<WorkflowAction | undefined>((resolve) => {
-    let result: WorkflowAction | undefined;
+    const cleanupTty = suppressInkTtyErrors();
     const { waitUntilExit } = render(
       <WorkflowActionSelectUI
         workflowName={data.workflowName}
         workflowDescription={data.workflowDescription}
         hasInputs={data.hasInputs}
         onSelect={(action) => {
-          result = action;
+          cleanupTty();
+          resolve(action);
         }}
-        onCancel={() => {}}
+        onCancel={() => {
+          cleanupTty();
+          resolve(undefined);
+        }}
       />,
     );
-    waitUntilExit().then(
-      () => resolve(result),
-      () => resolve(result),
-    );
+    waitUntilExit().catch(() => {});
   });
 }
 

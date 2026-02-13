@@ -192,7 +192,7 @@ Deno.test("StepTaskSchema throws clear error for shell type", () => {
   );
 });
 
-Deno.test("StepTaskSchema shell error suggests keeb/shell model", () => {
+Deno.test("StepTaskSchema shell error suggests command/shell model", () => {
   assertThrows(
     () => {
       StepTaskSchema.parse({
@@ -201,6 +201,6 @@ Deno.test("StepTaskSchema shell error suggests keeb/shell model", () => {
       });
     },
     Error,
-    "keeb/shell",
+    "command/shell",
   );
 });

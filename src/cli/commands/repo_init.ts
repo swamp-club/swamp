@@ -33,33 +33,40 @@ import { repoIndexCommand } from "./repo_index.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+// Exported for reuse by repoCommand default action
+export async function repoInitAction(
+  options: AnyOptions,
+  pathArg?: string,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, ["repo", "init"]);
+  ctx.logger.debug`Initializing repository at: ${pathArg ?? "."}`;
+
+  const repoPath = RepoPath.create(pathArg ?? ".");
+  const service = new RepoService(VERSION);
+
+  const result = await service.init(repoPath, { force: options.force });
+
+  ctx.logger.debug`Repository initialized: ${result.path}`;
+
+  const data: RepoInitData = {
+    path: result.path,
+    version: result.version,
+    initializedAt: result.initializedAt,
+    skillsCopied: result.skillsCopied,
+    claudeMdCreated: result.claudeMdCreated,
+    claudeSettingsCreated: result.claudeSettingsCreated,
+    gitignoreCreated: result.gitignoreCreated,
+  };
+
+  renderRepoInit(data, ctx.outputMode);
+  ctx.logger.debug("Repo init command completed");
+}
+
 export const repoInitCommand = new Command()
   .description("Initialize a new swamp repository")
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
-  .action(async function (options: AnyOptions, pathArg?: string) {
-    const ctx = createContext(options as GlobalOptions, ["repo", "init"]);
-    ctx.logger.debug`Initializing repository at: ${pathArg ?? "."}`;
-
-    const repoPath = RepoPath.create(pathArg ?? ".");
-    const service = new RepoService(VERSION);
-
-    const result = await service.init(repoPath, { force: options.force });
-
-    ctx.logger.debug`Repository initialized: ${result.path}`;
-
-    const data: RepoInitData = {
-      path: result.path,
-      version: result.version,
-      initializedAt: result.initializedAt,
-      skillsCopied: result.skillsCopied,
-      claudeMdCreated: result.claudeMdCreated,
-      claudeSettingsCreated: result.claudeSettingsCreated,
-    };
-
-    renderRepoInit(data, ctx.outputMode);
-    ctx.logger.debug("Repo init command completed");
-  });
+  .action(repoInitAction);
 
 export const repoUpgradeCommand = new Command()
   .description("Upgrade an existing swamp repository")
@@ -90,10 +97,18 @@ export const repoUpgradeCommand = new Command()
 
 export const repoCommand = new Command()
   .name("repo")
-  .description("Manage swamp repositories")
-  .action(function () {
-    this.showHelp();
-  })
-  .command("init", repoInitCommand)
+  .description("Initialize a swamp repository (or manage existing ones)")
+  .arguments("[path:string]")
+  .option("-f, --force", "Reinitialize if already exists")
+  .action(repoInitAction)
+  .command(
+    "init",
+    new Command()
+      .description("Initialize a new swamp repository")
+      .hidden()
+      .arguments("[path:string]")
+      .option("-f, --force", "Reinitialize if already exists")
+      .action(repoInitAction),
+  )
   .command("upgrade", repoUpgradeCommand)
   .command("index", repoIndexCommand);

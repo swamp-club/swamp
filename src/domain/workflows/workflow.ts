@@ -32,6 +32,7 @@ export const WorkflowSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
   description: z.string().optional(),
+  tags: z.record(z.string(), z.string()).default({}),
   inputs: InputsSchemaSchema,
   jobs: z.array(JobSchema).min(1),
   version: z.number().int().positive().default(1),
@@ -49,6 +50,7 @@ export interface CreateWorkflowProps {
   id?: string;
   name: string;
   description?: string;
+  tags?: Record<string, string>;
   inputs?: InputsSchema;
   jobs?: Job[];
   version?: number;
@@ -69,6 +71,7 @@ export class Workflow {
     readonly id: WorkflowId,
     readonly name: string,
     readonly description: string | undefined,
+    readonly tags: Record<string, string>,
     readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
     readonly version: number,
@@ -81,12 +84,14 @@ export class Workflow {
     const id = props.id ?? crypto.randomUUID();
     const version = props.version ?? 1;
     const jobs = props.jobs ?? [];
+    const tags = props.tags ?? {};
 
     // Allow empty jobs for initial creation - will be validated later
     const data: WorkflowData = {
       id,
       name: props.name,
       description: props.description,
+      tags,
       inputs: props.inputs,
       jobs: jobs.map((j) => j.toData()),
       version,
@@ -101,6 +106,7 @@ export class Workflow {
       createWorkflowId(data.id),
       data.name,
       data.description,
+      data.tags,
       data.inputs,
       jobs,
       data.version,
@@ -118,6 +124,7 @@ export class Workflow {
       createWorkflowId(validated.id),
       validated.name,
       validated.description,
+      validated.tags,
       validated.inputs,
       jobs,
       validated.version,
@@ -156,6 +163,7 @@ export class Workflow {
       id: this.id,
       name: this.name,
       description: this.description,
+      tags: this.tags,
       inputs: this.inputs,
       jobs: this._jobs.map((j) => j.toData()) as JobData[],
       version: this.version,

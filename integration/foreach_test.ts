@@ -84,9 +84,9 @@ async function runCliCommand(
   };
 }
 
-async function createEchoModel(repoDir: string, name: string): Promise<void> {
+async function createShellModel(repoDir: string, name: string): Promise<void> {
   const modelData = {
-    type: "swamp/echo",
+    type: "command/shell",
     typeVersion: 1,
     id: crypto.randomUUID(),
     name,
@@ -94,15 +94,15 @@ async function createEchoModel(repoDir: string, name: string): Promise<void> {
     tags: {},
     globalArguments: {},
     methods: {
-      write: {
+      execute: {
         arguments: {
-          message: "default",
+          run: "echo 'default'",
         },
       },
     },
   };
 
-  const modelDir = join(repoDir, ".swamp/definitions/swamp/echo");
+  const modelDir = join(repoDir, ".swamp/definitions/command/shell");
   await ensureDir(modelDir);
   await Deno.writeTextFile(
     join(modelDir, `${modelData.id}.yaml`),
@@ -115,8 +115,8 @@ async function createEchoModel(repoDir: string, name: string): Promise<void> {
 Deno.test("CLI: workflow with forEach over array creates multiple steps", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "echo-model");
-    await createEchoModel(repoDir, "test-model");
+    await createShellModel(repoDir, "echo-model");
+    await createShellModel(repoDir, "test-model");
 
     // Create workflow with forEach over array
     const workflowData = {
@@ -148,7 +148,7 @@ Deno.test("CLI: workflow with forEach over array creates multiple steps", async 
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [],
               weight: 0,
@@ -199,8 +199,8 @@ Deno.test("CLI: workflow with forEach over array creates multiple steps", async 
 Deno.test("CLI: workflow with forEach single item array", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "echo-single");
-    await createEchoModel(repoDir, "test-model");
+    await createShellModel(repoDir, "echo-single");
+    await createShellModel(repoDir, "test-model");
 
     const workflowData = {
       id: crypto.randomUUID(),
@@ -228,7 +228,7 @@ Deno.test("CLI: workflow with forEach single item array", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [],
               weight: 0,
@@ -296,7 +296,7 @@ Deno.test("CLI: workflow with forEach validates array minItems", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [],
               weight: 0,
@@ -339,7 +339,7 @@ Deno.test("CLI: workflow with forEach validates array minItems", async () => {
 Deno.test("CLI: workflow with forEach over object", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "test-model");
+    await createShellModel(repoDir, "test-model");
 
     const workflowData = {
       id: crypto.randomUUID(),
@@ -369,7 +369,7 @@ Deno.test("CLI: workflow with forEach over object", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [],
               weight: 0,
@@ -435,7 +435,7 @@ Deno.test("CLI: workflow with forEach over empty object succeeds", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [],
               weight: 0,
@@ -478,7 +478,7 @@ Deno.test("CLI: workflow with forEach over empty object succeeds", async () => {
 Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
-    await createEchoModel(repoDir, "test-model");
+    await createShellModel(repoDir, "test-model");
 
     const workflowData = {
       id: crypto.randomUUID(),
@@ -502,7 +502,7 @@ Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [],
               weight: 0,
@@ -516,7 +516,7 @@ Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [
                 {
@@ -531,7 +531,7 @@ Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
               task: {
                 type: "model_method",
                 modelIdOrName: "test-model",
-                methodName: "write",
+                methodName: "execute",
               },
               dependsOn: [],
               weight: 0,

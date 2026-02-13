@@ -24,7 +24,6 @@ import {
   ValidationResult,
 } from "./validation_service.ts";
 import { Definition, type DefinitionId } from "../definitions/definition.ts";
-import { echoModel } from "./echo/echo_model.ts";
 import { defineModel, type ModelDefinition } from "./model.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "./model_type.ts";
@@ -153,7 +152,7 @@ Deno.test("validateModel with valid definition returns 3 passing results", async
     methods: { write: { arguments: { message: "hello" } } },
   });
 
-  const results = await service.validateModel(definition, echoModel);
+  const results = await service.validateModel(definition, testExprModel);
 
   assertEquals(results.length, 3);
   assertEquals(results[0].name, "Definition schema");
@@ -172,7 +171,7 @@ Deno.test("validateModel with invalid method arguments returns failing result", 
     methods: { write: { arguments: { wrongAttribute: "hello" } } }, // Missing required 'message'
   });
 
-  const results = await service.validateModel(definition, echoModel);
+  const results = await service.validateModel(definition, testExprModel);
 
   assertEquals(results.length, 3);
   assertEquals(results[0].name, "Definition schema");
@@ -182,20 +181,20 @@ Deno.test("validateModel with invalid method arguments returns failing result", 
   assertEquals(typeof results[2].error, "string");
 });
 
-Deno.test("validateModel with empty message returns failing result", async () => {
+Deno.test("validateModel with empty message passes when schema allows it", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
     globalArguments: { message: "" },
-    methods: { write: { arguments: { message: "" } } }, // Empty message fails min(1) validation
+    methods: { write: { arguments: { message: "" } } }, // Empty message is allowed by z.string()
   });
 
-  const results = await service.validateModel(definition, echoModel);
+  const results = await service.validateModel(definition, testExprModel);
 
   assertEquals(results.length, 3);
   assertEquals(results[0].passed, true);
-  assertEquals(results[2].passed, false);
-  assertEquals(results[2].error !== undefined, true);
+  assertEquals(results[1].passed, true);
+  assertEquals(results[2].passed, true);
 });
 
 Deno.test("validateModel runs validations in parallel", async () => {
@@ -209,7 +208,7 @@ Deno.test("validateModel runs validations in parallel", async () => {
   // Run multiple times to verify parallel execution doesn't cause issues
   const promises = Array.from(
     { length: 10 },
-    () => service.validateModel(definition, echoModel),
+    () => service.validateModel(definition, testExprModel),
   );
 
   const allResults = await Promise.all(promises);
@@ -298,10 +297,14 @@ Deno.test("validateModel with expression paths fails for non-existent model", as
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -317,10 +320,14 @@ Deno.test("validateModel with expression paths validates self references", async
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -356,10 +363,14 @@ Deno.test("validateModel with expression paths fails for invalid self segment", 
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -410,7 +421,7 @@ Deno.test("validateModel without definitionRepo skips expression validation", as
   });
 
   // No definitionRepo provided - expression validation should be skipped
-  const results = await service.validateModel(definition, echoModel);
+  const results = await service.validateModel(definition, testExprModel);
 
   // Should only have definition schema and definition attributes validations
   assertEquals(results.length, 3);
@@ -425,10 +436,14 @@ Deno.test("validateModel with no expressions passes validation", async () => {
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -447,10 +462,14 @@ Deno.test("validateModel detects malformed expression with missing $ prefix", as
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -469,10 +488,14 @@ Deno.test("validateModel detects malformed expression with single braces", async
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -493,10 +516,14 @@ Deno.test("validateModel detects malformed expression in nested attributes", asy
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -514,10 +541,14 @@ Deno.test("validateModel detects incomplete model reference like my-vpc.VpcId", 
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -536,10 +567,14 @@ Deno.test("validateModel detects simple identifier expression", async () => {
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -563,11 +598,19 @@ Deno.test("validateModel with resource path passes for valid DataRecord field", 
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -590,11 +633,19 @@ Deno.test("validateModel fails for missing .attributes segment", async () => {
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -618,11 +669,19 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -644,11 +703,19 @@ Deno.test("validateModel with resource path passes for nested attributes in Data
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -668,11 +735,19 @@ Deno.test("validateModel with resource path passes for scalar DataRecord field",
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -692,11 +767,19 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "target-model", type: "swamp/echo", definition: targetDefinition },
-    { name: "test-definition", type: "swamp/echo", definition },
+    {
+      name: "target-model",
+      type: "test/expr-validation",
+      definition: targetDefinition,
+    },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
@@ -817,10 +900,14 @@ Deno.test("validateModel passes for CEL literal expressions", async () => {
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -836,10 +923,14 @@ Deno.test("validateModel passes for CEL numeric expressions", async () => {
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -857,10 +948,14 @@ Deno.test("validateModel passes for file.contents expression", async () => {
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
@@ -876,10 +971,14 @@ Deno.test("validateModel passes for data.latest expression", async () => {
   });
 
   const mockRepo = createMockDefinitionRepo([
-    { name: "test-definition", type: "swamp/echo", definition },
+    { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(definition, echoModel, mockRepo);
+  const results = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);

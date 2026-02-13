@@ -193,6 +193,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       resources,
       context.tagOverrides,
       context.dataOutputOverrides,
+      currentDefinition.tags,
+      context.runtimeTags,
     );
 
     const {
@@ -205,6 +207,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       files,
       context.tagOverrides,
       context.dataOutputOverrides,
+      undefined, // callbacks
+      currentDefinition.tags,
+      context.runtimeTags,
     );
 
     // Inject into context

@@ -34,15 +34,55 @@ export interface SkillInfo {
  */
 const BUNDLED_SKILLS: SkillInfo[] = [
   { relativePath: "swamp-data/SKILL.md", name: "swamp-data" },
+  {
+    relativePath: "swamp-data/references/examples.md",
+    name: "swamp-data",
+  },
+  {
+    relativePath: "swamp-data/references/troubleshooting.md",
+    name: "swamp-data",
+  },
   { relativePath: "swamp-model/SKILL.md", name: "swamp-model" },
   {
     relativePath: "swamp-model/references/data-chaining.md",
     name: "swamp-model",
   },
+  {
+    relativePath: "swamp-model/references/examples.md",
+    name: "swamp-model",
+  },
+  {
+    relativePath: "swamp-model/references/troubleshooting.md",
+    name: "swamp-model",
+  },
+  {
+    relativePath: "swamp-model/references/scenarios.md",
+    name: "swamp-model",
+  },
   { relativePath: "swamp-repo/SKILL.md", name: "swamp-repo" },
+  {
+    relativePath: "swamp-repo/references/structure.md",
+    name: "swamp-repo",
+  },
+  {
+    relativePath: "swamp-repo/references/troubleshooting.md",
+    name: "swamp-repo",
+  },
   { relativePath: "swamp-workflow/SKILL.md", name: "swamp-workflow" },
   {
     relativePath: "swamp-workflow/references/data-chaining.md",
+    name: "swamp-workflow",
+  },
+  {
+    relativePath: "swamp-workflow/references/scenarios.md",
+    name: "swamp-workflow",
+  },
+  {
+    relativePath: "swamp-workflow/references/nested-workflows.md",
+    name: "swamp-workflow",
+  },
+  {
+    relativePath: "swamp-workflow/references/expressions-and-foreach.md",
     name: "swamp-workflow",
   },
   {
@@ -58,6 +98,14 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-extension-model",
   },
   {
+    relativePath: "swamp-extension-model/references/scenarios.md",
+    name: "swamp-extension-model",
+  },
+  {
+    relativePath: "swamp-extension-model/references/api.md",
+    name: "swamp-extension-model",
+  },
+  {
     relativePath: "swamp-vault/SKILL.md",
     name: "swamp-vault",
   },
@@ -70,8 +118,16 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-vault",
   },
   {
+    relativePath: "swamp-vault/references/examples.md",
+    name: "swamp-vault",
+  },
+  {
     relativePath: "swamp-issue/SKILL.md",
     name: "swamp-issue",
+  },
+  {
+    relativePath: "swamp-troubleshooting/SKILL.md",
+    name: "swamp-troubleshooting",
   },
 ];
 

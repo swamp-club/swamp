@@ -10,7 +10,7 @@ LogTape is configured in `src/infrastructure/logging/logger.ts` and provides
 structured logging with timestamps, levels, and category prefixes.
 
 ```
-12:34:56 INF model.create Creating model definition: type=swamp/echo, name=test
+12:34:56 INF model.create Creating model definition: type=command/shell, name=test
 ```
 
 **Use LogTape for:**
@@ -60,8 +60,8 @@ export function writeOutput(message: string): void {
 
 1. LogTape decorates output with timestamps, log level, and category prefixes
    that clutter user-facing results
-2. LogTape wraps template values in quotes (e.g., `"swamp/echo"` instead of
-   `swamp/echo`)
+2. LogTape wraps template values in quotes (e.g., `"command/shell"` instead of
+   `command/shell`)
 3. LogTape has no way to create a "plain" sink without parent propagation in v2,
    causing double output if you try
 4. User output should read like a clean document, not a log stream

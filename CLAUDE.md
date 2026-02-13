@@ -2,6 +2,19 @@
 
 Deno based CLI for doing AI Native Automation.
 
+## Building Automation with Swamp
+
+When users ask you to build automation for specific services (AWS, APIs, etc.):
+
+1. **Always create extension models** in `extensions/models/` - do NOT use
+   `command/shell` to wrap CLI commands
+2. Search for existing model types first: `swamp model type search <query>`
+3. If no type exists, create a dedicated extension model for that service
+4. Use the `swamp-extension-model` skill for guidance on creating models
+
+The `command/shell` model is only for ad-hoc shell commands, NOT for building
+service integrations.
+
 ## Planning
 
 When planning new features, always use the `ddd` skill to inform the

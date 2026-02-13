@@ -74,7 +74,7 @@ Import from `@std/fmt/colors`. Colors auto-respect `NO_COLOR` env var and the
 | Sub-section headers  | `cyan(...)`       | Input Attributes:      |
 | Metadata/types       | `dim(...)`        | _(string)_ _*required_ |
 | Enum values          | `dim(...)`        | _[a, b, c]_            |
-| Type annotations     | `dim(...)`        | _(swamp/echo)_         |
+| Type annotations     | `dim(...)`        | _(command/shell)_      |
 | Pass indicator       | `green(...)`      | PASSED, checkmark      |
 | Fail indicator       | `red(...)`        | FAILED, cross          |
 | Separators           | `dim("-")`        | method - description   |

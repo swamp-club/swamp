@@ -435,4 +435,4 @@ End-to-end workflow creation:
 - **Data chaining and lifecycle workflows**: See
   [references/data-chaining.md](references/data-chaining.md) for `model.*` vs
   `data.latest()` expression guidance, delete/update workflow ordering, and
-  aws/cli chaining examples
+  command/shell chaining examples

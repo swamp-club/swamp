@@ -28,8 +28,13 @@ export interface TelemetrySender {
    * Sends a batch of telemetry entries to the remote endpoint.
    *
    * @param entries - The entries to send
-   * @param distinctId - The repo UUID used as distinct_id
+   * @param distinctId - The user or repo UUID used as distinct_id
+   * @param repoId - Optional repo UUID included as a property
    * @returns true if the batch was accepted, false otherwise
    */
-  sendBatch(entries: TelemetryEntry[], distinctId: string): Promise<boolean>;
+  sendBatch(
+    entries: TelemetryEntry[],
+    distinctId: string,
+    repoId?: string,
+  ): Promise<boolean>;
 }

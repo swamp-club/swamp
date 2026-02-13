@@ -36,6 +36,7 @@ import {
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
 import { parseInputs } from "../input_parser.ts";
+import { parseTags } from "./data_search.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { join } from "@std/path";
 import {
@@ -62,6 +63,11 @@ export const modelMethodRunCommand = new Command()
   )
   .option("--input <json:string>", "Input values as JSON")
   .option("--input-file <file:string>", "Input values from YAML file")
+  .option(
+    "--tag <tag:string>",
+    "Add tag to produced data (KEY=VALUE, repeatable)",
+    { collect: true },
+  )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -91,6 +97,11 @@ export const modelMethodRunCommand = new Command()
         input: options.input as string | undefined,
         inputFile: options.inputFile as string | undefined,
       });
+
+      // Parse runtime tags
+      const runtimeTags = options.tag
+        ? parseTags(options.tag as string[])
+        : undefined;
 
       // Look up the model definition
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
@@ -272,6 +283,7 @@ export const modelMethodRunCommand = new Command()
             logger: runLogger,
             dataRepository: unifiedDataRepo,
             definitionRepository: definitionRepo,
+            runtimeTags,
           },
         );
 

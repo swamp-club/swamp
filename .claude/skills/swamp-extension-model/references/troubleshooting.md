@@ -107,9 +107,9 @@ type: "@user/my-model";
 ### "Cannot extend unregistered model type: ..."
 
 The extension targets a model type that isn't registered. Ensure the type string
-matches exactly (e.g., `"swamp/echo"`, not `"echo"`). If extending a user model,
-both files must be in the same models directory — models are loaded before
-extensions automatically.
+matches exactly (e.g., `"command/shell"`, not `"shell"`). If extending a user
+model, both files must be in the same models directory — models are loaded
+before extensions automatically.
 
 ### "Method 'X' already exists on model type 'Y'"
 
@@ -137,9 +137,9 @@ resource. Common causes:
 name.
 
 ```typescript
-// Writes to instance name "vpc"
-await context.writeResource("vpc", "vpc", data);
-// CEL: model.<name>.resource.vpc.vpc.attributes.X
+// Writes to spec "vpc" with instance name "main"
+await context.writeResource("vpc", "main", data);
+// CEL: model.<name>.resource.vpc.main.attributes.X
 ```
 
 **2. Resource spec name contains hyphens.** CEL interprets hyphens as
@@ -170,10 +170,17 @@ schema: z.object({ VpcId: z.string() }).passthrough(),
 
 ### Syntax errors on load
 
-Avoid inline TypeScript type annotations in execute parameters:
+Extension models are loaded as JavaScript at runtime. Avoid TypeScript-only
+syntax:
 
 ```typescript
-// Wrong - causes syntax error
+// Wrong - non-null assertion (!) causes SyntaxError
+const handle = await context.writeResource!("state", "main", data);
+
+// Correct - call without !
+const handle = await context.writeResource("state", "main", data);
+
+// Wrong - type annotations cause syntax error
 execute: async (args: { id: string }, context: any) => { ... }
 
 // Correct

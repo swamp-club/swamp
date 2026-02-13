@@ -30,11 +30,15 @@ export class HttpTelemetrySender implements TelemetrySender {
   async sendBatch(
     entries: TelemetryEntry[],
     distinctId: string,
+    repoId?: string,
   ): Promise<boolean> {
     const events = entries.map((entry) => ({
       event: "cli_invocation",
       distinct_id: distinctId,
-      properties: entry.toData(),
+      properties: {
+        ...entry.toData(),
+        ...(repoId ? { $repo_id: repoId } : {}),
+      },
     }));
 
     const body = events.length === 1

@@ -21,7 +21,6 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
-import { echoModel } from "./echo/echo_model.ts";
 import type {
   DataHandle,
   DataWriter,
@@ -34,6 +33,39 @@ import type { UnifiedDataRepository } from "../../infrastructure/persistence/uni
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+
+/**
+ * Test model that mimics the echo model's write method.
+ * Used for testing method execution without depending on deleted models.
+ */
+const TEST_ECHO_MODEL_TYPE = ModelType.create("test/echo");
+const testEchoModel: ModelDefinition = {
+  type: TEST_ECHO_MODEL_TYPE,
+  version: "2026.02.09.1",
+  globalArguments: z.object({ message: z.string().min(1) }),
+  resources: {
+    "message": {
+      description: "Test echo message",
+      schema: z.object({ message: z.string(), timestamp: z.string() }),
+      lifetime: "ephemeral",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    write: {
+      description: "Write a test message",
+      arguments: z.object({ message: z.string().min(1) }),
+      execute: async (args: Record<string, unknown>, context) => {
+        const data = {
+          message: args.message as string,
+          timestamp: new Date().toISOString(),
+        };
+        const handle = await context.writeResource!("message", "message", data);
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
 
 /**
  * Stored result from mock data writer.
@@ -234,7 +266,7 @@ Deno.test("execute with valid definition returns method result", async () => {
   const { context, getResults } = createTestContext();
   const result = await service.execute(
     definition,
-    echoModel.methods.write,
+    testEchoModel.methods.write,
     context,
   );
 
@@ -261,7 +293,7 @@ Deno.test("execute with missing required attribute throws error", async () => {
 
   const { context } = createTestContext();
   await assertRejects(
-    () => service.execute(definition, echoModel.methods.write, context),
+    () => service.execute(definition, testEchoModel.methods.write, context),
     Error,
     "Method arguments validation failed",
   );
@@ -277,7 +309,7 @@ Deno.test("execute with invalid attribute type throws error", async () => {
 
   const { context } = createTestContext();
   await assertRejects(
-    () => service.execute(definition, echoModel.methods.write, context),
+    () => service.execute(definition, testEchoModel.methods.write, context),
     Error,
     "Method arguments validation failed",
   );
@@ -293,7 +325,7 @@ Deno.test("execute with empty message throws error", async () => {
 
   const { context } = createTestContext();
   await assertRejects(
-    () => service.execute(definition, echoModel.methods.write, context),
+    () => service.execute(definition, testEchoModel.methods.write, context),
     Error,
     "Method arguments validation failed",
   );
@@ -309,7 +341,7 @@ Deno.test("execute error message includes Zod details", async () => {
 
   const { context } = createTestContext();
   try {
-    await service.execute(definition, echoModel.methods.write, context);
+    await service.execute(definition, testEchoModel.methods.write, context);
     throw new Error("Expected error to be thrown");
   } catch (error) {
     const message = (error as Error).message;
