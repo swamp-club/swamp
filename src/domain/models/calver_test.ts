@@ -52,6 +52,29 @@ Deno.test("CalVer.isValid rejects invalid date ranges", () => {
   assertEquals(CalVer.isValid("2025.13.45.1"), false); // month 13, day 45
 });
 
+Deno.test("CalVer.isValid rejects impossible days for the month", () => {
+  assertEquals(CalVer.isValid("2026.02.31.1"), false); // Feb 31
+  assertEquals(CalVer.isValid("2026.02.30.1"), false); // Feb 30
+  assertEquals(CalVer.isValid("2026.02.29.1"), false); // Feb 29 non-leap year
+  assertEquals(CalVer.isValid("2026.04.31.1"), false); // Apr has 30 days
+  assertEquals(CalVer.isValid("2026.06.31.1"), false); // Jun has 30 days
+  assertEquals(CalVer.isValid("2026.09.31.1"), false); // Sep has 30 days
+  assertEquals(CalVer.isValid("2026.11.31.1"), false); // Nov has 30 days
+});
+
+Deno.test("CalVer.isValid accepts leap year Feb 29", () => {
+  assertEquals(CalVer.isValid("2024.02.29.1"), true); // 2024 is a leap year
+  assertEquals(CalVer.isValid("2028.02.29.1"), true); // 2028 is a leap year
+});
+
+Deno.test("CalVer.isValid accepts valid last days of months", () => {
+  assertEquals(CalVer.isValid("2026.01.31.1"), true); // Jan 31
+  assertEquals(CalVer.isValid("2026.02.28.1"), true); // Feb 28 non-leap
+  assertEquals(CalVer.isValid("2026.03.31.1"), true); // Mar 31
+  assertEquals(CalVer.isValid("2026.04.30.1"), true); // Apr 30
+  assertEquals(CalVer.isValid("2026.06.30.1"), true); // Jun 30
+});
+
 Deno.test("CalVer.create returns instance for valid version", () => {
   const cv = CalVer.create("2025.01.15.1");
   assertEquals(cv.value, "2025.01.15.1");
