@@ -57,7 +57,7 @@ attributes:
 # my-instance input (references aws/cli output)
 name: my-instance
 attributes:
-  imageId: ${{ model.latest-ami.resource.data.data.attributes.json.ImageId }}
+  imageId: ${{ model.latest-ami.resource.data.output.attributes.json.ImageId }}
   instanceType: t3.micro
 ```
 
@@ -145,7 +145,7 @@ name: subnet-lookup
 attributes:
   command: >-
     ec2 describe-subnets
-    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}"
+    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}"
     --query "Subnets[0]"
   parseJson: true
 ```
@@ -154,7 +154,7 @@ attributes:
 # app-security-group - chains from vpc-lookup
 name: app-security-group
 attributes:
-  vpcId: ${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}
+  vpcId: ${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}
   groupName: app-sg
   description: Security group for application
 ```
@@ -163,10 +163,10 @@ attributes:
 # app-server - chains from multiple lookups
 name: app-server
 attributes:
-  imageId: ${{ model.latest-ami.resource.data.data.attributes.json.ImageId }}
-  subnetId: ${{ model.subnet-lookup.resource.data.data.attributes.json.SubnetId }}
+  imageId: ${{ model.latest-ami.resource.data.output.attributes.json.ImageId }}
+  subnetId: ${{ model.subnet-lookup.resource.data.output.attributes.json.SubnetId }}
   securityGroupIds:
-    - ${{ model.app-security-group.resource.resource.resource.attributes.groupId }}
+    - ${{ model.app-security-group.resource.resource.main.attributes.groupId }}
   instanceType: t3.micro
 ```
 
@@ -175,11 +175,11 @@ attributes:
 All model data outputs are accessed via
 `model.<name>.resource.<specName>.<instanceName>.attributes.<field>`:
 
-| Model Type    | Spec Name  | Example                                                       |
-| ------------- | ---------- | ------------------------------------------------------------- |
-| aws/cli       | `data`     | `model.ami-lookup.resource.data.data.attributes.json.ImageId` |
-| Cloud Control | `resource` | `model.my-vpc.resource.resource.resource.attributes.VpcId`    |
-| Custom models | (varies)   | `model.my-deploy.resource.state.state.attributes.endpoint`    |
+| Model Type    | Spec Name  | Example                                                         |
+| ------------- | ---------- | --------------------------------------------------------------- |
+| aws/cli       | `data`     | `model.ami-lookup.resource.data.output.attributes.json.ImageId` |
+| Cloud Control | `resource` | `model.my-vpc.resource.resource.main.attributes.VpcId`          |
+| Custom models | (varies)   | `model.my-deploy.resource.state.current.attributes.endpoint`    |
 
 ## Delete Workflow Ordering
 

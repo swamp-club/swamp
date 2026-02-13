@@ -137,9 +137,9 @@ resource. Common causes:
 name.
 
 ```typescript
-// Writes to instance name "vpc"
-await context.writeResource("vpc", "vpc", data);
-// CEL: model.<name>.resource.vpc.vpc.attributes.X
+// Writes to spec "vpc" with instance name "main"
+await context.writeResource("vpc", "main", data);
+// CEL: model.<name>.resource.vpc.main.attributes.X
 ```
 
 **2. Resource spec name contains hyphens.** CEL interprets hyphens as

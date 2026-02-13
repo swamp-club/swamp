@@ -2,7 +2,7 @@
 
 The `aws/cli` model enables data chaining by running AWS CLI commands and
 capturing output for use in other models. Use `parseJson: true` to parse JSON
-output and access it via `resource.data.data.attributes.json`.
+output and access it via `resource.data.output.attributes.json`.
 
 ## aws/cli Data Attributes
 
@@ -50,11 +50,11 @@ version: 1
 tags: {}
 attributes:
   # Reference parsed JSON fields from the aws/cli model's data output
-  imageId: \${{ model.latest-ami.resource.data.data.attributes.json.ImageId }}
+  imageId: \${{ model.latest-ami.resource.data.output.attributes.json.ImageId }}
   instanceType: t3.micro
   tags:
     Name: \${{ self.name }}
-    AmiName: \${{ model.latest-ami.resource.data.data.attributes.json.Name }}
+    AmiName: \${{ model.latest-ami.resource.data.output.attributes.json.Name }}
 EOF
 ```
 
@@ -83,7 +83,7 @@ swamp model edit my-server --json <<EOF
 name: my-server
 attributes:
   securityGroupIds:
-    - \${{ model.default-sg.resource.data.data.attributes.json.GroupId }}
+    - \${{ model.default-sg.resource.data.output.attributes.json.GroupId }}
 EOF
 ```
 
@@ -110,7 +110,7 @@ name: subnet-lookup
 attributes:
   command: >-
     ec2 describe-subnets
-    --filters "Name=vpc-id,Values=\${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}"
+    --filters "Name=vpc-id,Values=\${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}"
     --query "Subnets[0]"
   parseJson: true
 EOF
@@ -123,7 +123,7 @@ swamp model create @user/ec2-instance my-instance --json
 swamp model edit my-instance --json <<EOF
 name: my-instance
 attributes:
-  subnetId: \${{ model.subnet-lookup.resource.data.data.attributes.json.SubnetId }}
-  vpcId: \${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}
+  subnetId: \${{ model.subnet-lookup.resource.data.output.attributes.json.SubnetId }}
+  vpcId: \${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}
 EOF
 ```

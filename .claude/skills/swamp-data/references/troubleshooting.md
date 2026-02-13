@@ -45,7 +45,7 @@ swamp model method run <model-name> create --json
 **CEL path anatomy**:
 
 ```
-model.my-vpc.resource.vpc.vpc.attributes.VpcId
+model.my-vpc.resource.vpc.main.attributes.VpcId
       ──────         ─── ───
       model name     |   └── instanceName (from writeResource 2nd arg)
                      └── specName (from writeResource 1st arg)
@@ -168,7 +168,7 @@ swamp data get <model-name> <data-name> --json
 
 ### Step 2: Verify Path Components
 
-For expression `model.my-vpc.resource.vpc.vpc.attributes.VpcId`:
+For expression `model.my-vpc.resource.vpc.main.attributes.VpcId`:
 
 | Component | Check Command                                           |
 | --------- | ------------------------------------------------------- |
@@ -191,7 +191,7 @@ Create a test model that uses the expression and run validate:
 ```yaml
 name: test-expression
 globalArguments:
-  testValue: ${{ model.my-vpc.resource.vpc.vpc.attributes.VpcId }}
+  testValue: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
 ```
 
 ```bash

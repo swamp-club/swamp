@@ -150,7 +150,7 @@ tags: {}
 globalArguments:
   command: >-
     ec2 describe-subnets
-    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}"
+    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}"
     --query "Subnets[0]"
   region: us-east-1
   parseJson: true
@@ -176,8 +176,8 @@ name: my-instance
 version: 1
 tags: {}
 globalArguments:
-  vpcId: ${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}
-  subnetId: ${{ model.subnet-lookup.resource.data.data.attributes.json.SubnetId }}
+  vpcId: ${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}
+  subnetId: ${{ model.subnet-lookup.resource.data.output.attributes.json.SubnetId }}
   instanceType: t3.micro
   tags:
     Name: ${{ self.name }}
@@ -192,13 +192,13 @@ swamp model validate my-instance --json
 
 ### CEL Paths Used
 
-| Model         | Expression                                                                | Description |
-| ------------- | ------------------------------------------------------------------------- | ----------- |
-| vpc-lookup    | `model.vpc-lookup.resource.data.data.attributes.json.VpcId`               | VPC ID      |
-| vpc-lookup    | `model.vpc-lookup.resource.data.data.attributes.json.CidrBlock`           | VPC CIDR    |
-| subnet-lookup | `model.subnet-lookup.resource.data.data.attributes.json.SubnetId`         | Subnet ID   |
-| subnet-lookup | `model.subnet-lookup.resource.data.data.attributes.json.AvailabilityZone` | AZ          |
-| my-instance   | `self.name`                                                               | Model name  |
+| Model         | Expression                                                                  | Description |
+| ------------- | --------------------------------------------------------------------------- | ----------- |
+| vpc-lookup    | `model.vpc-lookup.resource.data.output.attributes.json.VpcId`               | VPC ID      |
+| vpc-lookup    | `model.vpc-lookup.resource.data.output.attributes.json.CidrBlock`           | VPC CIDR    |
+| subnet-lookup | `model.subnet-lookup.resource.data.output.attributes.json.SubnetId`         | Subnet ID   |
+| subnet-lookup | `model.subnet-lookup.resource.data.output.attributes.json.AvailabilityZone` | AZ          |
+| my-instance   | `self.name`                                                                 | Model name  |
 
 ---
 

@@ -14,7 +14,7 @@
 | Expression Pattern                                           | Description                                | Example Value                 |
 | ------------------------------------------------------------ | ------------------------------------------ | ----------------------------- |
 | `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource reference (PREFERRED) | VPC ID, subnet CIDR, etc.     |
-| `model.<name>.resource.data.data.attributes.json.<field>`    | aws/cli with parseJson: true               | AMI ID from describe-images   |
+| `model.<name>.resource.data.output.attributes.json.<field>`  | aws/cli with parseJson: true               | AMI ID from describe-images   |
 | `model.<name>.file.<spec>.<instance>.path`                   | File path from another model               | `/path/to/file.txt`           |
 | `self.name`                                                  | Current model's name                       | `my-vpc`                      |
 | `self.version`                                               | Current model's version                    | `1`                           |
@@ -29,13 +29,13 @@
 
 ### CEL Path Patterns by Model Type
 
-| Model Type      | Resource Spec | CEL Path Example                                              |
-| --------------- | ------------- | ------------------------------------------------------------- |
-| `command/shell` | `result`      | `model.my-shell.resource.result.result.attributes.stdout`     |
-| `aws/cli`       | `data`        | `model.ami-lookup.resource.data.data.attributes.json.ImageId` |
-| `@user/vpc`     | `vpc`         | `model.my-vpc.resource.vpc.vpc.attributes.VpcId`              |
-| `@user/subnet`  | `subnet`      | `model.my-subnet.resource.subnet.subnet.attributes.SubnetId`  |
-| Factory model   | `<spec>`      | `model.scanner.resource.subnet.subnet-aaa.attributes.cidr`    |
+| Model Type      | Resource Spec | Instance    | CEL Path Example                                                |
+| --------------- | ------------- | ----------- | --------------------------------------------------------------- |
+| `command/shell` | `result`      | `result`    | `model.my-shell.resource.result.result.attributes.stdout`       |
+| `aws/cli`       | `data`        | `output`    | `model.ami-lookup.resource.data.output.attributes.json.ImageId` |
+| `@user/vpc`     | `vpc`         | `main`      | `model.my-vpc.resource.vpc.main.attributes.VpcId`               |
+| `@user/subnet`  | `subnet`      | `primary`   | `model.my-subnet.resource.subnet.primary.attributes.SubnetId`   |
+| Factory model   | `<spec>`      | `<dynamic>` | `model.scanner.resource.subnet.subnet-aaa.attributes.cidr`      |
 
 ## Decision Tree: What to Build
 
@@ -124,7 +124,7 @@ tags: {}
 globalArguments:
   command: >-
     ec2 describe-subnets
-    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}"
+    --filters "Name=vpc-id,Values=${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}"
     --query "Subnets[0]"
   region: us-east-1
   parseJson: true
@@ -142,8 +142,8 @@ name: my-instance
 version: 1
 tags: {}
 globalArguments:
-  vpcId: ${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}
-  subnetId: ${{ model.subnet-lookup.resource.data.data.attributes.json.SubnetId }}
+  vpcId: ${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}
+  subnetId: ${{ model.subnet-lookup.resource.data.output.attributes.json.SubnetId }}
   instanceType: t3.micro
   tags:
     Name: ${{ self.name }}
@@ -151,11 +151,11 @@ globalArguments:
 
 ### Key CEL Paths Used
 
-| Model         | Expression                                                        | Value             |
-| ------------- | ----------------------------------------------------------------- | ----------------- |
-| vpc-lookup    | `model.vpc-lookup.resource.data.data.attributes.json.VpcId`       | `vpc-12345678`    |
-| subnet-lookup | `model.subnet-lookup.resource.data.data.attributes.json.SubnetId` | `subnet-abcd1234` |
-| my-instance   | `self.name`                                                       | `my-instance`     |
+| Model         | Expression                                                          | Value             |
+| ------------- | ------------------------------------------------------------------- | ----------------- |
+| vpc-lookup    | `model.vpc-lookup.resource.data.output.attributes.json.VpcId`       | `vpc-12345678`    |
+| subnet-lookup | `model.subnet-lookup.resource.data.output.attributes.json.SubnetId` | `subnet-abcd1234` |
+| my-instance   | `self.name`                                                         | `my-instance`     |
 
 ## Model with Runtime Inputs
 
@@ -212,11 +212,11 @@ Always use `model.*` expressions for referencing other models' data:
 ```yaml
 # CORRECT: model.* expression
 globalArguments:
-  vpcId: ${{ model.my-vpc.resource.vpc.vpc.attributes.VpcId }}
+  vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
 
 # AVOID: data.latest() for cross-model references
 globalArguments:
-  vpcId: ${{ data.latest("my-vpc", "vpc").attributes.VpcId }}
+  vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
 ```
 
 ### Why model.* is Preferred

@@ -95,7 +95,7 @@ export const model = {
 
         const handle = await context.writeResource!(
           "customer",
-          "customer",
+          "primary",
           customer,
         );
         return { dataHandles: [handle] };
@@ -110,7 +110,7 @@ export const model = {
           context.modelType,
           context.modelId,
           "customer",
-          "customer",
+          "primary",
         );
 
         if (!content) {
@@ -133,7 +133,7 @@ export const model = {
 
         const handle = await context.writeResource!(
           "customer",
-          "customer",
+          "primary",
           customer,
         );
         return { dataHandles: [handle] };
@@ -173,16 +173,16 @@ swamp model method run my-customer create --json
 ```yaml
 # Another model referencing the customer
 globalArguments:
-  customerId: ${{ model.my-customer.resource.customer.customer.attributes.id }}
+  customerId: ${{ model.my-customer.resource.customer.primary.attributes.id }}
 ```
 
 ### CEL Paths Used
 
-| Field       | CEL Path                                                          |
-| ----------- | ----------------------------------------------------------------- |
-| Customer ID | `model.my-customer.resource.customer.customer.attributes.id`      |
-| Email       | `model.my-customer.resource.customer.customer.attributes.email`   |
-| Created     | `model.my-customer.resource.customer.customer.attributes.created` |
+| Field       | CEL Path                                                         |
+| ----------- | ---------------------------------------------------------------- |
+| Customer ID | `model.my-customer.resource.customer.primary.attributes.id`      |
+| Email       | `model.my-customer.resource.customer.primary.attributes.email`   |
+| Created     | `model.my-customer.resource.customer.primary.attributes.created` |
 
 ---
 
@@ -281,7 +281,7 @@ export const model = {
 
         const handle = await context.writeResource!(
           "bucket",
-          "bucket",
+          "main",
           bucketData,
         );
         return { dataHandles: [handle] };
@@ -298,7 +298,7 @@ export const model = {
           context.modelType,
           context.modelId,
           "bucket",
-          "bucket",
+          "main",
         );
 
         if (!content) {
@@ -331,7 +331,7 @@ export const model = {
 
         const handle = await context.writeResource!(
           "bucket",
-          "bucket",
+          "main",
           updatedData,
         );
         return { dataHandles: [handle] };
@@ -346,7 +346,7 @@ export const model = {
           context.modelType,
           context.modelId,
           "bucket",
-          "bucket",
+          "main",
         );
 
         if (!content) {

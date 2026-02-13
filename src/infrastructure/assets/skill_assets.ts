@@ -78,6 +78,14 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-workflow",
   },
   {
+    relativePath: "swamp-workflow/references/nested-workflows.md",
+    name: "swamp-workflow",
+  },
+  {
+    relativePath: "swamp-workflow/references/expressions-and-foreach.md",
+    name: "swamp-workflow",
+  },
+  {
     relativePath: "swamp-extension-model/SKILL.md",
     name: "swamp-extension-model",
   },
@@ -91,6 +99,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   {
     relativePath: "swamp-extension-model/references/scenarios.md",
+    name: "swamp-extension-model",
+  },
+  {
+    relativePath: "swamp-extension-model/references/api.md",
     name: "swamp-extension-model",
   },
   {

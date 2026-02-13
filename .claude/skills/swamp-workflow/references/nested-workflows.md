@@ -142,7 +142,7 @@ The `tag-networking` sub-workflow's model instances can reference the VPC data:
 name: tag-vpc
 attributes:
   region: us-east-1
-  resourceId: ${{ model.networking-vpc.resource.vpc.vpc.attributes.VpcId }}
+  resourceId: ${{ model.networking-vpc.resource.vpc.main.attributes.VpcId }}
   tagKey: ManagedBy
   tagValue: Swamp
 ```

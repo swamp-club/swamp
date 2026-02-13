@@ -313,7 +313,7 @@ name: my-subnet
 version: 1
 tags: {}
 globalArguments:
-  vpcId: ${{ model.my-vpc.resource.state.state.attributes.VpcId }}
+  vpcId: ${{ model.my-vpc.resource.state.current.attributes.VpcId }}
   cidrBlock: "10.0.1.0/24"
   tags:
     Name: ${{ self.name + "-subnet" }}

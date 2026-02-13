@@ -292,14 +292,14 @@ yet, accessing `.resource` will fail with "No such key". Use
 
 ```yaml
 # Access latest resource data via dot notation
-value: ${{ model.my-model.resource.output.output.attributes.result }}
+value: ${{ model.my-model.resource.output.main.attributes.result }}
 
 # Access specific version
-value: ${{ data.version("my-model", "output", 2).attributes.result }}
+value: ${{ data.version("my-model", "main", 2).attributes.result }}
 
 # Access file metadata
-path: ${{ model.my-model.file.content.content.path }}
-size: ${{ model.my-model.file.content.content.size }}
+path: ${{ model.my-model.file.content.primary.path }}
+size: ${{ model.my-model.file.content.primary.size }}
 
 # Lazy-load file contents
 body: ${{ file.contents("my-model", "content") }}

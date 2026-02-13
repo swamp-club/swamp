@@ -15,7 +15,7 @@
 | Expression Pattern                                           | Description                                 |
 | ------------------------------------------------------------ | ------------------------------------------- |
 | `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource reference (PREFERRED)  |
-| `model.<name>.resource.data.data.attributes.json.<field>`    | aws/cli with parseJson: true                |
+| `model.<name>.resource.data.output.attributes.json.<field>`  | aws/cli with parseJson: true                |
 | `model.<name>.file.<spec>.<instance>.path`                   | File path reference                         |
 | `self.name`                                                  | Current model's name                        |
 | `inputs.<name>`                                              | Workflow or model runtime input             |
@@ -28,12 +28,12 @@
 
 ## CEL Path Patterns by Model Type
 
-| Model Type      | CEL Path                                                             |
-| --------------- | -------------------------------------------------------------------- |
-| `command/shell` | `model.<name>.resource.result.result.attributes.stdout`              |
-| `aws/cli`       | `model.<name>.resource.data.data.attributes.json.<field>`            |
-| `@user/custom`  | `model.<name>.resource.<spec>.<instance>.attributes.<field>`         |
-| Factory models  | `model.<name>.resource.<spec>.<dynamic-instance>.attributes.<field>` |
+| Model Type      | CEL Path                                                             | Notes                              |
+| --------------- | -------------------------------------------------------------------- | ---------------------------------- |
+| `command/shell` | `model.<name>.resource.result.result.attributes.stdout`              | Built-in uses `result` for both    |
+| `aws/cli`       | `model.<name>.resource.data.output.attributes.json.<field>`          | spec=`data`, instance=`output`     |
+| `@user/custom`  | `model.<name>.resource.<spec>.<instance>.attributes.<field>`         | You choose both names              |
+| Factory models  | `model.<name>.resource.<spec>.<dynamic-instance>.attributes.<field>` | Instance varies (e.g., `vpc-1234`) |
 
 ## Cross-Model Data References
 
@@ -49,12 +49,12 @@ models' data. The `model.*` expression provides:
 ```yaml
 # PREFERRED: Cross-model resource reference
 globalArguments:
-  vpcId: ${{ model.my-vpc.resource.vpc.vpc.attributes.VpcId }}
-  subnetId: ${{ model.public-subnet.resource.subnet.subnet.attributes.SubnetId }}
+  vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
+  subnetId: ${{ model.public-subnet.resource.subnet.primary.attributes.SubnetId }}
 
 # For aws/cli models with parseJson: true
 globalArguments:
-  imageId: ${{ model.ami-lookup.resource.data.data.attributes.json.ImageId }}
+  imageId: ${{ model.ami-lookup.resource.data.output.attributes.json.ImageId }}
 ```
 
 ### When to Use data.latest()
@@ -118,8 +118,8 @@ jobs:
 # Known instance name from factory model
 subnetA: ${{ model.subnet-scanner.resource.subnet.subnet-aaa.attributes.cidr }}
 
-# Single-instance model (specName == instanceName convention)
-vpcId: ${{ model.my-vpc.resource.vpc.vpc.attributes.VpcId }}
+# Single-instance model — use descriptive instance name
+vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
 ```
 
 ## Version Management
@@ -272,7 +272,7 @@ jobs:
 # Model used by sub-workflow (tag-networking)
 name: tag-vpc
 globalArguments:
-  resourceId: ${{ model.networking-vpc.resource.vpc.vpc.attributes.VpcId }}
+  resourceId: ${{ model.networking-vpc.resource.vpc.main.attributes.VpcId }}
   tagKey: ManagedBy
   tagValue: Swamp
 ```

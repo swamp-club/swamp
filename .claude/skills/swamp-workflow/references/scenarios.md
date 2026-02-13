@@ -48,7 +48,7 @@ Configure each model to reference the previous:
 name: public-subnet
 version: 1
 globalArguments:
-  vpcId: ${{ model.networking-vpc.resource.vpc.vpc.attributes.VpcId }}
+  vpcId: ${{ model.networking-vpc.resource.vpc.main.attributes.VpcId }}
   cidrBlock: "10.0.1.0/24"
 ```
 
@@ -57,8 +57,8 @@ globalArguments:
 name: app-sg
 version: 1
 globalArguments:
-  vpcId: ${{ model.networking-vpc.resource.vpc.vpc.attributes.VpcId }}
-  subnetId: ${{ model.public-subnet.resource.subnet.subnet.attributes.SubnetId }}
+  vpcId: ${{ model.networking-vpc.resource.vpc.main.attributes.VpcId }}
+  subnetId: ${{ model.public-subnet.resource.subnet.primary.attributes.SubnetId }}
 ```
 
 **2. Create the workflow**
@@ -120,11 +120,11 @@ swamp workflow run provision-networking --json
 
 ### CEL Paths Used
 
-| Model         | Expression                                                       |
-| ------------- | ---------------------------------------------------------------- |
-| public-subnet | `model.networking-vpc.resource.vpc.vpc.attributes.VpcId`         |
-| app-sg        | `model.networking-vpc.resource.vpc.vpc.attributes.VpcId`         |
-| app-sg        | `model.public-subnet.resource.subnet.subnet.attributes.SubnetId` |
+| Model         | Expression                                                        |
+| ------------- | ----------------------------------------------------------------- |
+| public-subnet | `model.networking-vpc.resource.vpc.main.attributes.VpcId`         |
+| app-sg        | `model.networking-vpc.resource.vpc.main.attributes.VpcId`         |
+| app-sg        | `model.public-subnet.resource.subnet.primary.attributes.SubnetId` |
 
 ---
 
@@ -208,9 +208,9 @@ jobs:
 name: my-instance
 version: 1
 globalArguments:
-  imageId: ${{ model.ami-lookup.resource.data.data.attributes.json.ImageId }}
-  vpcId: ${{ model.vpc-lookup.resource.data.data.attributes.json.VpcId }}
-  securityGroupId: ${{ model.sg-lookup.resource.data.data.attributes.json.GroupId }}
+  imageId: ${{ model.ami-lookup.resource.data.output.attributes.json.ImageId }}
+  vpcId: ${{ model.vpc-lookup.resource.data.output.attributes.json.VpcId }}
+  securityGroupId: ${{ model.sg-lookup.resource.data.output.attributes.json.GroupId }}
 ```
 
 ---

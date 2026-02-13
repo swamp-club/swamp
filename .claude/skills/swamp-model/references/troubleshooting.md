@@ -112,11 +112,11 @@ swamp model validate my-model --json
 3. **Syntax error in expression**:
 
    ```yaml
-   # Wrong
-   value: ${{ model.my-vpc.resource.vpc.attributes.VpcId }} # Missing instance name
+   # Wrong — missing instance name
+   value: ${{ model.my-vpc.resource.vpc.attributes.VpcId }}
 
-   # Correct
-   value: ${{ model.my-vpc.resource.vpc.vpc.attributes.VpcId }}
+   # Correct — spec="vpc", instance="main"
+   value: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
    ```
 
 ### "No such key" in CEL expressions
@@ -131,8 +131,8 @@ swamp model validate my-model --json
    # Wrong — missing instance name
    vpcId: ${{ model.my-vpc.resource.vpc.attributes.VpcId }}
 
-   # Correct — include instance name (usually same as spec name)
-   vpcId: ${{ model.my-vpc.resource.vpc.vpc.attributes.VpcId }}
+   # Correct — include instance name (spec="vpc", instance="main")
+   vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
    ```
 
 2. **Model never executed**:
@@ -213,20 +213,20 @@ swamp data get <referenced-model> <data-name> --json
 model.<model-name>.resource.<specName>.<instanceName>.attributes.<field>
 
 Example:
-model.my-vpc.resource.vpc.vpc.attributes.VpcId
-      └─────┘         └─┘ └─┘            └───┘
-      model name      |   |              attribute
-                      |   └── instanceName (from writeResource 2nd arg)
+model.my-vpc.resource.vpc.main.attributes.VpcId
+      └─────┘         └─┘ └──┘            └───┘
+      model name      |    |              attribute
+                      |    └── instanceName (from writeResource 2nd arg)
                       └── specName (from writeResource 1st arg)
 ```
 
 ### Common Expression Patterns
 
-| Model Type    | Spec     | Expression Pattern                                        |
-| ------------- | -------- | --------------------------------------------------------- |
-| command/shell | result   | `model.<name>.resource.result.result.attributes.stdout`   |
-| aws/cli       | data     | `model.<name>.resource.data.data.attributes.json.<field>` |
-| Custom model  | (varies) | `model.<name>.resource.<spec>.<spec>.attributes.<field>`  |
+| Model Type    | Spec     | Instance | Expression Pattern                                           |
+| ------------- | -------- | -------- | ------------------------------------------------------------ |
+| command/shell | result   | result   | `model.<name>.resource.result.result.attributes.stdout`      |
+| aws/cli       | data     | output   | `model.<name>.resource.data.output.attributes.json.<field>`  |
+| Custom model  | (varies) | (varies) | `model.<name>.resource.<spec>.<instance>.attributes.<field>` |
 
 ## Method Execution Issues
 
