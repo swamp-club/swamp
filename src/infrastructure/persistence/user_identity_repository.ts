@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
+import { atomicWriteTextFile } from "./atomic_write.ts";
 import {
   createUserIdentity,
   type UserIdentityData,
@@ -58,7 +59,7 @@ export class UserIdentityRepository {
       // Create new identity
       const identity = createUserIdentity();
       await Deno.mkdir(configDir, { recursive: true });
-      await Deno.writeTextFile(
+      await atomicWriteTextFile(
         identityPath,
         JSON.stringify(identity, null, 2) + "\n",
       );

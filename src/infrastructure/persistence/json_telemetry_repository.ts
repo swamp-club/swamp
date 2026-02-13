@@ -19,6 +19,7 @@
 
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { TelemetryRepository } from "../../domain/telemetry/repositories.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
@@ -52,7 +53,7 @@ export class JsonTelemetryRepository implements TelemetryRepository {
       const path = join(telemetryDir, filename);
 
       const json = JSON.stringify(entry.toData(), null, 2);
-      await Deno.writeTextFile(path, json);
+      await atomicWriteTextFile(path, json);
     } catch (error) {
       // Silent failure - log only if SWAMP_DEBUG
       if (Deno.env.get("SWAMP_DEBUG")) {

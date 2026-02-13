@@ -19,6 +19,7 @@
 
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import {
@@ -172,7 +173,7 @@ export class YamlOutputRepository implements OutputRepository {
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await Deno.writeTextFile(path, content);
+    await atomicWriteTextFile(path, content);
   }
 
   async delete(

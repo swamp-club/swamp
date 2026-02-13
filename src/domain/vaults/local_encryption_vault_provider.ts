@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
+import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import type { VaultProvider } from "./vault_provider.ts";
 import {
   SWAMP_SUBDIRS,
@@ -111,7 +112,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     const encryptedData = await this.encrypt(secretValue, masterKey, salt);
 
     const encryptedFilePath = join(this.vaultDir, `${secretKey}.enc`);
-    await Deno.writeTextFile(
+    await atomicWriteTextFile(
       encryptedFilePath,
       JSON.stringify(encryptedData, null, 2),
     );
@@ -267,7 +268,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
         // Generate new key if it doesn't exist
         await this.ensureVaultDirectory();
         const generatedKey = crypto.randomUUID() + crypto.randomUUID(); // 72 chars
-        await Deno.writeTextFile(keyFile, generatedKey, { mode: 0o600 });
+        await atomicWriteTextFile(keyFile, generatedKey, { mode: 0o600 });
 
         return await crypto.subtle.importKey(
           "raw",

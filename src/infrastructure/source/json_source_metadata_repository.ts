@@ -19,6 +19,7 @@
 
 import { ensureDir } from "@std/fs";
 import { dirname } from "@std/path";
+import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import type {
   SourceMetadata,
   SourceMetadataRepository,
@@ -71,7 +72,7 @@ export class JsonSourceMetadataRepository implements SourceMetadataRepository {
   async write(metadata: SourceMetadata): Promise<void> {
     await ensureDir(dirname(this.metaPath));
     const content = JSON.stringify(metadata, null, 2);
-    await Deno.writeTextFile(this.metaPath, content);
+    await atomicWriteTextFile(this.metaPath, content);
   }
 
   /**
