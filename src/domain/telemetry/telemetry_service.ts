@@ -37,6 +37,7 @@ const DEFAULT_FLUSH_BATCH_SIZE = 25;
 export interface TelemetryFlushConfig {
   sender: TelemetrySender;
   distinctId: string;
+  repoId?: string;
   batchSize?: number;
   keepFlushed?: boolean;
 }
@@ -163,7 +164,13 @@ export class TelemetryService {
     const keepFlushed = config.keepFlushed ?? false;
 
     // Fire-and-forget: don't await, don't let errors propagate
-    this.doFlush(config.sender, config.distinctId, batchSize, keepFlushed)
+    this.doFlush(
+      config.sender,
+      config.distinctId,
+      batchSize,
+      keepFlushed,
+      config.repoId,
+    )
       .catch(
         (error) => {
           if (Deno.env.get("SWAMP_DEBUG")) {
@@ -178,11 +185,12 @@ export class TelemetryService {
     distinctId: string,
     batchSize: number,
     keepFlushed: boolean,
+    repoId?: string,
   ): Promise<void> {
     const entries = await this.repository.findUnflushed(batchSize);
     if (entries.length === 0) return;
 
-    const success = await sender.sendBatch(entries, distinctId);
+    const success = await sender.sendBatch(entries, distinctId, repoId);
     if (success) {
       for (const entry of entries) {
         await this.repository.markFlushed(entry, keepFlushed);

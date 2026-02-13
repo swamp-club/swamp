@@ -52,6 +52,7 @@ import {
   extractCommandInfo,
   isTelemetryDisabled,
 } from "./telemetry_integration.ts";
+import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -124,6 +125,7 @@ const DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.swamp.club";
 
 interface TelemetryContext {
   service: TelemetryService;
+  userId: string | null;
   repoId: string;
   telemetryEndpoint: string;
   keepFlushed: boolean;
@@ -152,6 +154,10 @@ async function initTelemetryService(): Promise<TelemetryContext | null> {
       await markerRepo.write(repoPath, marker);
     }
 
+    // Resolve user-level identity (lazy-creates ~/.config/swamp/identity.json)
+    const identityRepo = new UserIdentityRepository();
+    const userId = await identityRepo.getUserId();
+
     const repository = new JsonTelemetryRepository(cwd);
     const service = new TelemetryService(repository, VERSION);
     const telemetryEndpoint = marker.telemetryEndpoint ??
@@ -159,7 +165,7 @@ async function initTelemetryService(): Promise<TelemetryContext | null> {
 
     const keepFlushed = marker.telemetryKeepFlushed ?? false;
 
-    return { service, repoId, telemetryEndpoint, keepFlushed };
+    return { service, userId, repoId, telemetryEndpoint, keepFlushed };
   } catch {
     // Not in a swamp repo or other error
     return null;
@@ -258,7 +264,8 @@ export async function runCli(args: string[]): Promise<void> {
       const sender = new HttpTelemetrySender(telemetryCtx.telemetryEndpoint);
       telemetryCtx.service.flushTelemetry({
         sender,
-        distinctId: telemetryCtx.repoId,
+        distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
+        repoId: telemetryCtx.repoId,
         keepFlushed: telemetryCtx.keepFlushed,
       });
 

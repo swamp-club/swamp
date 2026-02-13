@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
+  getSwampConfigDir,
   SWAMP_DATA_DIR,
   SWAMP_MARKER_FILE,
   SWAMP_SUBDIRS,
@@ -149,4 +150,49 @@ Deno.test("toRelativePath and toAbsolutePath - round trip", () => {
   const backToAbsolute = toAbsolutePath(repoDir, relative);
 
   assertEquals(backToAbsolute, originalAbsolute);
+});
+
+Deno.test("getSwampConfigDir uses XDG_CONFIG_HOME when set", () => {
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  try {
+    Deno.env.set("XDG_CONFIG_HOME", "/custom/config");
+    assertEquals(getSwampConfigDir(), "/custom/config/swamp");
+  } finally {
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+  }
+});
+
+Deno.test("getSwampConfigDir falls back to HOME/.config/swamp", () => {
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  const originalHome = Deno.env.get("HOME");
+  try {
+    Deno.env.delete("XDG_CONFIG_HOME");
+    Deno.env.set("HOME", "/home/testuser");
+    assertEquals(getSwampConfigDir(), "/home/testuser/.config/swamp");
+  } finally {
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    if (originalHome) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+  }
+});
+
+Deno.test("getSwampConfigDir throws when HOME is not set", () => {
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  const originalHome = Deno.env.get("HOME");
+  try {
+    Deno.env.delete("XDG_CONFIG_HOME");
+    Deno.env.delete("HOME");
+    assertThrows(
+      () => getSwampConfigDir(),
+      Error,
+      "HOME environment variable is not set",
+    );
+  } finally {
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    if (originalHome) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+  }
 });
