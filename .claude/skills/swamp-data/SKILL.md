@@ -439,6 +439,11 @@ Data is stored in the `.swamp/data/` directory:
 
 ## References
 
+- **Examples**: See [references/examples.md](references/examples.md) for data
+  query patterns, CEL expressions, and GC scenarios
+- **Troubleshooting**: See
+  [references/troubleshooting.md](references/troubleshooting.md) for common
+  errors and fixes
 - **Data design**: See [design/models.md](design/models.md) for data lifecycle
   details
 - **Expressions**: See [design/expressions.md](design/expressions.md) for CEL

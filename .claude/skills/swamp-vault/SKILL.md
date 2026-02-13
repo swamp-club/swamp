@@ -189,6 +189,8 @@ devToken: ${{ vault.get(dev-secrets, auth-token) }}
 
 ## References
 
+- **Examples**: See [references/examples.md](references/examples.md) for
+  multi-vault setups, workflow usage, and migration patterns
 - **Provider details**: See [references/providers.md](references/providers.md)
   for encryption and configuration details
 - **Troubleshooting**: See

@@ -214,5 +214,10 @@ swamp repo webapp ./my-automation --json
 
 ## References
 
+- **Structure**: See [references/structure.md](references/structure.md) for
+  complete directory layout reference
+- **Troubleshooting**: See
+  [references/troubleshooting.md](references/troubleshooting.md) for symlink
+  issues, index rebuild, and config problems
 - **Repository design**: See [design/repo.md](design/repo.md)
 - **Model structure**: See [design/models.md](design/models.md)

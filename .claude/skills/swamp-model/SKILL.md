@@ -520,6 +520,13 @@ This ensures data integrity when multiple models reference the same data names.
 
 ## References
 
+- **Examples**: See [references/examples.md](references/examples.md) for
+  complete model workflows and CEL expression reference
+- **Troubleshooting**: See
+  [references/troubleshooting.md](references/troubleshooting.md) for common
+  errors and fixes
+- **Scenarios**: See [references/scenarios.md](references/scenarios.md) for
+  end-to-end scenarios (shell commands, chained lookups, runtime inputs)
 - **Data chaining**: See
   [references/data-chaining.md](references/data-chaining.md) for aws/cli model
   examples and chaining patterns

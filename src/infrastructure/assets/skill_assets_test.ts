@@ -169,3 +169,140 @@ Deno.test("SkillAssets.copySkillsTo copies nested reference files", async () => 
     assertEquals(troubleshootingStat.isFile, true);
   });
 });
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-data reference files", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const examplesPath = join(dir, "swamp-data", "references", "examples.md");
+    const troubleshootingPath = join(
+      dir,
+      "swamp-data",
+      "references",
+      "troubleshooting.md",
+    );
+
+    const examplesStat = await Deno.stat(examplesPath);
+    assertEquals(examplesStat.isFile, true);
+
+    const troubleshootingStat = await Deno.stat(troubleshootingPath);
+    assertEquals(troubleshootingStat.isFile, true);
+  });
+});
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-model reference files", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const examplesPath = join(dir, "swamp-model", "references", "examples.md");
+    const troubleshootingPath = join(
+      dir,
+      "swamp-model",
+      "references",
+      "troubleshooting.md",
+    );
+    const scenariosPath = join(
+      dir,
+      "swamp-model",
+      "references",
+      "scenarios.md",
+    );
+
+    const examplesStat = await Deno.stat(examplesPath);
+    assertEquals(examplesStat.isFile, true);
+
+    const troubleshootingStat = await Deno.stat(troubleshootingPath);
+    assertEquals(troubleshootingStat.isFile, true);
+
+    const scenariosStat = await Deno.stat(scenariosPath);
+    assertEquals(scenariosStat.isFile, true);
+  });
+});
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-repo reference files", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const structurePath = join(dir, "swamp-repo", "references", "structure.md");
+    const troubleshootingPath = join(
+      dir,
+      "swamp-repo",
+      "references",
+      "troubleshooting.md",
+    );
+
+    const structureStat = await Deno.stat(structurePath);
+    assertEquals(structureStat.isFile, true);
+
+    const troubleshootingStat = await Deno.stat(troubleshootingPath);
+    assertEquals(troubleshootingStat.isFile, true);
+  });
+});
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-workflow scenarios file", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const scenariosPath = join(
+      dir,
+      "swamp-workflow",
+      "references",
+      "scenarios.md",
+    );
+
+    const scenariosStat = await Deno.stat(scenariosPath);
+    assertEquals(scenariosStat.isFile, true);
+  });
+});
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-vault examples file", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const examplesPath = join(dir, "swamp-vault", "references", "examples.md");
+
+    const examplesStat = await Deno.stat(examplesPath);
+    assertEquals(examplesStat.isFile, true);
+  });
+});
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model scenarios file", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const scenariosPath = join(
+      dir,
+      "swamp-extension-model",
+      "references",
+      "scenarios.md",
+    );
+
+    const scenariosStat = await Deno.stat(scenariosPath);
+    assertEquals(scenariosStat.isFile, true);
+  });
+});
+
+Deno.test("SkillAssets includes swamp-troubleshooting skill", () => {
+  const assets = new SkillAssets();
+  const names = assets.getSkillNames();
+
+  assertEquals(names.includes("swamp-troubleshooting"), true);
+});
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-troubleshooting skill", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const skillPath = join(dir, "swamp-troubleshooting", "SKILL.md");
+
+    const skillStat = await Deno.stat(skillPath);
+    assertEquals(skillStat.isFile, true);
+  });
+});
