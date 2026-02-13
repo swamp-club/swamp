@@ -4,7 +4,7 @@
 
 # Swamp
 
-AI Native Automation, built for agents - Welcome to the Swamp.
+AI Native Automation, built for agents - Welcome to Swamp.
 
 Swamp is a CLI that supercharges AI agents to create operational workflows that
 are reviewable, shareable, and accurate. Built for agents, there to empower
@@ -108,7 +108,7 @@ Claude how to work with swamp — search for models, create definitions, run
 workflows, manage vaults, and more.
 
 The skills live in `.claude/skills/` and are bundled into the swamp binary. Run
-`swamp` inside a Claude Code session and Claude will discover them
+`swamp` inside a Claude Code session, and Claude will discover them
 automatically.
 
 While Claude Code is our primary supported agent today, the patterns are
@@ -117,7 +117,7 @@ markdown — read them, adapt them, bring them to your preferred tools.
 
 ### User-Defined Models
 
-Extend swamp with custom TypeScript models. Place them in `extensions/models/`
+Extend Swamp with custom TypeScript models. Place them in `extensions/models/`
 (or configure via `SWAMP_MODELS_DIR` or `.swamp.yaml`).
 
 See the [extension model guide](.claude/skills/swamp-extension-model/SKILL.md)
