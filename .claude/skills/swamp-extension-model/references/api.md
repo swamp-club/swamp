@@ -45,14 +45,14 @@ throw). The `instanceName` you pass here is used in CEL:
 
 ```typescript
 // Single-instance resource (use descriptive instance name)
-const handle = await context.writeResource!("state", "current", {
+const handle = await context.writeResource("state", "current", {
   status: "active",
   updatedAt: new Date().toISOString(),
 });
 
 // Factory model (use dynamic instance names)
 for (const item of items) {
-  await context.writeResource!("item", item.id, item);
+  await context.writeResource("item", item.id, item);
 }
 ```
 
@@ -101,14 +101,14 @@ here is used in CEL: `model.<defName>.file.<specName>.<instanceName>.path`.
 
 ```typescript
 // Write text file
-const logWriter = context.createFileWriter!("log", "execution");
+const logWriter = context.createFileWriter("log", "execution");
 const handle = await logWriter.writeText(JSON.stringify({
   timestamp: new Date().toISOString(),
   message: "Operation completed",
 }));
 
 // Streaming log (line by line)
-const streamWriter = context.createFileWriter!("log", "stream", {
+const streamWriter = context.createFileWriter("log", "stream", {
   streaming: true,
 });
 await streamWriter.writeLine("Starting process...");

@@ -170,10 +170,17 @@ schema: z.object({ VpcId: z.string() }).passthrough(),
 
 ### Syntax errors on load
 
-Avoid inline TypeScript type annotations in execute parameters:
+Extension models are loaded as JavaScript at runtime. Avoid TypeScript-only
+syntax:
 
 ```typescript
-// Wrong - causes syntax error
+// Wrong - non-null assertion (!) causes SyntaxError
+const handle = await context.writeResource!("state", "main", data);
+
+// Correct - call without !
+const handle = await context.writeResource("state", "main", data);
+
+// Wrong - type annotations cause syntax error
 execute: async (args: { id: string }, context: any) => { ... }
 
 // Correct

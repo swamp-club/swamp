@@ -93,7 +93,7 @@ export const model = {
 
         const customer = await response.json();
 
-        const handle = await context.writeResource!(
+        const handle = await context.writeResource(
           "customer",
           "primary",
           customer,
@@ -130,7 +130,7 @@ export const model = {
 
         const customer = await response.json();
 
-        const handle = await context.writeResource!(
+        const handle = await context.writeResource(
           "customer",
           "primary",
           customer,
@@ -278,7 +278,7 @@ export const model = {
           CreationDate: new Date().toISOString(),
         };
 
-        const handle = await context.writeResource!(
+        const handle = await context.writeResource(
           "bucket",
           "main",
           bucketData,
@@ -327,7 +327,7 @@ export const model = {
           UpdatedAt: new Date().toISOString(),
         };
 
-        const handle = await context.writeResource!(
+        const handle = await context.writeResource(
           "bucket",
           "main",
           updatedData,
@@ -504,7 +504,7 @@ export const model = {
         const handles = [];
         for (const vpc of vpcs) {
           // Each VPC gets its own instance name based on VpcId
-          const handle = await context.writeResource!(
+          const handle = await context.writeResource(
             "vpc",
             vpc.VpcId, // Dynamic instance name!
             vpc,
@@ -618,7 +618,7 @@ export const extension = {
         context.logger.info("Audit: {*}", auditEntry);
 
         // Write to the shell model's result spec
-        const handle = await context.writeResource!("result", "result", {
+        const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `audit: ${JSON.stringify(auditEntry)}`,
           executedAt: auditEntry.timestamp,
@@ -635,7 +635,7 @@ export const extension = {
 
         context.logger.info("Would execute: {command}", { command });
 
-        const handle = await context.writeResource!("result", "result", {
+        const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `dry-run: ${command}`,
           executedAt: new Date().toISOString(),
