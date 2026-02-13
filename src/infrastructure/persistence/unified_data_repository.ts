@@ -20,6 +20,7 @@
 import { ensureDir } from "@std/fs";
 import { join, relative } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   Data,
@@ -571,7 +572,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // Remove undefined values
     const cleanData = JSON.parse(JSON.stringify(metadata));
     const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
-    await Deno.writeTextFile(metadataPath, metadataContent);
+    await atomicWriteTextFile(metadataPath, metadataContent);
 
     // Save content
     const contentPath = this.getContentPath(
@@ -580,7 +581,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       data.name,
       newVersion,
     );
-    await Deno.writeFile(contentPath, content);
+    await atomicWriteFile(contentPath, content);
 
     // Update latest symlink
     await this.updateLatestSymlink(type, modelId, data.name, newVersion);
@@ -629,7 +630,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     metadata.size = currentContent.length;
     metadata.checksum = await this.computeChecksum(currentContent);
     const cleanData = JSON.parse(JSON.stringify(metadata));
-    await Deno.writeTextFile(
+    await atomicWriteTextFile(
       metadataPath,
       stringifyYaml(cleanData as Record<string, unknown>),
     );
@@ -830,7 +831,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const metadata = dataToSave.toData();
     const cleanData = JSON.parse(JSON.stringify(metadata));
     const metadataContent = stringifyYaml(cleanData as Record<string, unknown>);
-    await Deno.writeTextFile(metadataPath, metadataContent);
+    await atomicWriteTextFile(metadataPath, metadataContent);
 
     // Update latest symlink
     await this.updateLatestSymlink(type, modelId, data.name, version);

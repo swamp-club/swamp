@@ -19,6 +19,7 @@
 
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import type { RepoPath } from "./repo_path.ts";
 import {
   SWAMP_SUBDIRS,
@@ -424,7 +425,7 @@ Use \`swamp --help\` to see available commands.
         allow: mergedAllow,
       },
     };
-    await Deno.writeTextFile(
+    await atomicWriteTextFile(
       settingsPath,
       JSON.stringify(newSettings, null, 2) + "\n",
     );

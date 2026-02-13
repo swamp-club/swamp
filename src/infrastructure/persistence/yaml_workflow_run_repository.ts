@@ -20,6 +20,7 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import {
   SWAMP_SUBDIRS,
@@ -188,7 +189,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
-    await Deno.writeTextFile(path, content);
+    await atomicWriteTextFile(path, content);
 
     // Emit events based on status changes
     if (this.eventBus) {

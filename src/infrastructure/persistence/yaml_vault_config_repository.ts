@@ -20,6 +20,7 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import {
   VaultConfig,
@@ -168,7 +169,7 @@ export class YamlVaultConfigRepository {
 
     const data = config.toData();
     const content = stringifyYaml(data as unknown as Record<string, unknown>);
-    await Deno.writeTextFile(path, content);
+    await atomicWriteTextFile(path, content);
 
     // Emit event
     if (this.eventBus) {
