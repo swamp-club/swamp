@@ -70,7 +70,7 @@ export const model = {
         const output = await cmd.output();
         const vpcData = JSON.parse(new TextDecoder().decode(output.stdout)).Vpc;
 
-        const handle = await context.writeResource!("vpc", "vpc", vpcData);
+        const handle = await context.writeResource("vpc", "vpc", vpcData);
         return { dataHandles: [handle] };
       },
     },
@@ -132,7 +132,7 @@ export const model = {
         ).Vpcs[0];
 
         // 4. Write updated state — creates a new version of the resource
-        const handle = await context.writeResource!("vpc", "vpc", updatedData);
+        const handle = await context.writeResource("vpc", "vpc", updatedData);
         return { dataHandles: [handle] };
       },
     },
@@ -238,7 +238,7 @@ export const model = {
             break;
         }
 
-        const handle = await context.writeResource!("result", "result", {
+        const handle = await context.writeResource("result", "result", {
           originalText: text,
           processedText,
           operation,
@@ -294,7 +294,7 @@ export const model = {
         const attrs = context.globalArgs;
         const deploymentId = `deploy-${attrs.appName}-${Date.now()}`;
 
-        const handle = await context.writeResource!("state", "state", {
+        const handle = await context.writeResource("state", "state", {
           deploymentId,
           appName: attrs.appName,
           version: attrs.version,
@@ -312,7 +312,7 @@ export const model = {
       execute: async (args, context) => {
         const attrs = context.globalArgs;
 
-        const handle = await context.writeResource!("state", "state", {
+        const handle = await context.writeResource("state", "state", {
           deploymentId: `deploy-${attrs.appName}-scaled`,
           appName: attrs.appName,
           version: attrs.version,
@@ -358,7 +358,7 @@ export const model = {
       description: "Echo the message with timestamp",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("data", "data", {
+        const handle = await context.writeResource("data", "data", {
           message: context.globalArgs.message,
           timestamp: new Date().toISOString(),
         });
@@ -422,7 +422,7 @@ export const model = {
         const endpoint =
           `https://${serviceName}.${environment}.example.com/api`;
 
-        const handle = await context.writeResource!("config", "config", {
+        const handle = await context.writeResource("config", "config", {
           configJson: {
             endpoint,
             timeout: envConfig.timeout,
@@ -509,7 +509,7 @@ export const model = {
           );
         }
 
-        const handle = await context.writeResource!("output", "output", {
+        const handle = await context.writeResource("output", "output", {
           stdout: result.stdout,
           exitCode: result.exitCode,
           durationMs: result.durationMs,
@@ -537,7 +537,7 @@ export const extension = {
       arguments: z.object({}),
       execute: async (args, context) => {
         // Extensions use the target model's resources/files
-        const handle = await context.writeResource!("result", "result", {
+        const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `audit: ${context.definition.name}`,
           executedAt: new Date().toISOString(),
@@ -562,7 +562,7 @@ export const extension = {
       description: "Audit the shell command execution",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("result", "result", {
+        const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `audit: ${context.definition.name}`,
           executedAt: new Date().toISOString(),
@@ -574,7 +574,7 @@ export const extension = {
       description: "Validate the shell command format",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("result", "result", {
+        const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `valid: ${context.globalArgs.run?.length > 0}`,
           executedAt: new Date().toISOString(),

@@ -73,7 +73,7 @@ export const model = {
       description: "Process the input message",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("result", "main", {
+        const handle = await context.writeResource("result", "main", {
           message: context.globalArgs.message.toUpperCase(),
           timestamp: new Date().toISOString(),
         });
@@ -164,7 +164,7 @@ execute: (async (args, context) => {
   // context.writeResource  - Write structured JSON data
   // context.createFileWriter - Create a writer for files
 
-  const handle = await context.writeResource!("result", "main", {
+  const handle = await context.writeResource("result", "main", {
     value: "processed",
     timestamp: new Date().toISOString(),
   });
@@ -204,7 +204,7 @@ emit each as a separately-addressable resource.
 ```typescript
 const handles = [];
 for (const subnet of subnets) {
-  const handle = await context.writeResource!(
+  const handle = await context.writeResource(
     "subnet",
     subnet.subnetId, // Dynamic instance name
     subnet,
@@ -255,7 +255,7 @@ export const extension = {
       description: "Audit the shell command execution",
       arguments: z.object({}),
       execute: async (args, context) => {
-        const handle = await context.writeResource!("result", "result", {
+        const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `audit: ${context.definition.name}`,
           executedAt: new Date().toISOString(),
