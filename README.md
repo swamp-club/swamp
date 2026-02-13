@@ -43,7 +43,7 @@ in `.swamp/` before anything touches production.
 ## Core Concepts
 
 - **Models** — Typed representations of external systems (cloud resources, CLI
-  tools, APIs). Each model type defines metadata, attributes, methods, and
+  tools, APIs). Each model type defines metadata, arguments, methods, and
   inputs.
 - **Definitions** — YAML files that instantiate a model type with specific
   configuration. Support CEL expressions for dynamic values and cross-model
