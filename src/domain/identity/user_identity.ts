@@ -17,24 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { TelemetryEntry } from "./telemetry_entry.ts";
+/**
+ * Persistent user identity data stored at ~/.config/swamp/identity.json.
+ * Identifies a unique user across all repositories.
+ */
+export interface UserIdentityData {
+  /** UUID identifying this user */
+  userId: string;
+  /** ISO 8601 timestamp of when this identity was created */
+  createdAt: string;
+}
 
 /**
- * Port for sending telemetry events to a remote endpoint.
- * Implemented by infrastructure adapters (e.g. HttpTelemetrySender).
+ * Creates a new user identity with a random UUID.
  */
-export interface TelemetrySender {
-  /**
-   * Sends a batch of telemetry entries to the remote endpoint.
-   *
-   * @param entries - The entries to send
-   * @param distinctId - The user or repo UUID used as distinct_id
-   * @param repoId - Optional repo UUID included as a property
-   * @returns true if the batch was accepted, false otherwise
-   */
-  sendBatch(
-    entries: TelemetryEntry[],
-    distinctId: string,
-    repoId?: string,
-  ): Promise<boolean>;
+export function createUserIdentity(): UserIdentityData {
+  return {
+    userId: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+  };
 }
