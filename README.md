@@ -15,6 +15,8 @@ humans. All the data lives in the `.swamp/` (the swamp).
 > [bug reports and feature requests](https://github.com/systeminit/swamp/issues)
 > and we'll take care of the rest. Have fun with it.
 
+Come join the [swamp party on discord](https://discord.gg/system-init).
+
 ## Getting Started
 
 ```bash
@@ -43,7 +45,7 @@ in `.swamp/` before anything touches production.
 ## Core Concepts
 
 - **Models** — Typed representations of external systems (cloud resources, CLI
-  tools, APIs). Each model type defines metadata, attributes, methods, and
+  tools, APIs). Each model type defines metadata, arguments, methods, and
   inputs.
 - **Definitions** — YAML files that instantiate a model type with specific
   configuration. Support CEL expressions for dynamic values and cross-model
