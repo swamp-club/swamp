@@ -589,3 +589,118 @@ Deno.test("LocalEncryptionVaultProvider - list secrets", async (t) => {
     });
   });
 });
+
+Deno.test("LocalEncryptionVaultProvider - path traversal prevention", async (t) => {
+  await t.step("should reject key with ../ in put()", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider("traversal-vault", config);
+
+      const error = await assertRejects(
+        () => vault.put("../../escaped/pwned", "malicious"),
+        Error,
+      );
+
+      assertStringIncludes(error.message, "Invalid secret key");
+      assertStringIncludes(error.message, "..");
+    });
+  });
+
+  await t.step("should reject key with ../ in get()", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider("traversal-vault", config);
+
+      const error = await assertRejects(
+        () => vault.get("../../escaped/pwned"),
+        Error,
+      );
+
+      assertStringIncludes(error.message, "Invalid secret key");
+      assertStringIncludes(error.message, "..");
+    });
+  });
+
+  await t.step("should reject key with forward slash", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider("traversal-vault", config);
+
+      const error = await assertRejects(
+        () => vault.put("path/to/secret", "value"),
+        Error,
+      );
+
+      assertStringIncludes(error.message, "Invalid secret key");
+    });
+  });
+
+  await t.step("should reject key with backslash", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider("traversal-vault", config);
+
+      const error = await assertRejects(
+        () => vault.put("path\\to\\secret", "value"),
+        Error,
+      );
+
+      assertStringIncludes(error.message, "Invalid secret key");
+    });
+  });
+
+  await t.step("should reject key with null byte", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider("traversal-vault", config);
+
+      const error = await assertRejects(
+        () => vault.put("secret\0key", "value"),
+        Error,
+      );
+
+      assertStringIncludes(error.message, "Invalid secret key");
+    });
+  });
+
+  await t.step(
+    "should allow valid keys with hyphens, underscores, and dots",
+    async () => {
+      await withTempDir(async (dir) => {
+        const config: LocalEncryptionConfig = {
+          auto_generate: true,
+          base_dir: dir,
+        };
+        const vault = new LocalEncryptionVaultProvider(
+          "valid-keys-vault",
+          config,
+        );
+
+        await vault.put("api-key", "value1");
+        await vault.put("db_password", "value2");
+        await vault.put("config.prod", "value3");
+        await vault.put("MySecret123", "value4");
+
+        assertEquals(await vault.get("api-key"), "value1");
+        assertEquals(await vault.get("db_password"), "value2");
+        assertEquals(await vault.get("config.prod"), "value3");
+        assertEquals(await vault.get("MySecret123"), "value4");
+      });
+    },
+  );
+});
