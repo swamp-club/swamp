@@ -80,6 +80,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
   }
 
   async get(secretKey: string): Promise<string> {
+    this.validateSecretKey(secretKey);
     const encryptedFilePath = join(this.vaultDir, `${secretKey}.enc`);
 
     try {
@@ -105,6 +106,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
   }
 
   async put(secretKey: string, secretValue: string): Promise<void> {
+    this.validateSecretKey(secretKey);
     await this.ensureVaultDirectory();
 
     const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -334,6 +336,24 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     );
 
     return new TextDecoder().decode(decrypted);
+  }
+
+  /**
+   * Validates that a secret key does not contain path traversal characters.
+   * Rejects keys containing '..', '/', '\', or null bytes to prevent
+   * file operations outside the vault directory.
+   */
+  private validateSecretKey(secretKey: string): void {
+    if (
+      secretKey.includes("..") ||
+      secretKey.includes("/") ||
+      secretKey.includes("\\") ||
+      secretKey.includes("\0")
+    ) {
+      throw new Error(
+        `Invalid secret key '${secretKey}': must not contain '..', '/', '\\', or null bytes`,
+      );
+    }
   }
 
   /**
