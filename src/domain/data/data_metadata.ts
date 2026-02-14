@@ -81,7 +81,15 @@ export type OwnerDefinition = z.infer<typeof OwnerDefinitionSchema>;
  * Tags must include a 'type' key for categorization.
  */
 export const DataMetadataSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).refine(
+    (name) =>
+      !name.includes("..") && !name.includes("/") && !name.includes("\\") &&
+      !name.includes("\0"),
+    {
+      message:
+        "Data name must not contain '..', '/', '\\', or null bytes (path traversal)",
+    },
+  ),
   id: z.string().uuid(),
   version: z.number().int().positive(),
   contentType: z.string().min(1),
