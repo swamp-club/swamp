@@ -58,7 +58,7 @@ export const dataGcCommand = new Command()
   .option("-f, --force", "Skip confirmation prompt")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["data", "gc"]);
-    const { repoDir, repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });
@@ -66,7 +66,6 @@ export const dataGcCommand = new Command()
     const service = new DefaultDataLifecycleService(
       repoContext.unifiedDataRepo,
       repoContext.workflowRunRepo,
-      repoDir,
     );
 
     // If interactive and no force, prompt for confirmation
