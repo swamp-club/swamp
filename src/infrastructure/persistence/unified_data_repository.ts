@@ -618,8 +618,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       file.close();
     }
 
-    // Update metadata with new size
-    const currentContent = await Deno.readFile(contentPath);
+    // Update metadata with new size (O(1) via stat, no file read)
+    const stat = await Deno.stat(contentPath);
     const metadataPath = this.getMetadataPath(
       type,
       modelId,
@@ -627,8 +627,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       latestVersion,
     );
     const metadata = data.toData();
-    metadata.size = currentContent.length;
-    metadata.checksum = await this.computeChecksum(currentContent);
+    metadata.size = stat.size;
+    // Remove stale checksum — content has changed and recomputing
+    // would require reading the entire file into memory
+    delete metadata.checksum;
     const cleanData = JSON.parse(JSON.stringify(metadata));
     await atomicWriteTextFile(
       metadataPath,

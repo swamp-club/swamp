@@ -443,6 +443,13 @@ Deno.test("Integration: append works for streaming data", async () => {
     // Verify content
     const content = await repo.getContent(type, modelId, "append-test");
     assertEquals(new TextDecoder().decode(content!), "line1\nline2\nline3\n");
+
+    // Verify size is correct after appends
+    const found = await repo.findByName(type, modelId, "append-test");
+    assertEquals(found?.size, "line1\nline2\nline3\n".length);
+
+    // Checksum should be removed after append (content changed, old checksum is stale)
+    assertEquals(found?.checksum, undefined);
   });
 });
 
