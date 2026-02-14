@@ -178,6 +178,20 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       );
     }
 
+    // Validate globalArguments against schema (after upgrade and runtime resolution)
+    if (modelDef.globalArguments) {
+      const globalArgsResult = modelDef.globalArguments.safeParse(
+        currentDefinition.globalArguments,
+      );
+      if (!globalArgsResult.success) {
+        throw new Error(
+          `Global arguments validation failed: ${
+            formatZodError(globalArgsResult.error)
+          }`,
+        );
+      }
+    }
+
     // Create writeResource and createFileWriter for this execution
     const definitionHash = await currentDefinition.computeHash();
     const resources = modelDef.resources ?? {};

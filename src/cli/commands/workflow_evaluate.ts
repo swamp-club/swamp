@@ -28,7 +28,7 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
-import { containsVaultExpression } from "../../domain/expressions/expression_evaluation_service.ts";
+import { containsRuntimeExpression } from "../../domain/expressions/expression_evaluation_service.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
   extractExpressions,
@@ -206,7 +206,7 @@ async function evaluateWorkflow(
   // Evaluate CEL-only expressions; skip vault, self.*, and forEach.in expressions
   const evaluatedValues = new Map<string, unknown>();
   for (const expr of expressions) {
-    if (containsVaultExpression(expr.celExpression)) {
+    if (containsRuntimeExpression(expr.celExpression)) {
       continue;
     }
     // Skip self.* expressions — they reference forEach variables resolved at runtime
@@ -381,7 +381,7 @@ function resolveForEachTaskExpressions(
     for (const [key, val] of Object.entries(expandedTask.inputs)) {
       if (typeof val === "string") {
         const exprMatch = (val as string).match(/\$\{\{\s*(.+?)\s*\}\}/);
-        if (exprMatch && !containsVaultExpression(exprMatch[1])) {
+        if (exprMatch && !containsRuntimeExpression(exprMatch[1])) {
           try {
             expandedTask.inputs[key] = celEvaluator.evaluate(
               exprMatch[1],
@@ -402,7 +402,7 @@ function resolveForEachTaskExpressions(
       return (arg as string).replace(
         /\$\{\{\s*(.+?)\s*\}\}/g,
         (_match: string, expr: string) => {
-          if (containsVaultExpression(expr)) return _match;
+          if (containsRuntimeExpression(expr)) return _match;
           try {
             return String(celEvaluator.evaluate(expr, stepContext));
           } catch {

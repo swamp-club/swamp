@@ -48,7 +48,7 @@ import {
   replaceExpressions,
 } from "../expressions/expression_parser.ts";
 import {
-  containsVaultExpression,
+  containsRuntimeExpression,
   ExpressionEvaluationService,
 } from "../expressions/expression_evaluation_service.ts";
 import {
@@ -394,14 +394,15 @@ export class DefaultStepExecutor implements StepExecutor {
     const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(ctx.repoDir);
     await evaluatedDefRepo.save(modelType, evaluatedDefinition);
 
-    // Resolve vault expressions at runtime (never persisted)
+    // Resolve runtime expressions (vault and env) at runtime (never persisted)
     const evalService = new ExpressionEvaluationService(
       new YamlDefinitionRepository(ctx.repoDir),
       ctx.repoDir,
     );
-    evaluatedDefinition = await evalService.resolveVaultExpressionsInDefinition(
-      evaluatedDefinition,
-    );
+    evaluatedDefinition = await evalService
+      .resolveRuntimeExpressionsInDefinition(
+        evaluatedDefinition,
+      );
 
     // Validate method exists on the model
     const method = modelDef.methods[task.methodName];
@@ -628,10 +629,10 @@ export class DefaultStepExecutor implements StepExecutor {
       return definition;
     }
 
-    // Evaluate CEL-only expressions; skip vault-containing expressions
+    // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      if (containsVaultExpression(expr.celExpression)) {
+      if (containsRuntimeExpression(expr.celExpression)) {
         continue;
       }
 
@@ -1471,10 +1472,10 @@ export class WorkflowExecutionService {
       }
     }
 
-    // Evaluate CEL-only expressions; skip vault, self.*, and forEach.in expressions
+    // Evaluate CEL-only expressions; skip runtime (vault, env), self.*, and forEach.in expressions
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
-      if (containsVaultExpression(expr.celExpression)) {
+      if (containsRuntimeExpression(expr.celExpression)) {
         continue;
       }
       // Skip self.* expressions — they reference forEach variables resolved at runtime

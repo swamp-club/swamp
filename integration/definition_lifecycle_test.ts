@@ -769,12 +769,23 @@ Deno.test("Definition Lifecycle: environment variable expressions", async () => 
         repoDir,
       );
 
+      // evaluateDefinition defers env expressions to runtime (leaves raw)
       const result = await evalService.evaluateDefinition(
         definition,
         modelType,
       );
 
-      assertEquals(result.definition.globalArguments.from_env, "env-value-123");
+      assertEquals(
+        result.definition.globalArguments.from_env,
+        "${{ env.TEST_ENV_VAR }}",
+      );
+
+      // Resolve runtime expressions (env + vault) — this is the runtime phase
+      const resolved = await evalService.resolveRuntimeExpressionsInDefinition(
+        result.definition,
+      );
+
+      assertEquals(resolved.globalArguments.from_env, "env-value-123");
     } finally {
       Deno.env.delete("TEST_ENV_VAR");
     }

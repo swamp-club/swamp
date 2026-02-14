@@ -919,3 +919,109 @@ Deno.test("execute passes logger in context to method", async () => {
   assertEquals(capturedLogger !== undefined, true);
   assertEquals(typeof (capturedLogger as { info: unknown }).info, "function");
 });
+
+// ---------- globalArguments Validation Tests ----------
+
+Deno.test("executeWorkflow - rejects invalid globalArguments after resolution", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const schema = z.object({
+    host: z.string(),
+    port: z.number(),
+  });
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/global-args-validation"),
+    version: "1",
+    globalArguments: schema,
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  // Port is a string instead of a number — should fail validation
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { host: "localhost", port: "not-a-number" },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "run", context),
+    Error,
+    "Global arguments validation failed",
+  );
+});
+
+Deno.test("executeWorkflow - passes with valid globalArguments", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const schema = z.object({
+    host: z.string(),
+    port: z.number(),
+  });
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/global-args-valid"),
+    version: "1",
+    globalArguments: schema,
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { host: "localhost", port: 5432 },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "run",
+    context,
+  );
+  // Should succeed without error
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - skips validation when model has no globalArguments schema", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/no-global-args"),
+    version: "1",
+    // No globalArguments schema
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { anything: "goes" },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "run",
+    context,
+  );
+  // Should succeed without error
+  assertEquals(result !== undefined, true);
+});

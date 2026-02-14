@@ -589,10 +589,25 @@ Deno.test("CEL Data Access: access environment variables", async () => {
         repoDir,
       );
 
+      // evaluateDefinition defers env expressions to runtime (leaves raw)
       const result = await evalService.evaluateDefinition(model, type);
 
-      assertEquals(result.definition.globalArguments.from_env, "test-value");
-      assertEquals(result.definition.globalArguments.number_as_string, "42");
+      assertEquals(
+        result.definition.globalArguments.from_env,
+        "${{ env.CEL_TEST_VAR }}",
+      );
+      assertEquals(
+        result.definition.globalArguments.number_as_string,
+        "${{ env.CEL_TEST_NUMBER }}",
+      );
+
+      // Resolve runtime expressions (env + vault) — this is the runtime phase
+      const resolved = await evalService.resolveRuntimeExpressionsInDefinition(
+        result.definition,
+      );
+
+      assertEquals(resolved.globalArguments.from_env, "test-value");
+      assertEquals(resolved.globalArguments.number_as_string, "42");
     } finally {
       Deno.env.delete("CEL_TEST_VAR");
       Deno.env.delete("CEL_TEST_NUMBER");

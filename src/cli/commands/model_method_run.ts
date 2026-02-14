@@ -235,9 +235,9 @@ export const modelMethodRunCommand = new Command()
         }
       }
 
-      // Resolve vault expressions at runtime (never persisted)
+      // Resolve runtime expressions (vault and env) at runtime (never persisted)
       evaluatedDefinition = await evaluationService
-        .resolveVaultExpressionsInDefinition(evaluatedDefinition);
+        .resolveRuntimeExpressionsInDefinition(evaluatedDefinition);
 
       runLogger.info("Executing method {method}", { method: methodName });
 
