@@ -362,6 +362,87 @@ Deno.test("Data.create with garbage collection as duration", () => {
   assertEquals(data.garbageCollection, "30d");
 });
 
+Deno.test("Data.create rejects name with '..'", () => {
+  const owner = createTestOwner();
+  assertThrows(
+    () =>
+      Data.create({
+        name: "../escape",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { type: "test" },
+        ownerDefinition: owner,
+      }),
+    Error,
+    "path traversal",
+  );
+});
+
+Deno.test("Data.create rejects name with '/'", () => {
+  const owner = createTestOwner();
+  assertThrows(
+    () =>
+      Data.create({
+        name: "foo/bar",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { type: "test" },
+        ownerDefinition: owner,
+      }),
+    Error,
+    "path traversal",
+  );
+});
+
+Deno.test("Data.create rejects name with '\\'", () => {
+  const owner = createTestOwner();
+  assertThrows(
+    () =>
+      Data.create({
+        name: "foo\\bar",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { type: "test" },
+        ownerDefinition: owner,
+      }),
+    Error,
+    "path traversal",
+  );
+});
+
+Deno.test("Data.create rejects name with null byte", () => {
+  const owner = createTestOwner();
+  assertThrows(
+    () =>
+      Data.create({
+        name: "foo\0bar",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { type: "test" },
+        ownerDefinition: owner,
+      }),
+    Error,
+    "path traversal",
+  );
+});
+
+Deno.test("Data.create accepts valid names with hyphens, dots, and underscores", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "my-data.v2_final",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.name, "my-data.v2_final");
+});
+
 Deno.test("Data.create defaults streaming to false", () => {
   const owner = createTestOwner();
   const data = Data.create({

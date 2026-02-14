@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join, relative } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -938,7 +938,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   private getModelDataDir(type: ModelType, modelId: string): string {
-    return join(this.getTypeDir(type), modelId);
+    const typeDir = this.getTypeDir(type);
+    const result = join(typeDir, modelId);
+    this.assertPathContained(result, typeDir, `modelId "${modelId}"`);
+    return result;
   }
 
   private getDataNameDir(
@@ -946,7 +949,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): string {
-    return join(this.getModelDataDir(type, modelId), dataName);
+    const modelDir = this.getModelDataDir(type, modelId);
+    const result = join(modelDir, dataName);
+    this.assertPathContained(result, modelDir, `dataName "${dataName}"`);
+    return result;
+  }
+
+  private assertPathContained(
+    path: string,
+    expectedParent: string,
+    context: string,
+  ): void {
+    const resolvedPath = resolve(path);
+    const resolvedParent = resolve(expectedParent);
+    if (
+      resolvedPath !== resolvedParent &&
+      !resolvedPath.startsWith(resolvedParent + "/")
+    ) {
+      throw new Error(
+        `Path traversal detected: ${context} resolves outside expected directory`,
+      );
+    }
   }
 
   private getMetadataPath(
