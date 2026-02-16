@@ -309,13 +309,17 @@ Deno.test("Definition.computeHash returns consistent hash", async () => {
   assertEquals(hash1.length, 64); // SHA-256 hex string length
 });
 
-Deno.test("Definition.computeHash returns different hash for different content", async () => {
+Deno.test("Definition.computeHash returns different hash for different nested content", async () => {
+  const fixedId = "550e8400-e29b-41d4-a716-446655440000";
+
   const definition1 = Definition.create({
+    id: fixedId,
     name: "test-definition",
     globalArguments: { message: "hello" },
   });
 
   const definition2 = Definition.create({
+    id: fixedId,
     name: "test-definition",
     globalArguments: { message: "world" },
   });
@@ -323,8 +327,7 @@ Deno.test("Definition.computeHash returns different hash for different content",
   const hash1 = await definition1.computeHash();
   const hash2 = await definition2.computeHash();
 
-  // Different content should produce different hashes
-  // Note: IDs will be different, so hashes will definitely differ
+  // Different nested content should produce different hashes
   assertEquals(hash1 !== hash2, true);
 });
 

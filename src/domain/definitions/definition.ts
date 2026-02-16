@@ -384,11 +384,19 @@ export class Definition {
    */
   async computeHash(): Promise<string> {
     const { type: _type, typeVersion: _tv, ...contentData } = this.toData();
-    // Sort keys for consistent hashing
-    const sortedData = JSON.stringify(
-      contentData,
-      Object.keys(contentData).sort(),
-    );
+    // Recursively sort keys for consistent hashing
+    const sortedData = JSON.stringify(contentData, (_key, value) => {
+      if (
+        value !== null && typeof value === "object" && !Array.isArray(value)
+      ) {
+        const sorted: Record<string, unknown> = {};
+        for (const k of Object.keys(value).sort()) {
+          sorted[k] = value[k];
+        }
+        return sorted;
+      }
+      return value;
+    });
     const encoder = new TextEncoder();
     const dataBuffer = encoder.encode(sortedData);
     const hashBuffer = await crypto.subtle.digest("SHA-256", dataBuffer);
