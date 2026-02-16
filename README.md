@@ -15,7 +15,7 @@ humans. All the data lives in the `.swamp/` (the swamp).
 > [bug reports and feature requests](https://github.com/systeminit/swamp/issues)
 > and we'll take care of the rest. Have fun with it.
 
-Come join the [swamp party on discord](https://discord.gg/system-init).
+Come join the [swamp party on discord](https://discord.gg/swamp-club).
 
 ## Getting Started
 
