@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { ensureDir } from "@std/fs";
 import { join, relative, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
@@ -546,13 +545,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
     }
 
-    // Determine the new version
-    const versions = await this.listVersions(type, modelId, data.name);
-    const newVersion = versions.length > 0 ? Math.max(...versions) + 1 : 1;
-
-    // Create the version directory
-    const versionDir = this.getPath(type, modelId, data.name, newVersion);
-    await ensureDir(versionDir);
+    // Atomically allocate a new version directory
+    const { version: newVersion } = await this.atomicAllocateVersionDir(
+      type,
+      modelId,
+      data.name,
+    );
 
     // Create the data with updated version and size
     const dataToSave = data.withNewVersion({
@@ -780,13 +778,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
     }
 
-    // Determine the new version
-    const versions = await this.listVersions(type, modelId, data.name);
-    const newVersion = versions.length > 0 ? Math.max(...versions) + 1 : 1;
-
-    // Create the version directory
-    const versionDir = this.getPath(type, modelId, data.name, newVersion);
-    await ensureDir(versionDir);
+    // Atomically allocate a new version directory
+    const { version: newVersion } = await this.atomicAllocateVersionDir(
+      type,
+      modelId,
+      data.name,
+    );
 
     const contentPath = this.getContentPath(
       type,
@@ -955,6 +952,41 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const result = join(modelDir, dataName);
     this.assertPathContained(result, modelDir, `dataName "${dataName}"`);
     return result;
+  }
+
+  /**
+   * Atomically allocates a new version directory using mkdir as a claim mechanism.
+   * On collision (AlreadyExists), increments the version and retries.
+   */
+  private async atomicAllocateVersionDir(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<{ version: number; versionDir: string }> {
+    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    await Deno.mkdir(dataNameDir, { recursive: true });
+
+    const versions = await this.listVersions(type, modelId, dataName);
+    let nextVersion = versions.length > 0 ? Math.max(...versions) + 1 : 1;
+
+    const maxRetries = 100;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const versionDir = this.getPath(type, modelId, dataName, nextVersion);
+      try {
+        await Deno.mkdir(versionDir);
+        return { version: nextVersion, versionDir };
+      } catch (error) {
+        if (error instanceof Deno.errors.AlreadyExists) {
+          nextVersion++;
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new Error(
+      `Failed to allocate version for "${dataName}" after ${maxRetries} retries`,
+    );
   }
 
   private assertPathContained(
