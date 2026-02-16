@@ -85,6 +85,19 @@ main() {
 
   section "Installation of '$bin' release '$version' complete"
   indent "$dest/$bin" --version
+  echo
+  info "Next steps:"
+  info ""
+  info "  1. Initialize a swamp repository:"
+  info "       cd your-project && swamp repo init"
+  info ""
+  info "  2. Set up shell completions (optional):"
+  info "       swamp completions --help"
+  info ""
+  info "  3. Join the community:"
+  info "       https://discord.gg/swamp-club"
+  info ""
+  info "Learn more: https://github.com/systeminit/swamp"
 }
 
 parse_cli_args() {
@@ -295,7 +308,7 @@ trap_exit() {
       warn "$msg" >&2
       warn "If you need help, please join us on our discord!"
       warn ""
-      warn "    https://discord.gg/system-init"
+      warn "    https://discord.gg/swamp-club"
     } >&2
   fi
   trap_cleanups
@@ -523,7 +536,7 @@ download() {
     info "Downloading $_url to $_dst (curl)"
     _orig_flags="$-"
     set +e
-    
+
     # Check for S3 redirect metadata first
     _redirect_url="$(curl -sSI "$_url" | grep -i "x-amz-meta-x-amz-website-redirect-location" | cut -d' ' -f2- | tr -d '\r\n')"
     if [ -n "$_redirect_url" ]; then

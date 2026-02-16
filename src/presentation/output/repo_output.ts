@@ -79,6 +79,20 @@ export function renderRepoInit(data: RepoInitData, mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {
+    // ASCII banner for the swamp club
+    console.log("");
+    console.log("    ███████╗██╗    ██╗ █████╗ ███╗   ███╗██████╗");
+    console.log("    ██╔════╝██║    ██║██╔══██╗████╗ ████║██╔══██╗");
+    console.log("    ███████╗██║ █╗ ██║███████║██╔████╔██║██████╔╝");
+    console.log("    ╚════██║██║███╗██║██╔══██║██║╚██╔╝██║██╔═══╝");
+    console.log("    ███████║╚███╔███╔╝██║  ██║██║ ╚═╝ ██║██║");
+    console.log("    ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝");
+    console.log("");
+    console.log("    ╔═══════════════════════════════════════════╗");
+    console.log("    ║  WELCOME TO THE CLUB                      ║");
+    console.log("    ║  for hackers, by hackers                  ║");
+    console.log("    ╚═══════════════════════════════════════════╝");
+    console.log("");
     logger.info`Initialized swamp repository at ${data.path}`;
   }
 }

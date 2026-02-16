@@ -314,7 +314,7 @@ function Main {
         Write-Err "Installation failed: $_"
         Write-Info ""
         Write-Warn "If you need help, please join us on our Discord!"
-        Write-Warn "    https://discord.gg/system-init"
+        Write-Warn "    https://discord.gg/swamp-club"
         exit 1
     } finally {
         # Cleanup
