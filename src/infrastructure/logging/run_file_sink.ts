@@ -112,7 +112,12 @@ export class RunFileSink {
 
       for (const writer of this.writers.values()) {
         if (categoryMatchesPrefix(record.category, writer.prefix)) {
-          writer.fd.write(writer.encoder.encode(line)).catch(() => {});
+          try {
+            writer.fd.writeSync(writer.encoder.encode(line));
+          } catch {
+            // Logging infrastructure must not throw — a broken log file
+            // should never crash a running workflow.
+          }
         }
       }
     };

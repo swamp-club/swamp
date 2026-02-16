@@ -60,9 +60,6 @@ Deno.test("RunFileSink writes log records to registered file", async () => {
       ),
     );
 
-    // Allow async write to complete
-    await new Promise((r) => setTimeout(r, 50));
-
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "hello world");
 
@@ -79,8 +76,6 @@ Deno.test("RunFileSink ignores records that don't match any prefix", async () =>
 
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["workflow", "run", "wf1"], "should not appear"));
-
-    await new Promise((r) => setTimeout(r, 50));
 
     const content = await Deno.readTextFile(logPath);
     assertEquals(content, "");
@@ -104,8 +99,6 @@ Deno.test("RunFileSink writes to all matching prefixes", async () => {
     );
     sinkFn(makeRecord(["model", "method", "run", "other-model"], "broad"));
 
-    await new Promise((r) => setTimeout(r, 50));
-
     const specificContent = await Deno.readTextFile(specificPath);
     assertStringIncludes(specificContent, "specific");
 
@@ -128,13 +121,11 @@ Deno.test("RunFileSink unregister closes file and stops writing", async () => {
 
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["model", "method", "run", "my-model"], "before"));
-    await new Promise((r) => setTimeout(r, 50));
 
     sink.unregister(["model", "method", "run", "my-model"]);
 
     // After unregister, records should not be written
     sinkFn(makeRecord(["model", "method", "run", "my-model"], "after"));
-    await new Promise((r) => setTimeout(r, 50));
 
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "before");
@@ -151,7 +142,6 @@ Deno.test("RunFileSink creates parent directories", async () => {
 
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["workflow", "run", "wf1"], "nested dir test"));
-    await new Promise((r) => setTimeout(r, 50));
 
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "nested dir test");
@@ -177,8 +167,6 @@ Deno.test("RunFileSink empty prefix matches all categories", async () => {
     );
     sinkFn(makeRecord(["something", "else"], "other log"));
 
-    await new Promise((r) => setTimeout(r, 50));
-
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "workflow log");
     assertStringIncludes(content, "model log");
@@ -200,7 +188,6 @@ Deno.test("RunFileSink dispose closes all writers", async () => {
     // After dispose, writing should silently fail (no match)
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["a"], "should not write"));
-    await new Promise((r) => setTimeout(r, 50));
 
     // Files should be empty since no records matched after dispose
     const contentA = await Deno.readTextFile(join(dir, "a.log"));
