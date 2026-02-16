@@ -236,3 +236,39 @@ Deno.test("CyclicDependencyError contains cycle path", () => {
     }
   }
 });
+
+Deno.test("sorts forEach-expanded nodes where each expansion depends on all expansions of predecessor", () => {
+  // Simulates two forEach steps: deploy and smoke-test, each expanded over [dev, staging, prod]
+  // smoke-test-* should depend on ALL deploy-* expansions
+  const nodes: GraphNode[] = [
+    { name: "deploy-dev", weight: 0, dependencies: [] },
+    { name: "deploy-staging", weight: 0, dependencies: [] },
+    { name: "deploy-prod", weight: 0, dependencies: [] },
+    {
+      name: "smoke-test-dev",
+      weight: 0,
+      dependencies: ["deploy-dev", "deploy-staging", "deploy-prod"],
+    },
+    {
+      name: "smoke-test-staging",
+      weight: 0,
+      dependencies: ["deploy-dev", "deploy-staging", "deploy-prod"],
+    },
+    {
+      name: "smoke-test-prod",
+      weight: 0,
+      dependencies: ["deploy-dev", "deploy-staging", "deploy-prod"],
+    },
+  ];
+
+  const result = service.sort(nodes);
+  assertEquals(result.levels.length, 2);
+  assertEquals(
+    result.levels[0],
+    ["deploy-dev", "deploy-prod", "deploy-staging"],
+  );
+  assertEquals(
+    result.levels[1],
+    ["smoke-test-dev", "smoke-test-prod", "smoke-test-staging"],
+  );
+});

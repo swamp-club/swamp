@@ -884,14 +884,12 @@ export class WorkflowExecutionService {
             effectiveNodes.push({
               name: exp.expandedName,
               weight: node.weight,
-              // Map dependencies to expanded step names
-              dependencies: node.dependencies.map((dep) => {
+              // Map dependencies to all expanded step names
+              dependencies: node.dependencies.flatMap((dep) => {
                 const depExpanded = expandedStepsMap!.get(dep);
-                // For now, depend on all expansions of the dependency
-                // (future: support forEach-aware dependency mapping)
                 return depExpanded && depExpanded.length > 0
-                  ? depExpanded[0].expandedName
-                  : dep;
+                  ? depExpanded.map((d) => d.expandedName)
+                  : [dep];
               }),
             });
           }

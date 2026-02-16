@@ -473,6 +473,143 @@ Deno.test("CLI: workflow with forEach over empty object succeeds", async () => {
   });
 });
 
+// forEach-to-forEach dependencies
+
+Deno.test("CLI: workflow with forEach step depending on another forEach step", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    await createShellModel(repoDir, "test-model");
+
+    // Step B (smoke-test) depends on step A (deploy), both use forEach
+    // All deploy expansions must complete before any smoke-test expansion starts
+    const workflowData = {
+      id: crypto.randomUUID(),
+      name: "test-foreach-to-foreach-deps",
+      version: 1,
+      inputs: {
+        properties: {
+          environments: {
+            type: "array",
+            items: { type: "string" },
+          },
+        },
+        required: ["environments"],
+      },
+      jobs: [
+        {
+          name: "deploy-and-test",
+          steps: [
+            {
+              name: "deploy-${{self.env}}",
+              forEach: {
+                item: "env",
+                in: "${{ inputs.environments }}",
+              },
+              task: {
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "execute",
+              },
+              dependsOn: [],
+              weight: 0,
+            },
+            {
+              name: "smoke-test-${{self.env}}",
+              forEach: {
+                item: "env",
+                in: "${{ inputs.environments }}",
+              },
+              task: {
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "execute",
+              },
+              dependsOn: [
+                {
+                  step: "deploy-${{self.env}}",
+                  condition: { type: "succeeded" },
+                },
+              ],
+              weight: 0,
+            },
+          ],
+          dependsOn: [],
+          weight: 0,
+        },
+      ],
+    };
+
+    const workflowDir = join(repoDir, ".swamp/workflows");
+    await ensureDir(workflowDir);
+    await Deno.writeTextFile(
+      join(workflowDir, `workflow-${workflowData.id}.yaml`),
+      stringifyYaml(workflowData as Record<string, unknown>),
+    );
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "test-foreach-to-foreach-deps",
+        "--repo-dir",
+        repoDir,
+        "--input",
+        '{"environments": ["dev", "staging", "prod"]}',
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
+
+    const output = JSON.parse(result.stdout);
+    const job = output.jobs?.find(
+      (j: { name: string }) => j.name === "deploy-and-test",
+    );
+
+    // The output includes both template step names and expanded step names
+    const steps = job?.steps as { name: string; status: string }[];
+
+    // Filter to expanded steps only (exclude template names with ${{ }})
+    const expandedSteps = steps.filter(
+      (s) => !s.name.includes("${{"),
+    );
+
+    // Should have 6 expanded steps: 3 deploys + 3 smoke-tests
+    const expandedNames = expandedSteps.map((s) => s.name);
+    assertEquals(
+      expandedSteps.length,
+      6,
+      `Expected 6 expanded steps, got ${expandedSteps.length}: ${
+        JSON.stringify(expandedNames)
+      }`,
+    );
+
+    // All deploy and smoke-test expansions should be present
+    for (const env of ["dev", "staging", "prod"]) {
+      assertEquals(
+        expandedNames.includes(`deploy-${env}`),
+        true,
+        `Missing deploy-${env}`,
+      );
+      assertEquals(
+        expandedNames.includes(`smoke-test-${env}`),
+        true,
+        `Missing smoke-test-${env}`,
+      );
+    }
+
+    // All expanded steps should have succeeded (proves dependencies resolved correctly)
+    for (const step of expandedSteps) {
+      assertEquals(
+        step.status,
+        "succeeded",
+        `Expected ${step.name} to succeed but got ${step.status}`,
+      );
+    }
+  });
+});
+
 // Mixed forEach and regular steps
 
 Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
