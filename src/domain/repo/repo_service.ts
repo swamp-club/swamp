@@ -27,14 +27,37 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { SwampVersion } from "./swamp_version.ts";
 import {
+  type AiTool,
   type RepoMarkerData,
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { UserError } from "../errors.ts";
 
-const CLAUDE_MD_FILENAME = "CLAUDE.md";
+export type { AiTool } from "../../infrastructure/persistence/repo_marker_repository.ts";
+
 const GITIGNORE_FILENAME = ".gitignore";
+
+const SKILL_DIRS: Record<AiTool, string> = {
+  claude: ".claude/skills",
+  cursor: ".cursor/skills",
+  opencode: ".agents/skills",
+  codex: ".agents/skills",
+};
+
+const INSTRUCTIONS_FILES: Record<AiTool, string> = {
+  claude: "CLAUDE.md",
+  cursor: ".cursor/rules/swamp.mdc",
+  opencode: "AGENTS.md",
+  codex: "AGENTS.md",
+};
+
+const GITIGNORE_TOOL_ENTRIES: Record<AiTool, string> = {
+  claude: "# Claude Code configuration (managed by swamp)\n.claude/",
+  cursor: "# Cursor skills (managed by swamp)\n.cursor/skills/",
+  opencode: "# Agent skills (managed by swamp)\n.agents/skills/",
+  codex: "# Agent skills (managed by swamp)\n.agents/skills/",
+};
 
 /**
  * Result of a repository initialization operation.
@@ -44,9 +67,10 @@ export interface RepoInitResult {
   version: string;
   initializedAt: string;
   skillsCopied: string[];
-  claudeMdCreated: boolean;
-  claudeSettingsCreated: boolean;
+  instructionsFileCreated: boolean;
+  settingsCreated: boolean;
   gitignoreCreated: boolean;
+  tool: AiTool;
 }
 
 /**
@@ -58,7 +82,8 @@ export interface RepoUpgradeResult {
   newVersion: string;
   upgradedAt: string;
   skillsUpdated: string[];
-  claudeSettingsUpdated: boolean;
+  settingsUpdated: boolean;
+  tool: AiTool;
 }
 
 /**
@@ -66,6 +91,14 @@ export interface RepoUpgradeResult {
  */
 export interface RepoInitOptions {
   force?: boolean;
+  tool?: AiTool;
+}
+
+/**
+ * Options for upgrade.
+ */
+export interface RepoUpgradeOptions {
+  tool?: AiTool;
 }
 
 /**
@@ -100,6 +133,7 @@ export class RepoService {
     repoPath: RepoPath,
     options: RepoInitOptions = {},
   ): Promise<RepoInitResult> {
+    const tool = options.tool ?? "claude";
     const isAlreadyInit = await this.isInitialized(repoPath);
 
     if (isAlreadyInit && !options.force) {
@@ -111,37 +145,44 @@ export class RepoService {
     // Ensure the directory exists
     await ensureDir(repoPath.value);
 
-    // Create marker file
+    // Create marker file with tool choice
     const markerData = this.markerRepo.createInitMarker(this.currentVersion);
+    markerData.tool = tool;
     await this.markerRepo.write(repoPath, markerData);
 
     // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
 
-    // Copy skills
-    const skillsDir = join(repoPath.value, ".claude", "skills");
+    // Copy skills to tool-appropriate directory
+    const skillsDir = join(repoPath.value, SKILL_DIRS[tool]);
     await this.skillAssets.copySkillsTo(skillsDir);
     const skillsCopied = this.skillAssets.getSkillNames();
 
-    // Create CLAUDE.md if it doesn't exist
-    const claudeMdCreated = await this.createClaudeMdIfNotExists(repoPath);
+    // Create instructions file if it doesn't exist
+    const instructionsFileCreated = await this
+      .createInstructionsFileIfNotExists(repoPath, tool);
 
-    // Create Claude settings.local.json if it doesn't exist
-    const claudeSettingsCreated = await this.createClaudeSettingsIfNotExists(
-      repoPath,
-    );
+    // Create Claude settings.local.json only for Claude
+    let settingsCreated = false;
+    if (tool === "claude") {
+      settingsCreated = await this.createClaudeSettingsIfNotExists(repoPath);
+    }
 
     // Create .gitignore if it doesn't exist
-    const gitignoreCreated = await this.createGitignoreIfNotExists(repoPath);
+    const gitignoreCreated = await this.createGitignoreIfNotExists(
+      repoPath,
+      tool,
+    );
 
     return {
       path: repoPath.value,
       version: this.currentVersion.toString(),
       initializedAt: markerData.initializedAt,
       skillsCopied,
-      claudeMdCreated,
-      claudeSettingsCreated,
+      instructionsFileCreated,
+      settingsCreated,
       gitignoreCreated,
+      tool,
     };
   }
 
@@ -149,9 +190,13 @@ export class RepoService {
    * Upgrades an existing swamp repository.
    *
    * @param repoPath - The path to upgrade
+   * @param options - Upgrade options
    * @throws Error if not initialized
    */
-  async upgrade(repoPath: RepoPath): Promise<RepoUpgradeResult> {
+  async upgrade(
+    repoPath: RepoPath,
+    options: RepoUpgradeOptions = {},
+  ): Promise<RepoUpgradeResult> {
     const existingMarker = await this.markerRepo.read(repoPath);
 
     if (!existingMarker) {
@@ -160,22 +205,31 @@ export class RepoService {
       );
     }
 
+    // Determine tool: CLI override > stored marker > default "claude"
+    const tool = options.tool ?? existingMarker.tool ?? "claude";
     const previousVersion = existingMarker.swampVersion;
 
-    // Update marker with new version
+    // Update marker with new version and tool
     const updatedMarker = this.markerRepo.createUpgradeMarker(
       existingMarker,
       this.currentVersion,
     );
+    updatedMarker.tool = tool;
     await this.markerRepo.write(repoPath, updatedMarker);
 
-    // Update skills
-    const skillsDir = join(repoPath.value, ".claude", "skills");
+    // Update skills in tool-appropriate directory
+    const skillsDir = join(repoPath.value, SKILL_DIRS[tool]);
     await this.skillAssets.copySkillsTo(skillsDir);
     const skillsUpdated = this.skillAssets.getSkillNames();
 
-    // Update Claude settings.local.json (merge new permissions)
-    const claudeSettingsUpdated = await this.updateClaudeSettings(repoPath);
+    // Create instructions file if it doesn't exist (e.g., when switching tools)
+    await this.createInstructionsFileIfNotExists(repoPath, tool);
+
+    // Update Claude settings only for Claude tool
+    let settingsUpdated = false;
+    if (tool === "claude") {
+      settingsUpdated = await this.updateClaudeSettings(repoPath);
+    }
 
     // createUpgradeMarker always sets upgradedAt, but TypeScript doesn't know this
     if (!updatedMarker.upgradedAt) {
@@ -190,7 +244,8 @@ export class RepoService {
       newVersion: this.currentVersion.toString(),
       upgradedAt: updatedMarker.upgradedAt,
       skillsUpdated,
-      claudeSettingsUpdated,
+      settingsUpdated,
+      tool,
     };
   }
 
@@ -202,22 +257,26 @@ export class RepoService {
   }
 
   /**
-   * Creates CLAUDE.md if it doesn't already exist.
+   * Creates the tool-appropriate instructions file if it doesn't already exist.
    */
-  private async createClaudeMdIfNotExists(
+  private async createInstructionsFileIfNotExists(
     repoPath: RepoPath,
+    tool: AiTool,
   ): Promise<boolean> {
-    const claudeMdPath = join(repoPath.value, CLAUDE_MD_FILENAME);
+    const filePath = join(repoPath.value, INSTRUCTIONS_FILES[tool]);
 
     try {
-      await Deno.stat(claudeMdPath);
+      await Deno.stat(filePath);
       // File exists, don't overwrite
       return false;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        // Create the file
-        const content = this.generateClaudeMdContent();
-        await Deno.writeTextFile(claudeMdPath, content);
+        // Ensure parent directory exists (for cursor: .cursor/rules/)
+        const parentDir = join(filePath, "..");
+        await ensureDir(parentDir);
+
+        const content = this.generateInstructionsContent(tool);
+        await Deno.writeTextFile(filePath, content);
         return true;
       }
       throw error;
@@ -225,10 +284,10 @@ export class RepoService {
   }
 
   /**
-   * Generates the content for CLAUDE.md.
+   * Generates the instructions content for the given tool.
    */
-  private generateClaudeMdContent(): string {
-    return `# Project
+  private generateInstructionsContent(tool: AiTool): string {
+    const body = `# Project
 
 This repository is managed with [swamp](https://github.com/systeminit/swamp).
 
@@ -262,6 +321,16 @@ Always start by using the \`swamp-model\` skill to work with swamp models.
 
 Use \`swamp --help\` to see available commands.
 `;
+
+    if (tool === "cursor") {
+      return `---
+description: Swamp automation rules
+alwaysApply: true
+---
+${body}`;
+    }
+
+    return body;
   }
 
   /**
@@ -269,6 +338,7 @@ Use \`swamp --help\` to see available commands.
    */
   private async createGitignoreIfNotExists(
     repoPath: RepoPath,
+    tool: AiTool,
   ): Promise<boolean> {
     const gitignorePath = join(repoPath.value, GITIGNORE_FILENAME);
 
@@ -279,7 +349,7 @@ Use \`swamp --help\` to see available commands.
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         // Create the file
-        const content = this.generateGitignoreContent();
+        const content = this.generateGitignoreContent(tool);
         await Deno.writeTextFile(gitignorePath, content);
         return true;
       }
@@ -290,7 +360,7 @@ Use \`swamp --help\` to see available commands.
   /**
    * Generates the content for .gitignore.
    */
-  private generateGitignoreContent(): string {
+  private generateGitignoreContent(tool: AiTool): string {
     return `# Swamp managed defaults
 # Feel free to modify this file to suit your needs
 
@@ -300,8 +370,7 @@ Use \`swamp --help\` to see available commands.
 # Encryption keyfile (NEVER commit - allows decrypting secrets)
 .swamp/secrets/keyfile
 
-# Claude Code configuration (managed by swamp)
-.claude/
+${GITIGNORE_TOOL_ENTRIES[tool]}
 `;
   }
 

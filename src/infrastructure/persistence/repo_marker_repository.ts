@@ -24,6 +24,11 @@ import type { RepoPath } from "../../domain/repo/repo_path.ts";
 import { swampMarkerPath } from "./paths.ts";
 
 /**
+ * The AI coding tool to configure skills and instructions for.
+ */
+export type AiTool = "claude" | "cursor" | "opencode" | "codex";
+
+/**
  * Data structure for the .swamp.yaml marker file.
  */
 export interface RepoMarkerData {
@@ -34,6 +39,7 @@ export interface RepoMarkerData {
   repoId?: string;
   telemetryEndpoint?: string;
   telemetryKeepFlushed?: boolean;
+  tool?: AiTool;
 }
 
 /**
