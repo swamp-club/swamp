@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { resolveModelsDir } from "./mod.ts";
+import { isTelemetryDisabledByConfig, resolveModelsDir } from "./mod.ts";
 
 Deno.test("resolveModelsDir returns default 'extensions/models' when no config", () => {
   // Ensure env var is not set
@@ -107,4 +107,34 @@ Deno.test("resolveModelsDir env var takes priority over default", () => {
       Deno.env.delete("SWAMP_MODELS_DIR");
     }
   }
+});
+
+Deno.test("isTelemetryDisabledByConfig returns false for null marker", () => {
+  assertEquals(isTelemetryDisabledByConfig(null), false);
+});
+
+Deno.test("isTelemetryDisabledByConfig returns false when field is absent", () => {
+  const marker = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01T00:00:00Z",
+  };
+  assertEquals(isTelemetryDisabledByConfig(marker), false);
+});
+
+Deno.test("isTelemetryDisabledByConfig returns false when field is false", () => {
+  const marker = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01T00:00:00Z",
+    telemetryDisabled: false,
+  };
+  assertEquals(isTelemetryDisabledByConfig(marker), false);
+});
+
+Deno.test("isTelemetryDisabledByConfig returns true when field is true", () => {
+  const marker = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01T00:00:00Z",
+    telemetryDisabled: true,
+  };
+  assertEquals(isTelemetryDisabledByConfig(marker), true);
 });

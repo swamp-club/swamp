@@ -225,6 +225,24 @@ Deno.test("RepoMarkerRepository.createUpgradeMarker preserves existing data", ()
   assertEquals(isNaN(date.getTime()), false);
 });
 
+Deno.test("RepoMarkerRepository.write and read roundtrip with telemetryDisabled", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const original = {
+      swampVersion: "1.2.3",
+      initializedAt: "2024-01-15T10:30:00.000Z",
+      telemetryDisabled: true,
+    };
+
+    await repo.write(repoPath, original);
+    const result = await repo.read(repoPath);
+
+    assertEquals(result, original);
+  });
+});
+
 Deno.test("RepoMarkerRepository.createUpgradeMarker always sets upgradedAt", () => {
   const repo = new RepoMarkerRepository();
   const existing = {

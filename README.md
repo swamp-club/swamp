@@ -168,6 +168,60 @@ This means you get the feature you asked for, maintained over time, without
 having to worry about keeping a fork in sync. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the full details.
 
+## Telemetry
+
+Swamp collects anonymous usage telemetry to help us understand which commands
+are used, how long they take, and what errors occur. All user-identifiable
+values are redacted before transmission — nothing sensitive is ever sent.
+
+Here is a complete example of a telemetry event:
+
+```json
+{
+  "event": "cli_invocation",
+  "distinct_id": "a3f1b2c4-5678-9abc-def0-1234567890ab",
+  "properties": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "invocation": {
+      "command": "model",
+      "subcommand": "create",
+      "args": ["prompt", "<REDACTED>"],
+      "optionKeys": ["--force"],
+      "globalOptions": ["--json"]
+    },
+    "result": {
+      "status": "success",
+      "exitCode": 0
+    },
+    "startedAt": "2026-02-16T10:00:00.000Z",
+    "completedAt": "2026-02-16T10:00:01.234Z",
+    "durationMs": 1234,
+    "swampVersion": "0.13.0",
+    "denoVersion": "2.1.0",
+    "platform": "linux"
+  }
+}
+```
+
+Note that positional arguments containing user data (model names, file paths,
+queries) are replaced with `<REDACTED>`. Only categorical values defined by
+swamp itself (like model types) are recorded. Option values are never recorded —
+only the option keys.
+
+### Disabling Telemetry
+
+Per-invocation:
+
+```bash
+swamp --no-telemetry workflow run my-workflow
+```
+
+Permanently for a repository — add to `.swamp.yaml`:
+
+```yaml
+telemetryDisabled: true
+```
+
 ## License
 
 Swamp is licensed under the [GNU Affero General Public License v3.0](COPYING)

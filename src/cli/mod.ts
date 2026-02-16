@@ -80,6 +80,17 @@ export function resolveModelsDir(marker: RepoMarkerData | null): string {
 }
 
 /**
+ * Checks whether telemetry is disabled via .swamp.yaml config.
+ *
+ * @internal Exported for testing
+ */
+export function isTelemetryDisabledByConfig(
+  marker: RepoMarkerData | null,
+): boolean {
+  return marker?.telemetryDisabled === true;
+}
+
+/**
  * Load user models from configured directory.
  */
 async function loadUserModels(): Promise<void> {
@@ -144,6 +155,10 @@ async function initTelemetryService(): Promise<TelemetryContext | null> {
     const marker = await markerRepo.read(repoPath);
     if (!marker) {
       return null; // Not in a swamp repo
+    }
+
+    if (isTelemetryDisabledByConfig(marker)) {
+      return null;
     }
 
     // Lazy-migrate repoId if missing

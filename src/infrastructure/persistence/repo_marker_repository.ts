@@ -38,6 +38,7 @@ export interface RepoMarkerData {
   modelsDir?: string;
   repoId?: string;
   telemetryEndpoint?: string;
+  telemetryDisabled?: boolean;
   telemetryKeepFlushed?: boolean;
   tool?: AiTool;
 }
