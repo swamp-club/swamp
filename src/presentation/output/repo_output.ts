@@ -30,9 +30,10 @@ export interface RepoInitData {
   version: string;
   initializedAt: string;
   skillsCopied: string[];
-  claudeMdCreated: boolean;
-  claudeSettingsCreated: boolean;
+  instructionsFileCreated: boolean;
+  settingsCreated: boolean;
   gitignoreCreated: boolean;
+  tool: string;
 }
 
 /**
@@ -44,7 +45,8 @@ export interface RepoUpgradeData {
   newVersion: string;
   upgradedAt: string;
   skillsUpdated: string[];
-  claudeSettingsUpdated: boolean;
+  settingsUpdated: boolean;
+  tool: string;
 }
 
 /**
@@ -93,7 +95,8 @@ export function renderRepoInit(data: RepoInitData, mode: OutputMode): void {
     console.log("    ║  for hackers, by hackers                  ║");
     console.log("    ╚═══════════════════════════════════════════╝");
     console.log("");
-    logger.info`Initialized swamp repository at ${data.path}`;
+    logger
+      .info`Initialized swamp repository at ${data.path} (tool: ${data.tool})`;
   }
 }
 
@@ -105,7 +108,7 @@ export function renderRepoUpgrade(
     console.log(JSON.stringify(data, null, 2));
   } else {
     logger
-      .info`Upgraded swamp repository: ${data.previousVersion} \u2192 ${data.newVersion}`;
+      .info`Upgraded swamp repository: ${data.previousVersion} \u2192 ${data.newVersion} (tool: ${data.tool})`;
   }
 }
 

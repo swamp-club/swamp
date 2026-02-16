@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Command } from "@cliffy/command";
+import { Command, EnumType } from "@cliffy/command";
 import {
   renderRepoInit,
   renderRepoUpgrade,
@@ -26,12 +26,14 @@ import {
 } from "../../presentation/output/repo_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { RepoService } from "../../domain/repo/repo_service.ts";
+import { type AiTool, RepoService } from "../../domain/repo/repo_service.ts";
 import { VERSION } from "./version.ts";
 import { repoIndexCommand } from "./repo_index.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+const aiToolType = new EnumType(["claude", "cursor", "opencode", "codex"]);
 
 // Exported for reuse by repoCommand default action
 export async function repoInitAction(
@@ -43,8 +45,9 @@ export async function repoInitAction(
 
   const repoPath = RepoPath.create(pathArg ?? ".");
   const service = new RepoService(VERSION);
+  const tool = (options.tool as AiTool) ?? "claude";
 
-  const result = await service.init(repoPath, { force: options.force });
+  const result = await service.init(repoPath, { force: options.force, tool });
 
   ctx.logger.debug`Repository initialized: ${result.path}`;
 
@@ -53,9 +56,10 @@ export async function repoInitAction(
     version: result.version,
     initializedAt: result.initializedAt,
     skillsCopied: result.skillsCopied,
-    claudeMdCreated: result.claudeMdCreated,
-    claudeSettingsCreated: result.claudeSettingsCreated,
+    instructionsFileCreated: result.instructionsFileCreated,
+    settingsCreated: result.settingsCreated,
     gitignoreCreated: result.gitignoreCreated,
+    tool: result.tool,
   };
 
   renderRepoInit(data, ctx.outputMode);
@@ -66,19 +70,31 @@ export const repoInitCommand = new Command()
   .description("Initialize a new swamp repository")
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
+  .type("aiTool", aiToolType)
+  .option(
+    "-t, --tool <tool:aiTool>",
+    "AI coding tool to configure for (claude, cursor, opencode, codex)",
+    { default: "claude" },
+  )
   .action(repoInitAction);
 
 export const repoUpgradeCommand = new Command()
   .description("Upgrade an existing swamp repository")
   .arguments("[path:string]")
+  .type("aiTool", aiToolType)
+  .option(
+    "-t, --tool <tool:aiTool>",
+    "Switch to a different AI coding tool",
+  )
   .action(async function (options: AnyOptions, pathArg?: string) {
     const ctx = createContext(options as GlobalOptions, ["repo", "upgrade"]);
     ctx.logger.debug`Upgrading repository at: ${pathArg ?? "."}`;
 
     const repoPath = RepoPath.create(pathArg ?? ".");
     const service = new RepoService(VERSION);
+    const tool = options.tool as AiTool | undefined;
 
-    const result = await service.upgrade(repoPath);
+    const result = await service.upgrade(repoPath, { tool });
 
     ctx.logger.debug`Repository upgraded: ${result.path}`;
 
@@ -88,7 +104,8 @@ export const repoUpgradeCommand = new Command()
       newVersion: result.newVersion,
       upgradedAt: result.upgradedAt,
       skillsUpdated: result.skillsUpdated,
-      claudeSettingsUpdated: result.claudeSettingsUpdated,
+      settingsUpdated: result.settingsUpdated,
+      tool: result.tool,
     };
 
     renderRepoUpgrade(data, ctx.outputMode);
@@ -100,6 +117,12 @@ export const repoCommand = new Command()
   .description("Initialize a swamp repository (or manage existing ones)")
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
+  .type("aiTool", aiToolType)
+  .option(
+    "-t, --tool <tool:aiTool>",
+    "AI coding tool to configure for (claude, cursor, opencode, codex)",
+    { default: "claude" },
+  )
   .action(repoInitAction)
   .command(
     "init",
@@ -108,6 +131,12 @@ export const repoCommand = new Command()
       .hidden()
       .arguments("[path:string]")
       .option("-f, --force", "Reinitialize if already exists")
+      .type("aiTool", aiToolType)
+      .option(
+        "-t, --tool <tool:aiTool>",
+        "AI coding tool to configure for (claude, cursor, opencode, codex)",
+        { default: "claude" },
+      )
       .action(repoInitAction),
   )
   .command("upgrade", repoUpgradeCommand)
