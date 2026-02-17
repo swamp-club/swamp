@@ -547,3 +547,257 @@ Deno.test("CLI: input validation reports multiple errors", async () => {
     assertStringIncludes(result.stderr, "count");
   });
 });
+
+// Test: Key-value input for model method run
+
+Deno.test("CLI: model method run with key=value input succeeds", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    await createShellModelWithInputs(repoDir, "shell-env-kv");
+
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "shell-env-kv",
+        "execute",
+        "--repo-dir",
+        repoDir,
+        "--input",
+        "environment=dev",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.modelName, "shell-env-kv");
+  });
+});
+
+// Test: Key-value input for workflow run
+
+Deno.test("CLI: workflow run with key=value input succeeds", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    await createShellModelWithInputs(repoDir, "echo-model-kv");
+
+    // Create workflow with inputs
+    const workflowData = {
+      id: crypto.randomUUID(),
+      name: "test-workflow-kv",
+      version: 1,
+      inputs: {
+        properties: {
+          "environment-one": {
+            type: "string",
+            enum: ["dev", "staging", "production"],
+            description: "Target environment",
+          },
+        },
+        required: ["environment-one"],
+      },
+      jobs: [
+        {
+          name: "echo-job",
+          steps: [
+            {
+              name: "first-env",
+              task: {
+                type: "model_method",
+                modelIdOrName: "echo-model-kv",
+                methodName: "execute",
+                inputs: {
+                  environment: '${{ inputs["environment-one"] }}',
+                },
+              },
+              dependsOn: [],
+              weight: 0,
+            },
+          ],
+          dependsOn: [],
+          weight: 0,
+        },
+      ],
+    };
+
+    const workflowDir = join(repoDir, ".swamp/workflows");
+    await ensureDir(workflowDir);
+    await Deno.writeTextFile(
+      join(workflowDir, `workflow-${workflowData.id}.yaml`),
+      stringifyYaml(workflowData as Record<string, unknown>),
+    );
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "test-workflow-kv",
+        "--repo-dir",
+        repoDir,
+        "--input",
+        "environment-one=dev",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
+  });
+});
+
+// Test: Multiple key=value inputs with schema coercion
+
+Deno.test("CLI: model method run with multiple k=v and type coercion", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    // Create model with number and string inputs
+    const modelData = {
+      type: "command/shell",
+      typeVersion: 1,
+      id: crypto.randomUUID(),
+      name: "coerce-model",
+      version: 1,
+      tags: {},
+      inputs: {
+        properties: {
+          name: { type: "string" },
+          count: { type: "integer" },
+        },
+        required: ["name", "count"],
+      },
+      globalArguments: {},
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo '${{ inputs.name }} ${{ inputs.count }}'",
+          },
+        },
+      },
+    };
+
+    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    await ensureDir(modelDir);
+    await Deno.writeTextFile(
+      join(modelDir, `${modelData.id}.yaml`),
+      stringifyYaml(modelData as Record<string, unknown>),
+    );
+
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "coerce-model",
+        "execute",
+        "--repo-dir",
+        repoDir,
+        "--input",
+        "name=alice",
+        "--input",
+        "count=5",
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.modelName, "coerce-model");
+  });
+});
+
+// Test: @file input reads file contents
+
+Deno.test("CLI: model method run with @file input", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    // Create model that takes a string input
+    const modelData = {
+      type: "command/shell",
+      typeVersion: 1,
+      id: crypto.randomUUID(),
+      name: "file-input-model",
+      version: 1,
+      tags: {},
+      inputs: {
+        properties: {
+          message: { type: "string" },
+        },
+        required: ["message"],
+      },
+      globalArguments: {},
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo '${{ inputs.message }}'",
+          },
+        },
+      },
+    };
+
+    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    await ensureDir(modelDir);
+    await Deno.writeTextFile(
+      join(modelDir, `${modelData.id}.yaml`),
+      stringifyYaml(modelData as Record<string, unknown>),
+    );
+
+    // Create a file to read
+    const contentFile = join(repoDir, "message.txt");
+    await Deno.writeTextFile(contentFile, "hello from file");
+
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "file-input-model",
+        "execute",
+        "--repo-dir",
+        repoDir,
+        "--input",
+        `message=@${contentFile}`,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.modelName, "file-input-model");
+  });
+});
+
+// Test: Existing JSON tests still pass (backward compat explicitly verified)
+
+Deno.test("CLI: model method run with JSON input still works", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    await createShellModelWithInputs(repoDir, "shell-env-json-compat");
+
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "shell-env-json-compat",
+        "execute",
+        "--repo-dir",
+        repoDir,
+        "--input",
+        '{"environment": "production"}',
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(result.code, 0, `Should succeed. stderr: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.modelName, "shell-env-json-compat");
+  });
+});

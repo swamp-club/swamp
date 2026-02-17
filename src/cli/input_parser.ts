@@ -18,29 +18,248 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse as parseYaml } from "@std/yaml";
+import type { InputsSchema } from "../domain/definitions/definition.ts";
 
 /**
  * Result of parsing inputs.
  */
 export interface ParsedInputs {
   inputs: Record<string, unknown>;
-  source: "json" | "yaml-file" | "none";
+  source: "json" | "yaml-file" | "key-value" | "combined" | "none";
+}
+
+/**
+ * Sets a value at a dot-separated key path in an object.
+ * Creates intermediate objects as needed.
+ *
+ * @example
+ * setNestedValue({}, "server.host", "localhost")
+ * // → { server: { host: "localhost" } }
+ */
+export function setNestedValue(
+  obj: Record<string, unknown>,
+  keyPath: string,
+  value: unknown,
+): void {
+  const parts = keyPath.split(".");
+  // deno-lint-ignore no-explicit-any
+  let current: any = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (
+      current[part] === undefined || current[part] === null ||
+      typeof current[part] !== "object" || Array.isArray(current[part])
+    ) {
+      current[part] = {};
+    }
+    current = current[part];
+  }
+  current[parts[parts.length - 1]] = value;
+}
+
+/**
+ * Resolves a file reference value (prefixed with @) to its file contents.
+ * Supports tilde expansion for home directory paths.
+ */
+async function resolveFileValue(
+  key: string,
+  filePath: string,
+): Promise<string> {
+  let resolvedPath = filePath;
+  if (resolvedPath.startsWith("~/")) {
+    const home = Deno.env.get("HOME");
+    if (home) {
+      resolvedPath = home + resolvedPath.slice(1);
+    }
+  }
+  try {
+    return await Deno.readTextFile(resolvedPath);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      throw new Error(
+        `Input file not found for key "${key}": ${resolvedPath}`,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
+ * Parses an array of key=value strings into a nested object.
+ *
+ * - Dot notation creates nested objects: `server.host=localhost`
+ * - Values starting with `@` read file contents: `key=@path/to/file`
+ * - Escaped `@` with `\@` produces a literal `@`: `key=\@literal`
+ * - Splits on first `=` only, so values can contain `=`
+ */
+export async function parseKeyValueInputs(
+  entries: string[],
+): Promise<Record<string, unknown>> {
+  const result: Record<string, unknown> = {};
+
+  for (const entry of entries) {
+    const eqIndex = entry.indexOf("=");
+    if (eqIndex === -1) {
+      throw new Error(
+        `Invalid input format: "${entry}". Expected key=value format.`,
+      );
+    }
+
+    const key = entry.slice(0, eqIndex);
+    if (key === "") {
+      throw new Error(`Invalid input: empty key in "${entry}".`);
+    }
+
+    let value: string = entry.slice(eqIndex + 1);
+
+    if (value.startsWith("\\@")) {
+      // Escaped @ — use literal value without the backslash
+      value = value.slice(1);
+    } else if (value.startsWith("@")) {
+      // File reference — read file contents
+      const filePath = value.slice(1);
+      value = await resolveFileValue(key, filePath);
+    }
+
+    setNestedValue(result, key, value);
+  }
+
+  return result;
+}
+
+/**
+ * Deep merges two objects. Override values take precedence.
+ * Only merges plain objects recursively; arrays and primitives are replaced.
+ */
+export function deepMerge(
+  base: Record<string, unknown>,
+  overrides: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base };
+
+  for (const [key, overrideValue] of Object.entries(overrides)) {
+    const baseValue = result[key];
+    if (
+      isPlainObject(baseValue) && isPlainObject(overrideValue)
+    ) {
+      result[key] = deepMerge(
+        baseValue as Record<string, unknown>,
+        overrideValue as Record<string, unknown>,
+      );
+    } else {
+      result[key] = overrideValue;
+    }
+  }
+
+  return result;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Coerces string input values to match their declared types in an InputsSchema.
+ * Only coerces values that are strings and have a declared type in the schema.
+ * Without a schema, values are returned unchanged.
+ */
+export function coerceInputTypes(
+  inputs: Record<string, unknown>,
+  schema?: InputsSchema,
+): Record<string, unknown> {
+  if (!schema?.properties) {
+    return inputs;
+  }
+
+  const result: Record<string, unknown> = { ...inputs };
+
+  for (const [key, value] of Object.entries(result)) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    const propSchema = schema.properties[key];
+    if (!propSchema?.type) {
+      continue;
+    }
+
+    switch (propSchema.type) {
+      case "number":
+      case "integer": {
+        const num = Number(value);
+        if (!Number.isNaN(num)) {
+          result[key] = propSchema.type === "integer" ? Math.trunc(num) : num;
+        }
+        break;
+      }
+      case "boolean": {
+        if (value === "true") {
+          result[key] = true;
+        } else if (value === "false") {
+          result[key] = false;
+        }
+        break;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Detects whether input strings represent JSON (backward compat) or key=value pairs.
+ */
+function isJsonInput(entries: string[]): boolean {
+  return entries.length === 1 && entries[0].trimStart().startsWith("{");
+}
+
+/**
+ * Parses a YAML input file and returns the parsed object.
+ */
+async function parseInputFile(
+  inputFile: string,
+): Promise<Record<string, unknown>> {
+  try {
+    const content = await Deno.readTextFile(inputFile);
+    const parsed = parseYaml(content);
+    if (
+      typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
+    ) {
+      throw new Error("Input file must contain a YAML object");
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      throw new Error(`Input file not found: ${inputFile}`);
+    }
+    throw error;
+  }
 }
 
 /**
  * Parses input values from CLI options.
  *
+ * Supports three input methods:
+ * - `--input '{"key": "value"}'` — JSON object (backward compat, detected by leading `{`)
+ * - `--input key=value` — repeatable key=value pairs with dot-notation nesting
+ * - `--input-file file.yaml` — YAML file
+ *
+ * When both `--input-file` and key=value `--input` are provided, the file
+ * provides base values and key=value pairs act as overrides (deep merged).
+ *
  * @param options - CLI options containing input or inputFile
  * @returns Parsed inputs and their source
  */
 export async function parseInputs(options: {
-  input?: string;
+  input?: string | string[];
   inputFile?: string;
 }): Promise<ParsedInputs> {
-  // --input takes precedence over --input-file
-  if (options.input) {
+  const inputEntries = normalizeInputOption(options.input);
+
+  // JSON mode: single string starting with `{` — backward compat
+  if (inputEntries.length > 0 && isJsonInput(inputEntries)) {
     try {
-      const parsed = JSON.parse(options.input);
+      const parsed = JSON.parse(inputEntries[0]);
       if (
         typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
       ) {
@@ -58,29 +277,51 @@ export async function parseInputs(options: {
     }
   }
 
-  if (options.inputFile) {
-    try {
-      const content = await Deno.readTextFile(options.inputFile);
-      const parsed = parseYaml(content);
-      if (
-        typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
-      ) {
-        throw new Error("Input file must contain a YAML object");
-      }
+  // Key-value mode (possibly combined with --input-file)
+  if (inputEntries.length > 0) {
+    const kvInputs = await parseKeyValueInputs(inputEntries);
+
+    if (options.inputFile) {
+      const fileInputs = await parseInputFile(options.inputFile);
       return {
-        inputs: parsed as Record<string, unknown>,
-        source: "yaml-file",
+        inputs: deepMerge(fileInputs, kvInputs),
+        source: "combined",
       };
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        throw new Error(`Input file not found: ${options.inputFile}`);
-      }
-      throw error;
     }
+
+    return {
+      inputs: kvInputs,
+      source: "key-value",
+    };
+  }
+
+  // --input-file only
+  if (options.inputFile) {
+    const fileInputs = await parseInputFile(options.inputFile);
+    return {
+      inputs: fileInputs,
+      source: "yaml-file",
+    };
   }
 
   return {
     inputs: {},
     source: "none",
   };
+}
+
+/**
+ * Normalizes the --input option value to an array of strings.
+ * Handles both the old single-string form and the new collected array form.
+ */
+function normalizeInputOption(
+  input: string | string[] | undefined,
+): string[] {
+  if (input === undefined) {
+    return [];
+  }
+  if (Array.isArray(input)) {
+    return input;
+  }
+  return [input];
 }

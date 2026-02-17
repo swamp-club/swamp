@@ -38,7 +38,7 @@ import type {
 } from "../../domain/workflows/workflow_run.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
-import { parseInputs } from "../input_parser.ts";
+import { coerceInputTypes, parseInputs } from "../input_parser.ts";
 import { parseTags } from "./data_search.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { workflowRunSearchCommand } from "./workflow_run_search.ts";
@@ -159,7 +159,9 @@ export const workflowRunCommand = new Command()
     "Skip CEL evaluation, use previously evaluated workflow and definitions",
     { default: false },
   )
-  .option("--input <json:string>", "Input values as JSON")
+  .option("--input <value:string>", "Input values (key=value or JSON)", {
+    collect: true,
+  })
   .option("--input-file <file:string>", "Input values from YAML file")
   .option(
     "--tag <tag:string>",
@@ -188,7 +190,7 @@ export const workflowRunCommand = new Command()
 
     // Parse input values
     const { inputs } = await parseInputs({
-      input: options.input as string | undefined,
+      input: options.input as string[] | undefined,
       inputFile: options.inputFile as string | undefined,
     });
 
@@ -205,6 +207,12 @@ export const workflowRunCommand = new Command()
       if (!workflow) {
         throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
+
+      // Coerce k=v string inputs to match schema types before validation
+      const coercedInputs = workflow.inputs
+        ? coerceInputTypes(inputs, workflow.inputs)
+        : inputs;
+      Object.assign(inputs, coercedInputs);
 
       // Validate inputs against workflow schema if provided
       // Skip validation when using --last-evaluated since inputs are already baked in

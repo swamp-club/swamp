@@ -190,11 +190,70 @@ Workflows and Models must be able to have their inputs and CEL expressions evalu
 
 Workflow run and model method run both should support a --last-evaluated flag, which will skip evaluating the definitions inputs or CEL expressions, and instead run directly from the last evaluated version of the models and workflows.
 
-## Model Method Run
+## CLI Input Syntax
 
-When executing a model with `swamp model method run`, inputs are specified on the command line as --input '{..}' with JSON, or via --input-file, where the file will be yaml.
+There are three ways to provide inputs on the command line. These apply to both
+`swamp model method run` and `swamp workflow run`.
 
-## Workflow run
+### 1. Key=value pairs (recommended for humans)
 
-When executing a workflow with `swamp workflow run`, inputs are specified on the command line as --input '{..}' with JSON, or via --input-file, where the file will be yaml.
+The `--input` flag accepts repeatable `key=value` pairs:
+
+```bash
+swamp workflow run deploy --input environment=production --input replicas=3
+```
+
+Dot notation creates nested objects:
+
+```bash
+swamp workflow run deploy --input server.host=localhost --input server.port=8080
+# → { server: { host: "localhost", port: "8080" } }
+```
+
+Values starting with `@` read file contents (like curl):
+
+```bash
+swamp workflow run deploy --input sshKey=@~/.ssh/id_rsa.pub
+```
+
+To pass a literal `@` as the start of a value, escape it with `\@`:
+
+```bash
+swamp workflow run deploy --input handle=\@username
+```
+
+### 2. JSON (backward compatible)
+
+A single `--input` value starting with `{` is treated as JSON:
+
+```bash
+swamp workflow run deploy --input '{"environment": "production"}'
+```
+
+### 3. YAML file
+
+```bash
+swamp workflow run deploy --input-file inputs.yaml
+```
+
+### Combining file + key=value overrides
+
+When both `--input-file` and key=value `--input` are provided, the file supplies
+base values and key=value pairs act as overrides (deep merged):
+
+```bash
+swamp workflow run deploy --input-file base.yaml --input environment=production
+```
+
+### Type coercion
+
+Key=value inputs are always parsed as strings. When the workflow or model
+declares an `InputsSchema`, string values are automatically coerced to match
+the schema's declared types (`number`, `integer`, `boolean`) before validation.
+Without a schema, values remain as strings.
+
+### Arrays
+
+Array inputs are not supported via key=value syntax. Use `--input-file` or JSON
+for array values.
 
