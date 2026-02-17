@@ -26,10 +26,13 @@ curl -fsSL https://swamp.club/install.sh | sh
 ### Quick Start
 
 ```bash
-swamp repo init
+swamp repo init                    # Claude Code (default)
+swamp repo init --tool cursor      # Cursor
+swamp repo init --tool opencode    # OpenCode
+swamp repo init --tool codex       # Codex
 ```
 
-Start Claude Code in the repo and tell it what you want to do. Just ask:
+Start your AI agent in the repo and tell it what you want to do. Just ask:
 
 - _"Manage my EC2 fleet — inventory every instance across all regions and flag
   anything without a cost-center tag"_
@@ -104,26 +107,34 @@ directory's swamp repository.
 
 ## Using Swamp with AI Agents
 
-Swamp is designed to be driven by AI agents. We currently ship
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) skills that teach
-Claude how to work with swamp — search for models, create definitions, run
+Swamp ships first-class skills for four AI coding tools:
+
+| Tool                                                          | Init flag         | Skills dir        | Instructions file         |
+| ------------------------------------------------------------- | ----------------- | ----------------- | ------------------------- |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | _(default)_       | `.claude/skills/` | `CLAUDE.md`               |
+| [Cursor](https://cursor.com)                                  | `--tool cursor`   | `.cursor/skills/` | `.cursor/rules/swamp.mdc` |
+| [OpenCode](https://opencode.ai)                               | `--tool opencode` | `.agents/skills/` | `AGENTS.md`               |
+| [Codex](https://openai.com/codex)                             | `--tool codex`    | `.agents/skills/` | `AGENTS.md`               |
+
+The skills are bundled into the swamp binary and written into the appropriate
+directory so your agent discovers them automatically. Each skill teaches the
+agent how to work with swamp — search for models, create definitions, run
 workflows, manage vaults, and more.
 
-The skills live in `.claude/skills/` and are bundled into the swamp binary. Run
-`swamp` inside a Claude Code session, and Claude will discover them
-automatically.
+You can switch tools later or run multiple tools side-by-side — each tool's
+skills directory is independent and gitignored:
 
-While Claude Code is our primary supported agent today, the patterns are
-transferable to any AI agent or automation platform. The skills are plain
-markdown — read them, adapt them, bring them to your preferred tools.
+```bash
+swamp repo upgrade --tool cursor
+```
 
 ### User-Defined Models
 
 Extend Swamp with custom TypeScript models. Place them in `extensions/models/`
 (or configure via `SWAMP_MODELS_DIR` or `.swamp.yaml`).
 
-See the [extension model guide](.claude/skills/swamp-extension-model/SKILL.md)
-for details.
+See the extension model skill in your skills directory (e.g.
+`.claude/skills/swamp-extension-model/SKILL.md` for Claude Code) for details.
 
 ## Developer Guide
 
