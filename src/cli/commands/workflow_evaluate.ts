@@ -53,7 +53,9 @@ export const workflowEvaluateCommand = new Command()
   .arguments("[workflow_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--all", "Evaluate all workflow definitions")
-  .option("--input <json:string>", "Input values as JSON")
+  .option("--input <value:string>", "Input values (key=value or JSON)", {
+    collect: true,
+  })
   .option("--input-file <file:string>", "Input values from YAML file")
   .action(
     async function (options: AnyOptions, workflowIdOrName?: string) {
@@ -71,7 +73,7 @@ export const workflowEvaluateCommand = new Command()
 
       // Parse input values
       const { inputs } = await parseInputs({
-        input: options.input as string | undefined,
+        input: options.input as string[] | undefined,
         inputFile: options.inputFile as string | undefined,
       });
 

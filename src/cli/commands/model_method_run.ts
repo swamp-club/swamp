@@ -35,7 +35,7 @@ import {
   getRunLogger,
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
-import { parseInputs } from "../input_parser.ts";
+import { coerceInputTypes, parseInputs } from "../input_parser.ts";
 import { parseTags } from "./data_search.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { join } from "@std/path";
@@ -61,7 +61,9 @@ export const modelMethodRunCommand = new Command()
     "Skip CEL evaluation, use previously evaluated definition",
     { default: false },
   )
-  .option("--input <json:string>", "Input values as JSON")
+  .option("--input <value:string>", "Input values (key=value or JSON)", {
+    collect: true,
+  })
   .option("--input-file <file:string>", "Input values from YAML file")
   .option(
     "--tag <tag:string>",
@@ -94,7 +96,7 @@ export const modelMethodRunCommand = new Command()
 
       // Parse input values
       const { inputs } = await parseInputs({
-        input: options.input as string | undefined,
+        input: options.input as string[] | undefined,
         inputFile: options.inputFile as string | undefined,
       });
 
@@ -113,6 +115,12 @@ export const modelMethodRunCommand = new Command()
         throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       const { definition, type: modelType } = result;
+
+      // Coerce k=v string inputs to match schema types before validation
+      const coercedInputs = definition.inputs
+        ? coerceInputTypes(inputs, definition.inputs)
+        : inputs;
+      Object.assign(inputs, coercedInputs);
 
       // Validate inputs against model's input schema if provided
       if (definition.inputs) {
