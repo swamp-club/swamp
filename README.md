@@ -227,11 +227,21 @@ Per-invocation:
 swamp --no-telemetry workflow run my-workflow
 ```
 
+Via environment variable (useful for CI/UAT environments):
+
+```bash
+export SWAMP_NO_TELEMETRY=1
+swamp workflow run my-workflow
+```
+
 Permanently for a repository — add to `.swamp.yaml`:
 
 ```yaml
 telemetryDisabled: true
 ```
+
+Priority order (highest to lowest): `--no-telemetry` flag → `SWAMP_NO_TELEMETRY`
+env var → `.swamp.yaml` `telemetryDisabled: true`.
 
 ## License
 

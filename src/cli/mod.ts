@@ -91,6 +91,18 @@ export function isTelemetryDisabledByConfig(
 }
 
 /**
+ * Checks whether telemetry is disabled via SWAMP_NO_TELEMETRY environment variable.
+ * Any value other than "0", "false", or empty string disables telemetry.
+ *
+ * @internal Exported for testing
+ */
+export function isTelemetryDisabledByEnv(): boolean {
+  const val = Deno.env.get("SWAMP_NO_TELEMETRY");
+  if (val === undefined) return false;
+  return val !== "0" && val !== "false" && val !== "";
+}
+
+/**
  * Load user models from configured directory.
  */
 async function loadUserModels(): Promise<void> {
@@ -192,7 +204,8 @@ export async function runCli(args: string[]): Promise<void> {
   const startTime = new Date();
 
   // Pre-parse check for telemetry disable flag
-  const telemetryDisabled = isTelemetryDisabled(args);
+  const telemetryDisabled = isTelemetryDisabled(args) ||
+    isTelemetryDisabledByEnv();
 
   // Extract command info for telemetry (before parsing)
   const commandInfo = extractCommandInfo(args);

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { isTelemetryDisabledByConfig, resolveModelsDir } from "./mod.ts";
+import {
+  isTelemetryDisabledByConfig,
+  isTelemetryDisabledByEnv,
+  resolveModelsDir,
+} from "./mod.ts";
 
 Deno.test("resolveModelsDir returns default 'extensions/models' when no config", () => {
   // Ensure env var is not set
@@ -137,4 +141,86 @@ Deno.test("isTelemetryDisabledByConfig returns true when field is true", () => {
     telemetryDisabled: true,
   };
   assertEquals(isTelemetryDisabledByConfig(marker), true);
+});
+
+Deno.test("isTelemetryDisabledByEnv returns false when env var is not set", () => {
+  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
+  try {
+    Deno.env.delete("SWAMP_NO_TELEMETRY");
+    assertEquals(isTelemetryDisabledByEnv(), false);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_TELEMETRY", original);
+    }
+  }
+});
+
+Deno.test("isTelemetryDisabledByEnv returns true when env var is '1'", () => {
+  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
+  try {
+    Deno.env.set("SWAMP_NO_TELEMETRY", "1");
+    assertEquals(isTelemetryDisabledByEnv(), true);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_TELEMETRY", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_TELEMETRY");
+    }
+  }
+});
+
+Deno.test("isTelemetryDisabledByEnv returns true when env var is 'true'", () => {
+  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
+  try {
+    Deno.env.set("SWAMP_NO_TELEMETRY", "true");
+    assertEquals(isTelemetryDisabledByEnv(), true);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_TELEMETRY", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_TELEMETRY");
+    }
+  }
+});
+
+Deno.test("isTelemetryDisabledByEnv returns false when env var is '0'", () => {
+  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
+  try {
+    Deno.env.set("SWAMP_NO_TELEMETRY", "0");
+    assertEquals(isTelemetryDisabledByEnv(), false);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_TELEMETRY", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_TELEMETRY");
+    }
+  }
+});
+
+Deno.test("isTelemetryDisabledByEnv returns false when env var is 'false'", () => {
+  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
+  try {
+    Deno.env.set("SWAMP_NO_TELEMETRY", "false");
+    assertEquals(isTelemetryDisabledByEnv(), false);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_TELEMETRY", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_TELEMETRY");
+    }
+  }
+});
+
+Deno.test("isTelemetryDisabledByEnv returns false when env var is ''", () => {
+  const original = Deno.env.get("SWAMP_NO_TELEMETRY");
+  try {
+    Deno.env.set("SWAMP_NO_TELEMETRY", "");
+    assertEquals(isTelemetryDisabledByEnv(), false);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_TELEMETRY", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_TELEMETRY");
+    }
+  }
 });
