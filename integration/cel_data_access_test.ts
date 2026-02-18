@@ -42,6 +42,7 @@ import {
 } from "../src/domain/expressions/model_resolver.ts";
 import { ExpressionEvaluationService } from "../src/domain/expressions/expression_evaluation_service.ts";
 import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
+import { initializeTestRepo, runCliCommand } from "./test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-cel-data-" });
@@ -811,3 +812,125 @@ Deno.test("CEL Data Access: multiple resource items from same model", async () =
     }
   });
 });
+
+// ============================================================================
+// specName != dataName (writeResource pattern)
+// ============================================================================
+
+Deno.test(
+  "CEL Data Access: cross-model resource with specName != dataName (writeResource pattern)",
+  async () => {
+    await withTempDir(async (repoDir) => {
+      await setupRepoDir(repoDir);
+      const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const type = ModelType.create("test/model");
+      const owner = createOwner("test/model:spec-name-test");
+
+      // Create "s3-infra" model
+      const s3InfraModel = Definition.create({
+        name: "s3-infra",
+        globalArguments: {},
+      });
+      await definitionRepo.save(type, s3InfraModel);
+
+      // Write resource data with specName="summary", dataName="latest"
+      // This mirrors what writeResource("summary", "latest", data) produces:
+      //   tags.type = "resource", tags.specName = "summary", data.name = "latest"
+      const resourceData = Data.create({
+        name: "latest",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { type: "resource", specName: "summary" },
+        ownerDefinition: owner,
+      });
+      await dataRepo.save(
+        type,
+        s3InfraModel.id,
+        resourceData,
+        new TextEncoder().encode(JSON.stringify({ totalBuckets: 42 })),
+      );
+
+      // Create "s3-report" model referencing model.s3-infra.resource.summary.latest
+      const s3ReportModel = Definition.create({
+        name: "s3-report",
+        globalArguments: {
+          bucket_count:
+            "${{ model['s3-infra'].resource.summary.latest.attributes.totalBuckets }}",
+        },
+      });
+      await definitionRepo.save(type, s3ReportModel);
+
+      const evalService = new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+        { dataRepo },
+      );
+
+      const result = await evalService.evaluateDefinition(s3ReportModel, type);
+
+      assertEquals(result.hadExpressions, true);
+      assertEquals(result.definition.globalArguments.bucket_count, 42);
+    });
+  },
+);
+
+Deno.test(
+  "CLI: model evaluate resolves cross-model resource expressions (standalone, specName != dataName)",
+  async () => {
+    await withTempDir(async (repoDir) => {
+      await initializeTestRepo(repoDir);
+      const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const type = ModelType.create("test/model");
+      const owner = createOwner("test/model:cli-spec-name-test");
+
+      // Create "infra" model with resource data: specName="report", dataName="current"
+      const infraModel = Definition.create({
+        name: "infra",
+        globalArguments: {},
+      });
+      await definitionRepo.save(type, infraModel);
+
+      const resourceData = Data.create({
+        name: "current",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        tags: { type: "resource", specName: "report" },
+        ownerDefinition: owner,
+      });
+      await dataRepo.save(
+        type,
+        infraModel.id,
+        resourceData,
+        new TextEncoder().encode(JSON.stringify({ instanceCount: 7 })),
+      );
+
+      // Create "app" model referencing the infra resource
+      const appModel = Definition.create({
+        name: "app",
+        globalArguments: {
+          count:
+            "${{ model.infra.resource.report.current.attributes.instanceCount }}",
+        },
+      });
+      await definitionRepo.save(type, appModel);
+
+      // Run model evaluate via CLI
+      const { stdout, stderr, code } = await runCliCommand(
+        ["--json", "model", "evaluate", "app", "--repo-dir", repoDir],
+        Deno.cwd(),
+      );
+
+      assertEquals(
+        code,
+        0,
+        `CLI exited with code ${code}. stdout: ${stdout} stderr: ${stderr}`,
+      );
+      const parsed = JSON.parse(stdout);
+      assertEquals(parsed.globalArguments.count, 7);
+    });
+  },
+);
