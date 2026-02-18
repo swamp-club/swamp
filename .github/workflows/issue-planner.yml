@@ -43,11 +43,11 @@ jobs:
             --jq '.[] | select(.body | contains("<!-- IMPLEMENTATION-PLAN -->")) | .id' | head -1)
 
           if [ -n "$PLAN_COMMENT_ID" ]; then
-            echo "found=true" >> $GITHUB_OUTPUT
-            echo "comment_id=$PLAN_COMMENT_ID" >> $GITHUB_OUTPUT
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "comment_id=$PLAN_COMMENT_ID" >> "$GITHUB_OUTPUT"
             echo "Found existing plan comment: $PLAN_COMMENT_ID"
           else
-            echo "found=false" >> $GITHUB_OUTPUT
+            echo "found=false" >> "$GITHUB_OUTPUT"
             echo "No existing plan comment found"
           fi
         env:
@@ -174,11 +174,11 @@ jobs:
             --jq '.[] | select(.body | contains("<!-- IMPLEMENTATION-PLAN -->")) | .id' | head -1)
 
           if [ -n "$PLAN_COMMENT_ID" ]; then
-            echo "found=true" >> $GITHUB_OUTPUT
-            echo "comment_id=$PLAN_COMMENT_ID" >> $GITHUB_OUTPUT
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "comment_id=$PLAN_COMMENT_ID" >> "$GITHUB_OUTPUT"
             echo "Found existing plan comment: $PLAN_COMMENT_ID"
           else
-            echo "found=false" >> $GITHUB_OUTPUT
+            echo "found=false" >> "$GITHUB_OUTPUT"
             echo "No existing plan comment found, skipping"
           fi
         env:
@@ -210,9 +210,11 @@ jobs:
         id: get-plan
         run: |
           PLAN_BODY=$(gh api "/repos/${{ github.repository }}/issues/comments/${{ steps.find-plan.outputs.comment_id }}" --jq '.body')
-          echo "plan<<EOF" >> $GITHUB_OUTPUT
-          echo "$PLAN_BODY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "plan<<EOF"
+            echo "$PLAN_BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
