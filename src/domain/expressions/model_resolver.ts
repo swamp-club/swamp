@@ -23,6 +23,7 @@ import type { Definition, InputsSchema } from "../definitions/definition.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { Data } from "../data/data.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 
@@ -433,31 +434,91 @@ export class ModelResolver {
       context.model[definition.id] = modelData;
     }
 
-    // Build data cache if dataRepo is available
+    // Build data cache if dataRepo is available.
+    // Uses findAllGlobal() to discover data from disk first, then matches
+    // to definitions. This handles the case where a model was deleted and
+    // recreated (new UUID) — data under the old UUID is still found.
     const dataCache = new DataCache();
     if (this.dataRepo) {
-      for (const { definition, type: defType } of allDefinitions) {
-        const modelType = typeResolver?.(definition.id) ?? defType;
-        const modelName = definition.name;
+      // Build definition lookup maps
+      const defById = new Map<
+        string,
+        { definition: Definition; type: ModelType }
+      >();
+      const defsByType = new Map<
+        string,
+        Array<{ definition: Definition; type: ModelType }>
+      >();
 
-        // Load all data for this model
-        const allData = await this.dataRepo.findAllForModel(
-          modelType,
-          definition.id,
-        );
+      for (const { definition: def, type: defType } of allDefinitions) {
+        defById.set(def.id, { definition: def, type: defType });
+        const typeKey = defType.normalized;
+        if (!defsByType.has(typeKey)) defsByType.set(typeKey, []);
+        defsByType.get(typeKey)!.push({ definition: def, type: defType });
+      }
 
-        for (const data of allData) {
-          // Get all versions for this data item
+      // Discover all data on disk
+      const allGlobalData = await this.dataRepo.findAllGlobal();
+
+      // Group data items by (modelType, modelId) — the disk coordinates
+      const groupKey = (mt: ModelType, mid: string) =>
+        `${mt.normalized}::${mid}`;
+      const groupedData = new Map<
+        string,
+        { modelType: ModelType; modelId: string; items: Data[] }
+      >();
+      for (const { data, modelType, modelId } of allGlobalData) {
+        const key = groupKey(modelType, modelId);
+        if (!groupedData.has(key)) {
+          groupedData.set(key, { modelType, modelId, items: [] });
+        }
+        groupedData.get(key)!.items.push(data);
+      }
+
+      // Match each group to a definition and load data
+      for (const [_key, group] of groupedData) {
+        const { modelType, modelId, items } = group;
+
+        // 1. Direct match: modelId matches a definition's UUID
+        let matchedDef = defById.get(modelId);
+
+        // 2. Orphan recovery by modelName tag
+        if (!matchedDef) {
+          const modelNameTag = items.find((d) => d.tags["modelName"])
+            ?.tags["modelName"];
+          if (modelNameTag) {
+            const defsOfType = defsByType.get(modelType.normalized) ?? [];
+            const nameMatch = defsOfType.find(
+              (d) => d.definition.name === modelNameTag,
+            );
+            if (nameMatch) matchedDef = nameMatch;
+          }
+        }
+
+        // 3. Orphan recovery by heuristic: only one definition of this type
+        if (!matchedDef) {
+          const defsOfType = defsByType.get(modelType.normalized) ?? [];
+          if (defsOfType.length === 1) {
+            matchedDef = defsOfType[0];
+          }
+        }
+
+        if (!matchedDef) continue;
+
+        const modelName = matchedDef.definition.name;
+
+        // Process data items — use disk modelId for all repo calls
+        for (const data of items) {
           const versions = await this.dataRepo.listVersions(
             modelType,
-            definition.id,
+            modelId,
             data.name,
           );
 
           for (const version of versions) {
             const versionData = await this.dataRepo.findByName(
               modelType,
-              definition.id,
+              modelId,
               data.name,
               version,
             );
@@ -468,7 +529,7 @@ export class ModelResolver {
               if (versionData.contentType === "application/json") {
                 const content = await this.dataRepo.getContent(
                   modelType,
-                  definition.id,
+                  modelId,
                   data.name,
                   version,
                 );
@@ -520,9 +581,10 @@ export class ModelResolver {
               if (!modelData.file) modelData.file = {};
               const specName = latestRecord.tags["specName"] ?? dataName;
               if (!modelData.file[specName]) modelData.file[specName] = {};
+              // Use disk modelId for content path lookup
               const contentPath = this.dataRepo.getContentPath(
                 modelType,
-                definition.id,
+                modelId,
                 dataName,
                 latestRecord.version as number,
               );

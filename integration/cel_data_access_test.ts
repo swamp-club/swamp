@@ -934,3 +934,147 @@ Deno.test(
     });
   },
 );
+
+// ============================================================================
+// Cross-Model Type Resource References (Issue #370)
+// ============================================================================
+
+Deno.test("CEL Data Access: cross-type resource with specName tag via ExpressionEvaluationService (#370)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const owner = createOwner("user/s3-inventory:create");
+
+    // Two distinct model types — mirrors the real-world scenario from issue #370
+    // Uses @-prefixed types as in the actual user report
+    const inventoryType = ModelType.create("@user/s3-inventory");
+    const reportType = ModelType.create("@user/s3-report");
+
+    // Source model under inventory type — uses hyphenated name like issue #370
+    const sourceModel = Definition.create({
+      name: "s3-infra",
+      globalArguments: { region: "us-east-1" },
+    });
+    await definitionRepo.save(inventoryType, sourceModel);
+
+    // Write resource data the way createResourceWriter does:
+    //   name = "latest" (instance name), specName tag = "summary"
+    const resourceData = Data.create({
+      name: "latest",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "resource", specName: "summary" },
+      ownerDefinition: owner,
+    });
+
+    await dataRepo.save(
+      inventoryType,
+      sourceModel.id,
+      resourceData,
+      new TextEncoder().encode(JSON.stringify({ totalBuckets: 42 })),
+    );
+
+    // Dependent model under a *different* type referencing the source's resource
+    // Uses bracket notation for hyphenated name, matching the error from issue #370:
+    //   model["s3-infra"].resource.summary.latest.attributes.totalBuckets
+    const reportModel = Definition.create({
+      name: "s3-report",
+      globalArguments: {
+        bucket_count:
+          '${{ model["s3-infra"].resource.summary.latest.attributes.totalBuckets }}',
+      },
+    });
+    await definitionRepo.save(reportType, reportModel);
+
+    // Evaluate via ExpressionEvaluationService — the code path used by
+    // `swamp model method run` and `swamp model evaluate`
+    const evalService = new ExpressionEvaluationService(
+      definitionRepo,
+      repoDir,
+      { dataRepo },
+    );
+
+    const result = await evalService.evaluateDefinition(
+      reportModel,
+      reportType,
+    );
+
+    assertEquals(result.hadExpressions, true);
+    assertEquals(result.definition.globalArguments.bucket_count, 42);
+  });
+});
+
+Deno.test("CEL Data Access: resource resolves after model delete and recreate with new UUID (#370)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const inventoryType = ModelType.create("@user/s3-inventory");
+    const reportType = ModelType.create("@user/s3-report");
+    const owner = createOwner("user/s3-inventory:create");
+
+    // Step 1: Create source model and save resource data under its UUID
+    const originalModel = Definition.create({
+      name: "s3-infra",
+      globalArguments: { region: "us-east-1" },
+    });
+    await definitionRepo.save(inventoryType, originalModel);
+
+    const resourceData = Data.create({
+      name: "latest",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "resource", specName: "summary", modelName: "s3-infra" },
+      ownerDefinition: owner,
+    });
+
+    await dataRepo.save(
+      inventoryType,
+      originalModel.id,
+      resourceData,
+      new TextEncoder().encode(JSON.stringify({ totalBuckets: 42 })),
+    );
+
+    // Step 2: Delete the definition and recreate with a NEW UUID
+    // (simulates `swamp model delete` + `swamp model create`)
+    await definitionRepo.delete(inventoryType, originalModel.id);
+    const recreatedModel = Definition.create({
+      name: "s3-infra",
+      globalArguments: { region: "us-east-1" },
+    });
+    await definitionRepo.save(inventoryType, recreatedModel);
+
+    // Sanity check: the UUIDs are different
+    const uuidsDiffer = originalModel.id !== recreatedModel.id;
+    assertEquals(uuidsDiffer, true);
+
+    // Step 3: Create dependent model referencing the source's resource
+    const reportModel = Definition.create({
+      name: "s3-report",
+      globalArguments: {
+        bucket_count:
+          '${{ model["s3-infra"].resource.summary.latest.attributes.totalBuckets }}',
+      },
+    });
+    await definitionRepo.save(reportType, reportModel);
+
+    // Step 4: Evaluate — this used to fail with "No such key: resource"
+    // because data lived under the old UUID and the new UUID had no data.
+    const evalService = new ExpressionEvaluationService(
+      definitionRepo,
+      repoDir,
+      { dataRepo },
+    );
+
+    const result = await evalService.evaluateDefinition(
+      reportModel,
+      reportType,
+    );
+
+    assertEquals(result.hadExpressions, true);
+    assertEquals(result.definition.globalArguments.bucket_count, 42);
+  });
+});

@@ -301,6 +301,7 @@ export function createResourceWriter(
   }>,
   definitionTags?: Record<string, string>,
   runtimeTags?: Record<string, string>,
+  definitionName?: string,
 ): {
   writeResource: (
     specName: string,
@@ -364,6 +365,11 @@ export function createResourceWriter(
 
     // Auto-inject specName tag for findBySpec discovery
     resolvedTags["specName"] = specName;
+
+    // Auto-inject modelName tag for orphan data recovery (issue #370)
+    if (definitionName) {
+      resolvedTags["modelName"] = definitionName;
+    }
 
     // Apply global tag overrides (workflow step tags)
     if (tagOverrides) {
@@ -453,6 +459,7 @@ export function createFileWriterFactory(
   callbacks?: DataWriterCallbacks,
   definitionTags?: Record<string, string>,
   runtimeTags?: Record<string, string>,
+  definitionName?: string,
 ): {
   createFileWriter: (
     specName: string,
@@ -501,6 +508,11 @@ export function createFileWriterFactory(
 
     // Auto-inject specName tag for findBySpec discovery
     resolvedTags["specName"] = specName;
+
+    // Auto-inject modelName tag for orphan data recovery (issue #370)
+    if (definitionName) {
+      resolvedTags["modelName"] = definitionName;
+    }
 
     // Apply global tag overrides (workflow step tags)
     if (tagOverrides) {

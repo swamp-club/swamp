@@ -209,6 +209,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       context.dataOutputOverrides,
       currentDefinition.tags,
       context.runtimeTags,
+      currentDefinition.name,
     );
 
     const {
@@ -224,6 +225,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       undefined, // callbacks
       currentDefinition.tags,
       context.runtimeTags,
+      currentDefinition.name,
     );
 
     // Inject into context

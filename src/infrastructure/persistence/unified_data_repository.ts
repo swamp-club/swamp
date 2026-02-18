@@ -397,12 +397,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       for await (const entry of Deno.readDir(dir)) {
         if (!entry.isDirectory && !entry.isSymlink) continue;
 
-        // Check if this child is a data-name directory
+        // Check if this child is a data-name directory by looking for
+        // numeric version subdirectories (1/, 2/, 3/, ...).
+        // We intentionally skip checking for "latest" here because a data
+        // item could be literally named "latest", which would cause a
+        // type directory to be misidentified as a model-ID directory.
         const childPath = join(dir, entry.name);
         try {
           for await (const subEntry of Deno.readDir(childPath)) {
-            // If we find a "latest" symlink or a numeric directory, this is a data dir
-            if (subEntry.name === "latest" || /^\d+$/.test(subEntry.name)) {
+            if (subEntry.isDirectory && /^\d+$/.test(subEntry.name)) {
               return true;
             }
           }
