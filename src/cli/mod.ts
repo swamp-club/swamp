@@ -80,6 +80,21 @@ export function resolveModelsDir(marker: RepoMarkerData | null): string {
 }
 
 /**
+ * Resolves the log level.
+ * Priority: SWAMP_LOG_LEVEL env var > .swamp.yaml config > undefined (caller uses default)
+ *
+ * @internal Exported for testing
+ */
+export function resolveLogLevel(
+  marker: RepoMarkerData | null,
+): string | undefined {
+  const envVal = Deno.env.get("SWAMP_LOG_LEVEL");
+  if (envVal) return envVal;
+  if (marker?.logLevel) return marker.logLevel;
+  return undefined;
+}
+
+/**
  * Checks whether telemetry is disabled via .swamp.yaml config.
  *
  * @internal Exported for testing
@@ -219,6 +234,16 @@ export async function runCli(args: string[]): Promise<void> {
   // Load user models before setting up CLI
   await loadUserModels();
 
+  // Read marker for resolveLogLevel (used in globalAction closure)
+  let marker: RepoMarkerData | null = null;
+  try {
+    const markerRepo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(Deno.cwd());
+    marker = await markerRepo.read(repoPath);
+  } catch {
+    // Not in a swamp repo - marker stays null
+  }
+
   const cli = new Command()
     .name("swamp")
     .version(VERSION)
@@ -248,13 +273,17 @@ export async function runCli(args: string[]): Promise<void> {
       }
       const prettyOutput = !noColor && isStdinTty();
 
-      // Derive log level: --quiet → error, --log-level → parsed, default → info
+      // Derive log level: --quiet → error, --log-level → parsed,
+      // SWAMP_LOG_LEVEL env var / .swamp.yaml logLevel → parsed, default → info
       let logLevel: "trace" | "debug" | "info" | "warning" | "error" | "fatal" =
         "info";
       if (options.quiet) {
         logLevel = "error";
       } else if (options.logLevel) {
         logLevel = parseLogLevel(options.logLevel);
+      } else {
+        const resolved = resolveLogLevel(marker);
+        if (resolved) logLevel = parseLogLevel(resolved);
       }
 
       await initializeLogging({

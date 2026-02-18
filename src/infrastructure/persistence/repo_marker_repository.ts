@@ -41,6 +41,7 @@ export interface RepoMarkerData {
   telemetryDisabled?: boolean;
   telemetryKeepFlushed?: boolean;
   tool?: AiTool;
+  logLevel?: string;
 }
 
 /**

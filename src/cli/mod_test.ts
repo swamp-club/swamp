@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
+  resolveLogLevel,
   resolveModelsDir,
 } from "./mod.ts";
 
@@ -109,6 +110,94 @@ Deno.test("resolveModelsDir env var takes priority over default", () => {
       Deno.env.set("SWAMP_MODELS_DIR", original);
     } else {
       Deno.env.delete("SWAMP_MODELS_DIR");
+    }
+  }
+});
+
+Deno.test("resolveLogLevel returns undefined when no env var and no config", () => {
+  const original = Deno.env.get("SWAMP_LOG_LEVEL");
+  try {
+    Deno.env.delete("SWAMP_LOG_LEVEL");
+
+    const result = resolveLogLevel(null);
+    assertEquals(result, undefined);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_LOG_LEVEL", original);
+    }
+  }
+});
+
+Deno.test("resolveLogLevel returns undefined when marker has no logLevel", () => {
+  const original = Deno.env.get("SWAMP_LOG_LEVEL");
+  try {
+    Deno.env.delete("SWAMP_LOG_LEVEL");
+
+    const marker = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01T00:00:00Z",
+    };
+    const result = resolveLogLevel(marker);
+    assertEquals(result, undefined);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_LOG_LEVEL", original);
+    }
+  }
+});
+
+Deno.test("resolveLogLevel returns marker.logLevel when only config is set", () => {
+  const original = Deno.env.get("SWAMP_LOG_LEVEL");
+  try {
+    Deno.env.delete("SWAMP_LOG_LEVEL");
+
+    const marker = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01T00:00:00Z",
+      logLevel: "warning",
+    };
+    const result = resolveLogLevel(marker);
+    assertEquals(result, "warning");
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_LOG_LEVEL", original);
+    }
+  }
+});
+
+Deno.test("resolveLogLevel returns env var when set, even if config also has logLevel", () => {
+  const original = Deno.env.get("SWAMP_LOG_LEVEL");
+  try {
+    Deno.env.set("SWAMP_LOG_LEVEL", "debug");
+
+    const marker = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01T00:00:00Z",
+      logLevel: "error",
+    };
+    const result = resolveLogLevel(marker);
+    assertEquals(result, "debug");
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_LOG_LEVEL", original);
+    } else {
+      Deno.env.delete("SWAMP_LOG_LEVEL");
+    }
+  }
+});
+
+Deno.test("resolveLogLevel returns env var when set with no marker", () => {
+  const original = Deno.env.get("SWAMP_LOG_LEVEL");
+  try {
+    Deno.env.set("SWAMP_LOG_LEVEL", "error");
+
+    const result = resolveLogLevel(null);
+    assertEquals(result, "error");
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_LOG_LEVEL", original);
+    } else {
+      Deno.env.delete("SWAMP_LOG_LEVEL");
     }
   }
 });

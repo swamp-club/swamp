@@ -179,6 +179,36 @@ This means you get the feature you asked for, maintained over time, without
 having to worry about keeping a fork in sync. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the full details.
 
+## Log Level
+
+By default, swamp outputs at the `info` level. You can change this once rather
+than repeating a flag on every command.
+
+Per-invocation flags (highest priority):
+
+```bash
+swamp -q workflow run my-workflow               # error level only
+swamp --log-level debug workflow run my-workflow
+```
+
+Via environment variable (useful for CI/CD):
+
+```bash
+export SWAMP_LOG_LEVEL=warning
+swamp workflow run my-workflow
+```
+
+Permanently for a repository — add to `.swamp.yaml`:
+
+```yaml
+logLevel: error
+```
+
+Valid levels: `trace`, `debug`, `info`, `warning`, `error`, `fatal`.
+
+Priority order (highest to lowest): `-q` / `--log-level` flag →
+`SWAMP_LOG_LEVEL` env var → `.swamp.yaml` `logLevel` → default (`info`).
+
 ## Telemetry
 
 Swamp collects anonymous usage telemetry to help us understand which commands
