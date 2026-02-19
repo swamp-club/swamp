@@ -271,6 +271,49 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
   });
 
   await t.step(
+    "should handle concurrent key generation safely",
+    async () => {
+      await withTempDir(async (dir) => {
+        const vaultSecretsDir = secretsDir(dir, "concurrent-vault");
+        const config: LocalEncryptionConfig = {
+          auto_generate: true,
+          base_dir: dir,
+        };
+
+        // Create two vault instances pointing at the same vault directory
+        const vault1 = new LocalEncryptionVaultProvider(
+          "concurrent-vault",
+          config,
+        );
+        const vault2 = new LocalEncryptionVaultProvider(
+          "concurrent-vault",
+          config,
+        );
+
+        // Concurrently put secrets from both instances
+        await Promise.all([
+          vault1.put("secret-from-1", "value1"),
+          vault2.put("secret-from-2", "value2"),
+        ]);
+
+        // Both vaults should be able to read each other's secrets,
+        // proving they share the same encryption key
+        assertEquals(await vault1.get("secret-from-2"), "value2");
+        assertEquals(await vault2.get("secret-from-1"), "value1");
+
+        // Only one .key file should exist on disk
+        const keyEntries: string[] = [];
+        for await (const entry of Deno.readDir(vaultSecretsDir)) {
+          if (entry.name === ".key") {
+            keyEntries.push(entry.name);
+          }
+        }
+        assertEquals(keyEntries.length, 1);
+      });
+    },
+  );
+
+  await t.step(
     "should fall back to auto-generate when SSH key fails",
     async () => {
       await withTempDir(async (dir) => {
