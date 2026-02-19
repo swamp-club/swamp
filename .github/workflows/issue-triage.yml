@@ -6,6 +6,7 @@ on:
 
 permissions:
   issues: write
+  contents: read
 
 jobs:
   triage:
@@ -18,16 +19,19 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const payloadAssociation = context.payload.issue.author_association;
-            core.info(`Webhook payload author_association: ${payloadAssociation}`);
-            const { data: issue } = await github.rest.issues.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.issue.number,
-            });
-            const association = issue.author_association;
-            core.info(`REST API author_association: ${association}`);
-            const isMaintainer = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(association);
+            const login = context.payload.issue.user.login;
+            let isMaintainer = false;
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: login,
+              });
+              core.info(`Permission level for ${login}: ${data.permission}`);
+              isMaintainer = ['admin', 'write'].includes(data.permission);
+            } catch (error) {
+              core.info(`Could not fetch permission level for ${login}: ${error.message}`);
+            }
             core.setOutput('is_maintainer', isMaintainer.toString());
 
       - name: Add needs-triage label
