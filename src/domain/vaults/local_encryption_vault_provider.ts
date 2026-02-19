@@ -200,20 +200,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     // Try SSH key if explicitly configured
     if (this.config.ssh_key_path) {
       try {
-        const expandedPath = this.config.ssh_key_path.startsWith("~/")
-          ? this.config.ssh_key_path.replace("~/", `${Deno.env.get("HOME")}/`)
-          : this.config.ssh_key_path;
-
-        const sshKeyContent = await Deno.readTextFile(expandedPath);
-        const keyBytes = new TextEncoder().encode(sshKeyContent);
-
-        return await crypto.subtle.importKey(
-          "raw",
-          keyBytes,
-          { name: "PBKDF2" },
-          false,
-          ["deriveKey"],
-        );
+        return await this.readAndValidateSshKey(this.config.ssh_key_path);
       } catch (error) {
         if (!this.config.auto_generate) {
           throw new Error(
@@ -230,20 +217,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     if (!this.config.ssh_key_path && !this.config.auto_generate) {
       const defaultSshKeyPath = "~/.ssh/id_rsa";
       try {
-        const expandedPath = defaultSshKeyPath.replace(
-          "~/",
-          `${Deno.env.get("HOME")}/`,
-        );
-        const sshKeyContent = await Deno.readTextFile(expandedPath);
-        const keyBytes = new TextEncoder().encode(sshKeyContent);
-
-        return await crypto.subtle.importKey(
-          "raw",
-          keyBytes,
-          { name: "PBKDF2" },
-          false,
-          ["deriveKey"],
-        );
+        return await this.readAndValidateSshKey(defaultSshKeyPath);
       } catch (error) {
         throw new Error(
           `Failed to read default SSH key from '${defaultSshKeyPath}' for local vault '${this.name}': ${
@@ -313,6 +287,128 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
   }
 
   /**
+   * Reads an SSH private key file, validates its permissions and encryption
+   * status, extracts binary key material from the PEM envelope, and imports
+   * it as PBKDF2 key material.
+   */
+  private async readAndValidateSshKey(
+    sshKeyPath: string,
+  ): Promise<CryptoKey> {
+    const expandedPath = sshKeyPath.startsWith("~/")
+      ? sshKeyPath.replace("~/", `${Deno.env.get("HOME")}/`)
+      : sshKeyPath;
+
+    await this.validateSshKeyPermissions(expandedPath);
+    const content = await Deno.readTextFile(expandedPath);
+
+    // Detect PEM encryption before extraction (text-based check avoids
+    // base64 decode failures on header lines like Proc-Type)
+    this.detectEncryptedPemKey(content);
+
+    const decodedBytes = this.extractPemKeyMaterial(content);
+
+    // Detect OpenSSH encryption after extraction (needs decoded bytes
+    // to read the binary cipher name field)
+    this.detectEncryptedOpenSshKey(decodedBytes);
+
+    return await crypto.subtle.importKey(
+      "raw",
+      decodedBytes.buffer as ArrayBuffer,
+      { name: "PBKDF2" },
+      false,
+      ["deriveKey"],
+    );
+  }
+
+  /**
+   * Extracts the binary key material from a PEM-encoded SSH key.
+   * Strips the PEM header/footer lines and decodes the base64 body,
+   * returning only the raw key bytes for use as PBKDF2 input.
+   */
+  private extractPemKeyMaterial(content: string): Uint8Array {
+    const lines = content.split(/\r?\n/);
+    const base64Lines = lines.filter((line) => {
+      const trimmed = line.trim();
+      return trimmed.length > 0 && !trimmed.startsWith("-----");
+    });
+    const base64String = base64Lines.join("");
+    const binaryString = atob(base64String);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  /**
+   * Validates that an SSH key file has restrictive permissions (no group/other access).
+   * Skipped on Windows where POSIX permissions are not available.
+   */
+  private async validateSshKeyPermissions(path: string): Promise<void> {
+    if (Deno.build.os === "windows") return;
+    const stat = await Deno.stat(path);
+    if (stat.mode === null) return;
+    if ((stat.mode & 0o077) !== 0) {
+      const octal = "0o" + (stat.mode & 0o777).toString(8);
+      throw new Error(
+        `SSH key '${path}' has insecure permissions (${octal}). ` +
+          `Expected permissions no wider than 0o600. ` +
+          `Run 'chmod 600 ${path}' to fix.`,
+      );
+    }
+  }
+
+  /**
+   * Detects passphrase-encrypted legacy PEM keys (RSA/DSA/EC) by checking
+   * for the Proc-Type encryption header.
+   */
+  private detectEncryptedPemKey(content: string): void {
+    if (content.includes("Proc-Type: 4,ENCRYPTED")) {
+      throw new Error(
+        `SSH key is encrypted (legacy PEM format). ` +
+          `Swamp cannot use passphrase-protected SSH keys for vault encryption. ` +
+          `Use an unencrypted SSH key or enable 'auto_generate' in vault configuration.`,
+      );
+    }
+  }
+
+  /**
+   * Detects passphrase-encrypted OpenSSH keys by reading the cipher name
+   * from the binary key format (magic "openssh-key-v1\0", then uint32
+   * length-prefixed cipher name). Only rejects confirmed encrypted keys;
+   * parsing failures are silently allowed through.
+   */
+  private detectEncryptedOpenSshKey(decodedBytes: Uint8Array): void {
+    const magic = new TextEncoder().encode("openssh-key-v1\0");
+
+    // Verify we have enough bytes and the magic matches
+    if (decodedBytes.length < magic.length + 4) return;
+    for (let i = 0; i < magic.length; i++) {
+      if (decodedBytes[i] !== magic[i]) return;
+    }
+
+    // Read cipher name length (uint32 big-endian)
+    const offset = magic.length;
+    const cipherNameLen = (decodedBytes[offset] << 24) |
+      (decodedBytes[offset + 1] << 16) |
+      (decodedBytes[offset + 2] << 8) |
+      decodedBytes[offset + 3];
+
+    if (offset + 4 + cipherNameLen > decodedBytes.length) return;
+    const cipherName = new TextDecoder().decode(
+      decodedBytes.slice(offset + 4, offset + 4 + cipherNameLen),
+    );
+
+    if (cipherName !== "none") {
+      throw new Error(
+        `SSH key is encrypted (cipher: ${cipherName}). ` +
+          `Swamp cannot use passphrase-protected SSH keys for vault encryption. ` +
+          `Use an unencrypted SSH key or enable 'auto_generate' in vault configuration.`,
+      );
+    }
+  }
+
+  /**
    * Encrypts a value using AES-GCM.
    */
   private async encrypt(
@@ -336,7 +432,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
       iv: this.arrayBufferToBase64(iv),
       data: this.arrayBufferToBase64(encrypted),
       salt: this.arrayBufferToBase64(salt),
-      version: 1,
+      version: 2,
     };
   }
 
