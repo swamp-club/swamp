@@ -378,6 +378,29 @@ Deno.test("LocalEncryptionVaultProvider - error handling", async (t) => {
   });
 });
 
+Deno.test("LocalEncryptionVaultProvider - file permissions", async (t) => {
+  await t.step(
+    "should create .enc files with 0o600 permissions",
+    async () => {
+      await withTempDir(async (dir) => {
+        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY);
+
+        const vaultSecretsDir = secretsDir(dir, "perms-vault");
+        const config: LocalEncryptionConfig = {
+          ssh_key_path: "test_ssh_key",
+          base_dir: dir,
+        };
+        const vault = new LocalEncryptionVaultProvider("perms-vault", config);
+
+        await vault.put("secret-key", "secret-value");
+
+        const stat = await Deno.stat(join(vaultSecretsDir, "secret-key.enc"));
+        assertEquals(stat.mode! & 0o777, 0o600);
+      });
+    },
+  );
+});
+
 Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
   await t.step("should use different salts for different secrets", async () => {
     await withTempDir(async (dir) => {

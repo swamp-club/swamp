@@ -117,6 +117,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     await atomicWriteTextFile(
       encryptedFilePath,
       JSON.stringify(encryptedData, null, 2),
+      { mode: 0o600 },
     );
   }
 
