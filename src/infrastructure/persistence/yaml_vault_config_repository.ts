@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -234,7 +234,27 @@ export class YamlVaultConfigRepository {
    * Gets the directory for a specific vault type.
    */
   private getTypeDir(vaultType: string): string {
-    return join(this.getVaultDir(), vaultType);
+    const vaultDir = this.getVaultDir();
+    const result = join(vaultDir, vaultType);
+    this.assertPathContained(result, vaultDir, `vaultType "${vaultType}"`);
+    return result;
+  }
+
+  private assertPathContained(
+    path: string,
+    expectedParent: string,
+    context: string,
+  ): void {
+    const resolvedPath = resolve(path);
+    const resolvedParent = resolve(expectedParent);
+    if (
+      resolvedPath !== resolvedParent &&
+      !resolvedPath.startsWith(resolvedParent + "/")
+    ) {
+      throw new Error(
+        `Path traversal detected: ${context} resolves outside expected directory`,
+      );
+    }
   }
 
   /**
