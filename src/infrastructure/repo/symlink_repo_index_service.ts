@@ -25,7 +25,7 @@
  */
 
 import { ensureDir } from "@std/fs";
-import { join, relative } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
   SWAMP_DATA_DIR,
@@ -126,7 +126,13 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   }
 
   async handleModelDeleted(event: ModelDeleted): Promise<void> {
-    const modelDir = join(this.repoDir, "models", event.modelName);
+    const modelsBaseDir = join(this.repoDir, "models");
+    const modelDir = join(modelsBaseDir, event.modelName);
+    this.assertPathContained(
+      modelDir,
+      modelsBaseDir,
+      `modelName "${event.modelName}"`,
+    );
     await this.removeDirectory(modelDir);
   }
 
@@ -143,7 +149,13 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   }
 
   async handleWorkflowDeleted(event: WorkflowDeleted): Promise<void> {
-    const workflowDir = join(this.repoDir, "workflows", event.workflowName);
+    const workflowsBaseDir = join(this.repoDir, "workflows");
+    const workflowDir = join(workflowsBaseDir, event.workflowName);
+    this.assertPathContained(
+      workflowDir,
+      workflowsBaseDir,
+      `workflowName "${event.workflowName}"`,
+    );
     await this.removeDirectory(workflowDir);
   }
 
@@ -188,7 +200,13 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   }
 
   async handleVaultDeleted(event: VaultDeleted): Promise<void> {
-    const vaultDir = join(this.repoDir, "vaults", event.vaultName);
+    const vaultsBaseDir = join(this.repoDir, "vaults");
+    const vaultDir = join(vaultsBaseDir, event.vaultName);
+    this.assertPathContained(
+      vaultDir,
+      vaultsBaseDir,
+      `vaultName "${event.vaultName}"`,
+    );
     await this.removeDirectory(vaultDir);
   }
 
@@ -393,7 +411,13 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     modelInputId: string,
     modelName: string,
   ): Promise<void> {
-    const modelDir = join(this.repoDir, "models", modelName);
+    const modelsBaseDir = join(this.repoDir, "models");
+    const modelDir = join(modelsBaseDir, modelName);
+    this.assertPathContained(
+      modelDir,
+      modelsBaseDir,
+      `modelName "${modelName}"`,
+    );
     await ensureDir(modelDir);
 
     // Create ModelType for path generation
@@ -518,11 +542,22 @@ export class SymlinkRepoIndexService implements RepoIndexService {
 
       // Create symlinks for custom tags: {tag-key}/{tag-value}/
       for (const [tagKey, valueMap] of customTags) {
-        const tagKeyDir = join(typeDir, "..", tagKey);
+        const modelDir = join(typeDir, "..");
+        const tagKeyDir = join(modelDir, tagKey);
+        this.assertPathContained(
+          tagKeyDir,
+          modelDir,
+          `tagKey "${tagKey}"`,
+        );
         await ensureDir(tagKeyDir);
 
         for (const [tagValue, dataItems] of valueMap) {
           const tagValueDir = join(tagKeyDir, tagValue);
+          this.assertPathContained(
+            tagValueDir,
+            tagKeyDir,
+            `tagValue "${tagValue}"`,
+          );
           await ensureDir(tagValueDir);
 
           for (const data of dataItems) {
@@ -548,6 +583,12 @@ export class SymlinkRepoIndexService implements RepoIndexService {
         }
       }
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.startsWith("Path traversal detected")
+      ) {
+        throw error;
+      }
       logger.debug`Failed to index tag-based data: ${error}`;
     }
   }
@@ -579,7 +620,13 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     workflowId: string,
     workflowName: string,
   ): Promise<void> {
-    const workflowDir = join(this.repoDir, "workflows", workflowName);
+    const workflowsBaseDir = join(this.repoDir, "workflows");
+    const workflowDir = join(workflowsBaseDir, workflowName);
+    this.assertPathContained(
+      workflowDir,
+      workflowsBaseDir,
+      `workflowName "${workflowName}"`,
+    );
     await ensureDir(workflowDir);
 
     // Symlink to workflow.yaml
@@ -605,7 +652,13 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     workflowName: string,
     runId: string,
   ): Promise<void> {
-    const workflowDir = join(this.repoDir, "workflows", workflowName);
+    const workflowsBaseDir = join(this.repoDir, "workflows");
+    const workflowDir = join(workflowsBaseDir, workflowName);
+    this.assertPathContained(
+      workflowDir,
+      workflowsBaseDir,
+      `workflowName "${workflowName}"`,
+    );
     const runsDir = join(workflowDir, "runs");
     await ensureDir(runsDir);
 
@@ -647,6 +700,11 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       for (const job of run.jobs) {
         for (const step of job.steps) {
           const stepDir = join(stepsDir, step.stepName);
+          this.assertPathContained(
+            stepDir,
+            stepsDir,
+            `stepName "${step.stepName}"`,
+          );
           await ensureDir(stepDir);
 
           // Note: Step output symlinks would require additional context
@@ -668,7 +726,13 @@ export class SymlinkRepoIndexService implements RepoIndexService {
     vaultType: string,
     vaultName: string,
   ): Promise<void> {
-    const vaultDir = join(this.repoDir, "vaults", vaultName);
+    const vaultsBaseDir = join(this.repoDir, "vaults");
+    const vaultDir = join(vaultsBaseDir, vaultName);
+    this.assertPathContained(
+      vaultDir,
+      vaultsBaseDir,
+      `vaultName "${vaultName}"`,
+    );
     await ensureDir(vaultDir);
 
     // Symlink to vault.yaml
@@ -909,6 +973,27 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
       }
+    }
+  }
+
+  /**
+   * Asserts that a path is contained within an expected parent directory.
+   * Throws if the resolved path escapes the parent, preventing path traversal.
+   */
+  private assertPathContained(
+    path: string,
+    expectedParent: string,
+    context: string,
+  ): void {
+    const resolvedPath = resolve(path);
+    const resolvedParent = resolve(expectedParent);
+    if (
+      resolvedPath !== resolvedParent &&
+      !resolvedPath.startsWith(resolvedParent + "/")
+    ) {
+      throw new Error(
+        `Path traversal detected: ${context} resolves outside expected directory`,
+      );
     }
   }
 

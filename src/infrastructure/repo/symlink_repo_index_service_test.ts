@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { SymlinkRepoIndexService } from "./symlink_repo_index_service.ts";
@@ -34,6 +34,11 @@ import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   createModelCreated,
   createModelDeleted,
+  createVaultCreated,
+  createVaultDeleted,
+  createWorkflowCreated,
+  createWorkflowDeleted,
+  createWorkflowRunStarted,
 } from "../../domain/events/types.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -430,5 +435,144 @@ Deno.test("SymlinkRepoIndexService indexes workflow runs with latest symlink", a
     const latestPath = join(runsDir, "latest");
     const latestInfo = await Deno.lstat(latestPath);
     assertEquals(latestInfo.isSymlink, true);
+  });
+});
+
+// ============================================================================
+// Path Traversal Protection Tests
+// ============================================================================
+
+Deno.test("path traversal protection: model name in handleModelCreated", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    const event = createModelCreated(
+      type.normalized,
+      "some-id",
+      "../../../malicious",
+    );
+    await assertRejects(
+      () => indexService.handleModelCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: model name in handleModelDeleted", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    const event = createModelDeleted(
+      type.normalized,
+      "some-id",
+      "../../../malicious",
+    );
+    await assertRejects(
+      () => indexService.handleModelDeleted(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: workflow name in handleWorkflowCreated", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const event = createWorkflowCreated("some-id", "../../../malicious");
+    await assertRejects(
+      () => indexService.handleWorkflowCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: workflow name in handleWorkflowDeleted", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const event = createWorkflowDeleted("some-id", "../../../malicious");
+    await assertRejects(
+      () => indexService.handleWorkflowDeleted(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: vault name in handleVaultCreated", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const event = createVaultCreated(
+      "some-id",
+      "local_encryption",
+      "../../../malicious",
+    );
+    await assertRejects(
+      () => indexService.handleVaultCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: vault name in handleVaultDeleted", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const event = createVaultDeleted(
+      "some-id",
+      "local_encryption",
+      "../../../malicious",
+    );
+    await assertRejects(
+      () => indexService.handleVaultDeleted(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: step name in handleWorkflowRunStarted", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, workflowRepo, workflowRunRepo } = createIndexService(
+      dir,
+    );
+
+    // Create a workflow with a step whose name is a path traversal attempt
+    const step = Step.create({
+      name: "../../../malicious",
+      task: StepTask.model("test-model", "run"),
+    });
+    const job = Job.create({ name: "job1", steps: [step] });
+    const workflow = Workflow.create({ name: "my-workflow", jobs: [job] });
+    await workflowRepo.save(workflow);
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await workflowRunRepo.save(workflow.id, run);
+
+    const event = createWorkflowRunStarted(
+      workflow.id,
+      workflow.name,
+      run.id,
+    );
+    await assertRejects(
+      () => indexService.handleWorkflowRunStarted(event),
+      Error,
+      "Path traversal detected",
+    );
   });
 });
