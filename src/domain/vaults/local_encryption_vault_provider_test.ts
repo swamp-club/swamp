@@ -84,7 +84,9 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
   await t.step("should encrypt and decrypt secrets with SSH key", async () => {
     await withTempDir(async (dir) => {
       // Create a mock SSH key file
-      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY);
+      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
+        mode: 0o600,
+      });
 
       const config: LocalEncryptionConfig = {
         ssh_key_path: "test_ssh_key",
@@ -104,7 +106,9 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
     "should create vault directory with proper permissions",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY);
+        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
+          mode: 0o600,
+        });
 
         const vaultSecretsDir = secretsDir(dir, "secure-vault");
         const config: LocalEncryptionConfig = {
@@ -123,7 +127,9 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
 
   await t.step("should store secrets in separate encrypted files", async () => {
     await withTempDir(async (dir) => {
-      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY);
+      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
+        mode: 0o600,
+      });
 
       const vaultSecretsDir = secretsDir(dir, "multi-vault");
       const config: LocalEncryptionConfig = {
@@ -156,7 +162,7 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
       assertEquals(typeof parsed1.iv, "string");
       assertEquals(typeof parsed1.data, "string");
       assertEquals(typeof parsed1.salt, "string");
-      assertEquals(parsed1.version, 1);
+      assertEquals(parsed1.version, 2);
 
       // Should not contain plaintext
       assertStringIncludes(content1, '"data"');
@@ -167,7 +173,9 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
 
   await t.step("should handle multiple secrets with same SSH key", async () => {
     await withTempDir(async (dir) => {
-      await Deno.writeTextFile("shared_ssh_key", MOCK_SSH_PRIVATE_KEY);
+      await Deno.writeTextFile("shared_ssh_key", MOCK_SSH_PRIVATE_KEY, {
+        mode: 0o600,
+      });
 
       const config: LocalEncryptionConfig = {
         ssh_key_path: "shared_ssh_key",
@@ -426,7 +434,9 @@ Deno.test("LocalEncryptionVaultProvider - file permissions", async (t) => {
     "should create .enc files with 0o600 permissions",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY);
+        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
+          mode: 0o600,
+        });
 
         const vaultSecretsDir = secretsDir(dir, "perms-vault");
         const config: LocalEncryptionConfig = {
@@ -447,7 +457,9 @@ Deno.test("LocalEncryptionVaultProvider - file permissions", async (t) => {
 Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
   await t.step("should use different salts for different secrets", async () => {
     await withTempDir(async (dir) => {
-      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY);
+      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
+        mode: 0o600,
+      });
 
       const vaultSecretsDir = secretsDir(dir, "security-vault");
       const config: LocalEncryptionConfig = {
@@ -481,7 +493,9 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
     "should use different IVs for same secret updated multiple times",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY);
+        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
+          mode: 0o600,
+        });
 
         const vaultSecretsDir = secretsDir(dir, "iv-test-vault");
         const config: LocalEncryptionConfig = {
@@ -519,7 +533,9 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
     "should handle special characters and unicode in secrets",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY);
+        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
+          mode: 0o600,
+        });
 
         const config: LocalEncryptionConfig = {
           ssh_key_path: "test_ssh_key",
@@ -766,6 +782,181 @@ Deno.test("LocalEncryptionVaultProvider - path traversal prevention", async (t) 
         assertEquals(await vault.get("db_password"), "value2");
         assertEquals(await vault.get("config.prod"), "value3");
         assertEquals(await vault.get("MySecret123"), "value4");
+      });
+    },
+  );
+});
+
+/**
+ * Builds a mock encrypted OpenSSH private key with the given cipher name
+ * in the binary format header.
+ */
+function createMockEncryptedOpenSshKey(cipher: string): string {
+  const magic = new TextEncoder().encode("openssh-key-v1\0");
+  const cipherBytes = new TextEncoder().encode(cipher);
+  const cipherLenBuf = new DataView(new ArrayBuffer(4));
+  cipherLenBuf.setUint32(0, cipherBytes.length, false); // big-endian
+  const padding = new Uint8Array(64);
+
+  const total = magic.length + 4 + cipherBytes.length + padding.length;
+  const buf = new Uint8Array(total);
+  let off = 0;
+  buf.set(magic, off);
+  off += magic.length;
+  buf.set(new Uint8Array(cipherLenBuf.buffer), off);
+  off += 4;
+  buf.set(cipherBytes, off);
+  off += cipherBytes.length;
+  buf.set(padding, off);
+
+  let binary = "";
+  for (let i = 0; i < buf.length; i++) {
+    binary += String.fromCharCode(buf[i]);
+  }
+  const base64 = btoa(binary);
+  const lines = base64.match(/.{1,70}/g) || [];
+  return `-----BEGIN OPENSSH PRIVATE KEY-----\n${
+    lines.join("\n")
+  }\n-----END OPENSSH PRIVATE KEY-----`;
+}
+
+const MOCK_ENCRYPTED_PEM_KEY = `-----BEGIN RSA PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: AES-128-CBC,1234567890ABCDEF1234567890ABCDEF
+
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAFwAAAAdzc2gtcn
+NhAAAAAwEAAQAAAQEA7V3jKJJHtN4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N
+4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N4N
+-----END RSA PRIVATE KEY-----`;
+
+Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
+  await t.step(
+    "should reject encrypted OpenSSH key",
+    async () => {
+      await withTempDir(async (_dir) => {
+        const encryptedKey = createMockEncryptedOpenSshKey("aes256-ctr");
+        await Deno.writeTextFile("encrypted_openssh_key", encryptedKey, {
+          mode: 0o600,
+        });
+
+        const config: LocalEncryptionConfig = {
+          ssh_key_path: "encrypted_openssh_key",
+        };
+        const vault = new LocalEncryptionVaultProvider(
+          "encrypted-openssh-vault",
+          config,
+        );
+
+        const error = await assertRejects(
+          () => vault.put("test-key", "test-value"),
+          Error,
+        );
+
+        assertStringIncludes(error.message, "SSH key is encrypted");
+        assertStringIncludes(error.message, "aes256-ctr");
+      });
+    },
+  );
+
+  await t.step(
+    "should reject encrypted PEM key",
+    async () => {
+      await withTempDir(async (_dir) => {
+        await Deno.writeTextFile("encrypted_pem_key", MOCK_ENCRYPTED_PEM_KEY, {
+          mode: 0o600,
+        });
+
+        const config: LocalEncryptionConfig = {
+          ssh_key_path: "encrypted_pem_key",
+        };
+        const vault = new LocalEncryptionVaultProvider(
+          "encrypted-pem-vault",
+          config,
+        );
+
+        const error = await assertRejects(
+          () => vault.put("test-key", "test-value"),
+          Error,
+        );
+
+        assertStringIncludes(error.message, "SSH key is encrypted");
+        assertStringIncludes(error.message, "legacy PEM format");
+      });
+    },
+  );
+
+  await t.step(
+    "should reject SSH key with insecure permissions (0644)",
+    async () => {
+      await withTempDir(async (_dir) => {
+        await Deno.writeTextFile("insecure_key", MOCK_SSH_PRIVATE_KEY, {
+          mode: 0o644,
+        });
+
+        const config: LocalEncryptionConfig = {
+          ssh_key_path: "insecure_key",
+        };
+        const vault = new LocalEncryptionVaultProvider(
+          "insecure-perms-vault",
+          config,
+        );
+
+        const error = await assertRejects(
+          () => vault.put("test-key", "test-value"),
+          Error,
+        );
+
+        assertStringIncludes(error.message, "insecure permissions");
+        assertStringIncludes(error.message, "chmod 600");
+      });
+    },
+  );
+
+  await t.step(
+    "should accept SSH key with secure permissions (0600)",
+    async () => {
+      await withTempDir(async (dir) => {
+        await Deno.writeTextFile("secure_key", MOCK_SSH_PRIVATE_KEY, {
+          mode: 0o600,
+        });
+
+        const config: LocalEncryptionConfig = {
+          ssh_key_path: "secure_key",
+          base_dir: dir,
+        };
+        const vault = new LocalEncryptionVaultProvider(
+          "secure-perms-vault",
+          config,
+        );
+
+        await vault.put("test-key", "test-value");
+        const retrieved = await vault.get("test-key");
+        assertEquals(retrieved, "test-value");
+      });
+    },
+  );
+
+  await t.step(
+    "should fall back to auto-generate when SSH key has insecure permissions",
+    async () => {
+      await withTempDir(async (dir) => {
+        await Deno.writeTextFile("bad_perms_key", MOCK_SSH_PRIVATE_KEY, {
+          mode: 0o644,
+        });
+
+        const config: LocalEncryptionConfig = {
+          ssh_key_path: "bad_perms_key",
+          auto_generate: true,
+          base_dir: dir,
+        };
+        const vault = new LocalEncryptionVaultProvider(
+          "fallback-perms-vault",
+          config,
+        );
+
+        await vault.put("fallback-secret", "fallback-value");
+        const retrieved = await vault.get("fallback-secret");
+        assertEquals(retrieved, "fallback-value");
       });
     },
   );
