@@ -267,19 +267,42 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
           false,
           ["deriveKey"],
         );
-      } catch {
-        // Generate new key if it doesn't exist
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+        // Key file doesn't exist — generate a new one with exclusive creation
         await this.ensureVaultDirectory();
         const generatedKey = crypto.randomUUID() + crypto.randomUUID(); // 72 chars
-        await atomicWriteTextFile(keyFile, generatedKey, { mode: 0o600 });
 
-        return await crypto.subtle.importKey(
-          "raw",
-          new TextEncoder().encode(generatedKey),
-          { name: "PBKDF2" },
-          false,
-          ["deriveKey"],
-        );
+        try {
+          // createNew: true uses O_CREAT | O_EXCL — atomic exclusive creation
+          // prevents TOCTOU race where two processes both generate different keys
+          await Deno.writeTextFile(keyFile, generatedKey, {
+            createNew: true,
+            mode: 0o600,
+          });
+          return await crypto.subtle.importKey(
+            "raw",
+            new TextEncoder().encode(generatedKey),
+            { name: "PBKDF2" },
+            false,
+            ["deriveKey"],
+          );
+        } catch (writeError) {
+          if (!(writeError instanceof Deno.errors.AlreadyExists)) {
+            throw writeError;
+          }
+          // Another process won the race — read back their key
+          const winnerKey = await Deno.readTextFile(keyFile);
+          return await crypto.subtle.importKey(
+            "raw",
+            new TextEncoder().encode(winnerKey),
+            { name: "PBKDF2" },
+            false,
+            ["deriveKey"],
+          );
+        }
       }
     }
 
