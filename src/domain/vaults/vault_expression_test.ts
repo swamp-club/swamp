@@ -182,6 +182,26 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
     assertEquals(result, '"col1\\tcol2\\tcol3"');
   });
 
+  await t.step("should escape single quotes in secret values", async () => {
+    const resolver = createResolverWithMockVault({
+      "quote-secret": "p@ss'w0rd",
+    });
+    const result = await resolver.resolveVaultExpressions(
+      "vault.get(test-vault, quote-secret)",
+    );
+    assertEquals(result, '"p@ss\\\'w0rd"');
+  });
+
+  await t.step("should escape backticks in secret values", async () => {
+    const resolver = createResolverWithMockVault({
+      "backtick-secret": "value`with`backticks",
+    });
+    const result = await resolver.resolveVaultExpressions(
+      "vault.get(test-vault, backtick-secret)",
+    );
+    assertEquals(result, '"value\\`with\\`backticks"');
+  });
+
   await t.step(
     "should handle complex secret with multiple special characters",
     async () => {
@@ -256,7 +276,7 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, dollar-backtick)",
       );
-      assertEquals(result, '"prefix$`suffix"');
+      assertEquals(result, '"prefix$\\`suffix"');
     },
   );
 
@@ -269,7 +289,7 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, dollar-quote)",
       );
-      assertEquals(result, '"prefix$\'suffix"');
+      assertEquals(result, '"prefix$\\\'suffix"');
     },
   );
 
@@ -308,7 +328,7 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, multi-dollar)",
       );
-      assertEquals(result, '"a]$&b$`c$\'d$$e$1f"');
+      assertEquals(result, '"a]$&b$\\`c$\\\'d$$e$1f"');
     },
   );
 
