@@ -18,7 +18,15 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const association = context.payload.issue.author_association;
+            const payloadAssociation = context.payload.issue.author_association;
+            core.info(`Webhook payload author_association: ${payloadAssociation}`);
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+            });
+            const association = issue.author_association;
+            core.info(`REST API author_association: ${association}`);
             const isMaintainer = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(association);
             core.setOutput('is_maintainer', isMaintainer.toString());
 
