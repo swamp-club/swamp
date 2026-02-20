@@ -83,6 +83,7 @@ export interface RepoUpgradeResult {
   upgradedAt: string;
   skillsUpdated: string[];
   settingsUpdated: boolean;
+  gitignoreCreated: boolean;
   tool: AiTool;
 }
 
@@ -231,6 +232,12 @@ export class RepoService {
       settingsUpdated = await this.updateClaudeSettings(repoPath);
     }
 
+    // Create .gitignore if it doesn't exist
+    const gitignoreCreated = await this.createGitignoreIfNotExists(
+      repoPath,
+      tool,
+    );
+
     // createUpgradeMarker always sets upgradedAt, but TypeScript doesn't know this
     if (!updatedMarker.upgradedAt) {
       throw new Error(
@@ -245,6 +252,7 @@ export class RepoService {
       upgradedAt: updatedMarker.upgradedAt,
       skillsUpdated,
       settingsUpdated,
+      gitignoreCreated,
       tool,
     };
   }

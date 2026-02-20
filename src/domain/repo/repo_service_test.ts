@@ -722,6 +722,45 @@ Deno.test("RepoService.upgrade skips settings for non-claude tools", async () =>
   });
 });
 
+Deno.test("RepoService.upgrade creates .gitignore if missing", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init (creates .gitignore), then delete it
+    await service.init(repoPath);
+    const gitignorePath = join(tempDir, ".gitignore");
+    await Deno.remove(gitignorePath);
+
+    // Upgrade should recreate .gitignore
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.gitignoreCreated, true);
+
+    const content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(content, ".swamp/telemetry/");
+    assertStringIncludes(content, ".swamp/secrets/keyfile");
+    assertStringIncludes(content, ".claude/");
+  });
+});
+
+Deno.test("RepoService.upgrade does not overwrite existing .gitignore", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init creates .gitignore
+    await service.init(repoPath);
+
+    // Upgrade should leave .gitignore unchanged
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.gitignoreCreated, false);
+  });
+});
+
 Deno.test("RepoService.init cursor instructions have MDC frontmatter", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");

@@ -105,6 +105,7 @@ export const repoUpgradeCommand = new Command()
       upgradedAt: result.upgradedAt,
       skillsUpdated: result.skillsUpdated,
       settingsUpdated: result.settingsUpdated,
+      gitignoreCreated: result.gitignoreCreated,
       tool: result.tool,
     };
 
