@@ -24,7 +24,9 @@ import { SymlinkRepoIndexService } from "./symlink_repo_index_service.ts";
 import { YamlDefinitionRepository } from "../persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRepository } from "../persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../persistence/yaml_workflow_run_repository.ts";
+import type { UnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
+import { Data } from "../../domain/data/data.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
@@ -68,7 +70,9 @@ async function setupRepoDir(dir: string): Promise<void> {
   }
 }
 
-function createIndexService(dir: string) {
+function createIndexService(dir: string, opts?: {
+  unifiedDataRepo?: UnifiedDataRepository;
+}) {
   const definitionRepo = new YamlDefinitionRepository(dir);
   const workflowRepo = new YamlWorkflowRepository(dir);
   const workflowRunRepo = new YamlWorkflowRunRepository(dir);
@@ -79,10 +83,38 @@ function createIndexService(dir: string) {
       definitionRepo,
       workflowRepo,
       workflowRunRepo,
+      unifiedDataRepo: opts?.unifiedDataRepo,
     }),
     definitionRepo,
     workflowRepo,
     workflowRunRepo,
+  };
+}
+
+function createStubUnifiedDataRepo(
+  dataItems: Data[],
+): UnifiedDataRepository {
+  const notImplemented = () => {
+    throw new Error("not implemented");
+  };
+  return {
+    findAllGlobal: notImplemented,
+    findByName: notImplemented,
+    findById: notImplemented,
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve(dataItems),
+    save: notImplemented,
+    append: notImplemented,
+    stream: notImplemented,
+    getContent: notImplemented,
+    delete: notImplemented,
+    removeLatestSymlink: notImplemented,
+    allocateVersion: notImplemented,
+    finalizeVersion: notImplemented,
+    nextId: notImplemented,
+    getPath: notImplemented,
+    getContentPath: notImplemented,
+    collectGarbage: notImplemented,
   };
 }
 
@@ -538,6 +570,82 @@ Deno.test("path traversal protection: vault name in handleVaultDeleted", async (
     );
     await assertRejects(
       () => indexService.handleVaultDeleted(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: tag key in indexTagBasedData", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const maliciousData = Data.create({
+      name: "test-data",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { "type": "resource", "../../../malicious": "value" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+    const stubRepo = createStubUnifiedDataRepo([maliciousData]);
+    const { indexService, definitionRepo } = createIndexService(dir, {
+      unifiedDataRepo: stubRepo,
+    });
+
+    const type = ModelType.create("swamp/echo");
+    const definition = Definition.create({
+      name: "tag-key-model",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await assertRejects(
+      () => indexService.handleModelCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: tag value in indexTagBasedData", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const maliciousData = Data.create({
+      name: "test-data",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { "type": "resource", "safe-key": "../../../malicious" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+    const stubRepo = createStubUnifiedDataRepo([maliciousData]);
+    const { indexService, definitionRepo } = createIndexService(dir, {
+      unifiedDataRepo: stubRepo,
+    });
+
+    const type = ModelType.create("swamp/echo");
+    const definition = Definition.create({
+      name: "tag-value-model",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await assertRejects(
+      () => indexService.handleModelCreated(event),
       Error,
       "Path traversal detected",
     );
