@@ -788,12 +788,16 @@ export class ModelResolver {
       const [fullMatch, , vaultName, , secretKey] = match;
       try {
         const secretValue = await vaultService.get(vaultName, secretKey);
-        // Escape special characters to prevent CEL parsing issues and injection attacks
+        // Escape special characters to prevent CEL parsing issues and injection attacks.
+        // For $ and `, we use a \\X prefix (two backslashes + char) so that:
+        //   - CEL sees \\ → produces one \, then the char is a plain literal
+        //   - Shell receives \$ or \` → literal character, no command substitution
         const escapedValue = secretValue
           .replace(/\\/g, "\\\\")
+          .replace(/\$/g, "\\\\$") // $ → \\$ so CEL produces \$, shell treats as literal $
+          .replace(/`/g, "\\\\`") // ` → \\` so CEL produces \`, shell treats as literal `
           .replace(/"/g, '\\"')
           .replace(/'/g, "\\'")
-          .replace(/`/g, "\\`")
           .replace(/\n/g, "\\n")
           .replace(/\r/g, "\\r")
           .replace(/\t/g, "\\t");

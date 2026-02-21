@@ -165,6 +165,27 @@ attributes:
   keyData: ${{ vault.get(aws, machineKeyData) }}
 ```
 
+### Shell Safety
+
+When vault secrets are injected into the `run` field of a `command/shell` model via CEL
+string concatenation, shell metacharacters in the secret value are automatically escaped so
+that the value is always treated as **literal data**, never as shell syntax.
+
+Specifically, `$` and `` ` `` are escaped so that `$(cmd)` and `` `cmd` `` in a secret
+value do not trigger command substitution:
+
+```yaml
+# Secret value: $(cat /etc/passwd)
+# Shell receives: \$(cat /etc/passwd)  → outputs literally: $(cat /etc/passwd)
+attributes:
+  run: '"echo " + vault.get(''my-vault'', ''SECRET'') + '' done'''
+```
+
+This means:
+- `$VAR_NAME` in a secret is **not** expanded as a shell variable — it appears literally.
+- `$(cmd)` and `` `cmd` `` in a secret are **not** executed — they appear literally.
+- Prices, connection strings, and other data containing `$` are safe to store and use.
+
 ## Environment Variables
 
 All process environment variables are available in CEL expressions via the `env`

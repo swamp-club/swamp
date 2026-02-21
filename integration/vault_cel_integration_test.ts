@@ -726,9 +726,12 @@ Deno.test("Vault CEL: handles secrets with special characters", async () => {
     ]);
 
     // Store secret with special characters
-    // Note: Avoiding characters that require escaping in CEL strings
-    // (backslashes, quotes, newlines) as these are escaped for CEL parsing
+    // Note: $ and ` are escaped with a \\ prefix so that after CEL evaluation
+    // the shell receives \$ and \` (literal characters, no command substitution).
+    // Backslashes, quotes, and newlines are also escaped for CEL string safety.
     const specialSecret = "p@ssw0rd!#$%^&*()_+-=[]{}|;:.<>?/";
+    // After escaping, $ becomes \$ so the resolved CEL value includes the backslash
+    const expectedResolved = "p@ssw0rd!#\\$%^&*()_+-=[]{}|;:.<>?/";
     const vaultServiceForPut = await VaultService.fromRepository(repoDir);
     await vaultServiceForPut.put(
       "special-chars-vault",
@@ -760,7 +763,7 @@ Deno.test("Vault CEL: handles secrets with special characters", async () => {
       result.definition,
     );
 
-    assertEquals(resolved.globalArguments.password, specialSecret);
+    assertEquals(resolved.globalArguments.password, expectedResolved);
   });
 });
 

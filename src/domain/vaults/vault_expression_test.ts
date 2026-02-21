@@ -199,7 +199,7 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
     const result = await resolver.resolveVaultExpressions(
       "vault.get(test-vault, backtick-secret)",
     );
-    assertEquals(result, '"value\\`with\\`backticks"');
+    assertEquals(result, '"value\\\\`with\\\\`backticks"');
   });
 
   await t.step(
@@ -255,7 +255,7 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
   });
 
   await t.step(
-    "should preserve $& pattern in secret values",
+    "should escape $ in secret values to prevent shell variable expansion",
     async () => {
       const resolver = createResolverWithMockVault({
         "dollar-amp": "my$&secret",
@@ -263,12 +263,12 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, dollar-amp)",
       );
-      assertEquals(result, '"my$&secret"');
+      assertEquals(result, '"my\\\\$&secret"');
     },
   );
 
   await t.step(
-    "should preserve $` pattern in secret values",
+    "should escape $` pattern in secret values",
     async () => {
       const resolver = createResolverWithMockVault({
         "dollar-backtick": "prefix$`suffix",
@@ -276,12 +276,12 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, dollar-backtick)",
       );
-      assertEquals(result, '"prefix$\\`suffix"');
+      assertEquals(result, '"prefix\\\\$\\\\`suffix"');
     },
   );
 
   await t.step(
-    "should preserve $' pattern in secret values",
+    "should escape $' pattern in secret values",
     async () => {
       const resolver = createResolverWithMockVault({
         "dollar-quote": "prefix$'suffix",
@@ -289,12 +289,12 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, dollar-quote)",
       );
-      assertEquals(result, '"prefix$\\\'suffix"');
+      assertEquals(result, '"prefix\\\\$\\\'suffix"');
     },
   );
 
   await t.step(
-    "should preserve $$ pattern in secret values",
+    "should escape $$ pattern in secret values",
     async () => {
       const resolver = createResolverWithMockVault({
         "dollar-dollar": "cost: $$100",
@@ -302,12 +302,12 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, dollar-dollar)",
       );
-      assertEquals(result, '"cost: $$100"');
+      assertEquals(result, '"cost: \\\\$\\\\$100"');
     },
   );
 
   await t.step(
-    "should preserve numbered capture group patterns in secret values",
+    "should escape numbered dollar patterns in secret values",
     async () => {
       const resolver = createResolverWithMockVault({
         "dollar-numbers": "$1$2$3",
@@ -315,12 +315,12 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, dollar-numbers)",
       );
-      assertEquals(result, '"$1$2$3"');
+      assertEquals(result, '"\\\\$1\\\\$2\\\\$3"');
     },
   );
 
   await t.step(
-    "should preserve multiple dollar patterns in same secret",
+    "should escape multiple dollar and backtick patterns in same secret",
     async () => {
       const resolver = createResolverWithMockVault({
         "multi-dollar": "a]$&b$`c$'d$$e$1f",
@@ -328,7 +328,36 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
       const result = await resolver.resolveVaultExpressions(
         "vault.get(test-vault, multi-dollar)",
       );
-      assertEquals(result, '"a]$&b$\\`c$\\\'d$$e$1f"');
+      assertEquals(
+        result,
+        '"a]\\\\$&b\\\\$\\\\`c\\\\$\\\'d\\\\$\\\\$e\\\\$1f"',
+      );
+    },
+  );
+
+  await t.step(
+    "should escape $ to prevent shell command substitution",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "cmd-secret": "$(echo injected)",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get(test-vault, cmd-secret)",
+      );
+      assertEquals(result, '"\\\\$(echo injected)"');
+    },
+  );
+
+  await t.step(
+    "should escape backticks to prevent shell command substitution",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "backtick-cmd": "`echo injected`",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get(test-vault, backtick-cmd)",
+      );
+      assertEquals(result, '"\\\\`echo injected\\\\`"');
     },
   );
 
