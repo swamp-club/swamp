@@ -29,6 +29,17 @@ import { VaultService } from "../vaults/vault_service.ts";
 
 /**
  * Builds env context from Deno environment variables.
+ *
+ * Returns the **entire** process environment as a flat string map. Values are
+ * not filtered or redacted in any way.
+ *
+ * **Security note:** Any environment variable accessed via `env.VAR_NAME` in a
+ * CEL expression will be embedded in model output data and **persisted to disk**
+ * in `.swamp/data/`. This includes sensitive runtime values such as
+ * `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, database passwords, etc.
+ *
+ * Prefer `vault.get(vaultName, secretKey)` for sensitive values — vault secrets
+ * are fetched at runtime and are never written to model output data.
  */
 export function buildEnvContext(): Record<string, string> {
   return { ...Deno.env.toObject() };
@@ -188,7 +199,13 @@ export interface ExpressionContext {
   vault?: {
     get(vaultName: string, secretKey: string): string;
   };
-  /** Environment variables */
+  /**
+   * Full process environment, available as `env.VAR_NAME` in CEL expressions.
+   *
+   * **Security note:** Values accessed via `env` are not redacted. If used as
+   * model attributes they will be stored in `.swamp/data/` on disk and visible
+   * in `swamp data get` output. Use `vault.get()` for sensitive values instead.
+   */
   env: Record<string, string>;
   /** Data namespace for versioned data access */
   data?: DataNamespace;

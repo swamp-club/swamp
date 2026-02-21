@@ -165,6 +165,50 @@ attributes:
   keyData: ${{ vault.get(aws, machineKeyData) }}
 ```
 
+## Environment Variables
+
+All process environment variables are available in CEL expressions via the `env`
+namespace as `env.VAR_NAME`.
+
+### Basic Usage
+
+```yaml
+attributes:
+  homeDir: ${{ env.HOME }}
+  configValue: ${{ env.MY_CONFIG_VALUE }}
+```
+
+### Security Warning
+
+> **Warning:** Values accessed via `env` are **not redacted or filtered**. If
+> you use an environment variable as a model attribute, its value will be
+> **stored on disk** in `.swamp/data/` as part of the model output data and
+> will be visible in the output of `swamp data get`. This includes any
+> sensitive environment variables present at runtime (e.g.
+> `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, database passwords).
+
+### Use `vault.get()` for Sensitive Values
+
+For API keys, tokens, passwords, and other secrets, always use
+`vault.get()` instead of `env`. Vault values are fetched at runtime and are
+**never persisted** in model output data.
+
+**Wrong — secret will be stored in `.swamp/data/` on disk:**
+
+```yaml
+attributes:
+  apiKey: ${{ env.API_KEY }}
+```
+
+**Right — secret is fetched at runtime and never persisted:**
+
+```yaml
+attributes:
+  apiKey: ${{ vault.get('my-vault', 'API_KEY') }}
+```
+
+See the [Sensitive Data](#sensitive-data) section for more on vault usage.
+
 ## Extensibility
 
 Users should be able to extend the functions available to the CEL expressions by
