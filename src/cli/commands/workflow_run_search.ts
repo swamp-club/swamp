@@ -36,7 +36,7 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
-import { parseDuration } from "./data_search.ts";
+import { parseDuration, parseTags } from "./data_search.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -85,6 +85,7 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
 function toSearchItem(run: WorkflowRun): WorkflowHistorySearchItem {
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
+  const tags = Object.keys(run.tags).length > 0 ? { ...run.tags } : undefined;
 
   return {
     runId: run.id,
@@ -94,6 +95,7 @@ function toSearchItem(run: WorkflowRun): WorkflowHistorySearchItem {
     startedAt: run.startedAt?.toISOString(),
     completedAt: run.completedAt?.toISOString(),
     duration: startTime && endTime ? endTime - startTime : undefined,
+    tags,
   };
 }
 
@@ -123,13 +125,14 @@ interface RunSearchFilterOptions {
   since?: string;
   status?: string;
   workflow?: string;
+  tags?: Record<string, string>;
   limit?: number;
 }
 
 /**
  * Applies structured filters to workflow run search items.
  */
-function applyFilters(
+export function applyFilters(
   runs: WorkflowHistorySearchItem[],
   options: RunSearchFilterOptions,
 ): WorkflowHistorySearchItem[] {
@@ -153,6 +156,13 @@ function applyFilters(
     const name = options.workflow.toLowerCase();
     filtered = filtered.filter(
       (r) => r.workflowName.toLowerCase() === name,
+    );
+  }
+
+  if (options.tags) {
+    const tagEntries = Object.entries(options.tags);
+    filtered = filtered.filter((r) =>
+      tagEntries.every(([k, v]) => r.tags?.[k] === v)
     );
   }
 
@@ -197,12 +207,18 @@ export async function workflowRunSearchAction(
     return bTime - aTime;
   });
 
+  // Parse --tag values into Record<string, string>
+  const parsedTags = options.tag
+    ? parseTags(options.tag as string[])
+    : undefined;
+
   // Convert to search items and apply structured filters
   let searchItems = allRuns.map(toSearchItem);
   searchItems = applyFilters(searchItems, {
     since: options.since as string | undefined,
     status: options.status as string | undefined,
     workflow: options.workflow as string | undefined,
+    tags: parsedTags,
     limit: options.limit as number | undefined,
   });
 
@@ -262,6 +278,11 @@ export const workflowRunSearchCommand = new Command()
   .option(
     "--workflow <name:string>",
     "Filter by workflow name",
+  )
+  .option(
+    "--tag <tag:string>",
+    "Filter by tag (KEY=VALUE), can be repeated",
+    { collect: true },
   )
   .option("--limit <n:number>", "Max results", { default: 50 })
   .action(workflowRunSearchAction);

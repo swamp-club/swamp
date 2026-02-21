@@ -36,6 +36,7 @@ export interface WorkflowHistorySearchItem {
   startedAt?: string;
   completedAt?: string;
   duration?: number;
+  tags?: Record<string, string>;
 }
 
 /**
@@ -125,10 +126,14 @@ export function WorkflowHistorySearchUI(
   const fzf = useMemo(
     () =>
       new Fzf(runs, {
-        selector: (item) =>
-          `${item.workflowName} ${item.runId} ${item.status} ${
+        selector: (item) => {
+          const tagStr = item.tags
+            ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(" ")
+            : "";
+          return `${item.workflowName} ${item.runId} ${item.status} ${
             item.startedAt ?? ""
-          }`,
+          } ${tagStr}`.trim();
+        },
       }),
     [runs],
   );
@@ -266,6 +271,11 @@ function WorkflowHistorySearchResultItem(
     ? new Date(item.startedAt).toLocaleString()
     : "not started";
 
+  // Format tags if present
+  const tagStr = item.tags && Object.keys(item.tags).length > 0
+    ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
+    : "";
+
   return (
     <Box>
       <Text color={isSelected ? "green" : undefined} bold={isSelected}>
@@ -276,6 +286,12 @@ function WorkflowHistorySearchResultItem(
       <Text color={statusColor}>[{item.status}]</Text>
       <Text></Text>
       <Text dimColor>{dateStr}</Text>
+      {tagStr && (
+        <>
+          <Text></Text>
+          <Text color="cyan">[{tagStr}]</Text>
+        </>
+      )}
     </Box>
   );
 }

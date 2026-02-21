@@ -762,8 +762,12 @@ export class WorkflowExecutionService {
       await evaluatedWorkflowRepo.save(evaluatedWorkflow);
     }
 
-    // Create workflow run
-    const run = WorkflowRun.create(workflow);
+    // Create workflow run with merged tags (runtime tags take precedence)
+    const mergedTags: Record<string, string> = {
+      ...(workflow.tags ?? {}),
+      ...(options?.runtimeTags ?? {}),
+    };
+    const run = WorkflowRun.create(workflow, mergedTags);
 
     // Register run file sink target for the workflow log output
     const workflowLogPath = join(

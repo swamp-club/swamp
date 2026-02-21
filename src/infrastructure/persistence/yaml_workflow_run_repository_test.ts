@@ -331,6 +331,37 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId returns 0 for no runs
   });
 });
 
+Deno.test("YamlWorkflowRunRepository save/load roundtrip preserves tags", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const tags = { env: "prod", region: "us-east-1" };
+    const run = WorkflowRun.create(workflow, tags);
+    run.start();
+
+    await repo.save(workflow.id, run);
+    const loaded = await repo.findById(workflow.id, run.id);
+
+    assertNotEquals(loaded, null);
+    assertEquals(loaded!.tags, { env: "prod", region: "us-east-1" });
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository save/load roundtrip with no tags", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+
+    await repo.save(workflow.id, run);
+    const loaded = await repo.findById(workflow.id, run.id);
+
+    assertNotEquals(loaded, null);
+    assertEquals(loaded!.tags, {});
+  });
+});
+
 Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId does not affect other workflows", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);

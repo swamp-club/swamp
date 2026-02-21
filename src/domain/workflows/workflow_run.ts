@@ -73,12 +73,18 @@ export const WorkflowRunSchema = z.object({
   completedAt: z.string().datetime().optional(),
   jobs: z.array(JobRunSchema),
   logFile: z.string().optional(),
+  tags: z.record(z.string(), z.string()).default({}),
 });
 
 /**
- * Type representing workflow run data.
+ * Type representing workflow run data (output — tags always present).
  */
 export type WorkflowRunData = z.infer<typeof WorkflowRunSchema>;
+
+/**
+ * Type representing workflow run input data (tags optional for backward compat).
+ */
+export type WorkflowRunInput = z.input<typeof WorkflowRunSchema>;
 
 /**
  * StepRun tracks the execution state of a single step.
@@ -355,12 +361,16 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _completedAt: Date | undefined,
     private _jobs: JobRun[],
     private _logFile: string | undefined,
+    private readonly _tags: Record<string, string>,
   ) {}
 
   /**
    * Creates a new WorkflowRun from a workflow, initializing all jobs and steps as pending.
    */
-  static create(workflow: Workflow): WorkflowRun {
+  static create(
+    workflow: Workflow,
+    tags?: Record<string, string>,
+  ): WorkflowRun {
     const id = crypto.randomUUID();
     const jobs = workflow.jobs.map((job) =>
       JobRun.pending(
@@ -378,13 +388,14 @@ export class WorkflowRun implements TriggerEvaluationContext {
       undefined,
       jobs,
       undefined,
+      tags ?? {},
     );
   }
 
   /**
    * Reconstructs a WorkflowRun from persisted data.
    */
-  static fromData(data: WorkflowRunData): WorkflowRun {
+  static fromData(data: WorkflowRunInput): WorkflowRun {
     const validated = WorkflowRunSchema.parse(data);
     const jobs = validated.jobs.map((j) => JobRun.fromData(j));
 
@@ -397,6 +408,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.completedAt ? new Date(validated.completedAt) : undefined,
       jobs,
       validated.logFile,
+      validated.tags,
     );
   }
 
@@ -421,6 +433,13 @@ export class WorkflowRun implements TriggerEvaluationContext {
    */
   get logFile(): string | undefined {
     return this._logFile;
+  }
+
+  /**
+   * Gets the tags associated with this run.
+   */
+  get tags(): Readonly<Record<string, string>> {
+    return this._tags;
   }
 
   /**
@@ -473,6 +492,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       startedAt: this._startedAt?.toISOString(),
       completedAt: this._completedAt?.toISOString(),
       jobs: this._jobs.map((j) => j.toData()),
+      tags: { ...this._tags },
     };
     if (this._logFile) {
       data.logFile = this._logFile;

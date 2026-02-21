@@ -335,3 +335,70 @@ Deno.test("WorkflowRun.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.status, original.status);
   assertEquals(restored.jobs.length, original.jobs.length);
 });
+
+// WorkflowRun tags tests
+
+Deno.test("WorkflowRun.create with tags stores them", () => {
+  const workflow = createTestWorkflow();
+  const tags = { env: "prod", region: "us-east-1" };
+  const run = WorkflowRun.create(workflow, tags);
+
+  assertEquals(run.tags, { env: "prod", region: "us-east-1" });
+});
+
+Deno.test("WorkflowRun.create without tags defaults to empty", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+
+  assertEquals(run.tags, {});
+});
+
+Deno.test("WorkflowRun.toData includes tags when present", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow, { env: "staging" });
+  run.start();
+
+  const data = run.toData();
+  assertEquals(data.tags, { env: "staging" });
+});
+
+Deno.test("WorkflowRun.toData includes empty tags when none set", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+
+  const data = run.toData();
+  assertEquals(data.tags, {});
+});
+
+Deno.test("WorkflowRun.fromData and toData roundtrip preserves tags", () => {
+  const workflow = createTestWorkflow();
+  const tags = { env: "prod", team: "platform" };
+  const original = WorkflowRun.create(workflow, tags);
+  original.start();
+
+  const data = original.toData();
+  const restored = WorkflowRun.fromData(data);
+
+  assertEquals(restored.tags, { env: "prod", team: "platform" });
+});
+
+Deno.test("WorkflowRun.fromData with missing tags defaults to empty", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440001",
+    workflowId: "550e8400-e29b-41d4-a716-446655440000",
+    workflowName: "test-workflow",
+    status: "running" as const,
+    startedAt: new Date().toISOString(),
+    jobs: [
+      {
+        jobName: "job1",
+        status: "succeeded" as const,
+        steps: [{ stepName: "step1", status: "succeeded" as const }],
+      },
+    ],
+  };
+
+  const run = WorkflowRun.fromData(data);
+  assertEquals(run.tags, {});
+});
