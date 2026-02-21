@@ -35,6 +35,12 @@ export class HttpSourceDownloader implements SourceDownloader {
    * For version tags, uses tags/{version}.tar.gz
    */
   protected getArchiveUrl(version: string): string {
+    if (!/^[a-zA-Z0-9._-]+$/.test(version)) {
+      throw new UserError(
+        `Invalid version string "${version}": must contain only alphanumeric characters, dots, hyphens, and underscores.`,
+      );
+    }
+
     if (version === "main") {
       return `${HttpSourceDownloader.GITHUB_BASE}/heads/main.tar.gz`;
     }

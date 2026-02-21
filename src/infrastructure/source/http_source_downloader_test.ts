@@ -317,6 +317,76 @@ Deno.test("downloadAndExtract skips symlinks escaping via relative path", async 
   }
 });
 
+Deno.test("downloadAndExtract rejects version with path traversal", async () => {
+  const downloader = new HttpSourceDownloader();
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await assertRejects(
+      () => downloader.downloadAndExtract("../malicious", tempDir),
+      UserError,
+      "Invalid version string",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("downloadAndExtract rejects version with nested path traversal", async () => {
+  const downloader = new HttpSourceDownloader();
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await assertRejects(
+      () => downloader.downloadAndExtract("foo/../../heads/main", tempDir),
+      UserError,
+      "Invalid version string",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("downloadAndExtract rejects version with URL-encoded characters", async () => {
+  const downloader = new HttpSourceDownloader();
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await assertRejects(
+      () => downloader.downloadAndExtract("version%2F..", tempDir),
+      UserError,
+      "Invalid version string",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("downloadAndExtract rejects version with query string", async () => {
+  const downloader = new HttpSourceDownloader();
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await assertRejects(
+      () => downloader.downloadAndExtract("v1.0?ref=main", tempDir),
+      UserError,
+      "Invalid version string",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("downloadAndExtract rejects version with fragment", async () => {
+  const downloader = new HttpSourceDownloader();
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await assertRejects(
+      () => downloader.downloadAndExtract("v1.0#fragment", tempDir),
+      UserError,
+      "Invalid version string",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
 Deno.test("downloadAndExtract skips symlinks escaping via absolute path", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
