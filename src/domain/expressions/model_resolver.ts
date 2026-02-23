@@ -26,6 +26,7 @@ import type { UnifiedDataRepository } from "../../infrastructure/persistence/uni
 import type { Data } from "../data/data.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import type { SecretRedactor } from "../secrets/mod.ts";
 
 /**
  * Builds env context from Deno environment variables.
@@ -766,9 +767,13 @@ export class ModelResolver {
    * Resolves vault expressions in a string by evaluating vault.get() calls.
    *
    * @param value - The string that may contain vault expressions
+   * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
    * @returns The string with vault expressions resolved to actual secret values
    */
-  async resolveVaultExpressions(value: string): Promise<string> {
+  async resolveVaultExpressions(
+    value: string,
+    redactor?: SecretRedactor,
+  ): Promise<string> {
     // Pattern to match vault.get(vaultName, secretKey) expressions
     // Handles both quoted and unquoted arguments
     const vaultPattern =
@@ -788,6 +793,7 @@ export class ModelResolver {
       const [fullMatch, , vaultName, , secretKey] = match;
       try {
         const secretValue = await vaultService.get(vaultName, secretKey);
+        redactor?.addSecret(secretValue);
         // Escape special characters to prevent CEL parsing issues and injection attacks.
         // For $ and `, we use a \\X prefix (two backslashes + char) so that:
         //   - CEL sees \\ → produces one \, then the char is a plain literal
