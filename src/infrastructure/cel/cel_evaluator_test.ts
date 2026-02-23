@@ -776,3 +776,63 @@ Deno.test("CelEvaluator data.listVersions() with vary dimensions", () => {
   );
   assertEquals(result, [1, 2, 3]);
 });
+
+Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for cache lookup", () => {
+  // Regression test: CEL represents integers as bigint, but DataCache uses
+  // number keys. Map.get(1n) !== Map.get(1), so the CelDataNamespace must
+  // convert to Number() before delegating.
+  const evaluator = new CelEvaluator();
+
+  // Simulate a DataCache-like delegate that uses strict number equality
+  const versionStore = new Map<number, Record<string, unknown>>();
+  versionStore.set(1, { id: "d1", attributes: { value: "first" } });
+  versionStore.set(2, { id: "d2", attributes: { value: "second" } });
+
+  const context = {
+    data: {
+      version: (
+        _modelName: string,
+        _dataName: string,
+        version: number,
+      ) => {
+        // This mirrors DataCache.getVersion() — uses Map.get with number keys
+        return versionStore.get(version) ?? null;
+      },
+    },
+  };
+
+  // 3-arg form: data.version(model, name, version)
+  const v1 = evaluator.evaluate(
+    'data.version("scanner", "result", 1).attributes.value',
+    context,
+  );
+  assertEquals(v1, "first");
+
+  const v2 = evaluator.evaluate(
+    'data.version("scanner", "result", 2).attributes.value',
+    context,
+  );
+  assertEquals(v2, "second");
+
+  // 4-arg form with vary: data.version(model, name, [vary], version)
+  const varyContext = {
+    data: {
+      version: (
+        _modelName: string,
+        dataName: string,
+        version: number,
+      ) => {
+        if (dataName === "result-prod") {
+          return versionStore.get(version) ?? null;
+        }
+        return null;
+      },
+    },
+  };
+
+  const v1Vary = evaluator.evaluate(
+    'data.version("scanner", "result", ["prod"], 1).attributes.value',
+    varyContext,
+  );
+  assertEquals(v1Vary, "first");
+});

@@ -70,3 +70,35 @@ Deno.test("composeDataName: throws on whitespace-only vary value", () => {
 Deno.test("composeDataName: handles numeric-like vary values", () => {
   assertEquals(composeDataName("result", ["42"]), "result-42");
 });
+
+Deno.test("composeDataName: throws on vary value with forward slash", () => {
+  assertThrows(
+    () => composeDataName("result", ["../../etc"]),
+    Error,
+    "Vary value at index 0 contains path separator characters",
+  );
+});
+
+Deno.test("composeDataName: throws on vary value with backslash", () => {
+  assertThrows(
+    () => composeDataName("result", ["foo\\bar"]),
+    Error,
+    "Vary value at index 0 contains path separator characters",
+  );
+});
+
+Deno.test("composeDataName: throws on dot-dot vary value", () => {
+  assertThrows(
+    () => composeDataName("result", [".."]),
+    Error,
+    "Vary value at index 0 must not be a relative path component",
+  );
+});
+
+Deno.test("composeDataName: throws on single-dot vary value", () => {
+  assertThrows(
+    () => composeDataName("result", ["."]),
+    Error,
+    "Vary value at index 0 must not be a relative path component",
+  );
+});

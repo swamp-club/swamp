@@ -47,6 +47,20 @@ export function composeDataName(
         `Vary value at index ${i} must be a non-empty string`,
       );
     }
+    if (/[\/\\]/.test(varyValues[i])) {
+      throw new Error(
+        `Vary value at index ${i} contains path separator characters: ${
+          varyValues[i]
+        }`,
+      );
+    }
+    if (varyValues[i] === "." || varyValues[i] === "..") {
+      throw new Error(
+        `Vary value at index ${i} must not be a relative path component: ${
+          varyValues[i]
+        }`,
+      );
+    }
   }
 
   return `${baseName}-${varyValues.join("-")}`;
