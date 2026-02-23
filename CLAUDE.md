@@ -49,6 +49,13 @@ Use `deno run` to get a complete list of custom tasks.
   add the `hold` label to the PR.
 - After completing work (finishing tasks, merging PRs), run `deno run compile`
   to recompile swamp.
+- When a PR fixes a GitHub issue filed by an external contributor (not a repo
+  collaborator), add them as a co-author to the commit. Check with
+  `gh api /repos/systeminit/swamp/collaborators --jq '.[].login'` to determine
+  if the issue author is a team member. If they are not, add
+  `Co-authored-by: Name <email>` to the commit. Use `gh api /users/<username>`
+  to look up their name, and use `<username>@users.noreply.github.com` as the
+  email unless a public email is available from the API response.
 
 ## Verification
 
