@@ -20,6 +20,11 @@ service integrations.
 When planning new features, always use the `ddd` skill to inform the
 architecture.
 
+## Skills
+
+When creating or updating `swamp-*` skills in `.claude/skills/`, follow the
+`skill-creator` skill guidelines to ensure consistent structure and quality.
+
 ## Code Style
 
 - TypeScript strict mode, no `any` types
