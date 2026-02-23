@@ -8,6 +8,7 @@
 - [Minimal Echo Model](#minimal-echo-model)
 - [Data Chaining Model](#data-chaining-model)
 - [Shell Command with Streamed Logging](#shell-command-with-streamed-logging)
+- [AWS Model with Pre-flight Credential Check](#aws-model-with-pre-flight-credential-check)
 - [Extending Existing Model Types](#extending-existing-model-types)
 
 ## CRUD Lifecycle Model (VPC)
@@ -520,6 +521,123 @@ export const model = {
   },
 };
 ```
+
+## AWS Model with Pre-flight Credential Check
+
+Models that call AWS APIs should validate credentials before doing real work.
+This catches expired SSO sessions, missing profiles, and misconfigured
+credentials early — with an actionable error message instead of a cryptic
+failure mid-execution.
+
+**Key patterns:**
+
+- Add an optional `awsProfile` global argument for SSO/profile-based auth
+- Create a helper that injects `--profile` and `--region` into every AWS CLI
+  call
+- Call `sts get-caller-identity` as a pre-flight check before any real work
+- Include an `aws sso login` hint in the error message when a profile is
+  configured
+
+```typescript
+// extensions/models/vpc.ts
+import { z } from "npm:zod@4";
+
+const GlobalArgsSchema = z.object({
+  cidrBlock: z.string(),
+  region: z.string().default("us-east-1"),
+  awsProfile: z.string().optional(),
+});
+
+const VpcSchema = z.object({
+  VpcId: z.string(),
+}).passthrough();
+
+/** Run an AWS CLI command, injecting profile if configured. */
+async function awsCli(
+  args: string[],
+  globalArgs: { region: string; awsProfile?: string },
+) {
+  const fullArgs = [...args, "--region", globalArgs.region, "--output", "json"];
+  if (globalArgs.awsProfile) {
+    fullArgs.push("--profile", globalArgs.awsProfile);
+  }
+  const cmd = new Deno.Command("aws", {
+    args: fullArgs,
+    stdout: "piped",
+    stderr: "piped",
+  });
+  return await cmd.output();
+}
+
+/** Validate AWS credentials before doing real work. */
+async function validateCredentials(
+  globalArgs: { region: string; awsProfile?: string },
+) {
+  const output = await awsCli(
+    ["sts", "get-caller-identity"],
+    globalArgs,
+  );
+  if (output.code !== 0) {
+    const stderr = new TextDecoder().decode(output.stderr);
+    const profileHint = globalArgs.awsProfile
+      ? `\n  aws sso login --profile ${globalArgs.awsProfile}`
+      : "";
+    throw new Error(
+      `AWS credential check failed: ${stderr.trim()}\n\n` +
+        `Ensure your credentials are valid.${profileHint}`,
+    );
+  }
+}
+
+export const model = {
+  type: "@user/vpc",
+  version: "2026.02.10.1",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    "vpc": {
+      description: "VPC resource state",
+      schema: VpcSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    create: {
+      description: "Create a VPC",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const { cidrBlock, region, awsProfile } = context.globalArgs;
+
+        await validateCredentials({ region, awsProfile });
+
+        const output = await awsCli(
+          ["ec2", "create-vpc", "--cidr-block", cidrBlock],
+          { region, awsProfile },
+        );
+
+        if (output.code !== 0) {
+          const stderr = new TextDecoder().decode(output.stderr);
+          throw new Error(`Failed to create VPC: ${stderr.trim()}`);
+        }
+
+        const vpcData = JSON.parse(new TextDecoder().decode(output.stdout)).Vpc;
+        const handle = await context.writeResource("vpc", "vpc", vpcData);
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+```
+
+**Why this works without framework changes:**
+
+- Deno merges env vars with the parent environment, so `AWS_PROFILE` set in your
+  shell is already available to subprocesses
+- The AWS SDK credential chain handles SSO, `credential_process`, instance
+  profiles, and role assumption automatically
+- The model owns the pre-flight check logic because it is the domain expert for
+  its service — it knows what credentials it needs and what a useful error looks
+  like
 
 ## Extending Existing Model Types
 
