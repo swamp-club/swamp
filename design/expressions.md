@@ -133,6 +133,36 @@ attributes:
   versionCount: ${{ size(data.listVersions('my-model', 'output')) }}
 ```
 
+### Vary Dimensions
+
+When data is stored with `vary` dimensions (see [Workflows](./workflow.md)),
+each dimension value produces a composite data name. Use the 3-argument form
+of `data.latest()`, `data.version()`, and `data.listVersions()` to access
+varied data by passing a list of dimension values:
+
+In a forEach step, use the iteration variable to dynamically select the right
+environment's data:
+
+```yaml
+# Dynamic access via forEach variable:
+inputs:
+  scanResult: ${{ data.latest('scanner', 'result', [self.env]).attributes.count }}
+
+# Dynamic access via workflow input:
+inputs:
+  scanResult: ${{ data.latest('scanner', 'result', [inputs.environment]).attributes.count }}
+
+# Version access with vary dimensions:
+inputs:
+  oldResult: ${{ data.version('scanner', 'result', [inputs.environment], 1).attributes.count }}
+
+# List versions for a specific dimension:
+inputs:
+  versions: ${{ data.listVersions('scanner', 'result', [inputs.environment]) }}
+```
+
+The 2-argument forms continue to work for data stored without vary dimensions.
+
 ### Combined Example
 
 ```yaml

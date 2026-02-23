@@ -77,6 +77,70 @@ Each step has a name, a descirption, and a task (which is either a method on a
 model to run or a nested workflow to invoke). Each step has dependency logic that
 is identical to jobs, only for steps rather than jobs.
 
+## Data Output Overrides with Vary Dimensions
+
+Steps can declare `vary` on `dataOutputOverrides` to produce
+environment-isolated data storage. The `vary` field lists input key names whose
+values are appended to the data instance name, creating composite names like
+`result-prod` or `result-dev-us-east-1`.
+
+### Syntax
+
+```yaml
+steps:
+  - name: scan-${{ self.env }}
+    forEach:
+      item: env
+      in: ${{ inputs.environments }}
+    task:
+      type: model_method
+      modelIdOrName: scanner
+      methodName: execute
+      inputs:
+        environment: ${{ self.env }}
+    dataOutputOverrides:
+      - specName: result
+        vary:
+          - environment
+```
+
+### On-Disk Layout
+
+With `environments: ["dev", "staging", "prod"]`, the above produces:
+
+```
+.swamp/data/scanner/{id}/
+  result-dev/
+    1/content.json
+    latest → 1
+  result-staging/
+    1/content.json
+    latest → 1
+  result-prod/
+    1/content.json
+    latest → 1
+```
+
+Each environment gets its own versioning and `latest` symlink, preventing
+cross-environment data interleaving.
+
+### Accessing Varied Data
+
+Use the 3-argument form of `data.latest()` to dynamically access varied data,
+typically from a forEach step or via workflow inputs:
+
+```yaml
+# In a forEach step, use the iteration variable:
+inputs:
+  scanResult: ${{ data.latest('scanner', 'result', [self.env]).attributes.count }}
+
+# Or use a workflow input:
+inputs:
+  scanResult: ${{ data.latest('scanner', 'result', [inputs.environment]).attributes.count }}
+```
+
+See [Expressions](./expressions.md) for the full vary dimensions syntax.
+
 ## Workflow Runs
 
 When a workflow is run, it executes the jobs and steps in the correct order. The

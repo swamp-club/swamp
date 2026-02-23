@@ -648,3 +648,131 @@ Deno.test("CelEvaluator receiver method returns null when receiver lacks method"
   );
   assertEquals(result, null);
 });
+
+// Tests for vary dimensions (Issue #384)
+
+Deno.test("CelEvaluator data.latest() with single vary dimension", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (modelName: string, dataName: string) => {
+        if (modelName === "scanner" && dataName === "result-prod") {
+          return { id: "d1", attributes: { count: 5 } };
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("scanner", "result", ["prod"]).attributes.count',
+    context,
+  );
+  assertEquals(result, 5);
+});
+
+Deno.test("CelEvaluator data.latest() with multiple vary dimensions", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (modelName: string, dataName: string) => {
+        if (modelName === "scanner" && dataName === "result-prod-us-east-1") {
+          return { id: "d1", attributes: { region: "us-east-1" } };
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("scanner", "result", ["prod", "us-east-1"]).attributes.region',
+    context,
+  );
+  assertEquals(result, "us-east-1");
+});
+
+Deno.test("CelEvaluator data.latest() with empty vary array falls back to base name", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (modelName: string, dataName: string) => {
+        if (modelName === "scanner" && dataName === "result") {
+          return { id: "d1", attributes: { value: "base" } };
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("scanner", "result", []).attributes.value',
+    context,
+  );
+  assertEquals(result, "base");
+});
+
+Deno.test("CelEvaluator data.latest() 2-arg form still works (backward compat)", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (modelName: string, dataName: string) => {
+        if (modelName === "vpc" && dataName === "info") {
+          return { id: "d1", attributes: { vpcId: "vpc-123" } };
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("vpc", "info").attributes.vpcId',
+    context,
+  );
+  assertEquals(result, "vpc-123");
+});
+
+Deno.test("CelEvaluator data.version() with vary dimensions", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      version: (
+        modelName: string,
+        dataName: string,
+        version: unknown,
+      ) => {
+        if (
+          modelName === "scanner" && dataName === "result-prod" && version == 2
+        ) {
+          return { id: "d1", attributes: { env: "prod" } };
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.version("scanner", "result", ["prod"], 2).attributes.env',
+    context,
+  );
+  assertEquals(result, "prod");
+});
+
+Deno.test("CelEvaluator data.listVersions() with vary dimensions", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      listVersions: (modelName: string, dataName: string) => {
+        if (modelName === "scanner" && dataName === "result-staging") {
+          return [1, 2, 3];
+        }
+        return [];
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.listVersions("scanner", "result", ["staging"])',
+    context,
+  );
+  assertEquals(result, [1, 2, 3]);
+});

@@ -160,6 +160,7 @@ export class Step {
         lifetime: override.lifetime,
         garbageCollection: override.garbageCollection,
         tags: override.tags,
+        vary: override.vary,
       }));
 
     // Convert forEach data to ForEach interface
@@ -228,6 +229,7 @@ export class Step {
           lifetime: override.lifetime,
           garbageCollection: override.garbageCollection,
           tags: override.tags,
+          vary: override.vary,
         }))
         : undefined,
     };

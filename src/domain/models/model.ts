@@ -228,6 +228,7 @@ export interface MethodContext {
     lifetime?: Lifetime;
     garbageCollection?: GarbageCollectionPolicy;
     tags?: Record<string, string>;
+    resolvedVarySuffix?: string;
   }>;
 }
 

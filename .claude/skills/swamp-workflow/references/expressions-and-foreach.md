@@ -74,6 +74,56 @@ With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
 | `self.{item}.key`   | Key name (object iteration)    |
 | `self.{item}.value` | Value (object iteration)       |
 
+### forEach with Vary Dimensions
+
+Use `vary` on `dataOutputOverrides` to isolate data per forEach iteration:
+
+```yaml
+steps:
+  - name: deploy-${{ self.env }}
+    forEach:
+      item: env
+      in: ${{ inputs.environments }}
+    task:
+      type: model_method
+      modelIdOrName: my-service
+      methodName: deploy
+      inputs:
+        environment: ${{ self.env }}
+    dataOutputOverrides:
+      - specName: result
+        vary:
+          - environment
+```
+
+Access varied data from a downstream forEach step using the iteration variable:
+
+```yaml
+steps:
+  - name: check-${{ self.env }}
+    forEach:
+      item: env
+      in: ${{ inputs.environments }}
+    task:
+      type: model_method
+      modelIdOrName: health-checker
+      methodName: check
+      inputs:
+        environment: ${{ self.env }}
+        deployResult: ${{ data.latest('my-service', 'result', [self.env]).attributes.status }}
+```
+
+Or access a specific environment's data using workflow inputs:
+
+```yaml
+inputs:
+  lastDeploy: ${{ data.latest('my-service', 'result', [inputs.environment]).attributes.status }}
+```
+
+The `vary` keys reference input key names from `task.inputs`. Each resolved
+value is appended to the data name (e.g., `result-prod`, `result-dev`), giving
+each iteration its own versioned storage and `latest` symlink.
+
 ## Step Task Inputs
 
 When a step calls a model method, pass inputs to the model:

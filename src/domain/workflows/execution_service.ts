@@ -459,12 +459,29 @@ export class DefaultStepExecutor implements StepExecutor {
 
       // Convert step's dataOutputOverrides to the format expected by writer factories
       const stepDataOutputOverrides = ctx.step?.dataOutputOverrides
-        ? Array.from(ctx.step.dataOutputOverrides).map((override) => ({
-          specName: override.specName,
-          lifetime: override.lifetime,
-          garbageCollection: override.garbageCollection,
-          tags: override.tags,
-        }))
+        ? Array.from(ctx.step.dataOutputOverrides).map((override) => {
+          let resolvedVarySuffix: string | undefined;
+          if (override.vary && override.vary.length > 0) {
+            const inputs = ctx.expressionContext?.inputs ?? {};
+            const varyValues = override.vary.map((key) => {
+              const val = inputs[key];
+              if (val === undefined || val === null) {
+                throw new UserError(
+                  `Vary dimension '${key}' not found in step inputs for spec '${override.specName}'`,
+                );
+              }
+              return String(val);
+            });
+            resolvedVarySuffix = varyValues.join("-");
+          }
+          return {
+            specName: override.specName,
+            lifetime: override.lifetime,
+            garbageCollection: override.garbageCollection,
+            tags: override.tags,
+            resolvedVarySuffix,
+          };
+        })
         : undefined;
 
       // Execute the method with EVALUATED definition

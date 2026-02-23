@@ -41,6 +41,9 @@ export interface DataOutputOverride {
 
   /** Additional tags to merge */
   tags?: Record<string, string>;
+
+  /** Input key names to vary by — produces composite data names per dimension */
+  vary?: string[];
 }
 
 export const DataOutputOverrideSchema = z.object({
@@ -48,4 +51,5 @@ export const DataOutputOverrideSchema = z.object({
   lifetime: LifetimeSchema.optional(),
   garbageCollection: GarbageCollectionSchema.optional(),
   tags: z.record(z.string(), z.string()).optional(),
+  vary: z.array(z.string().min(1)).optional(),
 });

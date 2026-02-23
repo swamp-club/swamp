@@ -198,6 +198,65 @@ All model data outputs are accessed via
 | Cloud Control | `resource` | `model.my-vpc.resource.resource.main.attributes.VpcId`       |
 | Custom models | (varies)   | `model.my-deploy.resource.state.current.attributes.endpoint` |
 
+## Vary Dimensions for Environment Isolation
+
+When a forEach step produces data per environment, use `vary` on
+`dataOutputOverrides` to isolate each environment's data with its own versioning
+and `latest` symlink.
+
+### Workflow YAML
+
+```yaml
+steps:
+  - name: scan-${{ self.env }}
+    forEach:
+      item: env
+      in: ${{ inputs.environments }}
+    task:
+      type: model_method
+      modelIdOrName: scanner
+      methodName: execute
+      inputs:
+        environment: ${{ self.env }}
+    dataOutputOverrides:
+      - specName: result
+        vary:
+          - environment
+```
+
+### Accessing Varied Data
+
+In a downstream forEach step, use the iteration variable to dynamically access
+the correct environment's data:
+
+```yaml
+steps:
+  - name: report-${{ self.env }}
+    forEach:
+      item: env
+      in: ${{ inputs.environments }}
+    task:
+      type: model_method
+      modelIdOrName: reporter
+      methodName: summarize
+      inputs:
+        environment: ${{ self.env }}
+        # Dynamically access this environment's scan result:
+        scanResult: ${{ data.latest('scanner', 'result', [self.env]).attributes.count }}
+```
+
+For hardcoded access (e.g., in a non-forEach step that needs a specific
+environment's data):
+
+```yaml
+inputs:
+  scanCount: ${{ data.latest('scanner', 'result', [inputs.environment]).attributes.count }}
+```
+
+The `vary` field lists input key names (matching keys in `task.inputs`). Their
+resolved values are appended to the data instance name with hyphens, producing
+names like `result-prod` or `result-dev-us-east-1`.
+
 ## Delete Workflow Ordering
 
 Delete workflows require **explicit `dependsOn`** in reverse dependency order.

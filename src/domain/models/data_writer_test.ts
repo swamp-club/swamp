@@ -243,6 +243,87 @@ Deno.test("createFileWriterFactory: runtime tags override definition tags", asyn
   assertEquals(handle.tags["env"], "prod");
 });
 
+Deno.test("createResourceWriter: resolvedVarySuffix modifies instance name", async () => {
+  const repo = createMockRepo();
+  const dataOutputOverrides = [{
+    specName: "item",
+    resolvedVarySuffix: "prod",
+  }];
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    dataOutputOverrides,
+  );
+
+  const handle = await writeResource("item", "result", { value: "hello" });
+  assertEquals(handle.name, "result-prod");
+});
+
+Deno.test("createResourceWriter: resolvedVarySuffix with multiple dimensions", async () => {
+  const repo = createMockRepo();
+  const dataOutputOverrides = [{
+    specName: "item",
+    resolvedVarySuffix: "prod-us-east-1",
+  }];
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    dataOutputOverrides,
+  );
+
+  const handle = await writeResource("item", "result", { value: "hello" });
+  assertEquals(handle.name, "result-prod-us-east-1");
+});
+
+Deno.test("createResourceWriter: no resolvedVarySuffix leaves name unchanged", async () => {
+  const repo = createMockRepo();
+  const dataOutputOverrides = [{
+    specName: "item",
+    tags: { env: "prod" },
+  }];
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    dataOutputOverrides,
+  );
+
+  const handle = await writeResource("item", "result", { value: "hello" });
+  assertEquals(handle.name, "result");
+});
+
+Deno.test("createFileWriterFactory: resolvedVarySuffix modifies instance name", async () => {
+  const repo = createMockRepo();
+  const dataOutputOverrides = [{
+    specName: "log",
+    resolvedVarySuffix: "staging",
+  }];
+
+  const { createFileWriter } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+    undefined,
+    dataOutputOverrides,
+  );
+
+  const writer = createFileWriter("log", "app-log");
+  const handle = await writer.writeText("log content");
+  assertEquals(handle.name, "app-log-staging");
+});
+
 Deno.test("createResourceWriter: no definition or runtime tags still works", async () => {
   const repo = createMockRepo();
 

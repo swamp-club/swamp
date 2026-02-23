@@ -298,6 +298,7 @@ export function createResourceWriter(
     lifetime?: Lifetime;
     garbageCollection?: GarbageCollectionPolicy;
     tags?: Record<string, string>;
+    resolvedVarySuffix?: string;
   }>,
   definitionTags?: Record<string, string>,
   runtimeTags?: Record<string, string>,
@@ -350,7 +351,7 @@ export function createResourceWriter(
       );
     }
 
-    const instanceName = name;
+    let instanceName = name;
 
     // Resolve tags with full resolution chain:
     // 1. type auto-tag → 2. definition tags → 3. spec defaults →
@@ -396,6 +397,10 @@ export function createResourceWriter(
         garbageCollection = override.garbageCollection ?? garbageCollection;
         if (override.tags) {
           Object.assign(resolvedTags, override.tags);
+        }
+        // Apply vary suffix to produce composite instance names
+        if (override.resolvedVarySuffix) {
+          instanceName = `${instanceName}-${override.resolvedVarySuffix}`;
         }
       }
     }
@@ -455,6 +460,7 @@ export function createFileWriterFactory(
     lifetime?: Lifetime;
     garbageCollection?: GarbageCollectionPolicy;
     tags?: Record<string, string>;
+    resolvedVarySuffix?: string;
   }>,
   callbacks?: DataWriterCallbacks,
   definitionTags?: Record<string, string>,
@@ -493,7 +499,7 @@ export function createFileWriterFactory(
       );
     }
 
-    const instanceName = name;
+    let instanceName = name;
 
     // Resolve tags with full resolution chain:
     // 1. type auto-tag → 2. definition tags → 3. spec defaults →
@@ -541,6 +547,10 @@ export function createFileWriterFactory(
         garbageCollection = override.garbageCollection ?? garbageCollection;
         if (override.tags) {
           Object.assign(resolvedTags, override.tags);
+        }
+        // Apply vary suffix to produce composite instance names
+        if (override.resolvedVarySuffix) {
+          instanceName = `${instanceName}-${override.resolvedVarySuffix}`;
         }
       }
     }

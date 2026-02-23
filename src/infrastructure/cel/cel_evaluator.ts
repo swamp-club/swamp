@@ -20,6 +20,7 @@
 import { Environment } from "cel-js";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
+import { composeDataName } from "../../domain/data/mod.ts";
 
 /**
  * Result of expression validation.
@@ -86,30 +87,63 @@ export class CelDataNamespace {
     this.delegate = delegate;
   }
 
-  latest(modelName: string, dataName: string): unknown {
+  latest(modelName: string, dataName: string, varyValues?: unknown[]): unknown {
     const fn = this.delegate["latest"];
     if (typeof fn === "function") {
-      return (fn as (m: string, d: string) => unknown)(modelName, dataName);
+      const resolvedName = varyValues && varyValues.length > 0
+        ? composeDataName(dataName, varyValues.map((v) => String(v)))
+        : dataName;
+      return (fn as (m: string, d: string) => unknown)(modelName, resolvedName);
     }
     return null;
   }
 
-  version(modelName: string, dataName: string, version: unknown): unknown {
+  version(
+    modelName: string,
+    dataName: string,
+    versionOrVary: unknown,
+    version?: unknown,
+  ): unknown {
     const fn = this.delegate["version"];
     if (typeof fn === "function") {
-      return (fn as (m: string, d: string, v: unknown) => unknown)(
+      // 4-arg form: version(model, name, varyValues[], version)
+      if (Array.isArray(versionOrVary)) {
+        const resolvedName = versionOrVary.length > 0
+          ? composeDataName(
+            dataName,
+            versionOrVary.map((v) => String(v)),
+          )
+          : dataName;
+        return (fn as (m: string, d: string, v: number) => unknown)(
+          modelName,
+          resolvedName,
+          Number(version),
+        );
+      }
+      // 3-arg form: version(model, name, version)
+      return (fn as (m: string, d: string, v: number) => unknown)(
         modelName,
         dataName,
-        version,
+        Number(versionOrVary),
       );
     }
     return null;
   }
 
-  listVersions(modelName: string, dataName: string): unknown {
+  listVersions(
+    modelName: string,
+    dataName: string,
+    varyValues?: unknown[],
+  ): unknown {
     const fn = this.delegate["listVersions"];
     if (typeof fn === "function") {
-      return (fn as (m: string, d: string) => unknown)(modelName, dataName);
+      const resolvedName = varyValues && varyValues.length > 0
+        ? composeDataName(dataName, varyValues.map((v) => String(v)))
+        : dataName;
+      return (fn as (m: string, d: string) => unknown)(
+        modelName,
+        resolvedName,
+      );
     }
     return [];
   }
@@ -221,6 +255,38 @@ export class CelEvaluator {
       "CelDataNamespace.listVersions(string, string): dyn",
       (receiver: CelDataNamespace, modelName: string, dataName: string) =>
         receiver.listVersions(modelName, dataName),
+    );
+
+    // Register vary-aware overloads (3rd arg is list<dyn>)
+    this.env.registerFunction(
+      "CelDataNamespace.latest(string, string, list<dyn>): dyn",
+      (
+        receiver: CelDataNamespace,
+        modelName: string,
+        dataName: string,
+        varyValues: unknown[],
+      ) => receiver.latest(modelName, dataName, varyValues),
+    );
+
+    this.env.registerFunction(
+      "CelDataNamespace.version(string, string, list<dyn>, int): dyn",
+      (
+        receiver: CelDataNamespace,
+        modelName: string,
+        dataName: string,
+        varyValues: unknown[],
+        version: unknown,
+      ) => receiver.version(modelName, dataName, varyValues, version),
+    );
+
+    this.env.registerFunction(
+      "CelDataNamespace.listVersions(string, string, list<dyn>): dyn",
+      (
+        receiver: CelDataNamespace,
+        modelName: string,
+        dataName: string,
+        varyValues: unknown[],
+      ) => receiver.listVersions(modelName, dataName, varyValues),
     );
 
     this.env.registerFunction(

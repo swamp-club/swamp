@@ -40,3 +40,5 @@ export {
   type WorkflowDataItem,
   WorkflowDataService,
 } from "./workflow_data_service.ts";
+
+export { composeDataName } from "./composite_name.ts";
