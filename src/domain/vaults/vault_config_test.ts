@@ -34,14 +34,14 @@ Deno.test("VaultConfig.create creates a new config with current timestamp", () =
   const config = VaultConfig.create(
     "test-id",
     "my-vault",
-    "aws",
+    "aws-sm",
     { region: "us-east-1" },
   );
   const afterCreate = new Date();
 
   assertEquals(config.id, "test-id");
   assertEquals(config.name, "my-vault");
-  assertEquals(config.type, "aws");
+  assertEquals(config.type, "aws-sm");
   assertEquals(config.config, { region: "us-east-1" });
 
   // Verify createdAt is set to current time
@@ -71,7 +71,7 @@ Deno.test("VaultConfig.toData converts config to persistable format", () => {
   const config = VaultConfig.create(
     "export-id",
     "export-vault",
-    "aws",
+    "aws-sm",
     { region: "eu-west-1", profile: "production" },
   );
 
@@ -79,7 +79,7 @@ Deno.test("VaultConfig.toData converts config to persistable format", () => {
 
   assertEquals(data.id, "export-id");
   assertEquals(data.name, "export-vault");
-  assertEquals(data.type, "aws");
+  assertEquals(data.type, "aws-sm");
   assertEquals(data.config, { region: "eu-west-1", profile: "production" });
   assertEquals(typeof data.createdAt, "string");
   // Verify createdAt is valid ISO string
@@ -90,7 +90,7 @@ Deno.test("VaultConfig round-trip: create -> toData -> fromData preserves data",
   const original = VaultConfig.create(
     "round-trip-id",
     "round-trip-vault",
-    "aws",
+    "aws-sm",
     { region: "us-west-2" },
   );
 
@@ -141,7 +141,7 @@ Deno.test("VaultConfig handles complex nested config", () => {
   const config = VaultConfig.create(
     "complex-id",
     "complex-vault",
-    "aws",
+    "aws-sm",
     complexConfig,
   );
 

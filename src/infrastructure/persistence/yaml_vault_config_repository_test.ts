@@ -25,7 +25,7 @@ Deno.test("YamlVaultConfigRepository - normal vault types resolve correctly", as
   try {
     const repo = new YamlVaultConfigRepository(dir);
     // These should not throw - normal vault types
-    const resultAws = await repo.findAllByType("aws");
+    const resultAws = await repo.findAllByType("aws-sm");
     const resultLocal = await repo.findAllByType("local_encryption");
     // Both return empty arrays since the vault dir doesn't exist yet
     if (

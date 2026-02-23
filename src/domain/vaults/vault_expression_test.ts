@@ -48,7 +48,7 @@ Deno.test("Direct Vault Service Error Messages", async (t) => {
       );
       assertStringIncludes(
         error.message,
-        "Available vault types: aws, local_encryption",
+        "Available vault types: aws-sm, azure-kv, local_encryption",
       );
       assertStringIncludes(
         error.message,

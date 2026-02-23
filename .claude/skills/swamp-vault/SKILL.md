@@ -36,7 +36,30 @@ Vaults use the dual-layer architecture:
 
 ## Vault Types
 
-Two vault types are available:
+Three vault types are available:
+
+### aws-sm
+
+Integrates with AWS Secrets Manager. Region is resolved at creation time from
+`--region` flag or `AWS_REGION` env var.
+
+```yaml
+config:
+  region: "us-east-1" # Resolved at creation time
+```
+
+### azure-kv
+
+Integrates with Azure Key Vault. Vault URL is resolved at creation time from
+`--vault-url` flag or `AZURE_KEYVAULT_URL` env var. Uses
+`DefaultAzureCredential` for authentication (env vars, managed identity, Azure
+CLI).
+
+```yaml
+config:
+  vault_url: "https://myvault.vault.azure.net/" # Resolved at creation time
+  # secret_prefix: "swamp/"  # Optional: prefix for all secret names
+```
 
 ### local_encryption
 
@@ -50,21 +73,12 @@ config:
   ssh_key_path: "~/.ssh/id_rsa" # Use SSH key for encryption
 ```
 
-### aws
-
-Integrates with AWS Secrets Manager. Best for production environments.
-
-```yaml
-config:
-  region: "us-east-1" # Required
-  # profile: "default"  # Optional: AWS profile name
-```
-
 ## Create a Vault
 
 ```bash
 swamp vault create local_encryption dev-secrets --json
-swamp vault create aws prod-secrets --json
+swamp vault create aws-sm prod-secrets --region us-east-1 --json
+swamp vault create azure-kv azure-secrets --vault-url https://myvault.vault.azure.net/ --json
 ```
 
 **Output shape:**

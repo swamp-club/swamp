@@ -35,10 +35,16 @@ export interface VaultTypeInfo {
  */
 export const VAULT_TYPES: VaultTypeInfo[] = [
   {
-    type: "aws",
+    type: "aws-sm",
     name: "AWS Secrets Manager",
     description:
       "Store and retrieve secrets using AWS Secrets Manager. Requires AWS credentials via IAM roles, environment variables, or AWS profiles.",
+  },
+  {
+    type: "azure-kv",
+    name: "Azure Key Vault",
+    description:
+      "Store and retrieve secrets using Azure Key Vault. Requires vault URL and Azure credentials via environment variables, managed identity, or Azure CLI.",
   },
   {
     type: "local_encryption",

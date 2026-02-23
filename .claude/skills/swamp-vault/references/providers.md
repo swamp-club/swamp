@@ -56,21 +56,29 @@ createdAt: 2025-02-01T...
 }
 ```
 
-## AWS Secrets Manager Provider
+## AWS Secrets Manager Provider (`aws-sm`)
 
 ### Configuration Options
 
 ```yaml
-# .swamp/vault/aws/{id}.yaml
+# .swamp/vault/aws-sm/{id}.yaml
 id: def-456
 name: prod-vault
-type: aws
+type: aws-sm
 config:
-  region: us-east-1 # Required
-  profile: production # Optional: AWS profile name
-  endpoint_url: http://localhost:4566 # Optional: LocalStack endpoint
-  secret_prefix: myapp/ # Optional: Prefix for all secret names
+  region: us-east-1 # Resolved at creation time from --region or AWS_REGION
 createdAt: 2025-02-01T...
+```
+
+### Creation
+
+```bash
+# Explicit region
+swamp vault create aws-sm prod-vault --region us-east-1
+
+# From environment variable (logs a message confirming env var usage)
+export AWS_REGION=us-east-1
+swamp vault create aws-sm prod-vault
 ```
 
 ### Authentication
@@ -91,11 +99,56 @@ Secrets in AWS Secrets Manager are named:
 
 ### Auto-Registration
 
-If AWS credentials are detected in the environment, swamp automatically
-registers a default `aws` vault. This vault uses:
+If AWS credentials and region are detected in the environment
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`), swamp
+automatically registers a default `aws-sm` vault.
 
-- Region from `AWS_REGION` or `AWS_DEFAULT_REGION` (defaults to `us-east-1`)
-- Default credential chain for authentication
+## Azure Key Vault Provider (`azure-kv`)
+
+### Configuration Options
+
+```yaml
+# .swamp/vault/azure-kv/{id}.yaml
+id: ghi-789
+name: azure-secrets
+type: azure-kv
+config:
+  vault_url: https://myvault.vault.azure.net/ # Resolved at creation time
+  secret_prefix: swamp/ # Optional: prefix for all secret names
+createdAt: 2025-02-01T...
+```
+
+### Creation
+
+```bash
+# Explicit vault URL
+swamp vault create azure-kv azure-secrets --vault-url https://myvault.vault.azure.net/
+
+# From environment variable (logs a message confirming env var usage)
+export AZURE_KEYVAULT_URL=https://myvault.vault.azure.net/
+swamp vault create azure-kv azure-secrets
+```
+
+### Authentication
+
+Uses `DefaultAzureCredential` from the Azure SDK, which tries (in order):
+
+1. Environment variables: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+   `AZURE_CLIENT_SECRET`
+2. Workload Identity (Azure-hosted workloads)
+3. Managed Identity (Azure VMs, App Service, etc.)
+4. Azure CLI credentials (`az login`)
+5. Azure PowerShell credentials
+6. Azure Developer CLI credentials
+
+### Secret Naming
+
+Azure Key Vault secret names only allow alphanumeric characters and hyphens.
+Forward slashes and underscores in swamp secret names are automatically
+converted to hyphens when stored.
+
+- Without prefix: `{secret-key}` (with `/` and `_` replaced by `-`)
+- With prefix: `{secret_prefix}{secret-key}` (same replacement applied)
 
 ## Mock Provider (Testing Only)
 

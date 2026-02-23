@@ -50,7 +50,7 @@ Deno.test("VaultService - missing vault configuration error handling", async (t)
       );
       assertStringIncludes(
         error.message,
-        "Available vault types: aws, local_encryption",
+        "Available vault types: aws-sm, azure-kv, local_encryption",
       );
       assertStringIncludes(
         error.message,
@@ -121,9 +121,11 @@ Deno.test("VaultService - ensureDefaultVaults behavior", async (t) => {
       // Clear any existing AWS env vars for this test
       const originalAccessKey = Deno.env.get("AWS_ACCESS_KEY_ID");
       const originalSecretKey = Deno.env.get("AWS_SECRET_ACCESS_KEY");
+      const originalRegion = Deno.env.get("AWS_REGION");
 
       if (originalAccessKey) Deno.env.delete("AWS_ACCESS_KEY_ID");
       if (originalSecretKey) Deno.env.delete("AWS_SECRET_ACCESS_KEY");
+      if (originalRegion) Deno.env.delete("AWS_REGION");
 
       try {
         vaultService.ensureDefaultVaults();
@@ -131,39 +133,60 @@ Deno.test("VaultService - ensureDefaultVaults behavior", async (t) => {
       } finally {
         // Restore original env vars
         if (originalAccessKey) {
-          Deno.env.set(
-            "AWS_ACCESS_KEY_ID",
-            originalAccessKey,
-          );
+          Deno.env.set("AWS_ACCESS_KEY_ID", originalAccessKey);
         }
         if (originalSecretKey) {
-          Deno.env.set(
-            "AWS_SECRET_ACCESS_KEY",
-            originalSecretKey,
-          );
+          Deno.env.set("AWS_SECRET_ACCESS_KEY", originalSecretKey);
+        }
+        if (originalRegion) {
+          Deno.env.set("AWS_REGION", originalRegion);
         }
       }
     },
   );
 
   await t.step(
-    "should create default AWS vault when credentials present",
+    "should not create default vault when credentials present but no region",
     () => {
       const vaultService = new VaultService();
 
-      // Set mock AWS credentials
+      const originalRegion = Deno.env.get("AWS_REGION");
+      if (originalRegion) Deno.env.delete("AWS_REGION");
+
       Deno.env.set("AWS_ACCESS_KEY_ID", "test-key");
       Deno.env.set("AWS_SECRET_ACCESS_KEY", "test-secret");
 
       try {
         vaultService.ensureDefaultVaults();
+        assertEquals(vaultService.getVaultNames().length, 0);
+      } finally {
+        Deno.env.delete("AWS_ACCESS_KEY_ID");
+        Deno.env.delete("AWS_SECRET_ACCESS_KEY");
+        if (originalRegion) Deno.env.set("AWS_REGION", originalRegion);
+      }
+    },
+  );
+
+  await t.step(
+    "should create default AWS vault when credentials and region present",
+    () => {
+      const vaultService = new VaultService();
+
+      // Set mock AWS credentials and region
+      Deno.env.set("AWS_ACCESS_KEY_ID", "test-key");
+      Deno.env.set("AWS_SECRET_ACCESS_KEY", "test-secret");
+      Deno.env.set("AWS_REGION", "us-east-1");
+
+      try {
+        vaultService.ensureDefaultVaults();
         const vaultNames = vaultService.getVaultNames();
         assertEquals(vaultNames.length, 1);
-        assertEquals(vaultNames[0], "aws");
+        assertEquals(vaultNames[0], "aws-sm");
       } finally {
         // Clean up
         Deno.env.delete("AWS_ACCESS_KEY_ID");
         Deno.env.delete("AWS_SECRET_ACCESS_KEY");
+        Deno.env.delete("AWS_REGION");
       }
     },
   );
@@ -173,24 +196,26 @@ Deno.test("VaultService - ensureDefaultVaults behavior", async (t) => {
 
     // Manually register an AWS vault first
     vaultService.registerVault({
-      name: "aws",
-      type: "aws",
-      config: {},
+      name: "aws-sm",
+      type: "aws-sm",
+      config: { region: "us-east-1" },
     });
 
-    // Set mock AWS credentials
+    // Set mock AWS credentials and region
     Deno.env.set("AWS_ACCESS_KEY_ID", "test-key");
     Deno.env.set("AWS_SECRET_ACCESS_KEY", "test-secret");
+    Deno.env.set("AWS_REGION", "us-east-1");
 
     try {
       vaultService.ensureDefaultVaults();
       const vaultNames = vaultService.getVaultNames();
       assertEquals(vaultNames.length, 1);
-      assertEquals(vaultNames[0], "aws");
+      assertEquals(vaultNames[0], "aws-sm");
     } finally {
       // Clean up
       Deno.env.delete("AWS_ACCESS_KEY_ID");
       Deno.env.delete("AWS_SECRET_ACCESS_KEY");
+      Deno.env.delete("AWS_REGION");
     }
   });
 });
@@ -229,13 +254,64 @@ Deno.test("VaultService - basic functionality", async (t) => {
       () => {
         vaultService.registerVault({
           name: "invalid",
-          type: "unsupported-type" as "aws" | "mock" | "local_encryption",
+          type: "unsupported-type",
           config: {},
         });
       },
       Error,
-      "Unsupported vault type: unsupported-type",
+      "Unsupported vault type: 'unsupported-type'",
     );
+  });
+
+  await t.step(
+    "should suggest renamed type when using old 'aws' type name",
+    () => {
+      const vaultService = new VaultService();
+
+      assertThrows(
+        () => {
+          vaultService.registerVault({
+            name: "old-vault",
+            type: "aws",
+            config: {},
+          });
+        },
+        Error,
+        "renamed to 'aws-sm'",
+      );
+    },
+  );
+
+  await t.step(
+    "should suggest renamed type when using old 'azure' type name",
+    () => {
+      const vaultService = new VaultService();
+
+      assertThrows(
+        () => {
+          vaultService.registerVault({
+            name: "old-vault",
+            type: "azure",
+            config: {},
+          });
+        },
+        Error,
+        "renamed to 'azure-kv'",
+      );
+    },
+  );
+
+  await t.step("should register azure-kv vault", () => {
+    const vaultService = new VaultService();
+
+    vaultService.registerVault({
+      name: "my-azure-vault",
+      type: "azure-kv",
+      config: { vault_url: "https://myvault.vault.azure.net/" },
+    });
+
+    const vaultNames = vaultService.getVaultNames();
+    assertEquals(vaultNames, ["my-azure-vault"]);
   });
 
   await t.step("should register and use local_encryption vault", () => {
