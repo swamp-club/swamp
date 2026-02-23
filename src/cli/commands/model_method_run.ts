@@ -38,6 +38,7 @@ import {
 import { coerceInputTypes, parseInputs } from "../input_parser.ts";
 import { parseTags } from "./data_search.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
+import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { join } from "@std/path";
 import {
   SWAMP_SUBDIRS,
@@ -152,6 +153,9 @@ export const modelMethodRunCommand = new Command()
       // Create run logger for real-time output
       const runLogger = getRunLogger(definition.name, methodName);
 
+      // Create secret redactor — populated during vault resolution, used by log sink and data writers
+      const redactor = new SecretRedactor();
+
       // Register run file sink target for log persistence
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       const logFilePath = join(
@@ -161,7 +165,7 @@ export const modelMethodRunCommand = new Command()
         `${definition.id}-${timestamp}.log`,
       );
       const runLogCategory: string[] = [];
-      await runFileSink.register(runLogCategory, logFilePath);
+      await runFileSink.register(runLogCategory, logFilePath, redactor);
 
       runLogger.info("Found model {name} ({type})", {
         name: definition.name,
@@ -251,7 +255,7 @@ export const modelMethodRunCommand = new Command()
 
       // Resolve runtime expressions (vault and env) at runtime (never persisted)
       evaluatedDefinition = await evaluationService
-        .resolveRuntimeExpressionsInDefinition(evaluatedDefinition);
+        .resolveRuntimeExpressionsInDefinition(evaluatedDefinition, redactor);
 
       runLogger.info("Executing method {method}", { method: methodName });
 

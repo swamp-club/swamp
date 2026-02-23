@@ -71,6 +71,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { join } from "@std/path";
+import { SecretRedactor } from "../secrets/mod.ts";
 /**
  * Context for step execution.
  */
@@ -103,6 +104,8 @@ export interface StepExecutionContext {
   workflowTags?: Record<string, string>;
   /** Runtime tags from --tag CLI flags, passed to method execution context */
   runtimeTags?: Record<string, string>;
+  /** Secret redactor for stripping vault secrets from persisted data and logs */
+  secretRedactor?: SecretRedactor;
 }
 
 /**
@@ -402,6 +405,7 @@ export class DefaultStepExecutor implements StepExecutor {
     evaluatedDefinition = await evalService
       .resolveRuntimeExpressionsInDefinition(
         evaluatedDefinition,
+        ctx.secretRedactor,
       );
 
     // Validate method exists on the model
@@ -786,6 +790,9 @@ export class WorkflowExecutionService {
     };
     const run = WorkflowRun.create(workflow, mergedTags);
 
+    // Create secret redactor — populated during vault resolution, used by log sink and data writers
+    const secretRedactor = new SecretRedactor();
+
     // Register run file sink target for the workflow log output
     const workflowLogPath = join(
       swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
@@ -793,7 +800,11 @@ export class WorkflowExecutionService {
       `workflow-run-${run.id}.log`,
     );
     const workflowLogCategory: string[] = [];
-    await runFileSink.register(workflowLogCategory, workflowLogPath);
+    await runFileSink.register(
+      workflowLogCategory,
+      workflowLogPath,
+      secretRedactor,
+    );
     run.setLogFile(workflowLogPath);
 
     // Start execution
@@ -828,6 +839,7 @@ export class WorkflowExecutionService {
             options?.ancestorWorkflowIds,
             workflow.tags,
             options?.runtimeTags,
+            secretRedactor,
           )
         ),
       );
@@ -857,6 +869,7 @@ export class WorkflowExecutionService {
     ancestorWorkflowIds?: Set<string>,
     workflowTags?: Record<string, string>,
     runtimeTags?: Record<string, string>,
+    secretRedactor?: SecretRedactor,
   ): Promise<void> {
     const job = workflow.getJob(jobName);
     if (!job) {
@@ -964,6 +977,7 @@ export class WorkflowExecutionService {
             ancestorWorkflowIds,
             workflowTags,
             runtimeTags,
+            secretRedactor,
           );
         }),
       );
@@ -1258,6 +1272,7 @@ export class WorkflowExecutionService {
     ancestorWorkflowIds?: Set<string>,
     workflowTags?: Record<string, string>,
     runtimeTags?: Record<string, string>,
+    secretRedactor?: SecretRedactor,
   ): Promise<void> {
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
@@ -1329,6 +1344,7 @@ export class WorkflowExecutionService {
         ancestorWorkflowIds,
         workflowTags,
         runtimeTags,
+        secretRedactor,
       };
 
       const output = await this.executor.execute(step, ctx);

@@ -36,6 +36,7 @@ import {
   type ModelResolverRepositories,
 } from "./model_resolver.ts";
 import { CyclicDependencyError } from "./errors.ts";
+import type { SecretRedactor } from "../secrets/mod.ts";
 import {
   CyclicDependencyError as TopoCyclicError,
   type GraphNode,
@@ -363,10 +364,12 @@ export class ExpressionEvaluationService {
    * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
    *
    * @param definition - The definition (may contain remaining ${{ vault.get(...) }} or ${{ env.* }} expressions)
+   * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
    * @returns A new definition with all runtime expressions resolved
    */
   async resolveRuntimeExpressionsInDefinition(
     definition: Definition,
+    redactor?: SecretRedactor,
   ): Promise<Definition> {
     const definitionData = definition.toData();
     const expressions = extractExpressions(definitionData);
@@ -383,6 +386,7 @@ export class ExpressionEvaluationService {
     return await this.resolveRuntimeInExpressions(
       definitionData,
       runtimeExpressions,
+      redactor,
     );
   }
 
@@ -391,9 +395,13 @@ export class ExpressionEvaluationService {
    * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
    *
    * @param data - The data (may contain remaining runtime expressions)
+   * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
    * @returns The data with all runtime expressions resolved
    */
-  async resolveRuntimeExpressionsInData(data: unknown): Promise<unknown> {
+  async resolveRuntimeExpressionsInData(
+    data: unknown,
+    redactor?: SecretRedactor,
+  ): Promise<unknown> {
     const expressions = extractExpressions(data);
     const runtimeExpressions = expressions.filter((expr) =>
       containsRuntimeExpression(expr.celExpression)
@@ -410,6 +418,7 @@ export class ExpressionEvaluationService {
       if (containsVaultExpression(expr.celExpression)) {
         resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
           expr.celExpression,
+          redactor,
         );
       }
       const value = this.celEvaluator.evaluate(resolvedCelExpr, {
@@ -444,6 +453,7 @@ export class ExpressionEvaluationService {
   private async resolveRuntimeInExpressions(
     definitionData: ReturnType<Definition["toData"]>,
     runtimeExpressions: ExpressionLocation[],
+    redactor?: SecretRedactor,
   ): Promise<Definition> {
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of runtimeExpressions) {
@@ -452,6 +462,7 @@ export class ExpressionEvaluationService {
       if (containsVaultExpression(expr.celExpression)) {
         resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
           expr.celExpression,
+          redactor,
         );
       }
       const value = this.celEvaluator.evaluate(resolvedCelExpr, {

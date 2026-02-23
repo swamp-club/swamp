@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getTextFormatter, type LogRecord, type Sink } from "@logtape/logtape";
+import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 
 /**
  * Formats a LogRecord as a plain text line for file output.
@@ -49,6 +50,7 @@ interface FileWriter {
   fd: Deno.FsFile;
   encoder: TextEncoder;
   prefix: string[];
+  redactor?: SecretRedactor;
 }
 
 /**
@@ -63,7 +65,11 @@ export class RunFileSink {
    * Register a log file for a category prefix.
    * All log records matching this prefix will be written to the file.
    */
-  async register(categoryPrefix: string[], filePath: string): Promise<void> {
+  async register(
+    categoryPrefix: string[],
+    filePath: string,
+    redactor?: SecretRedactor,
+  ): Promise<void> {
     const key = prefixKey(categoryPrefix);
     // Close existing writer if any
     const existing = this.writers.get(key);
@@ -86,6 +92,7 @@ export class RunFileSink {
       fd,
       encoder: new TextEncoder(),
       prefix: categoryPrefix,
+      redactor,
     });
   }
 
@@ -113,7 +120,10 @@ export class RunFileSink {
       for (const writer of this.writers.values()) {
         if (categoryMatchesPrefix(record.category, writer.prefix)) {
           try {
-            writer.fd.writeSync(writer.encoder.encode(line));
+            const redactedLine = writer.redactor?.hasSecrets
+              ? writer.redactor.redact(line)
+              : line;
+            writer.fd.writeSync(writer.encoder.encode(redactedLine));
           } catch {
             // Logging infrastructure must not throw — a broken log file
             // should never crash a running workflow.
