@@ -204,9 +204,9 @@ Deno.test("extractCommandInfo records categorical arg for type describe", () => 
 });
 
 Deno.test("extractCommandInfo records categorical arg for vault create", () => {
-  const info = extractCommandInfo(["vault", "create", "aws", "my-vault"]);
+  const info = extractCommandInfo(["vault", "create", "aws-sm", "my-vault"]);
 
   assertEquals(info.command, "vault");
   assertEquals(info.subcommand, "create");
-  assertEquals(info.args, ["aws", "<REDACTED>"]);
+  assertEquals(info.args, ["aws-sm", "<REDACTED>"]);
 });

@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { vaultTypeSearchCommand } from "./vault_type_search.ts";
+import {
+  vaultTypeSearchAction,
+  vaultTypeSearchCommand,
+} from "./vault_type_search.ts";
 import { vaultCreateCommand } from "./vault_create.ts";
 import { vaultSearchCommand } from "./vault_search.ts";
 import { vaultGetCommand } from "./vault_get.ts";
@@ -35,7 +38,15 @@ export const vaultTypeCommand = new Command()
   .action(function () {
     this.showHelp();
   })
-  .command("search", vaultTypeSearchCommand);
+  .command("search", vaultTypeSearchCommand)
+  .command(
+    "list",
+    new Command()
+      .description("Alias for vault type search")
+      .hidden()
+      .arguments("[query:string]")
+      .action(vaultTypeSearchAction),
+  );
 
 /**
  * Parent command for vault operations.

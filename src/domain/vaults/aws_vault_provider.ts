@@ -34,9 +34,9 @@ export class AwsVaultProvider implements VaultProvider {
   private readonly client: SecretsManagerClient;
   private readonly name: string;
 
-  constructor(name: string, config: { region?: string } = {}) {
+  constructor(name: string, config: { region: string }) {
     this.name = name;
-    const region = config.region || Deno.env.get("AWS_REGION") || "us-east-1";
+    const region = config.region;
 
     this.client = new SecretsManagerClient({
       region,

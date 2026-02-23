@@ -35,7 +35,7 @@ const testDataWithSecrets: VaultListKeysData = {
 
 const testDataEmpty: VaultListKeysData = {
   vaultName: "empty-vault",
-  vaultType: "aws",
+  vaultType: "aws-sm",
   secretKeys: [],
   count: 0,
 };

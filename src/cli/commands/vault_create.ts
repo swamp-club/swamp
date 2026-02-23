@@ -34,19 +34,51 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+interface VaultCreateOptions {
+  region?: string;
+  vaultUrl?: string;
+}
+
 /**
- * Default configuration for each vault type.
+ * Resolves provider-specific configuration for each vault type.
+ * Provider options (e.g., region, vault URL) are resolved at creation time
+ * from flags or environment variables and persisted in the config file.
  */
-function getDefaultConfig(
+function resolveProviderConfig(
   vaultType: string,
   repoDir: string,
-  _vaultName: string,
+  options: VaultCreateOptions,
+  logger: {
+    info: (template: TemplateStringsArray, ...args: unknown[]) => void;
+  },
 ): Record<string, unknown> {
   switch (vaultType) {
-    case "aws":
-      return {
-        region: "us-east-1",
-      };
+    case "aws-sm": {
+      const region = options.region || Deno.env.get("AWS_REGION");
+      if (!region) {
+        throw new UserError(
+          "AWS region is required. Provide --region or set AWS_REGION environment variable.",
+        );
+      }
+      if (!options.region) {
+        logger
+          .info`Using region from AWS_REGION environment variable: ${region}`;
+      }
+      return { region };
+    }
+    case "azure-kv": {
+      const vaultUrl = options.vaultUrl || Deno.env.get("AZURE_KEYVAULT_URL");
+      if (!vaultUrl) {
+        throw new UserError(
+          "Azure Key Vault URL is required. Provide --vault-url or set AZURE_KEYVAULT_URL environment variable.",
+        );
+      }
+      if (!options.vaultUrl) {
+        logger
+          .info`Using vault URL from AZURE_KEYVAULT_URL environment variable: ${vaultUrl}`;
+      }
+      return { vault_url: vaultUrl };
+    }
     case "local_encryption":
       return {
         auto_generate: true,
@@ -87,6 +119,14 @@ export const vaultCreateCommand = new Command()
   .description("Create a new vault configuration")
   .arguments("<type:string> [name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--region <region:string>",
+    "AWS region (for aws-sm type). Falls back to AWS_REGION env var.",
+  )
+  .option(
+    "--vault-url <url:string>",
+    "Azure Key Vault URL (for azure-kv type). Falls back to AZURE_KEYVAULT_URL env var.",
+  )
   .action(
     async function (
       options: AnyOptions,
@@ -140,14 +180,19 @@ export const vaultCreateCommand = new Command()
         );
       }
 
-      // Create the vault config
-      const defaultConfig = getDefaultConfig(vaultType, repoDir, vaultName);
+      // Resolve provider-specific configuration from flags/env vars
+      const providerConfig = resolveProviderConfig(
+        vaultType,
+        repoDir,
+        { region: options.region, vaultUrl: options.vaultUrl },
+        ctx.logger,
+      );
       const vaultId = createVaultConfigId(generateVaultId());
       const vaultConfig = VaultConfig.create(
         vaultId,
         vaultName,
         vaultType,
-        defaultConfig,
+        providerConfig,
       );
 
       // Save to repository
@@ -160,7 +205,7 @@ export const vaultCreateCommand = new Command()
         name: vaultName,
         type: vaultType,
         typeName: typeInfo.name,
-        config: defaultConfig,
+        config: providerConfig,
       };
 
       renderVaultCreate(data, ctx.outputMode);

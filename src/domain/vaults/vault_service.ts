@@ -19,7 +19,12 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { VaultConfiguration, VaultProvider } from "./vault_provider.ts";
+import { getVaultTypes } from "./vault_types.ts";
 import { AwsVaultProvider } from "./aws_vault_provider.ts";
+import {
+  type AzureKvVaultConfig,
+  AzureKvVaultProvider,
+} from "./azure_kv_vault_provider.ts";
 import { MockVaultProvider } from "./mock_vault_provider.ts";
 import {
   type LocalEncryptionConfig,
@@ -65,8 +70,16 @@ export class VaultService {
         });
       }
     } catch (error) {
-      // Repository may not exist yet, or vault config may be invalid
-      getLogger("vaults").debug`Failed to load vault configs: ${error}`;
+      if (
+        error instanceof Error &&
+        error.message.includes("Unsupported vault type")
+      ) {
+        // Surface unsupported type errors as warnings so users see migration hints
+        getLogger("vaults").warn`${error.message}`;
+      } else {
+        // Repository may not exist yet, or vault config may be invalid
+        getLogger("vaults").debug`Failed to load vault configs: ${error}`;
+      }
     }
     vaultService.ensureDefaultVaults();
     return vaultService;
@@ -79,8 +92,17 @@ export class VaultService {
     let provider: VaultProvider;
 
     switch (config.type.toLowerCase()) {
-      case "aws":
-        provider = new AwsVaultProvider(config.name, config.config);
+      case "aws-sm":
+        provider = new AwsVaultProvider(
+          config.name,
+          config.config as { region: string },
+        );
+        break;
+      case "azure-kv":
+        provider = new AzureKvVaultProvider(
+          config.name,
+          config.config as unknown as AzureKvVaultConfig,
+        );
         break;
       case "mock":
         provider = new MockVaultProvider(
@@ -95,7 +117,10 @@ export class VaultService {
         );
         break;
       default:
-        throw new Error(`Unsupported vault type: ${config.type}`);
+        throw new Error(
+          `Unsupported vault type: '${config.type}' (vault '${config.name}').` +
+            suggestVaultType(config.type),
+        );
     }
 
     this.providers.set(config.name, provider);
@@ -113,7 +138,7 @@ export class VaultService {
           `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
             `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
             `  swamp vault create <type> ${vaultName}\n\n` +
-            `Available vault types: aws, local_encryption\n` +
+            `Available vault types: aws-sm, azure-kv, local_encryption\n` +
             `Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for automatic AWS vault.`,
         );
       } else {
@@ -145,7 +170,7 @@ export class VaultService {
           `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
             `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
             `  swamp vault create <type> ${vaultName}\n\n` +
-            `Available vault types: aws, local_encryption`,
+            `Available vault types: aws-sm, azure-kv, local_encryption`,
         );
       } else {
         throw new Error(
@@ -173,7 +198,7 @@ export class VaultService {
           `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
             `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
             `  swamp vault create <type> ${vaultName}\n\n` +
-            `Available vault types: aws, local_encryption`,
+            `Available vault types: aws-sm, azure-kv, local_encryption`,
         );
       } else {
         throw new Error(
@@ -206,15 +231,37 @@ export class VaultService {
       const hasAwsCredentials = Deno.env.get("AWS_ACCESS_KEY_ID") &&
         Deno.env.get("AWS_SECRET_ACCESS_KEY");
 
-      if (hasAwsCredentials) {
-        // Register default AWS vault only when credentials are explicitly set
+      const awsRegion = Deno.env.get("AWS_REGION");
+      if (hasAwsCredentials && awsRegion) {
+        // Register default AWS vault only when credentials and region are explicitly set
         this.registerVault({
-          name: "aws",
-          type: "aws",
-          config: {}, // Uses environment variables
+          name: "aws-sm",
+          type: "aws-sm",
+          config: { region: awsRegion },
         });
       }
       // If no credentials, leave providers empty to trigger helpful error messages
     }
   }
+}
+
+/**
+ * Known renamed vault types and their current names.
+ */
+const RENAMED_VAULT_TYPES: Record<string, string> = {
+  aws: "aws-sm",
+  azure: "azure-kv",
+};
+
+/**
+ * Suggests the correct vault type name if the user provided a renamed or similar type.
+ */
+function suggestVaultType(type: string): string {
+  const normalized = type.toLowerCase();
+  const renamed = RENAMED_VAULT_TYPES[normalized];
+  if (renamed) {
+    return ` The type '${type}' has been renamed to '${renamed}'. Update your vault configuration to use type: ${renamed}`;
+  }
+  const available = getVaultTypes().map((v) => v.type).join(", ");
+  return ` Available vault types: ${available}`;
 }

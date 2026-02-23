@@ -5,7 +5,7 @@
   "exports": "./main.ts",
   "tasks": {
     "dev": "deno run --allow-read --allow-write --allow-env --allow-run --allow-sys main.ts",
-    "test": "deno test --allow-read --allow-write --allow-env --allow-run --allow-net",
+    "test": "deno test --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys",
     "check": "deno check main.ts",
     "lint": "deno lint",
     "fmt": "deno fmt",
@@ -31,6 +31,8 @@
     "@types/react": "npm:@types/react@^18.3.28",
     "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@^3.993.0",
     "@aws-sdk/client-secrets-manager": "npm:@aws-sdk/client-secrets-manager@^3.993.0",
+    "@azure/identity": "npm:@azure/identity@^4.8.0",
+    "@azure/keyvault-secrets": "npm:@azure/keyvault-secrets@^4.9.0",
     "cel-js": "npm:@marcbachmann/cel-js@7.5.1",
     "fast-json-patch": "npm:fast-json-patch@^3.1.1"
   },

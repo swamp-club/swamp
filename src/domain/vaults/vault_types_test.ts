@@ -22,7 +22,8 @@ import { getVaultType, getVaultTypes, VAULT_TYPES } from "./vault_types.ts";
 
 Deno.test("VAULT_TYPES contains expected types", () => {
   const types = VAULT_TYPES.map((v) => v.type);
-  assertEquals(types.includes("aws"), true);
+  assertEquals(types.includes("aws-sm"), true);
+  assertEquals(types.includes("azure-kv"), true);
   assertEquals(types.includes("local_encryption"), true);
   // mock vault is excluded from public listing (internal testing only)
   assertEquals(types.includes("mock"), false);
@@ -30,15 +31,20 @@ Deno.test("VAULT_TYPES contains expected types", () => {
 
 Deno.test("getVaultTypes returns all vault types", () => {
   const types = getVaultTypes();
-  assertEquals(types.length, 2);
+  assertEquals(types.length, 3);
   assertEquals(types, VAULT_TYPES);
 });
 
 Deno.test("getVaultType returns vault type by identifier", () => {
-  const aws = getVaultType("aws");
+  const aws = getVaultType("aws-sm");
   assertExists(aws);
-  assertEquals(aws.type, "aws");
+  assertEquals(aws.type, "aws-sm");
   assertEquals(aws.name, "AWS Secrets Manager");
+
+  const azureKv = getVaultType("azure-kv");
+  assertExists(azureKv);
+  assertEquals(azureKv.type, "azure-kv");
+  assertEquals(azureKv.name, "Azure Key Vault");
 
   const local = getVaultType("local_encryption");
   assertExists(local);
@@ -46,9 +52,13 @@ Deno.test("getVaultType returns vault type by identifier", () => {
 });
 
 Deno.test("getVaultType is case-insensitive", () => {
-  const aws = getVaultType("AWS");
+  const aws = getVaultType("AWS-SM");
   assertExists(aws);
-  assertEquals(aws.type, "aws");
+  assertEquals(aws.type, "aws-sm");
+
+  const azureKv = getVaultType("AZURE-KV");
+  assertExists(azureKv);
+  assertEquals(azureKv.type, "azure-kv");
 
   const local = getVaultType("LOCAL_ENCRYPTION");
   assertExists(local);

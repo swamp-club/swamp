@@ -70,44 +70,49 @@ function displayVaultTypeDescribe(
   renderVaultTypeDescribe(item, ctx.outputMode);
 }
 
+export async function vaultTypeSearchAction(
+  options: AnyOptions,
+  query?: string,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, [
+    "vault",
+    "type-search",
+  ]);
+  ctx.logger.debug`Searching vault types with query: ${query ?? "(none)"}`;
+
+  const allTypes = getAllVaultTypes();
+
+  if (ctx.outputMode === "json") {
+    // Non-interactive: filter and output JSON
+    const filteredTypes = filterVaultTypes(allTypes, query ?? "");
+    const data: VaultTypeSearchData = {
+      query: query ?? "",
+      results: filteredTypes,
+    };
+    await renderVaultTypeSearch(data, ctx.outputMode);
+  } else {
+    // Interactive: show fuzzy search UI
+    const data: VaultTypeSearchData = {
+      query: query ?? "",
+      results: allTypes,
+    };
+
+    const selected = await renderVaultTypeSearch(data, ctx.outputMode);
+
+    if (selected) {
+      ctx.logger.debug`Selected vault type: ${selected.type}`;
+      // Display the vault type description
+      displayVaultTypeDescribe(selected, options);
+    } else {
+      ctx.logger.debug`Search cancelled`;
+    }
+  }
+
+  ctx.logger.debug("Vault type search command completed");
+}
+
 export const vaultTypeSearchCommand = new Command()
   .name("search")
   .description("Search for vault types")
   .arguments("[query:string]")
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, [
-      "vault",
-      "type-search",
-    ]);
-    ctx.logger.debug`Searching vault types with query: ${query ?? "(none)"}`;
-
-    const allTypes = getAllVaultTypes();
-
-    if (ctx.outputMode === "json") {
-      // Non-interactive: filter and output JSON
-      const filteredTypes = filterVaultTypes(allTypes, query ?? "");
-      const data: VaultTypeSearchData = {
-        query: query ?? "",
-        results: filteredTypes,
-      };
-      await renderVaultTypeSearch(data, ctx.outputMode);
-    } else {
-      // Interactive: show fuzzy search UI
-      const data: VaultTypeSearchData = {
-        query: query ?? "",
-        results: allTypes,
-      };
-
-      const selected = await renderVaultTypeSearch(data, ctx.outputMode);
-
-      if (selected) {
-        ctx.logger.debug`Selected vault type: ${selected.type}`;
-        // Display the vault type description
-        displayVaultTypeDescribe(selected, options);
-      } else {
-        ctx.logger.debug`Search cancelled`;
-      }
-    }
-
-    ctx.logger.debug("Vault type search command completed");
-  });
+  .action(vaultTypeSearchAction);
