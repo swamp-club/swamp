@@ -28,10 +28,12 @@ import { workflowValidateCommand } from "./workflow_validate.ts";
 import { workflowSearchCommand } from "./workflow_search.ts";
 import { workflowRunCommand } from "./workflow_run.ts";
 import { workflowSchemaCommand } from "./workflow_schema.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const workflowCommand = new Command()
   .name("workflow")
   .description("Manage workflows")
+  .error(unknownCommandErrorHandler)
   .action(function () {
     this.showHelp();
   })

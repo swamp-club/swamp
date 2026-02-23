@@ -38,6 +38,7 @@ import { modelEditCommand } from "./model_edit.ts";
 import { modelEvaluateCommand } from "./model_evaluate.ts";
 import { modelOutputCommand } from "./model_output.ts";
 import { modelTypeCommand } from "./model_type.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -121,6 +122,7 @@ export const modelCreateCommand = new Command()
 export const modelCommand = new Command()
   .name("model")
   .description("Manage models")
+  .error(unknownCommandErrorHandler)
   .action(function () {
     this.showHelp();
   })

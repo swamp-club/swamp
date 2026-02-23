@@ -28,6 +28,7 @@ import { vaultGetCommand } from "./vault_get.ts";
 import { vaultEditCommand } from "./vault_edit.ts";
 import { vaultPutCommand } from "./vault_put.ts";
 import { vaultListKeysCommand } from "./vault_list_keys.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 /**
  * Parent command for vault type operations.
@@ -54,6 +55,7 @@ export const vaultTypeCommand = new Command()
 export const vaultCommand = new Command()
   .name("vault")
   .description("Manage vault configurations")
+  .error(unknownCommandErrorHandler)
   .action(function () {
     this.showHelp();
   })

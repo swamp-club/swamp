@@ -44,6 +44,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { modelMethodHistoryCommand } from "./model_method_history.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -54,6 +55,11 @@ type AnyOptions = any;
 export const modelMethodRunCommand = new Command()
   .name("run")
   .description("Execute a method on a model")
+  .example("Run a method", "swamp model method run my-server getSystemInfo")
+  .example(
+    "Run with inputs",
+    "swamp model method run my-server deploy --input env=prod",
+  )
   .arguments("<model_id_or_name:model_name> <method_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(
@@ -401,6 +407,7 @@ export const modelMethodRunCommand = new Command()
 export const modelMethodCommand = new Command()
   .name("method")
   .description("Execute model methods")
+  .error(unknownCommandErrorHandler)
   .action(function () {
     this.showHelp();
   })

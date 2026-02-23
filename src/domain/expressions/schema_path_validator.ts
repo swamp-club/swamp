@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { z } from "zod";
+import { findClosestMatch } from "../string_distance.ts";
 
 /**
  * Result of validating a path against a Zod schema.
@@ -49,63 +50,6 @@ interface ZodDef {
   valueType?: z.ZodTypeAny;
   options?: z.ZodTypeAny[];
   schema?: z.ZodTypeAny;
-}
-
-/**
- * Computes Levenshtein distance between two strings for typo detection.
- */
-function levenshteinDistance(a: string, b: string): number {
-  const matrix: number[][] = [];
-
-  for (let i = 0; i <= b.length; i++) {
-    matrix[i] = [i];
-  }
-  for (let j = 0; j <= a.length; j++) {
-    matrix[0][j] = j;
-  }
-
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1, // substitution
-          matrix[i][j - 1] + 1, // insertion
-          matrix[i - 1][j] + 1, // deletion
-        );
-      }
-    }
-  }
-
-  return matrix[b.length][a.length];
-}
-
-/**
- * Finds the closest match to a key among available keys.
- */
-function findClosestKey(
-  key: string,
-  availableKeys: string[],
-): string | undefined {
-  if (availableKeys.length === 0) return undefined;
-
-  let closest: string | undefined;
-  let minDistance = Infinity;
-  const threshold = Math.max(2, Math.floor(key.length / 2));
-
-  for (const available of availableKeys) {
-    const distance = levenshteinDistance(
-      key.toLowerCase(),
-      available.toLowerCase(),
-    );
-    if (distance < minDistance && distance <= threshold) {
-      minDistance = distance;
-      closest = available;
-    }
-  }
-
-  return closest;
 }
 
 /**
@@ -245,7 +189,7 @@ export function validateSchemaPath(
       if (!propertySchema) {
         const availableKeys = getObjectKeys(unwrapped);
         const suggestion = availableKeys
-          ? findClosestKey(segment, availableKeys)
+          ? findClosestMatch(segment, availableKeys)
           : undefined;
 
         const pathSoFar = visitedPath.length > 0 ? visitedPath.join(".") : "";
