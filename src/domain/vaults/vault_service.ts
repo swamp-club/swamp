@@ -55,9 +55,18 @@ export class VaultService {
       const vaultRepo = new YamlVaultConfigRepository(repoDir);
       const vaultConfigs = await vaultRepo.findAll();
       for (const vaultConfig of vaultConfigs) {
+        // Auto-remap renamed vault types so old configs load transparently
+        let vaultType = vaultConfig.type;
+        const renamedTo = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
+        if (renamedTo) {
+          getLogger("vaults")
+            .warn`Vault '${vaultConfig.name}' uses deprecated type '${vaultType}'. Automatically remapping to '${renamedTo}'. Update your vault config to use type: ${renamedTo}`;
+          vaultType = renamedTo;
+        }
+
         // For local_encryption vaults, inject base_dir from repoDir if not already set
         let config = vaultConfig.config;
-        if (vaultConfig.type === "local_encryption") {
+        if (vaultType === "local_encryption") {
           const localConfig = config as LocalEncryptionConfig | undefined;
           if (!localConfig?.base_dir) {
             config = { ...localConfig, base_dir: repoDir };
@@ -65,21 +74,13 @@ export class VaultService {
         }
         vaultService.registerVault({
           name: vaultConfig.name,
-          type: vaultConfig.type, // Let registerVault validate and throw for unsupported types
+          type: vaultType,
           config,
         });
       }
     } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes("Unsupported vault type")
-      ) {
-        // Surface unsupported type errors as warnings so users see migration hints
-        getLogger("vaults").warn`${error.message}`;
-      } else {
-        // Repository may not exist yet, or vault config may be invalid
-        getLogger("vaults").debug`Failed to load vault configs: ${error}`;
-      }
+      // Repository may not exist yet, or vault config may be invalid
+      getLogger("vaults").debug`Failed to load vault configs: ${error}`;
     }
     vaultService.ensureDefaultVaults();
     return vaultService;

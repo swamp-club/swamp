@@ -23,6 +23,9 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { VaultService } from "./vault_service.ts";
 
 Deno.test("VaultService - missing vault configuration error handling", async (t) => {
@@ -326,4 +329,68 @@ Deno.test("VaultService - basic functionality", async (t) => {
     const vaultNames = vaultService.getVaultNames();
     assertEquals(vaultNames, ["local-vault"]);
   });
+});
+
+Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async (t) => {
+  await t.step(
+    "should remap 'aws' type to 'aws-sm' when loading from repository",
+    async () => {
+      const tempDir = await Deno.makeTempDir();
+      try {
+        // Create a vault config YAML with the old 'aws' type
+        const vaultDir = join(tempDir, ".swamp", "vault", "aws");
+        await ensureDir(vaultDir);
+        const vaultYaml = stringifyYaml({
+          id: "test-vault-id",
+          name: "my-aws-vault",
+          type: "aws",
+          config: { region: "us-east-1" },
+          createdAt: new Date().toISOString(),
+        });
+        await Deno.writeTextFile(
+          join(vaultDir, "test-vault-id.yaml"),
+          vaultYaml,
+        );
+
+        const vaultService = await VaultService.fromRepository(tempDir);
+        const vaultNames = vaultService.getVaultNames();
+
+        // The vault should have loaded successfully with the remapped type
+        assertEquals(vaultNames.includes("my-aws-vault"), true);
+      } finally {
+        await Deno.remove(tempDir, { recursive: true });
+      }
+    },
+  );
+
+  await t.step(
+    "should remap 'azure' type to 'azure-kv' when loading from repository",
+    async () => {
+      const tempDir = await Deno.makeTempDir();
+      try {
+        // Create a vault config YAML with the old 'azure' type
+        const vaultDir = join(tempDir, ".swamp", "vault", "azure");
+        await ensureDir(vaultDir);
+        const vaultYaml = stringifyYaml({
+          id: "test-vault-id",
+          name: "my-azure-vault",
+          type: "azure",
+          config: { vault_url: "https://myvault.vault.azure.net/" },
+          createdAt: new Date().toISOString(),
+        });
+        await Deno.writeTextFile(
+          join(vaultDir, "test-vault-id.yaml"),
+          vaultYaml,
+        );
+
+        const vaultService = await VaultService.fromRepository(tempDir);
+        const vaultNames = vaultService.getVaultNames();
+
+        // The vault should have loaded successfully with the remapped type
+        assertEquals(vaultNames.includes("my-azure-vault"), true);
+      } finally {
+        await Deno.remove(tempDir, { recursive: true });
+      }
+    },
+  );
 });
