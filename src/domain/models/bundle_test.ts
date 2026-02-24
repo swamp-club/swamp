@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
-import { bundleExtension } from "./bundle.ts";
+import { bundleExtension, stopBundler } from "./bundle.ts";
 
 async function withTempFile(
   content: string,
@@ -43,8 +43,15 @@ async function importBundled(
   return await import(`data:application/javascript;base64,${encoded}`);
 }
 
-Deno.test("bundleExtension transpiles TypeScript to valid JS", async () => {
-  const tsCode = `
+// esbuild WASM spawns a long-lived child process, so we disable Deno's
+// resource and ops sanitizers for these tests.
+
+Deno.test({
+  name: "bundleExtension transpiles TypeScript to valid JS",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const tsCode = `
 import { z } from "npm:zod@4";
 
 interface Config {
@@ -64,55 +71,87 @@ export const model = {
 };
 `;
 
-  await withTempFile(tsCode, async (path) => {
-    const js = await bundleExtension(path);
+    // Set up globalThis shim for zod
+    (globalThis as Record<string, unknown>).__swampZod = { z };
 
-    // Should not contain TypeScript syntax
-    assertEquals(js.includes("interface Config"), false);
-    assertEquals(js.includes(": string"), false);
-    assertEquals(js.includes("<T extends"), false);
+    await withTempFile(tsCode, async (path) => {
+      const js = await bundleExtension(path);
 
-    // Should be importable
-    const mod = await importBundled(js);
-    assertEquals((mod.model as { type: string }).type, "test");
-  });
+      // Should not contain TypeScript syntax
+      assertEquals(js.includes("interface Config"), false);
+      assertEquals(js.includes(": string"), false);
+      assertEquals(js.includes("<T extends"), false);
+
+      // Should be importable
+      const mod = await importBundled(js);
+      assertEquals((mod.model as { type: string }).type, "test");
+    });
+  },
 });
 
-Deno.test("bundleExtension externalizes zod imports", async () => {
-  const tsCode = `
+Deno.test({
+  name: "bundleExtension replaces zod with globalThis shim",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const tsCode = `
 import { z } from "npm:zod@4";
 
 export const schema = z.object({ name: z.string() });
 `;
 
-  await withTempFile(tsCode, async (path) => {
-    const js = await bundleExtension(path);
+    // Set up globalThis shim for zod
+    (globalThis as Record<string, unknown>).__swampZod = { z };
 
-    // Zod should not be inlined — the bundle should be small
-    // A fully inlined zod would be hundreds of KB
-    assertEquals(js.length < 10_000, true);
-  });
+    await withTempFile(tsCode, async (path) => {
+      const js = await bundleExtension(path);
+
+      // Zod should not be inlined — the bundle should be small
+      // because it's replaced with a globalThis shim
+      assertEquals(js.length < 10_000, true);
+    });
+  },
 });
 
-Deno.test("bundleExtension produces importable module with working zod instanceof", async () => {
-  const tsCode = `
+Deno.test({
+  name: "bundleExtension produces importable module with working zod instanceof",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const tsCode = `
 import { z } from "npm:zod@4";
 
 export const schema = z.object({ message: z.string() });
 `;
 
-  await withTempFile(tsCode, async (path) => {
-    const js = await bundleExtension(path);
-    const mod = await importBundled(js);
+    // Set up globalThis shim so the bundled module can access swamp's zod
+    (globalThis as Record<string, unknown>).__swampZod = { z };
 
-    // The schema from the bundled module should be a ZodType instance
-    // because zod is externalized and shares the same instance
-    assertEquals(mod.schema instanceof z.ZodType, true);
+    await withTempFile(tsCode, async (path) => {
+      const js = await bundleExtension(path);
+      const mod = await importBundled(js);
 
-    // It should also parse correctly
-    const parsed = (mod.schema as z.ZodObject<{ message: z.ZodString }>).parse({
-      message: "hello",
+      // The schema from the bundled module should be a ZodType instance
+      // because zod is accessed via globalThis shim sharing swamp's instance
+      assertEquals(mod.schema instanceof z.ZodType, true);
+
+      // It should also parse correctly
+      const parsed = (mod.schema as z.ZodObject<{ message: z.ZodString }>)
+        .parse({
+          message: "hello",
+        });
+      assertEquals(parsed, { message: "hello" });
     });
-    assertEquals(parsed, { message: "hello" });
-  });
+  },
+});
+
+Deno.test({
+  name: "stopBundler cleans up esbuild worker",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: () => {
+    // Should not throw even if called multiple times
+    stopBundler();
+    stopBundler();
+  },
 });

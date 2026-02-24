@@ -75,7 +75,6 @@ async function main() {
     const baseCommand = [
       "deno",
       "compile",
-      "--unstable-bundle",
       "--allow-read",
       "--allow-write",
       "--allow-env",

@@ -230,6 +230,10 @@ export class UserModelLoader {
 
     const files = await this.discoverFiles(modelsDir);
 
+    // Set globalThis shim so bundled extensions can access swamp's zod instance
+    // (preserves instanceof checks across the bundle boundary)
+    (globalThis as Record<string, unknown>).__swampZod = { z };
+
     // Import all files and classify by export name
     const modelFiles: Array<{
       file: string;
