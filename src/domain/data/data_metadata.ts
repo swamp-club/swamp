@@ -50,10 +50,36 @@ export const GarbageCollectionSchema = z.union([
   z.string().regex(/^\d+(mo|y|h|m|d|w)$/, {
     message:
       "Duration must match pattern like '1h', '5m', '10d', '2w', '1mo', '10y'",
+  }).refine((val) => {
+    const match = val.match(/^(\d+)/);
+    return match !== null && parseInt(match[1], 10) > 0;
+  }, {
+    message: "Garbage collection duration must be greater than zero",
   }),
 ]);
 
 export type GarbageCollectionPolicy = z.infer<typeof GarbageCollectionSchema>;
+
+/**
+ * Normalizes zero-duration lifetime strings to "workflow".
+ *
+ * Zero-duration strings like "0h", "0d", "00w" produce 0ms when parsed,
+ * which would cause data to expire immediately on creation. Instead,
+ * we treat them as "workflow" lifetime — the data lives for the
+ * duration of the workflow run.
+ *
+ * @param lifetime - The lifetime value to normalize
+ * @returns The normalized lifetime (zero durations become "workflow")
+ */
+export function normalizeLifetime(lifetime: Lifetime): Lifetime {
+  if (typeof lifetime === "string") {
+    const match = lifetime.match(/^(\d+)(mo|y|h|m|d|w)$/);
+    if (match && parseInt(match[1], 10) === 0) {
+      return "workflow";
+    }
+  }
+  return lifetime;
+}
 
 /**
  * Owner types that can create data.

@@ -182,6 +182,94 @@ function createMockData(overrides: {
   });
 }
 
+// --- Zero-duration lifetime normalization via Data.create ---
+
+Deno.test("calculateExpiration - Data.create with '0h' produces workflow lifetime (null expiration)", () => {
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  // Data.create normalizes "0h" to "workflow"
+  const data = createMockData({ name: "zero-hours", lifetime: "0h" });
+  assertEquals(data.lifetime, "workflow");
+
+  const createdAt = new Date("2025-01-01T00:00:00Z");
+  const expiration = service.calculateExpiration(data.lifetime, createdAt);
+  assertEquals(expiration, null);
+});
+
+Deno.test("calculateExpiration - Data.create with '0d' produces workflow lifetime (null expiration)", () => {
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const data = createMockData({ name: "zero-days", lifetime: "0d" });
+  assertEquals(data.lifetime, "workflow");
+
+  const createdAt = new Date("2025-01-01T00:00:00Z");
+  const expiration = service.calculateExpiration(data.lifetime, createdAt);
+  assertEquals(expiration, null);
+});
+
+Deno.test("calculateExpiration - Data.create with '0mo' produces workflow lifetime (null expiration)", () => {
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const data = createMockData({ name: "zero-months", lifetime: "0mo" });
+  assertEquals(data.lifetime, "workflow");
+
+  const createdAt = new Date("2025-01-01T00:00:00Z");
+  const expiration = service.calculateExpiration(data.lifetime, createdAt);
+  assertEquals(expiration, null);
+});
+
+Deno.test("calculateExpiration - Data.create with '0y' produces workflow lifetime (null expiration)", () => {
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const data = createMockData({ name: "zero-years", lifetime: "0y" });
+  assertEquals(data.lifetime, "workflow");
+
+  const createdAt = new Date("2025-01-01T00:00:00Z");
+  const expiration = service.calculateExpiration(data.lifetime, createdAt);
+  assertEquals(expiration, null);
+});
+
+Deno.test("calculateExpiration - Data.create with '00w' produces workflow lifetime (null expiration)", () => {
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const data = createMockData({ name: "zero-weeks", lifetime: "00w" });
+  assertEquals(data.lifetime, "workflow");
+
+  const createdAt = new Date("2025-01-01T00:00:00Z");
+  const expiration = service.calculateExpiration(data.lifetime, createdAt);
+  assertEquals(expiration, null);
+});
+
+Deno.test("calculateExpiration - non-zero durations still produce correct expiration", () => {
+  const service = new DefaultDataLifecycleService(
+    new MockDataRepository() as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  // Verify non-zero is unaffected
+  const data = createMockData({ name: "valid-hours", lifetime: "2h" });
+  assertEquals(data.lifetime, "2h");
+
+  const createdAt = new Date("2025-01-01T00:00:00Z");
+  const expiration = service.calculateExpiration(data.lifetime, createdAt);
+  assertEquals(expiration, new Date("2025-01-01T02:00:00Z"));
+});
+
 Deno.test("findExpiredData - finds expired data for nested model types", async () => {
   const mockRepo = new MockDataRepository();
   const expiredData = createMockData({ name: "vpc-data" });
