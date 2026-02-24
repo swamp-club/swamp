@@ -30,6 +30,7 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import {
   getRunLogger,
@@ -97,6 +98,7 @@ export const modelMethodRunCommand = new Command()
       const unifiedDataRepo = repoContext.unifiedDataRepo;
       const outputRepo = repoContext.outputRepo;
       const executionService = new DefaultMethodExecutionService();
+      const vaultService = await VaultService.fromRepository(repoDir);
 
       ctx.logger
         .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
@@ -302,6 +304,7 @@ export const modelMethodRunCommand = new Command()
             dataRepository: unifiedDataRepo,
             definitionRepository: definitionRepo,
             runtimeTags,
+            vaultService,
           },
         );
 

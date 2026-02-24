@@ -210,6 +210,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       currentDefinition.tags,
       context.runtimeTags,
       currentDefinition.name,
+      context.vaultService,
+      methodName,
     );
 
     const {

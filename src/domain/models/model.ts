@@ -21,6 +21,7 @@ import { z } from "zod";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import type { Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
+import type { VaultService } from "../vaults/vault_service.ts";
 import { CalVer } from "./calver.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import {
@@ -54,6 +55,12 @@ export interface ResourceOutputSpec {
 
   /** Tags applied to this data output (auto-includes type: "resource") */
   tags?: Record<string, string>;
+
+  /** When true, all fields in this resource output are treated as sensitive */
+  sensitiveOutput?: boolean;
+
+  /** Vault name to use for sensitive fields (overrides field-level metadata) */
+  vaultName?: string;
 }
 
 /**
@@ -90,6 +97,8 @@ export const ResourceOutputSpecSchema = z.object({
   lifetime: LifetimeSchema,
   garbageCollection: GarbageCollectionSchema,
   tags: z.record(z.string(), z.string()).optional(),
+  sensitiveOutput: z.boolean().optional(),
+  vaultName: z.string().optional(),
 });
 
 /**
@@ -182,6 +191,11 @@ export interface MethodContext {
    * Repository for tracking execution history.
    */
   outputRepository?: OutputRepository;
+
+  /**
+   * Optional vault service for storing sensitive field values.
+   */
+  vaultService?: VaultService;
 
   /**
    * Logger for emitting log messages. Category is set automatically.

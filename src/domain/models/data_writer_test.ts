@@ -17,16 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   createFileWriterFactory,
   createResourceWriter,
+  processSensitiveResourceData,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { generateDataId } from "../data/data_id.ts";
+import { VaultService } from "../vaults/vault_service.ts";
 
 /**
  * Creates a minimal mock UnifiedDataRepository for tag resolution tests.
@@ -337,4 +339,412 @@ Deno.test("createResourceWriter: no definition or runtime tags still works", asy
   const handle = await writeResource("item", "test-item", { value: "hello" });
   assertEquals(handle.tags["type"], "resource");
   assertEquals(handle.tags["specName"], "item");
+});
+
+// --- processSensitiveResourceData tests ---
+
+function createTestVaultService(vaultName = "test-vault"): VaultService {
+  const service = new VaultService();
+  service.registerVault({ name: vaultName, type: "mock", config: {} });
+  return service;
+}
+
+Deno.test("processSensitiveResourceData: replaces sensitive field with vault reference", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      name: z.string(),
+      secret: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = {
+    name: "public-value",
+    secret: "my-secret-value",
+  };
+
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  assertEquals(data.name, "public-value");
+  assertStringIncludes(data.secret as string, "vault.get");
+  assertStringIncludes(data.secret as string, "'test-vault'");
+});
+
+Deno.test("processSensitiveResourceData: stores actual value in vault", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { apiKey: "sk-live-abc123" };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  const vaultKey = `swamp/test/${modelId}/create/apiKey`;
+  const storedValue = await vaultService.get("test-vault", vaultKey);
+  assertEquals(storedValue, "sk-live-abc123");
+});
+
+Deno.test("processSensitiveResourceData: uses single-quoted strings for CEL compatibility", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      token: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { token: "secret-token" };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  const ref = data.token as string;
+  assertStringIncludes(ref, "vault.get('test-vault'");
+  assertStringIncludes(ref, `'swamp/test/${modelId}/create/token'`);
+});
+
+Deno.test("processSensitiveResourceData: handles non-string values with JSON.stringify", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      config: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const configValue = { key1: "value1", key2: 42 };
+  const data: Record<string, unknown> = { config: configValue };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  const vaultKey = `swamp/test/${modelId}/create/config`;
+  const storedValue = await vaultService.get("test-vault", vaultKey);
+  assertEquals(storedValue, JSON.stringify(configValue));
+});
+
+Deno.test("processSensitiveResourceData: throws error when no vault configured", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      secret: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { secret: "my-secret" };
+  const vaultService = new VaultService(); // No vaults registered
+
+  await assertRejects(
+    () =>
+      processSensitiveResourceData(
+        data,
+        spec,
+        vaultService,
+        modelType,
+        modelId,
+        "create",
+      ),
+    Error,
+    "no vault is configured",
+  );
+});
+
+Deno.test("processSensitiveResourceData: sensitiveOutput flag treats all fields as sensitive", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      field1: z.string(),
+      field2: z.string(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+    sensitiveOutput: true,
+  };
+
+  const data: Record<string, unknown> = {
+    field1: "value1",
+    field2: "value2",
+  };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  assertStringIncludes(data.field1 as string, "vault.get");
+  assertStringIncludes(data.field2 as string, "vault.get");
+
+  const key1 = `swamp/test/${modelId}/create/field1`;
+  const key2 = `swamp/test/${modelId}/create/field2`;
+  assertEquals(await vaultService.get("test-vault", key1), "value1");
+  assertEquals(await vaultService.get("test-vault", key2), "value2");
+});
+
+Deno.test("processSensitiveResourceData: uses custom vaultName from field metadata", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      secret: z.string().meta({
+        sensitive: true,
+        vaultName: "special-vault",
+      }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { secret: "special-secret" };
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: "special-vault",
+    type: "mock",
+    config: {},
+  });
+  vaultService.registerVault({
+    name: "default-vault",
+    type: "mock",
+    config: {},
+  });
+
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  assertStringIncludes(data.secret as string, "'special-vault'");
+});
+
+Deno.test("processSensitiveResourceData: uses custom vaultKey from field metadata", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      apiKey: z.string().meta({
+        sensitive: true,
+        vaultKey: "my-custom-key",
+      }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { apiKey: "key-value" };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  assertStringIncludes(data.apiKey as string, "'my-custom-key'");
+  assertEquals(
+    await vaultService.get("test-vault", "my-custom-key"),
+    "key-value",
+  );
+});
+
+Deno.test("processSensitiveResourceData: skips fields with null/undefined values", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      required: z.string().meta({ sensitive: true }),
+      optional: z.string().optional().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { required: "has-value" };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  assertStringIncludes(data.required as string, "vault.get");
+  assertEquals(data.optional, undefined);
+});
+
+Deno.test("processSensitiveResourceData: no-op when no sensitive fields", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      name: z.string(),
+      count: z.number(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = { name: "test", count: 42 };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  assertEquals(data.name, "test");
+  assertEquals(data.count, 42);
+});
+
+Deno.test("processSensitiveResourceData: spec vaultName overrides default vault", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      secret: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+    vaultName: "spec-vault",
+  };
+
+  const data: Record<string, unknown> = { secret: "my-secret" };
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "spec-vault", type: "mock", config: {} });
+  vaultService.registerVault({
+    name: "default-vault",
+    type: "mock",
+    config: {},
+  });
+
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  assertStringIncludes(data.secret as string, "'spec-vault'");
+});
+
+Deno.test("processSensitiveResourceData: handles nested sensitive fields", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      credentials: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }),
+      name: z.string(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = {
+    credentials: { apiKey: "secret-key-123", region: "us-east-1" },
+    name: "my-service",
+  };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  assertEquals(data.name, "my-service");
+  const creds = data.credentials as Record<string, unknown>;
+  assertEquals(creds.region, "us-east-1");
+  assertStringIncludes(creds.apiKey as string, "vault.get");
+  assertEquals(data["credentials.apiKey"], undefined);
+
+  const vaultKey = `swamp/test/${modelId}/create/credentials.apiKey`;
+  assertEquals(
+    await vaultService.get("test-vault", vaultKey),
+    "secret-key-123",
+  );
+});
+
+Deno.test("processSensitiveResourceData: snapshots values before mutation", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      credentials: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+    sensitiveOutput: true,
+  };
+
+  const data: Record<string, unknown> = {
+    credentials: { apiKey: "original-secret", region: "us-east-1" },
+  };
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    modelType,
+    modelId,
+    "create",
+  );
+
+  // Top-level "credentials" should also be a vault ref
+  assertStringIncludes(data.credentials as string, "vault.get");
+
+  // The nested apiKey's original value should be stored
+  const nestedKey = `swamp/test/${modelId}/create/credentials.apiKey`;
+  assertEquals(
+    await vaultService.get("test-vault", nestedKey),
+    "original-secret",
+  );
+
+  // The top-level object stored should contain ORIGINAL values
+  const topKey = `swamp/test/${modelId}/create/credentials`;
+  const storedObject = JSON.parse(
+    await vaultService.get("test-vault", topKey),
+  );
+  assertEquals(storedObject.apiKey, "original-secret");
+  assertEquals(storedObject.region, "us-east-1");
 });

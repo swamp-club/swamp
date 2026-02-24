@@ -34,6 +34,13 @@ import type {
   ResourceWriteOverrides,
 } from "./model.ts";
 import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
+import type { VaultService } from "../vaults/vault_service.ts";
+import {
+  extractSensitiveFields,
+  getNestedValue,
+  type SensitiveFieldInfo,
+  setNestedValue,
+} from "./sensitive_field_extractor.ts";
 
 const logger = getLogger(["swamp", "data-writer"]);
 
@@ -274,9 +281,96 @@ export class DefaultDataWriter implements DataWriter {
 }
 
 /**
+ * Processes sensitive fields in resource data before persistence.
+ *
+ * For each field marked with `{ sensitive: true }` metadata in the schema
+ * (or all fields when `sensitiveOutput` is true on the spec):
+ * 1. Snapshots original values before any mutation
+ * 2. Stores the actual value in the vault
+ * 3. Replaces the value with a vault reference expression
+ *
+ * @param data - The resource data to process (mutated in place)
+ * @param spec - The resource output specification
+ * @param vaultService - The vault service for storing values
+ * @param modelType - The model type (for vault key generation)
+ * @param modelId - The model ID (for vault key generation)
+ * @param methodName - The method name (for vault key generation)
+ */
+export async function processSensitiveResourceData(
+  data: Record<string, unknown>,
+  spec: ResourceOutputSpec,
+  vaultService: VaultService,
+  modelType: ModelType,
+  modelId: string,
+  methodName: string,
+): Promise<void> {
+  const sensitiveFields = extractSensitiveFields(spec.schema);
+
+  // If sensitiveOutput is true, add all top-level data keys not already marked
+  if (spec.sensitiveOutput) {
+    const existingPaths = new Set(sensitiveFields.map((f) => f.path));
+    for (const key of Object.keys(data)) {
+      if (!existingPaths.has(key)) {
+        sensitiveFields.push({ path: key });
+      }
+    }
+  }
+
+  // Snapshot values before mutation and filter out undefined/null
+  const snapshot = structuredClone(data);
+  const fieldsWithValues: {
+    field: SensitiveFieldInfo;
+    originalValue: unknown;
+  }[] = [];
+  for (const field of sensitiveFields) {
+    const value = getNestedValue(snapshot, field.path);
+    if (value !== undefined && value !== null) {
+      fieldsWithValues.push({ field, originalValue: value });
+    }
+  }
+
+  if (fieldsWithValues.length === 0) {
+    return;
+  }
+
+  // Validate vault availability
+  const vaultNames = vaultService.getVaultNames();
+  if (vaultNames.length === 0) {
+    const fieldList = fieldsWithValues.map((f) => `'${f.field.path}'`).join(
+      ", ",
+    );
+    throw new Error(
+      `Cannot persist data: fields ${fieldList} are marked as sensitive ` +
+        `but no vault is configured. Create a vault using: swamp vault create <type> <name>`,
+    );
+  }
+
+  for (const { field, originalValue } of fieldsWithValues) {
+    const targetVault = field.vaultName ?? spec.vaultName ?? vaultNames[0];
+    const vaultKey = field.vaultKey ??
+      `${modelType.normalized}/${modelId}/${methodName}/${field.path}`;
+
+    const stringValue = typeof originalValue === "string"
+      ? originalValue
+      : JSON.stringify(originalValue);
+    await vaultService.put(targetVault, vaultKey, stringValue);
+
+    const vaultRef = `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
+
+    // Apply vault reference to data
+    if (field.path.includes(".")) {
+      setNestedValue(data, field.path, vaultRef);
+    } else {
+      data[field.path] = vaultRef;
+    }
+  }
+}
+
+/**
  * Creates a writeResource function bound to a specific execution context.
  *
  * The returned function validates data against the resource's Zod schema (warn on failure),
+ * processes sensitive fields (storing values in vault and replacing with references),
  * serializes to JSON, writes via DefaultDataWriter, and returns a DataHandle.
  *
  * @param repo - The unified data repository
@@ -285,6 +379,8 @@ export class DefaultDataWriter implements DataWriter {
  * @param resources - The model's declared resource output specifications
  * @param tagOverrides - Tags merged into every writer (e.g., workflow step tags)
  * @param dataOutputOverrides - Overrides for specific spec names
+ * @param vaultService - Optional vault service for sensitive field storage
+ * @param methodName - Method name for vault key generation
  * @returns A tuple of [writeResource, getHandles]
  */
 export function createResourceWriter(
@@ -303,6 +399,8 @@ export function createResourceWriter(
   definitionTags?: Record<string, string>,
   runtimeTags?: Record<string, string>,
   definitionName?: string,
+  vaultService?: VaultService,
+  methodName?: string,
 ): {
   writeResource: (
     specName: string,
@@ -403,6 +501,18 @@ export function createResourceWriter(
           instanceName = `${instanceName}-${override.resolvedVarySuffix}`;
         }
       }
+    }
+
+    // Process sensitive fields before serialization
+    if (vaultService && methodName) {
+      await processSensitiveResourceData(
+        data,
+        spec,
+        vaultService,
+        modelType,
+        modelId,
+        methodName,
+      );
     }
 
     const resolvedOptions: ResolvedDataWriterOptions = {

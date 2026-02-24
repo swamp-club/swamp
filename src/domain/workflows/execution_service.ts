@@ -72,6 +72,7 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { join } from "@std/path";
 import { SecretRedactor } from "../secrets/mod.ts";
+import { VaultService } from "../vaults/vault_service.ts";
 /**
  * Context for step execution.
  */
@@ -264,6 +265,7 @@ export class DefaultStepExecutor implements StepExecutor {
     const unifiedDataRepo = new FileSystemUnifiedDataRepository(ctx.repoDir);
     const outputRepo = new YamlOutputRepository(ctx.repoDir);
     const executionService = new DefaultMethodExecutionService();
+    const vaultService = await VaultService.fromRepository(ctx.repoDir);
 
     // Look up the model definition by ID or name
     const lookupResult = await findDefinitionByIdOrName(
@@ -513,6 +515,7 @@ export class DefaultStepExecutor implements StepExecutor {
           tagOverrides: workflowTagOverrides,
           runtimeTags: ctx.runtimeTags,
           dataOutputOverrides: stepDataOutputOverrides,
+          vaultService,
         },
       );
 
