@@ -37,6 +37,8 @@ type AnyOptions = any;
 interface VaultCreateOptions {
   region?: string;
   vaultUrl?: string;
+  opVault?: string;
+  opAccount?: string;
 }
 
 /**
@@ -78,6 +80,28 @@ function resolveProviderConfig(
           .info`Using vault URL from AZURE_KEYVAULT_URL environment variable: ${vaultUrl}`;
       }
       return { vault_url: vaultUrl };
+    }
+    case "1password": {
+      const opVault = options.opVault || Deno.env.get("OP_VAULT");
+      if (!opVault) {
+        throw new UserError(
+          "1Password vault name is required. Provide --op-vault or set OP_VAULT environment variable.",
+        );
+      }
+      if (!options.opVault) {
+        logger
+          .info`Using vault name from OP_VAULT environment variable: ${opVault}`;
+      }
+      const opAccount = options.opAccount || Deno.env.get("OP_ACCOUNT");
+      if (opAccount && !options.opAccount) {
+        logger
+          .info`Using account from OP_ACCOUNT environment variable: ${opAccount}`;
+      }
+      const config: Record<string, unknown> = { op_vault: opVault };
+      if (opAccount) {
+        config.op_account = opAccount;
+      }
+      return config;
     }
     case "local_encryption":
       return {
@@ -126,6 +150,14 @@ export const vaultCreateCommand = new Command()
   .option(
     "--vault-url <url:string>",
     "Azure Key Vault URL (for azure-kv type). Falls back to AZURE_KEYVAULT_URL env var.",
+  )
+  .option(
+    "--op-vault <vault:string>",
+    "1Password vault name (for 1password type). Falls back to OP_VAULT env var.",
+  )
+  .option(
+    "--op-account <account:string>",
+    "1Password account shorthand (for 1password type). Falls back to OP_ACCOUNT env var.",
   )
   .action(
     async function (
@@ -184,7 +216,12 @@ export const vaultCreateCommand = new Command()
       const providerConfig = resolveProviderConfig(
         vaultType,
         repoDir,
-        { region: options.region, vaultUrl: options.vaultUrl },
+        {
+          region: options.region,
+          vaultUrl: options.vaultUrl,
+          opVault: options.opVault,
+          opAccount: options.opAccount,
+        },
         ctx.logger,
       );
       const vaultId = createVaultConfigId(generateVaultId());

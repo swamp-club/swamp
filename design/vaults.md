@@ -306,6 +306,55 @@ evaluated, ensuring:
 - Secret values are never logged or exposed in intermediate files
 - Expression evaluation errors don't expose secret values
 
+## 1Password Provider
+
+The 1Password provider uses the `op` CLI to access secrets stored in 1Password
+vaults.
+
+### Authentication
+
+- **Service Account Token**: `export OP_SERVICE_ACCOUNT_TOKEN=<token>`
+  (recommended for CI/CD)
+- **Desktop App**: Enable CLI integration in 1Password desktop app settings
+  (recommended for local development)
+- **Connect Server**: Set `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN` environment
+  variables
+- **Manual Sign-in**: `op signin` for interactive sessions
+
+### Configuration Options
+
+```yaml
+# Created via: swamp vault create 1password my-vault --op-vault Engineering
+type: "1password"
+config:
+  op_vault: "Engineering" # Required: 1Password vault name
+  op_account: "my-team" # Optional: Account shorthand (multi-account)
+```
+
+### Secret Key Mapping
+
+Secret keys are mapped to `op://` URIs:
+
+| Expression | Maps to | Notes |
+| --- | --- | --- |
+| `vault.get(my-1p, api-key)` | `op read op://Engineering/api-key/password` | Default field: `password` |
+| `vault.get(my-1p, api-key/token)` | `op read op://Engineering/api-key/token` | Explicit field |
+| `vault.get(my-1p, db/connection/host)` | `op read op://Engineering/db/connection/host` | Section + field |
+| `vault.get(my-1p, op://Shared/cert/pem)` | `op read op://Shared/cert/pem` | Full `op://` override |
+
+### Usage Examples
+
+```yaml
+# Retrieve a secret using default "password" field
+apiKey: ${{ vault.get(my-1p, api-key) }}
+
+# Retrieve a specific field
+dbHost: ${{ vault.get(my-1p, database/host) }}
+
+# Override vault with full op:// URI
+sharedCert: ${{ vault.get(my-1p, op://Shared/tls-cert/pem) }}
+```
+
 ## Extensibility
 
 The vault system is designed for easy extension to new providers:
@@ -338,9 +387,7 @@ class HashiCorpVaultProvider implements VaultProvider {
 The architecture supports adding:
 
 - **HashiCorp Vault**: Enterprise secret management
-- **Azure Key Vault**: Microsoft cloud secrets
 - **Google Secret Manager**: Google Cloud Platform secrets
-- **Local File Vault**: Development and testing scenarios
 - **Environment Variables**: Simple local development
 
 ## Error Handling

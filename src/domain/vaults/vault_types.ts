@@ -47,6 +47,12 @@ export const VAULT_TYPES: VaultTypeInfo[] = [
       "Store and retrieve secrets using Azure Key Vault. Requires vault URL and Azure credentials via environment variables, managed identity, or Azure CLI.",
   },
   {
+    type: "1password",
+    name: "1Password",
+    description:
+      "Store and retrieve secrets using 1Password. Requires the 1Password CLI (op) and authentication via service account token, desktop app, or Connect Server.",
+  },
+  {
     type: "local_encryption",
     name: "Local Encryption",
     description:

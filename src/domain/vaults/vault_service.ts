@@ -30,6 +30,10 @@ import {
   type LocalEncryptionConfig,
   LocalEncryptionVaultProvider,
 } from "./local_encryption_vault_provider.ts";
+import {
+  type OnePasswordVaultConfig,
+  OnePasswordVaultProvider,
+} from "./onepassword_vault_provider.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
 /**
@@ -119,6 +123,12 @@ export class VaultService {
           config.config as Record<string, string>,
         );
         break;
+      case "1password":
+        provider = new OnePasswordVaultProvider(
+          config.name,
+          config.config as unknown as OnePasswordVaultConfig,
+        );
+        break;
       case "local_encryption":
         provider = new LocalEncryptionVaultProvider(
           config.name,
@@ -147,7 +157,9 @@ export class VaultService {
           `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
             `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
             `  swamp vault create <type> ${vaultName}\n\n` +
-            `Available vault types: aws-sm, azure-kv, local_encryption\n` +
+            `Available vault types: ${
+              getVaultTypes().map((v) => v.type).join(", ")
+            }\n` +
             `Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for automatic AWS vault.`,
         );
       } else {
@@ -179,7 +191,9 @@ export class VaultService {
           `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
             `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
             `  swamp vault create <type> ${vaultName}\n\n` +
-            `Available vault types: aws-sm, azure-kv, local_encryption`,
+            `Available vault types: ${
+              getVaultTypes().map((v) => v.type).join(", ")
+            }`,
         );
       } else {
         throw new Error(
@@ -207,7 +221,9 @@ export class VaultService {
           `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
             `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
             `  swamp vault create <type> ${vaultName}\n\n` +
-            `Available vault types: aws-sm, azure-kv, local_encryption`,
+            `Available vault types: ${
+              getVaultTypes().map((v) => v.type).join(", ")
+            }`,
         );
       } else {
         throw new Error(

@@ -53,8 +53,9 @@ Deno.test("VaultService - missing vault configuration error handling", async (t)
       );
       assertStringIncludes(
         error.message,
-        "Available vault types: aws-sm, azure-kv, local_encryption",
+        "Available vault types:",
       );
+      assertStringIncludes(error.message, "1password");
       assertStringIncludes(
         error.message,
         "Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
@@ -328,6 +329,19 @@ Deno.test("VaultService - basic functionality", async (t) => {
 
     const vaultNames = vaultService.getVaultNames();
     assertEquals(vaultNames, ["local-vault"]);
+  });
+
+  await t.step("should register 1password vault", () => {
+    const vaultService = new VaultService();
+
+    vaultService.registerVault({
+      name: "my-1p-vault",
+      type: "1password",
+      config: { op_vault: "Engineering" },
+    });
+
+    const vaultNames = vaultService.getVaultNames();
+    assertEquals(vaultNames, ["my-1p-vault"]);
   });
 });
 

@@ -24,6 +24,7 @@ Deno.test("VAULT_TYPES contains expected types", () => {
   const types = VAULT_TYPES.map((v) => v.type);
   assertEquals(types.includes("aws-sm"), true);
   assertEquals(types.includes("azure-kv"), true);
+  assertEquals(types.includes("1password"), true);
   assertEquals(types.includes("local_encryption"), true);
   // mock vault is excluded from public listing (internal testing only)
   assertEquals(types.includes("mock"), false);
@@ -31,7 +32,7 @@ Deno.test("VAULT_TYPES contains expected types", () => {
 
 Deno.test("getVaultTypes returns all vault types", () => {
   const types = getVaultTypes();
-  assertEquals(types.length, 3);
+  assertEquals(types.length, 4);
   assertEquals(types, VAULT_TYPES);
 });
 
@@ -45,6 +46,11 @@ Deno.test("getVaultType returns vault type by identifier", () => {
   assertExists(azureKv);
   assertEquals(azureKv.type, "azure-kv");
   assertEquals(azureKv.name, "Azure Key Vault");
+
+  const onePassword = getVaultType("1password");
+  assertExists(onePassword);
+  assertEquals(onePassword.type, "1password");
+  assertEquals(onePassword.name, "1Password");
 
   const local = getVaultType("local_encryption");
   assertExists(local);
