@@ -23,6 +23,7 @@ import {
   DataMetadataSchema,
   type GarbageCollectionPolicy,
   type Lifetime,
+  normalizeLifetime,
   type OwnerDefinition,
 } from "./data_metadata.ts";
 
@@ -85,13 +86,14 @@ export class Data {
     const id = props.id ?? generateDataId();
     const version = props.version ?? 1;
     const createdAt = props.createdAt ?? new Date();
+    const lifetime = normalizeLifetime(props.lifetime);
 
     const validated = DataMetadataSchema.parse({
       id,
       name: props.name,
       version,
       contentType: props.contentType,
-      lifetime: props.lifetime,
+      lifetime,
       garbageCollection: props.garbageCollection,
       streaming: props.streaming ?? false,
       tags: props.tags,
@@ -125,7 +127,10 @@ export class Data {
    * @throws ZodError if validation fails
    */
   static fromData(data: DataMetadata): Data {
-    const validated = DataMetadataSchema.parse(data);
+    const validated = DataMetadataSchema.parse({
+      ...data,
+      lifetime: normalizeLifetime(data.lifetime),
+    });
     return new Data(
       createDataId(validated.id),
       validated.name,

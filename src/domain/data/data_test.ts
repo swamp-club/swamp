@@ -469,3 +469,163 @@ Deno.test("Data.create uses provided streaming value", () => {
   });
   assertEquals(data.streaming, true);
 });
+
+// --- Zero-duration lifetime normalization in Data.create ---
+
+Deno.test("Data.create normalizes '0h' lifetime to 'workflow'", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "0h",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.lifetime, "workflow");
+});
+
+Deno.test("Data.create normalizes '0d' lifetime to 'workflow'", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "0d",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.lifetime, "workflow");
+});
+
+Deno.test("Data.create normalizes '0mo' lifetime to 'workflow'", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "0mo",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.lifetime, "workflow");
+});
+
+Deno.test("Data.create normalizes '00w' lifetime to 'workflow'", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "00w",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.lifetime, "workflow");
+});
+
+Deno.test("Data.create does not normalize non-zero durations", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "7d",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.lifetime, "7d");
+});
+
+// --- Zero-duration lifetime normalization in Data.fromData ---
+
+Deno.test("Data.fromData normalizes '0h' lifetime to 'workflow'", () => {
+  const owner = createTestOwner();
+  const original = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "1h",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  // Simulate on-disk data that was saved with "0h" before the fix
+  const persisted = original.toData();
+  persisted.lifetime = "0h";
+
+  const restored = Data.fromData(persisted);
+  assertEquals(restored.lifetime, "workflow");
+});
+
+Deno.test("Data.fromData normalizes '0d' lifetime to 'workflow'", () => {
+  const owner = createTestOwner();
+  const original = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "1d",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  const persisted = original.toData();
+  persisted.lifetime = "0d";
+
+  const restored = Data.fromData(persisted);
+  assertEquals(restored.lifetime, "workflow");
+});
+
+Deno.test("Data.fromData preserves non-zero lifetime", () => {
+  const owner = createTestOwner();
+  const original = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "7d",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  const persisted = original.toData();
+  const restored = Data.fromData(persisted);
+  assertEquals(restored.lifetime, "7d");
+});
+
+Deno.test("Data.fromData preserves 'workflow' lifetime", () => {
+  const owner = createTestOwner();
+  const original = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "workflow",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  const persisted = original.toData();
+  const restored = Data.fromData(persisted);
+  assertEquals(restored.lifetime, "workflow");
+});
+
+// --- Roundtrip with zero-duration normalization ---
+
+Deno.test("Data roundtrip normalizes zero-duration: create with '0h' -> toData -> fromData -> 'workflow'", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "roundtrip-test",
+    contentType: "application/json",
+    lifetime: "0h",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  assertEquals(data.lifetime, "workflow");
+
+  const serialized = data.toData();
+  assertEquals(serialized.lifetime, "workflow");
+
+  const restored = Data.fromData(serialized);
+  assertEquals(restored.lifetime, "workflow");
+});
