@@ -46,6 +46,7 @@
     ".github/",
     ".agents/",
     "workflows/",
-    ".vault-test-vault/"
+    ".vault-test-vault/",
+    "resources/"
   ]
 }

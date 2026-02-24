@@ -12,6 +12,7 @@
     "jsr:@std/fmt@^1.0.9": "1.0.9",
     "jsr:@std/fs@^1.0.22": "1.0.22",
     "jsr:@std/internal@^1.0.12": "1.0.12",
+    "jsr:@std/path@1": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/semver@^1.0.8": "1.0.8",
     "jsr:@std/text@^1.0.17": "1.0.17",
@@ -28,6 +29,7 @@
     "npm:fzf@0.5.2": "0.5.2",
     "npm:ink-testing-library@4": "4.0.0_@types+react@18.3.28",
     "npm:ink@^5.2.1": "5.2.1_@types+react@18.3.28_react@18.3.1",
+    "npm:lodash-es@4": "4.17.23",
     "npm:react@^18.3.1": "18.3.1",
     "npm:zod@4": "4.3.6",
     "npm:zod@^4.3.6": "4.3.6"
@@ -90,7 +92,7 @@
       "integrity": "de0f277a58a867147a8a01bc1b181d0dfa80bfddba8c9cf2bacd6747bcec9308",
       "dependencies": [
         "jsr:@std/internal",
-        "jsr:@std/path"
+        "jsr:@std/path@^1.1.4"
       ]
     },
     "@std/internal@1.0.12": {
@@ -1603,6 +1605,9 @@
         "jwa",
         "safe-buffer"
       ]
+    },
+    "lodash-es@4.17.23": {
+      "integrity": "sha512-kVI48u3PZr38HdYz98UmfPnXl2DXrpdctLrFLCd3kOx1xUkOmpFPx7gCWWM5MPkL/fD8zb+Ph0QzjGFs4+hHWg=="
     },
     "lodash.includes@4.3.0": {
       "integrity": "sha512-W3Bx6mdkRTGtlJISOvVD/lbqjTlPPUDTMnlXZFnVwi9NKJ6tiAk6LVdlhZMm17VZisqhKcgzpO5Wz91PCt5b0w=="
