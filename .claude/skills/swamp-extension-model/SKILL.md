@@ -121,6 +121,26 @@ resources: {
 **Spec naming:** Resource spec keys must not contain hyphens (`-`). Use
 camelCase or single words (e.g., `igw` not `internet-gateway`).
 
+**Sensitive fields:** Mark fields containing secrets with
+`z.meta({ sensitive: true })`. Values are stored in a vault and replaced with
+vault references before persistence:
+
+```typescript
+resources: {
+  "keypair": {
+    schema: z.object({
+      keyId: z.string(),
+      keyMaterial: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+},
+```
+
+Set `sensitiveOutput: true` on the spec to treat all fields as sensitive.
+Set `vaultName` on the spec to override which vault stores the values.
+
 **Schema requirement:** If your resource will be referenced by other models via
 CEL expressions, declare the referenced properties explicitly in the Zod schema:
 

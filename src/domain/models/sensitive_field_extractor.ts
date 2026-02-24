@@ -36,7 +36,6 @@ export interface SensitiveFieldInfo {
  */
 interface SensitiveMetadata {
   sensitive?: boolean;
-  vault?: boolean;
   vaultName?: string;
   vaultKey?: string;
 }

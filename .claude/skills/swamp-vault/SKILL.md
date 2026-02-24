@@ -185,6 +185,40 @@ prodToken: ${{ vault.get(prod-secrets, auth-token) }}
 devToken: ${{ vault.get(dev-secrets, auth-token) }}
 ```
 
+## Automatic Sensitive Field Storage
+
+Model output schemas can mark fields as sensitive. When a method executes,
+sensitive values are stored in a vault and replaced with vault references before
+persistence — no manual `vault put` needed.
+
+```typescript
+// In an extension model's resource spec
+resources: {
+  "keypair": {
+    schema: z.object({
+      keyId: z.string(),
+      keyMaterial: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+},
+```
+
+After execution, persisted data contains `${{ vault.get('vault-name', 'auto-key') }}`
+instead of the plaintext secret. The actual value is stored in the vault.
+
+**Options:**
+
+- `z.meta({ sensitive: true })` — mark individual fields
+- `sensitiveOutput: true` on the spec — treat all fields as sensitive
+- `vaultName` on the spec or field metadata — override which vault stores values
+- `vaultKey` on field metadata — override the auto-generated vault key
+
+A vault must be configured or an error is thrown at write time.
+
+See the **swamp-extension-model** skill for full schema examples.
+
 ## Security Best Practices
 
 1. **Environment separation**: Use different vaults for dev/staging/prod
