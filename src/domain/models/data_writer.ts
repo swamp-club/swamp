@@ -281,6 +281,22 @@ export class DefaultDataWriter implements DataWriter {
 }
 
 /**
+ * Sanitizes a vault key by replacing characters that are invalid in vault
+ * secret keys (path separators, `@`, `..`). Vault providers like
+ * local_encryption map keys to filenames, so `/`, `\`, `..`, and null bytes
+ * are rejected.
+ *
+ * Replaces `@` with empty string and `/` or `\` with `-`.
+ */
+export function sanitizeVaultKey(key: string): string {
+  return key
+    .replace(/@/g, "")
+    .replace(/[/\\]/g, "-")
+    .replace(/\.\./g, ".")
+    .replace(/\0/g, "");
+}
+
+/**
  * Processes sensitive fields in resource data before persistence.
  *
  * For each field marked with `{ sensitive: true }` metadata in the schema
@@ -348,7 +364,9 @@ export async function processSensitiveResourceData(
   for (const { field, originalValue } of fieldsWithValues) {
     const targetVault = field.vaultName ?? spec.vaultName ?? vaultNames[0];
     const vaultKey = field.vaultKey ??
-      `${modelType.normalized}/${modelId}/${methodName}/${field.path}`;
+      sanitizeVaultKey(
+        `${modelType.normalized}/${modelId}/${methodName}/${field.path}`,
+      );
 
     const stringValue = typeof originalValue === "string"
       ? originalValue

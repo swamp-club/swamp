@@ -23,6 +23,7 @@ import {
   createFileWriterFactory,
   createResourceWriter,
   processSensitiveResourceData,
+  sanitizeVaultKey,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
@@ -399,7 +400,7 @@ Deno.test("processSensitiveResourceData: stores actual value in vault", async ()
     "create",
   );
 
-  const vaultKey = `swamp/test/${modelId}/create/apiKey`;
+  const vaultKey = `swamp-test-${modelId}-create-apiKey`;
   const storedValue = await vaultService.get("test-vault", vaultKey);
   assertEquals(storedValue, "sk-live-abc123");
 });
@@ -426,7 +427,7 @@ Deno.test("processSensitiveResourceData: uses single-quoted strings for CEL comp
 
   const ref = data.token as string;
   assertStringIncludes(ref, "vault.get('test-vault'");
-  assertStringIncludes(ref, `'swamp/test/${modelId}/create/token'`);
+  assertStringIncludes(ref, `'swamp-test-${modelId}-create-token'`);
 });
 
 Deno.test("processSensitiveResourceData: handles non-string values with JSON.stringify", async () => {
@@ -450,7 +451,7 @@ Deno.test("processSensitiveResourceData: handles non-string values with JSON.str
     "create",
   );
 
-  const vaultKey = `swamp/test/${modelId}/create/config`;
+  const vaultKey = `swamp-test-${modelId}-create-config`;
   const storedValue = await vaultService.get("test-vault", vaultKey);
   assertEquals(storedValue, JSON.stringify(configValue));
 });
@@ -510,8 +511,8 @@ Deno.test("processSensitiveResourceData: sensitiveOutput flag treats all fields 
   assertStringIncludes(data.field1 as string, "vault.get");
   assertStringIncludes(data.field2 as string, "vault.get");
 
-  const key1 = `swamp/test/${modelId}/create/field1`;
-  const key2 = `swamp/test/${modelId}/create/field2`;
+  const key1 = `swamp-test-${modelId}-create-field1`;
+  const key2 = `swamp-test-${modelId}-create-field2`;
   assertEquals(await vaultService.get("test-vault", key1), "value1");
   assertEquals(await vaultService.get("test-vault", key2), "value2");
 });
@@ -697,7 +698,7 @@ Deno.test("processSensitiveResourceData: handles nested sensitive fields", async
   assertStringIncludes(creds.apiKey as string, "vault.get");
   assertEquals(data["credentials.apiKey"], undefined);
 
-  const vaultKey = `swamp/test/${modelId}/create/credentials.apiKey`;
+  const vaultKey = `swamp-test-${modelId}-create-credentials.apiKey`;
   assertEquals(
     await vaultService.get("test-vault", vaultKey),
     "secret-key-123",
@@ -734,17 +735,82 @@ Deno.test("processSensitiveResourceData: snapshots values before mutation", asyn
   assertStringIncludes(data.credentials as string, "vault.get");
 
   // The nested apiKey's original value should be stored
-  const nestedKey = `swamp/test/${modelId}/create/credentials.apiKey`;
+  const nestedKey = `swamp-test-${modelId}-create-credentials.apiKey`;
   assertEquals(
     await vaultService.get("test-vault", nestedKey),
     "original-secret",
   );
 
   // The top-level object stored should contain ORIGINAL values
-  const topKey = `swamp/test/${modelId}/create/credentials`;
+  const topKey = `swamp-test-${modelId}-create-credentials`;
   const storedObject = JSON.parse(
     await vaultService.get("test-vault", topKey),
   );
   assertEquals(storedObject.apiKey, "original-secret");
   assertEquals(storedObject.region, "us-east-1");
+});
+
+// --- sanitizeVaultKey tests ---
+
+Deno.test("sanitizeVaultKey: replaces slashes with dashes", () => {
+  assertEquals(sanitizeVaultKey("a/b/c"), "a-b-c");
+});
+
+Deno.test("sanitizeVaultKey: removes @ prefix", () => {
+  assertEquals(sanitizeVaultKey("@user/aws/ec2"), "user-aws-ec2");
+});
+
+Deno.test("sanitizeVaultKey: replaces backslashes", () => {
+  assertEquals(sanitizeVaultKey("a\\b\\c"), "a-b-c");
+});
+
+Deno.test("sanitizeVaultKey: collapses double dots", () => {
+  assertEquals(sanitizeVaultKey("a..b"), "a.b");
+});
+
+Deno.test("sanitizeVaultKey: removes null bytes", () => {
+  assertEquals(sanitizeVaultKey("a\0b"), "ab");
+});
+
+Deno.test("sanitizeVaultKey: handles full namespaced model type path", () => {
+  const modelId = "941fe7df-b959-414e-a3a3-df30bbd3796e";
+  const raw = `@user/aws/ec2-keypair/${modelId}/create/KeyMaterial`;
+  assertEquals(
+    sanitizeVaultKey(raw),
+    `user-aws-ec2-keypair-${modelId}-create-KeyMaterial`,
+  );
+});
+
+Deno.test("processSensitiveResourceData: handles namespaced model types (#447)", async () => {
+  const namespacedType = ModelType.create("@user/aws/ec2-keypair");
+  const id = "941fe7df-b959-414e-a3a3-df30bbd3796e";
+
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      KeyMaterial: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+
+  const data: Record<string, unknown> = {
+    KeyMaterial: "-----BEGIN RSA PRIVATE KEY-----",
+  };
+
+  const vaultService = createTestVaultService();
+  await processSensitiveResourceData(
+    data,
+    spec,
+    vaultService,
+    namespacedType,
+    id,
+    "create",
+  );
+
+  // Should not throw — key is sanitized
+  const expectedKey = `user-aws-ec2-keypair-${id}-create-KeyMaterial`;
+  assertStringIncludes(data.KeyMaterial as string, expectedKey);
+
+  const stored = await vaultService.get("test-vault", expectedKey);
+  assertEquals(stored, "-----BEGIN RSA PRIVATE KEY-----");
 });

@@ -153,13 +153,16 @@ resources: {
 
 ### Vault Key Naming
 
-Auto-generated vault keys follow the pattern:
+Auto-generated vault keys are built from the model type, ID, method name, and
+field path, then sanitized to replace characters that are invalid in vault secret
+keys (`@` is removed, `/` and `\` are replaced with `-`):
 
 ```
-{modelType}/{modelId}/{methodName}/{fieldPath}
+{sanitized modelType}-{modelId}-{methodName}-{fieldPath}
 ```
 
-For example: `aws/ec2/key-pair/abc-123/createKeyPair/keyMaterial`
+For example: `@user/aws/ec2-keypair` with field `KeyMaterial` becomes
+`user-aws-ec2-keypair-abc-123-createKeyPair-KeyMaterial`
 
 Custom keys can be specified via `vaultKey` in field metadata:
 
