@@ -28,9 +28,20 @@ import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import { getLogger } from "@logtape/logtape";
+import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
 // Import models barrel to ensure command/shell is registered for extension test
 import "./models.ts";
+
+/** Test DenoRuntime that returns the current deno binary path. */
+const testDenoRuntime: DenoRuntime = {
+  ensureDeno: () => Promise.resolve(Deno.execPath()),
+};
+
+/** Creates a UserModelLoader configured for tests. */
+function createTestLoader(): UserModelLoader {
+  return new UserModelLoader(testDenoRuntime);
+}
 
 /**
  * Stored result from mock data writer.
@@ -276,7 +287,7 @@ export const model = {
 `;
 
   await withTempModels({ "data_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -291,7 +302,7 @@ export const notAModel = { foo: "bar" };
 `;
 
   await withTempModels({ "no_export.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     // Files without model/extension exports are now silently skipped
@@ -310,7 +321,7 @@ export const model = {
 `;
 
   await withTempModels({ "invalid_structure.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -320,7 +331,7 @@ export const model = {
 });
 
 Deno.test("UserModelLoader handles non-existent directory", async () => {
-  const loader = new UserModelLoader();
+  const loader = createTestLoader();
   const result = await loader.loadModels("/nonexistent/path/to/models");
 
   assertEquals(result.loaded.length, 0);
@@ -359,7 +370,7 @@ export const model = {
   await withTempModels(
     { "model_test.ts": testFile, "model.ts": regularFile },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -426,7 +437,7 @@ export const model = {
   await withTempModels(
     { "aaa_first.ts": model1, "zzz_second.ts": model2 },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       // First model should load, second should fail as duplicate
@@ -476,7 +487,7 @@ export const model = {
 `;
 
   await withTempModels({ "passthrough_data.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -539,7 +550,7 @@ export const model = {
 `;
 
   await withTempModels({ "inherit_schema.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -607,7 +618,7 @@ export const model = {
   await withTempModels(
     { "model_a.ts": model1, "model_b.ts": model2 },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 2);
@@ -653,7 +664,7 @@ export const model = {
 `;
 
   await withTempModels({ "empty_handles.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -707,7 +718,7 @@ export const model = {
 `;
 
   await withTempModels({ "no_handles.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -780,7 +791,7 @@ export const model = {
   await withTempModels(
     { "aws/ec2_start.ts": modelA, "echo_audit.ts": modelB },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 2);
@@ -818,7 +829,7 @@ export const model = {
   await withTempModels(
     { "sub/model.ts": modelCode, "sub/model_test.ts": testFile },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -853,7 +864,7 @@ export const model = {
   await withTempModels(
     { "a/b/c/deep_model.ts": modelCode },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -909,7 +920,7 @@ export const extension = {
   await withTempModels(
     { "base_model.ts": modelCode, "ext_audit.ts": extCode },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -973,7 +984,7 @@ export const extension = {
   await withTempModels(
     { "base.ts": modelCode, "ext.ts": extCode },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -1004,7 +1015,7 @@ export const extension = {
 `;
 
   await withTempModels({ "ext_bad.ts": extCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -1056,7 +1067,7 @@ export const extension = {
   await withTempModels(
     { "base.ts": modelCode, "ext_conflict.ts": extCode },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -1119,7 +1130,7 @@ export const extension = {
   await withTempModels(
     { "base.ts": modelCode, "ext_dup.ts": extCode },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -1175,7 +1186,7 @@ export const extension = {
   await withTempModels(
     { "base.ts": modelCode, "ext.ts": extCode },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.extended.length, 1);
@@ -1207,7 +1218,7 @@ export const extension = {
 `;
 
   await withTempModels({ "shell_ext.ts": extCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.extended.length, 1);
@@ -1275,7 +1286,7 @@ export const extension = {
   await withTempModels(
     { "base.ts": modelCode, "ext_audit.ts": ext1, "ext_verify.ts": ext2 },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -1335,7 +1346,7 @@ export const extension = {
   await withTempModels(
     { "zzz_model.ts": modelCode, "aaa_ext.ts": extCode },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.loaded.length, 1);
@@ -1397,7 +1408,7 @@ export const extension = {
   await withTempModels(
     { "base.ts": modelCode, "ext.ts": extCode },
     async (dir) => {
-      const loader = new UserModelLoader();
+      const loader = createTestLoader();
       const result = await loader.loadModels(dir);
 
       assertEquals(result.extended.length, 1);
@@ -1466,7 +1477,7 @@ export const model = {
 `;
 
   await withTempModels({ "custom_specs.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -1516,7 +1527,7 @@ export const model = {
 `;
 
   await withTempModels({ "no_at_prefix.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -1552,7 +1563,7 @@ export const model = {
 `;
 
   await withTempModels({ "only_namespace.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -1588,7 +1599,7 @@ export const model = {
 `;
 
   await withTempModels({ "only_myorg.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -1625,7 +1636,7 @@ export const model = {
 `;
 
   await withTempModels({ "custom_namespace.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -1664,7 +1675,7 @@ export const model = {
 `;
 
   await withTempModels({ "stack72_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -1703,7 +1714,7 @@ export const model = {
 `;
 
   await withTempModels({ "keeb_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -1742,7 +1753,7 @@ export const model = {
 `;
 
   await withTempModels({ "valid_user_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -1781,7 +1792,7 @@ export const model = {
 `;
 
   await withTempModels({ "valid_nested.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);
@@ -1816,7 +1827,7 @@ export const model = {
 `;
 
   await withTempModels({ "reserved_swamp.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -1852,7 +1863,7 @@ export const model = {
 `;
 
   await withTempModels({ "reserved_si.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -1888,7 +1899,7 @@ export const model = {
 `;
 
   await withTempModels({ "reserved_at_swamp.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -1924,7 +1935,7 @@ export const model = {
 `;
 
   await withTempModels({ "reserved_at_si.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 0);
@@ -1967,7 +1978,7 @@ export class ProxmoxClient {
     "lib/proxmox.ts": libCode,
     "utils/helpers.ts": libCode,
   }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     // Should load only the valid model
@@ -2036,7 +2047,7 @@ export const model = {
 `;
 
   await withTempModels({ "ts_syntax_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
+    const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
     assertEquals(result.loaded.length, 1);

@@ -31,8 +31,13 @@ import { ensureDir } from "@std/fs";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { UserModelLoader } from "../src/domain/models/user_model_loader.ts";
+import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+
+const testDenoRuntime: DenoRuntime = {
+  ensureDeno: () => Promise.resolve(Deno.execPath()),
+};
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-simple-return-" });
@@ -131,7 +136,7 @@ Deno.test("Integration: user model with dataWriter API works", async () => {
     );
 
     // 2. Load the user model
-    const loader = new UserModelLoader();
+    const loader = new UserModelLoader(testDenoRuntime);
     const loadResult = await loader.loadModels(modelsDir);
 
     // Debug: show any load failures
@@ -201,7 +206,7 @@ Deno.test("Integration: expression-aware validation allows expressions in requir
     );
 
     // 2. Load the model
-    const loader = new UserModelLoader();
+    const loader = new UserModelLoader(testDenoRuntime);
     const loadResult = await loader.loadModels(modelsDir);
 
     // Debug: show any load failures

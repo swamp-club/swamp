@@ -378,6 +378,9 @@ ${body}`;
 # Encryption keyfile (NEVER commit - allows decrypting secrets)
 .swamp/secrets/keyfile
 
+# Cached extension bundles (regenerated at runtime)
+.swamp/bundles/
+
 ${GITIGNORE_TOOL_ENTRIES[tool]}
 `;
   }
