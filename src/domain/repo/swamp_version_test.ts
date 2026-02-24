@@ -94,6 +94,17 @@ Deno.test("SwampVersion.create accepts calver format with sha suffix", () => {
   assertEquals(v.patch, 0);
 });
 
+Deno.test("SwampVersion.create preserves leading zeros in calver time component", () => {
+  const v = SwampVersion.create("20260224.003901.0");
+  assertEquals(v.toString(), "20260224.003901.0");
+  assertEquals(v.minor, 3901);
+});
+
+Deno.test("SwampVersion.create preserves leading zeros with sha suffix", () => {
+  const v = SwampVersion.create("20260224.003901.0-sha.abc123");
+  assertEquals(v.toString(), "20260224.003901.0");
+});
+
 Deno.test("SwampVersion.create accepts dev version", () => {
   const v = SwampVersion.create("0.0.0-dev");
   assertEquals(v.major, 0);

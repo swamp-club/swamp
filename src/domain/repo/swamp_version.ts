@@ -29,6 +29,7 @@ export class SwampVersion {
     readonly major: number,
     readonly minor: number,
     readonly patch: number,
+    private readonly rawVersion: string,
   ) {}
 
   /**
@@ -58,7 +59,8 @@ export class SwampVersion {
     const minor = parseInt(match[2], 10);
     const patch = parseInt(match[3], 10);
 
-    return new SwampVersion(major, minor, patch);
+    const rawVersion = `${match[1]}.${match[2]}.${match[3]}`;
+    return new SwampVersion(major, minor, patch, rawVersion);
   }
 
   /**
@@ -104,6 +106,6 @@ export class SwampVersion {
    * Returns the version as a string (e.g., "1.0.0").
    */
   toString(): string {
-    return `${this.major}.${this.minor}.${this.patch}`;
+    return this.rawVersion;
   }
 }
