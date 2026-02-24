@@ -80,39 +80,72 @@ jobs:
           sha256sum swamp-* > checksums.txt
           cat checksums.txt
 
+      - name: Generate release body
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Write changelog section
+          echo "## What's Changed" > /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            printf '* %s (#%s)\n' "$PR_TITLE" "$PR_NUMBER" >> /tmp/release_body.md
+            if [ -n "$PR_BODY" ]; then
+              echo "" >> /tmp/release_body.md
+              printenv PR_BODY >> /tmp/release_body.md
+            fi
+          else
+            git log -1 --pretty="* %s" HEAD >> /tmp/release_body.md
+            COMMIT_BODY=$(git log -1 --pretty=%b HEAD)
+            if [ -n "$COMMIT_BODY" ]; then
+              echo "" >> /tmp/release_body.md
+              echo "$COMMIT_BODY" >> /tmp/release_body.md
+            fi
+          fi
+
+          # Write installation section
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "### Installation"
+            echo ""
+            echo "**macOS (Apple Silicon):**"
+            echo '```bash'
+            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-darwin-aarch64 -o swamp"
+            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
+            echo '```'
+            echo ""
+            echo "**macOS (Intel):**"
+            echo '```bash'
+            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-darwin-x86_64 -o swamp"
+            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
+            echo '```'
+            echo ""
+            echo "**Linux (x86_64):**"
+            echo '```bash'
+            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-linux-x86_64 -o swamp"
+            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
+            echo '```'
+            echo ""
+            echo "**Linux (aarch64):**"
+            echo '```bash'
+            echo "curl -L https://github.com/${REPO}/releases/download/v${VERSION}/swamp-linux-aarch64 -o swamp"
+            echo 'chmod +x swamp && sudo mv swamp /usr/local/bin/'
+            echo '```'
+          } >> /tmp/release_body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: swamp ${{ steps.version.outputs.version }}
-          body: |
-            ## swamp ${{ steps.version.outputs.version }}
-
-            ### Installation
-
-            **macOS (Apple Silicon):**
-            ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/swamp-darwin-aarch64 -o swamp
-            chmod +x swamp && sudo mv swamp /usr/local/bin/
-            ```
-
-            **macOS (Intel):**
-            ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/swamp-darwin-x86_64 -o swamp
-            chmod +x swamp && sudo mv swamp /usr/local/bin/
-            ```
-
-            **Linux (x86_64):**
-            ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/swamp-linux-x86_64 -o swamp
-            chmod +x swamp && sudo mv swamp /usr/local/bin/
-            ```
-
-            **Linux (aarch64):**
-            ```bash
-            curl -L https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/swamp-linux-aarch64 -o swamp
-            chmod +x swamp && sudo mv swamp /usr/local/bin/
-            ```
+          body_path: /tmp/release_body.md
           files: |
             dist/swamp-linux-x86_64
             dist/swamp-linux-aarch64
