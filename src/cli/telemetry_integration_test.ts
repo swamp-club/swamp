@@ -210,3 +210,70 @@ Deno.test("extractCommandInfo records categorical arg for vault create", () => {
   assertEquals(info.subcommand, "create");
   assertEquals(info.args, ["aws-sm", "<REDACTED>"]);
 });
+
+Deno.test("extractCommandInfo handles --no-color as boolean flag", () => {
+  const info = extractCommandInfo(["--no-color", "model", "create"]);
+
+  assertEquals(info.command, "model");
+  assertEquals(info.subcommand, "create");
+  assertEquals(info.globalOptions, ["--no-color"]);
+});
+
+Deno.test("extractCommandInfo handles --show-properties as boolean flag", () => {
+  const info = extractCommandInfo(["--show-properties", "workflow", "run"]);
+
+  assertEquals(info.command, "workflow");
+  assertEquals(info.subcommand, "run");
+  assertEquals(info.globalOptions, ["--show-properties"]);
+});
+
+Deno.test("extractCommandInfo handles --no-color with --json", () => {
+  const info = extractCommandInfo([
+    "--no-color",
+    "--json",
+    "model",
+    "search",
+  ]);
+
+  assertEquals(info.command, "model");
+  assertEquals(info.subcommand, "search");
+  assertEquals(info.globalOptions, ["--no-color", "--json"]);
+});
+
+Deno.test("extractCommandInfo handles --last-evaluated as boolean flag", () => {
+  const info = extractCommandInfo([
+    "workflow",
+    "run",
+    "my-workflow",
+    "--last-evaluated",
+  ]);
+
+  assertEquals(info.command, "workflow");
+  assertEquals(info.subcommand, "run");
+  assertEquals(info.args, ["<REDACTED>"]);
+  assertEquals(info.optionKeys, ["--last-evaluated"]);
+});
+
+Deno.test("extractCommandInfo handles --check as boolean flag", () => {
+  const info = extractCommandInfo(["update", "--check"]);
+
+  assertEquals(info.command, "update");
+  assertEquals(info.subcommand, undefined);
+  assertEquals(info.optionKeys, ["--check"]);
+});
+
+Deno.test("extractCommandInfo handles --verify and --prune as boolean flags", () => {
+  const info = extractCommandInfo(["repo", "index", "--verify", "--prune"]);
+
+  assertEquals(info.command, "repo");
+  assertEquals(info.subcommand, "index");
+  assertEquals(info.optionKeys, ["--verify", "--prune"]);
+});
+
+Deno.test("extractCommandInfo handles --streaming as boolean flag", () => {
+  const info = extractCommandInfo(["data", "search", "--streaming"]);
+
+  assertEquals(info.command, "data");
+  assertEquals(info.subcommand, "search");
+  assertEquals(info.optionKeys, ["--streaming"]);
+});
