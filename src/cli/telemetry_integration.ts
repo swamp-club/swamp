@@ -38,12 +38,13 @@ const ARG_SCHEMAS: Record<string, readonly ("categorical" | "redact")[]> = {
 /** Global options that are tracked separately */
 const GLOBAL_OPTIONS = new Set([
   "--json",
-  "--stream",
   "-q",
   "--quiet",
   "-v",
   "--verbose",
   "--no-telemetry",
+  "--no-color",
+  "--show-properties",
 ]);
 
 /**
@@ -170,12 +171,13 @@ export function extractCommandInfo(args: string[]): CommandInvocationData {
 function isKnownFlag(option: string): boolean {
   const flags = new Set([
     "--json",
-    "--stream",
     "-q",
     "--quiet",
     "-v",
     "--verbose",
     "--no-telemetry",
+    "--no-color",
+    "--show-properties",
     "--force",
     "-f",
     "--help",
@@ -187,6 +189,11 @@ function isKnownFlag(option: string): boolean {
     "-a",
     "--yes",
     "-y",
+    "--check",
+    "--verify",
+    "--prune",
+    "--streaming",
+    "--last-evaluated",
   ]);
   return flags.has(option);
 }
