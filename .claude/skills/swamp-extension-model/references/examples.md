@@ -9,7 +9,95 @@
 - [Data Chaining Model](#data-chaining-model)
 - [Shell Command with Streamed Logging](#shell-command-with-streamed-logging)
 - [AWS Model with Pre-flight Credential Check](#aws-model-with-pre-flight-credential-check)
+- [Using External Dependencies](#using-external-dependencies)
 - [Extending Existing Model Types](#extending-existing-model-types)
+
+## Using External Dependencies
+
+Extension models are written in TypeScript and can import any package using
+Deno's import specifiers: `npm:`, `jsr:`, or `https://` URLs. Swamp
+automatically bundles the TypeScript source and all dependencies into a single
+JavaScript file at startup — no install step required.
+
+The bundler resolves and inlines all dependencies except `zod`, which is shared
+with swamp to preserve schema `instanceof` checks.
+
+```typescript
+// extensions/models/text_analyzer.ts
+import { z } from "npm:zod@4";
+import { countBy, sortBy, words } from "npm:lodash-es";
+
+const GlobalArgsSchema = z.object({
+  text: z.string().describe("Text to analyze"),
+});
+
+const AnalysisSchema = z.object({
+  wordCount: z.number(),
+  topWords: z.array(z.object({
+    word: z.string(),
+    count: z.number(),
+  })),
+  analyzedAt: z.string(),
+});
+
+export const model = {
+  type: "@user/text-analyzer",
+  version: "2026.02.24.1",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    "analysis": {
+      description: "Text analysis results",
+      schema: AnalysisSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    analyze: {
+      description: "Analyze word frequency in the text",
+      arguments: z.object({
+        topN: z.number().default(5),
+      }),
+      execute: async (args, context) => {
+        const allWords = words(context.globalArgs.text.toLowerCase());
+        const counts = countBy(allWords);
+        const sorted = sortBy(
+          Object.entries(counts).map(([word, count]) => ({ word, count })),
+          (entry) => -entry.count,
+        );
+
+        const handle = await context.writeResource("analysis", "analysis", {
+          wordCount: allWords.length,
+          topWords: sorted.slice(0, args.topN),
+          analyzedAt: new Date().toISOString(),
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+```
+
+**How bundling works:**
+
+- On first run (or after editing), swamp runs `deno bundle` to transpile your
+  TypeScript and resolve all `npm:` imports into a single `.js` file
+- The bundle is cached to `.swamp/bundles/` — subsequent runs skip bundling
+  unless the source file's modification time is newer than the cached bundle
+- `npm:zod` is externalized (not bundled) so your model shares the same zod
+  instance as swamp, which is required for schema validation to work
+- All other npm imports are fully resolved and inlined into the bundle
+
+**Import rules:**
+
+| Import                                   | Bundled? | Notes                            |
+| ---------------------------------------- | -------- | -------------------------------- |
+| `npm:zod@4`                              | No       | Shared with swamp (externalized) |
+| `npm:lodash-es`                          | Yes      | Resolved and inlined             |
+| `npm:@aws-sdk/client-s3`                 | Yes      | Resolved and inlined             |
+| `jsr:@std/path`                          | Yes      | Resolved and inlined             |
+| `https://deno.land/std@0.224.0/async/..` | Yes      | Resolved and inlined             |
+| Any other Deno-compatible import         | Yes      | Resolved and inlined             |
 
 ## CRUD Lifecycle Model (VPC)
 

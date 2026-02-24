@@ -307,7 +307,10 @@ Files are classified by export name: `export const model` defines new types,
 
 1. **Export**: Use `export const model = { ... }` for new types or
    `export const extension = { ... }` for extending existing types
-2. **Import**: Only `import { z } from "npm:zod@4";` is needed
+2. **Import**: `import { z } from "npm:zod@4";` is always required. Any
+   Deno-compatible import (`npm:`, `jsr:`, `https://`) can also be used — swamp
+   bundles all dependencies automatically (see
+   [references/examples.md](references/examples.md#using-external-dependencies))
 3. **Type naming**: Use `@<namespace>/<name>` format (e.g., `@user/my-model`)
 4. **No type annotations**: Avoid TypeScript types in execute parameters
 5. **File naming**: Use snake_case (`my_model.ts`)
