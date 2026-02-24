@@ -64,6 +64,8 @@ export const SWAMP_SUBDIRS = {
   inputs: "inputs",
   /** Legacy: evaluated inputs */
   inputsEvaluated: "inputs-evaluated",
+  /** Cached extension bundles */
+  bundles: "bundles",
   /** Legacy: resource definitions */
   resources: "resources",
 } as const;
