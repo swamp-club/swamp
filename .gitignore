@@ -18,10 +18,12 @@ resources/
 .swamp/files/
 .swamp/secrets/
 .swamp/telemetry/
+.swamp/bundles/
 
 test-repo/
 .vault-*/
 .claude/settings.local.json
 CLAUDE.local.md
 .envrc
+resources/deno/
 /scripts/dist

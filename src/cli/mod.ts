@@ -41,6 +41,7 @@ import {
   WorkflowNameType,
 } from "./completion_types.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
+import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
@@ -135,7 +136,8 @@ async function loadUserModels(): Promise<void> {
       ? modelsDir
       : resolve(cwd, modelsDir);
 
-    const loader = new UserModelLoader();
+    const denoRuntime = new EmbeddedDenoRuntime();
+    const loader = new UserModelLoader(denoRuntime, cwd);
     const result = await loader.loadModels(absoluteModelsDir);
 
     // Log extension successes at debug level

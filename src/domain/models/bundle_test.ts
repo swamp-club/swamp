@@ -22,6 +22,8 @@ import { join } from "@std/path";
 import { z } from "zod";
 import { bundleExtension } from "./bundle.ts";
 
+const DENO_PATH = Deno.execPath();
+
 async function withTempFile(
   content: string,
   fn: (path: string) => Promise<void>,
@@ -65,7 +67,7 @@ export const model = {
 `;
 
   await withTempFile(tsCode, async (path) => {
-    const js = await bundleExtension(path);
+    const js = await bundleExtension(path, DENO_PATH);
 
     // Should not contain TypeScript syntax
     assertEquals(js.includes("interface Config"), false);
@@ -86,7 +88,7 @@ export const schema = z.object({ name: z.string() });
 `;
 
   await withTempFile(tsCode, async (path) => {
-    const js = await bundleExtension(path);
+    const js = await bundleExtension(path, DENO_PATH);
 
     // Zod should not be inlined — the bundle should be small
     // A fully inlined zod would be hundreds of KB
@@ -102,7 +104,7 @@ export const schema = z.object({ message: z.string() });
 `;
 
   await withTempFile(tsCode, async (path) => {
-    const js = await bundleExtension(path);
+    const js = await bundleExtension(path, DENO_PATH);
     const mod = await importBundled(js);
 
     // The schema from the bundled module should be a ZodType instance
