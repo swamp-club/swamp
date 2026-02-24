@@ -53,6 +53,7 @@ export class AuthRepository {
     await atomicWriteTextFile(
       this.getAuthPath(),
       JSON.stringify(credentials, null, 2) + "\n",
+      { mode: 0o600 },
     );
   }
 

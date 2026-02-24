@@ -67,10 +67,10 @@ export class SwampClubClient {
     });
 
     if (!res.ok) {
+      const body = await res.text();
       if (res.status === 401 || res.status === 403) {
         throw new UserError("Invalid username/email or password.");
       }
-      const body = await res.text();
       throw new UserError(
         `Sign-in failed (HTTP ${res.status}): ${body}`,
       );
@@ -122,12 +122,12 @@ export class SwampClubClient {
     });
 
     if (!res.ok) {
+      await res.body?.cancel();
       if (res.status === 401) {
         return { authenticated: false };
       }
-      const body = await res.text();
       throw new UserError(
-        `Whoami request failed (HTTP ${res.status}): ${body}`,
+        `Whoami request failed (HTTP ${res.status})`,
       );
     }
 

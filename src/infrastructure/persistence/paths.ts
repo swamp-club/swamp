@@ -141,9 +141,11 @@ export function toAbsolutePath(repoDir: string, relativePath: string): string {
  * @throws Error if HOME environment variable is not set
  */
 export function getSwampDataDir(): string {
-  const home = Deno.env.get("HOME");
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
   if (!home) {
-    throw new Error("HOME environment variable is not set");
+    throw new Error(
+      "Cannot determine home directory (HOME/USERPROFILE not set)",
+    );
   }
   return join(home, ".swamp");
 }

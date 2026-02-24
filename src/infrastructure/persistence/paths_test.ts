@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   getSwampConfigDir,
+  getSwampDataDir,
   SWAMP_DATA_DIR,
   SWAMP_MARKER_FILE,
   SWAMP_SUBDIRS,
@@ -194,5 +195,50 @@ Deno.test("getSwampConfigDir throws when HOME is not set", () => {
     else Deno.env.delete("XDG_CONFIG_HOME");
     if (originalHome) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
+  }
+});
+
+Deno.test("getSwampDataDir uses HOME", () => {
+  const originalHome = Deno.env.get("HOME");
+  try {
+    Deno.env.set("HOME", "/home/testuser");
+    assertEquals(getSwampDataDir(), "/home/testuser/.swamp");
+  } finally {
+    if (originalHome) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+  }
+});
+
+Deno.test("getSwampDataDir falls back to USERPROFILE", () => {
+  const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
+  try {
+    Deno.env.delete("HOME");
+    Deno.env.set("USERPROFILE", "C:\\Users\\testuser");
+    assertEquals(getSwampDataDir(), "C:\\Users\\testuser/.swamp");
+  } finally {
+    if (originalHome) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+    if (originalProfile) Deno.env.set("USERPROFILE", originalProfile);
+    else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("getSwampDataDir throws when neither HOME nor USERPROFILE set", () => {
+  const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
+  try {
+    Deno.env.delete("HOME");
+    Deno.env.delete("USERPROFILE");
+    assertThrows(
+      () => getSwampDataDir(),
+      Error,
+      "Cannot determine home directory",
+    );
+  } finally {
+    if (originalHome) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+    if (originalProfile) Deno.env.set("USERPROFILE", originalProfile);
+    else Deno.env.delete("USERPROFILE");
   }
 });
