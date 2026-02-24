@@ -138,8 +138,8 @@ resources: {
 },
 ```
 
-Set `sensitiveOutput: true` on the spec to treat all fields as sensitive.
-Set `vaultName` on the spec to override which vault stores the values.
+Set `sensitiveOutput: true` on the spec to treat all fields as sensitive. Set
+`vaultName` on the spec to override which vault stores the values.
 
 **Schema requirement:** If your resource will be referenced by other models via
 CEL expressions, declare the referenced properties explicitly in the Zod schema:

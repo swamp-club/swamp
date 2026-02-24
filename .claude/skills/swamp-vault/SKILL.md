@@ -205,8 +205,9 @@ resources: {
 },
 ```
 
-After execution, persisted data contains `${{ vault.get('vault-name', 'auto-key') }}`
-instead of the plaintext secret. The actual value is stored in the vault.
+After execution, persisted data contains
+`${{ vault.get('vault-name', 'auto-key') }}` instead of the plaintext secret.
+The actual value is stored in the vault.
 
 **Options:**
 
