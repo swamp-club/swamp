@@ -17,17 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bundleExtension } from "./src/domain/models/bundle.ts";
-
-try {
-  const result = await bundleExtension(
-    "/tmp/poop/extensions/models/k8s_pods.ts",
-  );
-  console.log("SUCCESS: Bundled k8s_pods.ts");
-  console.log("Bundle size:", result.length, "bytes");
-} catch (error) {
-  console.error("ERROR:", error.message);
-  if (error.stack) {
-    console.error("Stack:", error.stack.split("\n").slice(0, 10).join("\n"));
-  }
+/**
+ * Port (interface) for the deno runtime manager.
+ *
+ * Provides access to a deno binary for bundling extensions.
+ * In dev mode this returns the running deno; in compiled mode
+ * it extracts the embedded binary to ~/.swamp/deno/.
+ */
+export interface DenoRuntime {
+  /** Returns the absolute path to a usable deno binary. */
+  ensureDeno(): Promise<string>;
 }
