@@ -1978,3 +1978,87 @@ export class ProxmoxClient {
     assertEquals(result.failed.length, 0);
   });
 });
+
+Deno.test("UserModelLoader loads model with TypeScript-specific syntax", async () => {
+  const typeId = `@user/ts-syntax-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+// TypeScript interface
+interface ModelConfig {
+  name: string;
+  retries?: number;
+}
+
+// Generic function
+function withDefault<T extends ModelConfig>(config: T): T {
+  return { ...config, retries: config.retries ?? 3 };
+}
+
+// Type annotation and optional parameter
+function formatName(name: string, prefix?: string): string {
+  return prefix ? prefix + "/" + name : name;
+}
+
+const config: ModelConfig = withDefault({ name: "ts-test" });
+const displayName: string = formatName(config.name, "@user");
+
+const InputSchema = z.object({
+  message: z.string(),
+});
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.24.1",
+  globalArguments: InputSchema,
+  resources: {
+    "data": {
+      description: "Data output",
+      schema: z.object({ name: z.string(), retries: z.number() }),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    run: {
+      description: "Run with TypeScript features",
+      arguments: InputSchema,
+      execute: async (args, context) => {
+        const handle = await context.writeResource("data", "data", {
+          name: displayName,
+          retries: config.retries,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+`;
+
+  await withTempModels({ "ts_syntax_model.ts": modelCode }, async (dir) => {
+    const loader = new UserModelLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.loaded[0], "ts_syntax_model.ts");
+    assertEquals(result.failed.length, 0);
+
+    // Verify the model actually works by executing it
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+
+    const { context, getResults } = createTestContext(modelDef!.type);
+    const methodResult = await modelDef!.methods.run.execute(
+      { message: "hello" },
+      context,
+    );
+
+    assertEquals(methodResult.dataHandles !== undefined, true);
+    assertEquals(methodResult.dataHandles!.length, 1);
+
+    const results = getResults();
+    const content = JSON.parse(new TextDecoder().decode(results[0].content));
+    assertEquals(content.name, "@user/ts-test");
+    assertEquals(content.retries, 3);
+  });
+});
