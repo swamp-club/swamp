@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Environment } from "cel-js";
+import { getLogger } from "@logtape/logtape";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
 import { composeDataName } from "../../domain/data/mod.ts";
@@ -174,6 +175,7 @@ export class CelDataNamespace {
  */
 export class CelEvaluator {
   private readonly env: Environment;
+  private readonly warnedPatterns = new Set<string>();
 
   constructor() {
     this.env = new Environment({ unlistedVariablesAreDyn: true });
@@ -315,6 +317,9 @@ export class CelEvaluator {
       // Transform hyphenated model names to bracket notation before evaluation
       const transformedExpr = transformHyphenatedModelRefs(expression);
 
+      // Warn about deprecated model.*.resource / model.*.file patterns
+      this.warnDeprecatedPatterns(transformedExpr);
+
       // Wrap file/data namespace objects in registered types so cel-js can
       // resolve receiver methods instead of treating them as maps.
       const wrappedContext = this.wrapNamespaces(context);
@@ -373,5 +378,21 @@ export class CelEvaluator {
       wrapped["data"] = new CelDataNamespace(data as Record<string, unknown>);
     }
     return wrapped;
+  }
+
+  /**
+   * Emits a deprecation warning when an expression uses model.*.resource or
+   * model.*.file patterns. Warnings are deduplicated per expression.
+   */
+  private warnDeprecatedPatterns(expression: string): void {
+    // Match model.X.resource or model["X"].resource (and .file)
+    const pattern = /model(?:\.\w[\w-]*|\["[^"]+"\])\.(?:resource|file)\b/;
+    if (pattern.test(expression)) {
+      if (!this.warnedPatterns.has(expression)) {
+        this.warnedPatterns.add(expression);
+        getLogger(["expressions"])
+          .warn`Deprecated: expression "${expression}" uses model.*.resource or model.*.file which will be removed in a future release. Use data.latest() or data.version() instead.`;
+      }
+    }
   }
 }

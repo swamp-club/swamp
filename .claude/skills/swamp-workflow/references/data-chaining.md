@@ -68,31 +68,33 @@ globalArguments:
 
 Use `dependsOn` to ensure step B runs after step A when B references A's output.
 
-## Choosing `model.*` vs `data.latest()` Expressions
+## Choosing `data.latest()` vs `model.*` Expressions
 
 Model instance definitions use CEL expressions to reference other models' data.
-Both expression forms work for cross-workflow data access, but they have
-different characteristics:
+**`data.latest()` is the preferred (canonical) accessor.** The
+`model.*.resource` and `model.*.file` patterns are deprecated and will be
+removed in a future release.
 
-| Expression                        | Sees current-run data?                              | Sees prior-run data?                              |
-| --------------------------------- | --------------------------------------------------- | ------------------------------------------------- |
-| `model.<name>.resource.<spec>`    | **Yes** — in-memory context updated after each step | **Yes** — reads persisted data with `type` intact |
-| `data.latest("<name>", "<spec>")` | **No** — snapshot taken at workflow start           | **Yes** — reads persisted data regardless of tags |
+| Expression                            | Sees current-run data?                 | Sees prior-run data? | Status         |
+| ------------------------------------- | -------------------------------------- | -------------------- | -------------- |
+| `data.latest("<name>", "<spec>")`     | **Yes** — sync disk read on every call | **Yes**              | **Preferred**  |
+| `data.version("<name>", "<spec>", N)` | **Yes** — sync disk read               | **Yes**              | **Preferred**  |
+| `model.<name>.resource.<spec>`        | **Yes** — eagerly populated            | **Yes**              | **Deprecated** |
 
 ### When to use each
 
-**Use `model.*`** for most cases:
+**Use `data.latest()` / `data.version()`** for all cases:
 
 - Intra-workflow chaining (step B reads step A's output in the same run)
 - Cross-workflow chaining (workflow B reads data from prior workflow A run)
+- Data always reflects the latest on-disk state (no stale cache)
+- Supports vary dimensions for environment isolation
 
-**Use `data.latest()`** when:
+**Avoid `model.*.resource` / `model.*.file`** — these patterns are deprecated
+and will emit a warning. They still work for backward compatibility but should
+be migrated to `data.latest()`.
 
-- You need to query data by model name dynamically
-- You want a snapshot from workflow start rather than live in-memory context
-
-Both forms are equivalent for dependency purposes — use explicit `dependsOn` to
-control step ordering.
+Use explicit `dependsOn` to control step ordering.
 
 ## Example: Multi-Step Infrastructure Workflow
 

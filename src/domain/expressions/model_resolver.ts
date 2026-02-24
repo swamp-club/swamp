@@ -230,121 +230,21 @@ export interface ModelResolverRepositories {
 }
 
 /**
- * Cache for pre-loaded data to enable synchronous CEL function evaluation.
- *
- * The cache indexes data by:
- * - (modelName, dataName, version) for direct lookups
- * - (tagKey, tagValue) for tag-based queries
+ * Coordinates for locating a model's data on disk.
+ * The modelType and modelId identify the disk path where data is stored,
+ * which may differ from the current definition's UUID (e.g., after delete/recreate).
  */
-export class DataCache {
-  // (modelName) -> (dataName) -> (version) -> DataRecord
-  private byModelData: Map<string, Map<string, Map<number, DataRecord>>> =
-    new Map();
-
-  // (tagKey:tagValue) -> DataRecord[]
-  private byTag: Map<string, DataRecord[]> = new Map();
-
-  // (modelName) -> (specName) -> DataRecord[]
-  private byModelSpec: Map<string, Map<string, DataRecord[]>> = new Map();
-
-  /**
-   * Adds a data record to the cache.
-   */
-  addData(
-    modelName: string,
-    dataName: string,
-    version: number,
-    record: DataRecord,
-  ): void {
-    // Add to model/data/version index
-    if (!this.byModelData.has(modelName)) {
-      this.byModelData.set(modelName, new Map());
-    }
-    const dataMap = this.byModelData.get(modelName)!;
-    if (!dataMap.has(dataName)) {
-      dataMap.set(dataName, new Map());
-    }
-    dataMap.get(dataName)!.set(version, record);
-
-    // Add to tag index
-    for (const [key, value] of Object.entries(record.tags)) {
-      const tagKey = `${key}:${value}`;
-      if (!this.byTag.has(tagKey)) {
-        this.byTag.set(tagKey, []);
-      }
-      this.byTag.get(tagKey)!.push(record);
-    }
-
-    // Add to model+spec index (from specName tag)
-    const specTag = record.tags["specName"];
-    if (specTag) {
-      if (!this.byModelSpec.has(modelName)) {
-        this.byModelSpec.set(modelName, new Map());
-      }
-      const specMap = this.byModelSpec.get(modelName)!;
-      if (!specMap.has(specTag)) {
-        specMap.set(specTag, []);
-      }
-      specMap.get(specTag)!.push(record);
-    }
-  }
-
-  /**
-   * Gets a specific version of data.
-   */
-  getVersion(
-    modelName: string,
-    dataName: string,
-    version: number,
-  ): DataRecord | null {
-    return (
-      this.byModelData.get(modelName)?.get(dataName)?.get(version) ?? null
-    );
-  }
-
-  /**
-   * Gets the latest version of data.
-   */
-  getLatest(modelName: string, dataName: string): DataRecord | null {
-    const versions = this.listVersions(modelName, dataName);
-    if (versions.length === 0) return null;
-    const latestVersion = Math.max(...versions);
-    return this.getVersion(modelName, dataName, latestVersion);
-  }
-
-  /**
-   * Lists all version numbers for a data item in ascending order.
-   */
-  listVersions(modelName: string, dataName: string): number[] {
-    const versionMap = this.byModelData.get(modelName)?.get(dataName);
-    if (!versionMap) return [];
-    return Array.from(versionMap.keys()).sort((a, b) => a - b);
-  }
-
-  /**
-   * Finds all data records with a specific tag.
-   */
-  findByTag(tagKey: string, tagValue: string): DataRecord[] {
-    return this.byTag.get(`${tagKey}:${tagValue}`) ?? [];
-  }
-
-  /**
-   * Finds all data records for a model that match a given spec name.
-   * Uses the `specName` tag populated during data writes.
-   */
-  findBySpec(modelName: string, specName: string): DataRecord[] {
-    return this.byModelSpec.get(modelName)?.get(specName) ?? [];
-  }
-
-  /**
-   * Gets all data names for a model.
-   */
-  getDataNames(modelName: string): string[] {
-    const dataMap = this.byModelData.get(modelName);
-    if (!dataMap) return [];
-    return Array.from(dataMap.keys());
-  }
+export interface ModelCoordinates {
+  modelType: ModelType;
+  modelId: string;
 }
+
+/**
+ * Map from model name to its disk coordinates.
+ * A model may have multiple coordinate sets when data exists under
+ * both the current and a previous UUID (orphan recovery).
+ */
+export type ModelCoordinatesMap = Map<string, ModelCoordinates[]>;
 
 /**
  * Resolves model references to build CEL evaluation context.
@@ -452,11 +352,11 @@ export class ModelResolver {
       context.model[definition.id] = modelData;
     }
 
-    // Build data cache if dataRepo is available.
+    // Build model coordinates map and populate model.resource/file eagerly.
     // Uses findAllGlobal() to discover data from disk first, then matches
     // to definitions. This handles the case where a model was deleted and
     // recreated (new UUID) — data under the old UUID is still found.
-    const dataCache = new DataCache();
+    const coordsMap: ModelCoordinatesMap = new Map();
     if (this.dataRepo) {
       // Build definition lookup maps
       const defById = new Map<
@@ -473,9 +373,17 @@ export class ModelResolver {
         const typeKey = defType.normalized;
         if (!defsByType.has(typeKey)) defsByType.set(typeKey, []);
         defsByType.get(typeKey)!.push({ definition: def, type: defType });
+
+        // Add current definition coordinates
+        const coords: ModelCoordinates = {
+          modelType: defType,
+          modelId: def.id,
+        };
+        if (!coordsMap.has(def.name)) coordsMap.set(def.name, []);
+        coordsMap.get(def.name)!.push(coords);
       }
 
-      // Discover all data on disk
+      // Discover all data on disk for orphan recovery and eager population
       const allGlobalData = await this.dataRepo.findAllGlobal();
 
       // Group data items by (modelType, modelId) — the disk coordinates
@@ -493,7 +401,7 @@ export class ModelResolver {
         groupedData.get(key)!.items.push(data);
       }
 
-      // Match each group to a definition and load data
+      // Match each group to a definition and populate model.resource/file
       for (const [_key, group] of groupedData) {
         const { modelType, modelId, items } = group;
 
@@ -525,93 +433,56 @@ export class ModelResolver {
 
         const modelName = matchedDef.definition.name;
 
-        // Process data items — use disk modelId for all repo calls
-        for (const data of items) {
-          const versions = await this.dataRepo.listVersions(
-            modelType,
-            modelId,
-            data.name,
+        // Add orphan coordinates (disk modelId differs from current definition UUID)
+        if (modelId !== matchedDef.definition.id) {
+          const orphanCoords: ModelCoordinates = { modelType, modelId };
+          if (!coordsMap.has(modelName)) coordsMap.set(modelName, []);
+          const existing = coordsMap.get(modelName)!;
+          const alreadyTracked = existing.some(
+            (c) =>
+              c.modelType.normalized === modelType.normalized &&
+              c.modelId === modelId,
           );
+          if (!alreadyTracked) existing.push(orphanCoords);
+        }
 
-          for (const version of versions) {
-            const versionData = await this.dataRepo.findByName(
+        // Populate model.resource and model.file eagerly (backward compat)
+        const modelData = context.model[modelName];
+        if (modelData) {
+          for (const data of items) {
+            const latestRecord = this.dataToRecord(
+              data,
               modelType,
               modelId,
               data.name,
-              version,
             );
-
-            if (versionData) {
-              // Parse attributes from content if JSON
-              let attributes: Record<string, unknown> = {};
-              if (versionData.contentType === "application/json") {
-                const content = await this.dataRepo.getContent(
-                  modelType,
-                  modelId,
-                  data.name,
-                  version,
-                );
-                if (content) {
-                  try {
-                    attributes = JSON.parse(
-                      new TextDecoder().decode(content),
-                    ) as Record<string, unknown>;
-                  } catch {
-                    // Not valid JSON, use empty attributes
-                  }
-                }
-              }
-
-              const record: DataRecord = {
-                id: versionData.id,
-                name: versionData.name,
-                version: versionData.version,
-                createdAt: versionData.createdAt.toISOString(),
-                attributes,
-                tags: { ...versionData.tags },
-              };
-
-              dataCache.addData(modelName, data.name, version, record);
-            }
-          }
-        }
-
-        // Populate model.resource and model.file from latest data versions
-        const modelData = context.model[modelName];
-        if (modelData) {
-          const dataNames = dataCache.getDataNames(modelName);
-          for (const dataName of dataNames) {
-            const latestRecord = dataCache.getLatest(modelName, dataName);
             if (!latestRecord) continue;
 
             const dataType = latestRecord.tags["type"];
 
             if (dataType === "resource") {
-              // Populate resource context: specName → instanceName → full DataRecord
               if (!modelData.resource) modelData.resource = {};
-              const specName = latestRecord.tags["specName"] ?? dataName;
+              const specName = latestRecord.tags["specName"] ?? data.name;
               if (!modelData.resource[specName]) {
                 modelData.resource[specName] = {};
               }
-              modelData.resource[specName][dataName] = latestRecord;
+              modelData.resource[specName][data.name] = latestRecord;
             } else if (dataType === "file") {
-              // Populate file context: specName → instanceName → file metadata
               if (!modelData.file) modelData.file = {};
-              const specName = latestRecord.tags["specName"] ?? dataName;
+              const specName = latestRecord.tags["specName"] ?? data.name;
               if (!modelData.file[specName]) modelData.file[specName] = {};
-              // Use disk modelId for content path lookup
               const contentPath = this.dataRepo.getContentPath(
                 modelType,
                 modelId,
-                dataName,
-                latestRecord.version as number,
+                data.name,
+                latestRecord.version,
               );
               try {
                 const stat = Deno.statSync(contentPath);
-                modelData.file[specName][dataName] = {
-                  id: latestRecord.id as string,
-                  version: latestRecord.version as number,
-                  createdAt: latestRecord.createdAt as string,
+                modelData.file[specName][data.name] = {
+                  id: latestRecord.id,
+                  version: latestRecord.version,
+                  createdAt: latestRecord.createdAt,
                   path: contentPath,
                   size: stat.size,
                   contentType: latestRecord.tags["contentType"] ??
@@ -626,26 +497,151 @@ export class ModelResolver {
       }
     }
 
-    // Create data namespace with functions that query the cache
+    // Create data namespace with sync disk reads
+    const dataRepo = this.dataRepo;
+    const dataToRecord = this.dataToRecord.bind(this);
     context.data = {
       version: (
         modelName: string,
         dataName: string,
         version: number,
       ): DataRecord | null => {
-        return dataCache.getVersion(modelName, dataName, version);
+        if (!dataRepo) return null;
+        const allCoords = coordsMap.get(modelName);
+        if (!allCoords) return null;
+        for (const { modelType, modelId } of allCoords) {
+          const data = dataRepo.findByNameSync(
+            modelType,
+            modelId,
+            dataName,
+            version,
+          );
+          if (data) {
+            return dataToRecord(data, modelType, modelId, dataName, version);
+          }
+        }
+        return null;
       },
       latest: (modelName: string, dataName: string): DataRecord | null => {
-        return dataCache.getLatest(modelName, dataName);
+        if (!dataRepo) return null;
+        const allCoords = coordsMap.get(modelName);
+        if (!allCoords) return null;
+        for (const { modelType, modelId } of allCoords) {
+          const latestVersion = dataRepo.getLatestVersionSync(
+            modelType,
+            modelId,
+            dataName,
+          );
+          if (latestVersion !== null) {
+            const data = dataRepo.findByNameSync(
+              modelType,
+              modelId,
+              dataName,
+              latestVersion,
+            );
+            if (data) {
+              return dataToRecord(
+                data,
+                modelType,
+                modelId,
+                dataName,
+                latestVersion,
+              );
+            }
+          }
+        }
+        return null;
       },
       listVersions: (modelName: string, dataName: string): number[] => {
-        return dataCache.listVersions(modelName, dataName);
+        if (!dataRepo) return [];
+        const allCoords = coordsMap.get(modelName);
+        if (!allCoords) return [];
+        for (const { modelType, modelId } of allCoords) {
+          const versions = dataRepo.listVersionsSync(
+            modelType,
+            modelId,
+            dataName,
+          );
+          if (versions.length > 0) return versions;
+        }
+        return [];
       },
       findByTag: (tagKey: string, tagValue: string): DataRecord[] => {
-        return dataCache.findByTag(tagKey, tagValue);
+        if (!dataRepo) return [];
+        const results: DataRecord[] = [];
+        const seen = new Set<string>();
+        for (const [, allCoords] of coordsMap) {
+          for (const { modelType, modelId } of allCoords) {
+            // Get all data names, then scan all versions of each
+            const allData = dataRepo.findAllForModelSync(modelType, modelId);
+            for (const data of allData) {
+              const versions = dataRepo.listVersionsSync(
+                modelType,
+                modelId,
+                data.name,
+              );
+              for (const version of versions) {
+                const versionData = dataRepo.findByNameSync(
+                  modelType,
+                  modelId,
+                  data.name,
+                  version,
+                );
+                if (versionData && versionData.tags[tagKey] === tagValue) {
+                  const dedupeKey =
+                    `${modelType.normalized}:${modelId}:${data.name}:${version}`;
+                  if (seen.has(dedupeKey)) continue;
+                  seen.add(dedupeKey);
+                  const record = dataToRecord(
+                    versionData,
+                    modelType,
+                    modelId,
+                    data.name,
+                    version,
+                  );
+                  if (record) results.push(record);
+                }
+              }
+            }
+          }
+        }
+        return results;
       },
       findBySpec: (modelName: string, specName: string): DataRecord[] => {
-        return dataCache.findBySpec(modelName, specName);
+        if (!dataRepo) return [];
+        const allCoords = coordsMap.get(modelName);
+        if (!allCoords) return [];
+        const results: DataRecord[] = [];
+        for (const { modelType, modelId } of allCoords) {
+          // Get all data names, then scan all versions of each
+          const allData = dataRepo.findAllForModelSync(modelType, modelId);
+          for (const data of allData) {
+            const versions = dataRepo.listVersionsSync(
+              modelType,
+              modelId,
+              data.name,
+            );
+            for (const version of versions) {
+              const versionData = dataRepo.findByNameSync(
+                modelType,
+                modelId,
+                data.name,
+                version,
+              );
+              if (versionData && versionData.tags["specName"] === specName) {
+                const record = dataToRecord(
+                  versionData,
+                  modelType,
+                  modelId,
+                  data.name,
+                  version,
+                );
+                if (record) results.push(record);
+              }
+            }
+          }
+        }
+        return results;
       },
     };
 
@@ -761,6 +757,50 @@ export class ModelResolver {
         inputs: definition.inputs,
       };
     }
+  }
+
+  /**
+   * Converts a Data entity to a DataRecord by reading content from disk synchronously.
+   * Used by data.* namespace functions for sync CEL evaluation.
+   */
+  private dataToRecord(
+    data: Data,
+    modelType: ModelType,
+    modelId: string,
+    dataName: string,
+    version?: number,
+  ): DataRecord | null {
+    if (!this.dataRepo) return null;
+
+    const resolvedVersion = version ?? data.version;
+    let attributes: Record<string, unknown> = {};
+
+    if (data.contentType === "application/json") {
+      const content = this.dataRepo.getContentSync(
+        modelType,
+        modelId,
+        dataName,
+        resolvedVersion,
+      );
+      if (content) {
+        try {
+          attributes = JSON.parse(
+            new TextDecoder().decode(content),
+          ) as Record<string, unknown>;
+        } catch {
+          // Not valid JSON, use empty attributes
+        }
+      }
+    }
+
+    return {
+      id: data.id,
+      name: data.name,
+      version: resolvedVersion,
+      createdAt: data.createdAt.toISOString(),
+      attributes,
+      tags: { ...data.tags },
+    };
   }
 
   /**

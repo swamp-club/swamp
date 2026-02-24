@@ -293,7 +293,7 @@ version: 1
 attributes:
   vaultName: aws
   secretKey: new-auth-token
-  secretValue: ${{ model.api-generator.data.attributes.token }}
+  secretValue: ${{ data.latest('api-generator', 'result').attributes.token }}
   operation: put
 ```
 

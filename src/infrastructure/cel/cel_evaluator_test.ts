@@ -777,13 +777,81 @@ Deno.test("CelEvaluator data.listVersions() with vary dimensions", () => {
   assertEquals(result, [1, 2, 3]);
 });
 
+// Tests for deprecation warnings
+
+Deno.test("CelEvaluator emits deprecation warning for model.X.resource pattern but still evaluates", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    model: {
+      vpc: {
+        resource: {
+          result: {
+            result: {
+              attributes: { vpcId: "vpc-123" },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  // Should still evaluate correctly despite deprecation
+  const result = evaluator.evaluate(
+    "model.vpc.resource.result.result.attributes.vpcId",
+    context,
+  );
+  assertEquals(result, "vpc-123");
+});
+
+Deno.test("CelEvaluator emits deprecation warning for model[X].file pattern but still evaluates", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    model: {
+      "my-model": {
+        file: {
+          config: {
+            path: "/tmp/config.json",
+          },
+        },
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'model["my-model"].file.config.path',
+    context,
+  );
+  assertEquals(result, "/tmp/config.json");
+});
+
+Deno.test("CelEvaluator does not emit deprecation warning for data.latest() pattern", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (modelName: string, dataName: string) => {
+        if (modelName === "vpc" && dataName === "info") {
+          return { id: "d1", attributes: { vpcId: "vpc-123" } };
+        }
+        return null;
+      },
+    },
+  };
+
+  // Should work without any deprecation concern
+  const result = evaluator.evaluate(
+    'data.latest("vpc", "info").attributes.vpcId',
+    context,
+  );
+  assertEquals(result, "vpc-123");
+});
+
 Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for cache lookup", () => {
-  // Regression test: CEL represents integers as bigint, but DataCache uses
-  // number keys. Map.get(1n) !== Map.get(1), so the CelDataNamespace must
-  // convert to Number() before delegating.
+  // Regression test: CEL represents integers as bigint, but the data
+  // functions use number keys. Map.get(1n) !== Map.get(1), so the
+  // CelDataNamespace must convert to Number() before delegating.
   const evaluator = new CelEvaluator();
 
-  // Simulate a DataCache-like delegate that uses strict number equality
+  // Simulate a delegate that uses strict number equality
   const versionStore = new Map<number, Record<string, unknown>>();
   versionStore.set(1, { id: "d1", attributes: { value: "first" } });
   versionStore.set(2, { id: "d2", attributes: { value: "second" } });
@@ -795,7 +863,7 @@ Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for c
         _dataName: string,
         version: number,
       ) => {
-        // This mirrors DataCache.getVersion() — uses Map.get with number keys
+        // Uses Map.get with number keys — same pattern as sync disk reads
         return versionStore.get(version) ?? null;
       },
     },

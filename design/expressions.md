@@ -37,7 +37,8 @@ attributes:
   message: ${{ model.foo.definition.attributes.message }}
 ```
 
-Or the data output of the same model:
+Or the data output of the same model (using the preferred `data.latest()`
+accessor):
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
@@ -45,7 +46,7 @@ name: baz
 version: 1
 tags: {}
 attributes:
-  message: ${{ model.foo.data.attributes.message }}
+  message: ${{ data.latest('foo', 'result').attributes.message }}
 ```
 
 You can refer to your own model with `self`, for things like name, version,
@@ -90,14 +91,12 @@ dynamic configuration without modifying definition files.
 
 ## Data Versioning
 
-When accessing model data, the "latest" version is implied by default:
+`data.latest()` is the **canonical accessor** for model data. It reads directly
+from disk on every call, so it always reflects the latest on-disk state with no
+cache staleness. The `model.*.resource` and `model.*.file` patterns are
+**deprecated** and will be removed in a future release.
 
-```yaml
-message: ${{ model.foo.data.attributes.message }} # accesses latest version
-```
-
-Data is immutable and versioned. To access specific versions or list available
-versions, use the following CEL functions:
+Data is immutable and versioned. Use the following CEL functions to access data:
 
 ### data.latest(modelName, dataName)
 

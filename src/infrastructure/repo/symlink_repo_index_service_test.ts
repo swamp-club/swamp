@@ -115,6 +115,11 @@ function createStubUnifiedDataRepo(
     getPath: notImplemented,
     getContentPath: notImplemented,
     collectGarbage: notImplemented,
+    getLatestVersionSync: () => null,
+    findByNameSync: () => null,
+    listVersionsSync: () => [],
+    getContentSync: () => null,
+    findAllForModelSync: () => [],
   };
 }
 

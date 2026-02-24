@@ -1078,3 +1078,62 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
     assertEquals(result.definition.globalArguments.bucket_count, 42);
   });
 });
+
+// ============================================================================
+// Sync Disk Read: data.latest() sees fresh data written after buildContext()
+// ============================================================================
+
+Deno.test("CEL Data Access: data.latest() sees data written after buildContext()", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const type = ModelType.create("test/model");
+    const owner = createOwner("test/model:fresh-data");
+
+    const model = Definition.create({
+      name: "fresh_data_model",
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, model);
+
+    // Write initial data
+    const data = Data.create({
+      name: "live_state",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({ step: 1 })),
+    );
+
+    // Build context — captures a snapshot of coordinates
+    const modelResolver = new ModelResolver(definitionRepo, {
+      repoDir,
+      dataRepo,
+    });
+    const context = await modelResolver.buildContext();
+
+    // Write NEW data AFTER context was built
+    await dataRepo.save(
+      type,
+      model.id,
+      data,
+      new TextEncoder().encode(JSON.stringify({ step: 2, fresh: true })),
+    );
+
+    // data.latest() should see the fresh version (sync disk read, no cache)
+    assertExists(context.data);
+    const latest = context.data.latest("fresh_data_model", "live_state");
+    assertExists(latest);
+    assertEquals(latest.version, 2);
+    assertEquals(latest.attributes.step, 2);
+    assertEquals(latest.attributes.fresh, true);
+  });
+});
