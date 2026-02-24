@@ -1,3 +1,4 @@
+import { parse } from "@std/yaml";
 import type { VaultConfiguration, VaultProvider } from "./vault_provider.ts";
 import { AwsVaultProvider } from "./aws_vault_provider.ts";
 import { MockVaultProvider } from "./mock_vault_provider.ts";
@@ -5,6 +6,21 @@ import {
   type LocalEncryptionConfig,
   LocalEncryptionVaultProvider,
 } from "./local_encryption_vault_provider.ts";
+
+/**
+ * Interface for vault configuration in .swamp.yaml
+ */
+interface VaultConfig {
+  type: string;
+  config: Record<string, unknown>;
+}
+
+/**
+ * Interface for the root configuration object
+ */
+interface SwampConfig {
+  vaults?: Record<string, VaultConfig>;
+}
 
 /**
  * Service for managing vault providers and resolving vault operations.
@@ -108,6 +124,37 @@ export class VaultService {
    */
   getVaultNames(): string[] {
     return Array.from(this.providers.keys());
+  }
+
+  /**
+   * Creates a VaultService configured from a repository's .swamp.yaml file.
+   *
+   * @param repoDir - The repository directory containing .swamp.yaml
+   * @returns A configured VaultService instance
+   */
+  static fromConfig(repoDir: string): VaultService {
+    const vaultService = new VaultService();
+
+    try {
+      const configPath = `${repoDir}/.swamp.yaml`;
+      const configText = Deno.readTextFileSync(configPath);
+      const config = parse(configText) as SwampConfig;
+
+      if (config.vaults) {
+        for (const [name, vaultConfig] of Object.entries(config.vaults)) {
+          vaultService.registerVault({
+            name,
+            type: vaultConfig.type,
+            config: vaultConfig.config,
+          });
+        }
+      }
+    } catch (_error) {
+      // Ignore file read errors - vault service will provide helpful error messages
+    }
+
+    vaultService.ensureDefaultVaults();
+    return vaultService;
   }
 
   /**

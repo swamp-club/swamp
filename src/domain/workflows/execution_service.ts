@@ -36,6 +36,11 @@ import {
   ModelResolver,
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import { VaultService } from "../vaults/vault_service.ts";
+import {
+  processSensitiveFields,
+  processSensitiveResourceFields,
+} from "../models/data_writer.ts";
 
 /**
  * Context for step execution.
@@ -131,6 +136,7 @@ export class DefaultStepExecutor implements StepExecutor {
     const fileRepo = new FileSystemFileRepository(ctx.repoDir);
     const logRepo = new StreamingLogRepository(ctx.repoDir);
     const executionService = new DefaultMethodExecutionService();
+    const vaultService = VaultService.fromConfig(ctx.repoDir);
 
     // Look up the model input by ID or name
     const lookupResult = await findByIdOrName(inputRepo, task.modelIdOrName);
@@ -231,6 +237,7 @@ export class DefaultStepExecutor implements StepExecutor {
           resourceRepository: resourceRepo,
           logRepository: logRepo,
           fileRepository: fileRepo,
+          vaultService,
         },
       );
 
@@ -240,6 +247,20 @@ export class DefaultStepExecutor implements StepExecutor {
           // Delete the resource file
           await resourceRepo.delete(modelType, result.resource.id);
         } else {
+          // Process sensitive fields in resource before saving
+          if (definition.resourceAttributesSchema) {
+            const method = definition.methods[task.methodName];
+            await processSensitiveResourceFields({
+              resource: result.resource,
+              schema: definition.resourceAttributesSchema,
+              vaultService,
+              modelType,
+              modelId: originalInput.id,
+              methodName: task.methodName,
+              sensitiveOutput: method?.sensitiveOutput,
+              methodVaultName: method?.vaultName,
+            });
+          }
           // Save the resource
           await resourceRepo.save(modelType, result.resource);
           resourcePath = resourceRepo.getPath(modelType, result.resource.id);
@@ -256,6 +277,20 @@ export class DefaultStepExecutor implements StepExecutor {
         if (result.deleteData) {
           await dataRepo.delete(modelType, result.data.id);
         } else {
+          // Process sensitive fields before saving
+          if (definition.dataAttributesSchema) {
+            const method = definition.methods[task.methodName];
+            await processSensitiveFields({
+              data: result.data,
+              schema: definition.dataAttributesSchema,
+              vaultService,
+              modelType,
+              modelId: originalInput.id,
+              methodName: task.methodName,
+              sensitiveOutput: method?.sensitiveOutput,
+              methodVaultName: method?.vaultName,
+            });
+          }
           await dataRepo.save(modelType, result.data);
           output.setDataId(result.data.id);
         }

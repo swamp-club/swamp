@@ -85,66 +85,107 @@ The expression syntax is:
 - `key` - The secret identifier within that vault
 - `value` - The value to store (for put operations)
 
-## Sensitive Field Marking
+## Sensitive Field Marking (Implemented)
 
-Model schemas can mark fields as sensitive using Zod's `.meta()` method:
+Model schemas mark fields as sensitive using Zod's `.meta()` method. When a
+method executes, sensitive output fields are automatically stored in a vault and
+replaced with vault reference expressions before persistence.
+
+### Schema Metadata
+
+Mark individual fields as sensitive:
 
 ```typescript
-// Input schema with sensitive field
-export const ApiKeyInputAttributesSchema = z.object({
-  serviceName: z.string().min(1),
-  keyData: z.string().meta({
-    description: "Private key data for API authentication",
-    sensitive: true,
-    vault: true, // Indicates this should come from vault
-  }),
-});
-
-// Data/Resource schema with sensitive output
-export const ApiKeyDataAttributesSchema = z.object({
-  serviceName: z.string(),
-  apiKey: z.string().meta({
-    description: "Generated API key",
-    sensitive: true,
-    vault: true, // Indicates this should be stored in vault
-    vaultKey: "generated-api-key", // Optional: specify vault key name
-  }),
+export const DataAttributesSchema = z.object({
   keyId: z.string(),
-  createdAt: z.string().datetime(),
+  keyMaterial: z.string().meta({ sensitive: true }),
+  publicKey: z.string(),
 });
 ```
 
-### Sensitive Field Metadata
+Supported metadata properties on `.meta()`:
 
-Fields marked as sensitive support these metadata properties:
+- `sensitive: boolean` - Marks the field as containing sensitive data (required)
+- `vaultKey?: string` - Custom vault key (defaults to auto-generated path)
+- `vaultName?: string` - Specific vault to use (overrides method/default vault)
 
-- `sensitive: boolean` - Marks the field as containing sensitive data
-- `vault: boolean` - Indicates the field should interact with vault storage
-- `vaultKey?: string` - Optional custom key name for vault storage (defaults to
-  field name)
-- `vaultName?: string` - Optional specific vault to use (defaults to repository
-  default)
+### Method-Level `sensitiveOutput`
 
-### Automatic Vault Integration
+When a method's entire output is sensitive, set `sensitiveOutput: true` on the
+`MethodDefinition` instead of marking each field individually:
 
-When a field is marked with `sensitive: true` and `vault: true`:
+```typescript
+const methods = {
+  createKeyPair: {
+    description: "Create a key pair",
+    sensitiveOutput: true, // All output fields treated as sensitive
+    vaultName: "my-vault", // Optional: override vault for this method
+    inputAttributesSchema: InputSchema,
+    execute: async (input, context) => { ... },
+  },
+};
+```
 
-**Input Fields**: The swamp runtime automatically resolves vault expressions:
+### Vault Key Naming
+
+Auto-generated vault keys follow the pattern:
+
+```
+{modelType}/{modelId}/{methodName}/{fieldPath}
+```
+
+For example: `aws/ec2/key-pair/abc-123/createKeyPair/keyMaterial`
+
+Custom keys can be specified via `vaultKey` in field metadata:
+
+```typescript
+apiKey: z.string().meta({ sensitive: true, vaultKey: "my-api-key" }),
+```
+
+### Vault Reference Format
+
+Sensitive values are replaced with CEL-compatible vault reference expressions
+using single-quoted string arguments:
+
+```
+${{ vault.get('vault-name', 'vault-key') }}
+```
+
+### Vault Resolution Order
+
+The vault used for storing a sensitive field is resolved in this order:
+
+1. Field-level `vaultName` from `.meta()` metadata
+2. Method-level `vaultName` from `MethodDefinition`
+3. `defaultVaultName` from `MethodContext`
+4. First available vault from `VaultService`
+
+### Processing Behavior
+
+- Values are **snapshotted** before processing to prevent cross-contamination
+  when multiple fields are sensitive
+- Both `ModelData` and `ModelResource` attributes are processed
+- Non-string values are JSON-stringified before vault storage
+- Fields with `null` or `undefined` values are skipped
+- If sensitive fields exist but no vault is configured, an error is thrown with
+  guidance to create a vault
+
+### Implementation
+
+Processing is handled by `processSensitiveFields()` and
+`processSensitiveResourceFields()` in `src/domain/models/data_writer.ts`. Schema
+introspection is performed by `extractSensitiveFields()` in
+`src/domain/models/sensitive_field_extractor.ts`.
+
+### Input Fields
+
+Input fields use vault expressions directly in YAML:
 
 ```yaml
-# User writes this
-keyData: ${{ vault.get(aws, machineKeyData) }}
-
-# Runtime validates against schema and retrieves from vault
+keyData: ${{ vault.get('aws', 'machineKeyData') }}
 ```
 
-**Output Fields**: The swamp runtime automatically stores sensitive output:
-
-```typescript
-// After method execution, sensitive fields are automatically stored
-// Field: apiKey with meta { sensitive: true, vault: true, vaultKey: "generated-api-key" }
-// Result: vault.put(default-vault, "generated-api-key", resultData.attributes.apiKey)
-```
+The expression evaluation system resolves these at runtime.
 
 ## AWS Secrets Manager Provider
 

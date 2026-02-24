@@ -13,6 +13,7 @@ import type {
   OutputRepository,
   ResourceRepository,
 } from "./repositories.ts";
+import type { VaultService } from "../vaults/vault_service.ts";
 
 /**
  * Context provided to method execution.
@@ -52,6 +53,16 @@ export interface MethodContext {
    * Optional output repository for tracking execution history.
    */
   outputRepository?: OutputRepository;
+
+  /**
+   * Optional vault service for storing/retrieving sensitive field values.
+   */
+  vaultService?: VaultService;
+
+  /**
+   * Optional default vault name to use when no vault is specified in field metadata.
+   */
+  defaultVaultName?: string;
 }
 
 /**
@@ -150,6 +161,18 @@ export interface MethodDefinition<
    * The method will only execute if the input's attributes match this schema.
    */
   inputAttributesSchema: TInputAttrs;
+
+  /**
+   * When true, all fields in the method's data output are treated as sensitive
+   * and will be stored in a vault before persistence.
+   */
+  sensitiveOutput?: boolean;
+
+  /**
+   * Vault name to use for sensitive output fields.
+   * Overrides field-level metadata and defaultVaultName from context.
+   */
+  vaultName?: string;
 
   /**
    * Executes the method with the given input and context.

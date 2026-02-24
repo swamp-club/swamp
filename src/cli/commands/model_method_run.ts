@@ -18,6 +18,11 @@ import { StreamingLogRepository } from "../../infrastructure/persistence/streami
 import { FileSystemFileRepository } from "../../infrastructure/persistence/fs_file_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
+import {
+  processSensitiveFields,
+  processSensitiveResourceFields,
+} from "../../domain/models/data_writer.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -46,6 +51,7 @@ export const modelMethodRunCommand = new Command()
       const logRepo = new StreamingLogRepository(repoDir);
       const fileRepo = new FileSystemFileRepository(repoDir);
       const executionService = new DefaultMethodExecutionService();
+      const vaultService = VaultService.fromConfig(repoDir);
 
       ctx.logger
         .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
@@ -113,6 +119,7 @@ export const modelMethodRunCommand = new Command()
             resourceRepository: resourceRepo,
             logRepository: logRepo,
             fileRepository: fileRepo,
+            vaultService,
           },
         );
 
@@ -126,6 +133,19 @@ export const modelMethodRunCommand = new Command()
             await resourceRepo.delete(modelType, result.resource.id);
             ctx.logger.debug`Resource deleted: ${result.resource.id}`;
           } else {
+            // Process sensitive fields in resource before saving
+            if (definition.resourceAttributesSchema) {
+              await processSensitiveResourceFields({
+                resource: result.resource,
+                schema: definition.resourceAttributesSchema,
+                vaultService,
+                modelType,
+                modelId: input.id,
+                methodName,
+                sensitiveOutput: method.sensitiveOutput,
+                methodVaultName: method.vaultName,
+              });
+            }
             // Save the resource
             await resourceRepo.save(modelType, result.resource);
             const resourcePath = resourceRepo.getPath(
@@ -151,6 +171,19 @@ export const modelMethodRunCommand = new Command()
             await dataRepo.delete(modelType, result.data.id);
             ctx.logger.debug`Data deleted: ${result.data.id}`;
           } else {
+            // Process sensitive fields before saving
+            if (definition.dataAttributesSchema) {
+              await processSensitiveFields({
+                data: result.data,
+                schema: definition.dataAttributesSchema,
+                vaultService,
+                modelType,
+                modelId: input.id,
+                methodName,
+                sensitiveOutput: method.sensitiveOutput,
+                methodVaultName: method.vaultName,
+              });
+            }
             await dataRepo.save(modelType, result.data);
             const dataPath = dataRepo.getPath(modelType, result.data.id);
             ctx.logger.debug`Data saved to: ${dataPath}`;
