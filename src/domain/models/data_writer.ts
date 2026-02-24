@@ -372,6 +372,10 @@ export async function processSensitiveResourceData(
       ? originalValue
       : JSON.stringify(originalValue);
     await vaultService.put(targetVault, vaultKey, stringValue);
+    logger.info(
+      "Stored sensitive field '{fieldPath}' in vault '{vaultName}' with key '{vaultKey}'",
+      { fieldPath: field.path, vaultName: targetVault, vaultKey },
+    );
 
     const vaultRef = `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
 
