@@ -20,6 +20,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parseArgs } from "@std/cli/parse-args";
+import { join } from "@std/path";
 
 interface CompileOptions {
   output: string;
@@ -38,6 +39,48 @@ async function stampVersion(version: string): Promise<string> {
   );
   await Deno.writeTextFile(VERSION_FILE, updated);
   return original;
+}
+
+/**
+ * Downloads the deno binary for the given target platform.
+ * Runs scripts/download_deno.ts to fetch from GitHub releases.
+ */
+async function downloadDeno(target?: string): Promise<void> {
+  const downloadArgs = ["run", "-A", "scripts/download_deno.ts"];
+  if (target) {
+    downloadArgs.push("--target", target);
+  }
+
+  console.log(`Downloading embedded deno runtime...`);
+  const command = new Deno.Command("deno", {
+    args: downloadArgs,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+
+  const { success } = await command.output();
+  if (!success) {
+    throw new Error("Failed to download deno binary for embedding");
+  }
+}
+
+/**
+ * Cleans up the resources/deno/ directory after compilation.
+ * Removes platform-specific binary to avoid leaving it in the repo.
+ */
+async function cleanupDenoResources(): Promise<void> {
+  const denoDir = join(
+    import.meta.dirname ?? ".",
+    "..",
+    "resources",
+    "deno",
+  );
+  try {
+    await Deno.remove(denoDir, { recursive: true });
+    console.log("Cleaned up resources/deno/");
+  } catch {
+    // Directory may not exist — that's fine
+  }
 }
 
 async function main() {
@@ -72,9 +115,13 @@ async function main() {
   }
 
   try {
+    // Download deno binary for embedding
+    await downloadDeno(options.target);
+
     const baseCommand = [
       "deno",
       "compile",
+      "--unstable-bundle",
       "--allow-read",
       "--allow-write",
       "--allow-env",
@@ -83,6 +130,8 @@ async function main() {
       "--allow-net",
       "--include",
       ".claude/skills",
+      "--include",
+      "resources/deno",
       // Exclude development-only directories from the binary
       "--exclude",
       ".agents",
@@ -132,6 +181,9 @@ async function main() {
     if (originalContent !== null) {
       await Deno.writeTextFile(VERSION_FILE, originalContent);
     }
+
+    // Clean up downloaded deno binary
+    await cleanupDenoResources();
   }
 }
 

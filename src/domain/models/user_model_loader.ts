@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import { join, resolve } from "@std/path";
+import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { getLogger } from "@logtape/logtape";
+import { bundleExtension } from "./bundle.ts";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
 import {
@@ -32,6 +34,13 @@ import {
   ResourceOutputSpecSchema,
   type VersionUpgrade,
 } from "./model.ts";
+import type { DenoRuntime } from "../runtime/deno_runtime.ts";
+import {
+  SWAMP_DATA_DIR,
+  SWAMP_SUBDIRS,
+} from "../../infrastructure/persistence/paths.ts";
+
+const logger = getLogger(["swamp", "models", "loader"]);
 
 /**
  * Plain object result returned by user methods before conversion.
@@ -210,6 +219,19 @@ export interface LoadResult {
  * This loader validates the structure and registers/extends models with the global registry.
  */
 export class UserModelLoader {
+  private readonly denoRuntime: DenoRuntime;
+  private readonly repoDir: string | null;
+
+  /**
+   * @param denoRuntime - Runtime manager for obtaining a deno binary path
+   * @param repoDir - Repository root for writing bundles to .swamp/bundles/
+   *                   (pass null to skip bundle caching)
+   */
+  constructor(denoRuntime: DenoRuntime, repoDir: string | null = null) {
+    this.denoRuntime = denoRuntime;
+    this.repoDir = repoDir;
+  }
+
   /**
    * Loads all user models and extensions from the specified directory.
    * Uses two-pass loading: models first, then extensions.
@@ -227,6 +249,9 @@ export class UserModelLoader {
       return result; // No user models directory - not an error
     }
 
+    // Ensure deno is available before bundling
+    const denoPath = await this.denoRuntime.ensureDeno();
+
     const files = await this.discoverFiles(modelsDir);
 
     // Import all files and classify by export name
@@ -238,20 +263,19 @@ export class UserModelLoader {
       file: string;
       module: Record<string, unknown>;
     }> = [];
-    const unknownFiles: string[] = [];
 
     for (const file of files) {
       try {
         const absolutePath = resolve(modelsDir, file);
-        const module = await import(`file://${absolutePath}`);
+        const js = await this.bundleWithCache(absolutePath, file, denoPath);
+        const module = await this.importBundle(js, file);
 
         if (module.model) {
           modelFiles.push({ file, module });
         } else if (module.extension) {
           extensionFiles.push({ file, module });
-        } else {
-          unknownFiles.push(file);
         }
+        // Files with neither export are silently skipped (utility files)
       } catch (error) {
         result.failed.push({ file, error: String(error) });
       }
@@ -303,10 +327,88 @@ export class UserModelLoader {
       }
     }
 
-    // Files with neither 'model' nor 'extension' export are silently skipped
-    // (they are likely library/utility files imported by actual model files)
-
     return result;
+  }
+
+  /**
+   * Bundles an extension file, using cached bundle from .swamp/bundles/ when possible.
+   * Writes the bundle to disk for future caching and potential publishing.
+   */
+  private async bundleWithCache(
+    absolutePath: string,
+    relativePath: string,
+    denoPath: string,
+  ): Promise<string> {
+    if (this.repoDir) {
+      const bundlePath = join(
+        this.repoDir,
+        SWAMP_DATA_DIR,
+        SWAMP_SUBDIRS.bundles,
+        relativePath.replace(/\.ts$/, ".js"),
+      );
+
+      // Check mtime-based cache
+      try {
+        const [sourceStat, bundleStat] = await Promise.all([
+          Deno.stat(absolutePath),
+          Deno.stat(bundlePath),
+        ]);
+
+        if (
+          sourceStat.mtime && bundleStat.mtime &&
+          bundleStat.mtime > sourceStat.mtime
+        ) {
+          logger.debug`Using cached bundle for ${relativePath}`;
+          return await Deno.readTextFile(bundlePath);
+        }
+      } catch {
+        // Bundle doesn't exist yet or source stat failed — will rebundle
+      }
+
+      // Bundle and write to cache
+      const js = await bundleExtension(absolutePath, denoPath);
+      await Deno.mkdir(dirname(bundlePath), { recursive: true });
+      await Deno.writeTextFile(bundlePath, js);
+      logger.debug`Wrote bundle cache: ${bundlePath}`;
+      return js;
+    }
+
+    // No repo dir — just bundle without caching
+    return await bundleExtension(absolutePath, denoPath);
+  }
+
+  /**
+   * Imports bundled JavaScript and returns the module exports.
+   * Uses file URL import when a bundle file exists on disk, otherwise falls back to data URL.
+   */
+  private async importBundle(
+    js: string,
+    relativePath: string,
+  ): Promise<Record<string, unknown>> {
+    if (this.repoDir) {
+      const bundlePath = join(
+        this.repoDir,
+        SWAMP_DATA_DIR,
+        SWAMP_SUBDIRS.bundles,
+        relativePath.replace(/\.ts$/, ".js"),
+      );
+
+      try {
+        await Deno.stat(bundlePath);
+        // Import from file URL — avoids base64 encoding overhead
+        return await import(toFileUrl(bundlePath).href);
+      } catch {
+        // Fall through to data URL import
+      }
+    }
+
+    // Fallback: import via base64 data URL
+    const encoded = btoa(
+      String.fromCharCode(...new TextEncoder().encode(js)),
+    );
+    return await import(
+      `data:application/javascript;base64,${encoded}`
+    );
   }
 
   /**
