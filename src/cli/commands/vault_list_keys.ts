@@ -33,9 +33,17 @@ type AnyOptions = any;
 export const vaultListKeysCommand = new Command()
   .name("list-keys")
   .description("List all secret keys in a vault (without values)")
-  .arguments("<vault_name:string>")
+  .arguments("[vault_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .action(async function (options: AnyOptions, vaultName: string) {
+  .action(async function (options: AnyOptions, vaultName?: string) {
+    if (!vaultName) {
+      throw new UserError(
+        "Missing required argument: vault_name\n\n" +
+          "Usage: swamp vault list-keys <vault_name>\n\n" +
+          "Use 'swamp vault search' to see available vaults.",
+      );
+    }
+
     const ctx = createContext(options as GlobalOptions, ["vault", "list-keys"]);
     ctx.logger.debug`Listing secret keys in vault: ${vaultName}`;
 
