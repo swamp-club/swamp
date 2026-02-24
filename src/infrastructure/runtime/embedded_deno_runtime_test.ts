@@ -17,17 +17,24 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bundleExtension } from "./src/domain/models/bundle.ts";
+import { assertEquals } from "@std/assert";
+import { EmbeddedDenoRuntime } from "./embedded_deno_runtime.ts";
 
-try {
-  const result = await bundleExtension(
-    "/tmp/poop/extensions/models/k8s_pods.ts",
-  );
-  console.log("SUCCESS: Bundled k8s_pods.ts");
-  console.log("Bundle size:", result.length, "bytes");
-} catch (error) {
-  console.error("ERROR:", error.message);
-  if (error.stack) {
-    console.error("Stack:", error.stack.split("\n").slice(0, 10).join("\n"));
-  }
-}
+Deno.test("EmbeddedDenoRuntime returns system deno in dev mode", async () => {
+  // When running from source (not compiled), Deno.build.standalone is falsy
+  const runtime = new EmbeddedDenoRuntime();
+  const denoPath = await runtime.ensureDeno();
+
+  // In dev mode, should return the running deno's path
+  assertEquals(denoPath, Deno.execPath());
+});
+
+Deno.test("EmbeddedDenoRuntime caches the deno path", async () => {
+  const runtime = new EmbeddedDenoRuntime();
+
+  const first = await runtime.ensureDeno();
+  const second = await runtime.ensureDeno();
+
+  // Should return the same path both times (cached)
+  assertEquals(first, second);
+});
