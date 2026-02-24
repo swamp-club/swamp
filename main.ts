@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { runCli } from "./src/cli/mod.ts";
+import { stopBundler } from "./src/domain/models/bundle.ts";
 import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
 import { renderError } from "./src/presentation/output/error_output.ts";
 
@@ -30,5 +31,7 @@ if (import.meta.main) {
     });
     renderError(error);
     Deno.exit(1);
+  } finally {
+    stopBundler();
   }
 }

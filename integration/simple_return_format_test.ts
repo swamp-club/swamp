@@ -121,47 +121,52 @@ export const model = {
 };
 `;
 
-Deno.test("Integration: user model with dataWriter API works", async () => {
-  await withTempDir(async (repoDir) => {
-    // 1. Create a user model that uses dataWriter API
-    const modelsDir = await createUserModel(
-      repoDir,
-      "datawriter_model.ts",
-      DATAWRITER_MODEL_CODE,
-    );
+Deno.test({
+  name: "Integration: user model with dataWriter API works",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      // 1. Create a user model that uses dataWriter API
+      const modelsDir = await createUserModel(
+        repoDir,
+        "datawriter_model.ts",
+        DATAWRITER_MODEL_CODE,
+      );
 
-    // 2. Load the user model
-    const loader = new UserModelLoader();
-    const loadResult = await loader.loadModels(modelsDir);
+      // 2. Load the user model
+      const loader = new UserModelLoader();
+      const loadResult = await loader.loadModels(modelsDir);
 
-    // Debug: show any load failures
-    if (loadResult.failed.length > 0) {
-      console.error("Model load failures:", loadResult.failed);
-    }
-    assertEquals(
-      loadResult.loaded.length,
-      1,
-      `Should load one model. Failed: ${JSON.stringify(loadResult.failed)}`,
-    );
-    assertEquals(loadResult.failed.length, 0, "Should have no failures");
+      // Debug: show any load failures
+      if (loadResult.failed.length > 0) {
+        console.error("Model load failures:", loadResult.failed);
+      }
+      assertEquals(
+        loadResult.loaded.length,
+        1,
+        `Should load one model. Failed: ${JSON.stringify(loadResult.failed)}`,
+      );
+      assertEquals(loadResult.failed.length, 0, "Should have no failures");
 
-    // 3. Verify model is registered
-    const modelType = ModelType.create("@user/datawriter-model");
-    const modelDef = modelRegistry.get(modelType);
-    assertEquals(modelDef !== undefined, true, "Model should be registered");
+      // 3. Verify model is registered
+      const modelType = ModelType.create("@user/datawriter-model");
+      const modelDef = modelRegistry.get(modelType);
+      assertEquals(modelDef !== undefined, true, "Model should be registered");
 
-    // 4. Verify resources are registered
-    assertEquals(
-      Object.keys(modelDef!.resources ?? {}).length,
-      1,
-      "Should have one resource spec",
-    );
-    assertEquals(
-      modelDef!.resources!["resource"]?.description,
-      "Resource output",
-      "Should have resource spec description",
-    );
-  });
+      // 4. Verify resources are registered
+      assertEquals(
+        Object.keys(modelDef!.resources ?? {}).length,
+        1,
+        "Should have one resource spec",
+      );
+      assertEquals(
+        modelDef!.resources!["resource"]?.description,
+        "Resource output",
+        "Should have resource spec description",
+      );
+    });
+  },
 });
 
 // ============================================================================
@@ -191,54 +196,60 @@ export const model = {
 };
 `;
 
-Deno.test("Integration: expression-aware validation allows expressions in required fields", async () => {
-  await withTempDir(async (repoDir) => {
-    // 1. Create a user model
-    const modelsDir = await createUserModel(
-      repoDir,
-      "expression_model.ts",
-      EXPRESSION_MODEL_CODE,
-    );
+Deno.test({
+  name:
+    "Integration: expression-aware validation allows expressions in required fields",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      // 1. Create a user model
+      const modelsDir = await createUserModel(
+        repoDir,
+        "expression_model.ts",
+        EXPRESSION_MODEL_CODE,
+      );
 
-    // 2. Load the model
-    const loader = new UserModelLoader();
-    const loadResult = await loader.loadModels(modelsDir);
+      // 2. Load the model
+      const loader = new UserModelLoader();
+      const loadResult = await loader.loadModels(modelsDir);
 
-    // Debug: show any load failures
-    if (loadResult.failed.length > 0) {
-      console.error("Model load failures:", loadResult.failed);
-    }
+      // Debug: show any load failures
+      if (loadResult.failed.length > 0) {
+        console.error("Model load failures:", loadResult.failed);
+      }
 
-    // 3. Verify model is registered
-    const modelType = ModelType.create("@user/expression-model");
-    const modelDef = modelRegistry.get(modelType);
-    assertEquals(modelDef !== undefined, true, "Model should be registered");
+      // 3. Verify model is registered
+      const modelType = ModelType.create("@user/expression-model");
+      const modelDef = modelRegistry.get(modelType);
+      assertEquals(modelDef !== undefined, true, "Model should be registered");
 
-    // 4. Create a definition with an expression in a required field
-    // Expressions should be allowed even when the underlying type is different
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const definition = Definition.create({
-      name: "test-expression",
-      methods: {
-        process: {
-          arguments: {
-            value: "${{ inputs.someValue }}", // Expression instead of literal
-            count: "${{ inputs.count }}", // Expression for number field
+      // 4. Create a definition with an expression in a required field
+      // Expressions should be allowed even when the underlying type is different
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const definition = Definition.create({
+        name: "test-expression",
+        methods: {
+          process: {
+            arguments: {
+              value: "${{ inputs.someValue }}", // Expression instead of literal
+              count: "${{ inputs.count }}", // Expression for number field
+            },
           },
         },
-      },
+      });
+
+      // This should succeed - expressions bypass strict type validation
+      await definitionRepo.save(modelType, definition);
+
+      // 5. Verify the definition was saved with expressions intact
+      const loaded = await definitionRepo.findById(modelType, definition.id);
+      assertEquals(loaded !== null, true, "Definition should be loaded");
+      assertEquals(
+        loaded!.getMethodArguments("process").value,
+        "${{ inputs.someValue }}",
+        "Expression should be preserved",
+      );
     });
-
-    // This should succeed - expressions bypass strict type validation
-    await definitionRepo.save(modelType, definition);
-
-    // 5. Verify the definition was saved with expressions intact
-    const loaded = await definitionRepo.findById(modelType, definition.id);
-    assertEquals(loaded !== null, true, "Definition should be loaded");
-    assertEquals(
-      loaded!.getMethodArguments("process").value,
-      "${{ inputs.someValue }}",
-      "Expression should be preserved",
-    );
-  });
+  },
 });

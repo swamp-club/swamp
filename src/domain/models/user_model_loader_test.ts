@@ -28,9 +28,19 @@ import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import { getLogger } from "@logtape/logtape";
+import { stopBundler } from "./bundle.ts";
 
 // Import models barrel to ensure command/shell is registered for extension test
 import "./models.ts";
+
+// esbuild WASM spawns a long-lived child process, so we disable Deno's
+// resource and ops sanitizers for all bundle-dependent tests.
+function bundleTest(
+  name: string,
+  fn: () => Promise<void> | void,
+): void {
+  Deno.test({ name, sanitizeResources: false, sanitizeOps: false, fn });
+}
 
 /**
  * Stored result from mock data writer.
@@ -239,7 +249,7 @@ async function withTempModels(
   }
 }
 
-Deno.test("UserModelLoader loads valid model with dataHandles", async () => {
+bundleTest("UserModelLoader loads valid model with dataHandles", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -285,23 +295,26 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader silently skips files without model or extension export", async () => {
-  const modelCode = `
+bundleTest(
+  "UserModelLoader silently skips files without model or extension export",
+  async () => {
+    const modelCode = `
 export const notAModel = { foo: "bar" };
 `;
 
-  await withTempModels({ "no_export.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "no_export.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    // Files without model/extension exports are now silently skipped
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.extended.length, 0);
-    assertEquals(result.failed.length, 0);
-  });
-});
+      // Files without model/extension exports are now silently skipped
+      assertEquals(result.loaded.length, 0);
+      assertEquals(result.extended.length, 0);
+      assertEquals(result.failed.length, 0);
+    });
+  },
+);
 
-Deno.test("UserModelLoader handles invalid model structure", async () => {
+bundleTest("UserModelLoader handles invalid model structure", async () => {
   const modelCode = `
 export const model = {
   type: "@user/invalid",
@@ -319,7 +332,7 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader handles non-existent directory", async () => {
+bundleTest("UserModelLoader handles non-existent directory", async () => {
   const loader = new UserModelLoader();
   const result = await loader.loadModels("/nonexistent/path/to/models");
 
@@ -327,7 +340,7 @@ Deno.test("UserModelLoader handles non-existent directory", async () => {
   assertEquals(result.failed.length, 0);
 });
 
-Deno.test("UserModelLoader skips test files", async () => {
+bundleTest("UserModelLoader skips test files", async () => {
   const testFile = `
 export const model = { type: "test/should-skip" };
 `;
@@ -370,7 +383,7 @@ export const model = {
   );
 });
 
-Deno.test("UserModelLoader prevents duplicate type registration", async () => {
+bundleTest("UserModelLoader prevents duplicate type registration", async () => {
   // Test that two models with the same type fail on the second one
   const ts = Date.now();
   const typeId = `@user/duplicate-${ts}`;
@@ -438,9 +451,11 @@ export const model = {
   );
 });
 
-Deno.test("UserModelLoader passes through dataHandles from user execute", async () => {
-  const typeId = `@user/passthrough-handles-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader passes through dataHandles from user execute",
+  async () => {
+    const typeId = `@user/passthrough-handles-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({
@@ -475,41 +490,44 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "passthrough_data.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "passthrough_data.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded.length, 1);
 
-    // Get the registered model and execute its method
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
+      // Get the registered model and execute its method
+      const modelDef = modelRegistry.get(typeId);
+      assertEquals(modelDef !== undefined, true);
 
-    const { context, getResults } = createTestContext(modelDef!.type);
-    const methodResult = await modelDef!.methods.create.execute(
-      { name: "test" },
-      context,
-    );
+      const { context, getResults } = createTestContext(modelDef!.type);
+      const methodResult = await modelDef!.methods.create.execute(
+        { name: "test" },
+        context,
+      );
 
-    // Verify the dataHandles are passed through
-    assertEquals(methodResult.dataHandles !== undefined, true);
-    assertEquals(methodResult.dataHandles!.length, 1);
+      // Verify the dataHandles are passed through
+      assertEquals(methodResult.dataHandles !== undefined, true);
+      assertEquals(methodResult.dataHandles!.length, 1);
 
-    const handle = methodResult.dataHandles![0];
-    assertEquals(handle.name, "data");
+      const handle = methodResult.dataHandles![0];
+      assertEquals(handle.name, "data");
 
-    // Verify content was written via mock writer
-    const results = getResults();
-    assertEquals(results.length, 1);
-    const content = JSON.parse(new TextDecoder().decode(results[0].content));
-    assertEquals(content.id, "resource-123");
-    assertEquals(content.status, "created");
-  });
-});
+      // Verify content was written via mock writer
+      const results = getResults();
+      assertEquals(results.length, 1);
+      const content = JSON.parse(new TextDecoder().decode(results[0].content));
+      assertEquals(content.id, "resource-123");
+      assertEquals(content.status, "created");
+    });
+  },
+);
 
-Deno.test("UserModelLoader uses model globalArguments when method lacks own arguments schema", async () => {
-  const typeId = `@user/method-inherits-schema-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader uses model globalArguments when method lacks own arguments schema",
+  async () => {
+    const typeId = `@user/method-inherits-schema-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({
@@ -538,24 +556,25 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "inherit_schema.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "inherit_schema.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded.length, 1);
 
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
+      const modelDef = modelRegistry.get(typeId);
+      assertEquals(modelDef !== undefined, true);
 
-    // Verify the method has an arguments schema (inherited from model)
-    assertEquals(
-      modelDef!.methods.run.arguments !== undefined,
-      true,
-    );
-  });
-});
+      // Verify the method has an arguments schema (inherited from model)
+      assertEquals(
+        modelDef!.methods.run.arguments !== undefined,
+        true,
+      );
+    });
+  },
+);
 
-Deno.test("UserModelLoader loads multiple models from directory", async () => {
+bundleTest("UserModelLoader loads multiple models from directory", async () => {
   const model1 = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -619,9 +638,11 @@ export const model = {
   );
 });
 
-Deno.test("UserModelLoader user method returns empty dataHandles", async () => {
-  const typeId = `@user/empty-handles-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader user method returns empty dataHandles",
+  async () => {
+    const typeId = `@user/empty-handles-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({
@@ -652,30 +673,33 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "empty_handles.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "empty_handles.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded.length, 1);
 
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
+      const modelDef = modelRegistry.get(typeId);
+      assertEquals(modelDef !== undefined, true);
 
-    const { context } = createTestContext(modelDef!.type);
-    const methodResult = await modelDef!.methods.execute.execute(
-      { testInput: "Hello World" },
-      context,
-    );
+      const { context } = createTestContext(modelDef!.type);
+      const methodResult = await modelDef!.methods.execute.execute(
+        { testInput: "Hello World" },
+        context,
+      );
 
-    // Verify empty dataHandles are passed through
-    assertEquals(methodResult.dataHandles !== undefined, true);
-    assertEquals(methodResult.dataHandles!.length, 0);
-  });
-});
+      // Verify empty dataHandles are passed through
+      assertEquals(methodResult.dataHandles !== undefined, true);
+      assertEquals(methodResult.dataHandles!.length, 0);
+    });
+  },
+);
 
-Deno.test("UserModelLoader user method without dataHandles returns undefined", async () => {
-  const typeId = `@user/no-handles-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader user method without dataHandles returns undefined",
+  async () => {
+    const typeId = `@user/no-handles-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({
@@ -706,31 +730,34 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "no_handles.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "no_handles.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded.length, 1);
 
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
+      const modelDef = modelRegistry.get(typeId);
+      assertEquals(modelDef !== undefined, true);
 
-    const { context } = createTestContext(modelDef!.type);
-    const methodResult = await modelDef!.methods.fetch.execute(
-      { query: "SELECT *" },
-      context,
-    );
+      const { context } = createTestContext(modelDef!.type);
+      const methodResult = await modelDef!.methods.fetch.execute(
+        { query: "SELECT *" },
+        context,
+      );
 
-    // Verify dataHandles is undefined when not provided
-    assertEquals(methodResult.dataHandles, undefined);
-  });
-});
+      // Verify dataHandles is undefined when not provided
+      assertEquals(methodResult.dataHandles, undefined);
+    });
+  },
+);
 
 // --- Recursive discovery tests ---
 
-Deno.test("UserModelLoader discovers nested files with correct relative paths", async () => {
-  const ts = Date.now();
-  const modelA = `
+bundleTest(
+  "UserModelLoader discovers nested files with correct relative paths",
+  async () => {
+    const ts = Date.now();
+    const modelA = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/nested-a-${ts}",
@@ -753,7 +780,7 @@ export const model = {
   },
 };
 `;
-  const modelB = `
+    const modelB = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/nested-b-${ts}",
@@ -777,22 +804,23 @@ export const model = {
 };
 `;
 
-  await withTempModels(
-    { "aws/ec2_start.ts": modelA, "echo_audit.ts": modelB },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "aws/ec2_start.ts": modelA, "echo_audit.ts": modelB },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.loaded.length, 2);
-      assertEquals(result.failed.length, 0);
-      // Sorted alphabetically: "aws/ec2_start.ts" < "echo_audit.ts"
-      assertEquals(result.loaded[0], join("aws", "ec2_start.ts"));
-      assertEquals(result.loaded[1], "echo_audit.ts");
-    },
-  );
-});
+        assertEquals(result.loaded.length, 2);
+        assertEquals(result.failed.length, 0);
+        // Sorted alphabetically: "aws/ec2_start.ts" < "echo_audit.ts"
+        assertEquals(result.loaded[0], join("aws", "ec2_start.ts"));
+        assertEquals(result.loaded[1], "echo_audit.ts");
+      },
+    );
+  },
+);
 
-Deno.test("UserModelLoader excludes _test.ts in subdirectories", async () => {
+bundleTest("UserModelLoader excludes _test.ts in subdirectories", async () => {
   const ts = Date.now();
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -828,9 +856,11 @@ export const model = {
   );
 });
 
-Deno.test("UserModelLoader handles deeply nested directories (3+ levels)", async () => {
-  const ts = Date.now();
-  const modelCode = `
+bundleTest(
+  "UserModelLoader handles deeply nested directories (3+ levels)",
+  async () => {
+    const ts = Date.now();
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/deep-nested-${ts}",
@@ -850,26 +880,29 @@ export const model = {
 };
 `;
 
-  await withTempModels(
-    { "a/b/c/deep_model.ts": modelCode },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "a/b/c/deep_model.ts": modelCode },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.loaded.length, 1);
-      assertEquals(
-        result.loaded[0],
-        join("a", "b", "c", "deep_model.ts"),
-      );
-    },
-  );
-});
+        assertEquals(result.loaded.length, 1);
+        assertEquals(
+          result.loaded[0],
+          join("a", "b", "c", "deep_model.ts"),
+        );
+      },
+    );
+  },
+);
 
 // --- Extension tests ---
 
-Deno.test("UserModelLoader loads extension with single method in array", async () => {
-  const ts = Date.now();
-  const modelCode = `
+bundleTest(
+  "UserModelLoader loads extension with single method in array",
+  async () => {
+    const ts = Date.now();
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-single-${ts}",
@@ -892,7 +925,7 @@ export const model = {
   },
 };
 `;
-  const extCode = `
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-single-${ts}",
@@ -906,29 +939,32 @@ export const extension = {
 };
 `;
 
-  await withTempModels(
-    { "base_model.ts": modelCode, "ext_audit.ts": extCode },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "base_model.ts": modelCode, "ext_audit.ts": extCode },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.loaded.length, 1);
-      assertEquals(result.extended.length, 1);
-      assertEquals(result.extended[0], "ext_audit.ts");
-      assertEquals(result.failed.length, 0);
+        assertEquals(result.loaded.length, 1);
+        assertEquals(result.extended.length, 1);
+        assertEquals(result.extended[0], "ext_audit.ts");
+        assertEquals(result.failed.length, 0);
 
-      // Verify the method was added
-      const modelDef = modelRegistry.get(`@user/ext-single-${ts}`);
-      assertEquals(modelDef !== undefined, true);
-      assertEquals("write" in modelDef!.methods, true);
-      assertEquals("audit" in modelDef!.methods, true);
-    },
-  );
-});
+        // Verify the method was added
+        const modelDef = modelRegistry.get(`@user/ext-single-${ts}`);
+        assertEquals(modelDef !== undefined, true);
+        assertEquals("write" in modelDef!.methods, true);
+        assertEquals("audit" in modelDef!.methods, true);
+      },
+    );
+  },
+);
 
-Deno.test("UserModelLoader loads extension with multiple methods in array", async () => {
-  const ts = Date.now();
-  const modelCode = `
+bundleTest(
+  "UserModelLoader loads extension with multiple methods in array",
+  async () => {
+    const ts = Date.now();
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-multi-${ts}",
@@ -951,7 +987,7 @@ export const model = {
   },
 };
 `;
-  const extCode = `
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-multi-${ts}",
@@ -970,26 +1006,29 @@ export const extension = {
 };
 `;
 
-  await withTempModels(
-    { "base.ts": modelCode, "ext.ts": extCode },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "base.ts": modelCode, "ext.ts": extCode },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.loaded.length, 1);
-      assertEquals(result.extended.length, 1);
+        assertEquals(result.loaded.length, 1);
+        assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`@user/ext-multi-${ts}`);
-      assertEquals("write" in modelDef!.methods, true);
-      assertEquals("audit" in modelDef!.methods, true);
-      assertEquals("verify" in modelDef!.methods, true);
-    },
-  );
-});
+        const modelDef = modelRegistry.get(`@user/ext-multi-${ts}`);
+        assertEquals("write" in modelDef!.methods, true);
+        assertEquals("audit" in modelDef!.methods, true);
+        assertEquals("verify" in modelDef!.methods, true);
+      },
+    );
+  },
+);
 
-Deno.test("UserModelLoader extension targeting unregistered type fails gracefully", async () => {
-  const ts = Date.now();
-  const extCode = `
+bundleTest(
+  "UserModelLoader extension targeting unregistered type fails gracefully",
+  async () => {
+    const ts = Date.now();
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/nonexistent-${ts}",
@@ -1003,20 +1042,26 @@ export const extension = {
 };
 `;
 
-  await withTempModels({ "ext_bad.ts": extCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "ext_bad.ts": extCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.extended.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "Cannot extend unregistered");
-  });
-});
+      assertEquals(result.loaded.length, 0);
+      assertEquals(result.extended.length, 0);
+      assertEquals(result.failed.length, 1);
+      assertStringIncludes(
+        result.failed[0].error,
+        "Cannot extend unregistered",
+      );
+    });
+  },
+);
 
-Deno.test("UserModelLoader extension with method name conflict fails gracefully", async () => {
-  const ts = Date.now();
-  const modelCode = `
+bundleTest(
+  "UserModelLoader extension with method name conflict fails gracefully",
+  async () => {
+    const ts = Date.now();
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-conflict-${ts}",
@@ -1039,7 +1084,7 @@ export const model = {
   },
 };
 `;
-  const extCode = `
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-conflict-${ts}",
@@ -1053,23 +1098,26 @@ export const extension = {
 };
 `;
 
-  await withTempModels(
-    { "base.ts": modelCode, "ext_conflict.ts": extCode },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "base.ts": modelCode, "ext_conflict.ts": extCode },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.loaded.length, 1);
-      assertEquals(result.extended.length, 0);
-      assertEquals(result.failed.length, 1);
-      assertStringIncludes(result.failed[0].error, "already exists");
-    },
-  );
-});
+        assertEquals(result.loaded.length, 1);
+        assertEquals(result.extended.length, 0);
+        assertEquals(result.failed.length, 1);
+        assertStringIncludes(result.failed[0].error, "already exists");
+      },
+    );
+  },
+);
 
-Deno.test("UserModelLoader extension with duplicate method names within array fails", async () => {
-  const ts = Date.now();
-  const modelCode = `
+bundleTest(
+  "UserModelLoader extension with duplicate method names within array fails",
+  async () => {
+    const ts = Date.now();
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-dup-methods-${ts}",
@@ -1092,8 +1140,8 @@ export const model = {
   },
 };
 `;
-  // Two array elements with same method name
-  const extCode = `
+    // Two array elements with same method name
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-dup-methods-${ts}",
@@ -1116,26 +1164,29 @@ export const extension = {
 };
 `;
 
-  await withTempModels(
-    { "base.ts": modelCode, "ext_dup.ts": extCode },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "base.ts": modelCode, "ext_dup.ts": extCode },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.loaded.length, 1);
-      assertEquals(result.extended.length, 0);
-      assertEquals(result.failed.length, 1);
-      assertStringIncludes(
-        result.failed[0].error,
-        "Duplicate method name 'audit'",
-      );
-    },
-  );
-});
+        assertEquals(result.loaded.length, 1);
+        assertEquals(result.extended.length, 0);
+        assertEquals(result.failed.length, 1);
+        assertStringIncludes(
+          result.failed[0].error,
+          "Duplicate method name 'audit'",
+        );
+      },
+    );
+  },
+);
 
-Deno.test("UserModelLoader extension methods inherit target model's arguments schema", async () => {
-  const ts = Date.now();
-  const modelCode = `
+bundleTest(
+  "UserModelLoader extension methods inherit target model's arguments schema",
+  async () => {
+    const ts = Date.now();
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-inherit-schema-${ts}",
@@ -1158,7 +1209,7 @@ export const model = {
   },
 };
 `;
-  const extCode = `
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-inherit-schema-${ts}",
@@ -1172,27 +1223,30 @@ export const extension = {
 };
 `;
 
-  await withTempModels(
-    { "base.ts": modelCode, "ext.ts": extCode },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "base.ts": modelCode, "ext.ts": extCode },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.extended.length, 1);
+        assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`@user/ext-inherit-schema-${ts}`);
-      // Extension method should have arguments schema inherited from target model
-      assertEquals(
-        modelDef!.methods.audit.arguments !== undefined,
-        true,
-      );
-    },
-  );
-});
+        const modelDef = modelRegistry.get(`@user/ext-inherit-schema-${ts}`);
+        // Extension method should have arguments schema inherited from target model
+        assertEquals(
+          modelDef!.methods.audit.arguments !== undefined,
+          true,
+        );
+      },
+    );
+  },
+);
 
-Deno.test("UserModelLoader extension of built-in command/shell type works", async () => {
-  // command/shell is registered via the models barrel import at the top
-  const extCode = `
+bundleTest(
+  "UserModelLoader extension of built-in command/shell type works",
+  async () => {
+    // command/shell is registered via the models barrel import at the top
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "command/shell",
@@ -1206,23 +1260,26 @@ export const extension = {
 };
 `;
 
-  await withTempModels({ "shell_ext.ts": extCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "shell_ext.ts": extCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.extended.length, 1);
-    assertEquals(result.failed.length, 0);
+      assertEquals(result.extended.length, 1);
+      assertEquals(result.failed.length, 0);
 
-    // The built-in command/shell should still have its original methods
-    const shellDef = modelRegistry.get("command/shell");
-    assertEquals(shellDef !== undefined, true);
-    assertEquals("execute" in shellDef!.methods, true);
-  });
-});
+      // The built-in command/shell should still have its original methods
+      const shellDef = modelRegistry.get("command/shell");
+      assertEquals(shellDef !== undefined, true);
+      assertEquals("execute" in shellDef!.methods, true);
+    });
+  },
+);
 
-Deno.test("UserModelLoader multiple extensions targeting same type", async () => {
-  const ts = Date.now();
-  const modelCode = `
+bundleTest(
+  "UserModelLoader multiple extensions targeting same type",
+  async () => {
+    const ts = Date.now();
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/multi-ext-${ts}",
@@ -1245,7 +1302,7 @@ export const model = {
   },
 };
 `;
-  const ext1 = `
+    const ext1 = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/multi-ext-${ts}",
@@ -1258,7 +1315,7 @@ export const extension = {
   }],
 };
 `;
-  const ext2 = `
+    const ext2 = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/multi-ext-${ts}",
@@ -1272,29 +1329,32 @@ export const extension = {
 };
 `;
 
-  await withTempModels(
-    { "base.ts": modelCode, "ext_audit.ts": ext1, "ext_verify.ts": ext2 },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "base.ts": modelCode, "ext_audit.ts": ext1, "ext_verify.ts": ext2 },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.loaded.length, 1);
-      assertEquals(result.extended.length, 2);
-      assertEquals(result.failed.length, 0);
+        assertEquals(result.loaded.length, 1);
+        assertEquals(result.extended.length, 2);
+        assertEquals(result.failed.length, 0);
 
-      const modelDef = modelRegistry.get(`@user/multi-ext-${ts}`);
-      assertEquals("write" in modelDef!.methods, true);
-      assertEquals("audit" in modelDef!.methods, true);
-      assertEquals("verify" in modelDef!.methods, true);
-    },
-  );
-});
+        const modelDef = modelRegistry.get(`@user/multi-ext-${ts}`);
+        assertEquals("write" in modelDef!.methods, true);
+        assertEquals("audit" in modelDef!.methods, true);
+        assertEquals("verify" in modelDef!.methods, true);
+      },
+    );
+  },
+);
 
-Deno.test("UserModelLoader two-pass ordering: user model registered before extension targets it", async () => {
-  const ts = Date.now();
-  // Extension file sorts before model file alphabetically,
-  // but two-pass loading should process models first
-  const modelCode = `
+bundleTest(
+  "UserModelLoader two-pass ordering: user model registered before extension targets it",
+  async () => {
+    const ts = Date.now();
+    // Extension file sorts before model file alphabetically,
+    // but two-pass loading should process models first
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/two-pass-${ts}",
@@ -1317,7 +1377,7 @@ export const model = {
   },
 };
 `;
-  const extCode = `
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/two-pass-${ts}",
@@ -1331,27 +1391,30 @@ export const extension = {
 };
 `;
 
-  // "aaa_ext.ts" sorts before "zzz_model.ts" to prove ordering doesn't matter
-  await withTempModels(
-    { "zzz_model.ts": modelCode, "aaa_ext.ts": extCode },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    // "aaa_ext.ts" sorts before "zzz_model.ts" to prove ordering doesn't matter
+    await withTempModels(
+      { "zzz_model.ts": modelCode, "aaa_ext.ts": extCode },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.loaded.length, 1);
-      assertEquals(result.extended.length, 1);
-      assertEquals(result.failed.length, 0);
+        assertEquals(result.loaded.length, 1);
+        assertEquals(result.extended.length, 1);
+        assertEquals(result.failed.length, 0);
 
-      const modelDef = modelRegistry.get(`@user/two-pass-${ts}`);
-      assertEquals("write" in modelDef!.methods, true);
-      assertEquals("audit" in modelDef!.methods, true);
-    },
-  );
-});
+        const modelDef = modelRegistry.get(`@user/two-pass-${ts}`);
+        assertEquals("write" in modelDef!.methods, true);
+        assertEquals("audit" in modelDef!.methods, true);
+      },
+    );
+  },
+);
 
-Deno.test("UserModelLoader extension method execute passes through dataHandles", async () => {
-  const ts = Date.now();
-  const modelCode = `
+bundleTest(
+  "UserModelLoader extension method execute passes through dataHandles",
+  async () => {
+    const ts = Date.now();
+    const modelCode = `
 import { z } from "npm:zod@4";
 export const model = {
   type: "@user/ext-execute-${ts}",
@@ -1374,7 +1437,7 @@ export const model = {
   },
 };
 `;
-  const extCode = `
+    const extCode = `
 import { z } from "npm:zod@4";
 export const extension = {
   type: "@user/ext-execute-${ts}",
@@ -1394,43 +1457,44 @@ export const extension = {
 };
 `;
 
-  await withTempModels(
-    { "base.ts": modelCode, "ext.ts": extCode },
-    async (dir) => {
-      const loader = new UserModelLoader();
-      const result = await loader.loadModels(dir);
+    await withTempModels(
+      { "base.ts": modelCode, "ext.ts": extCode },
+      async (dir) => {
+        const loader = new UserModelLoader();
+        const result = await loader.loadModels(dir);
 
-      assertEquals(result.extended.length, 1);
+        assertEquals(result.extended.length, 1);
 
-      const modelDef = modelRegistry.get(`@user/ext-execute-${ts}`);
-      const { context, getResults } = createTestContext(modelDef!.type);
+        const modelDef = modelRegistry.get(`@user/ext-execute-${ts}`);
+        const { context, getResults } = createTestContext(modelDef!.type);
 
-      const methodResult = await modelDef!.methods.audit.execute(
-        { message: "hello" },
-        context,
-      );
+        const methodResult = await modelDef!.methods.audit.execute(
+          { message: "hello" },
+          context,
+        );
 
-      assertEquals(methodResult.dataHandles !== undefined, true);
-      assertEquals(methodResult.dataHandles!.length, 1);
+        assertEquals(methodResult.dataHandles !== undefined, true);
+        assertEquals(methodResult.dataHandles!.length, 1);
 
-      const handle = methodResult.dataHandles![0];
-      assertEquals(handle.name, "data");
+        const handle = methodResult.dataHandles![0];
+        assertEquals(handle.name, "data");
 
-      // Verify content written via mock writer
-      const results = getResults();
-      assertEquals(results.length, 1);
-      const content = JSON.parse(
-        new TextDecoder().decode(results[0].content),
-      );
-      assertEquals(content.audited, true);
-      assertEquals(content.msg, "hello");
-    },
-  );
-});
+        // Verify content written via mock writer
+        const results = getResults();
+        assertEquals(results.length, 1);
+        const content = JSON.parse(
+          new TextDecoder().decode(results[0].content),
+        );
+        assertEquals(content.audited, true);
+        assertEquals(content.msg, "hello");
+      },
+    );
+  },
+);
 
 // --- resources/files validation tests ---
 
-Deno.test("UserModelLoader registers user-declared resources", async () => {
+bundleTest("UserModelLoader registers user-declared resources", async () => {
   const typeId = `@user/custom-specs-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -1489,7 +1553,7 @@ export const model = {
 
 // --- Namespace validation tests ---
 
-Deno.test("UserModelLoader rejects model without @ prefix", async () => {
+bundleTest("UserModelLoader rejects model without @ prefix", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1525,8 +1589,10 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader rejects model with only namespace segment (@user)", async () => {
-  const modelCode = `
+bundleTest(
+  "UserModelLoader rejects model with only namespace segment (@user)",
+  async () => {
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
@@ -1551,18 +1617,21 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "only_namespace.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "only_namespace.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "at least 2 segments");
-  });
-});
+      assertEquals(result.loaded.length, 0);
+      assertEquals(result.failed.length, 1);
+      assertStringIncludes(result.failed[0].error, "at least 2 segments");
+    });
+  },
+);
 
-Deno.test("UserModelLoader rejects model with only namespace segment (@myorg)", async () => {
-  const modelCode = `
+bundleTest(
+  "UserModelLoader rejects model with only namespace segment (@myorg)",
+  async () => {
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
@@ -1587,19 +1656,22 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "only_myorg.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "only_myorg.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "at least 2 segments");
-  });
-});
+      assertEquals(result.loaded.length, 0);
+      assertEquals(result.failed.length, 1);
+      assertStringIncludes(result.failed[0].error, "at least 2 segments");
+    });
+  },
+);
 
-Deno.test("UserModelLoader accepts model with custom namespace @adam/mymodel", async () => {
-  const typeId = `@adam/mymodel-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader accepts model with custom namespace @adam/mymodel",
+  async () => {
+    const typeId = `@adam/mymodel-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
@@ -1624,21 +1696,24 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "custom_namespace.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "custom_namespace.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
-    assertEquals(result.failed.length, 0);
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.failed.length, 0);
 
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
-  });
-});
+      const modelDef = modelRegistry.get(typeId);
+      assertEquals(modelDef !== undefined, true);
+    });
+  },
+);
 
-Deno.test("UserModelLoader accepts model with custom namespace @stack72/name", async () => {
-  const typeId = `@stack72/my-model-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader accepts model with custom namespace @stack72/name",
+  async () => {
+    const typeId = `@stack72/my-model-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
@@ -1663,21 +1738,24 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "stack72_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "stack72_model.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
-    assertEquals(result.failed.length, 0);
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.failed.length, 0);
 
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
-  });
-});
+      const modelDef = modelRegistry.get(typeId);
+      assertEquals(modelDef !== undefined, true);
+    });
+  },
+);
 
-Deno.test("UserModelLoader accepts model with custom namespace @keeb/name", async () => {
-  const typeId = `@keeb/keyboard-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader accepts model with custom namespace @keeb/name",
+  async () => {
+    const typeId = `@keeb/keyboard-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
@@ -1702,19 +1780,20 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "keeb_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "keeb_model.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
-    assertEquals(result.failed.length, 0);
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.failed.length, 0);
 
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
-  });
-});
+      const modelDef = modelRegistry.get(typeId);
+      assertEquals(modelDef !== undefined, true);
+    });
+  },
+);
 
-Deno.test("UserModelLoader accepts valid @user/name format", async () => {
+bundleTest("UserModelLoader accepts valid @user/name format", async () => {
   const typeId = `@user/valid-model-${Date.now()}`;
   const modelCode = `
 import { z } from "npm:zod@4";
@@ -1753,9 +1832,11 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader accepts valid @user/foo/bar format with 3 segments", async () => {
-  const typeId = `@user/category/model-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader accepts valid @user/foo/bar format with 3 segments",
+  async () => {
+    const typeId = `@user/category/model-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
@@ -1780,16 +1861,17 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "valid_nested.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "valid_nested.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
-    assertEquals(result.failed.length, 0);
-  });
-});
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.failed.length, 0);
+    });
+  },
+);
 
-Deno.test("UserModelLoader rejects reserved namespace swamp/*", async () => {
+bundleTest("UserModelLoader rejects reserved namespace swamp/*", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1825,7 +1907,7 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader rejects reserved namespace si/*", async () => {
+bundleTest("UserModelLoader rejects reserved namespace si/*", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1861,7 +1943,7 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader rejects reserved namespace @swamp/*", async () => {
+bundleTest("UserModelLoader rejects reserved namespace @swamp/*", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1897,7 +1979,7 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader rejects reserved namespace @si/*", async () => {
+bundleTest("UserModelLoader rejects reserved namespace @si/*", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1933,8 +2015,10 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader silently skips library files without model exports", async () => {
-  const validModelCode = `
+bundleTest(
+  "UserModelLoader silently skips library files without model exports",
+  async () => {
+    const validModelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
@@ -1950,7 +2034,7 @@ export const model = {
 };
 `;
 
-  const libCode = `
+    const libCode = `
 // Library file with no model or extension export
 export function sshConnect(host: string) {
   return \`ssh \${host}\`;
@@ -1961,27 +2045,30 @@ export class ProxmoxClient {
 }
 `;
 
-  await withTempModels({
-    "models/server.ts": validModelCode,
-    "lib/ssh.ts": libCode,
-    "lib/proxmox.ts": libCode,
-    "utils/helpers.ts": libCode,
-  }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({
+      "models/server.ts": validModelCode,
+      "lib/ssh.ts": libCode,
+      "lib/proxmox.ts": libCode,
+      "utils/helpers.ts": libCode,
+    }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    // Should load only the valid model
-    assertEquals(result.loaded.length, 1);
-    assertEquals(result.loaded[0], join("models", "server.ts"));
+      // Should load only the valid model
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded[0], join("models", "server.ts"));
 
-    // Library files should be silently skipped (not in failed list)
-    assertEquals(result.failed.length, 0);
-  });
-});
+      // Library files should be silently skipped (not in failed list)
+      assertEquals(result.failed.length, 0);
+    });
+  },
+);
 
-Deno.test("UserModelLoader loads model with TypeScript-specific syntax", async () => {
-  const typeId = `@user/ts-syntax-${Date.now()}`;
-  const modelCode = `
+bundleTest(
+  "UserModelLoader loads model with TypeScript-specific syntax",
+  async () => {
+    const typeId = `@user/ts-syntax-${Date.now()}`;
+    const modelCode = `
 import { z } from "npm:zod@4";
 
 // TypeScript interface
@@ -2035,30 +2122,35 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "ts_syntax_model.ts": modelCode }, async (dir) => {
-    const loader = new UserModelLoader();
-    const result = await loader.loadModels(dir);
+    await withTempModels({ "ts_syntax_model.ts": modelCode }, async (dir) => {
+      const loader = new UserModelLoader();
+      const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 1);
-    assertEquals(result.loaded[0], "ts_syntax_model.ts");
-    assertEquals(result.failed.length, 0);
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded[0], "ts_syntax_model.ts");
+      assertEquals(result.failed.length, 0);
 
-    // Verify the model actually works by executing it
-    const modelDef = modelRegistry.get(typeId);
-    assertEquals(modelDef !== undefined, true);
+      // Verify the model actually works by executing it
+      const modelDef = modelRegistry.get(typeId);
+      assertEquals(modelDef !== undefined, true);
 
-    const { context, getResults } = createTestContext(modelDef!.type);
-    const methodResult = await modelDef!.methods.run.execute(
-      { message: "hello" },
-      context,
-    );
+      const { context, getResults } = createTestContext(modelDef!.type);
+      const methodResult = await modelDef!.methods.run.execute(
+        { message: "hello" },
+        context,
+      );
 
-    assertEquals(methodResult.dataHandles !== undefined, true);
-    assertEquals(methodResult.dataHandles!.length, 1);
+      assertEquals(methodResult.dataHandles !== undefined, true);
+      assertEquals(methodResult.dataHandles!.length, 1);
 
-    const results = getResults();
-    const content = JSON.parse(new TextDecoder().decode(results[0].content));
-    assertEquals(content.name, "@user/ts-test");
-    assertEquals(content.retries, 3);
-  });
+      const results = getResults();
+      const content = JSON.parse(new TextDecoder().decode(results[0].content));
+      assertEquals(content.name, "@user/ts-test");
+      assertEquals(content.retries, 3);
+    });
+  },
+);
+
+bundleTest("UserModelLoader cleanup: stop esbuild worker", () => {
+  stopBundler();
 });
