@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -148,4 +153,186 @@ Deno.test("concurrent save returns unique versions with distinct content", async
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// ============================================================================
+// Sync read methods
+// ============================================================================
+
+function makeJsonData(name: string): Data {
+  return Data.create({
+    name,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 100,
+    tags: { type: "resource" },
+    ownerDefinition: owner,
+  });
+}
+
+Deno.test("getLatestVersionSync reads latest symlink", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const data = makeJsonData("sync-latest");
+
+    await repo.save(
+      testType,
+      "model-1",
+      data,
+      new TextEncoder().encode('{"v":1}'),
+    );
+    await repo.save(
+      testType,
+      "model-1",
+      data,
+      new TextEncoder().encode('{"v":2}'),
+    );
+
+    const latest = repo.getLatestVersionSync(
+      testType,
+      "model-1",
+      "sync-latest",
+    );
+    assertEquals(latest, 2);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("getLatestVersionSync returns null for missing data", () => {
+  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const result = repo.getLatestVersionSync(
+    testType,
+    "missing-model",
+    "missing-data",
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("findByNameSync reads metadata", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const data = makeJsonData("sync-find");
+
+    await repo.save(
+      testType,
+      "model-1",
+      data,
+      new TextEncoder().encode('{"key":"value"}'),
+    );
+
+    const result = repo.findByNameSync(testType, "model-1", "sync-find");
+    assertExists(result);
+    assertEquals(result.name, "sync-find");
+    assertEquals(result.contentType, "application/json");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("findByNameSync returns null for missing data", () => {
+  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const result = repo.findByNameSync(
+    testType,
+    "missing-model",
+    "missing-data",
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("listVersionsSync returns sorted version numbers", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const data = makeJsonData("sync-list");
+
+    for (let i = 0; i < 3; i++) {
+      await repo.save(
+        testType,
+        "model-1",
+        data,
+        new TextEncoder().encode(`{"i":${i}}`),
+      );
+    }
+
+    const versions = repo.listVersionsSync(testType, "model-1", "sync-list");
+    assertEquals(versions, [1, 2, 3]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("listVersionsSync returns empty for missing data", () => {
+  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const versions = repo.listVersionsSync(
+    testType,
+    "missing-model",
+    "missing-data",
+  );
+  assertEquals(versions, []);
+});
+
+Deno.test("getContentSync reads content bytes", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const data = makeJsonData("sync-content");
+    const content = new TextEncoder().encode('{"hello":"world"}');
+
+    await repo.save(testType, "model-1", data, content);
+
+    const result = repo.getContentSync(testType, "model-1", "sync-content");
+    assertExists(result);
+    assertEquals(new TextDecoder().decode(result), '{"hello":"world"}');
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("getContentSync returns null for missing content", () => {
+  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const result = repo.getContentSync(
+    testType,
+    "missing-model",
+    "missing-data",
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("findAllForModelSync returns all data items", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+
+    const data1 = makeJsonData("item-a");
+    const data2 = makeJsonData("item-b");
+
+    await repo.save(
+      testType,
+      "model-1",
+      data1,
+      new TextEncoder().encode('{"a":1}'),
+    );
+    await repo.save(
+      testType,
+      "model-1",
+      data2,
+      new TextEncoder().encode('{"b":2}'),
+    );
+
+    const results = repo.findAllForModelSync(testType, "model-1");
+    assertEquals(results.length, 2);
+    const names = results.map((d) => d.name).sort();
+    assertEquals(names, ["item-a", "item-b"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("findAllForModelSync returns empty for missing model", () => {
+  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const results = repo.findAllForModelSync(testType, "missing-model");
+  assertEquals(results, []);
 });

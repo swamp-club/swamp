@@ -299,6 +299,77 @@ export interface UnifiedDataRepository {
     type: ModelType,
     modelId: string,
   ): Promise<GarbageCollectionResult>;
+
+  // --- Sync read methods (for CEL expression evaluation) ---
+
+  /**
+   * Gets the latest version number synchronously.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param dataName - The data name
+   * @returns The latest version number, or null if not found
+   */
+  getLatestVersionSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): number | null;
+
+  /**
+   * Finds data by name synchronously, optionally for a specific version.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param dataName - The data name
+   * @param version - Optional version (defaults to latest)
+   * @returns The data if found, or null
+   */
+  findByNameSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version?: number,
+  ): Data | null;
+
+  /**
+   * Lists all versions for a data name synchronously.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param dataName - The data name
+   * @returns Array of version numbers in ascending order
+   */
+  listVersionsSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): number[];
+
+  /**
+   * Gets the full content of data synchronously.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param dataName - The data name
+   * @param version - Optional version (defaults to latest)
+   * @returns The content or null if not found
+   */
+  getContentSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version?: number,
+  ): Uint8Array | null;
+
+  /**
+   * Finds all data for a model synchronously.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @returns Array of data (latest version of each)
+   */
+  findAllForModelSync(type: ModelType, modelId: string): Data[];
 }
 
 /**
@@ -866,6 +937,137 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return join(this.getPath(type, modelId, dataName, version), "raw");
   }
 
+  // --- Sync read methods ---
+
+  getLatestVersionSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): number | null {
+    const latestPath = join(
+      this.getDataNameDir(type, modelId, dataName),
+      "latest",
+    );
+    try {
+      const linkTarget = Deno.readLinkSync(latestPath);
+      const version = parseInt(linkTarget.replace(/\/$/, ""), 10);
+      return isNaN(version) ? null : version;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        // Fall back to scanning versions
+        const versions = this.listVersionsSync(type, modelId, dataName);
+        return versions.length > 0 ? Math.max(...versions) : null;
+      }
+      throw error;
+    }
+  }
+
+  findByNameSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version?: number,
+  ): Data | null {
+    const versionToRead = version ??
+      this.getLatestVersionSync(type, modelId, dataName);
+    if (versionToRead === null) return null;
+
+    const metadataPath = this.getMetadataPath(
+      type,
+      modelId,
+      dataName,
+      versionToRead,
+    );
+    try {
+      const content = Deno.readTextFileSync(metadataPath);
+      const metadata = parseYaml(content) as DataMetadata;
+      return Data.fromData(metadata);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  listVersionsSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): number[] {
+    const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    const versions: number[] = [];
+
+    try {
+      for (const entry of Deno.readDirSync(dataNameDir)) {
+        if (!entry.isDirectory) continue;
+        if (entry.name === "latest") continue;
+
+        const version = parseInt(entry.name, 10);
+        if (!isNaN(version) && version > 0) {
+          versions.push(version);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    return versions.sort((a, b) => a - b);
+  }
+
+  getContentSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version?: number,
+  ): Uint8Array | null {
+    const versionToRead = version ??
+      this.getLatestVersionSync(type, modelId, dataName);
+    if (versionToRead === null) return null;
+
+    const contentPath = this.getContentPath(
+      type,
+      modelId,
+      dataName,
+      versionToRead,
+    );
+    try {
+      return Deno.readFileSync(contentPath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  findAllForModelSync(type: ModelType, modelId: string): Data[] {
+    const dataDir = this.getModelDataDir(type, modelId);
+    const results: Data[] = [];
+
+    try {
+      for (const entry of Deno.readDirSync(dataDir)) {
+        if (!entry.isDirectory) continue;
+        const dataName = entry.name;
+
+        const data = this.findByNameSync(type, modelId, dataName);
+        if (data) {
+          results.push(data);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    return results;
+  }
+
   async collectGarbage(
     type: ModelType,
     modelId: string,
@@ -946,7 +1148,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return result;
   }
 
-  private getDataNameDir(
+  getDataNameDir(
     type: ModelType,
     modelId: string,
     dataName: string,
@@ -1009,7 +1211,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
-  private getMetadataPath(
+  getMetadataPath(
     type: ModelType,
     modelId: string,
     dataName: string,

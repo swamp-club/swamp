@@ -56,6 +56,11 @@ function createMockRepo(): UnifiedDataRepository {
       Promise.resolve({ version: 1, contentPath: "/tmp/mock" }),
     finalizeVersion: () =>
       Promise.resolve({ size: 0, checksum: "mock-checksum" }),
+    getLatestVersionSync: () => null,
+    findByNameSync: () => null,
+    listVersionsSync: () => [],
+    getContentSync: () => null,
+    findAllForModelSync: () => [],
   };
 }
 

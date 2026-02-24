@@ -11,21 +11,21 @@
 
 ## CEL Expression Quick Reference
 
-| Expression Pattern                                           | Description                                | Example Value                 |
-| ------------------------------------------------------------ | ------------------------------------------ | ----------------------------- |
-| `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource reference (PREFERRED) | VPC ID, subnet CIDR, etc.     |
-| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout                       | AMI ID from aws cli command   |
-| `model.<name>.file.<spec>.<instance>.path`                   | File path from another model               | `/path/to/file.txt`           |
-| `self.name`                                                  | Current model's name                       | `my-vpc`                      |
-| `self.version`                                               | Current model's version                    | `1`                           |
-| `self.globalArguments.<field>`                               | This model's own global argument           | CIDR block, region, etc.      |
-| `inputs.<name>`                                              | Runtime input value                        | `production`, `true`, etc.    |
-| `env.<VAR_NAME>`                                             | Environment variable                       | AWS region, credentials       |
-| `vault.get("<vault>", "<key>")`                              | Vault secret                               | API key, password             |
-| `data.version("<model>", "<name>", <version>)`               | Specific version of data                   | Rollback to version 1         |
-| `data.latest("<model>", "<name>")`                           | Latest version snapshot                    | Workflow-start snapshot       |
-| `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec             | All subnets from scanner      |
-| `data.findByTag("<key>", "<value>")`                         | Find data by tag                           | All resources tagged env=prod |
+| Expression Pattern                                           | Description                               | Example Value                 |
+| ------------------------------------------------------------ | ----------------------------------------- | ----------------------------- |
+| `data.latest("<model>", "<name>").attributes.<field>`        | Latest data (PREFERRED, sync disk read)   | VPC ID, subnet CIDR, etc.     |
+| `data.version("<model>", "<name>", N).attributes.<field>`    | Specific version of data                  | Rollback to version 1         |
+| `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec            | All subnets from scanner      |
+| `data.findByTag("<key>", "<value>")`                         | Find data by tag                          | All resources tagged env=prod |
+| `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource (DEPRECATED)         | VPC ID, subnet CIDR, etc.     |
+| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout (DEPRECATED)         | AMI ID from aws cli command   |
+| `model.<name>.file.<spec>.<instance>.path`                   | File path from another model (DEPRECATED) | `/path/to/file.txt`           |
+| `self.name`                                                  | Current model's name                      | `my-vpc`                      |
+| `self.version`                                               | Current model's version                   | `1`                           |
+| `self.globalArguments.<field>`                               | This model's own global argument          | CIDR block, region, etc.      |
+| `inputs.<name>`                                              | Runtime input value                       | `production`, `true`, etc.    |
+| `env.<VAR_NAME>`                                             | Environment variable                      | AWS region, credentials       |
+| `vault.get("<vault>", "<key>")`                              | Vault secret                              | API key, password             |
 
 ### CEL Path Patterns by Model Type
 
@@ -205,42 +205,44 @@ dryRun: true
 
 ## Cross-Model Data References
 
-### Preferred: model.* Expressions
+### Preferred: data.latest() Expressions
 
-Always use `model.*` expressions for referencing other models' data:
+Always use `data.latest()` for referencing other models' data. It reads directly
+from disk on every call, so it always reflects the latest state:
 
 ```yaml
-# CORRECT: model.* expression
-globalArguments:
-  vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
-
-# AVOID: data.latest() for cross-model references
+# CORRECT: data.latest() — always reads fresh data from disk
 globalArguments:
   vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
+
+# DEPRECATED: model.*.resource — will be removed in a future release
+globalArguments:
+  vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
 ```
 
-### Why model.* is Preferred
+### Why data.latest() is Preferred
 
-| Feature                   | `model.*`        | `data.latest()` |
-| ------------------------- | ---------------- | --------------- |
-| In-workflow updates       | Yes (live)       | No (snapshot)   |
-| Clear dependency tracking | Yes              | Yes             |
-| Type validation           | Yes (via schema) | No              |
-| Expression readability    | More explicit    | Less explicit   |
+| Feature                   | `data.latest()` | `model.*.resource` |
+| ------------------------- | --------------- | ------------------ |
+| Always fresh (no cache)   | Yes (sync disk) | Yes (eager load)   |
+| Supports vary dimensions  | Yes             | No                 |
+| Clear dependency tracking | Yes             | Yes                |
+| Future-proof              | Yes (canonical) | No (deprecated)    |
 
-### When to Use data.latest()
-
-Only use `data.latest()` when you specifically need:
-
-1. **Snapshot semantics** — value frozen at workflow start
-2. **Dynamic model names** — building model name from variables
+### Other data.* Functions
 
 ```yaml
-# Rollback scenario: get the previous version
+# Specific version (rollback scenario)
 previousConfig: ${{ data.version("app-config", "config", 1).attributes.setting }}
 
-# Dynamic model name (rare)
+# Dynamic model name
 dynamicValue: ${{ data.latest(inputs.modelName, "state").attributes.value }}
+
+# Find all instances of a spec
+allSubnets: ${{ data.findBySpec("scanner", "subnet") }}
+
+# Find by tag
+prodResources: ${{ data.findByTag("env", "prod") }}
 ```
 
 ### Self-References

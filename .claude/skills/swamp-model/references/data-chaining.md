@@ -3,7 +3,11 @@
 The `command/shell` model enables data chaining by running shell commands and
 capturing output for use in other models. For JSON output, use `jq` in the
 command to extract specific fields, then access the result via
-`resource.result.result.attributes.stdout`.
+`data.latest("model-name", "result").attributes.stdout`.
+
+> **Note:** `data.latest()` is the preferred accessor for all cross-model data.
+> The `model.*.resource` pattern is deprecated and will be removed in a future
+> release. Existing examples below show both patterns for reference.
 
 ## command/shell Data Attributes
 
