@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import { join, resolve } from "@std/path";
+import { bundleExtension } from "./bundle.ts";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
 import {
@@ -243,7 +244,13 @@ export class UserModelLoader {
     for (const file of files) {
       try {
         const absolutePath = resolve(modelsDir, file);
-        const module = await import(`file://${absolutePath}`);
+        const js = await bundleExtension(absolutePath);
+        const encoded = btoa(
+          String.fromCharCode(...new TextEncoder().encode(js)),
+        );
+        const module = await import(
+          `data:application/javascript;base64,${encoded}`
+        );
 
         if (module.model) {
           modelFiles.push({ file, module });
