@@ -178,8 +178,9 @@ swamp data gc --dry-run --json
 
 **Output shows:**
 
-- `expired` — data items past their lifetime
-- `versions` — old versions to prune based on GC setting
+- `expiredDataCount` — count of expired data items
+- `expiredData` — data items past their lifetime (with type, modelId, dataName,
+  reason)
 
 ### Configure Version Retention
 

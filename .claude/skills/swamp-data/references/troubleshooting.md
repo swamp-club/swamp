@@ -119,7 +119,7 @@ swamp data versions <model-name> <data-name> --json
 
 # Check GC settings
 swamp data get <model-name> <data-name> --json
-# Look at gcSetting field
+# Look at garbageCollection field
 ```
 
 ### "GC deleted data I needed"

@@ -13,13 +13,14 @@ machine-readable output.
 | Task                   | Command                                        |
 | ---------------------- | ---------------------------------------------- |
 | Search all data        | `swamp data search --json`                     |
-| Search with filters    | `swamp data search --type resource --since 1d` |
+| Search with filters    | `swamp data search --type output --since 1d`   |
 | Search by workflow     | `swamp data search --workflow my-workflow`     |
 | Search by model        | `swamp data search --model my-model`           |
 | Free-text search       | `swamp data search vpc --json`                 |
 | List model data        | `swamp data list <model> --json`               |
 | List workflow data     | `swamp data list --workflow <name> --json`     |
 | Get specific data      | `swamp data get <model> <name> --json`         |
+| Get metadata only      | `swamp data get <model> <name> --no-content`   |
 | Get data via workflow  | `swamp data get --workflow <name> <data_name>` |
 | View version history   | `swamp data versions <model> <name> --json`    |
 | Run garbage collection | `swamp data gc --json`                         |
@@ -119,7 +120,7 @@ swamp data search --limit 10 --json
 
 | Filter           | Description                                             |
 | ---------------- | ------------------------------------------------------- |
-| `--type`         | Data type tag (log, file, resource, data)               |
+| `--type`         | Data type tag (log, file, resource, data, output)       |
 | `--lifetime`     | Lifetime (ephemeral, infinite, job, workflow, duration) |
 | `--owner-type`   | Owner type (model-method, workflow-step, manual)        |
 | `--workflow`     | Workflow name tag                                       |
@@ -144,19 +145,42 @@ swamp data list my-model --json
 
 ```json
 {
-  "model": "my-model",
   "modelId": "abc-123",
-  "data": {
-    "log": [
-      { "name": "execution-log", "versions": 5, "latestVersion": 5 }
-    ],
-    "resource": [
-      { "name": "state", "versions": 3, "latestVersion": 3 }
-    ],
-    "data": [
-      { "name": "output", "versions": 2, "latestVersion": 2 }
-    ]
-  }
+  "modelName": "my-model",
+  "modelType": "my-type",
+  "groups": [
+    {
+      "type": "log",
+      "items": [
+        {
+          "id": "uuid",
+          "name": "execution-log",
+          "version": 5,
+          "contentType": "text/plain",
+          "type": "log",
+          "streaming": false,
+          "size": 1024,
+          "createdAt": "2025-01-15T10:30:00Z"
+        }
+      ]
+    },
+    {
+      "type": "resource",
+      "items": [
+        {
+          "id": "uuid",
+          "name": "state",
+          "version": 3,
+          "contentType": "application/json",
+          "type": "resource",
+          "streaming": false,
+          "size": 512,
+          "createdAt": "2025-01-15T10:30:00Z"
+        }
+      ]
+    }
+  ],
+  "total": 2
 }
 ```
 
@@ -166,20 +190,36 @@ Retrieve the latest version of a specific data item.
 
 ```bash
 swamp data get my-model execution-log --json
+
+# Metadata only (no content)
+swamp data get my-model execution-log --no-content --json
 ```
 
 **Output shape:**
 
 ```json
 {
-  "model": "my-model",
+  "id": "uuid",
   "name": "execution-log",
+  "modelId": "abc-123",
+  "modelName": "my-model",
+  "modelType": "my-type",
   "version": 5,
-  "lifetime": "7d",
   "contentType": "text/plain",
+  "lifetime": "7d",
+  "garbageCollection": "infinite",
+  "streaming": false,
   "tags": { "type": "resource" },
+  "ownerDefinition": {
+    "ownerType": "model-method",
+    "ownerRef": "my-model:create",
+    "definitionHash": "abc123..."
+  },
   "createdAt": "2025-01-15T10:30:00Z",
-  "path": ".swamp/data/my-type/abc-123/execution-log/5/raw"
+  "size": 1024,
+  "checksum": "sha256:...",
+  "contentPath": ".swamp/data/my-type/abc-123/execution-log/5/raw",
+  "content": "..."
 }
 ```
 
@@ -213,15 +253,34 @@ swamp data versions my-model state --json
 
 ```json
 {
-  "model": "my-model",
-  "name": "state",
+  "dataName": "state",
+  "modelId": "abc-123",
+  "modelName": "my-model",
+  "modelType": "my-type",
   "versions": [
-    { "version": 3, "createdAt": "2025-01-15T10:30:00Z", "size": 1024 },
-    { "version": 2, "createdAt": "2025-01-14T09:00:00Z", "size": 980 },
-    { "version": 1, "createdAt": "2025-01-13T08:00:00Z", "size": 512 }
+    {
+      "version": 3,
+      "createdAt": "2025-01-15T10:30:00Z",
+      "size": 1024,
+      "checksum": "sha256:...",
+      "isLatest": true
+    },
+    {
+      "version": 2,
+      "createdAt": "2025-01-14T09:00:00Z",
+      "size": 980,
+      "checksum": "sha256:...",
+      "isLatest": false
+    },
+    {
+      "version": 1,
+      "createdAt": "2025-01-13T08:00:00Z",
+      "size": 512,
+      "checksum": "sha256:...",
+      "isLatest": false
+    }
   ],
-  "gcSetting": 5,
-  "lifetime": "infinite"
+  "total": 3
 }
 ```
 
@@ -239,25 +298,21 @@ swamp data gc --dry-run --json
 
 ```json
 {
-  "dryRun": true,
-  "expired": [
-    { "model": "temp-model", "name": "cache", "reason": "lifetime:ephemeral" },
-    { "model": "old-model", "name": "log", "reason": "lifetime:1h" }
-  ],
-  "versions": [
+  "expiredDataCount": 2,
+  "expiredData": [
     {
-      "model": "my-model",
-      "name": "state",
-      "pruned": [1, 2],
-      "kept": [3, 4, 5],
-      "reason": "gc:3"
+      "type": "my-type",
+      "modelId": "abc-123",
+      "dataName": "cache",
+      "reason": "lifetime:ephemeral"
+    },
+    {
+      "type": "other-type",
+      "modelId": "def-456",
+      "dataName": "log",
+      "reason": "lifetime:1h"
     }
-  ],
-  "summary": {
-    "dataItemsToDelete": 2,
-    "versionsToDelete": 2,
-    "spaceToFree": "15.2 MB"
-  }
+  ]
 }
 ```
 
@@ -272,12 +327,11 @@ swamp data gc -f --json  # Skip confirmation prompt
 
 ```json
 {
+  "dataEntriesExpired": 2,
+  "versionsDeleted": 2,
+  "bytesReclaimed": 15900000,
   "dryRun": false,
-  "deleted": {
-    "dataItems": 2,
-    "versions": 2,
-    "spaceFreed": "15.2 MB"
-  }
+  "expiredEntries": [...]
 }
 ```
 
@@ -376,8 +430,8 @@ Each data item tracks its owner through the `ownerDefinition` field:
 
 | Field            | Description                                  |
 | ---------------- | -------------------------------------------- |
-| `type`           | `model-method`, `workflow-step`, or `manual` |
-| `ref`            | Reference to the creating entity             |
+| `ownerType`      | `model-method`, `workflow-step`, or `manual` |
+| `ownerRef`       | Reference to the creating entity             |
 | `definitionHash` | Hash of the definition at creation time      |
 | `workflowId`     | Set when created during workflow execution   |
 | `workflowRunId`  | Specific run that created this data          |
@@ -405,8 +459,8 @@ swamp data get my-model state --json
   "name": "state",
   "version": 3,
   "ownerDefinition": {
-    "type": "model-method",
-    "ref": "my-model:create",
+    "ownerType": "model-method",
+    "ownerRef": "my-model:create",
     "definitionHash": "abc123..."
   }
 }
