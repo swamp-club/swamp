@@ -33,6 +33,7 @@ import { issueCommand } from "./commands/issue.ts";
 import { telemetryCommand } from "./commands/telemetry_stats.ts";
 import { updateCommand } from "./commands/update.ts";
 import { sourceCommand } from "./commands/source.ts";
+import { authCommand } from "./commands/auth.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { type GlobalOptions, isStdinTty } from "./context.ts";
 import {
@@ -312,7 +313,8 @@ export async function runCli(args: string[]): Promise<void> {
     .command("update", updateCommand)
     .command("source", sourceCommand)
     .command("completions", completionCommand)
-    .command("issue", issueCommand);
+    .command("issue", issueCommand)
+    .command("auth", authCommand);
 
   try {
     await cli.parse(args);
