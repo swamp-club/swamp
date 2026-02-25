@@ -153,7 +153,10 @@ export const vaultEditCommand = new Command()
           `Vault configuration file not found at: ${filePath}`,
         );
       }
-      throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `Failed to access vault configuration file: ${message}`,
+      );
     }
 
     ctx.logger.debug`Opening file: ${filePath}`;

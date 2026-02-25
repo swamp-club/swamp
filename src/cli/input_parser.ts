@@ -19,6 +19,7 @@
 
 import { parse as parseYaml } from "@std/yaml";
 import type { InputsSchema } from "../domain/definitions/definition.ts";
+import { UserError } from "../domain/errors.ts";
 
 /**
  * Result of parsing inputs.
@@ -76,11 +77,14 @@ async function resolveFileValue(
     return await Deno.readTextFile(resolvedPath);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      throw new Error(
+      throw new UserError(
         `Input file not found for key "${key}": ${resolvedPath}`,
       );
     }
-    throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new UserError(
+      `Failed to read input file for key "${key}": ${message}`,
+    );
   }
 }
 
@@ -100,14 +104,14 @@ export async function parseKeyValueInputs(
   for (const entry of entries) {
     const eqIndex = entry.indexOf("=");
     if (eqIndex === -1) {
-      throw new Error(
+      throw new UserError(
         `Invalid input format: "${entry}". Expected key=value format.`,
       );
     }
 
     const key = entry.slice(0, eqIndex);
     if (key === "") {
-      throw new Error(`Invalid input: empty key in "${entry}".`);
+      throw new UserError(`Invalid input: empty key in "${entry}".`);
     }
 
     let value: string = entry.slice(eqIndex + 1);
@@ -225,14 +229,15 @@ async function parseInputFile(
     if (
       typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
     ) {
-      throw new Error("Input file must contain a YAML object");
+      throw new UserError("Input file must contain a YAML object");
     }
     return parsed as Record<string, unknown>;
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      throw new Error(`Input file not found: ${inputFile}`);
+      throw new UserError(`Input file not found: ${inputFile}`);
     }
-    throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new UserError(`Failed to read input file: ${message}`);
   }
 }
 
@@ -263,7 +268,7 @@ export async function parseInputs(options: {
       if (
         typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
       ) {
-        throw new Error("Input must be a JSON object");
+        throw new UserError("Input must be a JSON object");
       }
       return {
         inputs: parsed as Record<string, unknown>,
@@ -271,9 +276,10 @@ export async function parseInputs(options: {
       };
     } catch (error) {
       if (error instanceof SyntaxError) {
-        throw new Error(`Invalid JSON in --input: ${error.message}`);
+        throw new UserError(`Invalid JSON in --input: ${error.message}`);
       }
-      throw error;
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new UserError(`Invalid input: ${msg}`);
     }
   }
 

@@ -146,7 +146,7 @@ export const modelMethodRunCommand = new Command()
           const errorMessages = validationResult.errors
             .map((e) => `  ${e.message}`)
             .join("\n");
-          throw new Error(`Input validation failed:\n${errorMessages}`);
+          throw new UserError(`Input validation failed:\n${errorMessages}`);
         }
         // Use inputs with defaults applied
         Object.assign(inputs, inputsWithDefaults);

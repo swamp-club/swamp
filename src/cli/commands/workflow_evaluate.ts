@@ -28,6 +28,7 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
+import { UserError } from "../../domain/errors.ts";
 import { containsRuntimeExpression } from "../../domain/expressions/expression_evaluation_service.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
@@ -124,7 +125,7 @@ export const workflowEvaluateCommand = new Command()
         await workflowRepo.findById(createWorkflowId(workflowIdOrName));
 
       if (!workflow) {
-        throw new Error(`Workflow not found: ${workflowIdOrName}`);
+        throw new UserError(`Workflow not found: ${workflowIdOrName}`);
       }
 
       // Validate inputs against workflow schema if provided
@@ -142,7 +143,7 @@ export const workflowEvaluateCommand = new Command()
           const errorMessages = validationResult.errors
             .map((e) => `  ${e.message}`)
             .join("\n");
-          throw new Error(`Input validation failed:\n${errorMessages}`);
+          throw new UserError(`Input validation failed:\n${errorMessages}`);
         }
         // Use inputs with defaults applied
         Object.assign(inputs, inputsWithDefaults);

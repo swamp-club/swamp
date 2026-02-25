@@ -102,7 +102,8 @@ async function browserFlow(serverUrl: string): Promise<string> {
     if (err instanceof UserError) {
       console.log(err.message);
     } else {
-      throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new UserError(`Failed to open browser: ${message}`);
     }
   }
 
