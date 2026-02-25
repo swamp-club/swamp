@@ -32,7 +32,7 @@ export interface RepoInitData {
   skillsCopied: string[];
   instructionsFileCreated: boolean;
   settingsCreated: boolean;
-  gitignoreCreated: boolean;
+  gitignoreAction: string;
   tool: string;
 }
 
@@ -46,7 +46,7 @@ export interface RepoUpgradeData {
   upgradedAt: string;
   skillsUpdated: string[];
   settingsUpdated: boolean;
-  gitignoreCreated: boolean;
+  gitignoreAction: string;
   tool: string;
 }
 
