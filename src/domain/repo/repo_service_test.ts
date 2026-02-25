@@ -510,7 +510,7 @@ Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rule
 
     assertEquals(result.tool, "cursor");
     assertEquals(result.instructionsFileCreated, true);
-    assertEquals(result.settingsCreated, false);
+    assertEquals(result.settingsCreated, true);
     assertEquals(result.gitignoreAction, "skipped");
 
     // Check skills copied to .cursor/skills/
@@ -524,6 +524,14 @@ Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rule
     assertStringIncludes(content, "alwaysApply: true");
     assertStringIncludes(content, "swamp");
     assertStringIncludes(content, "## Skills");
+
+    // Check .cursor/hooks.json was created
+    const hooksPath = join(tempDir, ".cursor", "hooks.json");
+    const hooksContent = await Deno.readTextFile(hooksPath);
+    assertStringIncludes(
+      hooksContent,
+      "swamp audit record --from-hook --tool cursor",
+    );
 
     // Check no .claude/ settings created
     const claudeSettingsPath = join(
@@ -551,7 +559,7 @@ Deno.test("RepoService.init with opencode creates .agents/skills/ and AGENTS.md"
 
     assertEquals(result.tool, "opencode");
     assertEquals(result.instructionsFileCreated, true);
-    assertEquals(result.settingsCreated, false);
+    assertEquals(result.settingsCreated, true);
     assertEquals(result.gitignoreAction, "skipped");
 
     // Check skills copied to .agents/skills/
@@ -564,6 +572,13 @@ Deno.test("RepoService.init with opencode creates .agents/skills/ and AGENTS.md"
     const content = await Deno.readTextFile(agentsMdPath);
     assertStringIncludes(content, "swamp");
     assertStringIncludes(content, "## Skills");
+
+    // Check .opencode/plugins/swamp-audit.ts created
+    const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
+    const pluginContent = await Deno.readTextFile(pluginPath);
+    assertStringIncludes(pluginContent, "--from-hook");
+    assertStringIncludes(pluginContent, "--tool");
+    assertStringIncludes(pluginContent, "opencode");
   });
 });
 
@@ -1252,5 +1267,202 @@ Deno.test("RepoService.init kiro gitignore contains .kiro/skills/ when opted in"
     assertStringIncludes(content, ".kiro/skills/");
     assertStringIncludes(content, "# Kiro skills (managed by swamp)");
     assertStringIncludes(content, ".swamp/telemetry/");
+  });
+});
+
+// Cursor audit hook tests
+
+Deno.test("RepoService.init with cursor creates .cursor/hooks.json", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { tool: "cursor" });
+
+    assertEquals(result.tool, "cursor");
+    assertEquals(result.settingsCreated, true);
+
+    const hooksPath = join(tempDir, ".cursor", "hooks.json");
+    const content = await Deno.readTextFile(hooksPath);
+    const hooks = JSON.parse(content);
+    assertEquals(hooks.version, 1);
+    assertStringIncludes(
+      JSON.stringify(hooks.hooks.postToolUse),
+      "swamp audit record --from-hook --tool cursor",
+    );
+    assertStringIncludes(
+      JSON.stringify(hooks.hooks.postToolUseFailure),
+      "swamp audit record --from-hook --tool cursor",
+    );
+  });
+});
+
+Deno.test("RepoService.init with cursor force reinit merges hooks", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // First init creates hooks
+    await service.init(repoPath, { tool: "cursor" });
+
+    // Add a custom hook to existing file
+    const hooksPath = join(tempDir, ".cursor", "hooks.json");
+    const existing = JSON.parse(await Deno.readTextFile(hooksPath));
+    existing.hooks.postToolUse.push({ command: "my-custom-hook" });
+    await Deno.writeTextFile(hooksPath, JSON.stringify(existing, null, 2));
+
+    // Force reinit should merge, not overwrite
+    await service.init(repoPath, { tool: "cursor", force: true });
+
+    const content = JSON.parse(await Deno.readTextFile(hooksPath));
+    // Both our hook and the custom hook should be present
+    assertEquals(content.hooks.postToolUse.length, 2);
+    assertStringIncludes(
+      JSON.stringify(content.hooks.postToolUse),
+      "my-custom-hook",
+    );
+    assertStringIncludes(
+      JSON.stringify(content.hooks.postToolUse),
+      "swamp audit record --from-hook --tool cursor",
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade with cursor updates hooks", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "cursor" });
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "cursor" });
+
+    assertEquals(result.tool, "cursor");
+
+    const hooksPath = join(tempDir, ".cursor", "hooks.json");
+    const content = await Deno.readTextFile(hooksPath);
+    const hooks = JSON.parse(content);
+    assertStringIncludes(
+      JSON.stringify(hooks.hooks.postToolUse),
+      "swamp audit record --from-hook --tool cursor",
+    );
+  });
+});
+
+// Kiro audit hook tests
+
+Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.json", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { tool: "kiro" });
+
+    assertEquals(result.settingsCreated, true);
+
+    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
+    const content = await Deno.readTextFile(hookPath);
+    const hook = JSON.parse(content);
+    assertEquals(hook.name, "Swamp Audit");
+    assertEquals(hook.when.type, "postToolUse");
+    assertEquals(hook.then.type, "runCommand");
+    assertStringIncludes(
+      hook.then.command,
+      "swamp audit record --from-hook --tool kiro",
+    );
+
+    // Also verify .vscode/settings.local.json was created
+    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+    const settingsContent = await Deno.readTextFile(settingsPath);
+    const settings = JSON.parse(settingsContent);
+    assertStringIncludes(
+      JSON.stringify(settings["kiroAgent.trustedCommands"]),
+      "swamp *",
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "kiro" });
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "kiro" });
+
+    assertEquals(result.tool, "kiro");
+
+    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
+    const content = await Deno.readTextFile(hookPath);
+    const hook = JSON.parse(content);
+    assertStringIncludes(
+      hook.then.command,
+      "swamp audit record --from-hook --tool kiro",
+    );
+  });
+});
+
+// OpenCode audit plugin tests
+
+Deno.test("RepoService.init with opencode creates .opencode/plugins/swamp-audit.ts", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { tool: "opencode" });
+
+    assertEquals(result.tool, "opencode");
+    assertEquals(result.settingsCreated, true);
+
+    const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
+    const content = await Deno.readTextFile(pluginPath);
+    assertStringIncludes(content, "SwampAudit");
+    assertStringIncludes(content, "tool.execute.before");
+    assertStringIncludes(content, "tool.execute.after");
+    assertStringIncludes(content, '"--from-hook"');
+    assertStringIncludes(content, '"opencode"');
+  });
+});
+
+Deno.test("RepoService.upgrade with opencode updates plugin", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "opencode" });
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "opencode" });
+
+    assertEquals(result.tool, "opencode");
+
+    const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
+    const content = await Deno.readTextFile(pluginPath);
+    assertStringIncludes(content, '"--from-hook"');
+    assertStringIncludes(content, '"opencode"');
+  });
+});
+
+Deno.test("RepoService.init with opencode force reinit overwrites plugin", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // First init
+    await service.init(repoPath, { tool: "opencode" });
+
+    // Modify the plugin
+    const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
+    await Deno.writeTextFile(pluginPath, "// custom content");
+
+    // Force reinit should overwrite the managed plugin
+    await service.init(repoPath, { tool: "opencode", force: true });
+
+    const content = await Deno.readTextFile(pluginPath);
+    assertStringIncludes(content, '"--from-hook"');
+    assertStringIncludes(content, '"opencode"');
   });
 });

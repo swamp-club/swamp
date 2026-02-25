@@ -179,12 +179,37 @@ export class RepoService {
     const instructionsFileCreated = await this
       .createInstructionsFileIfNotExists(repoPath, tool);
 
-    // Create tool-specific settings
+    // Create or update tool-specific settings
     let settingsCreated = false;
     if (tool === "claude") {
-      settingsCreated = await this.createClaudeSettingsIfNotExists(repoPath);
+      if (isAlreadyInit) {
+        // Force reinit: merge new permissions/hooks into existing settings
+        settingsCreated = await this.updateClaudeSettings(repoPath);
+      } else {
+        settingsCreated = await this.createClaudeSettingsIfNotExists(repoPath);
+      }
+    } else if (tool === "cursor") {
+      if (isAlreadyInit) {
+        settingsCreated = await this.updateCursorHooks(repoPath);
+      } else {
+        settingsCreated = await this.createCursorHooksIfNotExists(repoPath);
+      }
     } else if (tool === "kiro") {
-      settingsCreated = await this.createKiroSettingsIfNotExists(repoPath);
+      if (isAlreadyInit) {
+        const kiroSettings = await this.updateKiroSettings(repoPath);
+        const kiroHooks = await this.updateKiroHooks(repoPath);
+        settingsCreated = kiroSettings || kiroHooks;
+      } else {
+        const kiroSettings = await this.createKiroSettingsIfNotExists(repoPath);
+        const kiroHooks = await this.createKiroHooksIfNotExists(repoPath);
+        settingsCreated = kiroSettings || kiroHooks;
+      }
+    } else if (tool === "opencode") {
+      if (isAlreadyInit) {
+        settingsCreated = await this.updateOpenCodePlugin(repoPath);
+      } else {
+        settingsCreated = await this.createOpenCodePluginIfNotExists(repoPath);
+      }
     }
 
     // Manage .gitignore only when opted in
@@ -252,8 +277,14 @@ export class RepoService {
     let settingsUpdated = false;
     if (tool === "claude") {
       settingsUpdated = await this.updateClaudeSettings(repoPath);
+    } else if (tool === "cursor") {
+      settingsUpdated = await this.updateCursorHooks(repoPath);
     } else if (tool === "kiro") {
-      settingsUpdated = await this.updateKiroSettings(repoPath);
+      const kiroSettings = await this.updateKiroSettings(repoPath);
+      const kiroHooks = await this.updateKiroHooks(repoPath);
+      settingsUpdated = kiroSettings || kiroHooks;
+    } else if (tool === "opencode") {
+      settingsUpdated = await this.updateOpenCodePlugin(repoPath);
     }
 
     // Determine gitignore management: CLI flag > marker preference > default off
@@ -463,6 +494,9 @@ ${body}`;
       "# Local telemetry (not needed for reconstruction)",
       ".swamp/telemetry/",
       "",
+      "# Audit command logs (local-only hook data)",
+      ".swamp/audit/",
+      "",
       "# Encryption keyfile (NEVER commit - allows decrypting secrets)",
       ".swamp/secrets/keyfile",
       "",
@@ -524,12 +558,14 @@ ${body}`;
       ".swamp/telemetry/",
       ".swamp/secrets/keyfile",
       ".swamp/bundles/",
+      ".swamp/audit/",
       ".claude/",
       ".cursor/skills/",
       ".agents/skills/",
       ".kiro/skills/",
       "# Feel free to modify",
       "# Local telemetry",
+      "# Audit command logs",
       "# Encryption keyfile",
       "# Cached extension bundles",
       "# Claude Code configuration",
@@ -587,6 +623,7 @@ ${body}`;
       "Bash(swamp data:*)",
       "Bash(swamp repo:*)",
       "Bash(swamp telemetry:*)",
+      "Bash(swamp audit:*)",
       "Bash(swamp init:*)",
       "Bash(swamp version:*)",
       "Bash(swamp completions:*)",
@@ -602,8 +639,39 @@ ${body}`;
       permissions: {
         allow: this.getClaudeAllowedCommands(),
       },
+      hooks: this.getClaudeHooks(),
     };
     return JSON.stringify(settings, null, 2) + "\n";
+  }
+
+  /**
+   * Gets the hooks configuration for Claude settings.
+   */
+  private getClaudeHooks(): Record<string, unknown[]> {
+    return {
+      PostToolUse: [
+        {
+          matcher: "Bash",
+          hooks: [
+            {
+              type: "command",
+              command: "swamp audit record --from-hook",
+            },
+          ],
+        },
+      ],
+      PostToolUseFailure: [
+        {
+          matcher: "Bash",
+          hooks: [
+            {
+              type: "command",
+              command: "swamp audit record --from-hook",
+            },
+          ],
+        },
+      ],
+    };
   }
 
   /**
@@ -643,7 +711,10 @@ ${body}`;
     // Ensure .claude directory exists
     await ensureDir(claudeDir);
 
-    let existingSettings: { permissions?: { allow?: string[] } } = {};
+    let existingSettings: {
+      permissions?: { allow?: string[] };
+      hooks?: Record<string, unknown[]>;
+    } = {};
     let settingsExisted = false;
 
     try {
@@ -664,9 +735,19 @@ ${body}`;
     const existingAllow = existingSettings.permissions?.allow ?? [];
     const mergedAllow = [...new Set([...existingAllow, ...ourCommands])];
 
+    // Merge hooks
+    const ourHooks = this.getClaudeHooks();
+    const mergedHooks = this.mergeHooks(
+      existingSettings.hooks ?? {},
+      ourHooks,
+    );
+
     // Check if anything changed
-    const hasChanges = mergedAllow.length !== existingAllow.length ||
+    const permissionsChanged = mergedAllow.length !== existingAllow.length ||
       !ourCommands.every((cmd) => existingAllow.includes(cmd));
+    const hooksChanged = JSON.stringify(existingSettings.hooks ?? {}) !==
+      JSON.stringify(mergedHooks);
+    const hasChanges = permissionsChanged || hooksChanged;
 
     if (!hasChanges && settingsExisted) {
       return false;
@@ -679,6 +760,7 @@ ${body}`;
         ...existingSettings.permissions,
         allow: mergedAllow,
       },
+      hooks: mergedHooks,
     };
     await atomicWriteTextFile(
       settingsPath,
@@ -769,6 +851,296 @@ ${body}`;
   }
 
   /**
+   * Generates the content for Cursor's .cursor/hooks.json.
+   */
+  private generateCursorHooksContent(): string {
+    const hooks = {
+      version: 1,
+      hooks: {
+        postToolUse: [
+          { command: "swamp audit record --from-hook --tool cursor" },
+        ],
+        postToolUseFailure: [
+          { command: "swamp audit record --from-hook --tool cursor" },
+        ],
+      },
+    };
+    return JSON.stringify(hooks, null, 2) + "\n";
+  }
+
+  /**
+   * Creates .cursor/hooks.json if it doesn't already exist.
+   */
+  private async createCursorHooksIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const cursorDir = join(repoPath.value, ".cursor");
+    const hooksPath = join(cursorDir, "hooks.json");
+
+    try {
+      await Deno.stat(hooksPath);
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        await ensureDir(cursorDir);
+        const content = this.generateCursorHooksContent();
+        await Deno.writeTextFile(hooksPath, content);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Updates .cursor/hooks.json, merging new hook entries with existing ones.
+   */
+  private async updateCursorHooks(repoPath: RepoPath): Promise<boolean> {
+    const cursorDir = join(repoPath.value, ".cursor");
+    const hooksPath = join(cursorDir, "hooks.json");
+
+    await ensureDir(cursorDir);
+
+    let existingHooks: {
+      version?: number;
+      hooks?: Record<string, unknown[]>;
+    } = {};
+    let hooksExisted = false;
+
+    try {
+      const content = await Deno.readTextFile(hooksPath);
+      existingHooks = JSON.parse(content);
+      hooksExisted = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    const ourHooks: Record<string, unknown[]> = {
+      postToolUse: [
+        { command: "swamp audit record --from-hook --tool cursor" },
+      ],
+      postToolUseFailure: [
+        { command: "swamp audit record --from-hook --tool cursor" },
+      ],
+    };
+
+    const mergedHooks = this.mergeHooks(
+      existingHooks.hooks ?? {},
+      ourHooks,
+    );
+
+    const hooksChanged = JSON.stringify(existingHooks.hooks ?? {}) !==
+      JSON.stringify(mergedHooks);
+
+    if (!hooksChanged && hooksExisted) {
+      return false;
+    }
+
+    const newContent = {
+      version: existingHooks.version ?? 1,
+      hooks: mergedHooks,
+    };
+    await atomicWriteTextFile(
+      hooksPath,
+      JSON.stringify(newContent, null, 2) + "\n",
+    );
+    return true;
+  }
+
+  /**
+   * Generates the content for Kiro's .kiro/hooks/swamp-audit.json.
+   */
+  private generateKiroHookContent(): string {
+    const hook = {
+      name: "Swamp Audit",
+      description: "Records agent tool usage for swamp audit tracking",
+      version: "1",
+      when: { type: "postToolUse" },
+      then: {
+        type: "runCommand",
+        command: "swamp audit record --from-hook --tool kiro",
+      },
+    };
+    return JSON.stringify(hook, null, 2) + "\n";
+  }
+
+  /**
+   * Creates .kiro/hooks/swamp-audit.json if it doesn't already exist.
+   */
+  private async createKiroHooksIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const hooksDir = join(repoPath.value, ".kiro", "hooks");
+    const hookPath = join(hooksDir, "swamp-audit.json");
+
+    try {
+      await Deno.stat(hookPath);
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        await ensureDir(hooksDir);
+        const content = this.generateKiroHookContent();
+        await Deno.writeTextFile(hookPath, content);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Updates .kiro/hooks/swamp-audit.json, always overwriting with latest content.
+   */
+  private async updateKiroHooks(repoPath: RepoPath): Promise<boolean> {
+    const hooksDir = join(repoPath.value, ".kiro", "hooks");
+    const hookPath = join(hooksDir, "swamp-audit.json");
+
+    await ensureDir(hooksDir);
+
+    const newContent = this.generateKiroHookContent();
+
+    try {
+      const existingContent = await Deno.readTextFile(hookPath);
+      if (existingContent === newContent) {
+        return false;
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    await atomicWriteTextFile(hookPath, newContent);
+    return true;
+  }
+
+  /**
+   * Generates the content for OpenCode's .opencode/plugins/swamp-audit.ts.
+   */
+  private generateOpenCodePluginContent(): string {
+    return `// Swamp audit plugin for OpenCode
+// Records bash tool invocations for the swamp audit timeline.
+// This is a managed file — it will be overwritten on swamp upgrade.
+
+import type { Plugin } from "@opencode-ai/plugin";
+
+const pendingCommands = new Map();
+
+export const SwampAudit: Plugin = async ({ directory }) => {
+  return {
+    "tool.execute.before": async (input, output) => {
+      if (input.tool !== "bash") return;
+      const command = output.args?.command;
+      if (command && input.sessionID) {
+        pendingCommands.set(input.sessionID, command);
+      }
+    },
+    "tool.execute.after": async (input) => {
+      if (input.tool !== "bash") return;
+      const command = pendingCommands.get(input.sessionID);
+      pendingCommands.delete(input.sessionID);
+      if (!command) return;
+
+      try {
+        const payload = JSON.stringify({
+          tool_name: "bash",
+          tool_input: { command },
+          cwd: directory,
+          session_id: input.sessionID,
+        });
+        const proc = Bun.spawn(
+          ["swamp", "audit", "record", "--from-hook", "--tool", "opencode"],
+          { stdin: new Blob([payload]) },
+        );
+        await proc.exited;
+      } catch {
+        // Must never throw — this is a hook
+      }
+    },
+  };
+};
+`;
+  }
+
+  /**
+   * Creates .opencode/plugins/swamp-audit.ts if it doesn't already exist.
+   */
+  private async createOpenCodePluginIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const pluginsDir = join(repoPath.value, ".opencode", "plugins");
+    const pluginPath = join(pluginsDir, "swamp-audit.ts");
+
+    try {
+      await Deno.stat(pluginPath);
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        await ensureDir(pluginsDir);
+        const content = this.generateOpenCodePluginContent();
+        await Deno.writeTextFile(pluginPath, content);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Updates .opencode/plugins/swamp-audit.ts, always overwriting with latest content.
+   */
+  private async updateOpenCodePlugin(repoPath: RepoPath): Promise<boolean> {
+    const pluginsDir = join(repoPath.value, ".opencode", "plugins");
+    const pluginPath = join(pluginsDir, "swamp-audit.ts");
+
+    await ensureDir(pluginsDir);
+
+    const newContent = this.generateOpenCodePluginContent();
+
+    try {
+      const existingContent = await Deno.readTextFile(pluginPath);
+      if (existingContent === newContent) {
+        return false;
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    await atomicWriteTextFile(pluginPath, newContent);
+    return true;
+  }
+
+  /**
+   * Merges hook configurations, adding our hooks without duplicating.
+   */
+  private mergeHooks(
+    existing: Record<string, unknown[]>,
+    ours: Record<string, unknown[]>,
+  ): Record<string, unknown[]> {
+    const merged = { ...existing };
+
+    for (const [event, ourEntries] of Object.entries(ours)) {
+      const existingEntries = merged[event] ?? [];
+      const mergedEntries = [...existingEntries];
+
+      for (const ourEntry of ourEntries) {
+        const ourJson = JSON.stringify(ourEntry);
+        const alreadyExists = mergedEntries.some(
+          (e) => JSON.stringify(e) === ourJson,
+        );
+        if (!alreadyExists) {
+          mergedEntries.push(ourEntry);
+        }
+      }
+
+      merged[event] = mergedEntries;
+    }
+
+    return merged;
+  }
+
+  /**
    * Creates the data directory structure for storing repository artifacts.
    */
   private async createDataDirectoryStructure(
@@ -785,6 +1157,7 @@ ${body}`;
       SWAMP_SUBDIRS.vault,
       SWAMP_SUBDIRS.secrets,
       SWAMP_SUBDIRS.telemetry,
+      SWAMP_SUBDIRS.audit,
     ];
 
     for (const subdir of subdirs) {
