@@ -68,7 +68,9 @@ async function getDenoVersion(): Promise<string> {
   if (!match) {
     throw new Error(`Cannot parse deno version from: ${text}`);
   }
-  return match[1];
+  // Strip build metadata suffix (e.g. "2.7.0+fb4db33" → "2.7.0")
+  // GitHub releases use semver without build metadata
+  return match[1].replace(/\+.*$/, "");
 }
 
 /** Downloads a file from a URL, returning the bytes. */
