@@ -35,6 +35,7 @@ import {
   createFileWriterFactory,
   createResourceWriter,
 } from "./data_writer.ts";
+import { coerceMethodArgs } from "./zod_type_coercion.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -112,7 +113,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     context: MethodContext,
   ): Promise<MethodResult> {
     // Validate per-method arguments against the method's schema
-    const methodArgs = definition.getMethodArguments(context.methodName);
+    const rawMethodArgs = definition.getMethodArguments(context.methodName);
+    const methodArgs = coerceMethodArgs(rawMethodArgs, method.arguments);
     const argsResult = method.arguments.safeParse(methodArgs);
 
     if (!argsResult.success) {
@@ -179,9 +181,16 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }
 
     // Validate globalArguments against schema (after upgrade and runtime resolution)
+    // Coerce string values so CLI-provided "true"/"false"/numeric strings match
+    // the Zod schema types, then replace the definition's globalArguments with
+    // the parsed (correctly-typed) values so methods receive proper types.
     if (modelDef.globalArguments) {
-      const globalArgsResult = modelDef.globalArguments.safeParse(
+      const coercedGlobalArgs = coerceMethodArgs(
         currentDefinition.globalArguments,
+        modelDef.globalArguments,
+      );
+      const globalArgsResult = modelDef.globalArguments.safeParse(
+        coercedGlobalArgs,
       );
       if (!globalArgsResult.success) {
         throw new Error(
@@ -189,6 +198,11 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             formatZodError(globalArgsResult.error)
           }`,
         );
+      }
+      // Update definition with parsed values so methods receive correct types
+      const parsedGlobalArgs = globalArgsResult.data as Record<string, unknown>;
+      for (const [key, value] of Object.entries(parsedGlobalArgs)) {
+        currentDefinition.setGlobalArgument(key, value);
       }
     }
 

@@ -925,6 +925,105 @@ Deno.test("execute passes logger in context to method", async () => {
   assertEquals(typeof (capturedLogger as { info: unknown }).info, "function");
 });
 
+// ---------- Zod Type Coercion Tests ----------
+
+Deno.test("execute coerces string boolean and number args before validation", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const schema = z.object({
+    deleteOrphans: z.boolean().default(false),
+    maxCount: z.number().optional(),
+    name: z.string(),
+  });
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/coercion"),
+    version: "1",
+    globalArguments: z.object({}),
+    methods: {
+      run: {
+        description: "Test method with boolean and number args",
+        arguments: schema,
+        execute: (args: Record<string, unknown>) => {
+          // Verify the args were coerced to the correct types
+          assertEquals(args.deleteOrphans, true);
+          assertEquals(args.maxCount, 5);
+          assertEquals(args.name, "test");
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  // Simulate CLI passing all values as strings
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    methods: {
+      run: {
+        arguments: {
+          deleteOrphans: "true",
+          maxCount: "5",
+          name: "test",
+        },
+      },
+    },
+  });
+
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "run",
+  });
+  // Should not throw — coercion converts "true" → true and "5" → 5
+  await service.execute(definition, model.methods.run, context);
+});
+
+Deno.test("executeWorkflow coerces string globalArguments before validation", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const schema = z.object({
+    enabled: z.boolean(),
+    port: z.number(),
+  });
+
+  let receivedGlobalArgs: Record<string, unknown> = {};
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/global-coercion"),
+    version: "1",
+    globalArguments: schema,
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          receivedGlobalArgs = context.globalArgs;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  // Global args come in as strings from CLI
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { enabled: "true", port: "8080" },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  // Should not throw — coercion converts strings to correct types
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "run",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+  // Verify the method received coerced types, not strings
+  assertEquals(receivedGlobalArgs.enabled, true);
+  assertEquals(receivedGlobalArgs.port, 8080);
+});
+
 // ---------- globalArguments Validation Tests ----------
 
 Deno.test("executeWorkflow - rejects invalid globalArguments after resolution", async () => {
