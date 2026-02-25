@@ -30,9 +30,9 @@ const TEST_CREDENTIALS: AuthCredentials = {
 
 Deno.test("AuthRepository - save and load round trip", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const originalHome = Deno.env.get("HOME");
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   try {
-    Deno.env.set("HOME", tmpDir);
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
     const repo = new AuthRepository();
 
     await repo.save(TEST_CREDENTIALS);
@@ -44,33 +44,33 @@ Deno.test("AuthRepository - save and load round trip", async () => {
     assertEquals(loaded.apiKeyId, TEST_CREDENTIALS.apiKeyId);
     assertEquals(loaded.username, TEST_CREDENTIALS.username);
   } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
-    else Deno.env.delete("HOME");
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
 Deno.test("AuthRepository - load returns null when no file exists", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const originalHome = Deno.env.get("HOME");
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   try {
-    Deno.env.set("HOME", tmpDir);
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
     const repo = new AuthRepository();
 
     const loaded = await repo.load();
     assertEquals(loaded, null);
   } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
-    else Deno.env.delete("HOME");
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
 Deno.test("AuthRepository - delete removes credentials", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const originalHome = Deno.env.get("HOME");
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   try {
-    Deno.env.set("HOME", tmpDir);
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
     const repo = new AuthRepository();
 
     await repo.save(TEST_CREDENTIALS);
@@ -79,24 +79,24 @@ Deno.test("AuthRepository - delete removes credentials", async () => {
     await repo.delete();
     assertEquals(await repo.load(), null);
   } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
-    else Deno.env.delete("HOME");
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
 Deno.test("AuthRepository - delete is idempotent (no error when missing)", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const originalHome = Deno.env.get("HOME");
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   try {
-    Deno.env.set("HOME", tmpDir);
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
     const repo = new AuthRepository();
 
     // Should not throw
     await repo.delete();
   } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
-    else Deno.env.delete("HOME");
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
@@ -104,19 +104,19 @@ Deno.test("AuthRepository - delete is idempotent (no error when missing)", async
 Deno.test("AuthRepository - save sets restrictive file permissions", async () => {
   if (Deno.build.os === "windows") return; // mode not enforced on Windows
   const tmpDir = await Deno.makeTempDir();
-  const originalHome = Deno.env.get("HOME");
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   try {
-    Deno.env.set("HOME", tmpDir);
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
     const repo = new AuthRepository();
 
     await repo.save(TEST_CREDENTIALS);
 
-    const stat = await Deno.stat(`${tmpDir}/.swamp/auth.json`);
+    const stat = await Deno.stat(`${tmpDir}/swamp/auth.json`);
     // mode 0o600 = owner read/write only
     assertEquals(stat.mode !== null && (stat.mode & 0o777) === 0o600, true);
   } finally {
-    if (originalHome) Deno.env.set("HOME", originalHome);
-    else Deno.env.delete("HOME");
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });

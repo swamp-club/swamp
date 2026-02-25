@@ -19,18 +19,19 @@
 
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
-import { getSwampDataDir } from "./paths.ts";
+import { getSwampConfigDir } from "./paths.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 
 const AUTH_FILE = "auth.json";
 
 /**
  * Repository for managing swamp-club authentication credentials.
- * Stores API key and server info at ~/.swamp/auth.json.
+ * Stores API key and server info at ~/.config/swamp/auth.json
+ * (or $XDG_CONFIG_HOME/swamp/auth.json).
  */
 export class AuthRepository {
   private getAuthPath(): string {
-    return join(getSwampDataDir(), AUTH_FILE);
+    return join(getSwampConfigDir(), AUTH_FILE);
   }
 
   /** Read stored auth credentials. Returns null if not found. */
@@ -48,8 +49,8 @@ export class AuthRepository {
 
   /** Write auth credentials to disk. Creates directory if needed. */
   async save(credentials: AuthCredentials): Promise<void> {
-    const dataDir = getSwampDataDir();
-    await Deno.mkdir(dataDir, { recursive: true });
+    const configDir = getSwampConfigDir();
+    await Deno.mkdir(configDir, { recursive: true });
     await atomicWriteTextFile(
       this.getAuthPath(),
       JSON.stringify(credentials, null, 2) + "\n",
