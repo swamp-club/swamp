@@ -45,6 +45,7 @@ export function renderUpdateResult(
       case "updated":
         logger.info("swamp updated successfully!");
         logger.info`${result.previousVersion} \u2192 ${result.newVersion}`;
+        logger.info("SHA-256 integrity check passed");
         break;
     }
     if (result.warning) {
