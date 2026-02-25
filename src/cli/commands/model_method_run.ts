@@ -377,7 +377,7 @@ export const modelMethodRunCommand = new Command()
           model: definition.name,
           error: errorMessage,
         });
-        throw error;
+        throw new UserError(errorMessage);
       }
 
       // JSON mode: use existing render function
