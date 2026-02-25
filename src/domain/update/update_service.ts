@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Platform } from "./platform.ts";
+import { validateRedirectUrl } from "./integrity.ts";
 
 /**
  * Port for checking and performing updates.
@@ -31,9 +32,20 @@ export interface UpdateChecker {
   checkForUpdate(platform: Platform): Promise<string | null>;
 
   /**
-   * Download and install a binary from the given URL to the target path.
+   * Fetch the expected SHA-256 checksum for a tarball.
+   * Derives the checksum URL from the tarball URL by appending ".sha256".
    */
-  downloadAndInstall(url: string, binaryPath: string): Promise<void>;
+  fetchChecksum(tarballUrl: string): Promise<string>;
+
+  /**
+   * Download the tarball, verify its SHA-256 checksum, extract, and install.
+   * Throws UserError if checksum verification fails.
+   */
+  downloadAndInstall(
+    url: string,
+    binaryPath: string,
+    expectedChecksum: string,
+  ): Promise<void>;
 }
 
 /**
@@ -115,6 +127,8 @@ export class UpdateService {
       };
     }
 
+    validateRedirectUrl(redirectUrl);
+
     const latestVersion = parseVersionFromRedirectUrl(redirectUrl);
     if (!latestVersion || latestVersion === this.currentVersion) {
       return {
@@ -146,6 +160,8 @@ export class UpdateService {
       };
     }
 
+    validateRedirectUrl(redirectUrl);
+
     const latestVersion = parseVersionFromRedirectUrl(redirectUrl);
     if (!latestVersion || latestVersion === this.currentVersion) {
       return {
@@ -155,7 +171,12 @@ export class UpdateService {
       };
     }
 
-    await this.checker.downloadAndInstall(redirectUrl, this.binaryPath);
+    const expectedChecksum = await this.checker.fetchChecksum(redirectUrl);
+    await this.checker.downloadAndInstall(
+      redirectUrl,
+      this.binaryPath,
+      expectedChecksum,
+    );
 
     return {
       status: "updated",

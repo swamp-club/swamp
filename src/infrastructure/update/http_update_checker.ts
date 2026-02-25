@@ -20,6 +20,12 @@
 import type { Platform } from "../../domain/update/platform.ts";
 import type { UpdateChecker } from "../../domain/update/update_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  checksumUrlFromTarballUrl,
+  parseChecksumFile,
+  verifyChecksum,
+} from "../../domain/update/integrity.ts";
+import { computeChecksum } from "../../domain/models/checksum.ts";
 
 /**
  * Remove macOS quarantine extended attribute (best-effort).
@@ -82,9 +88,37 @@ export class HttpUpdateChecker implements UpdateChecker {
   }
 
   /**
-   * Download the tarball and install the binary.
+   * Fetch the expected SHA-256 checksum for a tarball.
    */
-  async downloadAndInstall(url: string, binaryPath: string): Promise<void> {
+  async fetchChecksum(tarballUrl: string): Promise<string> {
+    const checksumUrl = checksumUrlFromTarballUrl(tarballUrl);
+
+    let response: Response;
+    try {
+      response = await fetch(checksumUrl);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(`Failed to fetch checksum: ${message}`);
+    }
+
+    if (!response.ok) {
+      throw new UserError(
+        `Failed to fetch checksum: HTTP ${response.status} from ${checksumUrl}`,
+      );
+    }
+
+    const content = await response.text();
+    return parseChecksumFile(content);
+  }
+
+  /**
+   * Download the tarball, verify its checksum, and install the binary.
+   */
+  async downloadAndInstall(
+    url: string,
+    binaryPath: string,
+    expectedChecksum: string,
+  ): Promise<void> {
     const tempDir = await Deno.makeTempDir({ prefix: "swamp-update-" });
 
     try {
@@ -123,6 +157,11 @@ export class HttpUpdateChecker implements UpdateChecker {
         const message = error instanceof Error ? error.message : String(error);
         throw new UserError(`Download failed: ${message}`);
       }
+
+      // Verify tarball integrity before extraction
+      const tarballBytes = await Deno.readFile(tarballPath);
+      const actualChecksum = await computeChecksum(tarballBytes);
+      verifyChecksum(expectedChecksum, actualChecksum);
 
       // Extract the tarball
       const extract = new Deno.Command("tar", {

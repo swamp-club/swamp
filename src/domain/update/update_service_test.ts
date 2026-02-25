@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   isDevBuild,
   parseVersionFromRedirectUrl,
@@ -25,19 +25,32 @@ import {
   UpdateService,
 } from "./update_service.ts";
 import { Platform } from "./platform.ts";
+import { UserError } from "../errors.ts";
 
 interface MockCheckerCalls {
   downloadUrls: string[];
+  checksumUrls: string[];
+  expectedChecksums: string[];
 }
 
 function createMockChecker(
   redirectUrl: string | null = null,
   calls?: MockCheckerCalls,
+  checksumToReturn: string = "a".repeat(64),
 ): UpdateChecker {
   return {
     checkForUpdate: (_platform: Platform) => Promise.resolve(redirectUrl),
-    downloadAndInstall: (url: string, _binaryPath: string) => {
+    fetchChecksum: (tarballUrl: string) => {
+      calls?.checksumUrls.push(tarballUrl);
+      return Promise.resolve(checksumToReturn);
+    },
+    downloadAndInstall: (
+      url: string,
+      _binaryPath: string,
+      expectedChecksum: string,
+    ) => {
       calls?.downloadUrls.push(url);
+      calls?.expectedChecksums.push(expectedChecksum);
       return Promise.resolve();
     },
   };
@@ -172,7 +185,11 @@ Deno.test("update returns up_to_date when already current", async () => {
 Deno.test("update returns updated when new version available", async () => {
   const redirectUrl =
     "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
-  const calls: MockCheckerCalls = { downloadUrls: [] };
+  const calls: MockCheckerCalls = {
+    downloadUrls: [],
+    checksumUrls: [],
+    expectedChecksums: [],
+  };
   const service = new UpdateService(
     createMockChecker(redirectUrl, calls),
     "20260207.123456.0-sha.abc12345",
@@ -202,4 +219,61 @@ Deno.test("update includes warning for dev build", async () => {
   assertEquals(result.status, "updated");
   assertEquals(typeof result.warning, "string");
   assertEquals(result.warning?.includes("development build"), true);
+});
+
+// --- Redirect URL validation tests ---
+
+Deno.test("check rejects redirect to untrusted host", async () => {
+  const redirectUrl =
+    "https://evil.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp.tar.gz";
+  const service = new UpdateService(
+    createMockChecker(redirectUrl),
+    "20260207.123456.0-sha.abc12345",
+    "/usr/local/bin/swamp",
+  );
+
+  await assertRejects(
+    () => service.check(platform),
+    UserError,
+    "Untrusted redirect host",
+  );
+});
+
+Deno.test("update rejects redirect to untrusted host", async () => {
+  const redirectUrl =
+    "https://evil.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp.tar.gz";
+  const service = new UpdateService(
+    createMockChecker(redirectUrl),
+    "20260207.123456.0-sha.abc12345",
+    "/usr/local/bin/swamp",
+  );
+
+  await assertRejects(
+    () => service.update(platform),
+    UserError,
+    "Untrusted redirect host",
+  );
+});
+
+// --- Checksum flow tests ---
+
+Deno.test("update fetches checksum and passes it to downloadAndInstall", async () => {
+  const redirectUrl =
+    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+  const expectedHash = "b".repeat(64);
+  const calls: MockCheckerCalls = {
+    downloadUrls: [],
+    checksumUrls: [],
+    expectedChecksums: [],
+  };
+  const service = new UpdateService(
+    createMockChecker(redirectUrl, calls, expectedHash),
+    "20260207.123456.0-sha.abc12345",
+    "/usr/local/bin/swamp",
+  );
+
+  const result = await service.update(platform);
+  assertEquals(result.status, "updated");
+  assertEquals(calls.checksumUrls, [redirectUrl]);
+  assertEquals(calls.expectedChecksums, [expectedHash]);
 });
