@@ -38,6 +38,7 @@ export interface TelemetryFlushConfig {
   sender: TelemetrySender;
   distinctId: string;
   repoId?: string;
+  authToken?: string;
   batchSize?: number;
   keepFlushed?: boolean;
 }
@@ -170,6 +171,7 @@ export class TelemetryService {
       batchSize,
       keepFlushed,
       config.repoId,
+      config.authToken,
     )
       .catch(
         (error) => {
@@ -186,11 +188,17 @@ export class TelemetryService {
     batchSize: number,
     keepFlushed: boolean,
     repoId?: string,
+    authToken?: string,
   ): Promise<void> {
     const entries = await this.repository.findUnflushed(batchSize);
     if (entries.length === 0) return;
 
-    const success = await sender.sendBatch(entries, distinctId, repoId);
+    const success = await sender.sendBatch(
+      entries,
+      distinctId,
+      repoId,
+      authToken,
+    );
     if (success) {
       for (const entry of entries) {
         await this.repository.markFlushed(entry, keepFlushed);

@@ -177,3 +177,56 @@ Deno.test("HttpTelemetrySender.sendBatch omits $repo_id when not provided", asyn
 
   await server.shutdown();
 });
+
+Deno.test("HttpTelemetrySender.sendBatch includes Authorization header when authToken provided", async () => {
+  let capturedAuthHeader: string | null = null;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedAuthHeader = req.headers.get("Authorization");
+    await req.body?.cancel();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry = createTestEntry(
+    "test-uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+
+  const result = await sender.sendBatch(
+    [entry],
+    "user-uuid-123",
+    undefined,
+    "test-api-key-abc",
+  );
+
+  assertEquals(result, true);
+  assertEquals(capturedAuthHeader, "Bearer test-api-key-abc");
+
+  await server.shutdown();
+});
+
+Deno.test("HttpTelemetrySender.sendBatch omits Authorization header when authToken not provided", async () => {
+  let capturedAuthHeader: string | null = null;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedAuthHeader = req.headers.get("Authorization");
+    await req.body?.cancel();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry = createTestEntry(
+    "test-uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+
+  const result = await sender.sendBatch([entry], "user-uuid-123");
+
+  assertEquals(result, true);
+  assertEquals(capturedAuthHeader, null);
+
+  await server.shutdown();
+});

@@ -31,6 +31,7 @@ export class HttpTelemetrySender implements TelemetrySender {
     entries: TelemetryEntry[],
     distinctId: string,
     repoId?: string,
+    authToken?: string,
   ): Promise<boolean> {
     const events = entries.map((entry) => ({
       event: "cli_invocation",
@@ -46,9 +47,14 @@ export class HttpTelemetrySender implements TelemetrySender {
       : JSON.stringify({ events });
 
     try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...(authToken ? { "Authorization": `Bearer ${authToken}` } : {}),
+      };
+
       const response = await fetch(`${this.endpointUrl}/ingest`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body,
         signal: AbortSignal.timeout(5000),
       });

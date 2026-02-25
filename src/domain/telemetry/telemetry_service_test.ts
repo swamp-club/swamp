@@ -68,6 +68,7 @@ class MockTelemetrySender implements TelemetrySender {
     entries: TelemetryEntry[];
     distinctId: string;
     repoId?: string;
+    authToken?: string;
   }> = [];
   shouldSucceed = true;
 
@@ -75,8 +76,9 @@ class MockTelemetrySender implements TelemetrySender {
     entries: TelemetryEntry[],
     distinctId: string,
     repoId?: string,
+    authToken?: string,
   ): Promise<boolean> {
-    this.sentBatches.push({ entries, distinctId, repoId });
+    this.sentBatches.push({ entries, distinctId, repoId, authToken });
     return Promise.resolve(this.shouldSucceed);
   }
 }
@@ -340,4 +342,52 @@ Deno.test("TelemetryService.flushTelemetry passes repoId to sender", async () =>
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].distinctId, "user-uuid");
   assertEquals(sender.sentBatches[0].repoId, "repo-uuid-456");
+});
+
+Deno.test("TelemetryService.flushTelemetry passes authToken to sender", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const entry = createFlushTestEntry(
+    "uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+  repo.mockUnflushedEntries = [entry];
+
+  service.flushTelemetry({
+    sender,
+    distinctId: "user-uuid",
+    repoId: "repo-uuid-456",
+    authToken: "test-api-key-123",
+  });
+
+  // Wait for fire-and-forget to settle
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(sender.sentBatches.length, 1);
+  assertEquals(sender.sentBatches[0].authToken, "test-api-key-123");
+});
+
+Deno.test("TelemetryService.flushTelemetry passes undefined authToken when not provided", async () => {
+  const repo = new MockTelemetryRepository();
+  const sender = new MockTelemetrySender();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const entry = createFlushTestEntry(
+    "uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+  repo.mockUnflushedEntries = [entry];
+
+  service.flushTelemetry({
+    sender,
+    distinctId: "user-uuid",
+  });
+
+  // Wait for fire-and-forget to settle
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assertEquals(sender.sentBatches.length, 1);
+  assertEquals(sender.sentBatches[0].authToken, undefined);
 });

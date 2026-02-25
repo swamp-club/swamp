@@ -56,6 +56,7 @@ import {
   isTelemetryDisabled,
 } from "./telemetry_integration.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
+import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -171,6 +172,7 @@ interface TelemetryContext {
   repoId: string;
   telemetryEndpoint: string;
   keepFlushed: boolean;
+  authToken: string | null;
 }
 
 /**
@@ -211,7 +213,26 @@ async function initTelemetryService(): Promise<TelemetryContext | null> {
 
     const keepFlushed = marker.telemetryKeepFlushed ?? false;
 
-    return { service, userId, repoId, telemetryEndpoint, keepFlushed };
+    // Try loading auth credentials for authenticated telemetry
+    let authToken: string | null = null;
+    try {
+      const authRepo = new AuthRepository();
+      const creds = await authRepo.load();
+      if (creds?.apiKey) {
+        authToken = creds.apiKey;
+      }
+    } catch {
+      // Auth file unreadable — continue without auth
+    }
+
+    return {
+      service,
+      userId,
+      repoId,
+      telemetryEndpoint,
+      keepFlushed,
+      authToken,
+    };
   } catch {
     // Not in a swamp repo or other error
     return null;
@@ -329,6 +350,7 @@ export async function runCli(args: string[]): Promise<void> {
         sender,
         distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
         repoId: telemetryCtx.repoId,
+        authToken: telemetryCtx.authToken ?? undefined,
         keepFlushed: telemetryCtx.keepFlushed,
       });
 
