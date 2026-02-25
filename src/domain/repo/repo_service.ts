@@ -46,8 +46,9 @@ const GITIGNORE_LEGACY_HEADER = "# Swamp managed defaults";
  * - "created": a new .gitignore file was created with the managed section
  * - "updated": an existing .gitignore had its managed section added or refreshed
  * - "unchanged": the managed section already existed and was up-to-date
+ * - "skipped": gitignore management was not opted in
  */
-export type GitignoreAction = "created" | "updated" | "unchanged";
+export type GitignoreAction = "created" | "updated" | "unchanged" | "skipped";
 
 const SKILL_DIRS: Record<AiTool, string> = {
   claude: ".claude/skills",
@@ -104,6 +105,7 @@ export interface RepoUpgradeResult {
 export interface RepoInitOptions {
   force?: boolean;
   tool?: AiTool;
+  includeGitignore?: boolean;
 }
 
 /**
@@ -111,6 +113,7 @@ export interface RepoInitOptions {
  */
 export interface RepoUpgradeOptions {
   tool?: AiTool;
+  includeGitignore?: boolean;
 }
 
 /**
@@ -160,7 +163,6 @@ export class RepoService {
     // Create marker file with tool choice
     const markerData = this.markerRepo.createInitMarker(this.currentVersion);
     markerData.tool = tool;
-    await this.markerRepo.write(repoPath, markerData);
 
     // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
@@ -180,11 +182,16 @@ export class RepoService {
       settingsCreated = await this.createClaudeSettingsIfNotExists(repoPath);
     }
 
-    // Ensure .gitignore has swamp managed section
-    const gitignoreAction = await this.ensureGitignoreSection(
-      repoPath,
-      tool,
-    );
+    // Manage .gitignore only when opted in
+    let gitignoreAction: GitignoreAction;
+    if (options.includeGitignore) {
+      gitignoreAction = await this.ensureGitignoreSection(repoPath, tool);
+      markerData.gitignoreManaged = true;
+    } else {
+      gitignoreAction = "skipped";
+    }
+
+    await this.markerRepo.write(repoPath, markerData);
 
     return {
       path: repoPath.value,
@@ -227,7 +234,6 @@ export class RepoService {
       this.currentVersion,
     );
     updatedMarker.tool = tool;
-    await this.markerRepo.write(repoPath, updatedMarker);
 
     // Update skills in tool-appropriate directory
     const skillsDir = join(repoPath.value, SKILL_DIRS[tool]);
@@ -243,11 +249,23 @@ export class RepoService {
       settingsUpdated = await this.updateClaudeSettings(repoPath);
     }
 
-    // Ensure .gitignore has swamp managed section
-    const gitignoreAction = await this.ensureGitignoreSection(
-      repoPath,
-      tool,
-    );
+    // Determine gitignore management: CLI flag > marker preference > default off
+    const shouldManageGitignore = options.includeGitignore ??
+      existingMarker.gitignoreManaged ?? false;
+
+    // Persist the CLI flag choice if explicitly provided
+    if (options.includeGitignore !== undefined) {
+      updatedMarker.gitignoreManaged = options.includeGitignore;
+    }
+
+    let gitignoreAction: GitignoreAction;
+    if (shouldManageGitignore) {
+      gitignoreAction = await this.ensureGitignoreSection(repoPath, tool);
+    } else {
+      gitignoreAction = "skipped";
+    }
+
+    await this.markerRepo.write(repoPath, updatedMarker);
 
     // createUpgradeMarker always sets upgradedAt, but TypeScript doesn't know this
     if (!updatedMarker.upgradedAt) {

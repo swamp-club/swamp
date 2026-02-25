@@ -403,12 +403,34 @@ Deno.test("RepoService.init generates CLAUDE.md with skills section", async () =
   });
 });
 
-Deno.test("RepoService.init creates .gitignore with managed section", async () => {
+Deno.test("RepoService.init skips .gitignore by default", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
+
+    assertEquals(result.gitignoreAction, "skipped");
+
+    // .gitignore should not exist
+    const gitignorePath = join(tempDir, ".gitignore");
+    let exists = false;
+    try {
+      await Deno.stat(gitignorePath);
+      exists = true;
+    } catch {
+      // expected
+    }
+    assertEquals(exists, false);
+  });
+});
+
+Deno.test("RepoService.init creates .gitignore with managed section when opted in", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { includeGitignore: true });
 
     assertEquals(result.gitignoreAction, "created");
 
@@ -423,10 +445,14 @@ Deno.test("RepoService.init creates .gitignore with managed section", async () =
     assertStringIncludes(content, ".swamp/telemetry/");
     assertStringIncludes(content, ".swamp/secrets/keyfile");
     assertStringIncludes(content, ".claude/");
+
+    // Check marker persists the preference
+    const marker = await service.getMarker(repoPath);
+    assertEquals(marker!.gitignoreManaged, true);
   });
 });
 
-Deno.test("RepoService.init appends managed section to existing .gitignore", async () => {
+Deno.test("RepoService.init appends managed section to existing .gitignore when opted in", async () => {
   await withTempDir(async (tempDir) => {
     // Create existing .gitignore
     const gitignorePath = join(tempDir, ".gitignore");
@@ -438,7 +464,7 @@ Deno.test("RepoService.init appends managed section to existing .gitignore", asy
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath);
+    const result = await service.init(repoPath, { includeGitignore: true });
 
     assertEquals(result.gitignoreAction, "updated");
 
@@ -461,10 +487,13 @@ Deno.test("RepoService.init with force returns unchanged when section is current
     const repoPath = RepoPath.create(tempDir);
 
     // First init creates .gitignore with managed section
-    await service.init(repoPath);
+    await service.init(repoPath, { includeGitignore: true });
 
     // Second init with force — section already matches
-    const result = await service.init(repoPath, { force: true });
+    const result = await service.init(repoPath, {
+      force: true,
+      includeGitignore: true,
+    });
 
     assertEquals(result.gitignoreAction, "unchanged");
   });
@@ -482,6 +511,7 @@ Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rule
     assertEquals(result.tool, "cursor");
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, false);
+    assertEquals(result.gitignoreAction, "skipped");
 
     // Check skills copied to .cursor/skills/
     const skillsDir = join(tempDir, ".cursor", "skills");
@@ -494,11 +524,6 @@ Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rule
     assertStringIncludes(content, "alwaysApply: true");
     assertStringIncludes(content, "swamp");
     assertStringIncludes(content, "## Skills");
-
-    // Check .gitignore has cursor-specific entries
-    const gitignorePath = join(tempDir, ".gitignore");
-    const gitignoreContent = await Deno.readTextFile(gitignorePath);
-    assertStringIncludes(gitignoreContent, ".cursor/skills/");
 
     // Check no .claude/ settings created
     const claudeSettingsPath = join(
@@ -527,6 +552,7 @@ Deno.test("RepoService.init with opencode creates .agents/skills/ and AGENTS.md"
     assertEquals(result.tool, "opencode");
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, false);
+    assertEquals(result.gitignoreAction, "skipped");
 
     // Check skills copied to .agents/skills/
     const skillsDir = join(tempDir, ".agents", "skills");
@@ -538,11 +564,6 @@ Deno.test("RepoService.init with opencode creates .agents/skills/ and AGENTS.md"
     const content = await Deno.readTextFile(agentsMdPath);
     assertStringIncludes(content, "swamp");
     assertStringIncludes(content, "## Skills");
-
-    // Check .gitignore has agents-specific entries
-    const gitignorePath = join(tempDir, ".gitignore");
-    const gitignoreContent = await Deno.readTextFile(gitignorePath);
-    assertStringIncludes(gitignoreContent, ".agents/skills/");
   });
 });
 
@@ -556,6 +577,7 @@ Deno.test("RepoService.init with codex creates .agents/skills/ and AGENTS.md", a
     assertEquals(result.tool, "codex");
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, false);
+    assertEquals(result.gitignoreAction, "skipped");
 
     // Check skills copied to .agents/skills/
     const skillsDir = join(tempDir, ".agents", "skills");
@@ -566,11 +588,6 @@ Deno.test("RepoService.init with codex creates .agents/skills/ and AGENTS.md", a
     const agentsMdPath = join(tempDir, "AGENTS.md");
     const content = await Deno.readTextFile(agentsMdPath);
     assertStringIncludes(content, "swamp");
-
-    // Check .gitignore has agents-specific entries
-    const gitignorePath = join(tempDir, ".gitignore");
-    const gitignoreContent = await Deno.readTextFile(gitignorePath);
-    assertStringIncludes(gitignoreContent, ".agents/skills/");
   });
 });
 
@@ -723,17 +740,31 @@ Deno.test("RepoService.upgrade skips settings for non-claude tools", async () =>
   });
 });
 
-Deno.test("RepoService.upgrade creates .gitignore if missing", async () => {
+Deno.test("RepoService.upgrade skips .gitignore by default", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    // Init (creates .gitignore), then delete it
     await service.init(repoPath);
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.gitignoreAction, "skipped");
+  });
+});
+
+Deno.test("RepoService.upgrade creates .gitignore when marker has gitignoreManaged", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with gitignore opt-in (creates .gitignore and sets marker)
+    await service.init(repoPath, { includeGitignore: true });
     const gitignorePath = join(tempDir, ".gitignore");
     await Deno.remove(gitignorePath);
 
-    // Upgrade should recreate .gitignore
+    // Upgrade should recreate .gitignore because marker has gitignoreManaged
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
 
@@ -757,9 +788,9 @@ Deno.test("RepoService.upgrade returns unchanged when section is current", async
     const repoPath = RepoPath.create(tempDir);
 
     // Init creates .gitignore with managed section
-    await service.init(repoPath);
+    await service.init(repoPath, { includeGitignore: true });
 
-    // Upgrade — section already matches
+    // Upgrade — section already matches (marker has gitignoreManaged: true)
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
 
@@ -784,7 +815,7 @@ Deno.test("RepoService.init cursor instructions have MDC frontmatter", async () 
   });
 });
 
-Deno.test("RepoService.init tool-specific gitignore entries", async () => {
+Deno.test("RepoService.init tool-specific gitignore entries when opted in", async () => {
   const toolGitignoreEntries: Record<AiTool, string> = {
     claude: ".claude/",
     cursor: ".cursor/skills/",
@@ -801,7 +832,7 @@ Deno.test("RepoService.init tool-specific gitignore entries", async () => {
       const service = new RepoService("0.1.0");
       const repoPath = RepoPath.create(tempDir);
 
-      await service.init(repoPath, { tool });
+      await service.init(repoPath, { tool, includeGitignore: true });
 
       const gitignorePath = join(tempDir, ".gitignore");
       const content = await Deno.readTextFile(gitignorePath);
@@ -832,7 +863,7 @@ Deno.test("RepoService.init preserves user content before managed section", asyn
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath);
+    await service.init(repoPath, { includeGitignore: true });
 
     const content = await Deno.readTextFile(gitignorePath);
     // User content comes first
@@ -850,16 +881,17 @@ Deno.test("RepoService.init replaces managed section on tool switch", async () =
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    // Init with claude
-    await service.init(repoPath);
+    // Init with claude and gitignore
+    await service.init(repoPath, { includeGitignore: true });
     const gitignorePath = join(tempDir, ".gitignore");
     let content = await Deno.readTextFile(gitignorePath);
     assertStringIncludes(content, ".claude/");
 
-    // Re-init with cursor (force)
+    // Re-init with cursor (force) and gitignore
     const result = await service.init(repoPath, {
       force: true,
       tool: "cursor",
+      includeGitignore: true,
     });
 
     assertEquals(result.gitignoreAction, "updated");
@@ -875,15 +907,15 @@ Deno.test("RepoService.upgrade updates managed section on tool switch", async ()
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    // Init with claude
-    await service.init(repoPath);
+    // Init with claude and gitignore
+    await service.init(repoPath, { includeGitignore: true });
 
     // Add user content after the managed section
     const gitignorePath = join(tempDir, ".gitignore");
     const original = await Deno.readTextFile(gitignorePath);
     await Deno.writeTextFile(gitignorePath, original + "*.log\n");
 
-    // Upgrade with tool switch to cursor
+    // Upgrade with tool switch to cursor (marker has gitignoreManaged: true)
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath, { tool: "cursor" });
 
@@ -903,7 +935,7 @@ Deno.test("RepoService.init handles .gitignore without trailing newline", async 
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath);
+    const result = await service.init(repoPath, { includeGitignore: true });
 
     assertEquals(result.gitignoreAction, "updated");
     const content = await Deno.readTextFile(gitignorePath);
@@ -917,7 +949,7 @@ Deno.test("RepoService.init handles .gitignore without trailing newline", async 
   });
 });
 
-Deno.test("RepoService.init migrates legacy gitignore format", async () => {
+Deno.test("RepoService.init migrates legacy gitignore format when opted in", async () => {
   await withTempDir(async (tempDir) => {
     // Create legacy-format .gitignore (as old swamp would have created it)
     const gitignorePath = join(tempDir, ".gitignore");
@@ -941,7 +973,7 @@ Deno.test("RepoService.init migrates legacy gitignore format", async () => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath);
+    const result = await service.init(repoPath, { includeGitignore: true });
 
     assertEquals(result.gitignoreAction, "updated");
     const content = await Deno.readTextFile(gitignorePath);
@@ -957,7 +989,7 @@ Deno.test("RepoService.init migrates legacy gitignore format", async () => {
   });
 });
 
-Deno.test("RepoService.init migrates legacy gitignore with user additions", async () => {
+Deno.test("RepoService.init migrates legacy gitignore with user additions when opted in", async () => {
   await withTempDir(async (tempDir) => {
     // Create legacy-format .gitignore with user additions after it
     const gitignorePath = join(tempDir, ".gitignore");
@@ -984,7 +1016,7 @@ build/
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath);
+    const result = await service.init(repoPath, { includeGitignore: true });
 
     assertEquals(result.gitignoreAction, "updated");
     const content = await Deno.readTextFile(gitignorePath);
@@ -1000,5 +1032,95 @@ build/
     assertStringIncludes(content, "# My custom additions");
     assertStringIncludes(content, "*.log");
     assertStringIncludes(content, "build/");
+  });
+});
+
+// Opt-in/opt-out gitignore management tests
+
+Deno.test("RepoService.init without includeGitignore does not set gitignoreManaged", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const marker = await service.getMarker(repoPath);
+    assertEquals(marker!.gitignoreManaged, undefined);
+  });
+});
+
+Deno.test("RepoService.upgrade with includeGitignore true opts in and persists", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init without gitignore
+    await service.init(repoPath);
+
+    // Upgrade with opt-in
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, {
+      includeGitignore: true,
+    });
+
+    assertEquals(result.gitignoreAction, "created");
+
+    // Marker should persist the preference
+    const marker = await upgradeService.getMarker(repoPath);
+    assertEquals(marker!.gitignoreManaged, true);
+  });
+});
+
+Deno.test("RepoService.upgrade with includeGitignore false opts out and persists", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with gitignore (sets gitignoreManaged: true)
+    await service.init(repoPath, { includeGitignore: true });
+
+    // Upgrade with explicit opt-out
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, {
+      includeGitignore: false,
+    });
+
+    assertEquals(result.gitignoreAction, "skipped");
+
+    // Marker should persist the opt-out
+    const marker = await upgradeService.getMarker(repoPath);
+    assertEquals(marker!.gitignoreManaged, false);
+  });
+});
+
+Deno.test("RepoService.upgrade without flag honors marker gitignoreManaged true", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with gitignore (sets gitignoreManaged: true)
+    await service.init(repoPath, { includeGitignore: true });
+
+    // Upgrade without specifying flag — should honor marker
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.gitignoreAction, "unchanged");
+  });
+});
+
+Deno.test("RepoService.upgrade without flag and no marker gitignoreManaged skips", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init without gitignore (no gitignoreManaged in marker)
+    await service.init(repoPath);
+
+    // Upgrade without specifying flag — should skip
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.gitignoreAction, "skipped");
   });
 });

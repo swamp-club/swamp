@@ -42,6 +42,7 @@ export interface RepoMarkerData {
   telemetryKeepFlushed?: boolean;
   tool?: AiTool;
   logLevel?: string;
+  gitignoreManaged?: boolean;
 }
 
 /**

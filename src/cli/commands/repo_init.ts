@@ -46,8 +46,13 @@ export async function repoInitAction(
   const repoPath = RepoPath.create(pathArg ?? ".");
   const service = new RepoService(VERSION);
   const tool = (options.tool as AiTool) ?? "claude";
+  const includeGitignore = options.includeGitignore as boolean | undefined;
 
-  const result = await service.init(repoPath, { force: options.force, tool });
+  const result = await service.init(repoPath, {
+    force: options.force,
+    tool,
+    includeGitignore,
+  });
 
   ctx.logger.debug`Repository initialized: ${result.path}`;
 
@@ -76,6 +81,7 @@ export const repoInitCommand = new Command()
     "AI coding tool to configure for (claude, cursor, opencode, codex)",
     { default: "claude" },
   )
+  .option("--include-gitignore", "Manage a swamp section in .gitignore")
   .action(repoInitAction);
 
 export const repoUpgradeCommand = new Command()
@@ -86,6 +92,7 @@ export const repoUpgradeCommand = new Command()
     "-t, --tool <tool:aiTool>",
     "Switch to a different AI coding tool",
   )
+  .option("--include-gitignore", "Manage a swamp section in .gitignore")
   .action(async function (options: AnyOptions, pathArg?: string) {
     const ctx = createContext(options as GlobalOptions, ["repo", "upgrade"]);
     ctx.logger.debug`Upgrading repository at: ${pathArg ?? "."}`;
@@ -93,8 +100,12 @@ export const repoUpgradeCommand = new Command()
     const repoPath = RepoPath.create(pathArg ?? ".");
     const service = new RepoService(VERSION);
     const tool = options.tool as AiTool | undefined;
+    const includeGitignore = options.includeGitignore as boolean | undefined;
 
-    const result = await service.upgrade(repoPath, { tool });
+    const result = await service.upgrade(repoPath, {
+      tool,
+      includeGitignore,
+    });
 
     ctx.logger.debug`Repository upgraded: ${result.path}`;
 
@@ -124,6 +135,7 @@ export const repoCommand = new Command()
     "AI coding tool to configure for (claude, cursor, opencode, codex)",
     { default: "claude" },
   )
+  .option("--include-gitignore", "Manage a swamp section in .gitignore")
   .action(repoInitAction)
   .command(
     "init",
@@ -138,6 +150,7 @@ export const repoCommand = new Command()
         "AI coding tool to configure for (claude, cursor, opencode, codex)",
         { default: "claude" },
       )
+      .option("--include-gitignore", "Manage a swamp section in .gitignore")
       .action(repoInitAction),
   )
   .command("upgrade", repoUpgradeCommand)
