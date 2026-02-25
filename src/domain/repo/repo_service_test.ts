@@ -403,25 +403,30 @@ Deno.test("RepoService.init generates CLAUDE.md with skills section", async () =
   });
 });
 
-Deno.test("RepoService.init creates .gitignore", async () => {
+Deno.test("RepoService.init creates .gitignore with managed section", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
 
-    assertEquals(result.gitignoreCreated, true);
+    assertEquals(result.gitignoreAction, "created");
 
-    // Check .gitignore exists and has expected content
+    // Check .gitignore exists and has expected content with markers
     const gitignorePath = join(tempDir, ".gitignore");
     const content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(
+      content,
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
+    assertStringIncludes(content, "# END swamp managed section");
     assertStringIncludes(content, ".swamp/telemetry/");
     assertStringIncludes(content, ".swamp/secrets/keyfile");
     assertStringIncludes(content, ".claude/");
   });
 });
 
-Deno.test("RepoService.init does not overwrite existing .gitignore", async () => {
+Deno.test("RepoService.init appends managed section to existing .gitignore", async () => {
   await withTempDir(async (tempDir) => {
     // Create existing .gitignore
     const gitignorePath = join(tempDir, ".gitignore");
@@ -435,37 +440,33 @@ Deno.test("RepoService.init does not overwrite existing .gitignore", async () =>
 
     const result = await service.init(repoPath);
 
-    assertEquals(result.gitignoreCreated, false);
+    assertEquals(result.gitignoreAction, "updated");
 
-    // Check content is unchanged
+    // Check user content is preserved and managed section is appended
     const content = await Deno.readTextFile(gitignorePath);
-    assertEquals(content, "# My existing gitignore\nnode_modules/\n");
+    assertStringIncludes(content, "# My existing gitignore");
+    assertStringIncludes(content, "node_modules/");
+    assertStringIncludes(
+      content,
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
+    assertStringIncludes(content, ".swamp/telemetry/");
+    assertStringIncludes(content, "# END swamp managed section");
   });
 });
 
-Deno.test("RepoService.init with force does not overwrite existing .gitignore", async () => {
+Deno.test("RepoService.init with force returns unchanged when section is current", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    // First init
+    // First init creates .gitignore with managed section
     await service.init(repoPath);
 
-    // Modify .gitignore with custom content
-    const gitignorePath = join(tempDir, ".gitignore");
-    await Deno.writeTextFile(
-      gitignorePath,
-      "# Custom gitignore\nmy-custom-file.txt\n",
-    );
-
-    // Second init with force
+    // Second init with force — section already matches
     const result = await service.init(repoPath, { force: true });
 
-    assertEquals(result.gitignoreCreated, false);
-
-    // Check content is unchanged
-    const content = await Deno.readTextFile(gitignorePath);
-    assertEquals(content, "# Custom gitignore\nmy-custom-file.txt\n");
+    assertEquals(result.gitignoreAction, "unchanged");
   });
 });
 
@@ -736,28 +737,33 @@ Deno.test("RepoService.upgrade creates .gitignore if missing", async () => {
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
 
-    assertEquals(result.gitignoreCreated, true);
+    assertEquals(result.gitignoreAction, "created");
 
     const content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(
+      content,
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
     assertStringIncludes(content, ".swamp/telemetry/");
     assertStringIncludes(content, ".swamp/secrets/keyfile");
     assertStringIncludes(content, ".claude/");
+    assertStringIncludes(content, "# END swamp managed section");
   });
 });
 
-Deno.test("RepoService.upgrade does not overwrite existing .gitignore", async () => {
+Deno.test("RepoService.upgrade returns unchanged when section is current", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    // Init creates .gitignore
+    // Init creates .gitignore with managed section
     await service.init(repoPath);
 
-    // Upgrade should leave .gitignore unchanged
+    // Upgrade — section already matches
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
 
-    assertEquals(result.gitignoreCreated, false);
+    assertEquals(result.gitignoreAction, "unchanged");
   });
 });
 
@@ -804,9 +810,195 @@ Deno.test("RepoService.init tool-specific gitignore entries", async () => {
         expectedEntry,
         `${tool} gitignore should include ${expectedEntry}`,
       );
-      // All tools should have common entries
+      // All tools should have common entries within managed section
       assertStringIncludes(content, ".swamp/telemetry/");
       assertStringIncludes(content, ".swamp/secrets/keyfile");
+      assertStringIncludes(
+        content,
+        "# BEGIN swamp managed section - DO NOT EDIT",
+      );
+      assertStringIncludes(content, "# END swamp managed section");
     });
   }
+});
+
+// Managed .gitignore section tests
+
+Deno.test("RepoService.init preserves user content before managed section", async () => {
+  await withTempDir(async (tempDir) => {
+    const gitignorePath = join(tempDir, ".gitignore");
+    await Deno.writeTextFile(gitignorePath, "node_modules/\ndist/\n");
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const content = await Deno.readTextFile(gitignorePath);
+    // User content comes first
+    const beginIndex = content.indexOf(
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
+    const userContentIndex = content.indexOf("node_modules/");
+    assertEquals(userContentIndex < beginIndex, true);
+    assertStringIncludes(content, "dist/");
+  });
+});
+
+Deno.test("RepoService.init replaces managed section on tool switch", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with claude
+    await service.init(repoPath);
+    const gitignorePath = join(tempDir, ".gitignore");
+    let content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(content, ".claude/");
+
+    // Re-init with cursor (force)
+    const result = await service.init(repoPath, {
+      force: true,
+      tool: "cursor",
+    });
+
+    assertEquals(result.gitignoreAction, "updated");
+    content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(content, ".cursor/skills/");
+    // Old tool entry should be replaced
+    assertEquals(content.includes(".claude/"), false);
+  });
+});
+
+Deno.test("RepoService.upgrade updates managed section on tool switch", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with claude
+    await service.init(repoPath);
+
+    // Add user content after the managed section
+    const gitignorePath = join(tempDir, ".gitignore");
+    const original = await Deno.readTextFile(gitignorePath);
+    await Deno.writeTextFile(gitignorePath, original + "*.log\n");
+
+    // Upgrade with tool switch to cursor
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "cursor" });
+
+    assertEquals(result.gitignoreAction, "updated");
+    const content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(content, ".cursor/skills/");
+    // User content after section is preserved
+    assertStringIncludes(content, "*.log");
+  });
+});
+
+Deno.test("RepoService.init handles .gitignore without trailing newline", async () => {
+  await withTempDir(async (tempDir) => {
+    const gitignorePath = join(tempDir, ".gitignore");
+    await Deno.writeTextFile(gitignorePath, "node_modules/"); // no trailing newline
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath);
+
+    assertEquals(result.gitignoreAction, "updated");
+    const content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(content, "node_modules/");
+    assertStringIncludes(
+      content,
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
+    // Ensure there's separation between user content and managed section
+    assertEquals(content.includes("node_modules/\n\n#"), true);
+  });
+});
+
+Deno.test("RepoService.init migrates legacy gitignore format", async () => {
+  await withTempDir(async (tempDir) => {
+    // Create legacy-format .gitignore (as old swamp would have created it)
+    const gitignorePath = join(tempDir, ".gitignore");
+    const legacyContent = `# Swamp managed defaults
+# Feel free to modify this file to suit your needs
+
+# Local telemetry (not needed for reconstruction)
+.swamp/telemetry/
+
+# Encryption keyfile (NEVER commit - allows decrypting secrets)
+.swamp/secrets/keyfile
+
+# Cached extension bundles (regenerated at runtime)
+.swamp/bundles/
+
+# Claude Code configuration (managed by swamp)
+.claude/
+`;
+    await Deno.writeTextFile(gitignorePath, legacyContent);
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath);
+
+    assertEquals(result.gitignoreAction, "updated");
+    const content = await Deno.readTextFile(gitignorePath);
+    // Legacy header should be replaced by markers
+    assertEquals(content.includes("# Swamp managed defaults"), false);
+    assertStringIncludes(
+      content,
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
+    assertStringIncludes(content, "# END swamp managed section");
+    assertStringIncludes(content, ".swamp/telemetry/");
+    assertStringIncludes(content, ".claude/");
+  });
+});
+
+Deno.test("RepoService.init migrates legacy gitignore with user additions", async () => {
+  await withTempDir(async (tempDir) => {
+    // Create legacy-format .gitignore with user additions after it
+    const gitignorePath = join(tempDir, ".gitignore");
+    const legacyContent = `# Swamp managed defaults
+# Feel free to modify this file to suit your needs
+
+# Local telemetry (not needed for reconstruction)
+.swamp/telemetry/
+
+# Encryption keyfile (NEVER commit - allows decrypting secrets)
+.swamp/secrets/keyfile
+
+# Cached extension bundles (regenerated at runtime)
+.swamp/bundles/
+
+# Claude Code configuration (managed by swamp)
+.claude/
+# My custom additions
+*.log
+build/
+`;
+    await Deno.writeTextFile(gitignorePath, legacyContent);
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath);
+
+    assertEquals(result.gitignoreAction, "updated");
+    const content = await Deno.readTextFile(gitignorePath);
+    // Legacy header should be replaced
+    assertEquals(content.includes("# Swamp managed defaults"), false);
+    // New markers should be present
+    assertStringIncludes(
+      content,
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
+    assertStringIncludes(content, "# END swamp managed section");
+    // User additions should be preserved
+    assertStringIncludes(content, "# My custom additions");
+    assertStringIncludes(content, "*.log");
+    assertStringIncludes(content, "build/");
+  });
 });

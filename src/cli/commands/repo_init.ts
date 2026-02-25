@@ -58,7 +58,7 @@ export async function repoInitAction(
     skillsCopied: result.skillsCopied,
     instructionsFileCreated: result.instructionsFileCreated,
     settingsCreated: result.settingsCreated,
-    gitignoreCreated: result.gitignoreCreated,
+    gitignoreAction: result.gitignoreAction,
     tool: result.tool,
   };
 
@@ -105,7 +105,7 @@ export const repoUpgradeCommand = new Command()
       upgradedAt: result.upgradedAt,
       skillsUpdated: result.skillsUpdated,
       settingsUpdated: result.settingsUpdated,
-      gitignoreCreated: result.gitignoreCreated,
+      gitignoreAction: result.gitignoreAction,
       tool: result.tool,
     };
 

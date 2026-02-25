@@ -37,6 +37,17 @@ import { UserError } from "../errors.ts";
 export type { AiTool } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
 const GITIGNORE_FILENAME = ".gitignore";
+const GITIGNORE_SECTION_BEGIN = "# BEGIN swamp managed section - DO NOT EDIT";
+const GITIGNORE_SECTION_END = "# END swamp managed section";
+const GITIGNORE_LEGACY_HEADER = "# Swamp managed defaults";
+
+/**
+ * Describes what happened to the .gitignore during init/upgrade.
+ * - "created": a new .gitignore file was created with the managed section
+ * - "updated": an existing .gitignore had its managed section added or refreshed
+ * - "unchanged": the managed section already existed and was up-to-date
+ */
+export type GitignoreAction = "created" | "updated" | "unchanged";
 
 const SKILL_DIRS: Record<AiTool, string> = {
   claude: ".claude/skills",
@@ -69,7 +80,7 @@ export interface RepoInitResult {
   skillsCopied: string[];
   instructionsFileCreated: boolean;
   settingsCreated: boolean;
-  gitignoreCreated: boolean;
+  gitignoreAction: GitignoreAction;
   tool: AiTool;
 }
 
@@ -83,7 +94,7 @@ export interface RepoUpgradeResult {
   upgradedAt: string;
   skillsUpdated: string[];
   settingsUpdated: boolean;
-  gitignoreCreated: boolean;
+  gitignoreAction: GitignoreAction;
   tool: AiTool;
 }
 
@@ -169,8 +180,8 @@ export class RepoService {
       settingsCreated = await this.createClaudeSettingsIfNotExists(repoPath);
     }
 
-    // Create .gitignore if it doesn't exist
-    const gitignoreCreated = await this.createGitignoreIfNotExists(
+    // Ensure .gitignore has swamp managed section
+    const gitignoreAction = await this.ensureGitignoreSection(
       repoPath,
       tool,
     );
@@ -182,7 +193,7 @@ export class RepoService {
       skillsCopied,
       instructionsFileCreated,
       settingsCreated,
-      gitignoreCreated,
+      gitignoreAction,
       tool,
     };
   }
@@ -232,8 +243,8 @@ export class RepoService {
       settingsUpdated = await this.updateClaudeSettings(repoPath);
     }
 
-    // Create .gitignore if it doesn't exist
-    const gitignoreCreated = await this.createGitignoreIfNotExists(
+    // Ensure .gitignore has swamp managed section
+    const gitignoreAction = await this.ensureGitignoreSection(
       repoPath,
       tool,
     );
@@ -252,7 +263,7 @@ export class RepoService {
       upgradedAt: updatedMarker.upgradedAt,
       skillsUpdated,
       settingsUpdated,
-      gitignoreCreated,
+      gitignoreAction,
       tool,
     };
   }
@@ -342,47 +353,177 @@ ${body}`;
   }
 
   /**
-   * Creates .gitignore if it doesn't already exist.
+   * Ensures the .gitignore contains an up-to-date swamp managed section.
+   *
+   * - If no .gitignore exists: creates one with the managed section.
+   * - If .gitignore exists without a swamp section: appends the managed section.
+   * - If .gitignore exists with a swamp section: replaces the section if content differs.
+   * - If .gitignore has legacy format (pre-marker): migrates to managed section.
    */
-  private async createGitignoreIfNotExists(
+  private async ensureGitignoreSection(
     repoPath: RepoPath,
     tool: AiTool,
-  ): Promise<boolean> {
+  ): Promise<GitignoreAction> {
     const gitignorePath = join(repoPath.value, GITIGNORE_FILENAME);
+    const newSection = this.buildGitignoreSection(tool);
 
+    let existingContent: string | null = null;
     try {
-      await Deno.stat(gitignorePath);
-      // File exists, don't overwrite
-      return false;
+      existingContent = await Deno.readTextFile(gitignorePath);
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        // Create the file
-        const content = this.generateGitignoreContent(tool);
-        await Deno.writeTextFile(gitignorePath, content);
-        return true;
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
       }
-      throw error;
     }
+
+    // Case 1: No .gitignore exists — create new file
+    if (existingContent === null) {
+      await Deno.writeTextFile(gitignorePath, newSection + "\n");
+      return "created";
+    }
+
+    // Case 2: File exists with markers — replace managed section
+    if (existingContent.includes(GITIGNORE_SECTION_BEGIN)) {
+      const updatedContent = this.replaceManagedSection(
+        existingContent,
+        newSection,
+      );
+      if (updatedContent === existingContent) {
+        return "unchanged";
+      }
+      await atomicWriteTextFile(gitignorePath, updatedContent);
+      return "updated";
+    }
+
+    // Case 3: File exists with legacy header — migrate
+    if (existingContent.includes(GITIGNORE_LEGACY_HEADER)) {
+      const updatedContent = this.migrateLegacyGitignore(
+        existingContent,
+        newSection,
+      );
+      await atomicWriteTextFile(gitignorePath, updatedContent);
+      return "updated";
+    }
+
+    // Case 4: File exists without any swamp content — append section
+    const separator = existingContent.endsWith("\n") ? "\n" : "\n\n";
+    await atomicWriteTextFile(
+      gitignorePath,
+      existingContent + separator + newSection + "\n",
+    );
+    return "updated";
   }
 
   /**
-   * Generates the content for .gitignore.
+   * Builds the full managed section including BEGIN/END markers.
    */
-  private generateGitignoreContent(tool: AiTool): string {
-    return `# Swamp managed defaults
-# Feel free to modify this file to suit your needs
+  private buildGitignoreSection(tool: AiTool): string {
+    const body = this.generateGitignoreSectionBody(tool);
+    return GITIGNORE_SECTION_BEGIN + "\n" + body + GITIGNORE_SECTION_END;
+  }
 
-# Local telemetry (not needed for reconstruction)
-.swamp/telemetry/
+  /**
+   * Generates the content between markers (not including the markers).
+   */
+  private generateGitignoreSectionBody(tool: AiTool): string {
+    return [
+      "",
+      "# Local telemetry (not needed for reconstruction)",
+      ".swamp/telemetry/",
+      "",
+      "# Encryption keyfile (NEVER commit - allows decrypting secrets)",
+      ".swamp/secrets/keyfile",
+      "",
+      "# Cached extension bundles (regenerated at runtime)",
+      ".swamp/bundles/",
+      "",
+      GITIGNORE_TOOL_ENTRIES[tool],
+      "",
+    ].join("\n");
+  }
 
-# Encryption keyfile (NEVER commit - allows decrypting secrets)
-.swamp/secrets/keyfile
+  /**
+   * Replaces the managed section between BEGIN and END markers.
+   * Preserves all content outside the markers exactly as-is.
+   */
+  private replaceManagedSection(
+    content: string,
+    newSection: string,
+  ): string {
+    const beginIndex = content.indexOf(GITIGNORE_SECTION_BEGIN);
+    const endIndex = content.indexOf(GITIGNORE_SECTION_END);
 
-# Cached extension bundles (regenerated at runtime)
-.swamp/bundles/
+    if (beginIndex === -1 || endIndex === -1) {
+      throw new Error("Internal error: managed section markers not found");
+    }
 
-${GITIGNORE_TOOL_ENTRIES[tool]}
-`;
+    const endOfEndMarker = endIndex + GITIGNORE_SECTION_END.length;
+    // Consume the trailing newline after END marker if present
+    const nextChar = content[endOfEndMarker];
+    const endSlice = nextChar === "\n" ? endOfEndMarker + 1 : endOfEndMarker;
+
+    const before = content.substring(0, beginIndex);
+    const after = content.substring(endSlice);
+
+    return before + newSection + "\n" + after;
+  }
+
+  /**
+   * Migrates a legacy .gitignore (with "Swamp managed defaults" header
+   * but no section markers) to the new managed section format.
+   * Replaces the legacy swamp block; preserves user content after it.
+   */
+  private migrateLegacyGitignore(
+    content: string,
+    newSection: string,
+  ): string {
+    const lines = content.split("\n");
+    const headerLineIndex = lines.findIndex((l) =>
+      l.includes(GITIGNORE_LEGACY_HEADER)
+    );
+
+    if (headerLineIndex === -1) {
+      throw new Error("Internal error: legacy header not found");
+    }
+
+    // Scan forward from the header to find the end of the legacy block.
+    // The legacy block consists of comments and entries that match known patterns.
+    const swampPatterns = [
+      ".swamp/telemetry/",
+      ".swamp/secrets/keyfile",
+      ".swamp/bundles/",
+      ".claude/",
+      ".cursor/skills/",
+      ".agents/skills/",
+      "# Feel free to modify",
+      "# Local telemetry",
+      "# Encryption keyfile",
+      "# Cached extension bundles",
+      "# Claude Code configuration",
+      "# Cursor skills",
+      "# Agent skills",
+      "# Swamp managed defaults",
+    ];
+
+    let legacyEndIndex = headerLineIndex;
+    for (let i = headerLineIndex; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (
+        trimmed === "" || swampPatterns.some((p) => trimmed.includes(p))
+      ) {
+        legacyEndIndex = i;
+      } else {
+        break;
+      }
+    }
+
+    const before = lines.slice(0, headerLineIndex).join("\n");
+    const after = lines.slice(legacyEndIndex + 1).join("\n");
+
+    const prefix = before.length > 0 ? before + "\n" : "";
+    const suffix = after.length > 0 ? "\n" + after : "\n";
+
+    return prefix + newSection + suffix;
   }
 
   /**
