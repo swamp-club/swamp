@@ -17,17 +17,24 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Command } from "@cliffy/command";
-import { extensionPushCommand } from "./extension_push.ts";
-import { extensionPullCommand } from "./extension_pull.ts";
-import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 
-export const extensionCommand = new Command()
-  .name("extension")
-  .description("Manage swamp extensions")
-  .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
-  .command("push", extensionPushCommand)
-  .command("pull", extensionPullCommand);
+/**
+ * Resolves the models directory path.
+ * Priority: SWAMP_MODELS_DIR env var > .swamp.yaml config > default "extensions/models"
+ */
+export function resolveModelsDir(marker: RepoMarkerData | null): string {
+  // Environment variable takes highest priority
+  const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
+  if (envModelsDir) {
+    return envModelsDir;
+  }
+
+  // Then .swamp.yaml config
+  if (marker?.modelsDir) {
+    return marker.modelsDir;
+  }
+
+  // Default
+  return "extensions/models";
+}

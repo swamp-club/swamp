@@ -75,14 +75,15 @@ export class ExtensionApiClient {
    */
   async getLatestVersion(
     name: string,
-    apiKey: string,
+    apiKey?: string,
   ): Promise<LatestVersionInfo | null> {
     const encodedName = encodeURIComponent(name);
+    const headers = apiKey ? this.authHeaders(apiKey) : {};
     const res = await this.fetch(
       `/api/v1/extensions/${encodedName}/latest`,
       {
         method: "GET",
-        headers: this.authHeaders(apiKey),
+        headers,
       },
     );
 
@@ -205,10 +206,15 @@ export class ExtensionApiClient {
    * Get extension metadata by name.
    * Returns null if not found.
    */
-  async getExtension(name: string): Promise<ExtensionInfo | null> {
+  async getExtension(
+    name: string,
+    apiKey?: string,
+  ): Promise<ExtensionInfo | null> {
     const encodedName = encodeURIComponent(name);
+    const headers = apiKey ? this.authHeaders(apiKey) : {};
     const res = await this.fetch(`/api/v1/extensions/${encodedName}`, {
       method: "GET",
+      headers,
     });
 
     if (res.status === 404) {
@@ -227,13 +233,16 @@ export class ExtensionApiClient {
   async getDownloadUrl(
     name: string,
     version: string,
+    apiKey?: string,
   ): Promise<string | null> {
     const encodedName = encodeURIComponent(name);
+    const headers = apiKey ? this.authHeaders(apiKey) : {};
     const res = await this.fetch(
       `/api/v1/extensions/${encodedName}@${version}/download`,
       {
         method: "GET",
         redirect: "manual",
+        headers,
       },
     );
 
@@ -250,6 +259,41 @@ export class ExtensionApiClient {
 
     await this.checkResponse(res);
     return null;
+  }
+
+  /**
+   * Download the extension archive for a specific version.
+   * Returns the raw archive bytes.
+   */
+  async downloadArchive(
+    name: string,
+    version: string,
+    apiKey?: string,
+  ): Promise<Uint8Array> {
+    const downloadUrl = await this.getDownloadUrl(name, version, apiKey);
+    if (!downloadUrl) {
+      throw new UserError(
+        `Extension ${name}@${version} not found in the registry.`,
+      );
+    }
+    try {
+      const res = await fetch(downloadUrl, {
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!res.ok) {
+        throw new UserError(
+          `Failed to download extension archive (HTTP ${res.status}).`,
+        );
+      }
+      return new Uint8Array(await res.arrayBuffer());
+    } catch (error) {
+      if (error instanceof UserError) throw error;
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new UserError("Extension download timed out.");
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(`Extension download failed: ${message}`);
+    }
   }
 
   private authHeaders(apiKey: string): Record<string, string> {

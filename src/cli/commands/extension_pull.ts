@@ -1,0 +1,598 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { Command } from "@cliffy/command";
+import { basename, dirname, join, relative, resolve } from "@std/path";
+import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
+import { resolveModelsDir } from "../resolve_models_dir.ts";
+import {
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { UserError } from "../../domain/errors.ts";
+import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
+import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  renderExtensionPull,
+  renderExtensionPullCancelled,
+  renderExtensionPullConflicts,
+  renderExtensionPullDependencyPull,
+  renderExtensionPullResolved,
+  renderExtensionPullSafetyErrors,
+  renderExtensionPullSafetyWarnings,
+} from "../../presentation/output/extension_pull_output.ts";
+
+// deno-lint-ignore no-explicit-any
+type AnyOptions = any;
+
+const DEFAULT_SERVER_URL = "https://swamp.club";
+const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
+const MAX_DEPENDENCY_DEPTH = 10;
+const LOCK_RETRY_COUNT = 10;
+const LOCK_RETRY_DELAY_MS = 100;
+
+/** Parsed extension reference from CLI argument. */
+interface ExtensionRef {
+  name: string;
+  version: string | null;
+}
+
+/** Entry in upstream_extensions.json. */
+interface UpstreamExtensionEntry {
+  version: string;
+  pulledAt: string;
+}
+
+/** Shape of upstream_extensions.json. */
+type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
+
+/**
+ * Parses an extension reference string into name and optional version.
+ *
+ * Examples:
+ * - `@ns/name` → `{ name: "@ns/name", version: null }`
+ * - `@ns/name@2026.02.26.1` → `{ name: "@ns/name", version: "2026.02.26.1" }`
+ */
+export function parseExtensionRef(ref: string): ExtensionRef {
+  if (!ref.startsWith("@")) {
+    throw new UserError(
+      `Invalid extension name: "${ref}". Extension names must start with "@" (e.g., @namespace/name).`,
+    );
+  }
+
+  // Find the version separator '@' after the initial '@'
+  const versionSepIdx = ref.indexOf("@", 1);
+  if (versionSepIdx === -1) {
+    return { name: ref, version: null };
+  }
+
+  const name = ref.slice(0, versionSepIdx);
+  const version = ref.slice(versionSepIdx + 1);
+
+  if (!version) {
+    throw new UserError(
+      `Invalid extension reference: "${ref}". Version cannot be empty after "@".`,
+    );
+  }
+
+  return { name, version };
+}
+
+/**
+ * Resolves the registry server URL.
+ * Priority: SWAMP_CLUB_URL env var > default "https://swamp.club"
+ */
+function resolveServerUrl(): string {
+  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL;
+}
+
+async function promptConfirmation(message: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  await Deno.stdout.write(encoder.encode(`${message} [y/N] `));
+
+  const buf = new Uint8Array(1024);
+  const n = await Deno.stdin.read(buf);
+  if (n === null) return false;
+
+  const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
+  return response === "y" || response === "yes";
+}
+
+/**
+ * Acquires an advisory lockfile. Retries with short backoff.
+ * Returns a cleanup function to release the lock.
+ */
+async function acquireLock(lockPath: string): Promise<Deno.FsFile> {
+  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
+    try {
+      const file = await Deno.open(lockPath, {
+        create: true,
+        createNew: true,
+        write: true,
+      });
+      return file;
+    } catch (error) {
+      if (error instanceof Deno.errors.AlreadyExists) {
+        if (attempt < LOCK_RETRY_COUNT - 1) {
+          await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
+          continue;
+        }
+        throw new UserError(
+          "Could not acquire lock on upstream_extensions.json. Another pull may be in progress. Please retry.",
+        );
+      }
+      throw error;
+    }
+  }
+  // Unreachable, but satisfies TypeScript
+  throw new UserError("Could not acquire lock on upstream_extensions.json.");
+}
+
+/**
+ * Updates upstream_extensions.json with a new entry, using a lockfile
+ * for concurrency safety and atomicWriteTextFile for crash safety.
+ */
+async function updateUpstreamExtensions(
+  modelsDir: string,
+  name: string,
+  version: string,
+): Promise<void> {
+  const jsonPath = join(modelsDir, "upstream_extensions.json");
+  const lockPath = `${jsonPath}.lock`;
+
+  const lockFile = await acquireLock(lockPath);
+  try {
+    // Read current state
+    let data: UpstreamExtensionsMap = {};
+    try {
+      const content = await Deno.readTextFile(jsonPath);
+      data = JSON.parse(content) as UpstreamExtensionsMap;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    // Merge new entry
+    data[name] = {
+      version,
+      pulledAt: new Date().toISOString(),
+    };
+
+    // Write atomically
+    await atomicWriteTextFile(jsonPath, JSON.stringify(data, null, 2) + "\n");
+  } finally {
+    lockFile.close();
+    try {
+      await Deno.remove(lockPath);
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+}
+
+/**
+ * Checks if a file exists at the given path.
+ */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Recursively copies a directory's contents, returning list of relative dest paths.
+ */
+async function copyDir(
+  srcDir: string,
+  destDir: string,
+  repoDir: string,
+): Promise<string[]> {
+  const extracted: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(srcDir)) {
+      const srcPath = join(srcDir, entry.name);
+      const destPath = join(destDir, entry.name);
+      if (entry.isDirectory) {
+        await Deno.mkdir(destPath, { recursive: true });
+        const sub = await copyDir(srcPath, destPath, repoDir);
+        extracted.push(...sub);
+      } else if (entry.isFile) {
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.copyFile(srcPath, destPath);
+        extracted.push(relative(repoDir, destPath));
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) {
+      throw error;
+    }
+  }
+  return extracted;
+}
+
+/**
+ * Lists all files recursively under a directory.
+ */
+async function listFiles(dir: string): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory) {
+        files.push(...await listFiles(path));
+      } else if (entry.isFile) {
+        files.push(path);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) {
+      throw error;
+    }
+  }
+  return files;
+}
+
+/**
+ * Detects files that already exist at target paths.
+ */
+async function detectConflicts(
+  extractDir: string,
+  modelsDir: string,
+  workflowsDir: string,
+  bundlesDir: string,
+  repoDir: string,
+): Promise<string[]> {
+  const conflicts: string[] = [];
+
+  // Check models
+  const modelsSrc = join(extractDir, "models");
+  for (const file of await listFiles(modelsSrc)) {
+    const relPath = relative(modelsSrc, file);
+    const destPath = join(modelsDir, relPath);
+    if (await fileExists(destPath)) {
+      conflicts.push(relative(repoDir, destPath));
+    }
+  }
+
+  // Check workflows
+  const workflowsSrc = join(extractDir, "workflows");
+  for (const file of await listFiles(workflowsSrc)) {
+    const destPath = join(workflowsDir, basename(file));
+    if (await fileExists(destPath)) {
+      conflicts.push(relative(repoDir, destPath));
+    }
+  }
+
+  // Check bundles
+  const bundlesSrc = join(extractDir, "bundles");
+  for (const file of await listFiles(bundlesSrc)) {
+    const destPath = join(bundlesDir, basename(file));
+    if (await fileExists(destPath)) {
+      conflicts.push(relative(repoDir, destPath));
+    }
+  }
+
+  // Check additional files
+  const filesSrc = join(extractDir, "files");
+  for (const file of await listFiles(filesSrc)) {
+    const relPath = relative(filesSrc, file);
+    const destPath = join(modelsDir, relPath);
+    if (await fileExists(destPath)) {
+      conflicts.push(relative(repoDir, destPath));
+    }
+  }
+
+  return conflicts;
+}
+
+interface PullContext {
+  extensionClient: ExtensionApiClient;
+  modelsDir: string;
+  repoDir: string;
+  force: boolean;
+  outputMode: "log" | "json";
+  alreadyPulled: Set<string>;
+  depth: number;
+}
+
+/**
+ * Core pull logic, called recursively for dependencies.
+ */
+async function pullExtension(
+  ref: ExtensionRef,
+  ctx: PullContext,
+): Promise<void> {
+  const { extensionClient, modelsDir, repoDir, outputMode } = ctx;
+
+  // Guard against circular deps
+  if (ctx.alreadyPulled.has(ref.name)) {
+    return;
+  }
+
+  if (ctx.depth > MAX_DEPENDENCY_DEPTH) {
+    throw new UserError(
+      `Dependency depth exceeds maximum of ${MAX_DEPENDENCY_DEPTH}. Possible circular dependency.`,
+    );
+  }
+
+  ctx.alreadyPulled.add(ref.name);
+
+  // Get extension metadata (unauthenticated) — also resolves latest version
+  const extInfo = await extensionClient.getExtension(ref.name);
+  if (!extInfo) {
+    throw new UserError(
+      `Extension ${ref.name} not found in the registry.`,
+    );
+  }
+
+  // Resolve version: use explicit version or latest from metadata
+  const version = ref.version ?? extInfo.latestVersion;
+  if (!version) {
+    throw new UserError(
+      `Extension ${ref.name} has no published versions.`,
+    );
+  }
+
+  renderExtensionPullResolved(
+    {
+      name: ref.name,
+      version,
+      description: extInfo.description,
+    },
+    outputMode,
+  );
+
+  // Download archive
+  const archiveBytes = await extensionClient.downloadArchive(
+    ref.name,
+    version,
+  );
+
+  // Extract to temp dir
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_pull_" });
+  try {
+    // Write archive to temp file
+    const archivePath = join(tmpDir, "extension.tar.gz");
+    await Deno.writeFile(archivePath, archiveBytes);
+
+    // Extract using tar
+    const tarCommand = new Deno.Command("tar", {
+      args: ["-xzf", archivePath, "-C", tmpDir],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const tarOutput = await tarCommand.output();
+    if (!tarOutput.success) {
+      const stderr = new TextDecoder().decode(tarOutput.stderr);
+      throw new UserError(`Failed to extract archive: ${stderr}`);
+    }
+
+    const extractDir = join(tmpDir, "extension");
+
+    // Parse manifest
+    let manifestContent: string;
+    try {
+      manifestContent = await Deno.readTextFile(
+        join(extractDir, "manifest.yaml"),
+      );
+    } catch {
+      throw new UserError(
+        "Downloaded archive is missing manifest.yaml. The extension may be corrupt.",
+      );
+    }
+    const manifest = parseExtensionManifest(manifestContent);
+
+    // Safety analysis on .ts files
+    const tsFiles = (await listFiles(join(extractDir, "models"))).filter((f) =>
+      f.endsWith(".ts")
+    );
+    if (tsFiles.length > 0) {
+      const safetyResult = await analyzeExtensionSafety(tsFiles);
+
+      if (safetyResult.errors.length > 0) {
+        renderExtensionPullSafetyErrors(safetyResult.errors, outputMode);
+        throw new UserError(
+          "Extension has safety errors. Pull aborted.",
+        );
+      }
+
+      if (safetyResult.warnings.length > 0) {
+        renderExtensionPullSafetyWarnings(safetyResult.warnings, outputMode);
+      }
+    }
+
+    // Detect file conflicts
+    const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const workflowsDir = resolve(repoDir, "workflows");
+    const bundlesDir = swampPath(repoDir, "bundles");
+
+    const conflicts = await detectConflicts(
+      extractDir,
+      absoluteModelsDir,
+      workflowsDir,
+      bundlesDir,
+      repoDir,
+    );
+
+    if (conflicts.length > 0 && !ctx.force) {
+      renderExtensionPullConflicts(conflicts, outputMode);
+      if (outputMode === "json") {
+        throw new UserError(
+          "Files already exist. Use --force to overwrite.",
+        );
+      }
+      const confirmed = await promptConfirmation(
+        "Overwrite existing files?",
+      );
+      if (!confirmed) {
+        renderExtensionPullCancelled(outputMode);
+        return;
+      }
+    }
+
+    // Copy files to their destinations
+    const extractedFiles: string[] = [];
+
+    // Models → modelsDir
+    const modelsExtracted = await copyDir(
+      join(extractDir, "models"),
+      absoluteModelsDir,
+      repoDir,
+    );
+    extractedFiles.push(...modelsExtracted);
+
+    // Workflows → workflows/
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    const workflowsExtracted = await copyDir(
+      join(extractDir, "workflows"),
+      workflowsDir,
+      repoDir,
+    );
+    extractedFiles.push(...workflowsExtracted);
+
+    // Bundles → .swamp/bundles/
+    await Deno.mkdir(bundlesDir, { recursive: true });
+    const bundlesExtracted = await copyDir(
+      join(extractDir, "bundles"),
+      bundlesDir,
+      repoDir,
+    );
+    extractedFiles.push(...bundlesExtracted);
+
+    // Additional files → modelsDir
+    const filesExtracted = await copyDir(
+      join(extractDir, "files"),
+      absoluteModelsDir,
+      repoDir,
+    );
+    extractedFiles.push(...filesExtracted);
+
+    // Update upstream_extensions.json
+    await updateUpstreamExtensions(absoluteModelsDir, ref.name, version);
+
+    // Render success
+    renderExtensionPull(
+      { name: ref.name, version, extractedFiles },
+      outputMode,
+    );
+
+    // Pull dependencies recursively
+    if (manifest.dependencies.length > 0) {
+      for (const dep of manifest.dependencies) {
+        // Check if already pulled in this session or already installed
+        if (ctx.alreadyPulled.has(dep)) {
+          continue;
+        }
+
+        // Check if already in upstream_extensions.json
+        const upstreamPath = join(
+          absoluteModelsDir,
+          "upstream_extensions.json",
+        );
+        let isInstalled = false;
+        try {
+          const upstreamContent = await Deno.readTextFile(upstreamPath);
+          const upstream = JSON.parse(
+            upstreamContent,
+          ) as UpstreamExtensionsMap;
+          if (upstream[dep]) {
+            isInstalled = true;
+          }
+        } catch {
+          // File may not exist yet
+        }
+
+        if (!isInstalled) {
+          const depRef = parseExtensionRef(dep);
+          renderExtensionPullDependencyPull(dep, "latest", outputMode);
+          await pullExtension(depRef, {
+            ...ctx,
+            depth: ctx.depth + 1,
+          });
+        }
+      }
+    }
+  } finally {
+    try {
+      await Deno.remove(tmpDir, { recursive: true });
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+}
+
+export const extensionPullCommand = new Command()
+  .name("pull")
+  .description("Pull an extension from the swamp registry")
+  .arguments("<extension:string>")
+  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option("--force", "Overwrite existing files without prompting")
+  .action(async function (options: AnyOptions, extension: string) {
+    const ctx = createContext(options as GlobalOptions, ["extension", "pull"]);
+    ctx.logger.debug`Starting extension pull`;
+
+    // 1. Validate repo
+    const repoDir = options.repoDir ?? ".";
+    await requireInitializedRepo({
+      repoDir,
+      outputMode: ctx.outputMode,
+    });
+
+    // 2. Parse extension reference
+    const ref = parseExtensionRef(extension);
+
+    // 3. Validate name format
+    if (!SCOPED_NAME_PATTERN.test(ref.name)) {
+      throw new UserError(
+        `Invalid extension name: "${ref.name}". Must match @namespace/name pattern (lowercase, alphanumeric, hyphens, underscores).`,
+      );
+    }
+
+    // 4. Resolve models dir from .swamp.yaml
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    const modelsDir = resolveModelsDir(marker);
+
+    // 5. Resolve server URL (from env or default)
+    const serverUrl = resolveServerUrl();
+
+    // 6. Create API client and pull
+    const extensionClient = new ExtensionApiClient(serverUrl);
+
+    await pullExtension(ref, {
+      extensionClient,
+      modelsDir,
+      repoDir,
+      force: options.force ?? false,
+      outputMode: ctx.outputMode,
+      alreadyPulled: new Set(),
+      depth: 0,
+    });
+  });

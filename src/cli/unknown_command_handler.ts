@@ -131,6 +131,9 @@ function buildContextSuggestions(
     suggestions.push(
       `swamp extension push ${unknownName}`,
     );
+    suggestions.push(
+      `swamp extension pull ${unknownName}`,
+    );
   } else {
     // Generic: just list available subcommands
     const subcommands = getSubcommandNames(cmd);

@@ -124,6 +124,15 @@ Deno.test("ExtensionApiClient.checkResponse preserves JSON error messages", asyn
   await server.shutdown();
 });
 
+Deno.test("ExtensionApiClient.downloadArchive throws UserError on connection failure", async () => {
+  const client = new ExtensionApiClient("http://localhost:1");
+  const error = await assertRejects(
+    () => client.downloadArchive("@test/ext", "2026.02.26.1", "fake-key"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Could not connect");
+});
+
 Deno.test("ExtensionApiClient.uploadArchive throws UserError on failure", async () => {
   // Non-existent URL
   const error = await assertRejects(
