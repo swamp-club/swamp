@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { executeProcess, streamLines } from "./process_executor.ts";
+import { SecretRedactor } from "../../domain/secrets/mod.ts";
 
 Deno.test("streamLines processes complete lines", async () => {
   const encoder = new TextEncoder();
@@ -194,4 +195,36 @@ Deno.test("executeProcess handles timeout with logger", async () => {
   } catch (error) {
     assertStringIncludes((error as Error).message, "timed out");
   }
+});
+
+Deno.test("executeProcess redacts secrets from streamed stdout lines", async () => {
+  const infoLines: string[] = [];
+  const warnLines: string[] = [];
+
+  const mockLogger = {
+    info: (line: string) => {
+      infoLines.push(line);
+    },
+    warn: (line: string) => {
+      warnLines.push(line);
+    },
+  } as unknown as import("@logtape/logtape").Logger;
+
+  const redactor = new SecretRedactor();
+  redactor.addSecret("my-secret-token");
+
+  const result = await executeProcess({
+    command: "sh",
+    args: ["-c", "echo my-secret-token && echo my-secret-token >&2"],
+    logger: mockLogger,
+    redactor,
+  });
+
+  assertEquals(result.success, true);
+  // Streamed lines to logger should be redacted
+  assertEquals(infoLines, ["***"]);
+  assertEquals(warnLines, ["***"]);
+  // Raw captured output is NOT redacted by process executor (shell model handles that)
+  assertStringIncludes(result.stdout, "my-secret-token");
+  assertStringIncludes(result.stderr, "my-secret-token");
 });

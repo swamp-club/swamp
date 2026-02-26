@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertNotEquals } from "@std/assert/not-equals";
 import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
   SHELL_MODEL_TYPE,
@@ -31,6 +32,7 @@ import type { UnifiedDataRepository } from "../../../../infrastructure/persisten
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+import { SecretRedactor } from "../../../secrets/mod.ts";
 
 /**
  * Stored result from mock data writer.
@@ -539,4 +541,79 @@ Deno.test("shellModel.methods.execute returns output for no output command", asy
 
   // Should still have data handles
   assertEquals(result.dataHandles !== undefined, true);
+});
+
+// Secret redaction tests
+Deno.test("shellModel.methods.execute redacts secrets from stdout in result attributes", async () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("super-secret-value");
+
+  const args: ShellInputAttributes = { run: "echo super-secret-value" };
+  const { context, getResults } = createTestContext({ redactor });
+  await shellModel.methods.execute.execute(args, context);
+
+  const attrs = getResultAttributes(getResults(), "result");
+  assertNotEquals(attrs?.stdout, undefined);
+  assertStringIncludes(attrs?.stdout as string, "***");
+  assertEquals((attrs?.stdout as string).includes("super-secret-value"), false);
+});
+
+Deno.test("shellModel.methods.execute redacts secrets from stderr in result attributes", async () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("stderr-secret");
+
+  const args: ShellInputAttributes = { run: "echo stderr-secret >&2" };
+  const { context, getResults } = createTestContext({ redactor });
+  await shellModel.methods.execute.execute(args, context);
+
+  const attrs = getResultAttributes(getResults(), "result");
+  assertNotEquals(attrs?.stderr, undefined);
+  assertStringIncludes(attrs?.stderr as string, "***");
+  assertEquals((attrs?.stderr as string).includes("stderr-secret"), false);
+});
+
+Deno.test("shellModel.methods.execute redacts secrets from output log file", async () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("log-file-secret");
+
+  const args: ShellInputAttributes = {
+    run: "echo log-file-secret && echo log-file-secret >&2",
+  };
+  const { context, getResults } = createTestContext({ redactor });
+  await shellModel.methods.execute.execute(args, context);
+
+  const logContent = getOutputLogContent(getResults());
+  assertStringIncludes(logContent, "***");
+  assertEquals(logContent.includes("log-file-secret"), false);
+});
+
+Deno.test("shellModel.methods.execute redacts secrets from command in result attributes", async () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("command-secret");
+
+  const args: ShellInputAttributes = { run: "echo command-secret" };
+  const { context, getResults } = createTestContext({ redactor });
+  await shellModel.methods.execute.execute(args, context);
+
+  const attrs = getResultAttributes(getResults(), "result");
+  assertNotEquals(attrs?.command, undefined);
+  assertStringIncludes(attrs?.command as string, "***");
+  assertEquals((attrs?.command as string).includes("command-secret"), false);
+});
+
+Deno.test("shellModel.methods.execute redacts secrets from error messages on failure", async () => {
+  const redactor = new SecretRedactor();
+  redactor.addSecret("error-secret");
+
+  // Use a command that will produce an error containing the secret
+  const args: ShellInputAttributes = {
+    run: "echo error-secret >&2 && exit 1",
+  };
+  const { context, getResults } = createTestContext({ redactor });
+  await shellModel.methods.execute.execute(args, context);
+
+  const attrs = getResultAttributes(getResults(), "result");
+  // stderr should be redacted
+  assertNotEquals(attrs?.stderr, undefined);
+  assertEquals((attrs?.stderr as string).includes("error-secret"), false);
 });

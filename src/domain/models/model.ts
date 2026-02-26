@@ -22,6 +22,7 @@ import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import type { Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
+import type { SecretRedactor } from "../secrets/mod.ts";
 import { CalVer } from "./calver.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import {
@@ -220,6 +221,11 @@ export interface MethodContext {
     name: string,
     overrides?: FileWriterOverrides,
   ) => DataWriter;
+
+  /**
+   * Optional secret redactor for stripping vault secrets from output.
+   */
+  redactor?: SecretRedactor;
 
   /**
    * Tags merged into every writer created during execution.

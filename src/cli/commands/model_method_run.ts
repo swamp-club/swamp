@@ -311,6 +311,7 @@ export const modelMethodRunCommand = new Command()
             definitionRepository: definitionRepo,
             runtimeTags,
             vaultService,
+            redactor,
           },
         );
 

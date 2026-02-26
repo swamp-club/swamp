@@ -516,6 +516,7 @@ export class DefaultStepExecutor implements StepExecutor {
           runtimeTags: ctx.runtimeTags,
           dataOutputOverrides: stepDataOutputOverrides,
           vaultService,
+          redactor: ctx.secretRedactor,
         },
       );
 

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Logger } from "@logtape/logtape";
+import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 
 /**
  * Options for executing a process.
@@ -35,6 +36,8 @@ export interface ProcessExecutorOptions {
   timeoutMs?: number;
   /** Logger for streaming stdout (info) and stderr (warning). */
   logger?: Logger;
+  /** Secret redactor for stripping vault secrets from streamed output. */
+  redactor?: SecretRedactor;
 }
 
 /**
@@ -147,9 +150,11 @@ export async function executeProcess(
 
     try {
       const logger = options.logger;
+      const redact = (line: string) =>
+        options.redactor?.hasSecrets ? options.redactor.redact(line) : line;
       const [stdoutResult, stderrResult, status] = await Promise.all([
-        streamLines(process.stdout, (line) => logger.info(line)),
-        streamLines(process.stderr, (line) => logger.warn(line)),
+        streamLines(process.stdout, (line) => logger.info(redact(line))),
+        streamLines(process.stderr, (line) => logger.warn(redact(line))),
         process.status,
       ]);
 

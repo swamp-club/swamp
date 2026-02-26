@@ -88,6 +88,9 @@ async function executeCommand(
   let exitCode = 0;
   let durationMs = 0;
 
+  const redact = (text: string) =>
+    context.redactor?.hasSecrets ? context.redactor.redact(text) : text;
+
   try {
     const result = await executeProcess({
       command: "sh",
@@ -96,15 +99,17 @@ async function executeCommand(
       env: args.env,
       timeoutMs: args.timeout,
       logger: context.logger,
+      redactor: context.redactor,
     });
 
-    stdout = result.stdout;
-    stderr = result.stderr;
+    stdout = redact(result.stdout);
+    stderr = redact(result.stderr);
     exitCode = result.exitCode;
     durationMs = result.durationMs;
   } catch (error) {
     // Handle execution errors (command not found, timeout, etc.)
-    stderr = error instanceof Error ? error.message : String(error);
+    const rawError = error instanceof Error ? error.message : String(error);
+    stderr = redact(rawError);
     exitCode = -1;
   }
 
@@ -112,7 +117,7 @@ async function executeCommand(
   const resultAttributes = {
     exitCode,
     executedAt: new Date().toISOString(),
-    command: args.run,
+    command: redact(args.run),
     durationMs,
     stdout,
     stderr,

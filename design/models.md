@@ -174,7 +174,8 @@ Methods can be called on instantiated models. Each method declares a required
 method's `execute` function receives the merged arguments (global arguments from
 the definition combined with per-method arguments) as its first parameter, and a
 `MethodContext` as its second. The `MethodContext` includes `globalArgs`,
-`definition` metadata (id, name, version, tags), and `methodName`.
+`definition` metadata (id, name, version, tags), `methodName`, and an optional
+`redactor` (`SecretRedactor`) for stripping vault secrets from output.
 
 Methods can write data, which is tracked by the method invocation and the
 definition required to re-instantiate the object.

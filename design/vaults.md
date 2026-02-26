@@ -352,7 +352,11 @@ evaluated, ensuring:
 ### Expression Security
 
 - Vault expressions are evaluated server-side only
-- Secret values are never logged or exposed in intermediate files
+- Vault secrets resolved via `vault.get()` are automatically redacted from
+  stdout/stderr output, log files, and persisted data artifacts
+- Redaction replaces secret values with `***` using the `SecretRedactor`
+- The redactor is threaded through `MethodContext` and available to all model
+  implementations
 - Expression evaluation errors don't expose secret values
 
 ## 1Password Provider
