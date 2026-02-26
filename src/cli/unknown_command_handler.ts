@@ -127,6 +127,10 @@ function buildContextSuggestions(
     suggestions.push(
       `swamp vault list-keys ${unknownName}`,
     );
+  } else if (parentName === "extension") {
+    suggestions.push(
+      `swamp extension push ${unknownName}`,
+    );
   } else {
     // Generic: just list available subcommands
     const subcommands = getSubcommandNames(cmd);

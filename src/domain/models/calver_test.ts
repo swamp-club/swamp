@@ -145,6 +145,37 @@ Deno.test("CalVer.equals returns false for different values", () => {
   assertEquals(a.equals(b), false);
 });
 
+// --- bump ---
+
+Deno.test("CalVer.bump with no previous returns today with micro 1", () => {
+  const result = CalVer.bump();
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  assertEquals(result.value, `${yyyy}.${mm}.${dd}.1`);
+});
+
+Deno.test("CalVer.bump increments micro when previous has same date", () => {
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const previous = CalVer.create(`${yyyy}.${mm}.${dd}.3`);
+  const result = CalVer.bump(previous);
+  assertEquals(result.value, `${yyyy}.${mm}.${dd}.4`);
+});
+
+Deno.test("CalVer.bump resets micro to 1 when previous has different date", () => {
+  const previous = CalVer.create("2020.01.01.5");
+  const result = CalVer.bump(previous);
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  assertEquals(result.value, `${yyyy}.${mm}.${dd}.1`);
+});
+
 // --- toString ---
 
 Deno.test("CalVer.toString returns the raw string", () => {

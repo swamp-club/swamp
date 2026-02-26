@@ -42,6 +42,9 @@ than wrapping CLI commands.
 | Check schema        | `swamp model type describe @myorg/my-model --json`      |
 | Create instance     | `swamp model create @myorg/my-model my-instance --json` |
 | Run method          | `swamp model method run my-instance run --json`         |
+| Create manifest     | Create `manifest.yaml` with model/workflow entries      |
+| Push extension      | `swamp extension push manifest.yaml`                    |
+| Dry-run push        | `swamp extension push manifest.yaml --dry-run`          |
 
 ## Quick Start
 
@@ -303,6 +306,35 @@ Swamp discovers models and extensions recursively:
 Files are classified by export name: `export const model` defines new types,
 `export const extension` adds methods to existing types.
 
+## Publishing Extensions
+
+Extensions are published to the swamp registry via a `manifest.yaml` and the
+`swamp extension push` command.
+
+**Minimal manifest:**
+
+```yaml
+manifestVersion: 1
+name: "@myorg/my-model"
+version: "2026.02.26.1"
+models:
+  - my_model.ts
+```
+
+**Push commands:**
+
+```bash
+swamp extension push manifest.yaml              # Push to registry
+swamp extension push manifest.yaml --dry-run    # Validate without pushing
+swamp extension push manifest.yaml -y           # Skip confirmation prompts
+```
+
+The manifest `name` namespace must match your authenticated username. Model
+paths are relative to `extensions/models/`; local imports are auto-resolved.
+
+For the full manifest schema, safety rules, CalVer versioning, and
+troubleshooting, see [references/publishing.md](references/publishing.md).
+
 ## Key Rules
 
 1. **Export**: Use `export const model = { ... }` for new types or
@@ -358,6 +390,8 @@ swamp model type describe @myorg/my-model   # Check schema
   complete model examples (CRUD lifecycle, data chaining, extensions, etc.)
 - **Scenarios**: See [references/scenarios.md](references/scenarios.md) for
   end-to-end scenarios (custom API, cloud CRUD, factory models)
+- **Publishing**: See [references/publishing.md](references/publishing.md) for
+  manifest schema, push workflow, safety rules, and CalVer versioning
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md) for common
   errors and fixes

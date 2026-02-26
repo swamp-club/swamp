@@ -95,6 +95,32 @@ export class CalVer {
   }
 
   /**
+   * Computes the next CalVer version based on the current local date.
+   *
+   * If `previous` has the same YYYY.MM.DD prefix as today, the micro counter
+   * is incremented.  Otherwise (or when `previous` is omitted), the micro
+   * counter starts at 1.
+   */
+  static bump(previous?: CalVer): CalVer {
+    const now = new Date();
+    const yyyy = String(now.getFullYear());
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const todayPrefix = `${yyyy}.${mm}.${dd}`;
+
+    let micro = 1;
+    if (previous) {
+      const parts = previous.value.split(".");
+      const prevPrefix = `${parts[0]}.${parts[1]}.${parts[2]}`;
+      if (prevPrefix === todayPrefix) {
+        micro = Number(parts[3]) + 1;
+      }
+    }
+
+    return new CalVer(`${todayPrefix}.${micro}`);
+  }
+
+  /**
    * Value equality.
    */
   equals(other: CalVer): boolean {

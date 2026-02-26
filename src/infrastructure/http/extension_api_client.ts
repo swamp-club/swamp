@@ -1,0 +1,326 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { UserError } from "../../domain/errors.ts";
+
+/** Metadata sent during push initiation and confirmation. */
+export interface PushMetadata {
+  name: string;
+  version: string;
+  description: string;
+  dependencies: string[];
+}
+
+/** Response from the initiate push endpoint. */
+export interface InitiatePushResult {
+  uploadUrl: string;
+  s3Key: string;
+  extensionId: string;
+}
+
+/** Response from the confirm push endpoint. */
+export interface ConfirmPushResult {
+  extensionId: string;
+  name: string;
+  version: string;
+}
+
+/** Information about the latest published version. */
+export interface LatestVersionInfo {
+  version: string;
+  publishedAt: string;
+}
+
+/** Extension search result. */
+export interface ExtensionSearchResult {
+  extensions: ExtensionInfo[];
+  total: number;
+}
+
+/** Extension metadata. */
+export interface ExtensionInfo {
+  name: string;
+  description: string;
+  latestVersion: string;
+}
+
+/**
+ * HTTP client for the swamp-club extension registry API.
+ *
+ * Encapsulates all extension API interactions, following the same pattern
+ * as SwampClubClient for auth operations.
+ */
+export class ExtensionApiClient {
+  constructor(private readonly serverUrl: string) {}
+
+  /**
+   * Pre-flight: check latest published version.
+   * Returns null if the extension has never been published.
+   */
+  async getLatestVersion(
+    name: string,
+    apiKey: string,
+  ): Promise<LatestVersionInfo | null> {
+    const encodedName = encodeURIComponent(name);
+    const res = await this.fetch(
+      `/api/v1/extensions/${encodedName}/latest`,
+      {
+        method: "GET",
+        headers: this.authHeaders(apiKey),
+      },
+    );
+
+    if (res.status === 404) {
+      await res.body?.cancel();
+      return null;
+    }
+
+    await this.checkResponse(res);
+    const data = await res.json();
+    return {
+      version: data.latestVersionDetail?.version ?? data.latestVersion,
+      publishedAt: data.latestVersionDetail?.publishedAt ?? "",
+    };
+  }
+
+  /**
+   * Phase 1: Initiate push — validate metadata and get presigned S3 upload URL.
+   */
+  async initiatePush(
+    metadata: PushMetadata,
+    apiKey: string,
+  ): Promise<InitiatePushResult> {
+    const res = await this.fetch("/api/v1/extensions/push", {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(apiKey),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(metadata),
+    });
+
+    await this.checkResponse(res);
+    const data = await res.json();
+    return {
+      uploadUrl: data.uploadUrl,
+      s3Key: data.s3Key,
+      extensionId: data.extensionId,
+    };
+  }
+
+  /**
+   * Phase 2: Upload tar.gz archive directly to S3 presigned URL.
+   */
+  async uploadArchive(
+    uploadUrl: string,
+    archiveBytes: Uint8Array,
+  ): Promise<void> {
+    try {
+      const res = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/gzip" },
+        body: archiveBytes as unknown as BodyInit,
+        signal: AbortSignal.timeout(120_000), // 2 min for upload
+      });
+
+      if (!res.ok) {
+        const body = await res.text();
+        throw new UserError(
+          `Failed to upload archive (HTTP ${res.status}): ${body}`,
+        );
+      }
+      await res.body?.cancel();
+    } catch (error) {
+      if (error instanceof UserError) throw error;
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new UserError("Archive upload timed out.");
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(`Archive upload failed: ${message}`);
+    }
+  }
+
+  /**
+   * Phase 3: Confirm push — verify upload completed and persist version.
+   */
+  async confirmPush(
+    metadata: PushMetadata,
+    apiKey: string,
+  ): Promise<ConfirmPushResult> {
+    const res = await this.fetch("/api/v1/extensions/confirm", {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(apiKey),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(metadata),
+    });
+
+    await this.checkResponse(res);
+    const data = await res.json();
+    return {
+      extensionId: data.extensionId,
+      name: data.name,
+      version: data.version,
+    };
+  }
+
+  /**
+   * Search extensions by pattern.
+   */
+  async search(
+    pattern?: string,
+    limit?: number,
+    offset?: number,
+  ): Promise<ExtensionSearchResult> {
+    const params = new URLSearchParams();
+    if (pattern) params.set("pattern", pattern);
+    if (limit !== undefined) params.set("limit", String(limit));
+    if (offset !== undefined) params.set("offset", String(offset));
+    const query = params.toString();
+    const path = `/api/v1/extensions/${query ? `?${query}` : ""}`;
+
+    const res = await this.fetch(path, { method: "GET" });
+    await this.checkResponse(res);
+    return await res.json();
+  }
+
+  /**
+   * Get extension metadata by name.
+   * Returns null if not found.
+   */
+  async getExtension(name: string): Promise<ExtensionInfo | null> {
+    const encodedName = encodeURIComponent(name);
+    const res = await this.fetch(`/api/v1/extensions/${encodedName}`, {
+      method: "GET",
+    });
+
+    if (res.status === 404) {
+      await res.body?.cancel();
+      return null;
+    }
+
+    await this.checkResponse(res);
+    return await res.json();
+  }
+
+  /**
+   * Get download URL for a specific version.
+   * Returns null if not found.
+   */
+  async getDownloadUrl(
+    name: string,
+    version: string,
+  ): Promise<string | null> {
+    const encodedName = encodeURIComponent(name);
+    const res = await this.fetch(
+      `/api/v1/extensions/${encodedName}@${version}/download`,
+      {
+        method: "GET",
+        redirect: "manual",
+      },
+    );
+
+    if (res.status === 404) {
+      await res.body?.cancel();
+      return null;
+    }
+
+    if (res.status === 302 || res.status === 301) {
+      const location = res.headers.get("location");
+      await res.body?.cancel();
+      return location;
+    }
+
+    await this.checkResponse(res);
+    return null;
+  }
+
+  private authHeaders(apiKey: string): Record<string, string> {
+    return { "Authorization": `Bearer ${apiKey}` };
+  }
+
+  private async checkResponse(res: Response): Promise<void> {
+    if (res.ok || res.status === 201) return;
+
+    const body = await res.text();
+
+    if (res.status === 401) {
+      throw new UserError(
+        "Not authenticated. Run 'swamp auth login' first.",
+      );
+    }
+
+    // Parse error message from server if available
+    let serverMessage = body;
+    const contentType = res.headers.get("content-type") ?? "";
+    if (
+      contentType.includes("text/html") || body.trimStart().startsWith("<!")
+    ) {
+      // Server returned an HTML error page — extract nothing useful
+      serverMessage =
+        "The server returned an unexpected HTML response. This usually means the API endpoint is unavailable or misconfigured. Try again later.";
+    } else {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.message) serverMessage = parsed.message;
+        if (parsed.error) serverMessage = parsed.error;
+      } catch {
+        // Use raw body
+      }
+    }
+
+    if (res.status === 403) {
+      throw new UserError(serverMessage);
+    }
+
+    if (res.status === 409) {
+      throw new UserError(serverMessage);
+    }
+
+    if (res.status === 422) {
+      throw new UserError(serverMessage);
+    }
+
+    throw new UserError(
+      `Extension API error (HTTP ${res.status}): ${serverMessage}`,
+    );
+  }
+
+  private async fetch(path: string, init: RequestInit): Promise<Response> {
+    const url = `${this.serverUrl}${path}`;
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: init.signal ?? AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      if (error instanceof UserError) throw error;
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new UserError(
+          `Request to ${this.serverUrl} timed out. Is the server running?`,
+        );
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `Could not connect to ${this.serverUrl}: ${message}`,
+      );
+    }
+  }
+}
