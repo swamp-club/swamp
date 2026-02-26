@@ -47,6 +47,7 @@ export async function bundleExtension(
     const command = new Deno.Command(denoPath, {
       args: [
         "bundle",
+        "--no-lock",
         "--external",
         "npm:zod@4",
         "--external",

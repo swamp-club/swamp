@@ -96,6 +96,52 @@ export const schema = z.object({ name: z.string() });
   });
 });
 
+Deno.test("bundleExtension resolves npm imports without creating deno.lock", async () => {
+  const tsCode = `
+import { z } from "npm:zod@4";
+import { parse, stringify } from "npm:yaml@2.7.1";
+
+const ConfigSchema = z.object({
+  data: z.string(),
+});
+
+export const model = {
+  type: "@test/yaml-model",
+  version: "2026.01.01.1",
+  schema: ConfigSchema,
+  transform: (input: string) => {
+    const parsed = parse(input);
+    return stringify(parsed);
+  },
+};
+`;
+
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
+  const path = join(dir, "test_ext.ts");
+  await Deno.writeTextFile(path, tsCode);
+  try {
+    const js = await bundleExtension(path, DENO_PATH);
+
+    // Bundle should succeed and contain inlined yaml library code
+    assertEquals(js.length > 0, true);
+
+    // No deno.lock should be created in the source directory
+    let lockExists = true;
+    try {
+      await Deno.stat(join(dir, "deno.lock"));
+    } catch {
+      lockExists = false;
+    }
+    assertEquals(
+      lockExists,
+      false,
+      "deno.lock should not be created in the source directory",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("bundleExtension produces importable module with working zod instanceof", async () => {
   const tsCode = `
 import { z } from "npm:zod@4";

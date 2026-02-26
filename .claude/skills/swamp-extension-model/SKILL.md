@@ -311,9 +311,13 @@ Files are classified by export name: `export const model` defines new types,
    Deno-compatible import (`npm:`, `jsr:`, `https://`) can also be used — swamp
    bundles all dependencies automatically (see
    [references/examples.md](references/examples.md#using-external-dependencies))
-3. **Type naming**: Use `@<namespace>/<name>` format (e.g., `@user/my-model`)
-4. **No type annotations**: Avoid TypeScript types in execute parameters
-5. **File naming**: Use snake_case (`my_model.ts`)
+3. **Pin npm versions**: Always pin explicit versions for npm imports (e.g.,
+   `npm:lodash-es@4.17.21`, not `npm:lodash-es`). Swamp does not use a lockfile
+   during bundling, so unpinned versions may resolve differently across runs.
+   `npm:zod@4` is the one exception — it is externalized and provided by swamp.
+4. **Type naming**: Use `@<namespace>/<name>` format (e.g., `@user/my-model`)
+5. **No type annotations**: Avoid TypeScript types in execute parameters
+6. **File naming**: Use snake_case (`my_model.ts`)
 
 ## Namespace Rules
 

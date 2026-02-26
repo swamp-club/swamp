@@ -25,7 +25,7 @@ with swamp to preserve schema `instanceof` checks.
 ```typescript
 // extensions/models/text_analyzer.ts
 import { z } from "npm:zod@4";
-import { countBy, sortBy, words } from "npm:lodash-es";
+import { countBy, sortBy, words } from "npm:lodash-es@4.17.21";
 
 const GlobalArgsSchema = z.object({
   text: z.string().describe("Text to analyze"),
@@ -93,8 +93,8 @@ export const model = {
 | Import                                   | Bundled? | Notes                            |
 | ---------------------------------------- | -------- | -------------------------------- |
 | `npm:zod@4`                              | No       | Shared with swamp (externalized) |
-| `npm:lodash-es`                          | Yes      | Resolved and inlined             |
-| `npm:@aws-sdk/client-s3`                 | Yes      | Resolved and inlined             |
+| `npm:lodash-es@4.17.21`                  | Yes      | Resolved and inlined             |
+| `npm:@aws-sdk/client-s3@3.750.0`         | Yes      | Resolved and inlined             |
 | `jsr:@std/path`                          | Yes      | Resolved and inlined             |
 | `https://deno.land/std@0.224.0/async/..` | Yes      | Resolved and inlined             |
 | Any other Deno-compatible import         | Yes      | Resolved and inlined             |
