@@ -22,7 +22,8 @@
  * vulnerabilities using the OSV.dev API (https://osv.dev/).
  *
  * Direct dependency vulnerabilities fail the build. Transitive dependency
- * vulnerabilities are reported as warnings (since they require upstream fixes).
+ * vulnerabilities are reported as warnings with their full dependency chain
+ * (since they require upstream fixes).
  *
  * Usage: deno run audit
  *
@@ -66,11 +67,99 @@ interface PackageInfo {
 interface VulnFinding {
   pkg: PackageInfo;
   vulns: OsvVulnerability[];
+  chain: string[];
 }
 
-function parseNpmPackages(lockData: DenoLock): PackageInfo[] {
+/**
+ * Build a map from package name to the full key(s) in the npm section.
+ * e.g. "jws" -> "jws@3.2.2"
+ */
+function buildNameToKeyMap(
+  npm: Record<string, NpmEntry>,
+): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const key of Object.keys(npm)) {
+    const lastAt = key.lastIndexOf("@");
+    if (lastAt <= 0) continue;
+    const name = key.substring(0, lastAt);
+    const existing = map.get(name) ?? [];
+    existing.push(key);
+    map.set(name, existing);
+  }
+  return map;
+}
+
+/**
+ * Build a reverse dependency graph: for each package key, which other
+ * package keys depend on it?
+ */
+function buildReverseDeps(
+  npm: Record<string, NpmEntry>,
+  nameToKeys: Map<string, string[]>,
+): Map<string, string[]> {
+  const reverseDeps = new Map<string, string[]>();
+
+  for (const [parentKey, entry] of Object.entries(npm)) {
+    for (const depName of entry.dependencies ?? []) {
+      const depKeys = nameToKeys.get(depName) ?? [];
+      for (const depKey of depKeys) {
+        const parents = reverseDeps.get(depKey) ?? [];
+        parents.push(parentKey);
+        reverseDeps.set(depKey, parents);
+      }
+    }
+  }
+
+  return reverseDeps;
+}
+
+/**
+ * Trace the dependency chain from a vulnerable package back to a direct
+ * dependency using BFS on the reverse dependency graph.
+ */
+function traceDependencyChain(
+  targetKey: string,
+  reverseDeps: Map<string, string[]>,
+  directNames: Set<string>,
+): string[] {
+  // BFS from target to find path to a direct dependency
+  const visited = new Set<string>();
+  const queue: Array<{ key: string; path: string[] }> = [
+    { key: targetKey, path: [targetKey] },
+  ];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current.key)) continue;
+    visited.add(current.key);
+
+    const lastAt = current.key.lastIndexOf("@");
+    if (lastAt > 0) {
+      const name = current.key.substring(0, lastAt);
+      if (directNames.has(name) && current.path.length > 1) {
+        // Found a direct dependency — return the chain reversed
+        // (from direct dep down to vulnerable package)
+        return current.path.reverse();
+      }
+    }
+
+    const parents = reverseDeps.get(current.key) ?? [];
+    for (const parent of parents) {
+      if (!visited.has(parent)) {
+        queue.push({ key: parent, path: [...current.path, parent] });
+      }
+    }
+  }
+
+  // No direct dependency found (orphan transitive)
+  return [targetKey];
+}
+
+function parseNpmPackages(
+  lockData: DenoLock,
+): { packages: PackageInfo[]; directNames: Set<string> } {
   const npm = lockData.npm;
-  if (!npm) return [];
+  if (!npm) return { packages: [], directNames: new Set() };
 
   // Build set of direct npm dependency names from specifiers
   const directNames = new Set<string>();
@@ -99,7 +188,7 @@ function parseNpmPackages(lockData: DenoLock): PackageInfo[] {
     packages.push({ name, version, isDirect: directNames.has(name) });
   }
 
-  return packages;
+  return { packages, directNames };
 }
 
 async function queryOsv(
@@ -130,6 +219,11 @@ function formatVuln(vuln: OsvVulnerability): string {
   const cve = aliases.length > 0 ? ` (${aliases.join(", ")})` : "";
   const summary = vuln.summary ?? "No description available";
   return `${vuln.id}${cve}: ${summary}`;
+}
+
+function formatChain(chain: string[]): string {
+  if (chain.length <= 1) return "";
+  return chain.join(" → ");
 }
 
 async function writeGitHubSummary(
@@ -163,8 +257,11 @@ async function writeGitHubSummary(
     lines.push(
       "They require fixes from upstream maintainers and do not block this build.\n",
     );
-    for (const { pkg, vulns } of transitive) {
+    for (const { pkg, vulns, chain } of transitive) {
       lines.push(`#### \`${pkg.name}@${pkg.version}\`\n`);
+      if (chain.length > 1) {
+        lines.push(`Dependency chain: \`${formatChain(chain)}\`\n`);
+      }
       for (const vuln of vulns) {
         lines.push(`- ${formatVuln(vuln)}`);
       }
@@ -190,7 +287,7 @@ async function main(): Promise<void> {
   }
 
   const lockData = JSON.parse(lockContent) as DenoLock;
-  const packages = parseNpmPackages(lockData);
+  const { packages, directNames } = parseNpmPackages(lockData);
 
   if (packages.length === 0) {
     console.log("No npm packages found in deno.lock");
@@ -200,6 +297,11 @@ async function main(): Promise<void> {
   console.log(
     `Scanning ${packages.length} npm packages for vulnerabilities…`,
   );
+
+  // Build dependency graph for chain tracing
+  const npm = lockData.npm ?? {};
+  const nameToKeys = buildNameToKeyMap(npm);
+  const reverseDeps = buildReverseDeps(npm, nameToKeys);
 
   // Query OSV API in batches of 1000 (API limit)
   const batchSize = 1000;
@@ -213,8 +315,14 @@ async function main(): Promise<void> {
     for (let j = 0; j < response.results.length; j++) {
       const result = response.results[j];
       if (result.vulns && result.vulns.length > 0) {
-        const finding = { pkg: batch[j], vulns: result.vulns };
-        if (batch[j].isDirect) {
+        const pkg = batch[j];
+        const targetKey = `${pkg.name}@${pkg.version}`;
+        const chain = pkg.isDirect
+          ? [targetKey]
+          : traceDependencyChain(targetKey, reverseDeps, directNames);
+        const finding = { pkg, vulns: result.vulns, chain };
+
+        if (pkg.isDirect) {
           direct.push(finding);
         } else {
           transitive.push(finding);
@@ -251,8 +359,11 @@ async function main(): Promise<void> {
     console.warn(
       `\nTransitive dependency vulnerabilities (${transitive.length} ${label} — warning only):\n`,
     );
-    for (const { pkg, vulns } of transitive) {
+    for (const { pkg, vulns, chain } of transitive) {
       console.warn(`  ${pkg.name}@${pkg.version}`);
+      if (chain.length > 1) {
+        console.warn(`    chain: ${formatChain(chain)}`);
+      }
       for (const vuln of vulns) {
         console.warn(`    - ${formatVuln(vuln)}`);
       }
