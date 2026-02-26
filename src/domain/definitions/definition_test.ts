@@ -104,6 +104,42 @@ Deno.test("Definition.create throws on empty name", () => {
   );
 });
 
+Deno.test("Definition.create throws on name with forward slash", () => {
+  assertThrows(
+    () => Definition.create({ name: "/etc/passwd" }),
+    Error,
+  );
+  assertThrows(
+    () => Definition.create({ name: "foo/bar" }),
+    Error,
+  );
+});
+
+Deno.test("Definition.create throws on name with backslash", () => {
+  assertThrows(
+    () => Definition.create({ name: "foo\\bar" }),
+    Error,
+  );
+});
+
+Deno.test("Definition.create throws on name with path traversal", () => {
+  assertThrows(
+    () => Definition.create({ name: "../../../etc/passwd" }),
+    Error,
+  );
+  assertThrows(
+    () => Definition.create({ name: "foo..bar" }),
+    Error,
+  );
+});
+
+Deno.test("Definition.create throws on name with null bytes", () => {
+  assertThrows(
+    () => Definition.create({ name: "foo\0bar" }),
+    Error,
+  );
+});
+
 Deno.test("Definition.create throws on invalid version", () => {
   assertThrows(
     () => Definition.create({ name: "test", version: 0 }),

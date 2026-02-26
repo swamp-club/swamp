@@ -124,7 +124,15 @@ export const DefinitionSchema = z.object({
     z.string().optional(),
   ),
   id: z.string().uuid(),
-  name: z.string().min(1),
+  name: z.string().min(1).refine(
+    (name) =>
+      !name.includes("..") && !name.includes("/") && !name.includes("\\") &&
+      !name.includes("\0"),
+    {
+      message:
+        "Definition name must not contain '..', '/', '\\', or null bytes (path traversal)",
+    },
+  ),
   version: z.number().int().positive(),
   tags: z.record(z.string(), z.string()).default({}),
   globalArguments: z.record(z.string(), z.unknown()).default({}),
