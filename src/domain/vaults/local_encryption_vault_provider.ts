@@ -24,6 +24,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 
 /**
  * Configuration options for local encryption vault.
@@ -62,6 +63,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
   private readonly name: string;
   private readonly config: LocalEncryptionConfig;
   private readonly vaultDir: string;
+  private readonly secretsBoundary: string;
   /** Cache for key material (not the derived key, since each secret has unique salt) */
   private keyMaterialCache?: CryptoKey;
 
@@ -71,6 +73,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     // Compute secrets directory from base_dir + vault name
     // Path: {base_dir}/.swamp/secrets/local_encryption/{vault_name}
     const baseDir = config.base_dir ?? Deno.cwd();
+    this.secretsBoundary = swampPath(baseDir);
     this.vaultDir = swampPath(
       baseDir,
       SWAMP_SUBDIRS.secrets,
@@ -114,6 +117,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     const encryptedData = await this.encrypt(secretValue, masterKey, salt);
 
     const encryptedFilePath = join(this.vaultDir, `${secretKey}.enc`);
+    await assertSafePath(encryptedFilePath, this.secretsBoundary);
     await atomicWriteTextFile(
       encryptedFilePath,
       JSON.stringify(encryptedData, null, 2),
@@ -480,6 +484,7 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
    * Ensures the vault directory exists.
    */
   private async ensureVaultDirectory(): Promise<void> {
+    await assertSafePath(this.vaultDir, this.secretsBoundary);
     try {
       await Deno.mkdir(this.vaultDir, { recursive: true, mode: 0o700 });
     } catch (error) {

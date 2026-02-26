@@ -22,6 +22,7 @@ import { join, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import { assertSafePath } from "./safe_path.ts";
 import {
   VaultConfig,
   type VaultConfigData,
@@ -160,6 +161,7 @@ export class YamlVaultConfigRepository {
    */
   async save(config: VaultConfig): Promise<void> {
     const dir = this.getTypeDir(config.type);
+    await assertSafePath(dir, swampPath(this.repoDir));
     await ensureDir(dir);
 
     const path = this.getPath(config.type, config.id);

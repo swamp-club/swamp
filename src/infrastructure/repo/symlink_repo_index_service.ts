@@ -25,13 +25,17 @@
  */
 
 import { ensureDir } from "@std/fs";
-import { join, relative, resolve } from "@std/path";
+import { join, relative } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
   SWAMP_DATA_DIR,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../persistence/paths.ts";
+import {
+  assertSafePath,
+  PathTraversalError,
+} from "../persistence/safe_path.ts";
 import type {
   PruneResult,
   RebuildResult,
@@ -128,11 +132,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   async handleModelDeleted(event: ModelDeleted): Promise<void> {
     const modelsBaseDir = join(this.repoDir, "models");
     const modelDir = join(modelsBaseDir, event.modelName);
-    this.assertPathContained(
-      modelDir,
-      modelsBaseDir,
-      `modelName "${event.modelName}"`,
-    );
+    await assertSafePath(modelDir, this.repoDir);
     await this.removeDirectory(modelDir);
   }
 
@@ -151,11 +151,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   async handleWorkflowDeleted(event: WorkflowDeleted): Promise<void> {
     const workflowsBaseDir = join(this.repoDir, "workflows");
     const workflowDir = join(workflowsBaseDir, event.workflowName);
-    this.assertPathContained(
-      workflowDir,
-      workflowsBaseDir,
-      `workflowName "${event.workflowName}"`,
-    );
+    await assertSafePath(workflowDir, this.repoDir);
     await this.removeDirectory(workflowDir);
   }
 
@@ -202,11 +198,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   async handleVaultDeleted(event: VaultDeleted): Promise<void> {
     const vaultsBaseDir = join(this.repoDir, "vaults");
     const vaultDir = join(vaultsBaseDir, event.vaultName);
-    this.assertPathContained(
-      vaultDir,
-      vaultsBaseDir,
-      `vaultName "${event.vaultName}"`,
-    );
+    await assertSafePath(vaultDir, this.repoDir);
     await this.removeDirectory(vaultDir);
   }
 
@@ -413,11 +405,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   ): Promise<void> {
     const modelsBaseDir = join(this.repoDir, "models");
     const modelDir = join(modelsBaseDir, modelName);
-    this.assertPathContained(
-      modelDir,
-      modelsBaseDir,
-      `modelName "${modelName}"`,
-    );
+    await assertSafePath(modelDir, this.repoDir);
     await ensureDir(modelDir);
 
     // Create ModelType for path generation
@@ -544,20 +532,12 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       for (const [tagKey, valueMap] of customTags) {
         const modelDir = join(typeDir, "..");
         const tagKeyDir = join(modelDir, tagKey);
-        this.assertPathContained(
-          tagKeyDir,
-          modelDir,
-          `tagKey "${tagKey}"`,
-        );
+        await assertSafePath(tagKeyDir, modelDir);
         await ensureDir(tagKeyDir);
 
         for (const [tagValue, dataItems] of valueMap) {
           const tagValueDir = join(tagKeyDir, tagValue);
-          this.assertPathContained(
-            tagValueDir,
-            tagKeyDir,
-            `tagValue "${tagValue}"`,
-          );
+          await assertSafePath(tagValueDir, tagKeyDir);
           await ensureDir(tagValueDir);
 
           for (const data of dataItems) {
@@ -584,8 +564,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       }
     } catch (error) {
       if (
-        error instanceof Error &&
-        error.message.startsWith("Path traversal detected")
+        error instanceof PathTraversalError
       ) {
         throw error;
       }
@@ -622,11 +601,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   ): Promise<void> {
     const workflowsBaseDir = join(this.repoDir, "workflows");
     const workflowDir = join(workflowsBaseDir, workflowName);
-    this.assertPathContained(
-      workflowDir,
-      workflowsBaseDir,
-      `workflowName "${workflowName}"`,
-    );
+    await assertSafePath(workflowDir, this.repoDir);
     await ensureDir(workflowDir);
 
     // Symlink to workflow.yaml
@@ -654,11 +629,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   ): Promise<void> {
     const workflowsBaseDir = join(this.repoDir, "workflows");
     const workflowDir = join(workflowsBaseDir, workflowName);
-    this.assertPathContained(
-      workflowDir,
-      workflowsBaseDir,
-      `workflowName "${workflowName}"`,
-    );
+    await assertSafePath(workflowDir, this.repoDir);
     const runsDir = join(workflowDir, "runs");
     await ensureDir(runsDir);
 
@@ -700,11 +671,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       for (const job of run.jobs) {
         for (const step of job.steps) {
           const stepDir = join(stepsDir, step.stepName);
-          this.assertPathContained(
-            stepDir,
-            stepsDir,
-            `stepName "${step.stepName}"`,
-          );
+          await assertSafePath(stepDir, stepsDir);
           await ensureDir(stepDir);
 
           // Note: Step output symlinks would require additional context
@@ -728,11 +695,7 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   ): Promise<void> {
     const vaultsBaseDir = join(this.repoDir, "vaults");
     const vaultDir = join(vaultsBaseDir, vaultName);
-    this.assertPathContained(
-      vaultDir,
-      vaultsBaseDir,
-      `vaultName "${vaultName}"`,
-    );
+    await assertSafePath(vaultDir, this.repoDir);
     await ensureDir(vaultDir);
 
     // Symlink to vault.yaml
@@ -973,27 +936,6 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
       }
-    }
-  }
-
-  /**
-   * Asserts that a path is contained within an expected parent directory.
-   * Throws if the resolved path escapes the parent, preventing path traversal.
-   */
-  private assertPathContained(
-    path: string,
-    expectedParent: string,
-    context: string,
-  ): void {
-    const resolvedPath = resolve(path);
-    const resolvedParent = resolve(expectedParent);
-    if (
-      resolvedPath !== resolvedParent &&
-      !resolvedPath.startsWith(resolvedParent + "/")
-    ) {
-      throw new Error(
-        `Path traversal detected: ${context} resolves outside expected directory`,
-      );
     }
   }
 

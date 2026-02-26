@@ -24,6 +24,7 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import { assertSafePath } from "./safe_path.ts";
 import {
   createWorkflowId,
   type WorkflowId,
@@ -115,6 +116,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
 
   async save(workflow: Workflow): Promise<void> {
     const dir = this.getWorkflowsDir();
+    await assertSafePath(dir, swampPath(this.repoDir));
     await ensureDir(dir);
 
     const path = this.getPath(workflow.id);

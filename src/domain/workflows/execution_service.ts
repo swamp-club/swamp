@@ -803,10 +803,12 @@ export class WorkflowExecutionService {
       `workflow-run-${run.id}.log`,
     );
     const workflowLogCategory: string[] = [];
+    const workflowLogBoundary = swampPath(this.repoDir);
     await runFileSink.register(
       workflowLogCategory,
       workflowLogPath,
       secretRedactor,
+      workflowLogBoundary,
     );
     run.setLogFile(workflowLogPath);
 

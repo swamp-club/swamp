@@ -39,6 +39,7 @@ import {
   SWAMP_DATA_DIR,
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
+import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
@@ -367,6 +368,8 @@ export class UserModelLoader {
 
       // Bundle and write to cache
       const js = await bundleExtension(absolutePath, denoPath);
+      const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
+      await assertSafePath(bundlePath, bundleBoundary);
       await Deno.mkdir(dirname(bundlePath), { recursive: true });
       await Deno.writeTextFile(bundlePath, js);
       logger.debug`Wrote bundle cache: ${bundlePath}`;

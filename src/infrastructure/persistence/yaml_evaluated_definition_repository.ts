@@ -24,6 +24,7 @@ import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import { assertSafePath } from "./safe_path.ts";
 import {
   createDefinitionId,
   Definition,
@@ -234,6 +235,7 @@ export class YamlEvaluatedDefinitionRepository {
    */
   async save(type: ModelType, definition: Definition): Promise<void> {
     const dir = this.getTypeDir(type);
+    await assertSafePath(dir, swampPath(this.repoDir));
     await ensureDir(dir);
 
     const path = this.getPath(type, definition.id);

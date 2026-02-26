@@ -28,6 +28,7 @@ import {
   toAbsolutePath,
   toRelativePath,
 } from "./paths.ts";
+import { assertSafePath } from "./safe_path.ts";
 import {
   createWorkflowRunId,
   type WorkflowId,
@@ -170,6 +171,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const dir = this.getRunsDir(workflowId);
+    await assertSafePath(dir, swampPath(this.repoDir));
     await ensureDir(dir);
 
     const path = this.getPath(workflowId, run.id);

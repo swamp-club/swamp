@@ -167,7 +167,13 @@ export const modelMethodRunCommand = new Command()
         `${definition.id}-${timestamp}.log`,
       );
       const runLogCategory: string[] = [];
-      await runFileSink.register(runLogCategory, logFilePath, redactor);
+      const logBoundary = swampPath(repoDir);
+      await runFileSink.register(
+        runLogCategory,
+        logFilePath,
+        redactor,
+        logBoundary,
+      );
 
       runLogger.info("Found model {name} ({type})", {
         name: definition.name,

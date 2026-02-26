@@ -28,6 +28,7 @@ import {
   toAbsolutePath,
   toRelativePath,
 } from "./paths.ts";
+import { assertSafePath } from "./safe_path.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -162,6 +163,7 @@ export class YamlOutputRepository implements OutputRepository {
     output: ModelOutput,
   ): Promise<void> {
     const dir = this.getMethodDir(type, method);
+    await assertSafePath(dir, swampPath(this.repoDir));
     await ensureDir(dir);
 
     const path = this.getPath(type, method, output);

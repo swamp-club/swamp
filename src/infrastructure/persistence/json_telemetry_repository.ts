@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { TelemetryRepository } from "../../domain/telemetry/repositories.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import { assertSafePath } from "./safe_path.ts";
 import {
   TelemetryEntry,
   type TelemetryEntryData,
@@ -46,6 +47,7 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   async save(entry: TelemetryEntry): Promise<void> {
     try {
       const telemetryDir = this.getTelemetryDir();
+      await assertSafePath(telemetryDir, swampPath(this.repoDir));
       await ensureDir(telemetryDir);
 
       const date = entry.startedAt.toISOString().split("T")[0];

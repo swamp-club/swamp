@@ -21,6 +21,7 @@ import { join, relative, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import { assertSafePath } from "./safe_path.ts";
 import {
   Data,
   type DataId,
@@ -640,6 +641,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       data.name,
       newVersion,
     );
+    const boundary = swampPath(this.repoDir);
+    await assertSafePath(metadataPath, boundary);
     const metadata = dataToSave.toData();
     // Remove undefined values
     const cleanData = JSON.parse(JSON.stringify(metadata));
@@ -653,6 +656,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       data.name,
       newVersion,
     );
+    await assertSafePath(contentPath, boundary);
     await atomicWriteFile(contentPath, content);
 
     // Update latest symlink
@@ -683,6 +687,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
       latestVersion,
     );
+    await assertSafePath(contentPath, swampPath(this.repoDir));
     const file = await Deno.open(contentPath, { append: true });
     try {
       await file.write(content);
@@ -1169,6 +1174,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
   ): Promise<{ version: number; versionDir: string }> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    await assertSafePath(dataNameDir, swampPath(this.repoDir));
     await Deno.mkdir(dataNameDir, { recursive: true });
 
     const versions = await this.listVersions(type, modelId, dataName);
@@ -1253,6 +1259,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     version: number,
   ): Promise<void> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+    await assertSafePath(dataNameDir, swampPath(this.repoDir));
     const latestPath = join(dataNameDir, "latest");
     const target = version.toString();
 

@@ -19,6 +19,7 @@
 
 import { getTextFormatter, type LogRecord, type Sink } from "@logtape/logtape";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
+import { assertSafePath } from "../persistence/safe_path.ts";
 
 /**
  * Formats a LogRecord as a plain text line for file output.
@@ -69,12 +70,18 @@ export class RunFileSink {
     categoryPrefix: string[],
     filePath: string,
     redactor?: SecretRedactor,
+    boundary?: string,
   ): Promise<void> {
     const key = prefixKey(categoryPrefix);
     // Close existing writer if any
     const existing = this.writers.get(key);
     if (existing) {
       existing.fd.close();
+    }
+
+    // Validate the file path stays within the expected boundary
+    if (boundary) {
+      await assertSafePath(filePath, boundary);
     }
 
     // Ensure parent directory exists
