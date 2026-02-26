@@ -34,6 +34,7 @@ import { telemetryCommand } from "./commands/telemetry_stats.ts";
 import { updateCommand } from "./commands/update.ts";
 import { sourceCommand } from "./commands/source.ts";
 import { authCommand } from "./commands/auth.ts";
+import { extensionCommand } from "./commands/extension.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { type GlobalOptions, isStdinTty } from "./context.ts";
 import {
@@ -61,27 +62,10 @@ import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
 
-/**
- * Resolves the models directory path.
- * Priority: SWAMP_MODELS_DIR env var > .swamp.yaml config > default "extensions/models"
- *
- * @internal Exported for testing
- */
-export function resolveModelsDir(marker: RepoMarkerData | null): string {
-  // Environment variable takes highest priority
-  const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
-  if (envModelsDir) {
-    return envModelsDir;
-  }
-
-  // Then .swamp.yaml config
-  if (marker?.modelsDir) {
-    return marker.modelsDir;
-  }
-
-  // Default
-  return "extensions/models";
-}
+// Import and re-export — the canonical definition lives in
+// resolve_models_dir.ts to avoid circular imports through mod.ts.
+import { resolveModelsDir } from "./resolve_models_dir.ts";
+export { resolveModelsDir };
 
 /**
  * Resolves the log level.
@@ -335,7 +319,8 @@ export async function runCli(args: string[]): Promise<void> {
     .command("source", sourceCommand)
     .command("completions", completionCommand)
     .command("issue", issueCommand)
-    .command("auth", authCommand);
+    .command("auth", authCommand)
+    .command("extension", extensionCommand);
 
   try {
     await cli.parse(args);
