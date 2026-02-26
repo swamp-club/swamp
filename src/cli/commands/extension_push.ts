@@ -50,8 +50,11 @@ import {
   renderExtensionPushSafetyWarnings,
 } from "../../presentation/output/extension_push_output.ts";
 
-// deno-lint-ignore no-explicit-any
-type AnyOptions = any;
+interface ExtensionPushOptions extends GlobalOptions {
+  repoDir: string;
+  yes?: boolean;
+  dryRun?: boolean;
+}
 
 async function promptConfirmation(message: string): Promise<boolean> {
   const encoder = new TextEncoder();
@@ -74,8 +77,8 @@ export const extensionPushCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-y, --yes", "Skip confirmation prompts")
   .option("--dry-run", "Build archive locally without pushing to registry")
-  .action(async function (options: AnyOptions, manifestPath: string) {
-    const ctx = createContext(options as GlobalOptions, ["extension", "push"]);
+  .action(async function (options: ExtensionPushOptions, manifestPath: string) {
+    const ctx = createContext(options, ["extension", "push"]);
     ctx.logger.debug`Starting extension push`;
 
     // 1. Validate repo
