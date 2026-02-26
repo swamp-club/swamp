@@ -47,11 +47,13 @@ jobs:
         with:
           deno-version: v2.x
 
+      - name: Install osv-scanner
+        run: |
+          curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+
       - name: Scan for known vulnerabilities
-        uses: google/osv-scanner-action/osv-scanner-action@v2
-        with:
-          scan-args: |-
-            --lockfile=deno.lock
+        run: osv-scanner scan -L deno.lock
 
       - name: Check for outdated dependencies
         run: |
