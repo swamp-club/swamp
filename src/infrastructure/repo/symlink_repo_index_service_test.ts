@@ -657,6 +657,222 @@ Deno.test("path traversal protection: tag value in indexTagBasedData", async () 
   });
 });
 
+// ===========================================================================
+// Secrets indexing (refreshSecretsIndex) tests
+// ===========================================================================
+
+Deno.test("refreshSecretsIndex: basic secrets indexing creates symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    // Set up actual secrets directory with .enc files
+    const actualSecretsDir = join(
+      dir,
+      ".swamp",
+      "secrets",
+      "local_encryption",
+      "my-vault",
+    );
+    await ensureDir(actualSecretsDir);
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "api-key.enc"),
+      "encrypted",
+    );
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "db-password.enc"),
+      "encrypted",
+    );
+
+    // Set up vault config so indexVault works
+    const vaultDir = join(dir, ".swamp", "vault", "local_encryption");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "vault-id.yaml"),
+      "name: my-vault\ntype: local_encryption\n",
+    );
+
+    const event = createVaultCreated(
+      "vault-id",
+      "local_encryption",
+      "my-vault",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Check that symlinks were created (without .enc extension)
+    const logicalSecretsDir = join(dir, "vaults", "my-vault", "secrets");
+    const apiKeyStat = await Deno.lstat(join(logicalSecretsDir, "api-key"));
+    assertEquals(apiKeyStat.isSymlink, true);
+    const dbPwStat = await Deno.lstat(join(logicalSecretsDir, "db-password"));
+    assertEquals(dbPwStat.isSymlink, true);
+  });
+});
+
+Deno.test("refreshSecretsIndex: incremental add preserves existing symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const actualSecretsDir = join(
+      dir,
+      ".swamp",
+      "secrets",
+      "local_encryption",
+      "my-vault",
+    );
+    await ensureDir(actualSecretsDir);
+
+    // Set up vault config
+    const vaultDir = join(dir, ".swamp", "vault", "local_encryption");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "vault-id.yaml"),
+      "name: my-vault\ntype: local_encryption\n",
+    );
+
+    // First secret
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "secret-one.enc"),
+      "encrypted",
+    );
+    const event = createVaultCreated(
+      "vault-id",
+      "local_encryption",
+      "my-vault",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Add a second secret and re-index
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "secret-two.enc"),
+      "encrypted",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Both symlinks should exist
+    const logicalSecretsDir = join(dir, "vaults", "my-vault", "secrets");
+    const oneStat = await Deno.lstat(join(logicalSecretsDir, "secret-one"));
+    assertEquals(oneStat.isSymlink, true);
+    const twoStat = await Deno.lstat(join(logicalSecretsDir, "secret-two"));
+    assertEquals(twoStat.isSymlink, true);
+  });
+});
+
+Deno.test("refreshSecretsIndex: stale symlinks are removed", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const actualSecretsDir = join(
+      dir,
+      ".swamp",
+      "secrets",
+      "local_encryption",
+      "my-vault",
+    );
+    await ensureDir(actualSecretsDir);
+
+    // Set up vault config
+    const vaultDir = join(dir, ".swamp", "vault", "local_encryption");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "vault-id.yaml"),
+      "name: my-vault\ntype: local_encryption\n",
+    );
+
+    // Create two secrets and index them
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "keep-me.enc"),
+      "encrypted",
+    );
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "remove-me.enc"),
+      "encrypted",
+    );
+    const event = createVaultCreated(
+      "vault-id",
+      "local_encryption",
+      "my-vault",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Remove one .enc file and re-index
+    await Deno.remove(join(actualSecretsDir, "remove-me.enc"));
+    await indexService.handleVaultCreated(event);
+
+    // Kept symlink should still exist
+    const logicalSecretsDir = join(dir, "vaults", "my-vault", "secrets");
+    const keepStat = await Deno.lstat(join(logicalSecretsDir, "keep-me"));
+    assertEquals(keepStat.isSymlink, true);
+
+    // Stale symlink should be gone
+    let staleExists = true;
+    try {
+      await Deno.lstat(join(logicalSecretsDir, "remove-me"));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        staleExists = false;
+      }
+    }
+    assertEquals(staleExists, false);
+  });
+});
+
+Deno.test("refreshSecretsIndex: migrates old-style symlink to directory", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const actualSecretsDir = join(
+      dir,
+      ".swamp",
+      "secrets",
+      "local_encryption",
+      "my-vault",
+    );
+    await ensureDir(actualSecretsDir);
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "my-key.enc"),
+      "encrypted",
+    );
+
+    // Set up vault config
+    const vaultDir = join(dir, ".swamp", "vault", "local_encryption");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "vault-id.yaml"),
+      "name: my-vault\ntype: local_encryption\n",
+    );
+
+    // Create old-style symlink (secrets -> actualSecretsDir)
+    const vaultLogicalDir = join(dir, "vaults", "my-vault");
+    await ensureDir(vaultLogicalDir);
+    const logicalSecretsDir = join(vaultLogicalDir, "secrets");
+    await Deno.symlink(actualSecretsDir, logicalSecretsDir);
+
+    // Verify it's a symlink before migration
+    const beforeStat = await Deno.lstat(logicalSecretsDir);
+    assertEquals(beforeStat.isSymlink, true);
+
+    // Index — should migrate from symlink to directory of individual symlinks
+    const event = createVaultCreated(
+      "vault-id",
+      "local_encryption",
+      "my-vault",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Should now be a directory, not a symlink
+    const afterStat = await Deno.lstat(logicalSecretsDir);
+    assertEquals(afterStat.isSymlink, false);
+    assertEquals(afterStat.isDirectory, true);
+
+    // Individual key symlink should exist
+    const keyStat = await Deno.lstat(join(logicalSecretsDir, "my-key"));
+    assertEquals(keyStat.isSymlink, true);
+  });
+});
+
 Deno.test("path traversal protection: step name in handleWorkflowRunStarted", async () => {
   await withTempDir(async (dir) => {
     await setupRepoDir(dir);

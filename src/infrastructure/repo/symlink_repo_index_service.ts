@@ -736,17 +736,21 @@ export class SymlinkRepoIndexService implements RepoIndexService {
   /**
    * Refreshes the secrets index for a local_encryption vault.
    * Creates symlinks for each secret key, removing the .enc extension.
+   *
+   * Uses incremental sync (ensureDir + create/remove individual symlinks)
+   * rather than destructive remove+recreate, so concurrent calls are safe.
    */
   private async refreshSecretsIndex(
     logicalSecretsDir: string,
     actualSecretsDir: string,
     vaultName: string,
   ): Promise<void> {
-    // Remove existing logical secrets directory if it exists (could be old symlink or directory)
+    // Migration: if logicalSecretsDir is an old-style symlink, remove it
+    // so we can replace it with a real directory of individual symlinks.
     try {
       const stat = await Deno.lstat(logicalSecretsDir);
-      if (stat.isSymlink || stat.isDirectory) {
-        await Deno.remove(logicalSecretsDir, { recursive: true });
+      if (stat.isSymlink) {
+        await Deno.remove(logicalSecretsDir);
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
@@ -754,15 +758,16 @@ export class SymlinkRepoIndexService implements RepoIndexService {
       }
     }
 
-    // Create fresh logical secrets directory
+    // Idempotent directory creation — safe for concurrent calls
     await ensureDir(logicalSecretsDir);
 
-    // List all .enc files in the actual secrets directory
+    // Build the desired set of keys from actual .enc files
+    const desiredKeys = new Set<string>();
     try {
       for await (const entry of Deno.readDir(actualSecretsDir)) {
         if (entry.isFile && entry.name.endsWith(".enc")) {
-          // Remove .enc extension for the symlink name
           const keyName = entry.name.slice(0, -4);
+          desiredKeys.add(keyName);
           const targetPath = join(actualSecretsDir, entry.name);
           const linkPath = join(logicalSecretsDir, keyName);
           await this.createSymlink(targetPath, linkPath);
@@ -774,6 +779,25 @@ export class SymlinkRepoIndexService implements RepoIndexService {
           .warn`Failed to read secrets directory for vault '${vaultName}': ${error}`;
       }
       // Directory may not exist yet, that's OK
+    }
+
+    // Remove stale symlinks that no longer have a corresponding .enc file
+    try {
+      for await (const entry of Deno.readDir(logicalSecretsDir)) {
+        if (!desiredKeys.has(entry.name)) {
+          try {
+            await Deno.remove(join(logicalSecretsDir, entry.name));
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) {
+              throw error;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
     }
   }
 
