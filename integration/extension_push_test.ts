@@ -317,8 +317,8 @@ Deno.test("extension push --dry-run archives multiple workflows with unique name
       wf3Content,
     );
 
-    // Create symlinks at extensions/workflows/{name}/workflow.yaml (like swamp's indexer)
-    const workflowsDir = join(tmpDir, "extensions", "workflows");
+    // Create symlinks at workflows/{name}/workflow.yaml (like swamp's indexer)
+    const workflowsDir = join(tmpDir, "workflows");
     for (
       const [name, id] of [
         ["alpha-workflow", "a0a0a0a0-1111-4111-a111-111111111111"],
@@ -528,6 +528,110 @@ Deno.test("extension push --dry-run respects custom modelsDir from .swamp.yaml",
 
     const combined = stderr + "\n" + stdout;
     assertEquals(code, 0, `Expected success but got:\n${combined}`);
+    assertStringIncludes(combined, "Dry run complete");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extension push --dry-run resolves workflows from extensions/workflows", async () => {
+  const tmpDir = await initTempRepo();
+  try {
+    // Create a minimal model
+    const modelsDir = join(tmpDir, "extensions", "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(modelsDir, "echo.ts"),
+      [
+        'import { z } from "npm:zod@4";',
+        "export const model = {",
+        '  type: "@test/echo",',
+        '  version: "2026.02.27.1",',
+        "  methods: {",
+        "    run: {",
+        '      description: "echo",',
+        "      arguments: z.object({}),",
+        "      execute: async () => ({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    // Create workflow directly in extensions/workflows/ (not the indexer dir)
+    const extWfDir = join(tmpDir, "extensions", "workflows");
+    await Deno.mkdir(extWfDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(extWfDir, "ext-wf.yaml"),
+      stringifyYaml({
+        id: "d0d0d0d0-4444-4444-a444-444444444444",
+        name: "ext-wf",
+        version: 1,
+        jobs: [{
+          name: "main",
+          steps: [{
+            name: "run",
+            task: {
+              type: "model_method",
+              modelIdOrName: "echo",
+              methodName: "run",
+            },
+            dependsOn: [],
+            weight: 0,
+          }],
+          dependsOn: [],
+          weight: 0,
+        }],
+      }),
+    );
+
+    // Create auth.json
+    const configDir = join(tmpDir, ".config", "swamp");
+    await Deno.mkdir(configDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(configDir, "auth.json"),
+      JSON.stringify({
+        serverUrl: "http://localhost:9999",
+        apiKey: "swamp_test_key",
+        apiKeyId: "key-id",
+        username: "test",
+      }),
+    );
+
+    // Create manifest referencing a workflow in extensions/workflows/
+    const manifestPath = join(tmpDir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/ext-wf-test",
+        version: "2026.02.27.1",
+        models: ["echo.ts"],
+        workflows: ["ext-wf.yaml"],
+      }),
+    );
+
+    // Run dry-run — should find the workflow in extensions/workflows/
+    const { stdout, stderr, code } = await runCli(
+      [
+        "extension",
+        "push",
+        manifestPath,
+        "--repo-dir",
+        tmpDir,
+        "--dry-run",
+        "-y",
+        "--no-color",
+      ],
+      {
+        HOME: tmpDir,
+        XDG_CONFIG_HOME: join(tmpDir, ".config"),
+      },
+    );
+
+    const combined = stderr + "\n" + stdout;
+    assertEquals(code, 0, `Expected success but got:\n${combined}`);
+    assertStringIncludes(combined, "Workflows (1)");
     assertStringIncludes(combined, "Dry run complete");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
