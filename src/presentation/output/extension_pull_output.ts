@@ -28,6 +28,7 @@ export interface ExtensionPullResolvedData {
   name: string;
   version: string;
   description: string | undefined;
+  platforms?: string[];
 }
 
 /** Data for successful pull output. */
@@ -51,6 +52,25 @@ export function renderExtensionPullResolved(
     if (data.description) {
       logger.info`Description: ${data.description}`;
     }
+    if (data.platforms && data.platforms.length > 0) {
+      logger.info`Platforms: ${data.platforms.join(", ")}`;
+    }
+  }
+}
+
+/**
+ * Renders platform compatibility hint from the extension manifest.
+ */
+export function renderExtensionPullPlatforms(
+  platforms: string[],
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify({ platforms }, null, 2));
+  } else {
+    logger.warn`Platform hint: this extension declares support for ${
+      platforms.join(", ")
+    }`;
   }
 }
 

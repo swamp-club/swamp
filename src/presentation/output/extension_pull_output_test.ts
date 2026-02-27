@@ -23,6 +23,7 @@ import {
   renderExtensionPullCancelled,
   renderExtensionPullConflicts,
   renderExtensionPullDependencyPull,
+  renderExtensionPullPlatforms,
   renderExtensionPullResolved,
   renderExtensionPullSafetyErrors,
   renderExtensionPullSafetyWarnings,
@@ -111,6 +112,18 @@ Deno.test("renderExtensionPullSafetyErrors outputs JSON in json mode", () => {
   });
   const parsed = JSON.parse(output);
   assertStringIncludes(parsed.errors[0].file, "evil.ts");
+});
+
+Deno.test("renderExtensionPullPlatforms outputs JSON in json mode", () => {
+  const output = captureConsoleLog(() => {
+    renderExtensionPullPlatforms(
+      ["darwin-aarch64", "linux-x86_64"],
+      "json",
+    );
+  });
+  const parsed = JSON.parse(output);
+  assertStringIncludes(parsed.platforms[0], "darwin-aarch64");
+  assertStringIncludes(parsed.platforms[1], "linux-x86_64");
 });
 
 Deno.test("renderExtensionPullSafetyWarnings outputs JSON in json mode", () => {

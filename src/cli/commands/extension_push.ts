@@ -288,6 +288,7 @@ export const extensionPushCommand = new Command()
           relative(repoDir, wf.sourcePath)
         ),
         additionalFiles: additionalFilePaths.map((f) => relative(repoDir, f)),
+        platforms: manifest.platforms,
         dependencies: manifest.dependencies,
       },
       ctx.outputMode,
@@ -405,6 +406,9 @@ export const extensionPushCommand = new Command()
           models: manifest.models,
           workflows: manifest.workflows,
           additionalFiles: manifest.additionalFiles,
+          ...(manifest.platforms.length > 0
+            ? { platforms: manifest.platforms }
+            : {}),
           dependencies: manifest.dependencies,
         }),
       );

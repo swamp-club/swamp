@@ -198,6 +198,21 @@ Deno.test("parseExtensionManifest rejects non-object YAML", () => {
   );
 });
 
+Deno.test("parseExtensionManifest parses valid manifest with platforms", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+platforms:
+  - darwin-aarch64
+  - linux-x86_64
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.platforms, ["darwin-aarch64", "linux-x86_64"]);
+});
+
 Deno.test("parseExtensionManifest defaults optional fields", () => {
   const yaml = `
 manifestVersion: 1
@@ -210,5 +225,6 @@ models:
   assertEquals(manifest.description, undefined);
   assertEquals(manifest.workflows, []);
   assertEquals(manifest.additionalFiles, []);
+  assertEquals(manifest.platforms, []);
   assertEquals(manifest.dependencies, []);
 });

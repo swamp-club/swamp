@@ -52,6 +52,7 @@ Deno.test("renderExtensionPushResolved outputs JSON in json mode", () => {
         modelFiles: ["model.ts"],
         workflowFiles: [],
         additionalFiles: [],
+        platforms: [],
         dependencies: [],
       },
       "json",
