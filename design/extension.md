@@ -304,3 +304,16 @@ Options:
 - `-f, --force` — Skip confirmation prompt
 
 With `--verbose`, individual file deletions are logged.
+
+### extension list
+
+Alias is ls.
+
+Lists the upstream installed extensions, sorted alphabetical by name.
+
+Options:
+
+- `--repo-dir <dir>` — Repository directory (default: `.`)
+
+With `--verbose`, lists each file under the extension. With `--json`
+it will also include the file list
