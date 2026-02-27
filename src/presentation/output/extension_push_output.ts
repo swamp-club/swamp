@@ -31,6 +31,8 @@ export interface ExtensionPushResolvedData {
   modelFiles: string[];
   workflowFiles: string[];
   additionalFiles: string[];
+  platforms: string[];
+  tags: string[];
   dependencies: string[];
 }
 
@@ -82,6 +84,12 @@ export function renderExtensionPushResolved(
       for (const f of data.additionalFiles) {
         logger.info`  ${f}`;
       }
+    }
+    if (data.platforms.length > 0) {
+      logger.info`Platforms: ${data.platforms.join(", ")}`;
+    }
+    if (data.tags.length > 0) {
+      logger.info`Tags: ${data.tags.join(", ")}`;
     }
     if (data.dependencies.length > 0) {
       logger.info`Dependencies: ${data.dependencies.join(", ")}`;

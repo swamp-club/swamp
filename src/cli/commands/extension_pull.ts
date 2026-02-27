@@ -42,6 +42,7 @@ import {
   renderExtensionPullConflicts,
   renderExtensionPullDependencyPull,
   renderExtensionPullIntegrity,
+  renderExtensionPullPlatforms,
   renderExtensionPullResolved,
   renderExtensionPullSafetyErrors,
   renderExtensionPullSafetyWarnings,
@@ -449,6 +450,10 @@ async function pullExtension(
       );
     }
     const manifest = parseExtensionManifest(manifestContent);
+
+    if (manifest.platforms.length > 0) {
+      renderExtensionPullPlatforms(manifest.platforms, outputMode);
+    }
 
     // Safety analysis on .ts files
     const tsFiles = (await listFiles(join(extractDir, "models"))).filter((f) =>
