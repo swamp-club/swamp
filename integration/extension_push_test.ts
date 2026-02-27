@@ -317,8 +317,8 @@ Deno.test("extension push --dry-run archives multiple workflows with unique name
       wf3Content,
     );
 
-    // Create symlinks at workflows/{name}/workflow.yaml (like swamp's indexer)
-    const workflowsDir = join(tmpDir, "workflows");
+    // Create symlinks at extensions/workflows/{name}/workflow.yaml (like swamp's indexer)
+    const workflowsDir = join(tmpDir, "extensions", "workflows");
     for (
       const [name, id] of [
         ["alpha-workflow", "a0a0a0a0-1111-4111-a111-111111111111"],
@@ -444,6 +444,91 @@ Deno.test("extension push safety hard errors block push", async () => {
     );
     assertEquals(code === 0, false);
     assertStringIncludes(stderr, "safety errors");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extension push --dry-run respects custom modelsDir from .swamp.yaml", async () => {
+  const tmpDir = await initTempRepo();
+  try {
+    // Set custom modelsDir in .swamp.yaml
+    const markerPath = join(tmpDir, ".swamp.yaml");
+    const markerContent = await Deno.readTextFile(markerPath);
+    const { parse: parseYaml, stringify: yamlStringify } = await import(
+      "@std/yaml"
+    );
+    const markerData = parseYaml(markerContent) as Record<string, unknown>;
+    markerData.modelsDir = "custom/models";
+    await Deno.writeTextFile(markerPath, yamlStringify(markerData));
+
+    // Create model file in the CUSTOM directory (not extensions/models)
+    const customModelsDir = join(tmpDir, "custom", "models");
+    await Deno.mkdir(customModelsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(customModelsDir, "echo.ts"),
+      [
+        'import { z } from "npm:zod@4";',
+        "export const model = {",
+        '  type: "@test/echo",',
+        '  version: "2026.02.27.1",',
+        "  methods: {",
+        "    run: {",
+        '      description: "echo",',
+        "      arguments: z.object({}),",
+        "      execute: async () => ({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    // Create auth.json so we pass the auth check
+    const configDir = join(tmpDir, ".config", "swamp");
+    await Deno.mkdir(configDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(configDir, "auth.json"),
+      JSON.stringify({
+        serverUrl: "http://localhost:9999",
+        apiKey: "swamp_test_key",
+        apiKeyId: "key-id",
+        username: "test",
+      }),
+    );
+
+    // Create manifest referencing the model
+    const manifestPath = join(tmpDir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/custom-dir",
+        version: "2026.02.27.1",
+        models: ["echo.ts"],
+      }),
+    );
+
+    // Run dry-run — should find the model in custom/models, not extensions/models
+    const { stdout, stderr, code } = await runCli(
+      [
+        "extension",
+        "push",
+        manifestPath,
+        "--repo-dir",
+        tmpDir,
+        "--dry-run",
+        "-y",
+        "--no-color",
+      ],
+      {
+        HOME: tmpDir,
+        XDG_CONFIG_HOME: join(tmpDir, ".config"),
+      },
+    );
+
+    const combined = stderr + "\n" + stdout;
+    assertEquals(code, 0, `Expected success but got:\n${combined}`);
+    assertStringIncludes(combined, "Dry run complete");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
