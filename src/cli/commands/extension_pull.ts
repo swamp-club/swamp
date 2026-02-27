@@ -32,11 +32,14 @@ import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { computeChecksum } from "../../domain/models/checksum.ts";
+import { verifyChecksum } from "../../domain/update/integrity.ts";
 import {
   renderExtensionPull,
   renderExtensionPullCancelled,
   renderExtensionPullConflicts,
   renderExtensionPullDependencyPull,
+  renderExtensionPullIntegrity,
   renderExtensionPullResolved,
   renderExtensionPullSafetyErrors,
   renderExtensionPullSafetyWarnings,
@@ -373,6 +376,22 @@ async function pullExtension(
     ref.name,
     version,
   );
+
+  // Verify integrity
+  const serverChecksum = await extensionClient.getChecksum(ref.name, version);
+  const localChecksum = await computeChecksum(archiveBytes);
+  if (serverChecksum !== null) {
+    verifyChecksum(serverChecksum, localChecksum);
+    renderExtensionPullIntegrity(
+      { name: ref.name, version, status: "verified" },
+      outputMode,
+    );
+  } else {
+    renderExtensionPullIntegrity(
+      { name: ref.name, version, status: "unverified" },
+      outputMode,
+    );
+  }
 
   // Extract to temp dir
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_pull_" });

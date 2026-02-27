@@ -296,6 +296,32 @@ export class ExtensionApiClient {
     }
   }
 
+  /**
+   * Fetch the SHA-256 checksum for a specific extension version.
+   * Returns null if the extension predates checksum support (legacy) or is not found.
+   */
+  async getChecksum(
+    name: string,
+    version: string,
+  ): Promise<string | null> {
+    const encodedName = encodeURIComponent(name);
+    const res = await this.fetch(
+      `/api/v1/extensions/${encodedName}@${version}/checksum`,
+      {
+        method: "GET",
+      },
+    );
+
+    if (res.status === 404) {
+      await res.body?.cancel();
+      return null;
+    }
+
+    await this.checkResponse(res);
+    const data = await res.json();
+    return data.checksum ?? null;
+  }
+
   private authHeaders(apiKey: string): Record<string, string> {
     return { "Authorization": `Bearer ${apiKey}` };
   }

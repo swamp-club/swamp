@@ -117,6 +117,38 @@ export function renderExtensionPullDependencyPull(
   }
 }
 
+/** Data for integrity verification output. */
+export interface ExtensionPullIntegrityData {
+  name: string;
+  version: string;
+  status: "verified" | "unverified";
+}
+
+/**
+ * Renders integrity verification result.
+ */
+export function renderExtensionPullIntegrity(
+  data: ExtensionPullIntegrityData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify(
+        { integrity: data.status, name: data.name, version: data.version },
+        null,
+        2,
+      ),
+    );
+  } else {
+    if (data.status === "verified") {
+      logger.info`Identity verified: ${data.name}@${data.version}`;
+    } else {
+      logger
+        .warn`No checksum available: ${data.name}@${data.version} (legacy extension)`;
+    }
+  }
+}
+
 /**
  * Renders safety errors.
  */
