@@ -46,6 +46,8 @@ Deno.test("ExtensionApiClient.initiatePush throws UserError on connection failur
         version: "2026.02.26.1",
         description: "test",
         dependencies: [],
+        platforms: [],
+        labels: [],
       }, "fake-key"),
     UserError,
   );
@@ -61,6 +63,8 @@ Deno.test("ExtensionApiClient.confirmPush throws UserError on connection failure
         version: "2026.02.26.1",
         description: "test",
         dependencies: [],
+        platforms: [],
+        labels: [],
       }, "fake-key"),
     UserError,
   );

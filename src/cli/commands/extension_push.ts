@@ -500,6 +500,8 @@ export const extensionPushCommand = new Command()
         version: manifest.version,
         description: manifest.description ?? "",
         dependencies: manifest.dependencies,
+        platforms: manifest.platforms,
+        labels: manifest.labels,
       };
 
       // Phase 1: Initiate
