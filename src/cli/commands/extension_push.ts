@@ -289,7 +289,7 @@ export const extensionPushCommand = new Command()
         ),
         additionalFiles: additionalFilePaths.map((f) => relative(repoDir, f)),
         platforms: manifest.platforms,
-        tags: manifest.tags,
+        labels: manifest.labels,
         dependencies: manifest.dependencies,
       },
       ctx.outputMode,
@@ -410,7 +410,7 @@ export const extensionPushCommand = new Command()
           ...(manifest.platforms.length > 0
             ? { platforms: manifest.platforms }
             : {}),
-          ...(manifest.tags.length > 0 ? { tags: manifest.tags } : {}),
+          ...(manifest.labels.length > 0 ? { labels: manifest.labels } : {}),
           dependencies: manifest.dependencies,
         }),
       );

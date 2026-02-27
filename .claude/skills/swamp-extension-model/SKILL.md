@@ -336,7 +336,7 @@ paths are relative to `extensions/models/`; local imports are auto-resolved.
 
 - `platforms` — OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`).
   Use when your extension contains platform-specific code.
-- `tags` — Categorization labels (e.g. `aws`, `kubernetes`, `security`).
+- `labels` — Categorization labels (e.g. `aws`, `kubernetes`, `security`).
 
 Both are omitted from the archive when not specified.
 

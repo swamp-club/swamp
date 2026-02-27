@@ -22,7 +22,7 @@ additionalFiles:
 platforms:
   - darwin-aarch64
   - linux-x86_64
-tags:
+labels:
   - aws
   - security
 dependencies:
@@ -41,7 +41,7 @@ dependencies:
 | `workflows`       | No*      | Workflow file paths relative to `workflows/`                     |
 | `additionalFiles` | No       | Extra files relative to the manifest location                    |
 | `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)    |
-| `tags`            | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)     |
+| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)     |
 | `dependencies`    | No       | Other extensions this one depends on                             |
 
 *At least one of `models` or `workflows` must be present with entries.
