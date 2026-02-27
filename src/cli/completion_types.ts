@@ -18,9 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Type } from "@cliffy/command";
+import { isAbsolute, resolve } from "@std/path";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRepository } from "../infrastructure/persistence/yaml_workflow_repository.ts";
+import { ExtensionWorkflowRepository } from "../infrastructure/persistence/extension_workflow_repository.ts";
+import { CompositeWorkflowRepository } from "../infrastructure/persistence/composite_workflow_repository.ts";
+import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../domain/repo/repo_path.ts";
 import { modelRegistry } from "../domain/models/model.ts";
+import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 
 /**
  * Custom Cliffy types for shell completion support.
@@ -82,8 +88,29 @@ export class WorkflowNameType extends Type<string> {
 
   override async complete(): Promise<string[]> {
     try {
-      const workflowRepo = new YamlWorkflowRepository(".");
-      const workflows = await workflowRepo.findAll();
+      const cwd = ".";
+      const yamlRepo = new YamlWorkflowRepository(cwd);
+
+      // Try to read marker for extension workflows dir
+      let extensionRepo: ExtensionWorkflowRepository | null = null;
+      try {
+        const markerRepo = new RepoMarkerRepository();
+        const repoPath = RepoPath.create(cwd);
+        const marker = await markerRepo.read(repoPath);
+        const workflowsDirRel = resolveWorkflowsDir(marker);
+        const workflowsDir = isAbsolute(workflowsDirRel)
+          ? workflowsDirRel
+          : resolve(cwd, workflowsDirRel);
+        extensionRepo = new ExtensionWorkflowRepository(workflowsDir);
+      } catch {
+        // No marker available — skip extension workflows
+      }
+
+      const compositeRepo = new CompositeWorkflowRepository(
+        yamlRepo,
+        extensionRepo,
+      );
+      const workflows = await compositeRepo.findAll();
       return workflows.map((w) => w.name);
     } catch (_error) {
       // Graceful degradation: return empty completions if repository

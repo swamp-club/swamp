@@ -33,7 +33,7 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import type { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
 import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
@@ -80,7 +80,7 @@ function filterWorkflows(
  */
 async function displayWorkflowGet(
   item: WorkflowSearchItem,
-  repo: YamlWorkflowRepository,
+  repo: WorkflowRepository,
   options: AnyOptions,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
@@ -165,7 +165,7 @@ function hasAllDefaults(schema: InputsSchema | undefined): boolean {
  */
 async function executeWorkflowFromSearch(
   item: WorkflowSearchItem,
-  repo: YamlWorkflowRepository,
+  repo: WorkflowRepository,
   runRepo: YamlWorkflowRunRepository,
   repoDir: string,
   options: AnyOptions,

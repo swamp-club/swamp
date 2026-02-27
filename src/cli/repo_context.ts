@@ -25,6 +25,7 @@
  * - Throwing clear errors when not initialized
  */
 
+import { isAbsolute, resolve } from "@std/path";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   createRepositoryContext,
@@ -33,8 +34,10 @@ import {
 } from "../infrastructure/persistence/repository_factory.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
+import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
+import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 
 /**
  * Options for requireInitializedRepo.
@@ -80,9 +83,19 @@ export async function requireInitializedRepo(
     );
   }
 
+  // Read marker to resolve workflowsDir
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(repoPath);
+
+  const workflowsDirRel = resolveWorkflowsDir(marker);
+  const workflowsDir = isAbsolute(workflowsDirRel)
+    ? workflowsDirRel
+    : resolve(repoPath.value, workflowsDirRel);
+
   // Create repository context with the validated directory
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
+    workflowsDir,
     ...factoryConfig,
   });
 

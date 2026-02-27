@@ -108,6 +108,18 @@ export const workflowDeleteCommand = new Command()
     // Get path before deletion
     const workflowPath = workflowRepo.getPath(workflow.id);
 
+    // Guard against deleting extension-only workflows
+    try {
+      await Deno.stat(workflowPath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        throw new UserError(
+          `Cannot delete extension workflow '${workflow.name}'. Extension workflows are read-only. To remove it, delete the source file directly.`,
+        );
+      }
+      throw error;
+    }
+
     // Check how many runs exist
     const runs = await workflowRunRepo.findAllByWorkflowId(workflow.id);
     const runCount = runs.length;

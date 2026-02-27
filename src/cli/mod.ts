@@ -62,10 +62,12 @@ import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
 
-// Import and re-export — the canonical definition lives in
-// resolve_models_dir.ts to avoid circular imports through mod.ts.
+// Import and re-export — the canonical definitions live in
+// separate files to avoid circular imports through mod.ts.
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 export { resolveModelsDir };
+import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
+export { resolveWorkflowsDir };
 
 /**
  * Resolves the log level.

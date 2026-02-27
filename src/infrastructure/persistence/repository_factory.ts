@@ -56,9 +56,12 @@ import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
+import { ExtensionWorkflowRepository } from "./extension_workflow_repository.ts";
+import { CompositeWorkflowRepository } from "./composite_workflow_repository.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import { SymlinkRepoIndexService } from "../repo/symlink_repo_index_service.ts";
 import type { RepoIndexService } from "../../domain/repo/repo_index_service.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type {
   DefinitionCreated,
   DefinitionDeleted,
@@ -193,6 +196,7 @@ export function createVaultConfigRepository(
 export interface RepositoryFactoryConfig {
   repoDir: string;
   enableIndexing?: boolean;
+  workflowsDir?: string;
 }
 
 /**
@@ -206,7 +210,7 @@ export interface RepositoryContext {
   evaluatedDefinitionRepo: YamlEvaluatedDefinitionRepository;
   unifiedDataRepo: FileSystemUnifiedDataRepository;
   outputRepo: YamlOutputRepository;
-  workflowRepo: YamlWorkflowRepository;
+  workflowRepo: WorkflowRepository;
   workflowRunRepo: YamlWorkflowRunRepository;
   vaultConfigRepo: YamlVaultConfigRepository;
 }
@@ -220,7 +224,7 @@ export interface RepositoryContext {
 export function createRepositoryContext(
   config: RepositoryFactoryConfig,
 ): RepositoryContext {
-  const { repoDir, enableIndexing = true } = config;
+  const { repoDir, enableIndexing = true, workflowsDir } = config;
 
   // Create event bus
   const eventBus = new EventBus();
@@ -230,10 +234,20 @@ export function createRepositoryContext(
     repoDir,
     enableIndexing ? eventBus : undefined,
   );
-  const workflowRepo = new YamlWorkflowRepository(
+  const yamlWorkflowRepo = new YamlWorkflowRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
   );
+
+  // Create composite workflow repo if extension workflows dir is provided
+  const extensionWorkflowRepo = workflowsDir
+    ? new ExtensionWorkflowRepository(workflowsDir)
+    : null;
+  const workflowRepo: WorkflowRepository = new CompositeWorkflowRepository(
+    yamlWorkflowRepo,
+    extensionWorkflowRepo,
+  );
+
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
@@ -254,12 +268,12 @@ export function createRepositoryContext(
     enableIndexing ? eventBus : undefined,
   );
 
-  // Create index service
+  // Create index service (uses yaml repo directly for symlink management)
   const indexService = new SymlinkRepoIndexService({
     repoDir,
     definitionRepo,
     unifiedDataRepo,
-    workflowRepo,
+    workflowRepo: yamlWorkflowRepo,
     workflowRunRepo,
     vaultConfigRepo,
   });

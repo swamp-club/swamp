@@ -190,6 +190,27 @@ export const workflowEditCommand = new Command()
       }
     }
 
+    // If the primary path doesn't exist but we found the workflow,
+    // it's an extension workflow — try to find its actual source file.
+    if (filePath && workflow) {
+      try {
+        await Deno.stat(filePath);
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) {
+          // Try symlink fallback for extension workflows
+          const resolvedPath = await resolveWorkflowSymlink(
+            repoDir,
+            workflow.name,
+          );
+          if (resolvedPath) {
+            filePath = resolvedPath;
+          }
+          // If no symlink either, the file path is the best we have —
+          // the editor will create it or show an error
+        }
+      }
+    }
+
     ctx.logger.debug`Using file path: ${filePath}`;
 
     // Check for stdin content (non-interactive update mode)

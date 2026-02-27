@@ -23,6 +23,7 @@ import {
   isTelemetryDisabledByEnv,
   resolveLogLevel,
   resolveModelsDir,
+  resolveWorkflowsDir,
 } from "./mod.ts";
 
 Deno.test("resolveModelsDir returns default 'extensions/models' when no config", () => {
@@ -310,6 +311,94 @@ Deno.test("isTelemetryDisabledByEnv returns false when env var is ''", () => {
       Deno.env.set("SWAMP_NO_TELEMETRY", original);
     } else {
       Deno.env.delete("SWAMP_NO_TELEMETRY");
+    }
+  }
+});
+
+Deno.test("resolveWorkflowsDir returns default 'extensions/workflows' when no config", () => {
+  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
+  try {
+    Deno.env.delete("SWAMP_WORKFLOWS_DIR");
+
+    const result = resolveWorkflowsDir(null);
+    assertEquals(result, "extensions/workflows");
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
+    }
+  }
+});
+
+Deno.test("resolveWorkflowsDir returns default when marker has no workflowsDir", () => {
+  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
+  try {
+    Deno.env.delete("SWAMP_WORKFLOWS_DIR");
+
+    const marker = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01T00:00:00Z",
+    };
+    const result = resolveWorkflowsDir(marker);
+    assertEquals(result, "extensions/workflows");
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
+    }
+  }
+});
+
+Deno.test("resolveWorkflowsDir uses marker.workflowsDir when set", () => {
+  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
+  try {
+    Deno.env.delete("SWAMP_WORKFLOWS_DIR");
+
+    const marker = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01T00:00:00Z",
+      workflowsDir: "custom/workflows/path",
+    };
+    const result = resolveWorkflowsDir(marker);
+    assertEquals(result, "custom/workflows/path");
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
+    }
+  }
+});
+
+Deno.test("resolveWorkflowsDir env var takes priority over marker.workflowsDir", () => {
+  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
+  try {
+    Deno.env.set("SWAMP_WORKFLOWS_DIR", "/env/var/path");
+
+    const marker = {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01T00:00:00Z",
+      workflowsDir: "custom/workflows/path",
+    };
+    const result = resolveWorkflowsDir(marker);
+    assertEquals(result, "/env/var/path");
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
+    } else {
+      Deno.env.delete("SWAMP_WORKFLOWS_DIR");
+    }
+  }
+});
+
+Deno.test("resolveWorkflowsDir env var takes priority over default", () => {
+  const original = Deno.env.get("SWAMP_WORKFLOWS_DIR");
+  try {
+    Deno.env.set("SWAMP_WORKFLOWS_DIR", "env/workflows");
+
+    const result = resolveWorkflowsDir(null);
+    assertEquals(result, "env/workflows");
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_WORKFLOWS_DIR", original);
+    } else {
+      Deno.env.delete("SWAMP_WORKFLOWS_DIR");
     }
   }
 });
