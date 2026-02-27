@@ -26,6 +26,7 @@ import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import { Spinner } from "../../presentation/spinner.ts";
 import { renderAuthLoginSuccess } from "../../presentation/output/auth_login_output.ts";
+import { generateDeviceCode } from "../../domain/auth/device_code.ts";
 
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
@@ -91,12 +92,15 @@ async function browserFlow(
   spinner: Spinner | null,
 ): Promise<string> {
   const state = crypto.randomUUID();
+  const deviceCode = generateDeviceCode();
   const server = startCallbackServer(state, serverUrl);
 
   const callbackUrl = `http://localhost:${server.port}/callback`;
   const loginUrl = `${serverUrl}/login?cli_callback=${
     encodeURIComponent(callbackUrl)
-  }&state=${encodeURIComponent(state)}`;
+  }&state=${encodeURIComponent(state)}&device_code=${
+    encodeURIComponent(deviceCode)
+  }`;
 
   try {
     await openBrowser(loginUrl);
@@ -112,7 +116,15 @@ async function browserFlow(
     }
   }
 
-  spinner?.update("Waiting for authentication...");
+  spinner?.stop();
+  console.log();
+  console.log(`  Verification code: ${deviceCode}`);
+  console.log();
+  console.log(
+    "  Confirm this code matches in your browser before signing in.",
+  );
+  console.log();
+  spinner?.start("Waiting for authentication...");
 
   try {
     const token = await server.token;
