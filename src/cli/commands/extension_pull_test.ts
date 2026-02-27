@@ -19,8 +19,13 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
-import { parseExtensionRef } from "./extension_pull.ts";
+import {
+  parseExtensionRef,
+  updateUpstreamExtensions,
+} from "./extension_pull.ts";
+import type { UpstreamExtensionEntry } from "./extension_pull.ts";
 import { UserError } from "../../domain/errors.ts";
+import { join } from "@std/path";
 
 Deno.test("parseExtensionRef parses name without version", () => {
   const ref = parseExtensionRef("@myorg/my-ext");
@@ -48,4 +53,64 @@ Deno.test("parseExtensionRef throws on empty version after @", () => {
     UserError,
   );
   assertStringIncludes(error.message, "Version cannot be empty");
+});
+
+Deno.test("updateUpstreamExtensions persists files array", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const files = [
+      "extensions/models/foo/bar.yaml",
+      "extensions/models/foo/baz.ts",
+    ];
+    await updateUpstreamExtensions(tmpDir, "@test/ext", "1.0.0", files);
+
+    const content = await Deno.readTextFile(
+      join(tmpDir, "upstream_extensions.json"),
+    );
+    const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
+
+    assertEquals(data["@test/ext"].version, "1.0.0");
+    assertEquals(data["@test/ext"].files, files);
+    assertEquals(typeof data["@test/ext"].pulledAt, "string");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateUpstreamExtensions preserves existing entries", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    // Write first extension
+    await updateUpstreamExtensions(tmpDir, "@test/first", "1.0.0", ["a.yaml"]);
+    // Write second extension
+    await updateUpstreamExtensions(tmpDir, "@test/second", "2.0.0", ["b.yaml"]);
+
+    const content = await Deno.readTextFile(
+      join(tmpDir, "upstream_extensions.json"),
+    );
+    const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
+
+    assertEquals(data["@test/first"].version, "1.0.0");
+    assertEquals(data["@test/first"].files, ["a.yaml"]);
+    assertEquals(data["@test/second"].version, "2.0.0");
+    assertEquals(data["@test/second"].files, ["b.yaml"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("updateUpstreamExtensions handles empty files array", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    await updateUpstreamExtensions(tmpDir, "@test/empty", "1.0.0", []);
+
+    const content = await Deno.readTextFile(
+      join(tmpDir, "upstream_extensions.json"),
+    );
+    const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
+
+    assertEquals(data["@test/empty"].files, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });

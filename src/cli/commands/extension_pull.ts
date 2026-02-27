@@ -62,9 +62,10 @@ interface ExtensionRef {
 }
 
 /** Entry in upstream_extensions.json. */
-interface UpstreamExtensionEntry {
+export interface UpstreamExtensionEntry {
   version: string;
   pulledAt: string;
+  files?: string[];
 }
 
 /** Shape of upstream_extensions.json. */
@@ -158,10 +159,11 @@ async function acquireLock(lockPath: string): Promise<Deno.FsFile> {
  * Updates upstream_extensions.json with a new entry, using a lockfile
  * for concurrency safety and atomicWriteTextFile for crash safety.
  */
-async function updateUpstreamExtensions(
+export async function updateUpstreamExtensions(
   modelsDir: string,
   name: string,
   version: string,
+  files: string[],
 ): Promise<void> {
   const jsonPath = join(modelsDir, "upstream_extensions.json");
   const lockPath = `${jsonPath}.lock`;
@@ -183,6 +185,7 @@ async function updateUpstreamExtensions(
     data[name] = {
       version,
       pulledAt: new Date().toISOString(),
+      files,
     };
 
     // Write atomically
@@ -515,7 +518,12 @@ async function pullExtension(
     extractedFiles.push(...filesExtracted);
 
     // Update upstream_extensions.json
-    await updateUpstreamExtensions(absoluteModelsDir, ref.name, version);
+    await updateUpstreamExtensions(
+      absoluteModelsDir,
+      ref.name,
+      version,
+      extractedFiles,
+    );
 
     // Render success
     renderExtensionPull(
