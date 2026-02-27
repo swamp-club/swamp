@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { Logger } from "@logtape/logtape";
 import { basename, dirname, join, relative, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
@@ -45,6 +46,11 @@ import {
   renderExtensionPullSafetyErrors,
   renderExtensionPullSafetyWarnings,
 } from "../../presentation/output/extension_pull_output.ts";
+
+/** Returns true if the filename is a macOS resource fork (AppleDouble) file. */
+function isMacOsResourceFork(name: string): boolean {
+  return name.startsWith("._");
+}
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -220,6 +226,9 @@ async function copyDir(
   const extracted: string[] = [];
   try {
     for await (const entry of Deno.readDir(srcDir)) {
+      // Skip macOS resource fork files (._*)
+      if (isMacOsResourceFork(entry.name)) continue;
+
       const srcPath = join(srcDir, entry.name);
       const destPath = join(destDir, entry.name);
       if (entry.isDirectory) {
@@ -247,6 +256,9 @@ async function listFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
   try {
     for await (const entry of Deno.readDir(dir)) {
+      // Skip macOS resource fork files (._*)
+      if (isMacOsResourceFork(entry.name)) continue;
+
       const path = join(dir, entry.name);
       if (entry.isDirectory) {
         files.push(...await listFiles(path));
@@ -317,6 +329,7 @@ async function detectConflicts(
 
 interface PullContext {
   extensionClient: ExtensionApiClient;
+  logger: Logger;
   modelsDir: string;
   workflowsDir: string;
   repoDir: string;
@@ -333,7 +346,7 @@ async function pullExtension(
   ref: ExtensionRef,
   ctx: PullContext,
 ): Promise<void> {
-  const { extensionClient, modelsDir, repoDir, outputMode } = ctx;
+  const { extensionClient, logger, modelsDir, repoDir, outputMode } = ctx;
 
   // Guard against circular deps
   if (ctx.alreadyPulled.has(ref.name)) {
@@ -403,10 +416,12 @@ async function pullExtension(
     await Deno.writeFile(archivePath, archiveBytes);
 
     // Extract using tar
+    // COPYFILE_DISABLE prevents macOS tar from creating ._ resource fork files
     const tarCommand = new Deno.Command("tar", {
       args: ["-xzf", archivePath, "-C", tmpDir],
       stdout: "piped",
       stderr: "piped",
+      env: { COPYFILE_DISABLE: "1" },
     });
     const tarOutput = await tarCommand.output();
     if (!tarOutput.success) {
@@ -415,6 +430,12 @@ async function pullExtension(
     }
 
     const extractDir = join(tmpDir, "extension");
+
+    // Log extracted files for debugging
+    const allExtractedFiles = await listFiles(extractDir);
+    for (const f of allExtractedFiles) {
+      logger.debug`Archive contains: ${relative(extractDir, f)}`;
+    }
 
     // Parse manifest
     let manifestContent: string;
@@ -610,6 +631,7 @@ export const extensionPullCommand = new Command()
 
     await pullExtension(ref, {
       extensionClient,
+      logger: ctx.logger,
       modelsDir,
       workflowsDir,
       repoDir,
