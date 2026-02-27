@@ -29,6 +29,12 @@ import {
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
+import {
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
@@ -143,7 +149,10 @@ export const extensionPushCommand = new Command()
     }
 
     // 5. Resolve models dir
-    const modelsDir = resolve(repoDir, "extensions/models");
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    const modelsDir = resolve(repoDir, resolveModelsDir(marker));
 
     // 6. Collect model files from manifest
     const modelEntryPoints: string[] = [];
@@ -167,7 +176,7 @@ export const extensionPushCommand = new Command()
     const workflowFiles: Array<{ sourcePath: string; archiveName: string }> =
       [];
     if (manifest.workflows.length > 0) {
-      const workflowsDir = resolve(repoDir, "workflows");
+      const workflowsDir = resolve(repoDir, resolveWorkflowsDir(marker));
       // Validate workflow files exist and resolve symlinks
       const wfNames: string[] = [];
       for (const wfRef of manifest.workflows) {
