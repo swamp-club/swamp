@@ -176,17 +176,33 @@ export const extensionPushCommand = new Command()
     const workflowFiles: Array<{ sourcePath: string; archiveName: string }> =
       [];
     if (manifest.workflows.length > 0) {
-      const workflowsDir = resolve(repoDir, resolveWorkflowsDir(marker));
+      const indexerWorkflowsDir = resolve(repoDir, "workflows");
+      const extensionWorkflowsDir = resolve(
+        repoDir,
+        resolveWorkflowsDir(marker),
+      );
       // Validate workflow files exist and resolve symlinks
       const wfNames: string[] = [];
       for (const wfRef of manifest.workflows) {
-        const wfPath = resolve(workflowsDir, wfRef);
-        let realPath: string;
+        let realPath: string | null = null;
+
+        // Try indexer symlinks first (workflows/)
         try {
-          realPath = await Deno.realPath(wfPath);
-        } catch {
+          realPath = await Deno.realPath(resolve(indexerWorkflowsDir, wfRef));
+        } catch { /* not found here */ }
+
+        // Fall back to extension workflows dir
+        if (!realPath) {
+          try {
+            realPath = await Deno.realPath(
+              resolve(extensionWorkflowsDir, wfRef),
+            );
+          } catch { /* not found here either */ }
+        }
+
+        if (!realPath) {
           throw new UserError(
-            `Workflow file not found: ${wfRef} (expected at ${wfPath})`,
+            `Workflow file not found: ${wfRef} (looked in ${indexerWorkflowsDir} and ${extensionWorkflowsDir})`,
           );
         }
         // Derive a unique archive name from the manifest reference directory
