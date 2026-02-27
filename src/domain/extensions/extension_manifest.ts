@@ -46,6 +46,7 @@ const ExtensionManifestSchemaV1 = z.object({
   models: z.array(z.string()).optional(),
   additionalFiles: z.array(z.string()).optional(),
   platforms: z.array(z.string().min(1)).optional(),
+  tags: z.array(z.string().min(1)).optional(),
   dependencies: z.array(
     z.string().refine((dep) => dep.includes("/"), {
       message: "Dependencies must include a slash (e.g., @namespace/name)",
@@ -68,6 +69,7 @@ export interface ExtensionManifest {
   models: string[];
   additionalFiles: string[];
   platforms: string[];
+  tags: string[];
   dependencies: string[];
 }
 
@@ -119,6 +121,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     models: result.data.models ?? [],
     additionalFiles: result.data.additionalFiles ?? [],
     platforms: result.data.platforms ?? [],
+    tags: result.data.tags ?? [],
     dependencies: result.data.dependencies ?? [],
   };
 }

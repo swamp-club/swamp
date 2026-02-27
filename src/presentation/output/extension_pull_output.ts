@@ -29,6 +29,7 @@ export interface ExtensionPullResolvedData {
   version: string;
   description: string | undefined;
   platforms?: string[];
+  tags?: string[];
 }
 
 /** Data for successful pull output. */
@@ -54,6 +55,9 @@ export function renderExtensionPullResolved(
     }
     if (data.platforms && data.platforms.length > 0) {
       logger.info`Platforms: ${data.platforms.join(", ")}`;
+    }
+    if (data.tags && data.tags.length > 0) {
+      logger.info`Tags: ${data.tags.join(", ")}`;
     }
   }
 }

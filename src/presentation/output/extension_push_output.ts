@@ -32,6 +32,7 @@ export interface ExtensionPushResolvedData {
   workflowFiles: string[];
   additionalFiles: string[];
   platforms: string[];
+  tags: string[];
   dependencies: string[];
 }
 
@@ -86,6 +87,9 @@ export function renderExtensionPushResolved(
     }
     if (data.platforms.length > 0) {
       logger.info`Platforms: ${data.platforms.join(", ")}`;
+    }
+    if (data.tags.length > 0) {
+      logger.info`Tags: ${data.tags.join(", ")}`;
     }
     if (data.dependencies.length > 0) {
       logger.info`Dependencies: ${data.dependencies.join(", ")}`;

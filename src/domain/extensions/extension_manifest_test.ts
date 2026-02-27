@@ -213,6 +213,22 @@ platforms:
   assertEquals(manifest.platforms, ["darwin-aarch64", "linux-x86_64"]);
 });
 
+Deno.test("parseExtensionManifest parses valid manifest with tags", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+tags:
+  - aws
+  - kubernetes
+  - security
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.tags, ["aws", "kubernetes", "security"]);
+});
+
 Deno.test("parseExtensionManifest defaults optional fields", () => {
   const yaml = `
 manifestVersion: 1
@@ -226,5 +242,6 @@ models:
   assertEquals(manifest.workflows, []);
   assertEquals(manifest.additionalFiles, []);
   assertEquals(manifest.platforms, []);
+  assertEquals(manifest.tags, []);
   assertEquals(manifest.dependencies, []);
 });
