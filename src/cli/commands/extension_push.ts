@@ -164,10 +164,12 @@ export const extensionPushCommand = new Command()
     const allModelFiles = [...importResult.resolvedFiles];
 
     // 8. Resolve workflow dependencies if workflows present
-    const workflowFiles: string[] = [];
+    const workflowFiles: Array<{ sourcePath: string; archiveName: string }> =
+      [];
     if (manifest.workflows.length > 0) {
       const workflowsDir = resolve(repoDir, "workflows");
-      // Validate workflow files exist
+      // Validate workflow files exist and resolve symlinks
+      const wfNames: string[] = [];
       for (const wfRef of manifest.workflows) {
         const wfPath = resolve(workflowsDir, wfRef);
         let realPath: string;
@@ -178,33 +180,47 @@ export const extensionPushCommand = new Command()
             `Workflow file not found: ${wfRef} (expected at ${wfPath})`,
           );
         }
-        workflowFiles.push(realPath);
+        // Derive workflow name from the manifest reference directory
+        // e.g. "namespace-debug/workflow.yaml" → "namespace-debug"
+        const refDir = dirname(wfRef);
+        const archiveName = refDir !== "."
+          ? `${refDir.replace(/\//g, "-")}.yaml`
+          : basename(realPath);
+        workflowFiles.push({ sourcePath: realPath, archiveName });
+        wfNames.push(
+          refDir !== "."
+            ? refDir.replace(/_/g, "-")
+            : basename(wfRef, ".yaml").replace(/_/g, "-"),
+        );
       }
 
       // Also resolve models referenced by workflows
-      const wfNames = manifest.workflows.map((wf) =>
-        basename(wf, ".yaml").replace(/_/g, "-")
-      );
       const depResult = await resolveWorkflowDependencies(wfNames, {
         workflowRepo: repoContext.workflowRepo,
         definitionRepo: repoContext.definitionRepo,
         modelsDir,
       });
 
-      // Merge auto-resolved model files (dedup)
+      // Merge auto-resolved model files (dedup, skip non-existent)
       const existingSet = new Set(allModelFiles);
       for (const mf of depResult.modelFiles) {
-        if (!existingSet.has(mf)) {
+        if (existingSet.has(mf)) continue;
+        try {
+          await Deno.stat(mf);
           allModelFiles.push(mf);
           existingSet.add(mf);
+        } catch {
+          // Model source not at conventional path — it may already be
+          // included in the manifest under a different filename.
+          ctx.logger.debug`Skipping auto-resolved model (not found): ${mf}`;
         }
       }
 
       // Merge workflow files from dependency resolution
-      const wfSet = new Set(workflowFiles);
+      const wfSet = new Set(workflowFiles.map((wf) => wf.sourcePath));
       for (const wf of depResult.workflowFiles) {
         if (!wfSet.has(wf)) {
-          workflowFiles.push(wf);
+          workflowFiles.push({ sourcePath: wf, archiveName: basename(wf) });
           wfSet.add(wf);
         }
       }
@@ -231,7 +247,9 @@ export const extensionPushCommand = new Command()
         version: manifest.version,
         description: manifest.description,
         modelFiles: allModelFiles.map((f) => relative(repoDir, f)),
-        workflowFiles: workflowFiles.map((f) => relative(repoDir, f)),
+        workflowFiles: workflowFiles.map((wf) =>
+          relative(repoDir, wf.sourcePath)
+        ),
         additionalFiles: additionalFilePaths.map((f) => relative(repoDir, f)),
         dependencies: manifest.dependencies,
       },
@@ -241,7 +259,7 @@ export const extensionPushCommand = new Command()
     // 11. Run safety analysis
     const allFiles = [
       ...allModelFiles,
-      ...workflowFiles,
+      ...workflowFiles.map((wf) => wf.sourcePath),
       ...additionalFilePaths,
     ];
     const safetyResult = await analyzeExtensionSafety(allFiles);
@@ -368,10 +386,10 @@ export const extensionPushCommand = new Command()
         );
       }
 
-      // Copy workflow files
-      for (const wfFile of workflowFiles) {
-        const destPath = join(extDir, "workflows", basename(wfFile));
-        await Deno.copyFile(wfFile, destPath);
+      // Copy workflow files using unique archive names
+      for (const wf of workflowFiles) {
+        const destPath = join(extDir, "workflows", wf.archiveName);
+        await Deno.copyFile(wf.sourcePath, destPath);
       }
 
       // Copy additional files
