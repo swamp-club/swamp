@@ -152,6 +152,42 @@ async function loadUserModels(): Promise<void> {
 /** Default telemetry endpoint */
 const DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.swamp.club";
 
+/** Telemetry endpoint used when auth serverUrl is a localhost address */
+const LOCALHOST_TELEMETRY_ENDPOINT = "http://localhost:8080";
+
+/**
+ * Checks whether the given URL points to a localhost address.
+ *
+ * @internal Exported for testing
+ */
+export function isLocalhostUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "localhost" ||
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolves the telemetry endpoint.
+ * Priority: .swamp.yaml telemetryEndpoint > localhost auto-detect from auth serverUrl > default
+ *
+ * @internal Exported for testing
+ */
+export function resolveTelemetryEndpoint(
+  markerEndpoint: string | undefined,
+  authServerUrl: string | null,
+): string {
+  if (markerEndpoint) return markerEndpoint;
+  if (authServerUrl && isLocalhostUrl(authServerUrl)) {
+    return LOCALHOST_TELEMETRY_ENDPOINT;
+  }
+  return DEFAULT_TELEMETRY_ENDPOINT;
+}
+
 interface TelemetryContext {
   service: TelemetryService;
   userId: string | null;
@@ -192,24 +228,31 @@ async function initTelemetryService(): Promise<TelemetryContext | null> {
     const identityRepo = new UserIdentityRepository();
     const userId = await identityRepo.getUserId();
 
-    const repository = new JsonTelemetryRepository(cwd);
-    const service = new TelemetryService(repository, VERSION);
-    const telemetryEndpoint = marker.telemetryEndpoint ??
-      DEFAULT_TELEMETRY_ENDPOINT;
-
-    const keepFlushed = marker.telemetryKeepFlushed ?? false;
-
     // Try loading auth credentials for authenticated telemetry
+    // (loaded before telemetry endpoint resolution for localhost auto-detect)
     let authToken: string | null = null;
+    let authServerUrl: string | null = null;
     try {
       const authRepo = new AuthRepository();
       const creds = await authRepo.load();
       if (creds?.apiKey) {
         authToken = creds.apiKey;
       }
+      if (creds?.serverUrl) {
+        authServerUrl = creds.serverUrl;
+      }
     } catch {
       // Auth file unreadable — continue without auth
     }
+
+    const repository = new JsonTelemetryRepository(cwd);
+    const service = new TelemetryService(repository, VERSION);
+    const telemetryEndpoint = resolveTelemetryEndpoint(
+      marker.telemetryEndpoint,
+      authServerUrl,
+    );
+
+    const keepFlushed = marker.telemetryKeepFlushed ?? false;
 
     return {
       service,
