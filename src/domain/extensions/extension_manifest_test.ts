@@ -229,6 +229,36 @@ labels:
   assertEquals(manifest.labels, ["aws", "kubernetes", "security"]);
 });
 
+Deno.test("parseExtensionManifest parses valid manifest with repository", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+description: "My extension"
+repository: "https://github.com/myuser/swamp-myext"
+models:
+  - foo.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(
+    manifest.repository,
+    "https://github.com/myuser/swamp-myext",
+  );
+});
+
+Deno.test("parseExtensionManifest rejects invalid repository URL", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+repository: "not-a-url"
+models:
+  - foo.ts
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes((error as Error).message, "Invalid");
+});
+
 Deno.test("parseExtensionManifest defaults optional fields", () => {
   const yaml = `
 manifestVersion: 1
@@ -239,6 +269,7 @@ models:
 `;
   const manifest = parseExtensionManifest(yaml);
   assertEquals(manifest.description, undefined);
+  assertEquals(manifest.repository, undefined);
   assertEquals(manifest.workflows, []);
   assertEquals(manifest.additionalFiles, []);
   assertEquals(manifest.platforms, []);

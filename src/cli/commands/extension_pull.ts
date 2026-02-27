@@ -43,6 +43,7 @@ import {
   renderExtensionPullDependencyPull,
   renderExtensionPullIntegrity,
   renderExtensionPullPlatforms,
+  renderExtensionPullRepository,
   renderExtensionPullResolved,
   renderExtensionPullSafetyErrors,
   renderExtensionPullSafetyWarnings,
@@ -508,6 +509,10 @@ async function pullExtension(
       );
     }
     const manifest = parseExtensionManifest(manifestContent);
+
+    if (manifest.repository) {
+      renderExtensionPullRepository(manifest.repository, outputMode);
+    }
 
     if (manifest.platforms.length > 0) {
       renderExtensionPullPlatforms(manifest.platforms, outputMode);

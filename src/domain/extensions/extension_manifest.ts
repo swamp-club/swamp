@@ -42,6 +42,7 @@ const ExtensionManifestSchemaV1 = z.object({
     message: "Version must be valid CalVer format: YYYY.MM.DD.MICRO",
   }),
   description: z.string().optional(),
+  repository: z.string().url().optional(),
   workflows: z.array(z.string()).optional(),
   models: z.array(z.string()).optional(),
   additionalFiles: z.array(z.string()).optional(),
@@ -65,6 +66,7 @@ export interface ExtensionManifest {
   name: string;
   version: string;
   description: string | undefined;
+  repository: string | undefined;
   workflows: string[];
   models: string[];
   additionalFiles: string[];
@@ -117,6 +119,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     name: result.data.name,
     version: result.data.version,
     description: result.data.description,
+    repository: result.data.repository,
     workflows: result.data.workflows ?? [],
     models: result.data.models ?? [],
     additionalFiles: result.data.additionalFiles ?? [],

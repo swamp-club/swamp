@@ -28,6 +28,7 @@ export interface ExtensionPushResolvedData {
   name: string;
   version: string;
   description: string | undefined;
+  repository: string | undefined;
   modelFiles: string[];
   workflowFiles: string[];
   additionalFiles: string[];
@@ -66,6 +67,9 @@ export function renderExtensionPushResolved(
     logger.info`Extension: ${data.name}@${data.version}`;
     if (data.description) {
       logger.info`Description: ${data.description}`;
+    }
+    if (data.repository) {
+      logger.info`Repository: ${data.repository}`;
     }
     if (data.modelFiles.length > 0) {
       logger.info`Models (${data.modelFiles.length}):`;

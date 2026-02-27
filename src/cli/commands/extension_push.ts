@@ -283,6 +283,7 @@ export const extensionPushCommand = new Command()
         name: manifest.name,
         version: manifest.version,
         description: manifest.description,
+        repository: manifest.repository,
         modelFiles: allModelFiles.map((f) => relative(repoDir, f)),
         workflowFiles: workflowFiles.map((wf) =>
           relative(repoDir, wf.sourcePath)
@@ -404,6 +405,7 @@ export const extensionPushCommand = new Command()
           name: manifest.name,
           version: manifest.version,
           description: manifest.description ?? "",
+          ...(manifest.repository ? { repository: manifest.repository } : {}),
           models: manifest.models,
           workflows: manifest.workflows,
           additionalFiles: manifest.additionalFiles,

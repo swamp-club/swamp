@@ -63,6 +63,20 @@ export function renderExtensionPullResolved(
 }
 
 /**
+ * Renders repository URL from the extension manifest.
+ */
+export function renderExtensionPullRepository(
+  repository: string,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify({ repository }, null, 2));
+  } else {
+    logger.info`Repository: ${repository}`;
+  }
+}
+
+/**
  * Renders platform compatibility hint from the extension manifest.
  */
 export function renderExtensionPullPlatforms(

@@ -24,6 +24,7 @@ import {
   renderExtensionPullConflicts,
   renderExtensionPullDependencyPull,
   renderExtensionPullPlatforms,
+  renderExtensionPullRepository,
   renderExtensionPullResolved,
   renderExtensionPullSafetyErrors,
   renderExtensionPullSafetyWarnings,
@@ -112,6 +113,20 @@ Deno.test("renderExtensionPullSafetyErrors outputs JSON in json mode", () => {
   });
   const parsed = JSON.parse(output);
   assertStringIncludes(parsed.errors[0].file, "evil.ts");
+});
+
+Deno.test("renderExtensionPullRepository outputs JSON in json mode", () => {
+  const output = captureConsoleLog(() => {
+    renderExtensionPullRepository(
+      "https://github.com/myuser/swamp-myext",
+      "json",
+    );
+  });
+  const parsed = JSON.parse(output);
+  assertStringIncludes(
+    parsed.repository,
+    "https://github.com/myuser/swamp-myext",
+  );
 });
 
 Deno.test("renderExtensionPullPlatforms outputs JSON in json mode", () => {
