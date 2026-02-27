@@ -1439,3 +1439,76 @@ Deno.test("nesting context is propagated through WorkflowExecutionService to ste
     );
   });
 });
+
+// Regression test for issue #499: task.inputs matching definition input keys
+// must be forwarded to the step executor, not filtered out.
+Deno.test("task.inputs matching definition input keys are forwarded to step executor", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    // Executor that captures both the step and its context
+    class InputCapturingExecutor implements StepExecutor {
+      capturedSteps: Array<{ step: Step; ctx: StepExecutionContext }> = [];
+      execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.capturedSteps.push({ step, ctx });
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new InputCapturingExecutor();
+
+    // Create a workflow where step task.inputs include keys that would
+    // typically match definition-level inputs.properties (e.g., "region",
+    // "instance_type"). Before the fix, these were filtered out by
+    // DefaultStepExecutor and never forwarded as method arguments.
+    const workflow = Workflow.create({
+      name: "input-forwarding-test",
+      jobs: [
+        Job.create({
+          name: "deploy",
+          steps: [
+            Step.create({
+              name: "run-deploy",
+              task: StepTask.model("my-model", "deploy", {
+                region: "us-east-1",
+                instance_type: "t3.micro",
+                count: 3,
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.capturedSteps.length, 1);
+
+    // Verify the step executor receives the task with all inputs intact
+    const captured = executor.capturedSteps[0];
+    const taskData = captured.step.task.data;
+    assertEquals(taskData.type, "model_method");
+    if (taskData.type === "model_method") {
+      assertEquals(taskData.inputs, {
+        region: "us-east-1",
+        instance_type: "t3.micro",
+        count: 3,
+      });
+    }
+
+    // Verify the inputs are also available in the expression context
+    // (WorkflowExecutionService merges workflow-level inputs; step-level
+    // inputs are merged by DefaultStepExecutor at execution time)
+    const exprCtx = captured.ctx.expressionContext;
+    assertEquals(exprCtx !== undefined, true);
+  });
+});

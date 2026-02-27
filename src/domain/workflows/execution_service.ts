@@ -369,23 +369,11 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.repoDir,
       );
 
-      // Merge step inputs directly into method arguments
-      // Step inputs that aren't definition-level inputs override method arguments
-      const definitionInputKeys = originalDefinition.inputs
-        ? Object.keys(
-          (originalDefinition.inputs as {
-            properties?: Record<string, unknown>;
-          })
-            .properties || {},
-        )
-        : [];
-      const overrideInputs = Object.fromEntries(
-        Object.entries(stepInputs).filter(([key]) =>
-          !definitionInputKeys.includes(key)
-        ),
-      );
-      if (Object.keys(overrideInputs).length > 0) {
-        for (const [key, value] of Object.entries(overrideInputs)) {
+      // Forward all step inputs as method arguments.
+      // This runs after evaluateDefinitionExpressions, so task.inputs values
+      // take precedence over any values resolved from ${{ inputs.X }} expressions.
+      if (Object.keys(stepInputs).length > 0) {
+        for (const [key, value] of Object.entries(stepInputs)) {
           evaluatedDefinition.setMethodArgument(
             task.methodName,
             key,
