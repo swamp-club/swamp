@@ -170,14 +170,15 @@ export const extensionPushCommand = new Command()
       // Validate workflow files exist
       for (const wfRef of manifest.workflows) {
         const wfPath = resolve(workflowsDir, wfRef);
+        let realPath: string;
         try {
-          await Deno.stat(wfPath);
+          realPath = await Deno.realPath(wfPath);
         } catch {
           throw new UserError(
             `Workflow file not found: ${wfRef} (expected at ${wfPath})`,
           );
         }
-        workflowFiles.push(wfPath);
+        workflowFiles.push(realPath);
       }
 
       // Also resolve models referenced by workflows
