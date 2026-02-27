@@ -208,6 +208,60 @@ export async function updateUpstreamExtensions(
 }
 
 /**
+ * Removes an extension entry from upstream_extensions.json, using a lockfile
+ * for concurrency safety and atomicWriteTextFile for crash safety.
+ */
+export async function removeUpstreamExtension(
+  modelsDir: string,
+  name: string,
+): Promise<void> {
+  const jsonPath = join(modelsDir, "upstream_extensions.json");
+  const lockPath = `${jsonPath}.lock`;
+
+  const lockFile = await acquireLock(lockPath);
+  try {
+    let data: UpstreamExtensionsMap = {};
+    try {
+      const content = await Deno.readTextFile(jsonPath);
+      data = JSON.parse(content) as UpstreamExtensionsMap;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    delete data[name];
+
+    await atomicWriteTextFile(jsonPath, JSON.stringify(data, null, 2) + "\n");
+  } finally {
+    lockFile.close();
+    try {
+      await Deno.remove(lockPath);
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+}
+
+/**
+ * Reads upstream_extensions.json and returns the parsed map.
+ */
+export async function readUpstreamExtensions(
+  modelsDir: string,
+): Promise<UpstreamExtensionsMap> {
+  const jsonPath = join(modelsDir, "upstream_extensions.json");
+  try {
+    const content = await Deno.readTextFile(jsonPath);
+    return JSON.parse(content) as UpstreamExtensionsMap;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return {};
+    }
+    throw error;
+  }
+}
+
+/**
  * Checks if a file exists at the given path.
  */
 async function fileExists(path: string): Promise<boolean> {

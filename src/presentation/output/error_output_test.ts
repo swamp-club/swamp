@@ -73,6 +73,24 @@ Deno.test("renderError wraps non-Error values in Error", () => {
   }
 });
 
+Deno.test("renderError logs Cliffy missing argument error without stack trace", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+
+  try {
+    const error = new Error("Missing argument(s): extension");
+    renderError(error);
+
+    assertEquals(logs.length, 1);
+    assertStringIncludes(logs[0], "Missing argument(s): extension");
+    // Should not contain stack trace lines
+    assertEquals(logs[0].includes("    at "), false);
+  } finally {
+    console.error = originalError;
+  }
+});
+
 Deno.test("renderError uses fatal level for all errors", () => {
   const logs: string[] = [];
   const originalError = console.error;
