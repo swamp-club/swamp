@@ -19,6 +19,12 @@ workflows:
   - my_workflow.yaml
 additionalFiles:
   - README.md
+platforms:
+  - darwin-aarch64
+  - linux-x86_64
+tags:
+  - aws
+  - security
 dependencies:
   - "@other/extension"
 ```
@@ -34,6 +40,8 @@ dependencies:
 | `models`          | No*      | Model file paths relative to `extensions/models/`                |
 | `workflows`       | No*      | Workflow file paths relative to `workflows/`                     |
 | `additionalFiles` | No       | Extra files relative to the manifest location                    |
+| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)    |
+| `tags`            | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)     |
 | `dependencies`    | No       | Other extensions this one depends on                             |
 
 *At least one of `models` or `workflows` must be present with entries.

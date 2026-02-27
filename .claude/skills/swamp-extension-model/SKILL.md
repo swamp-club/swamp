@@ -332,6 +332,14 @@ swamp extension push manifest.yaml -y           # Skip confirmation prompts
 The manifest `name` namespace must match your authenticated username. Model
 paths are relative to `extensions/models/`; local imports are auto-resolved.
 
+**Optional metadata fields:**
+
+- `platforms` — OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`).
+  Use when your extension contains platform-specific code.
+- `tags` — Categorization labels (e.g. `aws`, `kubernetes`, `security`).
+
+Both are omitted from the archive when not specified.
+
 For the full manifest schema, safety rules, CalVer versioning, and
 troubleshooting, see [references/publishing.md](references/publishing.md).
 
