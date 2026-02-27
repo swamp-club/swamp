@@ -100,6 +100,81 @@ Deno.test("extension pull requires initialized repo", async () => {
   }
 });
 
+/** Runs the CLI with --allow-net (needed for tests that pull from the registry). */
+async function runCliWithNet(
+  args: string[],
+  env?: Record<string, string>,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  const command = new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--unstable-bundle",
+      "--allow-read",
+      "--allow-write",
+      "--allow-env",
+      "--allow-run",
+      "--allow-net",
+      "--allow-sys",
+      "main.ts",
+      ...args,
+    ],
+    stdout: "piped",
+    stderr: "piped",
+    cwd: PROJECT_ROOT,
+    env: {
+      ...Deno.env.toObject(),
+      SWAMP_NO_TELEMETRY: "1",
+      ...env,
+    },
+  });
+
+  const { code, stdout, stderr } = await command.output();
+  return {
+    stdout: new TextDecoder().decode(stdout),
+    stderr: new TextDecoder().decode(stderr),
+    code,
+  };
+}
+
+Deno.test("extension pull persists files in upstream_extensions.json", async () => {
+  const tmpDir = await initTempRepo();
+  try {
+    const { code, stderr } = await runCliWithNet([
+      "extension",
+      "pull",
+      "@keeb/ssh",
+      "--force",
+      "--repo-dir",
+      tmpDir,
+      "--no-color",
+    ]);
+    assertEquals(code, 0, `Pull failed: ${stderr}`);
+
+    // Read upstream_extensions.json and verify files array
+    const jsonPath = `${tmpDir}/extensions/models/upstream_extensions.json`;
+    const content = await Deno.readTextFile(jsonPath);
+    const data = JSON.parse(content) as Record<
+      string,
+      { version: string; pulledAt: string; files?: string[] }
+    >;
+
+    const entry = data["@keeb/ssh"];
+    assertEquals(typeof entry, "object", "Entry for @keeb/ssh should exist");
+    assertEquals(
+      Array.isArray(entry.files),
+      true,
+      "files should be an array",
+    );
+    assertEquals(
+      (entry.files as string[]).length > 0,
+      true,
+      "files array should be non-empty",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("extension pull does not require authentication", async () => {
   const tmpDir = await initTempRepo();
   try {
