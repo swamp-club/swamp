@@ -442,7 +442,7 @@ export const extensionPushCommand = new Command()
         args: ["-czf", tarPath, "-C", tmpDir, "extension"],
         stdout: "piped",
         stderr: "piped",
-        env: { GZIP: "-9" },
+        env: { GZIP: "-9", COPYFILE_DISABLE: "1" },
       });
       const tarOutput = await tarCommand.output();
       if (!tarOutput.success) {
