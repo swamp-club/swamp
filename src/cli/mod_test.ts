@@ -19,10 +19,12 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  isLocalhostUrl,
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
   resolveLogLevel,
   resolveModelsDir,
+  resolveTelemetryEndpoint,
   resolveWorkflowsDir,
 } from "./mod.ts";
 
@@ -401,4 +403,63 @@ Deno.test("resolveWorkflowsDir env var takes priority over default", () => {
       Deno.env.delete("SWAMP_WORKFLOWS_DIR");
     }
   }
+});
+
+// --- isLocalhostUrl tests ---
+
+Deno.test("isLocalhostUrl returns true for http://localhost", () => {
+  assertEquals(isLocalhostUrl("http://localhost"), true);
+});
+
+Deno.test("isLocalhostUrl returns true for http://localhost:3000", () => {
+  assertEquals(isLocalhostUrl("http://localhost:3000"), true);
+});
+
+Deno.test("isLocalhostUrl returns true for http://127.0.0.1:3000", () => {
+  assertEquals(isLocalhostUrl("http://127.0.0.1:3000"), true);
+});
+
+Deno.test("isLocalhostUrl returns true for http://[::1]:3000", () => {
+  assertEquals(isLocalhostUrl("http://[::1]:3000"), true);
+});
+
+Deno.test("isLocalhostUrl returns false for https://swamp.club", () => {
+  assertEquals(isLocalhostUrl("https://swamp.club"), false);
+});
+
+Deno.test("isLocalhostUrl returns false for https://example.com", () => {
+  assertEquals(isLocalhostUrl("https://example.com"), false);
+});
+
+Deno.test("isLocalhostUrl returns false for invalid URL", () => {
+  assertEquals(isLocalhostUrl("not-a-url"), false);
+});
+
+Deno.test("isLocalhostUrl returns false for empty string", () => {
+  assertEquals(isLocalhostUrl(""), false);
+});
+
+// --- resolveTelemetryEndpoint tests ---
+
+Deno.test("resolveTelemetryEndpoint returns marker endpoint when set", () => {
+  const result = resolveTelemetryEndpoint(
+    "https://custom.endpoint",
+    "http://localhost:3000",
+  );
+  assertEquals(result, "https://custom.endpoint");
+});
+
+Deno.test("resolveTelemetryEndpoint returns localhost endpoint when auth serverUrl is localhost", () => {
+  const result = resolveTelemetryEndpoint(undefined, "http://localhost:3000");
+  assertEquals(result, "http://localhost:8080");
+});
+
+Deno.test("resolveTelemetryEndpoint returns default when auth serverUrl is remote", () => {
+  const result = resolveTelemetryEndpoint(undefined, "https://swamp.club");
+  assertEquals(result, "https://telemetry.swamp.club");
+});
+
+Deno.test("resolveTelemetryEndpoint returns default when auth serverUrl is null", () => {
+  const result = resolveTelemetryEndpoint(undefined, null);
+  assertEquals(result, "https://telemetry.swamp.club");
 });
