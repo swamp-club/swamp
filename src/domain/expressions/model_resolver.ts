@@ -572,35 +572,33 @@ export class ModelResolver {
         const seen = new Set<string>();
         for (const [, allCoords] of coordsMap) {
           for (const { modelType, modelId } of allCoords) {
-            // Get all data names, then scan all versions of each
             const allData = dataRepo.findAllForModelSync(modelType, modelId);
             for (const data of allData) {
-              const versions = dataRepo.listVersionsSync(
+              const latestVersion = dataRepo.getLatestVersionSync(
                 modelType,
                 modelId,
                 data.name,
               );
-              for (const version of versions) {
-                const versionData = dataRepo.findByNameSync(
+              if (latestVersion === null) continue;
+              const versionData = dataRepo.findByNameSync(
+                modelType,
+                modelId,
+                data.name,
+                latestVersion,
+              );
+              if (versionData && versionData.tags[tagKey] === tagValue) {
+                const dedupeKey =
+                  `${modelType.normalized}:${modelId}:${data.name}`;
+                if (seen.has(dedupeKey)) continue;
+                seen.add(dedupeKey);
+                const record = dataToRecord(
+                  versionData,
                   modelType,
                   modelId,
                   data.name,
-                  version,
+                  latestVersion,
                 );
-                if (versionData && versionData.tags[tagKey] === tagValue) {
-                  const dedupeKey =
-                    `${modelType.normalized}:${modelId}:${data.name}:${version}`;
-                  if (seen.has(dedupeKey)) continue;
-                  seen.add(dedupeKey);
-                  const record = dataToRecord(
-                    versionData,
-                    modelType,
-                    modelId,
-                    data.name,
-                    version,
-                  );
-                  if (record) results.push(record);
-                }
+                if (record) results.push(record);
               }
             }
           }
@@ -612,32 +610,35 @@ export class ModelResolver {
         const allCoords = coordsMap.get(modelName);
         if (!allCoords) return [];
         const results: DataRecord[] = [];
+        const seen = new Set<string>();
         for (const { modelType, modelId } of allCoords) {
-          // Get all data names, then scan all versions of each
           const allData = dataRepo.findAllForModelSync(modelType, modelId);
           for (const data of allData) {
-            const versions = dataRepo.listVersionsSync(
+            const latestVersion = dataRepo.getLatestVersionSync(
               modelType,
               modelId,
               data.name,
             );
-            for (const version of versions) {
-              const versionData = dataRepo.findByNameSync(
+            if (latestVersion === null) continue;
+            const versionData = dataRepo.findByNameSync(
+              modelType,
+              modelId,
+              data.name,
+              latestVersion,
+            );
+            if (versionData && versionData.tags["specName"] === specName) {
+              const dedupeKey =
+                `${modelType.normalized}:${modelId}:${data.name}`;
+              if (seen.has(dedupeKey)) continue;
+              seen.add(dedupeKey);
+              const record = dataToRecord(
+                versionData,
                 modelType,
                 modelId,
                 data.name,
-                version,
+                latestVersion,
               );
-              if (versionData && versionData.tags["specName"] === specName) {
-                const record = dataToRecord(
-                  versionData,
-                  modelType,
-                  modelId,
-                  data.name,
-                  version,
-                );
-                if (record) results.push(record);
-              }
+              if (record) results.push(record);
             }
           }
         }

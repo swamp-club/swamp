@@ -412,6 +412,110 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
   });
 });
 
+Deno.test("data.findBySpec() returns only latest version when multiple versions exist", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "spec-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    // Create a data entry and save it multiple times to create multiple versions
+    const subnet = Data.create({
+      name: "subnet-versioned",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "subnet" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      subnet,
+      new TextEncoder().encode(JSON.stringify({ cidr: "10.0.1.0/24" })),
+    );
+    await dataRepo.save(
+      type,
+      model.id,
+      subnet,
+      new TextEncoder().encode(JSON.stringify({ cidr: "10.0.2.0/24" })),
+    );
+    await dataRepo.save(
+      type,
+      model.id,
+      subnet,
+      new TextEncoder().encode(JSON.stringify({ cidr: "10.0.3.0/24" })),
+    );
+
+    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.data);
+    const results = ctx.data.findBySpec("spec-model", "subnet");
+    // Should return only 1 record (the latest version), not 3
+    assertEquals(results.length, 1);
+    assertEquals(results[0].name, "subnet-versioned");
+  });
+});
+
+Deno.test("data.findByTag() returns only latest version when multiple versions exist", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "tag-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    // Create a data entry and save it multiple times to create multiple versions
+    const item = Data.create({
+      name: "tagged-versioned",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", env: "staging" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      item,
+      new TextEncoder().encode(JSON.stringify({ v: 1 })),
+    );
+    await dataRepo.save(
+      type,
+      model.id,
+      item,
+      new TextEncoder().encode(JSON.stringify({ v: 2 })),
+    );
+    await dataRepo.save(
+      type,
+      model.id,
+      item,
+      new TextEncoder().encode(JSON.stringify({ v: 3 })),
+    );
+
+    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.data);
+    const results = ctx.data.findByTag("env", "staging");
+    // Should return only 1 record (the latest version), not 3
+    assertEquals(results.length, 1);
+    assertEquals(results[0].name, "tagged-versioned");
+  });
+});
+
 // ============================================================================
 // Graceful handling of missing models/data
 // ============================================================================

@@ -308,7 +308,7 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
   });
 });
 
-Deno.test("Data Tagging: findByTag returns all versions with matching tag", async () => {
+Deno.test("Data Tagging: findByTag returns only latest version with matching tag", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
@@ -350,13 +350,12 @@ Deno.test("Data Tagging: findByTag returns all versions with matching tag", asyn
 
     assertExists(context.data);
 
-    // findByTag returns all versions with matching tag
+    // findByTag returns only the latest version, not all versions
     const results = context.data.findByTag("type", "versioned");
-    assertEquals(results.length, 5);
+    assertEquals(results.length, 1);
 
-    // Verify all versions are present
-    const versions = results.map((r) => r.version).sort((a, b) => a - b);
-    assertEquals(versions, [1, 2, 3, 4, 5]);
+    // Verify it's the latest version
+    assertEquals(results[0].version, 5);
   });
 });
 
