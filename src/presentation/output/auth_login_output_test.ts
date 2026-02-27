@@ -23,6 +23,7 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   type AuthLoginSuccessData,
   renderAuthLoginSuccess,
+  renderDeviceVerification,
 } from "./auth_login_output.ts";
 
 await initializeLogging({});
@@ -34,6 +35,28 @@ const testData: AuthLoginSuccessData = {
   serverUrl: "https://swamp.club",
   apiKey: "swamp_abc123def456ghi789",
 };
+
+Deno.test("renderDeviceVerification shows code in a styled card", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderDeviceVerification("NDUZ-32AA");
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Verify your device");
+    assertStringIncludes(combined, "Code");
+    assertStringIncludes(combined, "NDUZ-32AA");
+    assertStringIncludes(combined, "╔");
+    assertStringIncludes(combined, "╚");
+    assertStringIncludes(
+      combined,
+      "Confirm this code matches in your browser before signing in.",
+    );
+  } finally {
+    console.log = originalLog;
+  }
+});
 
 Deno.test("renderAuthLoginSuccess json mode outputs valid JSON", () => {
   const logs: string[] = [];

@@ -25,7 +25,10 @@ import { startCallbackServer } from "../../infrastructure/http/callback_server.t
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import { Spinner } from "../../presentation/spinner.ts";
-import { renderAuthLoginSuccess } from "../../presentation/output/auth_login_output.ts";
+import {
+  renderAuthLoginSuccess,
+  renderDeviceVerification,
+} from "../../presentation/output/auth_login_output.ts";
 import { generateDeviceCode } from "../../domain/auth/device_code.ts";
 
 const DEFAULT_SERVER_URL = "https://swamp.club";
@@ -117,12 +120,7 @@ async function browserFlow(
   }
 
   spinner?.stop();
-  console.log();
-  console.log(`  Verification code: ${deviceCode}`);
-  console.log();
-  console.log(
-    "  Confirm this code matches in your browser before signing in.",
-  );
+  renderDeviceVerification(deviceCode);
   console.log();
   spinner?.start("Waiting for authentication...");
 

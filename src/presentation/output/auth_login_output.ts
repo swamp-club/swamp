@@ -17,9 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, dim, green } from "@std/fmt/colors";
+import { bold, cyan, dim, green, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "./output.ts";
+
+export function renderDeviceVerification(deviceCode: string): void {
+  const lines = renderCard(
+    bold("Verify your device"),
+    [[{ label: "Code", value: bold(yellow(deviceCode)) }]],
+  );
+  lines.push("");
+  lines.push(
+    "  Confirm this code matches in your browser before signing in.",
+  );
+
+  writeOutput(lines.join("\n"));
+}
 
 export interface AuthLoginSuccessData {
   username: string;
