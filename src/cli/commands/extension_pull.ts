@@ -22,6 +22,7 @@ import { basename, dirname, join, relative, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -317,6 +318,7 @@ async function detectConflicts(
 interface PullContext {
   extensionClient: ExtensionApiClient;
   modelsDir: string;
+  workflowsDir: string;
   repoDir: string;
   force: boolean;
   outputMode: "log" | "json";
@@ -448,13 +450,13 @@ async function pullExtension(
 
     // Detect file conflicts
     const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const workflowsDir = resolve(repoDir, "workflows");
+    const absoluteWorkflowsDir = resolve(repoDir, ctx.workflowsDir);
     const bundlesDir = swampPath(repoDir, "bundles");
 
     const conflicts = await detectConflicts(
       extractDir,
       absoluteModelsDir,
-      workflowsDir,
+      absoluteWorkflowsDir,
       bundlesDir,
       repoDir,
     );
@@ -486,11 +488,11 @@ async function pullExtension(
     );
     extractedFiles.push(...modelsExtracted);
 
-    // Workflows → workflows/
-    await Deno.mkdir(workflowsDir, { recursive: true });
+    // Workflows → workflowsDir (default: extensions/workflows/)
+    await Deno.mkdir(absoluteWorkflowsDir, { recursive: true });
     const workflowsExtracted = await copyDir(
       join(extractDir, "workflows"),
-      workflowsDir,
+      absoluteWorkflowsDir,
       repoDir,
     );
     extractedFiles.push(...workflowsExtracted);
@@ -593,11 +595,12 @@ export const extensionPullCommand = new Command()
       );
     }
 
-    // 4. Resolve models dir from .swamp.yaml
+    // 4. Resolve models dir and workflows dir from .swamp.yaml
     const repoPath = RepoPath.create(repoDir);
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
     const modelsDir = resolveModelsDir(marker);
+    const workflowsDir = resolveWorkflowsDir(marker);
 
     // 5. Resolve server URL (from env or default)
     const serverUrl = resolveServerUrl();
@@ -608,6 +611,7 @@ export const extensionPullCommand = new Command()
     await pullExtension(ref, {
       extensionClient,
       modelsDir,
+      workflowsDir,
       repoDir,
       force: options.force ?? false,
       outputMode: ctx.outputMode,
