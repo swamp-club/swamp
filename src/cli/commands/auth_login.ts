@@ -24,6 +24,8 @@ import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts"
 import { startCallbackServer } from "../../infrastructure/http/callback_server.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
+import { Spinner } from "../../presentation/spinner.ts";
+import { renderAuthLoginSuccess } from "../../presentation/output/auth_login_output.ts";
 
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
@@ -84,7 +86,10 @@ async function readPassword(prompt: string): Promise<string> {
 }
 
 /** Get a session token via the browser-based login flow. */
-async function browserFlow(serverUrl: string): Promise<string> {
+async function browserFlow(
+  serverUrl: string,
+  spinner: Spinner | null,
+): Promise<string> {
   const state = crypto.randomUUID();
   const server = startCallbackServer(state, serverUrl);
 
@@ -93,21 +98,21 @@ async function browserFlow(serverUrl: string): Promise<string> {
     encodeURIComponent(callbackUrl)
   }&state=${encodeURIComponent(state)}`;
 
-  console.log("Opening browser to log in...");
-
   try {
     await openBrowser(loginUrl);
   } catch (err) {
-    // openBrowser throws UserError with the URL — print it and continue waiting
+    // openBrowser throws UserError with the URL — show it and continue waiting
     if (err instanceof UserError) {
+      spinner?.stop();
       console.log(err.message);
+      spinner?.start("Waiting for authentication...");
     } else {
       const message = err instanceof Error ? err.message : String(err);
       throw new UserError(`Failed to open browser: ${message}`);
     }
   }
 
-  console.log("Waiting for authentication...");
+  spinner?.update("Waiting for authentication...");
 
   try {
     const token = await server.token;
@@ -161,57 +166,61 @@ export const authLoginCommand = new Command()
     const useStdinFlow = options.username || options.password ||
       options.browser === false || !isStdinTty();
 
+    const showSpinner = ctx.outputMode !== "json" && !useStdinFlow;
+    const spinner = showSpinner ? new Spinner() : null;
+
     let sessionToken: string;
     let knownUsername: string | undefined;
 
-    if (useStdinFlow) {
-      ctx.logger.debug("Using stdin login flow");
-      const result = await stdinFlow(
-        serverUrl,
-        options.username,
-        options.password,
-      );
-      sessionToken = result.token;
-      knownUsername = result.username;
-    } else {
-      ctx.logger.debug("Using browser login flow");
-      sessionToken = await browserFlow(serverUrl);
-    }
-
-    // Verify identity using the session token (bearer plugin handles this)
-    const whoami = await client.whoami(sessionToken);
-    const username = whoami.username ?? knownUsername ?? "unknown";
-
-    // Create an API key for CLI use
-    // BetterAuth limits API key names to 32 characters
-    const host = (Deno.hostname?.() ?? "unknown").slice(0, 14);
-    const keyName = `cli-${host}-${Date.now()}`;
-    ctx.logger.debug`Creating API key: ${keyName}`;
-    const apiKey = await client.createApiKey(sessionToken, keyName);
-
-    // Store credentials
-    const repo = new AuthRepository();
-    await repo.save({
-      serverUrl,
-      apiKey: apiKey.key,
-      apiKeyId: apiKey.id,
-      username,
-    });
-
-    if (ctx.outputMode === "json") {
-      console.log(JSON.stringify(
-        {
-          authenticated: true,
+    try {
+      if (useStdinFlow) {
+        ctx.logger.debug("Using stdin login flow");
+        const result = await stdinFlow(
           serverUrl,
-          username,
-        },
-        null,
-        2,
-      ));
-    } else {
-      console.log(
-        `Logged in as ${username} on ${serverUrl}`,
-      );
+          options.username,
+          options.password,
+        );
+        sessionToken = result.token;
+        knownUsername = result.username;
+      } else {
+        ctx.logger.debug("Using browser login flow");
+        spinner?.start("Opening browser...");
+        sessionToken = await browserFlow(serverUrl, spinner);
+      }
+
+      // Verify identity using the session token (bearer plugin handles this)
+      spinner?.update("Securing session...");
+      const whoami = await client.whoami(sessionToken);
+      const username = whoami.username ?? knownUsername ?? "unknown";
+
+      // Create an API key for CLI use
+      // BetterAuth limits API key names to 32 characters
+      const host = (Deno.hostname?.() ?? "unknown").slice(0, 14);
+      const keyName = `cli-${host}-${Date.now()}`;
+      ctx.logger.debug`Creating API key: ${keyName}`;
+      const apiKey = await client.createApiKey(sessionToken, keyName);
+
+      // Store credentials
+      const repo = new AuthRepository();
+      await repo.save({
+        serverUrl,
+        apiKey: apiKey.key,
+        apiKeyId: apiKey.id,
+        username,
+      });
+
+      spinner?.stop();
+
+      renderAuthLoginSuccess({
+        username,
+        email: whoami.email,
+        name: whoami.name,
+        serverUrl,
+        apiKey: apiKey.key,
+      }, ctx.outputMode);
+    } catch (err) {
+      spinner?.stop();
+      throw err;
     }
 
     ctx.logger.debug("Auth login command completed");
