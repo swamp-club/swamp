@@ -335,7 +335,7 @@ async function listFiles(dir: string): Promise<string[]> {
 /**
  * Detects files that already exist at target paths.
  */
-async function detectConflicts(
+export async function detectConflicts(
   extractDir: string,
   modelsDir: string,
   workflowsDir: string,
@@ -366,7 +366,8 @@ async function detectConflicts(
   // Check bundles
   const bundlesSrc = join(extractDir, "bundles");
   for (const file of await listFiles(bundlesSrc)) {
-    const destPath = join(bundlesDir, basename(file));
+    const relPath = relative(bundlesSrc, file);
+    const destPath = join(bundlesDir, relPath);
     if (await fileExists(destPath)) {
       conflicts.push(relative(repoDir, destPath));
     }

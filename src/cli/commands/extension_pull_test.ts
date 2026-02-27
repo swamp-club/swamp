@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import {
+  detectConflicts,
   parseExtensionRef,
   updateUpstreamExtensions,
 } from "./extension_pull.ts";
@@ -110,6 +111,43 @@ Deno.test("updateUpstreamExtensions handles empty files array", async () => {
     const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
 
     assertEquals(data["@test/empty"].files, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("detectConflicts uses nested path for bundles, not basename", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    // Set up extract dir with a nested bundle: bundles/k8s/netpol.js
+    const extractDir = join(tmpDir, "extract");
+    const bundleSubdir = join(extractDir, "bundles", "k8s");
+    await Deno.mkdir(bundleSubdir, { recursive: true });
+    await Deno.writeTextFile(join(bundleSubdir, "netpol.js"), "// bundle");
+
+    // Set up the repo with the same nested bundle already installed
+    const repoDir = join(tmpDir, "repo");
+    const bundlesDir = join(repoDir, ".swamp", "bundles");
+    const nestedBundleDir = join(bundlesDir, "k8s");
+    await Deno.mkdir(nestedBundleDir, { recursive: true });
+    await Deno.writeTextFile(join(nestedBundleDir, "netpol.js"), "// existing");
+
+    // Also create empty dirs for models and workflows
+    const modelsDir = join(repoDir, "extensions", "models");
+    const workflowsDir = join(repoDir, ".swamp", "workflows");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    await Deno.mkdir(workflowsDir, { recursive: true });
+
+    const conflicts = await detectConflicts(
+      extractDir,
+      modelsDir,
+      workflowsDir,
+      bundlesDir,
+      repoDir,
+    );
+
+    // Should detect the conflict at the nested path, not the flat basename
+    assertEquals(conflicts, [join(".swamp", "bundles", "k8s", "netpol.js")]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
