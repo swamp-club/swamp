@@ -238,6 +238,19 @@ Deno.test("coerceInputTypes: non-string values are untouched", () => {
   assertEquals(result, { count: 42 });
 });
 
+Deno.test("coerceInputTypes: flat schema without properties wrapper", () => {
+  const schema: InputsSchema = {
+    memory: { type: "number" },
+    enabled: { type: "boolean" },
+    name: { type: "string" },
+  };
+  const result = coerceInputTypes(
+    { memory: "2048", enabled: "true", name: "test" },
+    schema,
+  );
+  assertEquals(result, { memory: 2048, enabled: true, name: "test" });
+});
+
 Deno.test("coerceInputTypes: keys not in schema stay as strings", () => {
   const schema: InputsSchema = {
     properties: {

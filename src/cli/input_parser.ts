@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse as parseYaml } from "@std/yaml";
-import type { InputsSchema } from "../domain/definitions/definition.ts";
+import type {
+  InputsSchema,
+  JsonSchemaProperty,
+} from "../domain/definitions/definition.ts";
 import { UserError } from "../domain/errors.ts";
 
 /**
@@ -171,7 +174,8 @@ export function coerceInputTypes(
   inputs: Record<string, unknown>,
   schema?: InputsSchema,
 ): Record<string, unknown> {
-  if (!schema?.properties) {
+  const properties = schema?.properties ?? schema;
+  if (!properties) {
     return inputs;
   }
 
@@ -182,7 +186,7 @@ export function coerceInputTypes(
       continue;
     }
 
-    const propSchema = schema.properties[key];
+    const propSchema = properties[key] as JsonSchemaProperty | undefined;
     if (!propSchema?.type) {
       continue;
     }
