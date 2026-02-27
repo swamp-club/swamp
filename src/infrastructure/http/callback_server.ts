@@ -29,17 +29,6 @@ export interface CallbackServerHandle {
   shutdown(): Promise<void>;
 }
 
-const SUCCESS_HTML = `<!DOCTYPE html>
-<html>
-<head><title>swamp CLI</title></head>
-<body style="background:#000;color:#39ff14;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-<div style="text-align:center">
-<h1 style="font-size:2rem">Authentication successful</h1>
-<p>You can close this tab and return to the terminal.</p>
-</div>
-</body>
-</html>`;
-
 const ERROR_HTML = `<!DOCTYPE html>
 <html>
 <head><title>swamp CLI</title></head>
@@ -58,9 +47,11 @@ const TIMEOUT_MS = 120_000;
  * callback from the browser containing a session token.
  *
  * @param expectedState  The random state nonce the CLI generated.
+ * @param serverUrl      The swamp-club server URL used to build the success redirect.
  */
 export function startCallbackServer(
   expectedState: string,
+  serverUrl: string,
 ): CallbackServerHandle {
   let resolveToken: (token: string) => void;
   let rejectToken: (err: Error) => void;
@@ -110,9 +101,10 @@ export function startCallbackServer(
       clearTimeout(timer);
       resolveToken(token);
 
-      return new Response(SUCCESS_HTML, {
-        status: 200,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
+      const successUrl = `${serverUrl}/cli/success`;
+      return new Response(null, {
+        status: 302,
+        headers: { Location: successUrl },
       });
     },
   );
@@ -124,7 +116,7 @@ export function startCallbackServer(
     token: tokenPromise,
     async shutdown() {
       clearTimeout(timer);
-      // Brief delay so the success HTML response flushes to the browser
+      // Brief delay so the 302 redirect response flushes to the browser
       // before we tear down the server.
       await new Promise((r) => setTimeout(r, 500));
       ac.abort();

@@ -22,17 +22,19 @@ import { startCallbackServer } from "./callback_server.ts";
 
 Deno.test("callback server - resolves token on valid callback", async () => {
   const state = crypto.randomUUID();
-  const server = startCallbackServer(state);
+  const serverUrl = "https://swamp.club";
+  const server = startCallbackServer(state, serverUrl);
   assertExists(server.port);
 
   const token = "test-session-token-123";
   const res = await fetch(
     `http://localhost:${server.port}/callback?token=${token}&state=${state}`,
+    { redirect: "manual" },
   );
 
-  assertEquals(res.status, 200);
-  const body = await res.text();
-  assertEquals(body.includes("Authentication successful"), true);
+  assertEquals(res.status, 302);
+  assertEquals(res.headers.get("location"), "https://swamp.club/cli/success");
+  await res.body?.cancel();
 
   const resolved = await server.token;
   assertEquals(resolved, token);
@@ -41,7 +43,7 @@ Deno.test("callback server - resolves token on valid callback", async () => {
 
 Deno.test("callback server - rejects mismatched state", async () => {
   const state = crypto.randomUUID();
-  const server = startCallbackServer(state);
+  const server = startCallbackServer(state, "https://swamp.club");
 
   const res = await fetch(
     `http://localhost:${server.port}/callback?token=tok&state=wrong-state`,
@@ -54,7 +56,7 @@ Deno.test("callback server - rejects mismatched state", async () => {
 
 Deno.test("callback server - rejects missing token", async () => {
   const state = crypto.randomUUID();
-  const server = startCallbackServer(state);
+  const server = startCallbackServer(state, "https://swamp.club");
 
   const res = await fetch(
     `http://localhost:${server.port}/callback?state=${state}`,
@@ -67,7 +69,7 @@ Deno.test("callback server - rejects missing token", async () => {
 
 Deno.test("callback server - returns 404 for non-callback paths", async () => {
   const state = crypto.randomUUID();
-  const server = startCallbackServer(state);
+  const server = startCallbackServer(state, "https://swamp.club");
 
   const res = await fetch(`http://localhost:${server.port}/other`);
 
@@ -77,7 +79,7 @@ Deno.test("callback server - returns 404 for non-callback paths", async () => {
 });
 
 Deno.test("callback server - allocates a random port", async () => {
-  const server = startCallbackServer("test-state");
+  const server = startCallbackServer("test-state", "https://swamp.club");
   assertEquals(server.port > 0, true);
   await server.shutdown();
 });

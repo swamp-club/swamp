@@ -86,7 +86,7 @@ async function readPassword(prompt: string): Promise<string> {
 /** Get a session token via the browser-based login flow. */
 async function browserFlow(serverUrl: string): Promise<string> {
   const state = crypto.randomUUID();
-  const server = startCallbackServer(state);
+  const server = startCallbackServer(state, serverUrl);
 
   const callbackUrl = `http://localhost:${server.port}/callback`;
   const loginUrl = `${serverUrl}/login?cli_callback=${
