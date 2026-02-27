@@ -180,8 +180,8 @@ export const extensionPushCommand = new Command()
             `Workflow file not found: ${wfRef} (expected at ${wfPath})`,
           );
         }
-        // Derive workflow name from the manifest reference directory
-        // e.g. "namespace-debug/workflow.yaml" → "namespace-debug"
+        // Derive a unique archive name from the manifest reference directory
+        // e.g. "namespace-debug/workflow.yaml" → "namespace-debug.yaml"
         const refDir = dirname(wfRef);
         const archiveName = refDir !== "."
           ? `${refDir.replace(/\//g, "-")}.yaml`
@@ -216,12 +216,24 @@ export const extensionPushCommand = new Command()
         }
       }
 
-      // Merge workflow files from dependency resolution
+      // Merge workflow files from dependency resolution.
+      // Use realPath on dep-resolver paths so they match the manifest paths
+      // (which were already realPath'd). Without this, symlinks in the repo
+      // path itself (e.g. /tmp → /private/tmp on macOS) cause mismatches.
       const wfSet = new Set(workflowFiles.map((wf) => wf.sourcePath));
       for (const wf of depResult.workflowFiles) {
-        if (!wfSet.has(wf)) {
-          workflowFiles.push({ sourcePath: wf, archiveName: basename(wf) });
-          wfSet.add(wf);
+        let realWf: string;
+        try {
+          realWf = await Deno.realPath(wf);
+        } catch {
+          continue; // Skip if the file doesn't exist
+        }
+        if (!wfSet.has(realWf)) {
+          workflowFiles.push({
+            sourcePath: realWf,
+            archiveName: basename(realWf),
+          });
+          wfSet.add(realWf);
         }
       }
     }
@@ -287,11 +299,13 @@ export const extensionPushCommand = new Command()
     // 12. Bundle each model entry point
     const denoRuntime = new EmbeddedDenoRuntime();
     const denoPath = await denoRuntime.ensureDeno();
-    const bundles = new Map<string, string>(); // entryPoint basename -> JS content
+    const bundles = new Map<string, string>(); // relative path (no ext) -> JS
     const compilationErrors: CompilationError[] = [];
 
     for (const entryPoint of modelEntryPoints) {
-      const entryName = basename(entryPoint, ".ts");
+      // Use relative path from modelsDir to avoid collisions with nested
+      // paths (e.g. aws/ec2/instance.ts and aws/ecs/instance.ts).
+      const entryName = relative(modelsDir, entryPoint).replace(/\.ts$/, "");
       try {
         const js = await bundleExtension(entryPoint, denoPath);
         bundles.set(entryName, js);
@@ -378,12 +392,11 @@ export const extensionPushCommand = new Command()
         await Deno.copyFile(modelFile, destPath);
       }
 
-      // Write compiled bundles (flat)
+      // Write compiled bundles (preserving relative paths from modelsDir)
       for (const [entryName, js] of bundles) {
-        await Deno.writeTextFile(
-          join(extDir, "bundles", `${entryName}.js`),
-          js,
-        );
+        const destPath = join(extDir, "bundles", `${entryName}.js`);
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.writeTextFile(destPath, js);
       }
 
       // Copy workflow files using unique archive names
