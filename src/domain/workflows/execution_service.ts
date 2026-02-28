@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Workflow, type WorkflowData, type WorkflowInput } from "./workflow.ts";
+import { Workflow, type WorkflowInput } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
 // deno-lint-ignore verbatim-module-syntax

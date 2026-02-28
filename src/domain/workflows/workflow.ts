@@ -19,7 +19,7 @@
 
 import { z } from "zod";
 import { createWorkflowId, type WorkflowId } from "./workflow_id.ts";
-import { Job, type JobData, type JobInput, JobSchema } from "./job.ts";
+import { Job, type JobData, JobSchema } from "./job.ts";
 import {
   type InputsSchema,
   InputsSchemaSchema,

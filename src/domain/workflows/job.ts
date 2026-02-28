@@ -23,7 +23,7 @@ import {
   type TriggerConditionData,
   TriggerConditionSchema,
 } from "./trigger_condition.ts";
-import { Step, type StepData, type StepInput, StepSchema } from "./step.ts";
+import { Step, type StepData, StepSchema } from "./step.ts";
 
 /**
  * Schema for job dependency with condition.
