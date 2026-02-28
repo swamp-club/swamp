@@ -62,15 +62,20 @@ export const modelEvaluateCommand = new Command()
         ctx.logger.debug`Evaluating all model definitions`;
 
         const results = await evaluationService.evaluateAllDefinitions();
+        const evaluatedDefRepo = repoContext.evaluatedDefinitionRepo;
         const items: ModelEvaluateItemData[] = [];
 
         for (const result of results) {
+          await evaluatedDefRepo.save(result.type, result.definition);
           items.push({
             id: result.definition.id,
             name: result.definition.name,
             type: result.type.normalized,
             hadExpressions: result.hadExpressions,
-            outputPath: undefined, // Definitions don't use evaluated repo
+            outputPath: evaluatedDefRepo.getPath(
+              result.type,
+              result.definition.id,
+            ),
           });
         }
 
@@ -108,12 +113,16 @@ export const modelEvaluateCommand = new Command()
         type,
       );
 
+      // Persist evaluated definition for --last-evaluated
+      const evaluatedDefRepo = repoContext.evaluatedDefinitionRepo;
+      await evaluatedDefRepo.save(type, result.definition);
+
       const item: ModelEvaluateItemData = {
         id: result.definition.id,
         name: result.definition.name,
         type: type.normalized,
         hadExpressions: result.hadExpressions,
-        outputPath: undefined, // Definitions don't use evaluated repo
+        outputPath: evaluatedDefRepo.getPath(type, result.definition.id),
         // Include evaluated globalArguments for JSON output
         globalArguments: result.definition.globalArguments,
       };
