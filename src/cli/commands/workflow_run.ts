@@ -139,6 +139,10 @@ function toRunData(
             }));
           }
 
+          if (step.allowedFailure) {
+            stepData.allowedFailure = true;
+          }
+
           return stepData;
         }),
         duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,

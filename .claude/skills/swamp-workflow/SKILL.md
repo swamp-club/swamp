@@ -365,6 +365,27 @@ swamp workflow evaluate --all --json
 - Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
 - Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
 
+## Allow Failure
+
+Steps can be marked with `allowFailure: true` so their failure does not fail the
+job or workflow. The step is still recorded as failed, but the failure is not
+propagated.
+
+```yaml
+steps:
+  - name: optional-check
+    allowFailure: true
+    task:
+      type: model_method
+      modelIdOrName: checker
+      methodName: validate
+```
+
+- Step status remains `failed` with its error message
+- The run output includes `allowedFailure: true` on the step
+- Downstream `dependsOn: succeeded` steps will skip; `dependsOn: completed`
+  steps will run
+
 ## Step Task Types
 
 Steps support two task types:

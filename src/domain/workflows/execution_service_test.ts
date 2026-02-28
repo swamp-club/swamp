@@ -1661,3 +1661,264 @@ Deno.test("useLastEvaluated context carries task.inputs and expressionContext (B
     }
   });
 });
+
+// allowFailure tests
+
+Deno.test("step with allowFailure true fails but job still succeeds", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("optional-step");
+
+    const workflow = Workflow.create({
+      name: "allow-failure-workflow",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "optional-step",
+              task: StepTask.model("test-model", "run"),
+              allowFailure: true,
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(run.getJob("job1")?.status, "succeeded");
+    const stepRun = run.getJob("job1")?.getStep("optional-step");
+    assertEquals(stepRun?.status, "failed");
+    assertEquals(stepRun?.allowedFailure, true);
+  });
+});
+
+Deno.test("step with allowFailure true fails but workflow still succeeds", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("optional-step");
+
+    const workflow = Workflow.create({
+      name: "allow-failure-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "optional-step",
+              task: StepTask.model("test-model", "run"),
+              allowFailure: true,
+            }),
+            Step.create({
+              name: "normal-step",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(
+      run.getJob("job1")?.getStep("optional-step")?.status,
+      "failed",
+    );
+    assertEquals(
+      run.getJob("job1")?.getStep("optional-step")?.allowedFailure,
+      true,
+    );
+    assertEquals(
+      run.getJob("job1")?.getStep("normal-step")?.status,
+      "succeeded",
+    );
+  });
+});
+
+Deno.test("downstream step with dependsOn succeeded skips when allowFailure step fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("optional-step");
+
+    const workflow = Workflow.create({
+      name: "allow-failure-skip-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "optional-step",
+              task: StepTask.model("test-model", "run"),
+              allowFailure: true,
+            }),
+            Step.create({
+              name: "depends-on-success",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [
+                {
+                  step: "optional-step",
+                  condition: TriggerCondition.succeeded(),
+                },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(
+      run.getJob("job1")?.getStep("optional-step")?.status,
+      "failed",
+    );
+    assertEquals(
+      run.getJob("job1")?.getStep("depends-on-success")?.status,
+      "skipped",
+    );
+  });
+});
+
+Deno.test("downstream step with dependsOn completed runs when allowFailure step fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("optional-step");
+
+    const workflow = Workflow.create({
+      name: "allow-failure-completed-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "optional-step",
+              task: StepTask.model("test-model", "run"),
+              allowFailure: true,
+            }),
+            Step.create({
+              name: "depends-on-completed",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [
+                {
+                  step: "optional-step",
+                  condition: TriggerCondition.completed(),
+                },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(
+      run.getJob("job1")?.getStep("optional-step")?.status,
+      "failed",
+    );
+    assertEquals(
+      run.getJob("job1")?.getStep("depends-on-completed")?.status,
+      "succeeded",
+    );
+  });
+});
+
+Deno.test("mix of allowFailure and regular failing steps causes job failure", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("optional-step");
+    executor.shouldFail.add("required-step");
+
+    const workflow = Workflow.create({
+      name: "mixed-failure-wf",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "optional-step",
+              task: StepTask.model("test-model", "run"),
+              allowFailure: true,
+            }),
+            Step.create({
+              name: "required-step",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "failed");
+    assertEquals(run.getJob("job1")?.status, "failed");
+    assertEquals(
+      run.getJob("job1")?.getStep("optional-step")?.allowedFailure,
+      true,
+    );
+    assertEquals(
+      run.getJob("job1")?.getStep("required-step")?.status,
+      "failed",
+    );
+    assertEquals(
+      run.getJob("job1")?.getStep("required-step")?.allowedFailure,
+      false,
+    );
+  });
+});

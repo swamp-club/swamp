@@ -147,6 +147,86 @@ Deno.test("Step.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.weight, original.weight);
 });
 
+// allowFailure field tests
+
+Deno.test("Step.create defaults allowFailure to false", () => {
+  const task = StepTask.model("test-model", "run");
+  const step = Step.create({
+    name: "basic-step",
+    task,
+  });
+
+  assertEquals(step.allowFailure, false);
+});
+
+Deno.test("Step.create with allowFailure true", () => {
+  const task = StepTask.model("test-model", "run");
+  const step = Step.create({
+    name: "optional-step",
+    task,
+    allowFailure: true,
+  });
+
+  assertEquals(step.allowFailure, true);
+});
+
+Deno.test("Step.fromData reconstructs step with allowFailure", () => {
+  const data = {
+    name: "optional-step",
+    task: {
+      type: "model_method" as const,
+      modelIdOrName: "test-model",
+      methodName: "run",
+    },
+    dependsOn: [],
+    weight: 0,
+    allowFailure: true,
+  };
+
+  const step = Step.fromData(data);
+  assertEquals(step.allowFailure, true);
+});
+
+Deno.test("Step.fromData defaults allowFailure to false when missing", () => {
+  const data = {
+    name: "basic-step",
+    task: {
+      type: "model_method" as const,
+      modelIdOrName: "test-model",
+      methodName: "run",
+    },
+    dependsOn: [],
+    weight: 0,
+  };
+
+  const step = Step.fromData(data);
+  assertEquals(step.allowFailure, false);
+});
+
+Deno.test("Step.toData includes allowFailure", () => {
+  const step = Step.create({
+    name: "optional-step",
+    task: StepTask.model("test-model", "run"),
+    allowFailure: true,
+  });
+
+  const data = step.toData();
+  assertEquals(data.allowFailure, true);
+});
+
+Deno.test("Step.fromData and toData roundtrip with allowFailure", () => {
+  const original = Step.create({
+    name: "optional-step",
+    task: StepTask.model("test-model", "run"),
+    allowFailure: true,
+  });
+
+  const data = original.toData();
+  const restored = Step.fromData(data);
+
+  assertEquals(restored.allowFailure, original.allowFailure);
+});
+
 // forEach field tests
 
 Deno.test("Step.create creates step with forEach", () => {

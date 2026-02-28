@@ -51,6 +51,8 @@ export interface StepRunData {
   artifacts?: StepArtifactsData;
   /** Data artifacts produced by this step */
   dataArtifacts?: DataArtifactRefData[];
+  /** Whether this step's failure was allowed (did not fail the job) */
+  allowedFailure?: boolean;
 }
 
 export interface JobRunData {
@@ -103,8 +105,11 @@ function renderLogWorkflowRun(data: WorkflowRunData): void {
       const stepDuration = step.duration !== undefined
         ? ` (${step.duration}ms)`
         : "";
+      const stepIcon = step.status === "failed" && step.allowedFailure
+        ? "\u26A0"
+        : statusIcon(step.status);
       logger.info("    {status} {stepName}{duration}", {
-        status: statusIcon(step.status),
+        status: stepIcon,
         stepName: step.name,
         duration: stepDuration,
       });
