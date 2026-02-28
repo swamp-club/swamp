@@ -1512,3 +1512,152 @@ Deno.test("task.inputs matching definition input keys are forwarded to step exec
     assertEquals(exprCtx !== undefined, true);
   });
 });
+
+// Regression test for issue #537 Bug A: workflow expressions must be evaluated
+// before reaching the step executor.
+Deno.test("workflow expressions are evaluated before step execution (Bug A)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    // Executor that captures the step task data to verify expression resolution
+    class TaskCapturingExecutor implements StepExecutor {
+      capturedSteps: Array<{ step: Step; ctx: StepExecutionContext }> = [];
+      execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.capturedSteps.push({ step, ctx });
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new TaskCapturingExecutor();
+
+    // Create a workflow with an expression in the model name.
+    // The expression ${{ inputs.deviceModel }} should be resolved
+    // to the actual value before execution.
+    const workflow = Workflow.create({
+      name: "expression-eval-test",
+      jobs: [
+        Job.create({
+          name: "deploy",
+          steps: [
+            Step.create({
+              name: "run-model",
+              task: StepTask.model(
+                "${{ inputs.deviceModel }}",
+                "create",
+              ),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, undefined, {
+      inputs: { deviceModel: "my-device" },
+    });
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.capturedSteps.length, 1);
+
+    // The step executor should receive the resolved model name,
+    // not the raw expression string.
+    const captured = executor.capturedSteps[0];
+    const taskData = captured.step.task.data;
+    assertEquals(taskData.type, "model_method");
+    if (taskData.type === "model_method") {
+      assertEquals(taskData.modelIdOrName, "my-device");
+      assertNotEquals(taskData.modelIdOrName, "${{ inputs.deviceModel }}");
+    }
+  });
+});
+
+// Regression test for issue #537 Bug B: --last-evaluated must still forward
+// task.inputs and provide an expression context.
+Deno.test("useLastEvaluated context carries task.inputs and expressionContext (Bug B)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    // Executor that captures context for verification
+    class ContextCapturingExecutor implements StepExecutor {
+      capturedSteps: Array<{ step: Step; ctx: StepExecutionContext }> = [];
+      execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.capturedSteps.push({ step, ctx });
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new ContextCapturingExecutor();
+
+    // Create a workflow with task.inputs (values already resolved since
+    // this simulates a pre-evaluated workflow)
+    const workflow = Workflow.create({
+      name: "last-evaluated-inputs-test",
+      jobs: [
+        Job.create({
+          name: "deploy",
+          steps: [
+            Step.create({
+              name: "run-model",
+              task: StepTask.model("my-model", "create", {
+                region: "us-west-2",
+                instance_type: "t3.large",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    // Pre-save the evaluated workflow so --last-evaluated can find it
+    const { YamlEvaluatedWorkflowRepository } = await import(
+      "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
+    );
+    const evalWorkflowRepo = new YamlEvaluatedWorkflowRepository(tempDir);
+    await evalWorkflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, undefined, {
+      lastEvaluated: true,
+    });
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.capturedSteps.length, 1);
+
+    const captured = executor.capturedSteps[0];
+
+    // The expression context should be provided even with --last-evaluated
+    assertEquals(captured.ctx.expressionContext !== undefined, true);
+    assertEquals(
+      typeof captured.ctx.expressionContext?.model,
+      "object",
+    );
+    assertEquals(
+      typeof captured.ctx.expressionContext?.env,
+      "object",
+    );
+
+    // task.inputs should be present on the step
+    const taskData = captured.step.task.data;
+    assertEquals(taskData.type, "model_method");
+    if (taskData.type === "model_method") {
+      assertEquals(taskData.inputs, {
+        region: "us-west-2",
+        instance_type: "t3.large",
+      });
+    }
+  });
+});

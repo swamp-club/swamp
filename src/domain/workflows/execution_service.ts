@@ -55,6 +55,7 @@ import {
   hasStepOutputDependency,
 } from "../expressions/dependency_extractor.ts";
 import {
+  buildEnvContext,
   type DataRecord,
   type ExpressionContext,
   type FileDataRecord,
@@ -311,6 +312,7 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Evaluate CEL expressions (vault left raw for persistence)
     let evaluatedDefinition = originalDefinition;
+    let stepInputs: Record<string, unknown> = {};
     if (ctx.useLastEvaluated) {
       // Load previously-evaluated definition from cache
       runLogger?.info("Loading last evaluated definition");
@@ -328,6 +330,11 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       }
       evaluatedDefinition = lastEvaluated;
+
+      // Values are already resolved in the pre-evaluated workflow
+      if (task.inputs) {
+        stepInputs = task.inputs;
+      }
     } else if (ctx.expressionContext) {
       runLogger.info("Evaluating expressions");
       // Set self context for this specific model before evaluating
@@ -346,7 +353,6 @@ export class DefaultStepExecutor implements StepExecutor {
       };
 
       // Evaluate step task inputs and merge into context
-      let stepInputs: Record<string, unknown> = {};
       if (task.inputs) {
         // Evaluate any expressions in the step task inputs
         const evalService = new ExpressionEvaluationService(
@@ -368,18 +374,18 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.expressionContext,
         ctx.repoDir,
       );
+    }
 
-      // Forward all step inputs as method arguments.
-      // This runs after evaluateDefinitionExpressions, so task.inputs values
-      // take precedence over any values resolved from ${{ inputs.X }} expressions.
-      if (Object.keys(stepInputs).length > 0) {
-        for (const [key, value] of Object.entries(stepInputs)) {
-          evaluatedDefinition.setMethodArgument(
-            task.methodName,
-            key,
-            value,
-          );
-        }
+    // Forward all step inputs as method arguments.
+    // This runs after expression evaluation, so task.inputs values
+    // take precedence over any values resolved from ${{ inputs.X }} expressions.
+    if (Object.keys(stepInputs).length > 0) {
+      for (const [key, value] of Object.entries(stepInputs)) {
+        evaluatedDefinition.setMethodArgument(
+          task.methodName,
+          key,
+          value,
+        );
       }
     }
 
@@ -756,6 +762,17 @@ export class WorkflowExecutionService {
       }
       // Use the fully evaluated workflow (forEach expanded, expressions resolved)
       workflow = lastEvaluated;
+
+      // Build a minimal expression context so step outputs can be tracked
+      // and deferred expressions (e.g. model.previous.resource.*) can be
+      // evaluated at step execution time.
+      expressionContext = {
+        model: {},
+        env: buildEnvContext(),
+      };
+      if (options?.inputs) {
+        expressionContext.inputs = options.inputs;
+      }
     } else {
       // Build expression context and evaluate workflow
       expressionContext = await this.modelResolver.buildContext();
@@ -765,14 +782,14 @@ export class WorkflowExecutionService {
         expressionContext.inputs = options.inputs;
       }
 
-      const evaluatedWorkflow = await this.evaluateWorkflow(
+      workflow = this.evaluateWorkflow(
         workflow,
         expressionContext,
       );
       const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
         this.repoDir,
       );
-      await evaluatedWorkflowRepo.save(evaluatedWorkflow);
+      await evaluatedWorkflowRepo.save(workflow);
     }
 
     // Create workflow run with merged tags (runtime tags take precedence)
@@ -1156,7 +1173,7 @@ export class WorkflowExecutionService {
         jobName: job.name,
         stepName,
         repoDir: this.repoDir,
-        expressionContext: lastEvaluated ? undefined : expressionContext,
+        expressionContext,
         progress,
         workflowRun: run,
         step,
@@ -1327,7 +1344,7 @@ export class WorkflowExecutionService {
         jobName: job.name,
         stepName,
         repoDir: this.repoDir,
-        expressionContext: lastEvaluated ? undefined : stepExprContext,
+        expressionContext: stepExprContext,
         progress,
         workflowRun: run,
         step,
