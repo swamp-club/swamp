@@ -127,6 +127,66 @@ Deno.test("StepRun.fromData reconstructs step run correctly", () => {
   assertEquals(stepRun.output, { value: 42 });
 });
 
+// StepRun allowedFailure tests
+
+Deno.test("StepRun.allowedFailure defaults to false", () => {
+  const stepRun = StepRun.pending("step1");
+  assertEquals(stepRun.allowedFailure, false);
+});
+
+Deno.test("StepRun.markAllowedFailure sets the flag", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.start();
+  stepRun.fail("expected error");
+  stepRun.markAllowedFailure();
+  assertEquals(stepRun.allowedFailure, true);
+});
+
+Deno.test("StepRun.toData includes allowedFailure when true", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.start();
+  stepRun.fail("expected error");
+  stepRun.markAllowedFailure();
+
+  const data = stepRun.toData();
+  assertEquals(data.allowedFailure, true);
+});
+
+Deno.test("StepRun.toData omits allowedFailure when false", () => {
+  const stepRun = StepRun.pending("step1");
+  stepRun.start();
+  stepRun.succeed();
+
+  const data = stepRun.toData();
+  assertEquals(data.allowedFailure, undefined);
+});
+
+Deno.test("StepRun.fromData reconstructs allowedFailure", () => {
+  const data = {
+    stepName: "test",
+    status: "failed" as const,
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    error: "expected error",
+    allowedFailure: true,
+  };
+
+  const stepRun = StepRun.fromData(data);
+  assertEquals(stepRun.allowedFailure, true);
+});
+
+Deno.test("StepRun.fromData defaults allowedFailure to false when missing", () => {
+  const data = {
+    stepName: "test",
+    status: "succeeded" as const,
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  };
+
+  const stepRun = StepRun.fromData(data);
+  assertEquals(stepRun.allowedFailure, false);
+});
+
 // JobRun tests
 
 Deno.test("JobRun.pending creates pending job run with steps", () => {

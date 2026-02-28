@@ -63,12 +63,16 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
           const stepStart = step.startedAt?.getTime();
           const stepEnd = step.completedAt?.getTime();
 
-          return {
+          const stepData: StepRunData = {
             name: step.stepName,
             status: step.status,
             error: step.error,
             duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
           };
+          if (step.allowedFailure) {
+            stepData.allowedFailure = true;
+          }
+          return stepData;
         }),
         duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,
       };

@@ -64,12 +64,18 @@ export const StepSchema = z.object({
   dependsOn: z.array(StepDependencySchema).default([]),
   weight: z.number().default(0),
   dataOutputOverrides: z.array(DataOutputOverrideSchema).optional(),
+  allowFailure: z.boolean().default(false),
 });
 
 /**
- * Type representing step data.
+ * Type representing step data (output — defaults applied).
  */
 export type StepData = z.infer<typeof StepSchema>;
+
+/**
+ * Type representing step input data (defaults optional for backward compat).
+ */
+export type StepInput = z.input<typeof StepSchema>;
 
 /**
  * Step dependency with resolved TriggerCondition.
@@ -98,6 +104,7 @@ export interface CreateStepProps {
   dependsOn?: StepDependency[];
   weight?: number;
   dataOutputOverrides?: DataOutputOverride[];
+  allowFailure?: boolean;
 }
 
 /**
@@ -120,6 +127,7 @@ export class Step {
     private _dependsOn: StepDependency[],
     readonly weight: number,
     private _dataOutputOverrides: DataOutputOverride[],
+    readonly allowFailure: boolean,
   ) {}
 
   /**
@@ -137,6 +145,7 @@ export class Step {
       })),
       weight: props.weight ?? 0,
       dataOutputOverrides: props.dataOutputOverrides,
+      allowFailure: props.allowFailure ?? false,
     });
 
     return Step.fromData(data);
@@ -145,7 +154,7 @@ export class Step {
   /**
    * Reconstructs a Step from persisted data.
    */
-  static fromData(data: StepData): Step {
+  static fromData(data: StepInput): Step {
     const validated = StepSchema.parse(data);
     const task = StepTask.fromData(validated.task);
     const dependsOn = validated.dependsOn.map((d) => ({
@@ -176,6 +185,7 @@ export class Step {
       dependsOn,
       validated.weight,
       dataOutputOverrides,
+      validated.allowFailure,
     );
   }
 
@@ -232,6 +242,7 @@ export class Step {
           vary: override.vary,
         }))
         : undefined,
+      allowFailure: this.allowFailure,
     };
   }
 }

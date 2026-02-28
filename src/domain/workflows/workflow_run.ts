@@ -38,6 +38,7 @@ export const StepRunSchema = z.object({
   error: z.string().optional(),
   output: z.unknown().optional(),
   dataArtifacts: z.array(DataArtifactRefSchema).optional(),
+  allowedFailure: z.boolean().optional(),
 });
 
 /**
@@ -98,6 +99,7 @@ export class StepRun {
     private _error: string | undefined,
     private _output: unknown,
     private _dataArtifacts: DataArtifactRef[] = [],
+    private _allowedFailure: boolean = false,
   ) {}
 
   /**
@@ -112,6 +114,7 @@ export class StepRun {
       undefined,
       undefined,
       [],
+      false,
     );
   }
 
@@ -128,6 +131,7 @@ export class StepRun {
       validated.error,
       validated.output,
       validated.dataArtifacts ?? [],
+      validated.allowedFailure ?? false,
     );
   }
 
@@ -156,6 +160,20 @@ export class StepRun {
    */
   get dataArtifacts(): ReadonlyArray<DataArtifactRef> {
     return this._dataArtifacts;
+  }
+
+  /**
+   * Whether this step's failure was allowed (not propagated to the job).
+   */
+  get allowedFailure(): boolean {
+    return this._allowedFailure;
+  }
+
+  /**
+   * Marks this step's failure as allowed.
+   */
+  markAllowedFailure(): void {
+    this._allowedFailure = true;
   }
 
   /**
@@ -215,6 +233,9 @@ export class StepRun {
     };
     if (this._dataArtifacts.length > 0) {
       data.dataArtifacts = this._dataArtifacts.map((a) => ({ ...a }));
+    }
+    if (this._allowedFailure) {
+      data.allowedFailure = true;
     }
     return data;
   }

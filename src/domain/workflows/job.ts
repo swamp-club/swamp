@@ -23,7 +23,7 @@ import {
   type TriggerConditionData,
   TriggerConditionSchema,
 } from "./trigger_condition.ts";
-import { Step, type StepData, StepSchema } from "./step.ts";
+import { Step, type StepData, type StepInput, StepSchema } from "./step.ts";
 
 /**
  * Schema for job dependency with condition.
@@ -50,9 +50,14 @@ export const JobSchema = z.object({
 });
 
 /**
- * Type representing job data.
+ * Type representing job data (output — defaults applied).
  */
 export type JobData = z.infer<typeof JobSchema>;
+
+/**
+ * Type representing job input data (defaults optional for backward compat).
+ */
+export type JobInput = z.input<typeof JobSchema>;
 
 /**
  * Job dependency with resolved TriggerCondition.
@@ -117,7 +122,7 @@ export class Job {
   /**
    * Reconstructs a Job from persisted data.
    */
-  static fromData(data: JobData): Job {
+  static fromData(data: JobInput): Job {
     const validated = JobSchema.parse(data);
     const steps = validated.steps.map((s) => Step.fromData(s));
     const dependsOn = validated.dependsOn.map((d) => ({

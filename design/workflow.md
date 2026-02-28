@@ -77,6 +77,42 @@ Each step has a name, a descirption, and a task (which is either a method on a
 model to run or a nested workflow to invoke). Each step has dependency logic that
 is identical to jobs, only for steps rather than jobs.
 
+## Allow Failure
+
+Steps can be marked with `allowFailure: true` to indicate that their failure
+should not cause the job or workflow to fail. This is useful for test or
+diagnostic workflows where some steps may fail due to external constraints (e.g.,
+billing plan limitations).
+
+When a step with `allowFailure: true` fails:
+
+- The step is recorded as **failed** with its error message
+- The failure is **not propagated** to the job — the job can still succeed
+- The step run is flagged with `allowedFailure: true` in the run output
+- Trigger conditions behave normally: `succeeded` evaluates to `false` (step did
+  fail), `failed` evaluates to `true`, `completed` evaluates to `true`
+- Downstream steps with `dependsOn: succeeded` will skip; `dependsOn: completed`
+  will fire
+
+```yaml
+steps:
+  - name: optional-check
+    allowFailure: true
+    task:
+      type: model_method
+      modelIdOrName: checker
+      methodName: validate
+  - name: always-runs
+    dependsOn:
+      - step: optional-check
+        condition:
+          type: completed
+    task:
+      type: model_method
+      modelIdOrName: runner
+      methodName: execute
+```
+
 ## Data Output Overrides with Vary Dimensions
 
 Steps can declare `vary` on `dataOutputOverrides` to produce

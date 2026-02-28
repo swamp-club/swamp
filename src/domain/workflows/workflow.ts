@@ -19,7 +19,7 @@
 
 import { z } from "zod";
 import { createWorkflowId, type WorkflowId } from "./workflow_id.ts";
-import { Job, type JobData, JobSchema } from "./job.ts";
+import { Job, type JobData, type JobInput, JobSchema } from "./job.ts";
 import {
   type InputsSchema,
   InputsSchemaSchema,
@@ -39,9 +39,14 @@ export const WorkflowSchema = z.object({
 });
 
 /**
- * Type representing workflow data.
+ * Type representing workflow data (output — defaults applied).
  */
 export type WorkflowData = z.infer<typeof WorkflowSchema>;
+
+/**
+ * Type representing workflow input data (defaults optional for backward compat).
+ */
+export type WorkflowInput = z.input<typeof WorkflowSchema>;
 
 /**
  * Properties for creating a new Workflow.
@@ -116,7 +121,7 @@ export class Workflow {
   /**
    * Reconstructs a Workflow from persisted data.
    */
-  static fromData(data: WorkflowData): Workflow {
+  static fromData(data: WorkflowInput): Workflow {
     const validated = WorkflowSchema.parse(data);
     const jobs = validated.jobs.map((j) => Job.fromData(j));
 
