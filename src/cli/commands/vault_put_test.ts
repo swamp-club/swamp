@@ -18,26 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-
-/**
- * Parses a KEY=VALUE string into key and value parts.
- * Handles values that contain = signs.
- */
-function parseKeyValue(input: string): { key: string; value: string } | null {
-  const equalsIndex = input.indexOf("=");
-  if (equalsIndex === -1) {
-    return null;
-  }
-
-  const key = input.substring(0, equalsIndex);
-  const value = input.substring(equalsIndex + 1);
-
-  if (key.length === 0) {
-    return null;
-  }
-
-  return { key, value };
-}
+import { parseKeyValue, resolveKeyValue } from "./vault_put.ts";
 
 Deno.test("parseKeyValue - simple key=value", () => {
   const result = parseKeyValue("API_KEY=secret123");
@@ -77,4 +58,50 @@ Deno.test("parseKeyValue - key with dashes", () => {
 Deno.test("parseKeyValue - key with underscores", () => {
   const result = parseKeyValue("MY_API_KEY=secret");
   assertEquals(result, { key: "MY_API_KEY", value: "secret" });
+});
+
+// resolveKeyValue tests
+
+Deno.test("resolveKeyValue - KEY=VALUE inline takes precedence over stdin", () => {
+  const result = resolveKeyValue("API_KEY=inline-secret", "stdin-secret\n");
+  assertEquals(result, { key: "API_KEY", value: "inline-secret" });
+});
+
+Deno.test("resolveKeyValue - KEY=VALUE works without stdin", () => {
+  const result = resolveKeyValue("API_KEY=secret123", null);
+  assertEquals(result, { key: "API_KEY", value: "secret123" });
+});
+
+Deno.test("resolveKeyValue - KEY with stdin value", () => {
+  const result = resolveKeyValue("API_KEY", "piped-secret");
+  assertEquals(result, { key: "API_KEY", value: "piped-secret" });
+});
+
+Deno.test("resolveKeyValue - strips trailing newline from stdin", () => {
+  const result = resolveKeyValue("API_KEY", "piped-secret\n");
+  assertEquals(result, { key: "API_KEY", value: "piped-secret" });
+});
+
+Deno.test("resolveKeyValue - strips only one trailing newline", () => {
+  const result = resolveKeyValue("API_KEY", "line1\nline2\n");
+  assertEquals(result, { key: "API_KEY", value: "line1\nline2" });
+});
+
+Deno.test("resolveKeyValue - preserves value with no trailing newline", () => {
+  const result = resolveKeyValue("API_KEY", "exact-value");
+  assertEquals(result, { key: "API_KEY", value: "exact-value" });
+});
+
+Deno.test("resolveKeyValue - error when no = and no stdin", () => {
+  const result = resolveKeyValue("API_KEY", null);
+  assertEquals("error" in result, true);
+});
+
+Deno.test("resolveKeyValue - error message includes both usage formats", () => {
+  const result = resolveKeyValue("MY_KEY", null);
+  assertEquals("error" in result, true);
+  if ("error" in result) {
+    assertEquals(result.error.includes("MY_KEY=<value>"), true);
+    assertEquals(result.error.includes("echo"), true);
+  }
 });

@@ -28,6 +28,7 @@ import { requireInitializedRepo } from "../repo_context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createVaultSecretUpdated } from "../../domain/events/types.ts";
+import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 
 /**
  * Prompts user for confirmation in interactive mode.
@@ -53,7 +54,9 @@ async function promptConfirmation(message: string): Promise<boolean> {
  * Parses a KEY=VALUE string into key and value parts.
  * Handles values that contain = signs.
  */
-function parseKeyValue(input: string): { key: string; value: string } | null {
+export function parseKeyValue(
+  input: string,
+): { key: string; value: string } | null {
   const equalsIndex = input.indexOf("=");
   if (equalsIndex === -1) {
     return null;
@@ -67,6 +70,46 @@ function parseKeyValue(input: string): { key: string; value: string } | null {
   }
 
   return { key, value };
+}
+
+/**
+ * Resolves a key and value from a CLI argument and optional stdin content.
+ *
+ * Resolution order:
+ * 1. If the argument contains '=', parse as KEY=VALUE (existing behavior)
+ * 2. If no '=', treat argument as KEY and use stdinContent as the value
+ * 3. If no '=' and no stdinContent, return an error
+ *
+ * Stdin values have a single trailing newline stripped (pipes/files
+ * typically append one).
+ */
+export function resolveKeyValue(
+  argument: string,
+  stdinContent: string | null,
+): { key: string; value: string } | { error: string } {
+  const parsed = parseKeyValue(argument);
+  if (parsed) {
+    return parsed;
+  }
+
+  // No '=' found — treat argument as key and use stdin as value
+  const key = argument;
+  if (key.length === 0) {
+    return { error: "Key cannot be empty" };
+  }
+
+  if (stdinContent !== null) {
+    // Strip a single trailing newline (pipes/files typically append one)
+    const value = stdinContent.replace(/\n$/, "");
+    return { key, value };
+  }
+
+  return {
+    error: `Invalid argument format: ${argument}\n\n` +
+      `Provide the value inline or via stdin:\n` +
+      `  swamp vault put <vault> ${argument}=<value>\n` +
+      `  echo "<value>" | swamp vault put <vault> ${argument}`,
+  };
 }
 
 /**
@@ -108,15 +151,19 @@ export const vaultPutCommand = new Command()
       outputMode: ctx.outputMode,
     });
 
-    // Parse KEY=VALUE argument
+    // Parse KEY=VALUE argument, or KEY with value from stdin.
+    // Only consume stdin when the argument has no '=' — this preserves
+    // the ability for promptConfirmation to read interactive input later.
     const parsed = parseKeyValue(keyValue);
+    let stdinContent: string | null = null;
     if (!parsed) {
-      throw new UserError(
-        `Invalid argument format. Expected KEY=VALUE, got: ${keyValue}`,
-      );
+      stdinContent = await readStdin();
     }
-
-    const { key, value } = parsed;
+    const resolved = resolveKeyValue(keyValue, stdinContent);
+    if ("error" in resolved) {
+      throw new UserError(resolved.error);
+    }
+    const { key, value } = resolved;
     ctx.logger.debug`Parsed key: ${key}`;
 
     // Verify vault exists
@@ -146,8 +193,16 @@ export const vaultPutCommand = new Command()
     const exists = await secretExists(vaultService, vaultName, key);
     ctx.logger.debug`Secret exists: ${exists}`;
 
-    // Prompt for confirmation if overwriting in interactive mode
+    // Prompt for confirmation if overwriting in interactive mode.
+    // When stdin was piped (stdinContent is not null), skip the prompt since
+    // there's no interactive user — require --force instead.
     if (exists && ctx.outputMode === "log" && !options.force) {
+      if (stdinContent !== null) {
+        throw new UserError(
+          `Secret '${key}' already exists in vault '${vaultName}'.\n` +
+            `Use --force (-f) to overwrite when piping from stdin.`,
+        );
+      }
       const confirmed = await promptConfirmation(
         `Secret '${key}' already exists in vault '${vaultName}'. Overwrite?`,
       );

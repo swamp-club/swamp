@@ -10,16 +10,17 @@ for machine-readable output.
 
 ## Quick Reference
 
-| Task              | Command                                    |
-| ----------------- | ------------------------------------------ |
-| List vault types  | `swamp vault type search --json`           |
-| Create a vault    | `swamp vault create <type> <name> --json`  |
-| Search vaults     | `swamp vault search [query] --json`        |
-| Get vault details | `swamp vault get <name_or_id> --json`      |
-| Edit vault config | `swamp vault edit <name_or_id>`            |
-| Store a secret    | `swamp vault put <vault> KEY=VALUE --json` |
-| Get a secret      | `swamp vault get <vault> <key> --json`     |
-| List secret keys  | `swamp vault list-keys <vault> --json`     |
+| Task              | Command                                            |
+| ----------------- | -------------------------------------------------- |
+| List vault types  | `swamp vault type search --json`                   |
+| Create a vault    | `swamp vault create <type> <name> --json`          |
+| Search vaults     | `swamp vault search [query] --json`                |
+| Get vault details | `swamp vault get <name_or_id> --json`              |
+| Edit vault config | `swamp vault edit <name_or_id>`                    |
+| Store a secret    | `swamp vault put <vault> KEY=VALUE --json`         |
+| Store from stdin  | `echo "val" \| swamp vault put <vault> KEY --json` |
+| Get a secret      | `swamp vault get <vault> <key> --json`             |
+| List secret keys  | `swamp vault list-keys <vault> --json`             |
 
 ## Repository Structure
 
@@ -100,10 +101,28 @@ swamp vault edit dev-secrets
 
 ## Store Secrets
 
+**Inline value (appears in shell history):**
+
 ```bash
 swamp vault put dev-secrets API_KEY=sk-1234567890 --json
 swamp vault put prod-secrets DB_PASSWORD=secret123 -f --json  # Skip confirmation
 ```
+
+**Piped value (recommended — keeps secrets out of shell history):**
+
+```bash
+echo "$API_KEY" | swamp vault put dev-secrets API_KEY --json
+cat ~/secrets/token.txt | swamp vault put dev-secrets TOKEN --json
+op read "op://vault/item/field" | swamp vault put dev-secrets SECRET --json
+```
+
+When no `=` is present in the argument, the value is read from stdin. A single
+trailing newline is stripped automatically.
+
+**IMPORTANT — agent security:** Never ask the user to paste or type a secret
+value into conversation. Instead, instruct them to run `vault put` directly in
+their terminal using piped input. This prevents secrets from being logged in
+agent context or chat history.
 
 **Output shape:**
 
