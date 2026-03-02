@@ -22,6 +22,7 @@ import {
   isLocalhostUrl,
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
+  isUpdateCheckDisabledByEnv,
   resolveLogLevel,
   resolveModelsDir,
   resolveTelemetryEndpoint,
@@ -462,4 +463,88 @@ Deno.test("resolveTelemetryEndpoint returns default when auth serverUrl is remot
 Deno.test("resolveTelemetryEndpoint returns default when auth serverUrl is null", () => {
   const result = resolveTelemetryEndpoint(undefined, null);
   assertEquals(result, "https://telemetry.swamp.club");
+});
+
+// --- isUpdateCheckDisabledByEnv tests ---
+
+Deno.test("isUpdateCheckDisabledByEnv returns false when env var is not set", () => {
+  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
+  try {
+    Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
+    assertEquals(isUpdateCheckDisabledByEnv(), false);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
+    }
+  }
+});
+
+Deno.test("isUpdateCheckDisabledByEnv returns true when env var is '1'", () => {
+  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
+  try {
+    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "1");
+    assertEquals(isUpdateCheckDisabledByEnv(), true);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
+    }
+  }
+});
+
+Deno.test("isUpdateCheckDisabledByEnv returns true when env var is 'true'", () => {
+  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
+  try {
+    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "true");
+    assertEquals(isUpdateCheckDisabledByEnv(), true);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
+    }
+  }
+});
+
+Deno.test("isUpdateCheckDisabledByEnv returns false when env var is '0'", () => {
+  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
+  try {
+    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "0");
+    assertEquals(isUpdateCheckDisabledByEnv(), false);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
+    }
+  }
+});
+
+Deno.test("isUpdateCheckDisabledByEnv returns false when env var is 'false'", () => {
+  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
+  try {
+    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "false");
+    assertEquals(isUpdateCheckDisabledByEnv(), false);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
+    }
+  }
+});
+
+Deno.test("isUpdateCheckDisabledByEnv returns false when env var is ''", () => {
+  const original = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
+  try {
+    Deno.env.set("SWAMP_NO_UPDATE_CHECK", "");
+    assertEquals(isUpdateCheckDisabledByEnv(), false);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_NO_UPDATE_CHECK", original);
+    } else {
+      Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
+    }
+  }
 });

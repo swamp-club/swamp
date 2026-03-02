@@ -58,6 +58,13 @@ import {
 } from "./telemetry_integration.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
+import { isDevBuild } from "../domain/update/update_service.ts";
+import { UpdateNotificationService } from "../domain/update/update_notification_service.ts";
+import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_check_cache_file_repository.ts";
+import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
+import { Platform } from "../domain/update/platform.ts";
+import { renderUpdateNotification } from "../presentation/output/update_notification_output.ts";
+import { getOutputModeFromArgs } from "./context.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -103,6 +110,18 @@ export function isTelemetryDisabledByConfig(
  */
 export function isTelemetryDisabledByEnv(): boolean {
   const val = Deno.env.get("SWAMP_NO_TELEMETRY");
+  if (val === undefined) return false;
+  return val !== "0" && val !== "false" && val !== "";
+}
+
+/**
+ * Checks whether update checks are disabled via SWAMP_NO_UPDATE_CHECK environment variable.
+ * Any value other than "0", "false", or empty string disables update checks.
+ *
+ * @internal Exported for testing
+ */
+export function isUpdateCheckDisabledByEnv(): boolean {
+  const val = Deno.env.get("SWAMP_NO_UPDATE_CHECK");
   if (val === undefined) return false;
   return val !== "0" && val !== "false" && val !== "";
 }
@@ -386,6 +405,34 @@ export async function runCli(args: string[]): Promise<void> {
 
       // Trigger cleanup asynchronously (fire-and-forget)
       telemetryCtx.service.cleanupOldTelemetry();
+    }
+
+    // Proactive update notification (after telemetry, before exit)
+    if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
+      const outputMode = getOutputModeFromArgs(args);
+      const commandName = commandInfo.command;
+
+      if (outputMode === "log" && commandName !== "update") {
+        try {
+          const cacheRepo = new UpdateCheckCacheFileRepository();
+          const checker = new HttpUpdateChecker();
+          const service = new UpdateNotificationService(
+            VERSION,
+            cacheRepo,
+            checker,
+          );
+
+          const notification = await service.getNotification();
+          if (notification) {
+            renderUpdateNotification(notification);
+          }
+
+          const platform = Platform.detect();
+          service.backgroundCheck(platform);
+        } catch {
+          // Silently ignore — never break the CLI for update checks
+        }
+      }
     }
   } catch (error) {
     // Record error invocation before re-throwing
