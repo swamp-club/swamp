@@ -27,6 +27,7 @@ export interface PushMetadata {
   dependencies: string[];
   platforms: string[];
   labels: string[];
+  repository?: string;
 }
 
 /** Response from the initiate push endpoint. */
