@@ -46,6 +46,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { modelMethodHistoryCommand } from "./model_method_history.ts";
+import { modelMethodDescribeCommand } from "./model_method_describe.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
@@ -426,4 +427,5 @@ export const modelMethodCommand = new Command()
     this.showHelp();
   })
   .command("run", modelMethodRunCommand)
+  .command("describe", modelMethodDescribeCommand)
   .command("history", modelMethodHistoryCommand);
