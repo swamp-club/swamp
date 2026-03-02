@@ -821,6 +821,7 @@ Deno.test("RepoService.init tool-specific gitignore entries when opted in", asyn
     cursor: ".cursor/skills/",
     opencode: ".agents/skills/",
     codex: ".agents/skills/",
+    kiro: ".kiro/skills/",
   };
 
   for (
@@ -1122,5 +1123,134 @@ Deno.test("RepoService.upgrade without flag and no marker gitignoreManaged skips
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.gitignoreAction, "skipped");
+  });
+});
+
+// Kiro tool tests
+
+Deno.test("RepoService.init with kiro creates .kiro/skills/ and steering file with frontmatter", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { tool: "kiro" });
+
+    assertEquals(result.tool, "kiro");
+    assertEquals(result.instructionsFileCreated, true);
+    assertEquals(result.settingsCreated, true);
+
+    // Check skills copied to .kiro/skills/
+    const skillsDir = join(tempDir, ".kiro", "skills");
+    const stat = await Deno.stat(skillsDir);
+    assertEquals(stat.isDirectory, true);
+
+    // Check steering file with frontmatter
+    const steeringPath = join(
+      tempDir,
+      ".kiro",
+      "steering",
+      "swamp-rules.md",
+    );
+    const content = await Deno.readTextFile(steeringPath);
+    assertStringIncludes(content, "---\ninclusion: always\n---");
+    assertStringIncludes(content, "swamp");
+    assertStringIncludes(content, "## Skills");
+
+    // Check .vscode/settings.local.json created with trusted commands
+    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+    const settingsContent = await Deno.readTextFile(settingsPath);
+    const settings = JSON.parse(settingsContent);
+    assertEquals(
+      Array.isArray(settings["kiroAgent.trustedCommands"]),
+      true,
+    );
+    assertStringIncludes(
+      JSON.stringify(settings["kiroAgent.trustedCommands"]),
+      "swamp *",
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade allows switching to kiro and creates steering file", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with claude (default)
+    await service.init(repoPath);
+
+    // Upgrade with tool switch to kiro
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "kiro" });
+
+    assertEquals(result.tool, "kiro");
+    assertEquals(result.settingsUpdated, true);
+
+    // Verify skills exist in kiro dir
+    const skillsDir = join(tempDir, ".kiro", "skills");
+    const stat = await Deno.stat(skillsDir);
+    assertEquals(stat.isDirectory, true);
+
+    // Verify marker updated with new tool
+    const marker = await upgradeService.getMarker(repoPath);
+    assertEquals(marker!.tool, "kiro");
+
+    // Verify steering file created
+    const steeringPath = join(
+      tempDir,
+      ".kiro",
+      "steering",
+      "swamp-rules.md",
+    );
+    const content = await Deno.readTextFile(steeringPath);
+    assertStringIncludes(content, "inclusion: always");
+
+    // Verify kiro settings created
+    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+    const settingsContent = await Deno.readTextFile(settingsPath);
+    const settings = JSON.parse(settingsContent);
+    assertStringIncludes(
+      JSON.stringify(settings["kiroAgent.trustedCommands"]),
+      "swamp *",
+    );
+  });
+});
+
+Deno.test("RepoService.init with kiro does not create claude settings", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "kiro" });
+
+    // Check no .claude/ settings created
+    const claudeSettingsPath = join(
+      tempDir,
+      ".claude",
+      "settings.local.json",
+    );
+    let settingsExist = false;
+    try {
+      await Deno.stat(claudeSettingsPath);
+      settingsExist = true;
+    } catch {
+      // expected
+    }
+    assertEquals(settingsExist, false);
+  });
+});
+
+Deno.test("RepoService.init kiro gitignore contains .kiro/skills/ when opted in", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "kiro", includeGitignore: true });
+
+    const gitignorePath = join(tempDir, ".gitignore");
+    const content = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(content, ".kiro/skills/");
+    assertStringIncludes(content, "# Kiro skills (managed by swamp)");
+    assertStringIncludes(content, ".swamp/telemetry/");
   });
 });

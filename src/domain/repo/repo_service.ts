@@ -55,6 +55,7 @@ const SKILL_DIRS: Record<AiTool, string> = {
   cursor: ".cursor/skills",
   opencode: ".agents/skills",
   codex: ".agents/skills",
+  kiro: ".kiro/skills",
 };
 
 const INSTRUCTIONS_FILES: Record<AiTool, string> = {
@@ -62,6 +63,7 @@ const INSTRUCTIONS_FILES: Record<AiTool, string> = {
   cursor: ".cursor/rules/swamp.mdc",
   opencode: "AGENTS.md",
   codex: "AGENTS.md",
+  kiro: ".kiro/steering/swamp-rules.md",
 };
 
 const GITIGNORE_TOOL_ENTRIES: Record<AiTool, string> = {
@@ -69,6 +71,7 @@ const GITIGNORE_TOOL_ENTRIES: Record<AiTool, string> = {
   cursor: "# Cursor skills (managed by swamp)\n.cursor/skills/",
   opencode: "# Agent skills (managed by swamp)\n.agents/skills/",
   codex: "# Agent skills (managed by swamp)\n.agents/skills/",
+  kiro: "# Kiro skills (managed by swamp)\n.kiro/skills/",
 };
 
 /**
@@ -176,10 +179,12 @@ export class RepoService {
     const instructionsFileCreated = await this
       .createInstructionsFileIfNotExists(repoPath, tool);
 
-    // Create Claude settings.local.json only for Claude
+    // Create tool-specific settings
     let settingsCreated = false;
     if (tool === "claude") {
       settingsCreated = await this.createClaudeSettingsIfNotExists(repoPath);
+    } else if (tool === "kiro") {
+      settingsCreated = await this.createKiroSettingsIfNotExists(repoPath);
     }
 
     // Manage .gitignore only when opted in
@@ -243,10 +248,12 @@ export class RepoService {
     // Create instructions file if it doesn't exist (e.g., when switching tools)
     await this.createInstructionsFileIfNotExists(repoPath, tool);
 
-    // Update Claude settings only for Claude tool
+    // Update tool-specific settings
     let settingsUpdated = false;
     if (tool === "claude") {
       settingsUpdated = await this.updateClaudeSettings(repoPath);
+    } else if (tool === "kiro") {
+      settingsUpdated = await this.updateKiroSettings(repoPath);
     }
 
     // Determine gitignore management: CLI flag > marker preference > default off
@@ -363,6 +370,13 @@ Use \`swamp --help\` to see available commands.
       return `---
 description: Swamp automation rules
 alwaysApply: true
+---
+${body}`;
+    }
+
+    if (tool === "kiro") {
+      return `---
+inclusion: always
 ---
 ${body}`;
     }
@@ -513,6 +527,7 @@ ${body}`;
       ".claude/",
       ".cursor/skills/",
       ".agents/skills/",
+      ".kiro/skills/",
       "# Feel free to modify",
       "# Local telemetry",
       "# Encryption keyfile",
@@ -520,6 +535,7 @@ ${body}`;
       "# Claude Code configuration",
       "# Cursor skills",
       "# Agent skills",
+      "# Kiro skills",
       "# Swamp managed defaults",
     ];
 
@@ -663,6 +679,87 @@ ${body}`;
         ...existingSettings.permissions,
         allow: mergedAllow,
       },
+    };
+    await atomicWriteTextFile(
+      settingsPath,
+      JSON.stringify(newSettings, null, 2) + "\n",
+    );
+    return true;
+  }
+
+  /**
+   * Generates the content for Kiro's .vscode/settings.local.json.
+   */
+  private generateKiroSettingsContent(): string {
+    const settings = {
+      "kiroAgent.trustedCommands": [
+        "swamp *",
+      ],
+    };
+    return JSON.stringify(settings, null, 2) + "\n";
+  }
+
+  /**
+   * Creates .vscode/settings.local.json for Kiro if it doesn't already exist.
+   */
+  private async createKiroSettingsIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const vscodeDir = join(repoPath.value, ".vscode");
+    const settingsPath = join(vscodeDir, "settings.local.json");
+
+    try {
+      await Deno.stat(settingsPath);
+      return false;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        await ensureDir(vscodeDir);
+        const content = this.generateKiroSettingsContent();
+        await Deno.writeTextFile(settingsPath, content);
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Updates .vscode/settings.local.json for Kiro, merging trusted commands.
+   */
+  private async updateKiroSettings(repoPath: RepoPath): Promise<boolean> {
+    const vscodeDir = join(repoPath.value, ".vscode");
+    const settingsPath = join(vscodeDir, "settings.local.json");
+
+    await ensureDir(vscodeDir);
+
+    let existingSettings: Record<string, unknown> = {};
+    let settingsExisted = false;
+
+    try {
+      const content = await Deno.readTextFile(settingsPath);
+      existingSettings = JSON.parse(content);
+      settingsExisted = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    const ourCommands = ["swamp *"];
+    const existingCommands =
+      (existingSettings["kiroAgent.trustedCommands"] as string[] | undefined) ??
+        [];
+    const mergedCommands = [...new Set([...existingCommands, ...ourCommands])];
+
+    const hasChanges = mergedCommands.length !== existingCommands.length ||
+      !ourCommands.every((cmd) => existingCommands.includes(cmd));
+
+    if (!hasChanges && settingsExisted) {
+      return false;
+    }
+
+    const newSettings = {
+      ...existingSettings,
+      "kiroAgent.trustedCommands": mergedCommands,
     };
     await atomicWriteTextFile(
       settingsPath,

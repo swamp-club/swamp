@@ -33,7 +33,13 @@ import { repoIndexCommand } from "./repo_index.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-const aiToolType = new EnumType(["claude", "cursor", "opencode", "codex"]);
+const aiToolType = new EnumType([
+  "claude",
+  "cursor",
+  "opencode",
+  "codex",
+  "kiro",
+]);
 
 // Exported for reuse by repoCommand default action
 export async function repoInitAction(
@@ -78,7 +84,7 @@ export const repoInitCommand = new Command()
   .type("aiTool", aiToolType)
   .option(
     "-t, --tool <tool:aiTool>",
-    "AI coding tool to configure for (claude, cursor, opencode, codex)",
+    "AI coding tool to configure for (claude, cursor, opencode, codex, kiro)",
     { default: "claude" },
   )
   .option("--include-gitignore", "Manage a swamp section in .gitignore")
@@ -132,7 +138,7 @@ export const repoCommand = new Command()
   .type("aiTool", aiToolType)
   .option(
     "-t, --tool <tool:aiTool>",
-    "AI coding tool to configure for (claude, cursor, opencode, codex)",
+    "AI coding tool to configure for (claude, cursor, opencode, codex, kiro)",
     { default: "claude" },
   )
   .option("--include-gitignore", "Manage a swamp section in .gitignore")
@@ -147,7 +153,7 @@ export const repoCommand = new Command()
       .type("aiTool", aiToolType)
       .option(
         "-t, --tool <tool:aiTool>",
-        "AI coding tool to configure for (claude, cursor, opencode, codex)",
+        "AI coding tool to configure for (claude, cursor, opencode, codex, kiro)",
         { default: "claude" },
       )
       .option("--include-gitignore", "Manage a swamp section in .gitignore")

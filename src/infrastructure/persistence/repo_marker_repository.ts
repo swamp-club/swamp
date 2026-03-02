@@ -26,7 +26,7 @@ import { swampMarkerPath } from "./paths.ts";
 /**
  * The AI coding tool to configure skills and instructions for.
  */
-export type AiTool = "claude" | "cursor" | "opencode" | "codex";
+export type AiTool = "claude" | "cursor" | "opencode" | "codex" | "kiro";
 
 /**
  * Data structure for the .swamp.yaml marker file.
