@@ -62,6 +62,17 @@ export const extensionSearchCommand = new Command()
   )
   .option("--per-page <perPage:number>", "Results per page", { default: 20 })
   .option("--page <page:number>", "Page number", { default: 1 })
+  .example("Browse all extensions", "swamp extension search")
+  .example("Search by keyword", "swamp extension search aws")
+  .example("Filter by namespace", "swamp extension search --namespace stack72")
+  .example(
+    "Filter by platform and label",
+    "swamp extension search --platform aws --label networking",
+  )
+  .example(
+    "Sort by newest",
+    "swamp extension search --sort new",
+  )
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, [
       "extension",
