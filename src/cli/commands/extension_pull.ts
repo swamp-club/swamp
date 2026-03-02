@@ -387,7 +387,7 @@ export async function detectConflicts(
   return conflicts;
 }
 
-interface PullContext {
+export interface PullContext {
   extensionClient: ExtensionApiClient;
   logger: Logger;
   modelsDir: string;
@@ -402,7 +402,7 @@ interface PullContext {
 /**
  * Core pull logic, called recursively for dependencies.
  */
-async function pullExtension(
+export async function pullExtension(
   ref: ExtensionRef,
   ctx: PullContext,
 ): Promise<void> {

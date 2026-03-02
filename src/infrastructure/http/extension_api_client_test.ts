@@ -151,3 +151,88 @@ Deno.test("ExtensionApiClient.uploadArchive throws UserError on failure", async 
   );
   assertStringIncludes(error.message, "upload failed");
 });
+
+Deno.test("ExtensionApiClient.searchExtensions builds correct URL with params", async () => {
+  let capturedUrl = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    capturedUrl = req.url;
+    return new Response(
+      JSON.stringify({
+        extensions: [],
+        meta: { total: 0, page: 1, perPage: 20 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  await client.searchExtensions({
+    q: "aws",
+    namespace: "stack72",
+    sort: "new",
+    perPage: 10,
+    page: 2,
+  });
+  const url = new URL(capturedUrl);
+  assertEquals(url.pathname, "/api/v1/extensions/search");
+  assertEquals(url.searchParams.get("q"), "aws");
+  assertEquals(url.searchParams.get("namespace"), "stack72");
+  assertEquals(url.searchParams.get("sort"), "new");
+  assertEquals(url.searchParams.get("perPage"), "10");
+  assertEquals(url.searchParams.get("page"), "2");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.searchExtensions repeats platform and label params", async () => {
+  let capturedUrl = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    capturedUrl = req.url;
+    return new Response(
+      JSON.stringify({
+        extensions: [],
+        meta: { total: 0, page: 1, perPage: 20 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  await client.searchExtensions({
+    platform: ["aws", "docker"],
+    label: ["deploy", "infra"],
+  });
+  const url = new URL(capturedUrl);
+  assertEquals(url.searchParams.getAll("platform"), ["aws", "docker"]);
+  assertEquals(url.searchParams.getAll("label"), ["deploy", "infra"]);
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.searchExtensions sends no params when empty", async () => {
+  let capturedUrl = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    capturedUrl = req.url;
+    return new Response(
+      JSON.stringify({
+        extensions: [],
+        meta: { total: 0, page: 1, perPage: 20 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  await client.searchExtensions({});
+  const url = new URL(capturedUrl);
+  assertEquals(url.pathname, "/api/v1/extensions/search");
+  assertEquals(url.search, "");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.searchExtensions throws UserError on connection failure", async () => {
+  const client = new ExtensionApiClient("http://localhost:1");
+  const error = await assertRejects(
+    () => client.searchExtensions({ q: "test" }),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Could not connect");
+});

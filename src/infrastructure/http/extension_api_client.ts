@@ -49,17 +49,44 @@ export interface LatestVersionInfo {
   publishedAt: string;
 }
 
-/** Extension search result. */
-export interface ExtensionSearchResult {
-  extensions: ExtensionInfo[];
-  total: number;
-}
-
 /** Extension metadata. */
 export interface ExtensionInfo {
   name: string;
   description: string;
   latestVersion: string;
+}
+
+/** Parameters for the extension search endpoint. */
+export interface ExtensionSearchParams {
+  q?: string;
+  namespace?: string;
+  platform?: string[];
+  label?: string[];
+  sort?: "relevance" | "new" | "updated" | "name";
+  perPage?: number;
+  page?: number;
+}
+
+/** A single extension entry in search results. */
+export interface ExtensionSearchEntry {
+  id: string;
+  name: string;
+  description: string;
+  platforms: string[];
+  labels: string[];
+  latestVersion: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Response from the extension search endpoint. */
+export interface ExtensionSearchResponse {
+  extensions: ExtensionSearchEntry[];
+  meta: {
+    total: number;
+    page: number;
+    perPage: number;
+  };
 }
 
 /**
@@ -185,19 +212,24 @@ export class ExtensionApiClient {
   }
 
   /**
-   * Search extensions by pattern.
+   * Search extensions using the structured search endpoint.
    */
-  async search(
-    pattern?: string,
-    limit?: number,
-    offset?: number,
-  ): Promise<ExtensionSearchResult> {
-    const params = new URLSearchParams();
-    if (pattern) params.set("pattern", pattern);
-    if (limit !== undefined) params.set("limit", String(limit));
-    if (offset !== undefined) params.set("offset", String(offset));
-    const query = params.toString();
-    const path = `/api/v1/extensions/${query ? `?${query}` : ""}`;
+  async searchExtensions(
+    params: ExtensionSearchParams,
+  ): Promise<ExtensionSearchResponse> {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.namespace) qs.set("namespace", params.namespace);
+    if (params.sort) qs.set("sort", params.sort);
+    if (params.perPage !== undefined) {
+      qs.set("perPage", String(params.perPage));
+    }
+    if (params.page !== undefined) qs.set("page", String(params.page));
+    for (const p of params.platform ?? []) qs.append("platform", p);
+    for (const l of params.label ?? []) qs.append("label", l);
+
+    const query = qs.toString();
+    const path = `/api/v1/extensions/search${query ? `?${query}` : ""}`;
 
     const res = await this.fetch(path, { method: "GET" });
     await this.checkResponse(res);
