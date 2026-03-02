@@ -994,8 +994,11 @@ ${body}`;
 
   /**
    * Generates the content for Kiro's .kiro/hooks/swamp-audit.json.
+   * Uses the absolute path to the swamp binary because kiro-cli does not
+   * perform PATH resolution when executing hook commands.
    */
   private generateKiroHookContent(): string {
+    const swampBin = this.resolveSwampBinaryPath();
     const hook = {
       name: "Swamp Audit",
       description: "Records agent tool usage for swamp audit tracking",
@@ -1003,10 +1006,32 @@ ${body}`;
       when: { type: "postToolUse" },
       then: {
         type: "runCommand",
-        command: "swamp audit record --from-hook --tool kiro",
+        command: `${swampBin} audit record --from-hook --tool kiro`,
       },
     };
     return JSON.stringify(hook, null, 2) + "\n";
+  }
+
+  /**
+   * Resolves the absolute path to the swamp binary.
+   * Falls back to bare "swamp" if resolution fails.
+   */
+  private resolveSwampBinaryPath(): string {
+    try {
+      const cmd = new Deno.Command("which", {
+        args: ["swamp"],
+        stdout: "piped",
+        stderr: "null",
+      });
+      const { success, stdout } = cmd.outputSync();
+      if (success) {
+        const path = new TextDecoder().decode(stdout).trim();
+        if (path) return path;
+      }
+    } catch {
+      // which not available or failed
+    }
+    return "swamp";
   }
 
   /**
