@@ -36,6 +36,7 @@ import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_wri
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
+import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   renderExtensionPull,
   renderExtensionPullCancelled,
@@ -45,7 +46,6 @@ import {
   renderExtensionPullPlatforms,
   renderExtensionPullRepository,
   renderExtensionPullResolved,
-  renderExtensionPullSafetyErrors,
   renderExtensionPullSafetyWarnings,
 } from "../../presentation/output/extension_pull_output.ts";
 
@@ -64,9 +64,48 @@ const LOCK_RETRY_COUNT = 10;
 const LOCK_RETRY_DELAY_MS = 100;
 
 /** Parsed extension reference from CLI argument. */
-interface ExtensionRef {
+export interface ExtensionRef {
   name: string;
   version: string | null;
+}
+
+/** Result of installing a single extension (no rendering). */
+export interface InstallResult {
+  name: string;
+  version: string;
+  description: string | undefined;
+  extractedFiles: string[];
+  integrityStatus: "verified" | "unverified";
+  repository: string | undefined;
+  platforms: string[];
+  safetyWarnings: SafetyIssue[];
+  conflicts: string[];
+  dependencyResults: InstallResult[];
+}
+
+/** Context for the headless install function. */
+export interface InstallContext {
+  extensionClient: ExtensionApiClient;
+  logger: Logger;
+  modelsDir: string;
+  workflowsDir: string;
+  repoDir: string;
+  force: boolean;
+  alreadyPulled: Set<string>;
+  depth: number;
+}
+
+/** Thrown when file conflicts are detected and force is false. */
+export class ConflictError extends UserError {
+  conflicts: string[];
+  constructor(conflicts: string[]) {
+    super(
+      `The following files already exist and would be overwritten:\n${
+        conflicts.map((c) => `  ${c}`).join("\n")
+      }\nUse --force to overwrite.`,
+    );
+    this.conflicts = conflicts;
+  }
 }
 
 /** Entry in upstream_extensions.json. */
@@ -400,17 +439,20 @@ export interface PullContext {
 }
 
 /**
- * Core pull logic, called recursively for dependencies.
+ * Core install logic: download, verify, extract, copy, track.
+ * No rendering — returns structured data for callers to present.
+ * Throws ConflictError when !force and conflicts exist.
+ * Recursively installs dependencies.
  */
-export async function pullExtension(
+export async function installExtension(
   ref: ExtensionRef,
-  ctx: PullContext,
-): Promise<void> {
-  const { extensionClient, logger, modelsDir, repoDir, outputMode } = ctx;
+  ctx: InstallContext,
+): Promise<InstallResult | undefined> {
+  const { extensionClient, logger, modelsDir, repoDir } = ctx;
 
   // Guard against circular deps
   if (ctx.alreadyPulled.has(ref.name)) {
-    return;
+    return undefined;
   }
 
   if (ctx.depth > MAX_DEPENDENCY_DEPTH) {
@@ -437,15 +479,6 @@ export async function pullExtension(
     );
   }
 
-  renderExtensionPullResolved(
-    {
-      name: ref.name,
-      version,
-      description: extInfo.description,
-    },
-    outputMode,
-  );
-
   // Download archive
   const archiveBytes = await extensionClient.downloadArchive(
     ref.name,
@@ -455,17 +488,12 @@ export async function pullExtension(
   // Verify integrity
   const serverChecksum = await extensionClient.getChecksum(ref.name, version);
   const localChecksum = await computeChecksum(archiveBytes);
+  let integrityStatus: "verified" | "unverified";
   if (serverChecksum !== null) {
     verifyChecksum(serverChecksum, localChecksum);
-    renderExtensionPullIntegrity(
-      { name: ref.name, version, status: "verified" },
-      outputMode,
-    );
+    integrityStatus = "verified";
   } else {
-    renderExtensionPullIntegrity(
-      { name: ref.name, version, status: "unverified" },
-      outputMode,
-    );
+    integrityStatus = "unverified";
   }
 
   // Extract to temp dir
@@ -510,15 +538,8 @@ export async function pullExtension(
     }
     const manifest = parseExtensionManifest(manifestContent);
 
-    if (manifest.repository) {
-      renderExtensionPullRepository(manifest.repository, outputMode);
-    }
-
-    if (manifest.platforms.length > 0) {
-      renderExtensionPullPlatforms(manifest.platforms, outputMode);
-    }
-
     // Safety analysis on .ts files
+    const safetyWarnings: SafetyIssue[] = [];
     const tsFiles = (await listFiles(join(extractDir, "models"))).filter((f) =>
       f.endsWith(".ts")
     );
@@ -526,15 +547,16 @@ export async function pullExtension(
       const safetyResult = await analyzeExtensionSafety(tsFiles);
 
       if (safetyResult.errors.length > 0) {
-        renderExtensionPullSafetyErrors(safetyResult.errors, outputMode);
         throw new UserError(
-          "Extension has safety errors. Pull aborted.",
+          `Extension has safety errors. Install aborted.\n${
+            safetyResult.errors.map((e) => `  ${e.file}: ${e.message}`).join(
+              "\n",
+            )
+          }`,
         );
       }
 
-      if (safetyResult.warnings.length > 0) {
-        renderExtensionPullSafetyWarnings(safetyResult.warnings, outputMode);
-      }
+      safetyWarnings.push(...safetyResult.warnings);
     }
 
     // Detect file conflicts
@@ -551,19 +573,7 @@ export async function pullExtension(
     );
 
     if (conflicts.length > 0 && !ctx.force) {
-      renderExtensionPullConflicts(conflicts, outputMode);
-      if (outputMode === "json") {
-        throw new UserError(
-          "Files already exist. Use --force to overwrite.",
-        );
-      }
-      const confirmed = await promptConfirmation(
-        "Overwrite existing files?",
-      );
-      if (!confirmed) {
-        renderExtensionPullCancelled(outputMode);
-        return;
-      }
+      throw new ConflictError(conflicts);
     }
 
     // Copy files to their destinations
@@ -611,13 +621,8 @@ export async function pullExtension(
       extractedFiles,
     );
 
-    // Render success
-    renderExtensionPull(
-      { name: ref.name, version, extractedFiles },
-      outputMode,
-    );
-
-    // Pull dependencies recursively
+    // Install dependencies recursively
+    const dependencyResults: InstallResult[] = [];
     if (manifest.dependencies.length > 0) {
       for (const dep of manifest.dependencies) {
         // Check if already pulled in this session or already installed
@@ -645,19 +650,143 @@ export async function pullExtension(
 
         if (!isInstalled) {
           const depRef = parseExtensionRef(dep);
-          renderExtensionPullDependencyPull(dep, "latest", outputMode);
-          await pullExtension(depRef, {
+          const depResult = await installExtension(depRef, {
             ...ctx,
             depth: ctx.depth + 1,
           });
+          if (depResult) {
+            dependencyResults.push(depResult);
+          }
         }
       }
     }
+
+    return {
+      name: ref.name,
+      version,
+      description: extInfo.description,
+      extractedFiles,
+      integrityStatus,
+      repository: manifest.repository,
+      platforms: manifest.platforms,
+      safetyWarnings,
+      conflicts,
+      dependencyResults,
+    };
   } finally {
     try {
       await Deno.remove(tmpDir, { recursive: true });
     } catch {
       // Best-effort cleanup
+    }
+  }
+}
+
+/**
+ * Renders an InstallResult and its dependency tree using pull output functions.
+ */
+function renderInstallResult(
+  result: InstallResult,
+  outputMode: "log" | "json",
+): void {
+  renderExtensionPullResolved(
+    {
+      name: result.name,
+      version: result.version,
+      description: result.description,
+    },
+    outputMode,
+  );
+
+  renderExtensionPullIntegrity(
+    {
+      name: result.name,
+      version: result.version,
+      status: result.integrityStatus,
+    },
+    outputMode,
+  );
+
+  if (result.repository) {
+    renderExtensionPullRepository(result.repository, outputMode);
+  }
+
+  if (result.platforms.length > 0) {
+    renderExtensionPullPlatforms(result.platforms, outputMode);
+  }
+
+  if (result.safetyWarnings.length > 0) {
+    renderExtensionPullSafetyWarnings(result.safetyWarnings, outputMode);
+  }
+
+  renderExtensionPull(
+    {
+      name: result.name,
+      version: result.version,
+      extractedFiles: result.extractedFiles,
+    },
+    outputMode,
+  );
+
+  for (const depResult of result.dependencyResults) {
+    renderExtensionPullDependencyPull(
+      depResult.name,
+      depResult.version,
+      outputMode,
+    );
+    renderInstallResult(depResult, outputMode);
+  }
+}
+
+/**
+ * Pull command wrapper: calls installExtension and handles rendering + conflict prompts.
+ */
+export async function pullExtension(
+  ref: ExtensionRef,
+  ctx: PullContext,
+): Promise<void> {
+  const { outputMode } = ctx;
+  const installCtx: InstallContext = {
+    extensionClient: ctx.extensionClient,
+    logger: ctx.logger,
+    modelsDir: ctx.modelsDir,
+    workflowsDir: ctx.workflowsDir,
+    repoDir: ctx.repoDir,
+    force: ctx.force,
+    alreadyPulled: ctx.alreadyPulled,
+    depth: ctx.depth,
+  };
+
+  try {
+    const result = await installExtension(ref, installCtx);
+    if (result) {
+      renderInstallResult(result, outputMode);
+    }
+  } catch (error) {
+    if (error instanceof ConflictError) {
+      renderExtensionPullConflicts(error.conflicts, outputMode);
+      if (outputMode === "json") {
+        throw new UserError(
+          "Files already exist. Use --force to overwrite.",
+        );
+      }
+      const confirmed = await promptConfirmation(
+        "Overwrite existing files?",
+      );
+      if (!confirmed) {
+        renderExtensionPullCancelled(outputMode);
+        return;
+      }
+      // Retry with force
+      installCtx.force = true;
+      // Reset alreadyPulled so the extension can be retried
+      installCtx.alreadyPulled.delete(ref.name);
+      const result = await installExtension(ref, installCtx);
+      if (result) {
+        renderInstallResult(result, outputMode);
+      }
+    } else {
+      throw error;
     }
   }
 }

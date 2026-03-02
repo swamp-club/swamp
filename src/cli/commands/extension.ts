@@ -23,6 +23,7 @@ import { extensionPullCommand } from "./extension_pull.ts";
 import { extensionRemoveCommand } from "./extension_rm.ts";
 import { extensionListCommand } from "./extension_list.ts";
 import { extensionSearchCommand } from "./extension_search.ts";
+import { extensionUpdateCommand } from "./extension_update.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const extensionCommand = new Command()
@@ -36,4 +37,5 @@ export const extensionCommand = new Command()
   .command("pull", extensionPullCommand)
   .command("rm", extensionRemoveCommand)
   .command("list", extensionListCommand)
-  .command("search", extensionSearchCommand);
+  .command("search", extensionSearchCommand)
+  .command("update", extensionUpdateCommand);
