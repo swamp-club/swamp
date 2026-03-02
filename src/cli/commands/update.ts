@@ -24,6 +24,7 @@ import { Platform } from "../../domain/update/platform.ts";
 import { UpdateService } from "../../domain/update/update_service.ts";
 import { HttpUpdateChecker } from "../../infrastructure/update/http_update_checker.ts";
 import { renderUpdateResult } from "../../presentation/output/update_output.ts";
+import { Spinner } from "../../presentation/spinner.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -42,11 +43,25 @@ export const updateCommand = new Command()
     const binaryPath = Deno.execPath();
     const service = new UpdateService(checker, VERSION, binaryPath);
 
-    const result = options.check
-      ? await service.check(platform)
-      : await service.update(platform);
+    const spinner = ctx.outputMode !== "json" ? new Spinner() : null;
 
-    renderUpdateResult(result, ctx.outputMode);
+    try {
+      const message = options.check
+        ? "Checking for updates..."
+        : "Updating swamp...";
+      spinner?.start(message);
+
+      const result = options.check
+        ? await service.check(platform)
+        : await service.update(platform);
+
+      spinner?.stop();
+
+      renderUpdateResult(result, ctx.outputMode);
+    } catch (err) {
+      spinner?.stop();
+      throw err;
+    }
 
     ctx.logger.debug("Update command completed");
   });
