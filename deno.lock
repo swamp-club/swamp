@@ -5,6 +5,7 @@
     "jsr:@cliffy/flags@1.0.0": "1.0.0",
     "jsr:@cliffy/internal@1.0.0": "1.0.0",
     "jsr:@cliffy/table@1.0.0": "1.0.0",
+    "jsr:@logtape/logtape@2.0.2": "2.0.2",
     "jsr:@logtape/logtape@^2.0.2": "2.0.2",
     "jsr:@logtape/pretty@^2.0.2": "2.0.2",
     "jsr:@std/assert@^1.0.18": "1.0.18",
@@ -22,6 +23,7 @@
     "npm:@azure/identity@^4.8.0": "4.13.0",
     "npm:@azure/keyvault-secrets@^4.9.0": "4.10.0_@azure+core-rest-pipeline@1.22.2",
     "npm:@kubernetes/client-node@*": "1.4.0_ws@8.19.0",
+    "npm:@logtape/pretty@*": "2.0.4_@logtape+logtape@2.0.4",
     "npm:@marcbachmann/cel-js@7.5.1": "7.5.1",
     "npm:@types/node@24.0.7": "24.0.7",
     "npm:@types/react@^18.3.28": "18.3.28",
@@ -69,7 +71,7 @@
     "@logtape/pretty@2.0.2": {
       "integrity": "5addabab67f654f4aa828bdd88e611c8bf76f91a038cb72c01857708066896f0",
       "dependencies": [
-        "jsr:@logtape/logtape",
+        "jsr:@logtape/logtape@^2.0.2",
         "npm:@types/node"
       ]
     },
@@ -761,6 +763,15 @@
         "stream-buffers",
         "tar-fs",
         "ws"
+      ]
+    },
+    "@logtape/logtape@2.0.4": {
+      "integrity": "sha512-Z4COeAMdedcBFuFkXaPFvDPOVuHoEom1hwNnPCIkSyojyikuNguplwPoSG+kZthWrS7GiOJo1USQyjWwIFfTKA=="
+    },
+    "@logtape/pretty@2.0.4_@logtape+logtape@2.0.4": {
+      "integrity": "sha512-y1nubV70avD9Gx8Q3gcWBlVUsVwpaBdHUntrkkpXIrC/UPRoHuWnBo+FNrtyvgjCEHSbKuxIaOgsE8rxTPEhzg==",
+      "dependencies": [
+        "@logtape/logtape"
       ]
     },
     "@marcbachmann/cel-js@7.5.1": {
