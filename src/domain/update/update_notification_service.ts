@@ -72,7 +72,11 @@ export class UpdateNotificationService {
     // Check if the current version is very old
     const now = new Date();
     if (
-      isVersionStale(this.currentVersion, now, VERSION_STALENESS_THRESHOLD_DAYS)
+      isVersionStale(
+        this.currentVersion,
+        now,
+        VERSION_STALENESS_THRESHOLD_DAYS,
+      )
     ) {
       const ageDays = getVersionAgeDays(this.currentVersion, now);
       if (ageDays !== null) {
