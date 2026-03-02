@@ -406,6 +406,19 @@ If no model is specified interactively, shows a search interface.
 Editor selection: Uses $EDITOR if set, otherwise falls back to: vscode, zed,
 nvim, vim, nano, emacs.
 
+### model method describe <model_id_or_name> <method_name>
+
+Describes a specific method on an instantiated model, showing the method's
+description, typed arguments with required/optional status, and data output
+specifications. Uses metadata already present in the model type definition
+(method descriptions, Zod argument schemas with `.describe()`).
+
+In log mode, outputs a human-readable summary with the model name, type,
+version, method description, arguments table, and data output specs.
+
+When specifying json, it should have the same content as structured JSON,
+including the full JSON Schema for the method's arguments.
+
 ### model method run <model_id_or_name> <method_name>
 
 Runs a method for the given model.
