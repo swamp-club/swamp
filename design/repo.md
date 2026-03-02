@@ -3,7 +3,7 @@
 A swamp repo contains all of the models and code for automating tasks with
 swamp.
 
-Swamp repo's can be initalized, where the needed directories, and the swamp-*
+Swamp repo's can be initalized, where the needed directories, and the swamp-\*
 skills will be copied in.
 
 They can be upgraded, where the skills and anything else that is needed can move
@@ -61,26 +61,6 @@ attributes to control the behaviour of the swamp operations.
 - `vaults`: The swamp vault key specifies stores where sensitive data can be
   sent to and retrieved from when evaluating and running workflow steps.
   Multitple vaults can be specified for a each swamp repository.
-
-## CLI Commands
-
-### repo init <path>
-
-Initalizes a new swamp repo, and defaults to the current working directory if no
-path is provided.
-
-Writes the swamp version to the marker file.
-
-### repo upgrade <path>
-
-Should pull the new skills into the repo from the swamp binary and update the
-files in the repository.
-
-### repo index
-
-Should update the logical views through the same mechanism the entity
-repositories use. This is the equivalent of "event replay" - it rebuilds all
-read models (logical views) by scanning the data directory.
 
 ## RepoIndexService
 

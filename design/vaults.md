@@ -388,12 +388,12 @@ config:
 
 Secret keys are mapped to `op://` URIs:
 
-| Expression | Maps to | Notes |
-| --- | --- | --- |
-| `vault.get(my-1p, api-key)` | `op read op://Engineering/api-key/password` | Default field: `password` |
-| `vault.get(my-1p, api-key/token)` | `op read op://Engineering/api-key/token` | Explicit field |
-| `vault.get(my-1p, db/connection/host)` | `op read op://Engineering/db/connection/host` | Section + field |
-| `vault.get(my-1p, op://Shared/cert/pem)` | `op read op://Shared/cert/pem` | Full `op://` override |
+| Expression                               | Maps to                                       | Notes                     |
+| ---------------------------------------- | --------------------------------------------- | ------------------------- |
+| `vault.get(my-1p, api-key)`              | `op read op://Engineering/api-key/password`   | Default field: `password` |
+| `vault.get(my-1p, api-key/token)`        | `op read op://Engineering/api-key/token`      | Explicit field            |
+| `vault.get(my-1p, db/connection/host)`   | `op read op://Engineering/db/connection/host` | Section + field           |
+| `vault.get(my-1p, op://Shared/cert/pem)` | `op read op://Shared/cert/pem`                | Full `op://` override     |
 
 ### Usage Examples
 
@@ -472,47 +472,3 @@ All errors include:
 - Vault name and key information (when safe to expose)
 - Suggested resolution steps
 - Reference to relevant documentation sections
-
-## CLI Commands
-
-### vault type search
-
-Should work similarly to swamp type search - it uses fzf to search across all
-the available vault types. Should produce json output or use interactive fuzzy
-search.
-
-### vault create <type> <name>
-
-This will create a new vault of the specified type with the given name.
-
-### vault search
-
-Should work similarly to swamp vault type search - it uses fzf to search across
-all the initialised vaults in the current repository. Should produce json output
-or use interactive fuzzy search.
-
-### vault get <model_id_or_name>
-
-Shows the entire details of the vault configuration.
-
-when specifying json, it should have the same content.
-
-### vault edit [model_id_or_name]
-
-Opens the vault config file in the user's preferred editor.
-
-If no vault is specified interactively, shows a search interface.
-
-Editor selection: Uses $EDITOR if set, otherwise falls back to: vscode, zed,
-nvim, vim, nano, emacs.
-
-### vault put <vault_name> KEY=VALUE
-
-Stores a secret in the vault using the CLI. This will error if there's no vault
-for that name. It prompts the user if they want to overwrite an existing secret
-if it exists.
-
-### vault list-keys <vault_name>
-
-Lists all secret key names in the vault. This does NOT return any values, only
-the key names.

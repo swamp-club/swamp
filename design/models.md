@@ -297,16 +297,16 @@ execute: async (args, context) => {
 
 Lightweight reference to data already persisted:
 
-| Field      | Description                              |
-| ---------- | ---------------------------------------- |
-| `name`     | Data artifact name                       |
+| Field      | Description                               |
+| ---------- | ----------------------------------------- |
+| `name`     | Data artifact name                        |
 | `specName` | The spec name from `resources` or `files` |
-| `kind`     | `"resource"` or `"file"`                 |
-| `dataId`   | Unique ID for this data                  |
-| `version`  | Version number of this write             |
-| `size`     | Size of the written content in bytes     |
-| `tags`     | Tags from the writer options             |
-| `metadata` | Full metadata for the data artifact      |
+| `kind`     | `"resource"` or `"file"`                  |
+| `dataId`   | Unique ID for this data                   |
+| `version`  | Version number of this write              |
+| `size`     | Size of the written content in bytes      |
+| `tags`     | Tags from the writer options              |
+| `metadata` | Full metadata for the data artifact       |
 
 ## Output
 
@@ -347,78 +347,3 @@ The ModelRepository emits domain events when model data changes:
 The RepoIndexService subscribes to these events and updates the logical views
 accordingly, ensuring the `/models/` view stays synchronized with the data
 directory.
-
-## CLI Commands
-
-### model type describe <type>
-
-This command describes the model as a markdown document, will all of its
-details, using code blocks as neccessary. it should syntax highlight the
-markdown.
-
-when specifying json, it should have the same content.
-
-### model type search <string>
-
-When run interactively, it should show a text box that says "type to search",
-and then use the npm:fzf package to search the list of available types (by
-either normalized type or actual type name). Then the user can use the arrow
-keys to select the type they want, and the result will be the same as type
-describe.
-
-When run non-interactively, it should produce a json output that has the list.
-
-### model create <type> <name>
-
-Creates a new instance of a type with the given unique name. Type should accept
-either the domain specific type or the normalized type. It should return the id
-and path to the model that is created.
-
-### model search <string>
-
-When run interactively, it should show a text box that says "type to search",
-and then use the npm:fzf package to search the list of available models (by
-either normalized type or actual type name). Then the user can use the arrow
-keys to select the type they want, and the result will be the same as type
-describe.
-
-When run non-interactively, it should produce a json output that has the list.
-
-### model get <model_id_or_name>
-
-Shows the entire details of the model. It should not include the type schema or
-the methods.
-
-when specifying json, it should have the same content.
-
-### model validate <model_id_or_name>
-
-Runs the models zod validations for the models inputs and resources. Run them in
-parallel and print the output as it comes.
-
-### model edit [model_id_or_name]
-
-Opens the model input file in the user's preferred editor. Use `--resource` to
-edit the resource file instead.
-
-If no model is specified interactively, shows a search interface.
-
-Editor selection: Uses $EDITOR if set, otherwise falls back to: vscode, zed,
-nvim, vim, nano, emacs.
-
-### model method describe <model_id_or_name> <method_name>
-
-Describes a specific method on an instantiated model, showing the method's
-description, typed arguments with required/optional status, and data output
-specifications. Uses metadata already present in the model type definition
-(method descriptions, Zod argument schemas with `.describe()`).
-
-In log mode, outputs a human-readable summary with the model name, type,
-version, method description, arguments table, and data output specs.
-
-When specifying json, it should have the same content as structured JSON,
-including the full JSON Schema for the method's arguments.
-
-### model method run <model_id_or_name> <method_name>
-
-Runs a method for the given model.
