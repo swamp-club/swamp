@@ -696,7 +696,7 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to codex", async
   });
 });
 
-Deno.test("RepoService.upgrade does not overwrite existing instructions file", async () => {
+Deno.test("RepoService.upgrade overwrites instructions file with managed content", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -704,18 +704,35 @@ Deno.test("RepoService.upgrade does not overwrite existing instructions file", a
     // Init with claude
     await service.init(repoPath);
 
-    // Create custom AGENTS.md before switching
-    const instructionsPath = join(tempDir, "AGENTS.md");
-    const customContent = "# My Custom Instructions\nDo not overwrite me!";
-    await Deno.writeTextFile(instructionsPath, customContent);
+    // Write stale content to the instructions file
+    const instructionsPath = join(tempDir, "CLAUDE.md");
+    await Deno.writeTextFile(instructionsPath, "# Old content");
 
-    // Upgrade with tool switch to codex
+    // Upgrade — should overwrite with current template
     const upgradeService = new RepoService("0.2.0");
-    await upgradeService.upgrade(repoPath, { tool: "codex" });
+    const result = await upgradeService.upgrade(repoPath);
 
-    // Verify AGENTS.md was NOT overwritten
+    assertEquals(result.instructionsUpdated, true);
+
     const content = await Deno.readTextFile(instructionsPath);
-    assertEquals(content, customContent);
+    assertStringIncludes(content, "# Project");
+    assertStringIncludes(content, "swamp");
+  });
+});
+
+Deno.test("RepoService.upgrade returns instructionsUpdated false when content is current", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with claude — instructions file is created with current template
+    await service.init(repoPath);
+
+    // Upgrade with same version — instructions content hasn't changed
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, false);
   });
 });
 

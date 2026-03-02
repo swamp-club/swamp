@@ -28,3 +28,11 @@ export class UserError extends Error {
     this.name = "UserError";
   }
 }
+
+/**
+ * Exhaustiveness check for switch statements.
+ * TypeScript will error at compile time if a case is missing.
+ */
+export function assertNever(value: never): never {
+  throw new Error(`Unexpected value: ${value}`);
+}

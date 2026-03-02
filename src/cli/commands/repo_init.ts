@@ -121,6 +121,7 @@ export const repoUpgradeCommand = new Command()
       newVersion: result.newVersion,
       upgradedAt: result.upgradedAt,
       skillsUpdated: result.skillsUpdated,
+      instructionsUpdated: result.instructionsUpdated,
       settingsUpdated: result.settingsUpdated,
       gitignoreAction: result.gitignoreAction,
       tool: result.tool,
