@@ -211,7 +211,7 @@ Deno.test("backgroundCheck skips when cache is fresh", async () => {
   assertEquals(cacheRepo.written, null);
 });
 
-Deno.test("backgroundCheck silently ignores errors", async () => {
+Deno.test("backgroundCheck writes cache with current version on network error", async () => {
   const cacheRepo = createMockCacheRepo(null);
   const checker: UpdateChecker = {
     checkForUpdate(): Promise<string | null> {
@@ -232,14 +232,18 @@ Deno.test("backgroundCheck silently ignores errors", async () => {
     checker,
   );
 
-  // Should not throw
+  // Should not throw, and should still write cache to respect 24h cooldown
   service.backgroundCheck(platform);
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  assertEquals(cacheRepo.written, null);
+  assertEquals(
+    cacheRepo.written?.latestVersion,
+    "20260228.200442.0-sha.abc123",
+  );
+  assertEquals(typeof cacheRepo.written?.checkedAt, "string");
 });
 
-Deno.test("backgroundCheck skips when redirect has no parseable version", async () => {
+Deno.test("backgroundCheck writes cache with current version when redirect has no parseable version", async () => {
   const cacheRepo = createMockCacheRepo(null);
   const checker = createMockChecker("https://example.com/no-version-here");
   const platform = Platform.from("darwin", "aarch64");
@@ -253,5 +257,9 @@ Deno.test("backgroundCheck skips when redirect has no parseable version", async 
   service.backgroundCheck(platform);
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  assertEquals(cacheRepo.written, null);
+  assertEquals(
+    cacheRepo.written?.latestVersion,
+    "20260228.200442.0-sha.abc123",
+  );
+  assertEquals(typeof cacheRepo.written?.checkedAt, "string");
 });

@@ -108,14 +108,21 @@ export class UpdateNotificationService {
 
       if (!isCacheStale(cache, now)) return;
 
-      const redirectUrl = await this.checker.checkForUpdate(platform);
-      if (!redirectUrl) return;
-
-      const latestVersion = parseVersionFromRedirectUrl(redirectUrl);
-      if (!latestVersion) return;
+      let latestVersion: string | undefined;
+      try {
+        const redirectUrl = await this.checker.checkForUpdate(platform);
+        if (redirectUrl) {
+          latestVersion = parseVersionFromRedirectUrl(redirectUrl) ??
+            undefined;
+        }
+      } catch {
+        // Network failure — fall through to write a timestamp-only cache
+        // entry so we respect the 24h cooldown even when offline.
+      }
 
       await this.cacheRepository.write({
-        latestVersion,
+        latestVersion: latestVersion ?? cache?.latestVersion ??
+          this.currentVersion,
         checkedAt: now.toISOString(),
       });
     })().catch(() => {
