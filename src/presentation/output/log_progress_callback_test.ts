@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { createLogProgressCallback } from "./log_progress_callback.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -97,4 +98,131 @@ Deno.test("createLogProgressCallback lifecycle callbacks do not throw", () => {
   run.start();
   run.complete();
   callback.onWorkflowComplete?.(run);
+});
+
+// Helper: configure LogTape to capture records, run fn, then reset.
+async function withLogCapture(
+  fn: (records: LogRecord[]) => void,
+): Promise<void> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: {
+      test: (record: LogRecord) => {
+        records.push(record);
+      },
+    },
+    loggers: [
+      {
+        category: ["workflow", "run"],
+        lowestLevel: "debug",
+        sinks: ["test"],
+      },
+    ],
+    reset: true,
+  });
+  try {
+    fn(records);
+  } finally {
+    await configure({ sinks: {}, loggers: [], reset: true });
+  }
+}
+
+Deno.test("onWorkflowComplete logs data commands for successful run with artifacts", async () => {
+  await withLogCapture((records) => {
+    const callback = createLogProgressCallback("test-workflow");
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+
+    // Add data artifacts to the step
+    const step = run.getJob("test-job")!.getStep("test-step")!;
+    step.addDataArtifact({
+      dataId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      name: "my-data",
+      version: 1,
+      tags: {},
+    });
+
+    run.start();
+    run.complete();
+    callback.onWorkflowComplete?.(run);
+
+    const messages = records.map((r) => r.rawMessage);
+    assertEquals(messages.includes("View produced data:"), true);
+    assertEquals(
+      messages.includes(
+        "  swamp data list --workflow {workflowName}",
+      ),
+      true,
+    );
+    assertEquals(
+      messages.includes(
+        "  swamp data get --workflow {workflowName} {artifactName}",
+      ),
+      true,
+    );
+
+    // Verify the artifact name was passed as a property
+    const getRecord = records.find(
+      (r) =>
+        r.rawMessage ===
+          "  swamp data get --workflow {workflowName} {artifactName}",
+    );
+    assertEquals(getRecord?.properties.artifactName, "my-data");
+    assertEquals(getRecord?.properties.workflowName, "test-workflow");
+  });
+});
+
+Deno.test("onWorkflowComplete does not log data commands for failed run", async () => {
+  await withLogCapture((records) => {
+    const callback = createLogProgressCallback("test-workflow");
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+
+    // Add data artifacts to the step
+    const step = run.getJob("test-job")!.getStep("test-step")!;
+    step.addDataArtifact({
+      dataId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      name: "my-data",
+      version: 1,
+      tags: {},
+    });
+
+    // Force a failed run
+    run.start();
+    run.getJob("test-job")!.start();
+    run.getJob("test-job")!.fail();
+    run.complete();
+    callback.onWorkflowComplete?.(run);
+
+    const messages = records.map((r) => r.rawMessage);
+    assertEquals(messages.includes("View produced data:"), false);
+    assertEquals(
+      messages.includes(
+        "  swamp data get --workflow {workflowName} {artifactName}",
+      ),
+      false,
+    );
+  });
+});
+
+Deno.test("onWorkflowComplete does not log data commands when no artifacts exist", async () => {
+  await withLogCapture((records) => {
+    const callback = createLogProgressCallback("test-workflow");
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+
+    // No data artifacts added
+    run.start();
+    run.complete();
+    callback.onWorkflowComplete?.(run);
+
+    const messages = records.map((r) => r.rawMessage);
+    assertEquals(messages.includes("View produced data:"), false);
+    assertEquals(
+      messages.includes(
+        "  swamp data list --workflow {workflowName}",
+      ),
+      false,
+    );
+  });
 });

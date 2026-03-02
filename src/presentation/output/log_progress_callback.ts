@@ -97,6 +97,31 @@ export function createLogProgressCallback(
         wfLogger.with({ summary: true }).info("Workflow {status}", {
           status: run.status,
         });
+
+        // Collect unique data artifact names across all steps
+        const artifactNames = new Set<string>();
+        for (const job of run.jobs) {
+          for (const step of job.steps) {
+            for (const artifact of step.dataArtifacts) {
+              artifactNames.add(artifact.name);
+            }
+          }
+        }
+
+        if (artifactNames.size > 0) {
+          wfLogger.info("");
+          wfLogger.info("View produced data:");
+          wfLogger.info(
+            "  swamp data list --workflow {workflowName}",
+            { workflowName },
+          );
+          for (const name of artifactNames) {
+            wfLogger.info(
+              "  swamp data get --workflow {workflowName} {artifactName}",
+              { workflowName, artifactName: name },
+            );
+          }
+        }
       }
     },
   };
