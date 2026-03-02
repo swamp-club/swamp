@@ -274,6 +274,57 @@ Deno.test("renderExtensionSearch with json mode outputs valid JSON", () => {
   }
 });
 
+Deno.test("renderExtensionSearch with json mode omits empty platforms and labels", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  const data: ExtensionSearchData = {
+    extensions: [{
+      name: "@keeb/terraria",
+      description: "Terraria server control via Docker tmux",
+      latestVersion: "2026.02.27.1",
+      platforms: [],
+      labels: [],
+      createdAt: "2026-02-27T17:06:27.544Z",
+      updatedAt: "2026-02-27T17:06:27.544Z",
+    }],
+    meta: { total: 1, page: 1, perPage: 20 },
+  };
+
+  try {
+    renderExtensionSearch(data, "json");
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.extensions[0].name, "@keeb/terraria");
+    assertEquals(parsed.extensions[0].platforms, undefined);
+    assertEquals(parsed.extensions[0].labels, undefined);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderExtensionSearch with json mode keeps non-empty platforms and labels", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  const data: ExtensionSearchData = {
+    extensions: [testExtensions[0]],
+    meta: { total: 1, page: 1, perPage: 20 },
+  };
+
+  try {
+    renderExtensionSearch(data, "json");
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.extensions[0].platforms, ["aws"]);
+    assertEquals(parsed.extensions[0].labels, ["networking", "infrastructure"]);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("renderExtensionSearch with json mode includes meta", () => {
   const logs: string[] = [];
   const originalLog = console.log;

@@ -75,7 +75,18 @@ export async function renderExtensionSearch(
   mode: OutputMode,
 ): Promise<ExtensionSearchResult | undefined> {
   if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
+    const output = {
+      ...data,
+      extensions: data.extensions.map((ext) => {
+        const { platforms, labels, ...rest } = ext;
+        return {
+          ...rest,
+          ...(platforms.length > 0 ? { platforms } : {}),
+          ...(labels.length > 0 ? { labels } : {}),
+        };
+      }),
+    };
+    console.log(JSON.stringify(output, null, 2));
     return undefined;
   } else {
     return await renderInteractiveExtensionSearch(data);
