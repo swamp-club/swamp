@@ -10,11 +10,18 @@ startup.
 
 ## When to Create a Custom Model
 
-**Create an extension model when no built-in type exists for your use case.**
+**Create an extension model when no built-in or community type exists for your
+use case.**
 
-If you search for a type with `swamp model type search <query>` and get no
-results, you should create a custom model rather than assuming the functionality
-doesn't exist. Extension models let you:
+Before creating a custom model, always check both local types and community
+extensions:
+
+1. Search local types: `swamp model type search <query>`
+2. Search community extensions: `swamp extension search <query>`
+3. If a community extension exists, install it instead of building from scratch
+4. Only create a custom model if nothing exists locally or in the community
+
+Extension models let you:
 
 - Integrate with any API or service (AWS S3, Stripe, custom APIs, etc.)
 - Define any automation logic you need
@@ -23,9 +30,10 @@ doesn't exist. Extension models let you:
 **Example decision flow:**
 
 ```
-1. User wants to work with S3 buckets
-2. Run: swamp model type search S3 → no results
-3. Solution: Create extensions/models/s3_bucket.ts with the S3 logic you need
+User wants to work with S3 buckets
+swamp model type search S3 → no local results
+swamp extension search S3 → no community extension
+No existing model → Create extensions/models/s3_bucket.ts
 ```
 
 **Important:** Do not default to generic CLI types (like `command/shell`) for
@@ -37,6 +45,7 @@ than wrapping CLI commands.
 
 | Task                | Command/Action                                          |
 | ------------------- | ------------------------------------------------------- |
+| Search community    | `swamp extension search <query>`                        |
 | Create model file   | Create `extensions/models/my_model.ts`                  |
 | Verify registration | `swamp model type search --json`                        |
 | Check schema        | `swamp model type describe @myorg/my-model --json`      |

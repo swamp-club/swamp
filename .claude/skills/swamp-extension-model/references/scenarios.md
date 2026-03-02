@@ -26,7 +26,9 @@ End-to-end scenarios showing how to build custom extension models.
 ### Decision Tree
 
 ```
-No built-in model for this API → Create extension model
+swamp model type search Stripe → no local results
+swamp extension search Stripe → no community extension
+No existing model → Create extension model
 Need typed input validation → Define Zod schemas
 Store response data for CEL access → Use writeResource
 ```
@@ -200,6 +202,9 @@ globalArguments:
 ### Decision Tree
 
 ```
+swamp model type search S3 → no local results
+swamp extension search S3 → no community extension
+No existing model → Create extension model
 Full lifecycle management → create, update, delete methods
 Update reads existing state → Use dataRepository.getContent
 Delete cleans up → Return empty dataHandles
@@ -435,6 +440,9 @@ jobs:
 ### Decision Tree
 
 ```
+swamp model type search VPC → no local results
+swamp extension search VPC → no community extension
+No existing model → Create extension model
 Discover multiple resources → Factory model pattern
 Each resource needs unique ID → Dynamic instance names
 Query all discovered resources → data.findBySpec()
@@ -586,7 +594,8 @@ jobs:
 ### Decision Tree
 
 ```
-Add functionality to existing type → export const extension
+swamp model type search command/shell → exists locally
+Want to add methods, not create new type → export const extension
 Cannot change schema → Only add new methods
 ```
 

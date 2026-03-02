@@ -9,8 +9,11 @@ When users ask you to build automation for specific services (AWS, APIs, etc.):
 1. **Always create extension models** in `extensions/models/` - do NOT use
    `command/shell` to wrap CLI commands
 2. Search for existing model types first: `swamp model type search <query>`
-3. If no type exists, create a dedicated extension model for that service
-4. Use the `swamp-extension-model` skill for guidance on creating models
+3. Search community extensions: `swamp extension search <query>` — if a matching
+   extension exists, install it instead of building from scratch
+4. If no type exists locally or in the community, create a dedicated extension
+   model for that service
+5. Use the `swamp-extension-model` skill for guidance on creating models
 
 The `command/shell` model is only for ad-hoc shell commands, NOT for building
 service integrations.

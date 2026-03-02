@@ -515,3 +515,100 @@ Deno.test({
     assertStringIncludes(output, "1 more below");
   },
 });
+
+// Community extension hint tests
+Deno.test({
+  name:
+    "TypeSearchUI shows community extension hint when no results match with a query",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery="nonexistent"
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    assertStringIncludes(output, "swamp extension search");
+    assertStringIncludes(output, "community extensions");
+  },
+});
+
+Deno.test({
+  name: "TypeSearchUI does not show hint when results exist",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={testTypes}
+        initialQuery="echo"
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    assertEquals(output.includes("swamp extension search"), false);
+  },
+});
+
+Deno.test({
+  name:
+    "TypeSearchUI does not show hint when query is empty and no types loaded",
+  ...inkTestOptions,
+  fn: () => {
+    const { lastFrame } = render(
+      <TypeSearchUI
+        types={[]}
+        initialQuery=""
+        onSelect={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    const output = lastFrame() ?? "";
+    assertStringIncludes(output, "No matching types found");
+    assertEquals(output.includes("swamp extension search"), false);
+  },
+});
+
+Deno.test("renderTypeSearch JSON output includes hint when no results and query provided", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  const dataWithHint: TypeSearchData = {
+    query: "nonexistent",
+    results: [],
+    hint: "No local types matched. Try: swamp extension search nonexistent",
+  };
+
+  try {
+    renderTypeSearch(dataWithHint, "json");
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.query, "nonexistent");
+    assertEquals(parsed.results.length, 0);
+    assertStringIncludes(parsed.hint, "swamp extension search");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderTypeSearch JSON output omits hint when results exist", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    renderTypeSearch(testData, "json");
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.hint, undefined);
+  } finally {
+    console.log = originalLog;
+  }
+});

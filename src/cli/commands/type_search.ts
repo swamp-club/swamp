@@ -118,6 +118,10 @@ export const typeSearchCommand = new Command()
         query: query ?? "",
         results: filteredTypes,
       };
+      if (filteredTypes.length === 0 && query) {
+        data.hint =
+          `No local types matched. Try: swamp extension search ${query}`;
+      }
       await renderTypeSearch(data, ctx.outputMode);
     } else {
       // Interactive: show fuzzy search UI

@@ -39,6 +39,7 @@ export interface TypeSearchItem {
 export interface TypeSearchData {
   query: string;
   results: TypeSearchItem[];
+  hint?: string;
 }
 
 /**
@@ -215,7 +216,15 @@ export function TypeSearchUI(
           </Text>
         )}
         {results.length === 0 && (
-          <Text color="yellow">No matching types found</Text>
+          <>
+            <Text color="yellow">No matching types found</Text>
+            {query && (
+              <Text dimColor>
+                Tip: run `swamp extension search{" "}
+                {query}` to check community extensions
+              </Text>
+            )}
+          </>
         )}
       </Box>
 
