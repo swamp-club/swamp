@@ -200,7 +200,10 @@ export class RepoService {
         const h = isAlreadyInit
           ? await this.updateKiroHooks(repoPath)
           : await this.createKiroHooksIfNotExists(repoPath);
-        settingsCreated = s || h;
+        const a = isAlreadyInit
+          ? await this.updateKiroAgentConfig(repoPath)
+          : await this.createKiroAgentConfigIfNotExists(repoPath);
+        settingsCreated = s || h || a;
         break;
       }
       case "opencode":
@@ -290,7 +293,8 @@ export class RepoService {
       case "kiro": {
         const s = await this.updateKiroSettings(repoPath);
         const h = await this.updateKiroHooks(repoPath);
-        settingsUpdated = s || h;
+        const a = await this.updateKiroAgentConfig(repoPath);
+        settingsUpdated = s || h || a;
         break;
       }
       case "opencode":
@@ -994,8 +998,11 @@ ${body}`;
 
   /**
    * Generates the content for Kiro's .kiro/hooks/swamp-audit.json.
+   * Uses the absolute path to the swamp binary because kiro-cli does not
+   * perform PATH resolution when executing hook commands.
    */
   private generateKiroHookContent(): string {
+    const swampBin = this.resolveSwampBinaryPath();
     const hook = {
       name: "Swamp Audit",
       description: "Records agent tool usage for swamp audit tracking",
@@ -1003,10 +1010,32 @@ ${body}`;
       when: { type: "postToolUse" },
       then: {
         type: "runCommand",
-        command: "swamp audit record --from-hook --tool kiro",
+        command: `"${swampBin}" audit record --from-hook --tool kiro`,
       },
     };
     return JSON.stringify(hook, null, 2) + "\n";
+  }
+
+  /**
+   * Resolves the absolute path to the swamp binary.
+   * Falls back to bare "swamp" if resolution fails.
+   */
+  private resolveSwampBinaryPath(): string {
+    try {
+      const cmd = new Deno.Command("which", {
+        args: ["swamp"],
+        stdout: "piped",
+        stderr: "null",
+      });
+      const { success, stdout } = cmd.outputSync();
+      if (success) {
+        const path = new TextDecoder().decode(stdout).trim();
+        if (path) return path;
+      }
+    } catch {
+      // which not available or failed
+    }
+    return "swamp";
   }
 
   /**
@@ -1028,6 +1057,71 @@ ${body}`;
   private updateKiroHooks(repoPath: RepoPath): Promise<boolean> {
     const hookPath = join(repoPath.value, ".kiro", "hooks", "swamp-audit.json");
     return this.overwriteIfChanged(hookPath, this.generateKiroHookContent());
+  }
+
+  /**
+   * Generates the content for the kiro CLI agent config at .kiro/agents/swamp.json.
+   * This provides kiro-cli with trusted commands, audit hooks, and resource
+   * references that the IDE gets from .vscode/settings.local.json and .kiro/hooks/.
+   */
+  private generateKiroAgentConfigContent(): string {
+    const swampBin = this.resolveSwampBinaryPath();
+    const config = {
+      name: "swamp",
+      description: "Swamp automation agent with audit tracking",
+      tools: ["*"],
+      resources: [
+        "file://.kiro/steering/**/*.md",
+        "skill://.kiro/skills/**/SKILL.md",
+      ],
+      toolsSettings: {
+        shell: {
+          allowedCommands: ["swamp .*"],
+        },
+      },
+      hooks: {
+        postToolUse: [
+          {
+            command: `"${swampBin}" audit record --from-hook --tool kiro`,
+          },
+        ],
+      },
+    };
+    return JSON.stringify(config, null, 2) + "\n";
+  }
+
+  /**
+   * Creates .kiro/agents/swamp.json if it doesn't already exist.
+   */
+  private createKiroAgentConfigIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const configPath = join(
+      repoPath.value,
+      ".kiro",
+      "agents",
+      "swamp.json",
+    );
+    return this.createFileIfNotExists(
+      configPath,
+      this.generateKiroAgentConfigContent(),
+    );
+  }
+
+  /**
+   * Updates .kiro/agents/swamp.json, overwriting with latest content.
+   */
+  private updateKiroAgentConfig(repoPath: RepoPath): Promise<boolean> {
+    const configPath = join(
+      repoPath.value,
+      ".kiro",
+      "agents",
+      "swamp.json",
+    );
+    return this.overwriteIfChanged(
+      configPath,
+      this.generateKiroAgentConfigContent(),
+    );
   }
 
   /**
