@@ -18,18 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { authApikeyCommand } from "./auth_apikey.ts";
-import { authLoginCommand } from "./auth_login.ts";
-import { authLogoutCommand } from "./auth_logout.ts";
-import { authWhoamiCommand } from "./auth_whoami.ts";
+import { authApikeyListCommand } from "./auth_apikey_list.ts";
+import { authApikeyCreateCommand } from "./auth_apikey_create.ts";
+import { authApikeyRevokeCommand } from "./auth_apikey_revoke.ts";
+import { authApikeyDeleteCommand } from "./auth_apikey_delete.ts";
 
-export const authCommand = new Command()
-  .name("auth")
-  .description("Manage swamp-club authentication")
+export const authApikeyCommand = new Command()
+  .name("apikey")
+  .description("Manage API keys")
   .action(function () {
     this.showHelp();
   })
-  .command("apikey", authApikeyCommand)
-  .command("login", authLoginCommand)
-  .command("logout", authLogoutCommand)
-  .command("whoami", authWhoamiCommand);
+  .command("list", authApikeyListCommand)
+  .command("create", authApikeyCreateCommand)
+  .command("revoke", authApikeyRevokeCommand)
+  .command("delete", authApikeyDeleteCommand);
