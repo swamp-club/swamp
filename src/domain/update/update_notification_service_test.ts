@@ -118,6 +118,25 @@ Deno.test("getNotification returns update_available when cache has newer version
   });
 });
 
+Deno.test("getNotification returns null when current version is newer than cache", async () => {
+  // User updated via another channel (e.g. deno run compile) to a version
+  // newer than what the background check last cached.
+  const cache: UpdateCheckCacheData = {
+    latestVersion: "20260228.200442.0-sha.abc123",
+    checkedAt: new Date().toISOString(),
+  };
+  const cacheRepo = createMockCacheRepo(cache);
+  const checker = createMockChecker();
+  const service = new UpdateNotificationService(
+    "20260301.120000.0-sha.def456",
+    cacheRepo,
+    checker,
+  );
+
+  const result = await service.getNotification();
+  assertEquals(result, null);
+});
+
 Deno.test("getNotification returns null when cache matches current version", async () => {
   const version = "20260228.200442.0-sha.abc123";
   const cache: UpdateCheckCacheData = {

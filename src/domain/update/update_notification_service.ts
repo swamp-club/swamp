@@ -84,9 +84,11 @@ export class UpdateNotificationService {
       }
     }
 
-    // Check cache for a known newer version
+    // Check cache for a known newer version.
+    // Use lexicographic comparison: CalVer versions (YYYYMMDD.HHMMSS.patch-sha.hash)
+    // are naturally sortable, so "greater than" means "newer than".
     const cache = await this.cacheRepository.read();
-    if (cache && cache.latestVersion !== this.currentVersion) {
+    if (cache && cache.latestVersion > this.currentVersion) {
       return {
         type: "update_available",
         currentVersion: this.currentVersion,
