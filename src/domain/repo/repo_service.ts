@@ -539,6 +539,7 @@ ${body}`;
       "",
       "# Cached extension bundles (regenerated at runtime)",
       ".swamp/bundles/",
+      ".swamp/vault-bundles/",
       "",
       GITIGNORE_TOOL_ENTRIES[tool],
       "",
@@ -1253,6 +1254,7 @@ export const SwampAudit: Plugin = async ({ directory }) => {
       SWAMP_SUBDIRS.secrets,
       SWAMP_SUBDIRS.telemetry,
       SWAMP_SUBDIRS.audit,
+      SWAMP_SUBDIRS.vaultBundles,
     ];
 
     for (const subdir of subdirs) {

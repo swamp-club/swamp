@@ -24,7 +24,7 @@ import {
 } from "../../presentation/output/vault_create_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { getVaultType } from "../../domain/vaults/vault_types.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createVaultConfigId,
@@ -159,6 +159,10 @@ export const vaultCreateCommand = new Command()
     "--op-account <account:string>",
     "1Password account shorthand (for 1password type). Falls back to OP_ACCOUNT env var.",
   )
+  .option(
+    "--config <json:string>",
+    "Provider configuration as JSON (for user-defined vault types)",
+  )
   .action(
     async function (
       options: AnyOptions,
@@ -188,11 +192,13 @@ export const vaultCreateCommand = new Command()
       ctx.logger
         .debug`Creating vault: type=${vaultType}, name=${vaultName}`;
 
-      // Validate the vault type
-      const typeInfo = getVaultType(vaultType);
+      // Validate the vault type using the registry
+      const typeInfo = vaultTypeRegistry.get(vaultType);
       if (!typeInfo) {
+        const availableTypes = vaultTypeRegistry.getAll().map((v) => v.type)
+          .join(", ");
         throw new UserError(
-          `Unknown vault type: ${vaultType}. Use 'swamp vault type search' to see available types.`,
+          `Unknown vault type: ${vaultType}. Available types: ${availableTypes}. Use 'swamp vault type search' to see available types.`,
         );
       }
 
@@ -212,18 +218,52 @@ export const vaultCreateCommand = new Command()
         );
       }
 
-      // Resolve provider-specific configuration from flags/env vars
-      const providerConfig = resolveProviderConfig(
-        vaultType,
-        repoDir,
-        {
-          region: options.region,
-          vaultUrl: options.vaultUrl,
-          opVault: options.opVault,
-          opAccount: options.opAccount,
-        },
-        ctx.logger,
-      );
+      // Resolve provider configuration
+      let providerConfig: Record<string, unknown>;
+
+      if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
+        // User-defined vault type: parse --config JSON
+        if (!options.config) {
+          throw new UserError(
+            `User-defined vault type '${vaultType}' requires --config <json> with provider configuration.`,
+          );
+        }
+
+        try {
+          providerConfig = JSON.parse(options.config) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          throw new UserError(
+            `Invalid JSON in --config: ${options.config}`,
+          );
+        }
+
+        // Validate against configSchema if provided
+        if (typeInfo.configSchema) {
+          const result = typeInfo.configSchema.safeParse(providerConfig);
+          if (!result.success) {
+            throw new UserError(
+              `Invalid config for vault type '${vaultType}': ${result.error.message}`,
+            );
+          }
+        }
+      } else {
+        // Built-in vault type: resolve from flags/env vars
+        providerConfig = resolveProviderConfig(
+          vaultType,
+          repoDir,
+          {
+            region: options.region,
+            vaultUrl: options.vaultUrl,
+            opVault: options.opVault,
+            opAccount: options.opAccount,
+          },
+          ctx.logger,
+        );
+      }
+
       const vaultId = createVaultConfigId(generateVaultId());
       const vaultConfig = VaultConfig.create(
         vaultId,

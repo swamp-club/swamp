@@ -17,59 +17,65 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Represents a vault type with metadata for display.
- */
-export interface VaultTypeInfo {
-  /** The type identifier used in configuration */
-  type: string;
-  /** Human-readable name */
-  name: string;
-  /** Description of the vault type */
-  description: string;
-}
+import {
+  type VaultTypeInfo,
+  vaultTypeRegistry,
+} from "./vault_type_registry.ts";
+
+export type { VaultTypeInfo } from "./vault_type_registry.ts";
 
 /**
- * Registry of available vault types.
+ * Built-in vault type definitions.
  * Note: mock vault is intentionally excluded as it's for internal testing only.
  */
-export const VAULT_TYPES: VaultTypeInfo[] = [
+const BUILT_IN_VAULT_TYPES: VaultTypeInfo[] = [
   {
     type: "aws-sm",
     name: "AWS Secrets Manager",
     description:
       "Store and retrieve secrets using AWS Secrets Manager. Requires AWS credentials via IAM roles, environment variables, or AWS profiles.",
+    isBuiltIn: true,
   },
   {
     type: "azure-kv",
     name: "Azure Key Vault",
     description:
       "Store and retrieve secrets using Azure Key Vault. Requires vault URL and Azure credentials via environment variables, managed identity, or Azure CLI.",
+    isBuiltIn: true,
   },
   {
     type: "1password",
     name: "1Password",
     description:
       "Store and retrieve secrets using 1Password. Requires the 1Password CLI (op) and authentication via service account token, desktop app, or Connect Server.",
+    isBuiltIn: true,
   },
   {
     type: "local_encryption",
     name: "Local Encryption",
     description:
       "Store encrypted secrets in local files using AES-GCM encryption. Uses SSH private key or auto-generated key for encryption.",
+    isBuiltIn: true,
   },
 ];
+
+// Register built-in types on module load
+for (const vaultType of BUILT_IN_VAULT_TYPES) {
+  if (!vaultTypeRegistry.has(vaultType.type)) {
+    vaultTypeRegistry.register(vaultType);
+  }
+}
 
 /**
  * Gets all available vault types.
  */
 export function getVaultTypes(): VaultTypeInfo[] {
-  return VAULT_TYPES;
+  return vaultTypeRegistry.getAll();
 }
 
 /**
  * Gets a vault type by its identifier.
  */
 export function getVaultType(type: string): VaultTypeInfo | undefined {
-  return VAULT_TYPES.find((v) => v.type === type.toLowerCase());
+  return vaultTypeRegistry.get(type);
 }

@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 import {
   RepoMarkerRepository,
@@ -143,12 +144,14 @@ export const extensionSearchCommand = new Command()
       const marker = await markerRepo.read(repoPath);
       const modelsDir = resolveModelsDir(marker);
       const workflowsDir = resolveWorkflowsDir(marker);
+      const vaultsDir = resolveVaultsDir(marker);
 
       const pullCtx: PullContext = {
         extensionClient: client,
         logger: ctx.logger,
         modelsDir,
         workflowsDir,
+        vaultsDir,
         repoDir,
         force: false,
         outputMode: ctx.outputMode,

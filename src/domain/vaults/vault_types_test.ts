@@ -18,10 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertExists } from "@std/assert";
-import { getVaultType, getVaultTypes, VAULT_TYPES } from "./vault_types.ts";
+import { getVaultType, getVaultTypes } from "./vault_types.ts";
 
-Deno.test("VAULT_TYPES contains expected types", () => {
-  const types = VAULT_TYPES.map((v) => v.type);
+Deno.test("getVaultTypes contains expected built-in types", () => {
+  const types = getVaultTypes().map((v) => v.type);
   assertEquals(types.includes("aws-sm"), true);
   assertEquals(types.includes("azure-kv"), true);
   assertEquals(types.includes("1password"), true);
@@ -30,10 +30,9 @@ Deno.test("VAULT_TYPES contains expected types", () => {
   assertEquals(types.includes("mock"), false);
 });
 
-Deno.test("getVaultTypes returns all vault types", () => {
+Deno.test("getVaultTypes returns at least 4 built-in types", () => {
   const types = getVaultTypes();
-  assertEquals(types.length, 4);
-  assertEquals(types, VAULT_TYPES);
+  assertEquals(types.length >= 4, true);
 });
 
 Deno.test("getVaultType returns vault type by identifier", () => {
@@ -79,8 +78,21 @@ Deno.test("getVaultType returns undefined for unknown type", () => {
   assertEquals(empty, undefined);
 });
 
+Deno.test("built-in vault types have isBuiltIn flag set", () => {
+  const types = getVaultTypes();
+  for (const vaultType of types) {
+    if (
+      ["aws-sm", "azure-kv", "1password", "local_encryption"].includes(
+        vaultType.type,
+      )
+    ) {
+      assertEquals(vaultType.isBuiltIn, true);
+    }
+  }
+});
+
 Deno.test("all vault types have required fields", () => {
-  for (const vaultType of VAULT_TYPES) {
+  for (const vaultType of getVaultTypes()) {
     assertExists(vaultType.type);
     assertExists(vaultType.name);
     assertExists(vaultType.description);

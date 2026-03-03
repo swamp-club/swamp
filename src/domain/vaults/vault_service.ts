@@ -20,6 +20,7 @@
 import { getLogger } from "@logtape/logtape";
 import type { VaultConfiguration, VaultProvider } from "./vault_provider.ts";
 import { getVaultTypes } from "./vault_types.ts";
+import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { AwsVaultProvider } from "./aws_vault_provider.ts";
 import {
   type AzureKvVaultConfig,
@@ -104,6 +105,24 @@ export class VaultService {
   registerVault(config: VaultConfiguration): void {
     let provider: VaultProvider;
 
+    // Check registry for user-defined types with a createProvider factory
+    const registeredType = vaultTypeRegistry.get(config.type);
+    if (registeredType?.createProvider && !registeredType.isBuiltIn) {
+      // Validate config against schema if provided
+      if (registeredType.configSchema) {
+        const result = registeredType.configSchema.safeParse(config.config);
+        if (!result.success) {
+          throw new Error(
+            `Invalid config for vault type '${config.type}' (vault '${config.name}'): ${result.error.message}`,
+          );
+        }
+      }
+      provider = registeredType.createProvider(config.name, config.config);
+      this.providers.set(config.name, provider);
+      return;
+    }
+
+    // Built-in types
     switch (config.type.toLowerCase()) {
       case "aws-sm":
         provider = new AwsVaultProvider(
@@ -135,11 +154,13 @@ export class VaultService {
           config.config as LocalEncryptionConfig,
         );
         break;
-      default:
+      default: {
+        const allTypes = vaultTypeRegistry.getAll().map((v) => v.type);
         throw new Error(
           `Unsupported vault type: '${config.type}' (vault '${config.name}').` +
-            suggestVaultType(config.type),
+            suggestVaultType(config.type, allTypes),
         );
+      }
     }
 
     this.providers.set(config.name, provider);
@@ -281,12 +302,13 @@ const RENAMED_VAULT_TYPES: Record<string, string> = {
 /**
  * Suggests the correct vault type name if the user provided a renamed or similar type.
  */
-function suggestVaultType(type: string): string {
+function suggestVaultType(type: string, allTypes?: string[]): string {
   const normalized = type.toLowerCase();
   const renamed = RENAMED_VAULT_TYPES[normalized];
   if (renamed) {
     return ` The type '${type}' has been renamed to '${renamed}'. Update your vault configuration to use type: ${renamed}`;
   }
-  const available = getVaultTypes().map((v) => v.type).join(", ");
+  const available = allTypes?.join(", ") ??
+    getVaultTypes().map((v) => v.type).join(", ");
   return ` Available vault types: ${available}`;
 }

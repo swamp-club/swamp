@@ -31,6 +31,7 @@ export interface ExtensionPushResolvedData {
   repository: string | undefined;
   modelFiles: string[];
   workflowFiles: string[];
+  vaultFiles: string[];
   additionalFiles: string[];
   platforms: string[];
   labels: string[];
@@ -46,6 +47,7 @@ export interface ExtensionPushSuccessData {
   modelCount: number;
   workflowCount: number;
   bundleCount: number;
+  vaultCount: number;
 }
 
 /** Data for compilation error output. */
@@ -80,6 +82,12 @@ export function renderExtensionPushResolved(
     if (data.workflowFiles.length > 0) {
       logger.info`Workflows (${data.workflowFiles.length}):`;
       for (const f of data.workflowFiles) {
+        logger.info`  ${f}`;
+      }
+    }
+    if (data.vaultFiles.length > 0) {
+      logger.info`Vaults (${data.vaultFiles.length}):`;
+      for (const f of data.vaultFiles) {
         logger.info`  ${f}`;
       }
     }
@@ -149,7 +157,7 @@ export function renderExtensionPush(
     logger.info`Extension ID: ${data.extensionId}`;
     logger.info`Archive size: ${formatBytes(data.archiveSize)}`;
     logger
-      .info`Models: ${data.modelCount}, Workflows: ${data.workflowCount}, Bundles: ${data.bundleCount}`;
+      .info`Models: ${data.modelCount}, Workflows: ${data.workflowCount}, Vaults: ${data.vaultCount}, Bundles: ${data.bundleCount}`;
   }
 }
 

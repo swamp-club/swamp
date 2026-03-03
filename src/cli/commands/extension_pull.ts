@@ -23,6 +23,7 @@ import { basename, dirname, join, relative, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 import {
   RepoMarkerRepository,
@@ -89,6 +90,7 @@ export interface InstallContext {
   logger: Logger;
   modelsDir: string;
   workflowsDir: string;
+  vaultsDir: string;
   repoDir: string;
   force: boolean;
   alreadyPulled: Set<string>;
@@ -381,6 +383,8 @@ export async function detectConflicts(
   workflowsDir: string,
   bundlesDir: string,
   repoDir: string,
+  vaultsDir?: string,
+  vaultBundlesDir?: string,
 ): Promise<string[]> {
   const conflicts: string[] = [];
 
@@ -413,6 +417,30 @@ export async function detectConflicts(
     }
   }
 
+  // Check vaults
+  if (vaultsDir) {
+    const vaultsSrc = join(extractDir, "vaults");
+    for (const file of await listFiles(vaultsSrc)) {
+      const relPath = relative(vaultsSrc, file);
+      const destPath = join(vaultsDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
+  // Check vault bundles
+  if (vaultBundlesDir) {
+    const vaultBundlesSrc = join(extractDir, "vault-bundles");
+    for (const file of await listFiles(vaultBundlesSrc)) {
+      const relPath = relative(vaultBundlesSrc, file);
+      const destPath = join(vaultBundlesDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
   // Check additional files
   const filesSrc = join(extractDir, "files");
   for (const file of await listFiles(filesSrc)) {
@@ -431,6 +459,7 @@ export interface PullContext {
   logger: Logger;
   modelsDir: string;
   workflowsDir: string;
+  vaultsDir: string;
   repoDir: string;
   force: boolean;
   outputMode: "log" | "json";
@@ -538,11 +567,15 @@ export async function installExtension(
     }
     const manifest = parseExtensionManifest(manifestContent);
 
-    // Safety analysis on .ts files
+    // Safety analysis on .ts files (models and vaults)
     const safetyWarnings: SafetyIssue[] = [];
-    const tsFiles = (await listFiles(join(extractDir, "models"))).filter((f) =>
-      f.endsWith(".ts")
+    const modelTsFiles = (await listFiles(join(extractDir, "models"))).filter(
+      (f) => f.endsWith(".ts"),
     );
+    const vaultTsFiles = (await listFiles(join(extractDir, "vaults"))).filter(
+      (f) => f.endsWith(".ts"),
+    );
+    const tsFiles = [...modelTsFiles, ...vaultTsFiles];
     if (tsFiles.length > 0) {
       const safetyResult = await analyzeExtensionSafety(tsFiles);
 
@@ -562,7 +595,9 @@ export async function installExtension(
     // Detect file conflicts
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const absoluteWorkflowsDir = resolve(repoDir, ctx.workflowsDir);
+    const absoluteVaultsDir = resolve(repoDir, ctx.vaultsDir);
     const bundlesDir = swampPath(repoDir, "bundles");
+    const vaultBundlesDir = swampPath(repoDir, "vault-bundles");
 
     const conflicts = await detectConflicts(
       extractDir,
@@ -570,6 +605,8 @@ export async function installExtension(
       absoluteWorkflowsDir,
       bundlesDir,
       repoDir,
+      absoluteVaultsDir,
+      vaultBundlesDir,
     );
 
     if (conflicts.length > 0 && !ctx.force) {
@@ -604,6 +641,24 @@ export async function installExtension(
       repoDir,
     );
     extractedFiles.push(...bundlesExtracted);
+
+    // Vaults → vaultsDir
+    await Deno.mkdir(absoluteVaultsDir, { recursive: true });
+    const vaultsExtracted = await copyDir(
+      join(extractDir, "vaults"),
+      absoluteVaultsDir,
+      repoDir,
+    );
+    extractedFiles.push(...vaultsExtracted);
+
+    // Vault bundles → .swamp/vault-bundles/
+    await Deno.mkdir(vaultBundlesDir, { recursive: true });
+    const vaultBundlesExtracted = await copyDir(
+      join(extractDir, "vault-bundles"),
+      vaultBundlesDir,
+      repoDir,
+    );
+    extractedFiles.push(...vaultBundlesExtracted);
 
     // Additional files → modelsDir
     const filesExtracted = await copyDir(
@@ -751,6 +806,7 @@ export async function pullExtension(
     logger: ctx.logger,
     modelsDir: ctx.modelsDir,
     workflowsDir: ctx.workflowsDir,
+    vaultsDir: ctx.vaultsDir,
     repoDir: ctx.repoDir,
     force: ctx.force,
     alreadyPulled: ctx.alreadyPulled,
@@ -818,12 +874,13 @@ export const extensionPullCommand = new Command()
       );
     }
 
-    // 4. Resolve models dir and workflows dir from .swamp.yaml
+    // 4. Resolve models dir, workflows dir, and vaults dir from .swamp.yaml
     const repoPath = RepoPath.create(repoDir);
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
     const modelsDir = resolveModelsDir(marker);
     const workflowsDir = resolveWorkflowsDir(marker);
+    const vaultsDir = resolveVaultsDir(marker);
 
     // 5. Resolve server URL (from env or default)
     const serverUrl = resolveServerUrl();
@@ -836,6 +893,7 @@ export const extensionPullCommand = new Command()
       logger: ctx.logger,
       modelsDir,
       workflowsDir,
+      vaultsDir,
       repoDir,
       force: options.force ?? false,
       outputMode: ctx.outputMode,

@@ -37,6 +37,7 @@ export interface RepoMarkerData {
   upgradedAt?: string;
   modelsDir?: string;
   workflowsDir?: string;
+  vaultsDir?: string;
   repoId?: string;
   telemetryEndpoint?: string;
   telemetryDisabled?: boolean;

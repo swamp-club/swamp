@@ -159,7 +159,21 @@ models:
   );
 });
 
-Deno.test("parseExtensionManifest rejects no models or workflows", () => {
+Deno.test("parseExtensionManifest parses valid manifest with vaults", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+vaults:
+  - custom_vault.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.vaults, ["custom_vault.ts"]);
+  assertEquals(manifest.models, []);
+  assertEquals(manifest.workflows, []);
+});
+
+Deno.test("parseExtensionManifest rejects no models, workflows, or vaults", () => {
   const yaml = `
 manifestVersion: 1
 name: "@myuser/myext"
@@ -168,7 +182,7 @@ version: "2026.02.26.1"
   const error = assertThrows(() => parseExtensionManifest(yaml));
   assertStringIncludes(
     (error as Error).message,
-    "at least one model or workflow",
+    "at least one model, workflow, or vault",
   );
 });
 
@@ -271,6 +285,7 @@ models:
   assertEquals(manifest.description, undefined);
   assertEquals(manifest.repository, undefined);
   assertEquals(manifest.workflows, []);
+  assertEquals(manifest.vaults, []);
   assertEquals(manifest.additionalFiles, []);
   assertEquals(manifest.platforms, []);
   assertEquals(manifest.labels, []);
