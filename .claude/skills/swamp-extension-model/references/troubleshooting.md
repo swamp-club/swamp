@@ -13,6 +13,7 @@
   - [Duplicate method name](#duplicate-method-name-x-within-extension-methods-array)
   - [No such key in CEL expressions](#no-such-key-specname-in-cel-expressions)
   - [Property not found in expression path validation](#property-not-found-in-expression-path-validation)
+  - [Extension has formatting or lint issues](#extension-has-formatting-or-lint-issues)
   - [Syntax errors on load](#syntax-errors-on-load)
 - [Configuration](#configuration)
 - [Verification Commands](#verification-commands)
@@ -167,6 +168,23 @@ schema: z.object({}).passthrough(),
 // Correct — VpcId is declared, .passthrough() allows additional fields
 schema: z.object({ VpcId: z.string() }).passthrough(),
 ```
+
+### "Extension has formatting or lint issues"
+
+When `swamp extension push` runs its quality checks and they fail, the push is
+blocked:
+
+```
+Fix: Run `swamp extension fmt <manifest-path>` to auto-fix formatting and lint
+issues, then retry the push.
+```
+
+If unfixable issues remain after running `fmt`, manually address the lint errors
+shown in the output. Common causes include unused variables, missing return
+types, or patterns that `deno lint --fix` cannot auto-correct.
+
+You can also run `swamp extension fmt <manifest-path> --check` to preview issues
+without modifying files.
 
 ### Syntax errors on load
 

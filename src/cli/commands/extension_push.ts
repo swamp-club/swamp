@@ -18,30 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-} from "@std/path";
+import { basename, dirname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
-import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
-import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
-import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { resolveExtensionFiles } from "../resolve_extension_files.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { UserError } from "../../domain/errors.ts";
-import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
-import { resolveLocalImports } from "../../domain/extensions/extension_import_resolver.ts";
-import { resolveWorkflowDependencies } from "../../domain/extensions/extension_dependency_resolver.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
+import { checkExtensionQuality } from "../../domain/extensions/extension_quality_checker.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
@@ -54,6 +39,7 @@ import {
   renderExtensionPushCancelled,
   renderExtensionPushCompilationErrors,
   renderExtensionPushDryRun,
+  renderExtensionPushQualityErrors,
   renderExtensionPushResolved,
   renderExtensionPushSafetyErrors,
   renderExtensionPushSafetyWarnings,
@@ -97,24 +83,24 @@ export const extensionPushCommand = new Command()
       outputMode: ctx.outputMode,
     });
 
-    // 2. Read and parse manifest (before auth so validation errors surface first)
-    const absoluteManifestPath = isAbsolute(manifestPath)
-      ? manifestPath
-      : resolve(repoDir, manifestPath);
-
-    let manifestContent: string;
-    try {
-      manifestContent = await Deno.readTextFile(absoluteManifestPath);
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        throw new UserError(
-          `Manifest file not found: ${absoluteManifestPath}`,
-        );
-      }
-      throw error;
-    }
-
-    const manifest = parseExtensionManifest(manifestContent);
+    // 2. Resolve extension files (manifest, models, workflows, additional files)
+    const resolved = await resolveExtensionFiles({
+      repoDir,
+      manifestPath,
+      repoContext,
+      logger: ctx.logger,
+    });
+    const {
+      manifest,
+      modelsDir,
+      modelEntryPoints,
+      allModelFiles,
+      vaultsDir,
+      vaultEntryPoints,
+      allVaultFiles,
+      workflowFiles,
+      additionalFilePaths,
+    } = resolved;
 
     // 3. Load auth credentials
     const authRepo = new AuthRepository();
@@ -149,160 +135,6 @@ export const extensionPushCommand = new Command()
       }
       // Update name for the push
       manifest.name = suggested;
-    }
-
-    // 5. Resolve models dir and vaults dir
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolve(repoDir, resolveModelsDir(marker));
-    const vaultsDir = resolve(repoDir, resolveVaultsDir(marker));
-
-    // 6. Collect model files from manifest
-    const modelEntryPoints: string[] = [];
-    for (const modelRef of manifest.models) {
-      const modelPath = resolve(modelsDir, modelRef);
-      try {
-        await Deno.stat(modelPath);
-      } catch {
-        throw new UserError(
-          `Model file not found: ${modelRef} (expected at ${modelPath})`,
-        );
-      }
-      modelEntryPoints.push(modelPath);
-    }
-
-    // 7. Resolve local imports for each model entry point
-    const importResult = await resolveLocalImports(modelEntryPoints, modelsDir);
-    const allModelFiles = [...importResult.resolvedFiles];
-
-    // 8. Resolve workflow dependencies if workflows present
-    const workflowFiles: Array<{ sourcePath: string; archiveName: string }> =
-      [];
-    if (manifest.workflows.length > 0) {
-      const indexerWorkflowsDir = resolve(repoDir, "workflows");
-      const extensionWorkflowsDir = resolve(
-        repoDir,
-        resolveWorkflowsDir(marker),
-      );
-      // Validate workflow files exist and resolve symlinks
-      const wfNames: string[] = [];
-      for (const wfRef of manifest.workflows) {
-        let realPath: string | null = null;
-
-        // Try indexer symlinks first (workflows/)
-        try {
-          realPath = await Deno.realPath(resolve(indexerWorkflowsDir, wfRef));
-        } catch { /* not found here */ }
-
-        // Fall back to extension workflows dir
-        if (!realPath) {
-          try {
-            realPath = await Deno.realPath(
-              resolve(extensionWorkflowsDir, wfRef),
-            );
-          } catch { /* not found here either */ }
-        }
-
-        if (!realPath) {
-          throw new UserError(
-            `Workflow file not found: ${wfRef} (looked in ${indexerWorkflowsDir} and ${extensionWorkflowsDir})`,
-          );
-        }
-        // Derive a unique archive name from the manifest reference directory
-        // e.g. "namespace-debug/workflow.yaml" → "namespace-debug.yaml"
-        const refDir = dirname(wfRef);
-        const archiveName = refDir !== "."
-          ? `${refDir.replace(/\//g, "-")}.yaml`
-          : basename(realPath);
-        workflowFiles.push({ sourcePath: realPath, archiveName });
-        wfNames.push(
-          refDir !== "."
-            ? refDir.replace(/_/g, "-")
-            : basename(wfRef, ".yaml").replace(/_/g, "-"),
-        );
-      }
-
-      // Also resolve models referenced by workflows
-      const depResult = await resolveWorkflowDependencies(wfNames, {
-        workflowRepo: repoContext.workflowRepo,
-        definitionRepo: repoContext.definitionRepo,
-        modelsDir,
-      });
-
-      // Merge auto-resolved model files (dedup, skip non-existent)
-      const existingSet = new Set(allModelFiles);
-      for (const mf of depResult.modelFiles) {
-        if (existingSet.has(mf)) continue;
-        try {
-          await Deno.stat(mf);
-          allModelFiles.push(mf);
-          existingSet.add(mf);
-        } catch {
-          // Model source not at conventional path — it may already be
-          // included in the manifest under a different filename.
-          ctx.logger.debug`Skipping auto-resolved model (not found): ${mf}`;
-        }
-      }
-
-      // Merge workflow files from dependency resolution.
-      // Use realPath on dep-resolver paths so they match the manifest paths
-      // (which were already realPath'd). Without this, symlinks in the repo
-      // path itself (e.g. /tmp → /private/tmp on macOS) cause mismatches.
-      const wfSet = new Set(workflowFiles.map((wf) => wf.sourcePath));
-      for (const wf of depResult.workflowFiles) {
-        let realWf: string;
-        try {
-          realWf = await Deno.realPath(wf);
-        } catch {
-          continue; // Skip if the file doesn't exist
-        }
-        if (!wfSet.has(realWf)) {
-          workflowFiles.push({
-            sourcePath: realWf,
-            archiveName: basename(realWf),
-          });
-          wfSet.add(realWf);
-        }
-      }
-    }
-
-    // 9a. Collect vault files from manifest
-    const vaultEntryPoints: string[] = [];
-    const allVaultFiles: string[] = [];
-    for (const vaultRef of manifest.vaults) {
-      const vaultPath = resolve(vaultsDir, vaultRef);
-      try {
-        await Deno.stat(vaultPath);
-      } catch {
-        throw new UserError(
-          `Vault file not found: ${vaultRef} (expected at ${vaultPath})`,
-        );
-      }
-      vaultEntryPoints.push(vaultPath);
-    }
-
-    // Resolve local imports for vault entry points
-    if (vaultEntryPoints.length > 0) {
-      const vaultImportResult = await resolveLocalImports(
-        vaultEntryPoints,
-        vaultsDir,
-      );
-      allVaultFiles.push(...vaultImportResult.resolvedFiles);
-    }
-
-    // 9. Validate additional files
-    const additionalFilePaths: string[] = [];
-    for (const af of manifest.additionalFiles) {
-      const afPath = resolve(dirname(absoluteManifestPath), af);
-      try {
-        await Deno.stat(afPath);
-      } catch {
-        throw new UserError(
-          `Additional file not found: ${af} (expected at ${afPath})`,
-        );
-      }
-      additionalFilePaths.push(afPath);
     }
 
     // 10. Show resolved bundle contents
@@ -354,9 +186,20 @@ export const extensionPushCommand = new Command()
       }
     }
 
-    // 12. Bundle each model entry point
+    // 11b. Resolve deno binary (reused by quality check + bundling)
     const denoRuntime = new EmbeddedDenoRuntime();
     const denoPath = await denoRuntime.ensureDeno();
+
+    // 11c. Quality checks (formatting + lint)
+    const qualityResult = await checkExtensionQuality(allFiles, denoPath);
+    if (!qualityResult.passed) {
+      renderExtensionPushQualityErrors(qualityResult.issues, ctx.outputMode);
+      throw new UserError(
+        "Extension has formatting or lint issues. Run 'swamp extension fmt <manifest-path>' to fix.",
+      );
+    }
+
+    // 12. Bundle each model entry point
     const bundles = new Map<string, string>(); // relative path (no ext) -> JS
     const compilationErrors: CompilationError[] = [];
 

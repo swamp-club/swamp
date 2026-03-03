@@ -20,6 +20,7 @@
 import type { OutputMode } from "./output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
+import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
 
 const logger = getSwampLogger(["extension", "push"]);
 
@@ -202,6 +203,27 @@ export function renderExtensionPushDryRun(
     logger.info`Dry run complete for ${data.name}@${data.version}`;
     logger.info`Archive size: ${formatBytes(data.archiveSize)}`;
     logger.info("No API calls were made.");
+  }
+}
+
+/**
+ * Renders quality check errors (formatting/lint issues that block push).
+ */
+export function renderExtensionPushQualityErrors(
+  issues: QualityIssue[],
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify({ qualityErrors: issues }, null, 2));
+  } else {
+    logger.error`Quality checks failed (push blocked):`;
+    for (const issue of issues) {
+      const label = issue.check === "fmt" ? "Formatting" : "Lint";
+      logger.error`  ${label} issues:`;
+      logger.error`${issue.output}`;
+    }
+    logger
+      .error`Run 'swamp extension fmt <manifest-path>' to fix these issues.`;
   }
 }
 

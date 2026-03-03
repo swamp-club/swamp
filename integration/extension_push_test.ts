@@ -232,11 +232,11 @@ Deno.test("extension push --dry-run archives multiple workflows with unique name
         "    run: {",
         '      description: "echo",',
         "      arguments: z.object({}),",
-        "      execute: async () => ({ dataHandles: [] }),",
+        "      execute: () => Promise.resolve({ dataHandles: [] }),",
         "    },",
         "  },",
         "};",
-      ].join("\n"),
+      ].join("\n") + "\n",
     );
 
     // Create workflow YAML files in .swamp/workflows/ (the real files)
@@ -476,11 +476,11 @@ Deno.test("extension push --dry-run respects custom modelsDir from .swamp.yaml",
         "    run: {",
         '      description: "echo",',
         "      arguments: z.object({}),",
-        "      execute: async () => ({ dataHandles: [] }),",
+        "      execute: () => Promise.resolve({ dataHandles: [] }),",
         "    },",
         "  },",
         "};",
-      ].join("\n"),
+      ].join("\n") + "\n",
     );
 
     // Create auth.json so we pass the auth check
@@ -534,6 +534,118 @@ Deno.test("extension push --dry-run respects custom modelsDir from .swamp.yaml",
   }
 });
 
+Deno.test("extension push blocked when TypeScript files have formatting issues", async () => {
+  const tmpDir = await initTempRepo();
+  try {
+    // Create model with formatting issues (missing spaces, no trailing newline)
+    const modelsDir = join(tmpDir, "extensions", "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(modelsDir, "model.ts"),
+      "export const x=1;export const y=2;",
+    );
+
+    // Create auth.json
+    const configDir = join(tmpDir, ".config", "swamp");
+    await Deno.mkdir(configDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(configDir, "auth.json"),
+      JSON.stringify({
+        serverUrl: "http://localhost:9999",
+        apiKey: "swamp_test_key",
+        apiKeyId: "key-id",
+        username: "test",
+      }),
+    );
+
+    const manifestPath = join(tmpDir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.02.26.1",
+        models: ["model.ts"],
+      }),
+    );
+
+    const { stderr, code } = await runCli(
+      [
+        "extension",
+        "push",
+        manifestPath,
+        "--repo-dir",
+        tmpDir,
+        "--no-color",
+      ],
+      {
+        HOME: tmpDir,
+        XDG_CONFIG_HOME: join(tmpDir, ".config"),
+      },
+    );
+    assertEquals(code === 0, false);
+    assertStringIncludes(stderr, "formatting or lint issues");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extension push blocked when TypeScript files have lint issues", async () => {
+  const tmpDir = await initTempRepo();
+  try {
+    // Create model with a lint issue (unused ignore directive)
+    const modelsDir = join(tmpDir, "extensions", "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(modelsDir, "model.ts"),
+      "// deno-lint-ignore no-explicit-any\nexport const x = 1;\n",
+    );
+
+    // Create auth.json
+    const configDir = join(tmpDir, ".config", "swamp");
+    await Deno.mkdir(configDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(configDir, "auth.json"),
+      JSON.stringify({
+        serverUrl: "http://localhost:9999",
+        apiKey: "swamp_test_key",
+        apiKeyId: "key-id",
+        username: "test",
+      }),
+    );
+
+    const manifestPath = join(tmpDir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.02.26.1",
+        models: ["model.ts"],
+      }),
+    );
+
+    const { stderr, code } = await runCli(
+      [
+        "extension",
+        "push",
+        manifestPath,
+        "--repo-dir",
+        tmpDir,
+        "--no-color",
+      ],
+      {
+        HOME: tmpDir,
+        XDG_CONFIG_HOME: join(tmpDir, ".config"),
+      },
+    );
+    assertEquals(code === 0, false);
+    assertStringIncludes(stderr, "formatting or lint issues");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("extension push --dry-run resolves workflows from extensions/workflows", async () => {
   const tmpDir = await initTempRepo();
   try {
@@ -551,11 +663,11 @@ Deno.test("extension push --dry-run resolves workflows from extensions/workflows
         "    run: {",
         '      description: "echo",',
         "      arguments: z.object({}),",
-        "      execute: async () => ({ dataHandles: [] }),",
+        "      execute: () => Promise.resolve({ dataHandles: [] }),",
         "    },",
         "  },",
         "};",
-      ].join("\n"),
+      ].join("\n") + "\n",
     );
 
     // Create workflow directly in extensions/workflows/ (not the indexer dir)

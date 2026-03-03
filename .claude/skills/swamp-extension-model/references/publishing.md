@@ -132,6 +132,43 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo
 7. **Build archive** — creates tar.gz with models, bundles, workflows, and files
 8. **Upload** — three-phase push: initiate, upload archive, confirm
 
+## Extension Formatting
+
+Format and lint extension files before publishing. The `extension fmt` command
+resolves all TypeScript files referenced by the manifest (model entry points and
+their local imports), then runs `deno fmt` and `deno lint --fix` on them.
+
+### Commands
+
+```bash
+# Auto-fix formatting and lint issues
+swamp extension fmt manifest.yaml
+
+# Check-only mode (exit non-zero if issues exist, does not modify files)
+swamp extension fmt manifest.yaml --check
+
+# Specify a different repo directory
+swamp extension fmt manifest.yaml --repo-dir /path/to/repo
+```
+
+### What Happens During Fmt
+
+1. **Parse manifest** — reads the manifest and resolves model/workflow file
+   paths
+2. **Resolve files** — collects all TypeScript files (entry points + local
+   imports) referenced by the manifest
+3. **Run `deno fmt`** — formats all resolved files (or checks in `--check` mode)
+4. **Run `deno lint --fix`** — auto-fixes lint issues (or checks in `--check`
+   mode)
+5. **Re-check** — if any unfixable lint issues remain, reports them and exits
+   non-zero
+
+### Relationship to Push
+
+`swamp extension push` automatically runs the equivalent of `--check` before
+uploading. If formatting or lint issues are detected, the push is blocked with a
+message directing you to run `swamp extension fmt <manifest-path>` to fix them.
+
 ## Safety Rules
 
 The safety analyzer scans all files before push. Issues are classified as
