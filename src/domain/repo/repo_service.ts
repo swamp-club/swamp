@@ -109,7 +109,6 @@ export interface RepoUpgradeResult {
 export interface RepoInitOptions {
   force?: boolean;
   tool?: AiTool;
-  includeGitignore?: boolean;
 }
 
 /**
@@ -217,14 +216,9 @@ export class RepoService {
         assertNever(tool);
     }
 
-    // Manage .gitignore only when opted in
-    let gitignoreAction: GitignoreAction;
-    if (options.includeGitignore) {
-      gitignoreAction = await this.ensureGitignoreSection(repoPath, tool);
-      markerData.gitignoreManaged = true;
-    } else {
-      gitignoreAction = "skipped";
-    }
+    // Always manage .gitignore on init
+    const gitignoreAction = await this.ensureGitignoreSection(repoPath, tool);
+    markerData.gitignoreManaged = true;
 
     await this.markerRepo.write(repoPath, markerData);
 
