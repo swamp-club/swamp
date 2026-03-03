@@ -245,7 +245,7 @@ Deno.test("ExtensionApiClient.yankExtension sends POST with reason to version ya
   const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
     capturedUrl = req.url;
     capturedMethod = req.method;
-    capturedAuth = req.headers.get("authorization") ?? "";
+    capturedAuth = req.headers.get("x-api-key") ?? "";
     capturedBody = await req.text();
     return new Response(
       JSON.stringify({ message: "Yanked @test/ext@2026.02.26.1" }),
@@ -266,7 +266,7 @@ Deno.test("ExtensionApiClient.yankExtension sends POST with reason to version ya
     url.pathname,
     "/api/v1/extensions/%40test%2Fext@2026.02.26.1/yank",
   );
-  assertEquals(capturedAuth, "Bearer swamp_fake-key");
+  assertEquals(capturedAuth, "swamp_fake-key");
   assertEquals(JSON.parse(capturedBody).reason, "Security vulnerability");
   assertStringIncludes(result.message, "Yanked");
   await server.shutdown();

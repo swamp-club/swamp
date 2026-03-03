@@ -113,12 +113,12 @@ export class SwampClubClient {
 
   /**
    * Call /api/whoami to verify identity.
-   * Accepts either a session token or an API key as a Bearer token.
+   * Authenticates using the x-api-key header.
    */
-  async whoami(token: string): Promise<WhoamiResponse> {
+  async whoami(apiKey: string): Promise<WhoamiResponse> {
     const res = await this.fetch("/api/whoami", {
       method: "GET",
-      headers: { "Authorization": `Bearer ${token}` },
+      headers: { "x-api-key": apiKey },
     });
 
     if (!res.ok) {

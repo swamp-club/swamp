@@ -178,11 +178,11 @@ Deno.test("HttpTelemetrySender.sendBatch omits $repo_id when not provided", asyn
   await server.shutdown();
 });
 
-Deno.test("HttpTelemetrySender.sendBatch includes Authorization header when authToken provided", async () => {
-  let capturedAuthHeader: string | null = null;
+Deno.test("HttpTelemetrySender.sendBatch includes x-api-key header when authToken provided", async () => {
+  let capturedApiKey: string | null = null;
 
   const server = Deno.serve({ port: 0 }, async (req: Request) => {
-    capturedAuthHeader = req.headers.get("Authorization");
+    capturedApiKey = req.headers.get("x-api-key");
     await req.body?.cancel();
     return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
   });
@@ -202,16 +202,16 @@ Deno.test("HttpTelemetrySender.sendBatch includes Authorization header when auth
   );
 
   assertEquals(result, true);
-  assertEquals(capturedAuthHeader, "Bearer test-api-key-abc");
+  assertEquals(capturedApiKey, "test-api-key-abc");
 
   await server.shutdown();
 });
 
-Deno.test("HttpTelemetrySender.sendBatch omits Authorization header when authToken not provided", async () => {
-  let capturedAuthHeader: string | null = null;
+Deno.test("HttpTelemetrySender.sendBatch omits x-api-key header when authToken not provided", async () => {
+  let capturedApiKey: string | null = null;
 
   const server = Deno.serve({ port: 0 }, async (req: Request) => {
-    capturedAuthHeader = req.headers.get("Authorization");
+    capturedApiKey = req.headers.get("x-api-key");
     await req.body?.cancel();
     return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
   });
@@ -226,7 +226,7 @@ Deno.test("HttpTelemetrySender.sendBatch omits Authorization header when authTok
   const result = await sender.sendBatch([entry], "user-uuid-123");
 
   assertEquals(result, true);
-  assertEquals(capturedAuthHeader, null);
+  assertEquals(capturedApiKey, null);
 
   await server.shutdown();
 });
