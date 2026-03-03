@@ -1010,7 +1010,7 @@ ${body}`;
       when: { type: "postToolUse" },
       then: {
         type: "runCommand",
-        command: `${swampBin} audit record --from-hook --tool kiro`,
+        command: `"${swampBin}" audit record --from-hook --tool kiro`,
       },
     };
     return JSON.stringify(hook, null, 2) + "\n";
@@ -1082,7 +1082,7 @@ ${body}`;
       hooks: {
         postToolUse: [
           {
-            command: `${swampBin} audit record --from-hook --tool kiro`,
+            command: `"${swampBin}" audit record --from-hook --tool kiro`,
           },
         ],
       },

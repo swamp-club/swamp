@@ -1386,7 +1386,7 @@ Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.json", asy
     assertEquals(hook.then.type, "runCommand");
     assertStringIncludes(
       hook.then.command,
-      "swamp audit record --from-hook --tool kiro",
+      "audit record --from-hook --tool kiro",
     );
 
     // Also verify .vscode/settings.local.json was created
@@ -1417,7 +1417,7 @@ Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
     const hook = JSON.parse(content);
     assertStringIncludes(
       hook.then.command,
-      "swamp audit record --from-hook --tool kiro",
+      "audit record --from-hook --tool kiro",
     );
   });
 });
