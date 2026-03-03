@@ -200,6 +200,57 @@ Deno.test("normalizeHookInput kiro: skips non-execute_bash tools", () => {
   assertEquals(result, null);
 });
 
+// ---- Kiro IDE (USER_PROMPT camelCase format) normalization ----
+
+Deno.test("normalizeHookInput kiro: normalizes Kiro IDE camelCase successful execute_bash", () => {
+  const result = normalizeHookInput("kiro", {
+    toolName: "execute_bash",
+    toolArgs: { command: "npm install" },
+    toolResult: "added 42 packages",
+    toolSuccess: true,
+  });
+
+  assertEquals(result, {
+    command: "npm install",
+    cwd: ".",
+    isFailure: false,
+  });
+});
+
+Deno.test("normalizeHookInput kiro: normalizes Kiro IDE camelCase failed execute_bash", () => {
+  const result = normalizeHookInput("kiro", {
+    toolName: "execute_bash",
+    toolArgs: { command: "npm test" },
+    toolResult: "tests failed with exit code 1",
+    toolSuccess: false,
+  });
+
+  assertEquals(result?.isFailure, true);
+  assertEquals(result?.errorMessage, "tests failed with exit code 1");
+});
+
+Deno.test("normalizeHookInput kiro: skips non-execute_bash Kiro IDE tools", () => {
+  const result = normalizeHookInput("kiro", {
+    toolName: "read",
+    toolArgs: { path: "/foo" },
+    toolResult: "file contents",
+    toolSuccess: true,
+  });
+
+  assertEquals(result, null);
+});
+
+Deno.test("normalizeHookInput kiro: returns null for Kiro IDE empty toolArgs", () => {
+  const result = normalizeHookInput("kiro", {
+    toolName: "execute_bash",
+    toolArgs: {},
+    toolResult: "",
+    toolSuccess: true,
+  });
+
+  assertEquals(result, null);
+});
+
 // ---- OpenCode normalization ----
 
 Deno.test("normalizeHookInput opencode: normalizes successful bash", () => {

@@ -141,23 +141,42 @@ function normalizeCursor(
 
 /**
  * Kiro: postToolUse hook (fires for both success and failure).
- * tool_name === "execute_bash", command from tool_input.command,
- * failure when tool_response.success === false.
+ *
+ * Supports two input formats:
+ * - kiro-cli (stdin, snake_case): tool_name, tool_input, tool_response
+ * - Kiro IDE (USER_PROMPT env var, camelCase): toolName, toolArgs, toolResult, toolSuccess
+ *
+ * tool_name/toolName === "execute_bash", command from tool_input/toolArgs,
+ * failure when tool_response.success === false or toolSuccess === false.
  */
 function normalizeKiro(
   raw: Record<string, unknown>,
 ): NormalizedHookInput | null {
-  if (raw.tool_name !== "execute_bash") return null;
+  // Support both kiro-cli (snake_case) and Kiro IDE (camelCase) field names
+  const toolName = (raw.tool_name ?? raw.toolName) as string | undefined;
+  if (toolName !== "execute_bash") return null;
 
-  const toolInput = raw.tool_input as { command?: string } | undefined;
+  const toolInput = (raw.tool_input ?? raw.toolArgs) as
+    | { command?: string }
+    | undefined;
   const command = toolInput?.command;
   if (!command) return null;
 
+  // kiro-cli format: tool_response.success / tool_response.error
   const toolResponse = raw.tool_response as
     | { success?: boolean; error?: string }
     | undefined;
-  const isFailure = toolResponse?.success === false;
-  const errorMessage = toolResponse?.error;
+  // Kiro IDE format: toolSuccess boolean, toolResult string
+  const toolSuccess = raw.toolSuccess as boolean | undefined;
+
+  const isFailure = toolResponse !== undefined
+    ? toolResponse.success === false
+    : toolSuccess !== undefined
+    ? !toolSuccess
+    : false;
+
+  const errorMessage = toolResponse?.error ??
+    (isFailure ? (raw.toolResult as string | undefined) : undefined);
 
   return {
     command,

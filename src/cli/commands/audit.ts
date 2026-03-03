@@ -49,6 +49,21 @@ async function readStdin(): Promise<string> {
   return chunks.join("");
 }
 
+/**
+ * Reads hook input for the given tool.
+ *
+ * Kiro IDE passes postToolUse data via the USER_PROMPT environment variable
+ * rather than stdin. We check USER_PROMPT first for kiro, falling back to
+ * stdin for kiro-cli compatibility. All other tools read from stdin.
+ */
+function readHookInput(tool: HookTool): Promise<string> {
+  if (tool === "kiro") {
+    const envInput = Deno.env.get("USER_PROMPT");
+    if (envInput) return Promise.resolve(envInput);
+  }
+  return readStdin();
+}
+
 /** Valid values for the --tool option */
 const VALID_HOOK_TOOLS: HookTool[] = ["claude", "cursor", "kiro", "opencode"];
 
@@ -76,7 +91,7 @@ export const auditRecordCommand = new Command()
         return;
       }
 
-      const input = await readStdin();
+      const input = await readHookInput(tool);
       if (!input.trim()) {
         return;
       }

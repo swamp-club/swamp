@@ -1346,7 +1346,7 @@ Deno.test("RepoService.upgrade with cursor updates hooks", async () => {
 
 // Kiro audit hook tests
 
-Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.json", async () => {
+Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.kiro.hook", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -1355,12 +1355,14 @@ Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.json", asy
 
     assertEquals(result.settingsCreated, true);
 
-    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
+    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook");
     const content = await Deno.readTextFile(hookPath);
     const hook = JSON.parse(content);
     assertEquals(hook.name, "Swamp Audit");
     assertEquals(hook.when.type, "postToolUse");
+    assertEquals(hook.when.toolTypes, ["*"]);
     assertEquals(hook.then.type, "runCommand");
+    assertEquals(hook.then.timeout, 5);
     assertStringIncludes(
       hook.then.command,
       "audit record --from-hook --tool kiro",
@@ -1389,13 +1391,51 @@ Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
 
     assertEquals(result.tool, "kiro");
 
-    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
+    const hookPath = join(
+      tempDir,
+      ".kiro",
+      "hooks",
+      "swamp-audit.kiro.hook",
+    );
     const content = await Deno.readTextFile(hookPath);
     const hook = JSON.parse(content);
     assertStringIncludes(
       hook.then.command,
       "audit record --from-hook --tool kiro",
     );
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro removes old swamp-audit.json hook file", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "kiro" });
+
+    // Simulate an old hook file left from a previous version
+    const oldHookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
+    await Deno.writeTextFile(oldHookPath, "{}");
+
+    const upgradeService = new RepoService("0.2.0");
+    await upgradeService.upgrade(repoPath, { tool: "kiro" });
+
+    // Old .json hook file should be removed
+    await assertRejects(
+      () => Deno.stat(oldHookPath),
+      Deno.errors.NotFound,
+    );
+
+    // New .kiro.hook file should exist
+    const newHookPath = join(
+      tempDir,
+      ".kiro",
+      "hooks",
+      "swamp-audit.kiro.hook",
+    );
+    const content = await Deno.readTextFile(newHookPath);
+    const hook = JSON.parse(content);
+    assertEquals(hook.name, "Swamp Audit");
   });
 });
 
