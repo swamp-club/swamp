@@ -198,17 +198,17 @@ export const authLoginCommand = new Command()
         sessionToken = await browserFlow(serverUrl, spinner);
       }
 
-      // Verify identity using the session token (bearer plugin handles this)
-      spinner?.update("Securing session...");
-      const whoami = await client.whoami(sessionToken);
-      const username = whoami.username ?? knownUsername ?? "unknown";
-
       // Create an API key for CLI use
       // BetterAuth limits API key names to 32 characters
+      spinner?.update("Securing session...");
       const host = (Deno.hostname?.() ?? "unknown").slice(0, 14);
       const keyName = `cli-${host}-${Date.now()}`;
       ctx.logger.debug`Creating API key: ${keyName}`;
       const apiKey = await client.createApiKey(sessionToken, keyName);
+
+      // Verify identity using the new API key
+      const whoami = await client.whoami(apiKey.key);
+      const username = whoami.username ?? knownUsername ?? "unknown";
 
       // Store credentials
       const repo = new AuthRepository();

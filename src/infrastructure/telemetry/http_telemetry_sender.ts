@@ -49,7 +49,7 @@ export class HttpTelemetrySender implements TelemetrySender {
     try {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
-        ...(authToken ? { "Authorization": `Bearer ${authToken}` } : {}),
+        ...(authToken ? { "x-api-key": authToken } : {}),
       };
 
       const response = await fetch(`${this.endpointUrl}/ingest`, {
