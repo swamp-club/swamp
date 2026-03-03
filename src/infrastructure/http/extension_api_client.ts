@@ -390,7 +390,7 @@ export class ExtensionApiClient {
   }
 
   private authHeaders(apiKey: string): Record<string, string> {
-    return { "Authorization": `Bearer ${apiKey}` };
+    return { "x-api-key": apiKey };
   }
 
   private async checkResponse(res: Response): Promise<void> {

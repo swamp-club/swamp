@@ -149,16 +149,16 @@ Deno.test("SwampClubClient - throws UserError on connection failure", async () =
   );
 });
 
-Deno.test("SwampClubClient - sends Authorization Bearer header for whoami", async () => {
-  let capturedAuth = "";
+Deno.test("SwampClubClient - sends x-api-key header for whoami", async () => {
+  let capturedApiKey = "";
   const mock = startMockServer((req) => {
-    capturedAuth = req.headers.get("authorization") ?? "";
+    capturedApiKey = req.headers.get("x-api-key") ?? "";
     return Response.json({ authenticated: true, username: "u" });
   });
   try {
     const client = new SwampClubClient(`http://localhost:${mock.port}`);
     await client.whoami("my-api-key");
-    assertEquals(capturedAuth, "Bearer my-api-key");
+    assertEquals(capturedApiKey, "my-api-key");
   } finally {
     await mock.shutdown();
   }

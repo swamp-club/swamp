@@ -30,7 +30,7 @@ export interface TelemetrySender {
    * @param entries - The entries to send
    * @param distinctId - The user or repo UUID used as distinct_id
    * @param repoId - Optional repo UUID included as a property
-   * @param authToken - Optional API key used as Bearer token to authenticate the flush request
+   * @param authToken - Optional API key sent via x-api-key header to authenticate the flush request
    * @returns true if the batch was accepted, false otherwise
    */
   sendBatch(
