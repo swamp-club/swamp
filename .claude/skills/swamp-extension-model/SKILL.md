@@ -52,6 +52,8 @@ than wrapping CLI commands.
 | Create instance     | `swamp model create @myorg/my-model my-instance --json` |
 | Run method          | `swamp model method run my-instance run --json`         |
 | Create manifest     | Create `manifest.yaml` with model/workflow entries      |
+| Format extension    | `swamp extension fmt manifest.yaml`                     |
+| Check formatting    | `swamp extension fmt manifest.yaml --check`             |
 | Push extension      | `swamp extension push manifest.yaml`                    |
 | Dry-run push        | `swamp extension push manifest.yaml --dry-run`          |
 

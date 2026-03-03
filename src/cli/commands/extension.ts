@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { extensionPushCommand } from "./extension_push.ts";
 import { extensionPullCommand } from "./extension_pull.ts";
+import { extensionFmtCommand } from "./extension_fmt.ts";
 import { extensionRemoveCommand } from "./extension_rm.ts";
 import { extensionListCommand } from "./extension_list.ts";
 import { extensionSearchCommand } from "./extension_search.ts";
@@ -35,6 +36,7 @@ export const extensionCommand = new Command()
     this.showHelp();
   })
   .command("push", extensionPushCommand)
+  .command("fmt", extensionFmtCommand)
   .command("pull", extensionPullCommand)
   .command("rm", extensionRemoveCommand)
   .command("list", extensionListCommand)
