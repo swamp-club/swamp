@@ -150,6 +150,61 @@ converted to hyphens when stored.
 - Without prefix: `{secret-key}` (with `/` and `_` replaced by `-`)
 - With prefix: `{secret_prefix}{secret-key}` (same replacement applied)
 
+## 1Password Provider (`1password`)
+
+### Configuration Options
+
+```yaml
+# .swamp/vault/1password/{id}.yaml
+id: jkl-012
+name: op-secrets
+type: 1password
+config:
+  op_vault: my-vault # 1Password vault name (required)
+  op_account: my-team # Account shorthand for multi-account setups (optional)
+createdAt: 2025-02-01T...
+```
+
+### Creation
+
+```bash
+# Explicit vault name
+swamp vault create 1password op-secrets --op-vault "my-vault"
+
+# With account shorthand
+swamp vault create 1password op-secrets --op-vault "my-vault" --op-account "my-team"
+
+# From environment variables
+export OP_VAULT=my-vault
+export OP_ACCOUNT=my-team
+swamp vault create 1password op-secrets
+```
+
+### Authentication
+
+Requires the 1Password CLI (`op`). Authenticates via (in order):
+
+1. Service account token: `OP_SERVICE_ACCOUNT_TOKEN`
+2. Desktop app biometric unlock (enable CLI integration in 1Password settings)
+3. 1Password Connect Server: `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN`
+
+### Secret Key Mapping
+
+Keys are mapped to 1Password `op://` URIs:
+
+| Key Format               | Maps To                              |
+| ------------------------ | ------------------------------------ |
+| `item-name`              | `op://vault/item-name/password`      |
+| `item-name/field`        | `op://vault/item-name/field`         |
+| `item/section/field`     | `op://vault/item/section/field`      |
+| `op://vault/item/field`  | Passed through directly              |
+
+### Write Behavior
+
+- If the item exists, the field is updated via `op item edit`
+- If the item does not exist, a new Secure Note is created via `op item create`
+- Full `op://` URIs cannot be used for `put` operations
+
 ## Mock Provider (Testing Only)
 
 A mock provider exists for testing and demonstrations. It stores secrets

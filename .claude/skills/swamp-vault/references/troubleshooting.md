@@ -82,6 +82,82 @@
    chmod 600 .swamp/secrets/local_encryption/{vault-name}/.key
    ```
 
+### 1Password CLI Errors
+
+**Symptom**: `Error: 1Password CLI (op) is not installed or not in PATH`
+
+**Solution**: Install the `op` CLI from
+https://developer.1password.com/docs/cli/get-started/ and authenticate:
+
+```bash
+# Service account
+export OP_SERVICE_ACCOUNT_TOKEN=<token>
+
+# Or enable desktop app CLI integration in 1Password settings
+```
+
+**Symptom**: `1Password authentication failed`
+
+**Solution**: Sign in or set credentials:
+
+```bash
+op signin
+# Or set OP_SERVICE_ACCOUNT_TOKEN
+```
+
+### User-Defined Vault Loading Errors
+
+**Symptom**: `Warning: Failed to load user vault <file>: <error>`
+
+**Causes and solutions**:
+
+1. Missing `vault` export — ensure file has `export const vault = { ... }`
+2. Invalid type format — must match `@namespace/name` (e.g.,
+   `@hashicorp/vault`)
+3. Reserved namespace — cannot use `@swamp/` or `@si/` namespaces
+4. Duplicate type — another file already registered the same type
+5. Invalid `configSchema` — must be a Zod schema instance (`z.object({...})`)
+6. Missing `createProvider` — must be a function returning a VaultProvider
+
+**Symptom**: `Unknown vault type: @myorg/my-vault`
+
+**Causes**:
+
+1. Vault file not in `extensions/vaults/` (or configured vaults directory)
+2. File has a `_test.ts` suffix (test files are excluded)
+3. Bundle failed at startup — check for TypeScript errors in the vault file
+
+**Debug steps**:
+
+```bash
+# Check if the type is registered
+swamp vault type search --json
+
+# Check startup logs for loading errors
+SWAMP_DEBUG=1 swamp vault type search
+```
+
+### User-Defined Vault Config Errors
+
+**Symptom**: `Invalid config for vault type '@myorg/my-vault': ...`
+
+**Solution**: The `--config` JSON does not match the vault's `configSchema`.
+Check the required fields:
+
+```bash
+# View available types and their descriptions
+swamp vault type search --json
+```
+
+**Symptom**: `User-defined vault type requires --config <json>`
+
+**Solution**: User-defined vaults always need `--config`:
+
+```bash
+swamp vault create @myorg/my-vault my-vault \
+  --config '{"address": "https://example.com"}'
+```
+
 ### Expression Evaluation Errors
 
 **Symptom**: `Error evaluating vault expression: vault.get(dev-secrets, KEY)`

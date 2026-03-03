@@ -1,6 +1,6 @@
 ---
 name: swamp-vault
-description: Manage swamp vaults for secure secret storage. Use when creating vaults, storing secrets, retrieving secrets, listing vault keys, or working with vault expressions in workflows. Triggers on "vault", "secret", "secrets", "credentials", "api key storage", "secure storage", "password", "token", "key management", "sensitive data", "encrypt", "aws secrets manager", "store secret", "put secret", "get secret", "credential storage", or vault-related CLI commands.
+description: Manage swamp vaults for secure secret storage. Use when creating vaults, storing secrets, retrieving secrets, listing vault keys, or working with vault expressions in workflows. Triggers on "vault", "secret", "secrets", "credentials", "api key storage", "secure storage", "password", "token", "key management", "sensitive data", "encrypt", "aws secrets manager", "store secret", "put secret", "get secret", "credential storage", "user-defined vault", "custom vault", "vault implementation", "extensions/vaults", "vault provider", or vault-related CLI commands.
 ---
 
 # Swamp Vault Skill
@@ -37,49 +37,38 @@ Vaults use the dual-layer architecture:
 
 ## Vault Types
 
-Three vault types are available:
+### Built-in Types
 
-### aws-sm
+| Type               | Description                    | Key Config                 |
+| ------------------ | ------------------------------ | -------------------------- |
+| `aws-sm`           | AWS Secrets Manager            | `--region` or `AWS_REGION` |
+| `azure-kv`         | Azure Key Vault                | `--vault-url` or env var   |
+| `1password`        | 1Password via CLI              | `--op-vault` or `OP_VAULT` |
+| `local_encryption` | Local AES-GCM encrypted files  | Auto-generated key         |
 
-Integrates with AWS Secrets Manager. Region is resolved at creation time from
-`--region` flag or `AWS_REGION` env var.
+See [references/providers.md](references/providers.md) for full configuration
+details on each built-in type.
 
-```yaml
-config:
-  region: "us-east-1" # Resolved at creation time
-```
+### User-Defined Types
 
-### azure-kv
+Create custom vault implementations in `extensions/vaults/*.ts`. User-defined
+vaults follow the `@namespace/name` type format (e.g., `@hashicorp/vault`,
+`@openbao/vault`).
 
-Integrates with Azure Key Vault. Vault URL is resolved at creation time from
-`--vault-url` flag or `AZURE_KEYVAULT_URL` env var. Uses
-`DefaultAzureCredential` for authentication (env vars, managed identity, Azure
-CLI).
-
-```yaml
-config:
-  vault_url: "https://myvault.vault.azure.net/" # Resolved at creation time
-  # secret_prefix: "swamp/"  # Optional: prefix for all secret names
-```
-
-### local_encryption
-
-Stores secrets encrypted locally using AES-GCM. Best for development and local
-workflows.
-
-```yaml
-config:
-  auto_generate: true # Generate encryption key automatically
-  # OR
-  ssh_key_path: "~/.ssh/id_rsa" # Use SSH key for encryption
-```
+See [references/user-defined-vaults.md](references/user-defined-vaults.md) for
+the full implementation guide, export contract, and examples.
 
 ## Create a Vault
 
 ```bash
+# Built-in types
 swamp vault create local_encryption dev-secrets --json
 swamp vault create aws-sm prod-secrets --region us-east-1 --json
 swamp vault create azure-kv azure-secrets --vault-url https://myvault.vault.azure.net/ --json
+swamp vault create 1password op-secrets --op-vault "my-vault" --json
+
+# User-defined types (pass config as JSON)
+swamp vault create @hashicorp/vault my-hcv --config '{"address": "https://vault.example.com:8200"}' --json
 ```
 
 **Output shape:**
@@ -248,15 +237,19 @@ See the **swamp-extension-model** skill for full schema examples.
 
 ## When to Use Other Skills
 
-| Need                     | Use Skill        |
-| ------------------------ | ---------------- |
-| Vault usage in workflows | `swamp-workflow` |
-| Create/run models        | `swamp-model`    |
-| Repository structure     | `swamp-repo`     |
-| Manage model data        | `swamp-data`     |
+| Need                        | Use Skill               |
+| --------------------------- | ----------------------- |
+| Vault usage in workflows    | `swamp-workflow`        |
+| Create/run models           | `swamp-model`           |
+| Create custom model types   | `swamp-extension-model` |
+| Repository structure        | `swamp-repo`            |
+| Manage model data           | `swamp-data`            |
 
 ## References
 
+- **User-defined vaults**: See
+  [references/user-defined-vaults.md](references/user-defined-vaults.md) for
+  creating custom vault implementations
 - **Examples**: See [references/examples.md](references/examples.md) for
   multi-vault setups, workflow usage, and migration patterns
 - **Provider details**: See [references/providers.md](references/providers.md)

@@ -19,6 +19,7 @@ resources/
 .swamp/secrets/
 .swamp/telemetry/
 .swamp/bundles/
+.swamp/vault-bundles/
 
 test-repo/
 .vault-*/

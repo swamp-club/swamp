@@ -5,6 +5,7 @@
 - [Multi-Vault Setup](#multi-vault-setup)
 - [Using Vaults in Models](#using-vaults-in-models)
 - [Using Vaults in Workflows](#using-vaults-in-workflows)
+- [Using User-Defined Vaults](#using-user-defined-vaults)
 - [Migration Patterns](#migration-patterns)
 - [Rotation Patterns](#rotation-patterns)
 
@@ -170,6 +171,59 @@ tags:
 globalArguments:
   deployKey: ${{ vault.get("prod-secrets", "DEPLOY_KEY") }}
   endpoint: https://deploy.example.com
+```
+
+## Using User-Defined Vaults
+
+### Setup and Usage
+
+Create a user-defined vault implementation, then use it like any built-in vault:
+
+```bash
+# Create vault instance (user-defined types use --config)
+swamp vault create @hashicorp/vault my-hcv \
+  --config '{"address": "https://vault.example.com:8200", "path_prefix": "myapp/prod"}'
+
+# Store and retrieve secrets
+swamp vault put my-hcv db-password "s3cur3-p@ssw0rd"
+swamp vault list-keys my-hcv
+```
+
+### User-Defined Vault in Workflows
+
+```yaml
+name: deploy-with-hcv
+version: 1
+jobs:
+  - name: deploy
+    steps:
+      - name: run-deploy
+        task:
+          type: model_method
+          modelIdOrName: deploy-service
+          methodName: deploy
+        env:
+          DB_PASSWORD: ${{ vault.get(my-hcv, db-password) }}
+          API_KEY: ${{ vault.get(my-hcv, api-key) }}
+```
+
+### Mixed Built-in and User-Defined Vaults
+
+```bash
+# Local vault for dev secrets
+swamp vault create local_encryption dev-secrets
+
+# HashiCorp Vault for production
+swamp vault create @hashicorp/vault prod-hcv \
+  --config '{"address": "https://vault.prod.internal:8200", "path_prefix": "prod"}'
+```
+
+Reference both in models:
+
+```yaml
+globalArguments:
+  devKey: ${{ vault.get(dev-secrets, API_KEY) }}
+  prodKey: ${{ vault.get(prod-hcv, API_KEY) }}
 ```
 
 ## Migration Patterns
