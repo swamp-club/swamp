@@ -35,11 +35,11 @@ export const vault = {
 
 ## File Location
 
-| Priority | Source                           |
-| -------- | -------------------------------- |
-| 1        | `SWAMP_VAULTS_DIR` env var       |
-| 2        | `vaultsDir` in `.swamp.yaml`     |
-| 3        | `extensions/vaults/` (default)   |
+| Priority | Source                         |
+| -------- | ------------------------------ |
+| 1        | `SWAMP_VAULTS_DIR` env var     |
+| 2        | `vaultsDir` in `.swamp.yaml`   |
+| 3        | `extensions/vaults/` (default) |
 
 Files ending in `_test.ts` are excluded. Files without a `vault` export are
 silently skipped (utility files).
@@ -96,7 +96,9 @@ class HashiCorpVaultProvider {
     );
     if (!resp.ok) {
       if (resp.status === 404) {
-        throw new Error(`Secret '${secretKey}' not found in vault '${this.name}'`);
+        throw new Error(
+          `Secret '${secretKey}' not found in vault '${this.name}'`,
+        );
       }
       throw new Error(`Failed to get '${secretKey}': ${resp.status}`);
     }
@@ -155,12 +157,17 @@ class HashiCorpVaultProvider {
 export const vault = {
   type: "@hashicorp/vault",
   name: "HashiCorp Vault",
-  description: "KV v2 secrets engine via HTTP API. Requires VAULT_TOKEN env var.",
+  description:
+    "KV v2 secrets engine via HTTP API. Requires VAULT_TOKEN env var.",
   configSchema: z.object({
     address: z.string().url().describe("Vault server address"),
-    token_env: z.string().optional().describe("Env var for token (default: VAULT_TOKEN)"),
+    token_env: z.string().optional().describe(
+      "Env var for token (default: VAULT_TOKEN)",
+    ),
     namespace: z.string().optional().describe("Vault namespace (enterprise)"),
-    mount_path: z.string().optional().describe("KV mount path (default: secret)"),
+    mount_path: z.string().optional().describe(
+      "KV mount path (default: secret)",
+    ),
     path_prefix: z.string().optional().describe("Path prefix (default: swamp)"),
   }),
   createProvider(name: string, config: Record<string, unknown>) {
@@ -190,7 +197,8 @@ import { z } from "npm:zod";
 export const vault = {
   type: "@myorg/env-vault",
   name: "Environment Variable Vault",
-  description: "Read secrets from environment variables with a configurable prefix.",
+  description:
+    "Read secrets from environment variables with a configurable prefix.",
   configSchema: z.object({
     prefix: z.string().optional().describe("Env var prefix (default: VAULT_)"),
   }),
@@ -211,7 +219,9 @@ export const vault = {
           .map((k) => k.slice(prefix.length))
           .sort();
       },
-      getName() { return name; },
+      getName() {
+        return name;
+      },
     };
   },
 };
@@ -222,7 +232,8 @@ export const vault = {
 1. **Import**: Use `import { z } from "npm:zod";` (same as extension models)
 2. **Export**: Must be `export const vault` (named export, not default)
 3. **Namespaces**: `@swamp/` and `@si/` are reserved for built-in types
-4. **Config**: User-defined vaults always use `--config <json>` on `vault create`
+4. **Config**: User-defined vaults always use `--config <json>` on
+   `vault create`
 5. **Bundling**: Files are bundled by Deno before import — standard Deno imports
    (`npm:`, `jsr:`, `https://`) all work
 6. **Caching**: Bundles are cached in `.swamp/vault-bundles/` and rebuilt when

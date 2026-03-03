@@ -192,12 +192,12 @@ Requires the 1Password CLI (`op`). Authenticates via (in order):
 
 Keys are mapped to 1Password `op://` URIs:
 
-| Key Format               | Maps To                              |
-| ------------------------ | ------------------------------------ |
-| `item-name`              | `op://vault/item-name/password`      |
-| `item-name/field`        | `op://vault/item-name/field`         |
-| `item/section/field`     | `op://vault/item/section/field`      |
-| `op://vault/item/field`  | Passed through directly              |
+| Key Format              | Maps To                         |
+| ----------------------- | ------------------------------- |
+| `item-name`             | `op://vault/item-name/password` |
+| `item-name/field`       | `op://vault/item-name/field`    |
+| `item/section/field`    | `op://vault/item/section/field` |
+| `op://vault/item/field` | Passed through directly         |
 
 ### Write Behavior
 

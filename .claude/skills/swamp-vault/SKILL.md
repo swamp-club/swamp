@@ -39,12 +39,12 @@ Vaults use the dual-layer architecture:
 
 ### Built-in Types
 
-| Type               | Description                    | Key Config                 |
-| ------------------ | ------------------------------ | -------------------------- |
-| `aws-sm`           | AWS Secrets Manager            | `--region` or `AWS_REGION` |
-| `azure-kv`         | Azure Key Vault                | `--vault-url` or env var   |
-| `1password`        | 1Password via CLI              | `--op-vault` or `OP_VAULT` |
-| `local_encryption` | Local AES-GCM encrypted files  | Auto-generated key         |
+| Type               | Description                   | Key Config                 |
+| ------------------ | ----------------------------- | -------------------------- |
+| `aws-sm`           | AWS Secrets Manager           | `--region` or `AWS_REGION` |
+| `azure-kv`         | Azure Key Vault               | `--vault-url` or env var   |
+| `1password`        | 1Password via CLI             | `--op-vault` or `OP_VAULT` |
+| `local_encryption` | Local AES-GCM encrypted files | Auto-generated key         |
 
 See [references/providers.md](references/providers.md) for full configuration
 details on each built-in type.
@@ -237,13 +237,13 @@ See the **swamp-extension-model** skill for full schema examples.
 
 ## When to Use Other Skills
 
-| Need                        | Use Skill               |
-| --------------------------- | ----------------------- |
-| Vault usage in workflows    | `swamp-workflow`        |
-| Create/run models           | `swamp-model`           |
-| Create custom model types   | `swamp-extension-model` |
-| Repository structure        | `swamp-repo`            |
-| Manage model data           | `swamp-data`            |
+| Need                      | Use Skill               |
+| ------------------------- | ----------------------- |
+| Vault usage in workflows  | `swamp-workflow`        |
+| Create/run models         | `swamp-model`           |
+| Create custom model types | `swamp-extension-model` |
+| Repository structure      | `swamp-repo`            |
+| Manage model data         | `swamp-data`            |
 
 ## References
 
