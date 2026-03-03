@@ -1422,6 +1422,55 @@ Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
   });
 });
 
+// Kiro CLI agent config tests
+
+Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "kiro" });
+
+    const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
+    const content = await Deno.readTextFile(configPath);
+    const config = JSON.parse(content);
+    assertEquals(config.name, "swamp");
+    assertEquals(config.tools, ["*"]);
+    assertStringIncludes(
+      JSON.stringify(config.toolsSettings.shell.allowedCommands),
+      "swamp .*",
+    );
+    assertStringIncludes(
+      JSON.stringify(config.hooks.postToolUse),
+      "audit record --from-hook --tool kiro",
+    );
+    assertStringIncludes(
+      JSON.stringify(config.resources),
+      "skill://.kiro/skills/**/SKILL.md",
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro updates agent config", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "kiro" });
+
+    const upgradeService = new RepoService("0.2.0");
+    await upgradeService.upgrade(repoPath, { tool: "kiro" });
+
+    const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
+    const content = await Deno.readTextFile(configPath);
+    const config = JSON.parse(content);
+    assertStringIncludes(
+      JSON.stringify(config.hooks.postToolUse),
+      "audit record --from-hook --tool kiro",
+    );
+  });
+});
+
 // OpenCode audit plugin tests
 
 Deno.test("RepoService.init with opencode creates .opencode/plugins/swamp-audit.ts", async () => {
