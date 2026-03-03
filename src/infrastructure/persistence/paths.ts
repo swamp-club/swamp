@@ -66,6 +66,8 @@ export const SWAMP_SUBDIRS = {
   inputsEvaluated: "inputs-evaluated",
   /** Cached extension bundles */
   bundles: "bundles",
+  /** Cached vault extension bundles */
+  vaultBundles: "vault-bundles",
   /** Audit command logs */
   audit: "audit",
   /** Legacy: resource definitions */

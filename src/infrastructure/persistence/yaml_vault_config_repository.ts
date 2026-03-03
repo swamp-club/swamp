@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { ensureDir } from "@std/fs";
+import { ensureDir, walk } from "@std/fs";
 import { join, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
@@ -75,19 +75,16 @@ export class YamlVaultConfigRepository {
   async findByName(name: string): Promise<VaultConfig | null> {
     const vaultDir = this.getVaultDir();
     try {
-      for await (const typeEntry of Deno.readDir(vaultDir)) {
-        if (!typeEntry.isDirectory) continue;
-
-        const typeDir = join(vaultDir, typeEntry.name);
-        for await (const entry of Deno.readDir(typeDir)) {
-          if (entry.isFile && entry.name.endsWith(".yaml")) {
-            const path = join(typeDir, entry.name);
-            const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as VaultConfigData;
-            if (data.name === name) {
-              return VaultConfig.fromData(data);
-            }
-          }
+      for await (
+        const entry of walk(vaultDir, {
+          exts: [".yaml"],
+          includeDirs: false,
+        })
+      ) {
+        const content = await Deno.readTextFile(entry.path);
+        const data = parseYaml(content) as VaultConfigData;
+        if (data.name === name) {
+          return VaultConfig.fromData(data);
         }
       }
     } catch (error) {
@@ -107,13 +104,15 @@ export class YamlVaultConfigRepository {
     const configs: VaultConfig[] = [];
 
     try {
-      for await (const entry of Deno.readDir(dir)) {
-        if (entry.isFile && entry.name.endsWith(".yaml")) {
-          const path = join(dir, entry.name);
-          const content = await Deno.readTextFile(path);
-          const data = parseYaml(content) as VaultConfigData;
-          configs.push(VaultConfig.fromData(data));
-        }
+      for await (
+        const entry of walk(dir, {
+          exts: [".yaml"],
+          includeDirs: false,
+        })
+      ) {
+        const content = await Deno.readTextFile(entry.path);
+        const data = parseYaml(content) as VaultConfigData;
+        configs.push(VaultConfig.fromData(data));
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
@@ -133,18 +132,15 @@ export class YamlVaultConfigRepository {
     const configs: VaultConfig[] = [];
 
     try {
-      for await (const typeEntry of Deno.readDir(vaultDir)) {
-        if (!typeEntry.isDirectory) continue;
-
-        const typeDir = join(vaultDir, typeEntry.name);
-        for await (const entry of Deno.readDir(typeDir)) {
-          if (entry.isFile && entry.name.endsWith(".yaml")) {
-            const path = join(typeDir, entry.name);
-            const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as VaultConfigData;
-            configs.push(VaultConfig.fromData(data));
-          }
-        }
+      for await (
+        const entry of walk(vaultDir, {
+          exts: [".yaml"],
+          includeDirs: false,
+        })
+      ) {
+        const content = await Deno.readTextFile(entry.path);
+        const data = parseYaml(content) as VaultConfigData;
+        configs.push(VaultConfig.fromData(data));
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {

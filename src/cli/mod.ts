@@ -44,6 +44,7 @@ import {
   WorkflowNameType,
 } from "./completion_types.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
+import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   type RepoMarkerData,
@@ -76,6 +77,8 @@ import { resolveModelsDir } from "./resolve_models_dir.ts";
 export { resolveModelsDir };
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 export { resolveWorkflowsDir };
+import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
+export { resolveVaultsDir };
 
 /**
  * Resolves the log level.
@@ -165,6 +168,47 @@ async function loadUserModels(): Promise<void> {
     // Not in a swamp repo or other error - log at debug level for troubleshooting
     if (Deno.env.get("SWAMP_DEBUG")) {
       console.debug(`Skipping user models: ${error}`);
+    }
+  }
+}
+
+/**
+ * Load user vault implementations from configured directory.
+ */
+async function loadUserVaults(): Promise<void> {
+  const cwd = Deno.cwd();
+  const markerRepo = new RepoMarkerRepository();
+
+  try {
+    const repoPath = RepoPath.create(cwd);
+    const marker = await markerRepo.read(repoPath);
+
+    const vaultsDir = resolveVaultsDir(marker);
+    const absoluteVaultsDir = isAbsolute(vaultsDir)
+      ? vaultsDir
+      : resolve(cwd, vaultsDir);
+
+    const denoRuntime = new EmbeddedDenoRuntime();
+    const loader = new UserVaultLoader(denoRuntime, cwd);
+    const result = await loader.loadVaults(absoluteVaultsDir);
+
+    // Log successes at debug level
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      for (const file of result.loaded) {
+        console.debug(`Loaded user vault type from ${file}`);
+      }
+    }
+
+    // Log failures as warnings (don't block CLI startup)
+    for (const failure of result.failed) {
+      console.error(
+        `Warning: Failed to load user vault ${failure.file}: ${failure.error}`,
+      );
+    }
+  } catch (error) {
+    // Not in a swamp repo or other error - log at debug level for troubleshooting
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      console.debug(`Skipping user vaults: ${error}`);
     }
   }
 }
@@ -305,8 +349,9 @@ export async function runCli(args: string[]): Promise<void> {
     telemetryCtx = await initTelemetryService();
   }
 
-  // Load user models before setting up CLI
+  // Load user models and vaults before setting up CLI
   await loadUserModels();
+  await loadUserVaults();
 
   // Read marker for resolveLogLevel (used in globalAction closure)
   let marker: RepoMarkerData | null = null;

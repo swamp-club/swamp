@@ -30,6 +30,7 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 import {
   RepoMarkerRepository,
@@ -150,11 +151,12 @@ export const extensionPushCommand = new Command()
       manifest.name = suggested;
     }
 
-    // 5. Resolve models dir
+    // 5. Resolve models dir and vaults dir
     const repoPath = RepoPath.create(repoDir);
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
     const modelsDir = resolve(repoDir, resolveModelsDir(marker));
+    const vaultsDir = resolve(repoDir, resolveVaultsDir(marker));
 
     // 6. Collect model files from manifest
     const modelEntryPoints: string[] = [];
@@ -265,6 +267,30 @@ export const extensionPushCommand = new Command()
       }
     }
 
+    // 9a. Collect vault files from manifest
+    const vaultEntryPoints: string[] = [];
+    const allVaultFiles: string[] = [];
+    for (const vaultRef of manifest.vaults) {
+      const vaultPath = resolve(vaultsDir, vaultRef);
+      try {
+        await Deno.stat(vaultPath);
+      } catch {
+        throw new UserError(
+          `Vault file not found: ${vaultRef} (expected at ${vaultPath})`,
+        );
+      }
+      vaultEntryPoints.push(vaultPath);
+    }
+
+    // Resolve local imports for vault entry points
+    if (vaultEntryPoints.length > 0) {
+      const vaultImportResult = await resolveLocalImports(
+        vaultEntryPoints,
+        vaultsDir,
+      );
+      allVaultFiles.push(...vaultImportResult.resolvedFiles);
+    }
+
     // 9. Validate additional files
     const additionalFilePaths: string[] = [];
     for (const af of manifest.additionalFiles) {
@@ -290,6 +316,7 @@ export const extensionPushCommand = new Command()
         workflowFiles: workflowFiles.map((wf) =>
           relative(repoDir, wf.sourcePath)
         ),
+        vaultFiles: allVaultFiles.map((f) => relative(repoDir, f)),
         additionalFiles: additionalFilePaths.map((f) => relative(repoDir, f)),
         platforms: manifest.platforms,
         labels: manifest.labels,
@@ -301,6 +328,7 @@ export const extensionPushCommand = new Command()
     // 11. Run safety analysis
     const allFiles = [
       ...allModelFiles,
+      ...allVaultFiles,
       ...workflowFiles.map((wf) => wf.sourcePath),
       ...additionalFilePaths,
     ];
@@ -340,6 +368,20 @@ export const extensionPushCommand = new Command()
         const js = await bundleExtension(entryPoint, denoPath);
         bundles.set(entryName, js);
         ctx.logger.debug`Bundled ${entryName} (${js.length} bytes)`;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        compilationErrors.push({ file: entryPoint, error: msg });
+      }
+    }
+
+    // Bundle vault entry points
+    const vaultBundles = new Map<string, string>();
+    for (const entryPoint of vaultEntryPoints) {
+      const entryName = relative(vaultsDir, entryPoint).replace(/\.ts$/, "");
+      try {
+        const js = await bundleExtension(entryPoint, denoPath);
+        vaultBundles.set(entryName, js);
+        ctx.logger.debug`Bundled vault ${entryName} (${js.length} bytes)`;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         compilationErrors.push({ file: entryPoint, error: msg });
@@ -411,6 +453,8 @@ export const extensionPushCommand = new Command()
       await Deno.mkdir(join(extDir, "models"), { recursive: true });
       await Deno.mkdir(join(extDir, "bundles"), { recursive: true });
       await Deno.mkdir(join(extDir, "workflows"), { recursive: true });
+      await Deno.mkdir(join(extDir, "vaults"), { recursive: true });
+      await Deno.mkdir(join(extDir, "vault-bundles"), { recursive: true });
       await Deno.mkdir(join(extDir, "files"), { recursive: true });
 
       // Write normalized manifest
@@ -424,6 +468,7 @@ export const extensionPushCommand = new Command()
           ...(manifest.repository ? { repository: manifest.repository } : {}),
           models: manifest.models,
           workflows: manifest.workflows,
+          vaults: manifest.vaults,
           additionalFiles: manifest.additionalFiles,
           ...(manifest.platforms.length > 0
             ? { platforms: manifest.platforms }
@@ -452,6 +497,21 @@ export const extensionPushCommand = new Command()
       for (const wf of workflowFiles) {
         const destPath = join(extDir, "workflows", wf.archiveName);
         await Deno.copyFile(wf.sourcePath, destPath);
+      }
+
+      // Copy vault source files (preserving relative paths from vaultsDir)
+      for (const vaultFile of allVaultFiles) {
+        const relPath = relative(vaultsDir, vaultFile);
+        const destPath = join(extDir, "vaults", relPath);
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.copyFile(vaultFile, destPath);
+      }
+
+      // Write compiled vault bundles
+      for (const [entryName, js] of vaultBundles) {
+        const destPath = join(extDir, "vault-bundles", `${entryName}.js`);
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.writeTextFile(destPath, js);
       }
 
       // Copy additional files
@@ -552,6 +612,7 @@ export const extensionPushCommand = new Command()
           modelCount: allModelFiles.length,
           workflowCount: workflowFiles.length,
           bundleCount: bundles.size,
+          vaultCount: allVaultFiles.length,
         },
         ctx.outputMode,
       );

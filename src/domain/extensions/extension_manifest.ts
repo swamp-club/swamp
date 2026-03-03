@@ -45,6 +45,7 @@ const ExtensionManifestSchemaV1 = z.object({
   repository: z.string().url().optional(),
   workflows: z.array(z.string()).optional(),
   models: z.array(z.string()).optional(),
+  vaults: z.array(z.string()).optional(),
   additionalFiles: z.array(z.string()).optional(),
   platforms: z.array(z.string().min(1)).optional(),
   labels: z.array(z.string().min(1)).optional(),
@@ -56,8 +57,11 @@ const ExtensionManifestSchemaV1 = z.object({
 }).refine(
   (data) =>
     (data.models && data.models.length > 0) ||
-    (data.workflows && data.workflows.length > 0),
-  { message: "Extension must include at least one model or workflow" },
+    (data.workflows && data.workflows.length > 0) ||
+    (data.vaults && data.vaults.length > 0),
+  {
+    message: "Extension must include at least one model, workflow, or vault",
+  },
 );
 
 /** Parsed and validated extension manifest. */
@@ -69,6 +73,7 @@ export interface ExtensionManifest {
   repository: string | undefined;
   workflows: string[];
   models: string[];
+  vaults: string[];
   additionalFiles: string[];
   platforms: string[];
   labels: string[];
@@ -122,6 +127,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     repository: result.data.repository,
     workflows: result.data.workflows ?? [],
     models: result.data.models ?? [],
+    vaults: result.data.vaults ?? [],
     additionalFiles: result.data.additionalFiles ?? [],
     platforms: result.data.platforms ?? [],
     labels: result.data.labels ?? [],

@@ -52,6 +52,7 @@ Deno.test("renderExtensionPushResolved outputs JSON in json mode", () => {
         repository: undefined,
         modelFiles: ["model.ts"],
         workflowFiles: [],
+        vaultFiles: [],
         additionalFiles: [],
         platforms: [],
         labels: [],
@@ -75,6 +76,7 @@ Deno.test("renderExtensionPush outputs JSON in json mode", () => {
         modelCount: 1,
         workflowCount: 0,
         bundleCount: 1,
+        vaultCount: 0,
       },
       "json",
     );

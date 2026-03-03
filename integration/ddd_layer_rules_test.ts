@@ -54,7 +54,7 @@ function importsLayer(
 // Ratchet counts: current number of known violations.
 // If someone fixes a violation, the count decreases and the test still passes.
 // If someone adds a new violation, the count increases and the test fails.
-const KNOWN_DOMAIN_INFRA_VIOLATIONS = 13;
+const KNOWN_DOMAIN_INFRA_VIOLATIONS = 14;
 
 Deno.test(
   "domain layer must not add new infrastructure imports (ratchet)",

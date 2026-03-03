@@ -164,7 +164,7 @@ Deno.test("extension push with invalid manifest (no models or workflows) gives c
       "--no-color",
     ]);
     assertEquals(code === 0, false);
-    assertStringIncludes(stderr, "at least one model or workflow");
+    assertStringIncludes(stderr, "at least one model, workflow, or vault");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
