@@ -24,7 +24,7 @@ import { extractContentMetadata } from "./extension_content_extractor.ts";
 
 Deno.test("extractContentMetadata returns empty for no inputs", async () => {
   const result = await extractContentMetadata([], "/tmp/models", []);
-  assertEquals(result, { models: [], workflows: [] });
+  assertEquals(result, { models: [], workflows: [], vaults: [] });
 });
 
 Deno.test("extractContentMetadata extracts model type from ModelType.create", async () => {
@@ -58,6 +58,7 @@ Deno.test("extractContentMetadata extracts model type from ModelType.create", as
     assertEquals(result.models[0].type, "aws/ec2-instance");
     assertEquals(result.models[0].version, "2026.03.01.1");
     assertEquals(result.models[0].fileName, "instance.ts");
+    assertEquals(result.models[0].globalArguments, []);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -620,6 +621,236 @@ Deno.test("extractContentMetadata skips workflow YAML without name", async () =>
       [{ sourcePath: wfFile, archiveName: "bad-wf.yaml" }],
     );
     assertEquals(result.workflows.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts globalArguments from inline z.object", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "model.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "export const model = {",
+        '  type: "test/global-args",',
+        '  version: "2026.03.01.1",',
+        "  globalArguments: z.object({",
+        '    region: z.string().describe("AWS region"),',
+        '    profile: z.string().optional().describe("AWS profile"),',
+        "  }),",
+        "  methods: {",
+        "    run: {",
+        '      description: "Run",',
+        "      arguments: z.object({}),",
+        "      execute: async () => ({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    assertEquals(result.models[0].globalArguments.length, 2);
+    assertEquals(result.models[0].globalArguments[0].name, "region");
+    assertEquals(result.models[0].globalArguments[0].type, "string");
+    assertEquals(result.models[0].globalArguments[0].required, true);
+    assertEquals(result.models[0].globalArguments[1].name, "profile");
+    assertEquals(result.models[0].globalArguments[1].required, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts globalArguments from named schema reference", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "model.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "const GlobalArgs = z.object({",
+        '  accountId: z.string().describe("AWS account ID"),',
+        "});",
+        "export const model = {",
+        '  type: "test/named-global",',
+        '  version: "2026.03.01.1",',
+        "  globalArguments: GlobalArgs,",
+        "  methods: {",
+        "    run: {",
+        '      description: "Run",',
+        "      arguments: z.object({}),",
+        "      execute: async () => ({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    assertEquals(result.models[0].globalArguments.length, 1);
+    assertEquals(result.models[0].globalArguments[0].name, "accountId");
+    assertEquals(result.models[0].globalArguments[0].type, "string");
+    assertEquals(
+      result.models[0].globalArguments[0].description,
+      "AWS account ID",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts vault type, name, and description", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+
+    const vaultFile = join(vaultsDir, "hashicorp.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const vault = {",
+        '  type: "@hashicorp/vault",',
+        '  name: "HashiCorp Vault",',
+        '  description: "KV v2 secrets engine via HTTP API.",',
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { get: async () => '', put: async () => {}, list: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(result.vaults.length, 1);
+    assertEquals(result.vaults[0].type, "@hashicorp/vault");
+    assertEquals(result.vaults[0].name, "HashiCorp Vault");
+    assertEquals(
+      result.vaults[0].description,
+      "KV v2 secrets engine via HTTP API.",
+    );
+    assertEquals(result.vaults[0].hasConfigSchema, false);
+    assertEquals(result.vaults[0].configFields, []);
+    assertEquals(result.vaults[0].fileName, "hashicorp.ts");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts vault configSchema fields", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+
+    const vaultFile = join(vaultsDir, "custom.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const vault = {",
+        '  type: "@myorg/custom",',
+        '  name: "Custom Vault",',
+        '  description: "A custom vault provider.",',
+        "  configSchema: z.object({",
+        '    address: z.string().url().describe("Server address"),',
+        '    token_env: z.string().optional().describe("Token env var"),',
+        "  }),",
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { get: async () => '', put: async () => {}, list: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(result.vaults[0].hasConfigSchema, true);
+    assertEquals(result.vaults[0].configFields.length, 2);
+    assertEquals(result.vaults[0].configFields[0].name, "address");
+    assertEquals(result.vaults[0].configFields[0].type, "string");
+    assertEquals(result.vaults[0].configFields[0].required, true);
+    assertEquals(result.vaults[0].configFields[1].name, "token_env");
+    assertEquals(result.vaults[0].configFields[1].required, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata skips vault file without vault export", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+
+    const vaultFile = join(vaultsDir, "helper.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      "export const helper = () => 42;\n",
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(result.vaults.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata skips vault without type", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+
+    const vaultFile = join(vaultsDir, "bad.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      [
+        "export const vault = {",
+        '  name: "Bad Vault",',
+        '  description: "Missing type field.",',
+        "  createProvider(name: string) {",
+        "    return { get: async () => '', put: async () => {}, list: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(result.vaults.length, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

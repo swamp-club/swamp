@@ -26,6 +26,7 @@ import type {
   ExtractedMethod,
   ExtractedModel,
   ExtractedResource,
+  ExtractedVault,
   ExtractedWorkflow,
   ExtractedWorkflowJob,
   ExtractedWorkflowStep,
@@ -44,9 +45,12 @@ export async function extractContentMetadata(
   modelFiles: string[],
   modelsDir: string,
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>,
+  vaultFiles: string[] = [],
+  vaultsDir = "",
 ): Promise<ExtensionContentMetadata> {
   const models: ExtractedModel[] = [];
   const workflows: ExtractedWorkflow[] = [];
+  const vaults: ExtractedVault[] = [];
 
   for (const filePath of modelFiles) {
     try {
@@ -72,7 +76,19 @@ export async function extractContentMetadata(
     }
   }
 
-  return { models, workflows };
+  for (const filePath of vaultFiles) {
+    try {
+      const content = await Deno.readTextFile(filePath);
+      const vault = extractVaultFromSource(content, filePath, vaultsDir);
+      if (vault) {
+        vaults.push(vault);
+      }
+    } catch {
+      // Non-fatal: skip files that can't be read or parsed
+    }
+  }
+
+  return { models, workflows, vaults };
 }
 
 /**
@@ -90,6 +106,7 @@ function extractModelFromSource(
   const version = extractModelVersion(content);
   if (!version) return null;
 
+  const globalArguments = extractGlobalArguments(content);
   const methods = extractMethods(content);
   const resources = extractResources(content);
   const files = extractFiles(content);
@@ -98,6 +115,7 @@ function extractModelFromSource(
     fileName: relative(modelsDir, filePath),
     type,
     version,
+    globalArguments,
     methods,
     resources,
     files,
@@ -131,6 +149,121 @@ function extractModelType(content: string): string | null {
 function extractModelVersion(content: string): string | null {
   const match = content.match(/version:\s*["']([^"']+)["']/);
   return match ? match[1] : null;
+}
+
+/**
+ * Extracts global arguments from the model source.
+ * Looks for top-level `globalArguments: z.object({...})` or a named schema reference.
+ */
+function extractGlobalArguments(content: string): ExtractedArgument[] {
+  // Match top-level globalArguments: z.object({...}) — use negative lookbehind
+  // to avoid matching nested keys (e.g. inside a method entry).
+  const inlineMatch = content.match(
+    /(?<![.\w])globalArguments:\s*z\.object\(\s*\{/,
+  );
+  if (inlineMatch && inlineMatch.index !== undefined) {
+    const start = inlineMatch.index + inlineMatch[0].length;
+    const schemaBody = extractBalancedBraces(content, start);
+    if (schemaBody) {
+      return parseZodObjectFields(schemaBody);
+    }
+  }
+
+  // Check for a named schema reference: globalArguments: SomeSchema
+  const refMatch = content.match(/(?<![.\w])globalArguments:\s*(\w+)/);
+  if (refMatch) {
+    const schemaName = refMatch[1];
+    // Skip z.object — already handled above
+    if (schemaName !== "z") {
+      const namedPattern = new RegExp(
+        `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
+      );
+      const namedMatch = content.match(namedPattern);
+      if (namedMatch && namedMatch.index !== undefined) {
+        const start = namedMatch.index + namedMatch[0].length;
+        const schemaBody = extractBalancedBraces(content, start);
+        if (schemaBody) {
+          return parseZodObjectFields(schemaBody);
+        }
+      }
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Extracts vault metadata from a TypeScript source file.
+ * Returns null if the file doesn't contain a recognizable vault definition.
+ * Uses `createProvider` as the discriminator to distinguish vault files from model files.
+ */
+function extractVaultFromSource(
+  content: string,
+  filePath: string,
+  vaultsDir: string,
+): ExtractedVault | null {
+  // Must contain createProvider to be a vault file
+  if (!/createProvider/.test(content)) return null;
+
+  // Find the vault export object body
+  const vaultMatch = content.match(/export\s+const\s+vault\s*=\s*\{/);
+  if (!vaultMatch || vaultMatch.index === undefined) return null;
+
+  const vaultStart = vaultMatch.index + vaultMatch[0].length;
+  const vaultBody = extractBalancedBraces(content, vaultStart);
+  if (!vaultBody) return null;
+
+  // Extract type
+  const typeMatch = vaultBody.match(/type:\s*["']([^"']+)["']/);
+  if (!typeMatch) return null;
+
+  // Extract name
+  const nameMatch = vaultBody.match(/(?<![.\w])name:\s*["']([^"']+)["']/);
+
+  // Extract description
+  const descMatch = vaultBody.match(
+    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
+  );
+
+  // Check for configSchema presence
+  const hasConfigSchema = /configSchema\s*:/.test(vaultBody);
+
+  // Extract config fields if configSchema uses z.object
+  let configFields: ExtractedArgument[] = [];
+  const configInline = vaultBody.match(/configSchema:\s*z\.object\(\s*\{/);
+  if (configInline && configInline.index !== undefined) {
+    const start = configInline.index + configInline[0].length;
+    const schemaBody = extractBalancedBraces(vaultBody, start);
+    if (schemaBody) {
+      configFields = parseZodObjectFields(schemaBody);
+    }
+  } else if (hasConfigSchema) {
+    // Check for named schema reference
+    const configRef = vaultBody.match(/configSchema:\s*(\w+)/);
+    if (configRef && configRef[1] !== "z") {
+      const schemaName = configRef[1];
+      const namedPattern = new RegExp(
+        `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
+      );
+      const namedMatch = content.match(namedPattern);
+      if (namedMatch && namedMatch.index !== undefined) {
+        const start = namedMatch.index + namedMatch[0].length;
+        const schemaBody = extractBalancedBraces(content, start);
+        if (schemaBody) {
+          configFields = parseZodObjectFields(schemaBody);
+        }
+      }
+    }
+  }
+
+  return {
+    fileName: relative(vaultsDir, filePath),
+    type: typeMatch[1],
+    name: nameMatch ? nameMatch[1] : "",
+    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
+    hasConfigSchema,
+    configFields,
+  };
 }
 
 /**
