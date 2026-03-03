@@ -236,3 +236,92 @@ Deno.test("ExtensionApiClient.searchExtensions throws UserError on connection fa
   );
   assertStringIncludes(error.message, "Could not connect");
 });
+
+Deno.test("ExtensionApiClient.yankExtension sends POST with reason to version yank endpoint", async () => {
+  let capturedUrl = "";
+  let capturedMethod = "";
+  let capturedBody = "";
+  let capturedAuth = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
+    capturedUrl = req.url;
+    capturedMethod = req.method;
+    capturedAuth = req.headers.get("authorization") ?? "";
+    capturedBody = await req.text();
+    return new Response(
+      JSON.stringify({ message: "Yanked @test/ext@2026.02.26.1" }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const result = await client.yankExtension(
+    "@test/ext",
+    "2026.02.26.1",
+    "Security vulnerability",
+    "swamp_fake-key",
+  );
+  const url = new URL(capturedUrl);
+  assertEquals(capturedMethod, "POST");
+  assertEquals(
+    url.pathname,
+    "/api/v1/extensions/%40test%2Fext@2026.02.26.1/yank",
+  );
+  assertEquals(capturedAuth, "Bearer swamp_fake-key");
+  assertEquals(JSON.parse(capturedBody).reason, "Security vulnerability");
+  assertStringIncludes(result.message, "Yanked");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.yankExtension sends POST to extension yank endpoint when no version", async () => {
+  let capturedUrl = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    capturedUrl = _req.url;
+    return new Response(
+      JSON.stringify({ message: "Yanked @test/ext" }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  await client.yankExtension(
+    "@test/ext",
+    null,
+    "Policy violation",
+    "swamp_fake-key",
+  );
+  const url = new URL(capturedUrl);
+  assertEquals(url.pathname, "/api/v1/extensions/%40test%2Fext/yank");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.yankExtension throws UserError on 410 already yanked", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response(
+      JSON.stringify({ error: "'@test/ext' is already yanked" }),
+      { status: 410, headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const error = await assertRejects(
+    () => client.yankExtension("@test/ext", null, "reason", "swamp_fake-key"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "already yanked");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.yankExtension throws UserError on connection failure", async () => {
+  const client = new ExtensionApiClient("http://localhost:1");
+  const error = await assertRejects(
+    () =>
+      client.yankExtension(
+        "@test/ext",
+        "2026.02.26.1",
+        "reason",
+        "fake-key",
+      ),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Could not connect");
+});
