@@ -90,6 +90,11 @@ export interface ExtensionSearchResponse {
   };
 }
 
+/** Response from the yank endpoint. */
+export interface YankResult {
+  message: string;
+}
+
 /**
  * HTTP client for the swamp-club extension registry API.
  *
@@ -355,6 +360,33 @@ export class ExtensionApiClient {
     await this.checkResponse(res);
     const data = await res.json();
     return data.checksum ?? null;
+  }
+
+  /**
+   * Yank an extension or a specific version.
+   * When version is null, yanks the entire extension (all versions).
+   */
+  async yankExtension(
+    name: string,
+    version: string | null,
+    reason: string,
+    apiKey: string,
+  ): Promise<YankResult> {
+    const encodedName = encodeURIComponent(name);
+    const path = version
+      ? `/api/v1/extensions/${encodedName}@${version}/yank`
+      : `/api/v1/extensions/${encodedName}/yank`;
+    const res = await this.fetch(path, {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(apiKey),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ reason }),
+    });
+
+    await this.checkResponse(res);
+    return await res.json();
   }
 
   private authHeaders(apiKey: string): Record<string, string> {
