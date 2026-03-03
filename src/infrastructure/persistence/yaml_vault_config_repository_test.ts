@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
 import { VaultConfig } from "../../domain/vaults/vault_config.ts";
 import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
 
@@ -160,4 +162,96 @@ Deno.test("YamlVaultConfigRepository - findById works for namespaced type", asyn
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("YamlVaultConfigRepository - rejects malformed YAML config", async (t) => {
+  await t.step("should reject YAML missing required 'id' field", async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const vaultDir = join(dir, ".swamp", "vault", "mock");
+      await ensureDir(vaultDir);
+      // Write YAML missing the 'id' field
+      await Deno.writeTextFile(
+        join(vaultDir, "bad.yaml"),
+        "name: bad-vault\ntype: mock\nconfig: {}\ncreatedAt: '2025-01-01T00:00:00Z'\n",
+      );
+
+      const repo = new YamlVaultConfigRepository(dir);
+      const error = await assertRejects(
+        () => repo.findAll(),
+        Error,
+      );
+      assertStringIncludes(error.message, "Invalid vault config");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+
+  await t.step(
+    "should reject YAML missing required 'name' field",
+    async () => {
+      const dir = await Deno.makeTempDir();
+      try {
+        const vaultDir = join(dir, ".swamp", "vault", "mock");
+        await ensureDir(vaultDir);
+        await Deno.writeTextFile(
+          join(vaultDir, "bad.yaml"),
+          "id: test-id\ntype: mock\nconfig: {}\ncreatedAt: '2025-01-01T00:00:00Z'\n",
+        );
+
+        const repo = new YamlVaultConfigRepository(dir);
+        const error = await assertRejects(
+          () => repo.findAll(),
+          Error,
+        );
+        assertStringIncludes(error.message, "Invalid vault config");
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    },
+  );
+
+  await t.step(
+    "should reject YAML with completely wrong structure",
+    async () => {
+      const dir = await Deno.makeTempDir();
+      try {
+        const vaultDir = join(dir, ".swamp", "vault", "mock");
+        await ensureDir(vaultDir);
+        await Deno.writeTextFile(
+          join(vaultDir, "bad.yaml"),
+          "just-a-string\n",
+        );
+
+        const repo = new YamlVaultConfigRepository(dir);
+        const error = await assertRejects(
+          () => repo.findAll(),
+          Error,
+        );
+        assertStringIncludes(error.message, "Invalid vault config");
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    },
+  );
+
+  await t.step("should default config to empty object if missing", async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const vaultDir = join(dir, ".swamp", "vault", "mock");
+      await ensureDir(vaultDir);
+      // Config field omitted - should default to {}
+      await Deno.writeTextFile(
+        join(vaultDir, "ok.yaml"),
+        "id: test-id\nname: ok-vault\ntype: mock\ncreatedAt: '2025-01-01T00:00:00Z'\n",
+      );
+
+      const repo = new YamlVaultConfigRepository(dir);
+      const configs = await repo.findAll();
+      assertEquals(configs.length, 1);
+      assertEquals(configs[0].name, "ok-vault");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
 });

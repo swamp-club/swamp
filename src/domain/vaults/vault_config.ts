@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { z } from "zod";
+
 /**
  * Unique identifier for a vault configuration.
  */
@@ -28,6 +30,17 @@ export type VaultConfigId = string;
 export function createVaultConfigId(id: string): VaultConfigId {
   return id;
 }
+
+/**
+ * Zod schema for validating vault configuration data loaded from YAML files.
+ */
+export const VaultConfigDataSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.string(),
+  config: z.record(z.string(), z.unknown()).default({}),
+  createdAt: z.string(),
+});
 
 /**
  * Data structure for vault configuration stored in YAML files.

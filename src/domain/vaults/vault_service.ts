@@ -118,6 +118,7 @@ export class VaultService {
         }
       }
       provider = registeredType.createProvider(config.name, config.config);
+      assertVaultProvider(provider, config.type, config.name);
       this.providers.set(config.name, provider);
       return;
     }
@@ -288,6 +289,35 @@ export class VaultService {
       }
       // If no credentials, leave providers empty to trigger helpful error messages
     }
+  }
+}
+
+/**
+ * Validates that an object returned by a user-defined createProvider implements
+ * the VaultProvider interface. Throws a descriptive error if any required method
+ * is missing or not a function.
+ */
+function assertVaultProvider(
+  obj: unknown,
+  vaultType: string,
+  vaultName: string,
+): asserts obj is VaultProvider {
+  const required: (keyof VaultProvider)[] = ["get", "put", "list", "getName"];
+  const missing: string[] = [];
+  for (const method of required) {
+    if (
+      typeof obj !== "object" || obj === null ||
+      typeof (obj as Record<string, unknown>)[method] !== "function"
+    ) {
+      missing.push(method);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `createProvider for vault type '${vaultType}' (vault '${vaultName}') returned an invalid provider: ` +
+        `missing methods: ${missing.join(", ")}. ` +
+        `A VaultProvider must implement get, put, list, and getName.`,
+    );
   }
 }
 

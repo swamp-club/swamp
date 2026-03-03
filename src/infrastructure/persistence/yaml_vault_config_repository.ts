@@ -26,6 +26,7 @@ import { assertSafePath } from "./safe_path.ts";
 import {
   VaultConfig,
   type VaultConfigData,
+  VaultConfigDataSchema,
   type VaultConfigId,
 } from "../../domain/vaults/vault_config.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
@@ -59,7 +60,7 @@ export class YamlVaultConfigRepository {
     const path = this.getPath(vaultType, id);
     try {
       const content = await Deno.readTextFile(path);
-      const data = parseYaml(content) as VaultConfigData;
+      const data = this.parseVaultConfig(content, path);
       return VaultConfig.fromData(data);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
@@ -82,7 +83,7 @@ export class YamlVaultConfigRepository {
         })
       ) {
         const content = await Deno.readTextFile(entry.path);
-        const data = parseYaml(content) as VaultConfigData;
+        const data = this.parseVaultConfig(content, entry.path);
         if (data.name === name) {
           return VaultConfig.fromData(data);
         }
@@ -111,7 +112,7 @@ export class YamlVaultConfigRepository {
         })
       ) {
         const content = await Deno.readTextFile(entry.path);
-        const data = parseYaml(content) as VaultConfigData;
+        const data = this.parseVaultConfig(content, entry.path);
         configs.push(VaultConfig.fromData(data));
       }
     } catch (error) {
@@ -139,7 +140,7 @@ export class YamlVaultConfigRepository {
         })
       ) {
         const content = await Deno.readTextFile(entry.path);
-        const data = parseYaml(content) as VaultConfigData;
+        const data = this.parseVaultConfig(content, entry.path);
         configs.push(VaultConfig.fromData(data));
       }
     } catch (error) {
@@ -260,5 +261,20 @@ export class YamlVaultConfigRepository {
    */
   private getPath(vaultType: string, id: VaultConfigId): string {
     return join(this.getTypeDir(vaultType), `${id}.yaml`);
+  }
+
+  /**
+   * Parses YAML content and validates it against the VaultConfigData schema.
+   * Throws a descriptive error if the YAML is malformed or missing required fields.
+   */
+  private parseVaultConfig(content: string, path: string): VaultConfigData {
+    const raw = parseYaml(content);
+    const result = VaultConfigDataSchema.safeParse(raw);
+    if (!result.success) {
+      throw new Error(
+        `Invalid vault config in ${path}: ${result.error.message}`,
+      );
+    }
+    return result.data;
   }
 }

@@ -27,6 +27,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { VaultService } from "./vault_service.ts";
+import { vaultTypeRegistry } from "./vault_type_registry.ts";
 
 Deno.test("VaultService - missing vault configuration error handling", async (t) => {
   await t.step(
@@ -343,6 +344,102 @@ Deno.test("VaultService - basic functionality", async (t) => {
     const vaultNames = vaultService.getVaultNames();
     assertEquals(vaultNames, ["my-1p-vault"]);
   });
+});
+
+Deno.test("VaultService - rejects invalid provider from createProvider", async (t) => {
+  const testType = "@test/broken-provider";
+
+  await t.step(
+    "should throw when createProvider returns an empty object",
+    () => {
+      // Register a user-defined type that returns an invalid provider
+      if (!vaultTypeRegistry.has(testType)) {
+        vaultTypeRegistry.register({
+          type: testType,
+          name: "Broken Provider",
+          description: "Test broken provider",
+          isBuiltIn: false,
+          createProvider: () => ({}) as never,
+        });
+      }
+
+      const vaultService = new VaultService();
+      assertThrows(
+        () => {
+          vaultService.registerVault({
+            name: "broken-vault",
+            type: testType,
+            config: {},
+          });
+        },
+        Error,
+        "missing methods: get, put, list, getName",
+      );
+    },
+  );
+
+  await t.step(
+    "should throw when createProvider returns null",
+    () => {
+      const nullType = "@test/null-provider";
+      if (!vaultTypeRegistry.has(nullType)) {
+        vaultTypeRegistry.register({
+          type: nullType,
+          name: "Null Provider",
+          description: "Test null provider",
+          isBuiltIn: false,
+          createProvider: () => null as never,
+        });
+      }
+
+      const vaultService = new VaultService();
+      assertThrows(
+        () => {
+          vaultService.registerVault({
+            name: "null-vault",
+            type: nullType,
+            config: {},
+          });
+        },
+        Error,
+        "missing methods",
+      );
+    },
+  );
+
+  await t.step(
+    "should throw when createProvider returns partial implementation",
+    () => {
+      const partialType = "@test/partial-provider";
+      if (!vaultTypeRegistry.has(partialType)) {
+        vaultTypeRegistry.register({
+          type: partialType,
+          name: "Partial Provider",
+          description: "Test partial provider",
+          isBuiltIn: false,
+          createProvider: (name: string) =>
+            ({
+              get: (_key: string) => Promise.resolve("value"),
+              getName: () => name,
+              // missing put and list
+            }) as never,
+        });
+      }
+
+      const vaultService = new VaultService();
+      assertThrows(
+        () => {
+          vaultService.registerVault({
+            name: "partial-vault",
+            type: partialType,
+            config: {},
+          });
+        },
+        Error,
+        "missing methods: put, list",
+      );
+    },
+  );
 });
 
 Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async (t) => {
