@@ -160,7 +160,7 @@ export class RepoService {
       throw new UserError(
         `Repository already initialized at ${repoPath.value} (tool: "${currentTool}"). ` +
           "To switch tools, run: swamp repo upgrade -t <tool>. " +
-          "To reinitialize from scratch, run: swamp repo --force -t <tool>",
+          "To reinitialize from scratch, run: swamp repo init --force -t <tool>",
       );
     }
 
