@@ -149,6 +149,123 @@ Deno.test("SwampClubClient - throws UserError on connection failure", async () =
   );
 });
 
+Deno.test("SwampClubClient - listApiKeys returns array of keys", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json([
+      {
+        id: "key-1",
+        name: "test-key",
+        start: "swamp_abc",
+        prefix: "swamp",
+        enabled: true,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        lastUsedAt: null,
+        lastRefillAt: null,
+        rateLimitEnabled: false,
+        rateLimitTimeWindow: 0,
+        rateLimitMax: 0,
+        requestCount: 0,
+        remaining: null,
+        refillAmount: null,
+        refillInterval: null,
+        metadata: null,
+        expiresAt: null,
+        permissions: null,
+        userId: "u1",
+      },
+    ])
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.listApiKeys("token");
+    assertEquals(result.length, 1);
+    assertEquals(result[0].id, "key-1");
+    assertEquals(result[0].name, "test-key");
+    assertEquals(result[0].enabled, true);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - listApiKeys throws on failure", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("Unauthorized", { status: 401 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.listApiKeys("bad-token"),
+      UserError,
+      "Failed to list API keys",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - updateApiKey succeeds on 200", async () => {
+  let capturedAuth = "";
+  const mock = startMockServer((req) => {
+    capturedAuth = req.headers.get("authorization") ?? "";
+    return new Response(null, { status: 200 });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await client.updateApiKey("token", "key-1", false);
+    assertEquals(capturedAuth, "Bearer token");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - updateApiKey throws on failure", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("Not found", { status: 404 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.updateApiKey("token", "bad-key", false),
+      UserError,
+      "Failed to update API key",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - deleteApiKey succeeds on 200", async () => {
+  let capturedAuth = "";
+  const mock = startMockServer((req) => {
+    capturedAuth = req.headers.get("authorization") ?? "";
+    return new Response(null, { status: 200 });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await client.deleteApiKey("token", "key-1");
+    assertEquals(capturedAuth, "Bearer token");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - deleteApiKey throws on failure", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("Server error", { status: 500 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.deleteApiKey("token", "bad-key"),
+      UserError,
+      "Failed to delete API key",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
 Deno.test("SwampClubClient - sends Authorization Bearer header for whoami", async () => {
   let capturedAuth = "";
   const mock = startMockServer((req) => {
