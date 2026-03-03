@@ -1,0 +1,907 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
+import { SymlinkRepoIndexService } from "./symlink_repo_index_service.ts";
+import { YamlDefinitionRepository } from "../persistence/yaml_definition_repository.ts";
+import { YamlWorkflowRepository } from "../persistence/yaml_workflow_repository.ts";
+import { YamlWorkflowRunRepository } from "../persistence/yaml_workflow_run_repository.ts";
+import type { UnifiedDataRepository } from "../persistence/unified_data_repository.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
+import { Data } from "../../domain/data/data.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  createModelCreated,
+  createModelDeleted,
+  createVaultCreated,
+  createVaultDeleted,
+  createWorkflowCreated,
+  createWorkflowDeleted,
+  createWorkflowRunStarted,
+} from "../../domain/events/types.ts";
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-index-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+async function setupRepoDir(dir: string): Promise<void> {
+  // Create standard data directory structure
+  const subdirs = [
+    // .swamp paths
+    ".swamp/definitions",
+    ".swamp/data",
+    ".swamp/outputs",
+    ".swamp/workflows",
+    ".swamp/workflow-runs",
+    // Logical view directories
+    "models",
+    "workflows",
+  ];
+  for (const subdir of subdirs) {
+    await ensureDir(join(dir, subdir));
+  }
+}
+
+function createIndexService(dir: string, opts?: {
+  unifiedDataRepo?: UnifiedDataRepository;
+}) {
+  const definitionRepo = new YamlDefinitionRepository(dir);
+  const workflowRepo = new YamlWorkflowRepository(dir);
+  const workflowRunRepo = new YamlWorkflowRunRepository(dir);
+
+  return {
+    indexService: new SymlinkRepoIndexService({
+      repoDir: dir,
+      definitionRepo,
+      workflowRepo,
+      workflowRunRepo,
+      unifiedDataRepo: opts?.unifiedDataRepo,
+    }),
+    definitionRepo,
+    workflowRepo,
+    workflowRunRepo,
+  };
+}
+
+function createStubUnifiedDataRepo(
+  dataItems: Data[],
+): UnifiedDataRepository {
+  const notImplemented = () => {
+    throw new Error("not implemented");
+  };
+  return {
+    findAllGlobal: notImplemented,
+    findByName: notImplemented,
+    findById: notImplemented,
+    listVersions: () => Promise.resolve([]),
+    findAllForModel: () => Promise.resolve(dataItems),
+    save: notImplemented,
+    append: notImplemented,
+    stream: notImplemented,
+    getContent: notImplemented,
+    delete: notImplemented,
+    removeLatestSymlink: notImplemented,
+    allocateVersion: notImplemented,
+    finalizeVersion: notImplemented,
+    nextId: notImplemented,
+    getPath: notImplemented,
+    getContentPath: notImplemented,
+    collectGarbage: notImplemented,
+    getLatestVersionSync: () => null,
+    findByNameSync: () => null,
+    listVersionsSync: () => [],
+    getContentSync: () => null,
+    findAllForModelSync: () => [],
+  };
+}
+
+Deno.test("SymlinkRepoIndexService.handleModelCreated creates model directory", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, definitionRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+    const definition = Definition.create({
+      name: "my-test-model",
+      version: 1,
+      tags: {},
+      globalArguments: { message: "hello" },
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await indexService.handleModelCreated(event);
+
+    // Check that the model directory was created
+    const modelDir = join(dir, "models", "my-test-model");
+    const stat = await Deno.stat(modelDir);
+    assertEquals(stat.isDirectory, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.handleModelCreated creates definition.yaml symlink", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, definitionRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+    const definition = Definition.create({
+      name: "my-definition-model",
+      version: 1,
+      tags: {},
+      globalArguments: { message: "hello" },
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await indexService.handleModelCreated(event);
+
+    // Check that definition.yaml symlink exists and points to correct file
+    const symlinkPath = join(
+      dir,
+      "models",
+      "my-definition-model",
+      "definition.yaml",
+    );
+    const linkInfo = await Deno.lstat(symlinkPath);
+    assertEquals(linkInfo.isSymlink, true);
+
+    // Read through symlink should work
+    const content = await Deno.readTextFile(symlinkPath);
+    assertEquals(content.includes("my-definition-model"), true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.handleModelDeleted removes model directory", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, definitionRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+    const definition = Definition.create({
+      name: "delete-me",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, definition);
+
+    // Create the model view
+    const createEvent = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await indexService.handleModelCreated(createEvent);
+
+    // Verify it exists
+    const modelDir = join(dir, "models", "delete-me");
+    const stat = await Deno.stat(modelDir);
+    assertEquals(stat.isDirectory, true);
+
+    // Delete it
+    const deleteEvent = createModelDeleted(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await indexService.handleModelDeleted(deleteEvent);
+
+    // Verify it's gone
+    let exists = true;
+    try {
+      await Deno.stat(modelDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertEquals(exists, false);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.rebuildAll indexes all definitions", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, definitionRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    // Create multiple definitions
+    const def1 = Definition.create({
+      name: "def-one",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    const def2 = Definition.create({
+      name: "def-two",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, def1);
+    await definitionRepo.save(type, def2);
+
+    // Rebuild all
+    const result = await indexService.rebuildAll();
+
+    assertEquals(result.modelsIndexed, 2);
+
+    // Verify both model directories exist
+    const dir1 = join(dir, "models", "def-one");
+    const dir2 = join(dir, "models", "def-two");
+    const stat1 = await Deno.stat(dir1);
+    const stat2 = await Deno.stat(dir2);
+    assertEquals(stat1.isDirectory, true);
+    assertEquals(stat2.isDirectory, true);
+
+    // Verify definition.yaml symlinks exist
+    const symlink1 = join(dir1, "definition.yaml");
+    const symlink2 = join(dir2, "definition.yaml");
+    const linkInfo1 = await Deno.lstat(symlink1);
+    const linkInfo2 = await Deno.lstat(symlink2);
+    assertEquals(linkInfo1.isSymlink, true);
+    assertEquals(linkInfo2.isSymlink, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.rebuildAll removes stale indexes", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, definitionRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    // Create a model and its index
+    const definition = Definition.create({
+      name: "my-model",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await indexService.handleModelCreated(event);
+
+    // Create a stale directory that shouldn't exist after rebuild
+    // (represents a model that was deleted from data but index wasn't updated)
+    const staleDir = join(dir, "models", "stale-model");
+    await ensureDir(staleDir);
+
+    // Rebuild - should remove stale-model since it doesn't exist in data
+    await indexService.rebuildAll();
+
+    // Stale directory should be gone
+    let exists = true;
+    try {
+      await Deno.stat(staleDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertEquals(exists, false);
+
+    // But the real model should still be indexed
+    const realDir = join(dir, "models", "my-model");
+    const stat = await Deno.stat(realDir);
+    assertEquals(stat.isDirectory, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.verify detects broken symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    // Create a model directory with a broken symlink
+    const modelDir = join(dir, "models", "broken-model");
+    await ensureDir(modelDir);
+    await Deno.symlink(
+      "../.swamp/definitions/nonexistent/file.yaml",
+      join(modelDir, "definition.yaml"),
+    );
+
+    const result = await indexService.verify();
+
+    assertEquals(result.valid, false);
+    assertEquals(result.brokenLinks.length, 1);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.verify returns valid for good symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, definitionRepo } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    // Create a model with valid symlinks
+    const definition = Definition.create({
+      name: "good-model",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await indexService.handleModelCreated(event);
+
+    const result = await indexService.verify();
+
+    assertEquals(result.valid, true);
+    assertEquals(result.brokenLinks.length, 0);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService.prune removes broken symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    // Create a model directory with a broken symlink
+    const modelDir = join(dir, "models", "broken-model");
+    await ensureDir(modelDir);
+    const brokenLink = join(modelDir, "definition.yaml");
+    await Deno.symlink(
+      "../.swamp/definitions/nonexistent/file.yaml",
+      brokenLink,
+    );
+
+    const result = await indexService.prune();
+
+    assertEquals(result.removedLinks.length, 1);
+
+    // Verify the symlink is gone
+    let exists = true;
+    try {
+      await Deno.lstat(brokenLink);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        exists = false;
+      }
+    }
+    assertEquals(exists, false);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService indexes workflows", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, workflowRepo } = createIndexService(dir);
+
+    // Create a workflow
+    const step = Step.create({
+      name: "step1",
+      task: StepTask.model("test-model", "run"),
+    });
+    const job = Job.create({ name: "job1", steps: [step] });
+    const workflow = Workflow.create({ name: "my-workflow", jobs: [job] });
+    await workflowRepo.save(workflow);
+
+    // Rebuild to index
+    const result = await indexService.rebuildAll();
+
+    assertEquals(result.workflowsIndexed, 1);
+
+    // Verify workflow directory exists
+    const workflowDir = join(dir, "workflows", "my-workflow");
+    const stat = await Deno.stat(workflowDir);
+    assertEquals(stat.isDirectory, true);
+
+    // Verify workflow.yaml symlink exists
+    const symlinkPath = join(workflowDir, "workflow.yaml");
+    const linkInfo = await Deno.lstat(symlinkPath);
+    assertEquals(linkInfo.isSymlink, true);
+  });
+});
+
+Deno.test("SymlinkRepoIndexService indexes workflow runs with latest symlink", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, workflowRepo, workflowRunRepo } = createIndexService(
+      dir,
+    );
+
+    // Create a workflow
+    const step = Step.create({
+      name: "step1",
+      task: StepTask.model("test-model", "run"),
+    });
+    const job = Job.create({ name: "job1", steps: [step] });
+    const workflow = Workflow.create({ name: "my-workflow", jobs: [job] });
+    await workflowRepo.save(workflow);
+
+    // Create a workflow run
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await workflowRunRepo.save(workflow.id, run);
+
+    // Rebuild to index
+    const result = await indexService.rebuildAll();
+
+    assertEquals(result.workflowRunsIndexed, 1);
+
+    // Verify runs directory exists
+    const runsDir = join(dir, "workflows", "my-workflow", "runs");
+    const runsDirStat = await Deno.stat(runsDir);
+    assertEquals(runsDirStat.isDirectory, true);
+
+    // Verify latest symlink exists
+    const latestPath = join(runsDir, "latest");
+    const latestInfo = await Deno.lstat(latestPath);
+    assertEquals(latestInfo.isSymlink, true);
+  });
+});
+
+// ============================================================================
+// Path Traversal Protection Tests
+// ============================================================================
+
+Deno.test("path traversal protection: model name in handleModelCreated", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    const event = createModelCreated(
+      type.normalized,
+      "some-id",
+      "../../../malicious",
+    );
+    await assertRejects(
+      () => indexService.handleModelCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: model name in handleModelDeleted", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+    const type = ModelType.create("swamp/echo");
+
+    const event = createModelDeleted(
+      type.normalized,
+      "some-id",
+      "../../../malicious",
+    );
+    await assertRejects(
+      () => indexService.handleModelDeleted(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: workflow name in handleWorkflowCreated", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const event = createWorkflowCreated("some-id", "../../../malicious");
+    await assertRejects(
+      () => indexService.handleWorkflowCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: workflow name in handleWorkflowDeleted", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const event = createWorkflowDeleted("some-id", "../../../malicious");
+    await assertRejects(
+      () => indexService.handleWorkflowDeleted(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: vault name in handleVaultCreated", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const event = createVaultCreated(
+      "some-id",
+      "local_encryption",
+      "../../../malicious",
+    );
+    await assertRejects(
+      () => indexService.handleVaultCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: vault name in handleVaultDeleted", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const event = createVaultDeleted(
+      "some-id",
+      "local_encryption",
+      "../../../malicious",
+    );
+    await assertRejects(
+      () => indexService.handleVaultDeleted(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: tag key in indexTagBasedData", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const maliciousData = Data.create({
+      name: "test-data",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { "type": "resource", "../../../malicious": "value" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+    const stubRepo = createStubUnifiedDataRepo([maliciousData]);
+    const { indexService, definitionRepo } = createIndexService(dir, {
+      unifiedDataRepo: stubRepo,
+    });
+
+    const type = ModelType.create("swamp/echo");
+    const definition = Definition.create({
+      name: "tag-key-model",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await assertRejects(
+      () => indexService.handleModelCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+Deno.test("path traversal protection: tag value in indexTagBasedData", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const maliciousData = Data.create({
+      name: "test-data",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { "type": "resource", "safe-key": "../../../malicious" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+    const stubRepo = createStubUnifiedDataRepo([maliciousData]);
+    const { indexService, definitionRepo } = createIndexService(dir, {
+      unifiedDataRepo: stubRepo,
+    });
+
+    const type = ModelType.create("swamp/echo");
+    const definition = Definition.create({
+      name: "tag-value-model",
+      version: 1,
+      tags: {},
+      globalArguments: {},
+    });
+    await definitionRepo.save(type, definition);
+
+    const event = createModelCreated(
+      type.normalized,
+      definition.id,
+      definition.name,
+    );
+    await assertRejects(
+      () => indexService.handleModelCreated(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
+
+// ===========================================================================
+// Secrets indexing (refreshSecretsIndex) tests
+// ===========================================================================
+
+Deno.test("refreshSecretsIndex: basic secrets indexing creates symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    // Set up actual secrets directory with .enc files
+    const actualSecretsDir = join(
+      dir,
+      ".swamp",
+      "secrets",
+      "local_encryption",
+      "my-vault",
+    );
+    await ensureDir(actualSecretsDir);
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "api-key.enc"),
+      "encrypted",
+    );
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "db-password.enc"),
+      "encrypted",
+    );
+
+    // Set up vault config so indexVault works
+    const vaultDir = join(dir, ".swamp", "vault", "local_encryption");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "vault-id.yaml"),
+      "name: my-vault\ntype: local_encryption\n",
+    );
+
+    const event = createVaultCreated(
+      "vault-id",
+      "local_encryption",
+      "my-vault",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Check that symlinks were created (without .enc extension)
+    const logicalSecretsDir = join(dir, "vaults", "my-vault", "secrets");
+    const apiKeyStat = await Deno.lstat(join(logicalSecretsDir, "api-key"));
+    assertEquals(apiKeyStat.isSymlink, true);
+    const dbPwStat = await Deno.lstat(join(logicalSecretsDir, "db-password"));
+    assertEquals(dbPwStat.isSymlink, true);
+  });
+});
+
+Deno.test("refreshSecretsIndex: incremental add preserves existing symlinks", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const actualSecretsDir = join(
+      dir,
+      ".swamp",
+      "secrets",
+      "local_encryption",
+      "my-vault",
+    );
+    await ensureDir(actualSecretsDir);
+
+    // Set up vault config
+    const vaultDir = join(dir, ".swamp", "vault", "local_encryption");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "vault-id.yaml"),
+      "name: my-vault\ntype: local_encryption\n",
+    );
+
+    // First secret
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "secret-one.enc"),
+      "encrypted",
+    );
+    const event = createVaultCreated(
+      "vault-id",
+      "local_encryption",
+      "my-vault",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Add a second secret and re-index
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "secret-two.enc"),
+      "encrypted",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Both symlinks should exist
+    const logicalSecretsDir = join(dir, "vaults", "my-vault", "secrets");
+    const oneStat = await Deno.lstat(join(logicalSecretsDir, "secret-one"));
+    assertEquals(oneStat.isSymlink, true);
+    const twoStat = await Deno.lstat(join(logicalSecretsDir, "secret-two"));
+    assertEquals(twoStat.isSymlink, true);
+  });
+});
+
+Deno.test("refreshSecretsIndex: stale symlinks are removed", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const actualSecretsDir = join(
+      dir,
+      ".swamp",
+      "secrets",
+      "local_encryption",
+      "my-vault",
+    );
+    await ensureDir(actualSecretsDir);
+
+    // Set up vault config
+    const vaultDir = join(dir, ".swamp", "vault", "local_encryption");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "vault-id.yaml"),
+      "name: my-vault\ntype: local_encryption\n",
+    );
+
+    // Create two secrets and index them
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "keep-me.enc"),
+      "encrypted",
+    );
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "remove-me.enc"),
+      "encrypted",
+    );
+    const event = createVaultCreated(
+      "vault-id",
+      "local_encryption",
+      "my-vault",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Remove one .enc file and re-index
+    await Deno.remove(join(actualSecretsDir, "remove-me.enc"));
+    await indexService.handleVaultCreated(event);
+
+    // Kept symlink should still exist
+    const logicalSecretsDir = join(dir, "vaults", "my-vault", "secrets");
+    const keepStat = await Deno.lstat(join(logicalSecretsDir, "keep-me"));
+    assertEquals(keepStat.isSymlink, true);
+
+    // Stale symlink should be gone
+    let staleExists = true;
+    try {
+      await Deno.lstat(join(logicalSecretsDir, "remove-me"));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        staleExists = false;
+      }
+    }
+    assertEquals(staleExists, false);
+  });
+});
+
+Deno.test("refreshSecretsIndex: migrates old-style symlink to directory", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService } = createIndexService(dir);
+
+    const actualSecretsDir = join(
+      dir,
+      ".swamp",
+      "secrets",
+      "local_encryption",
+      "my-vault",
+    );
+    await ensureDir(actualSecretsDir);
+    await Deno.writeTextFile(
+      join(actualSecretsDir, "my-key.enc"),
+      "encrypted",
+    );
+
+    // Set up vault config
+    const vaultDir = join(dir, ".swamp", "vault", "local_encryption");
+    await ensureDir(vaultDir);
+    await Deno.writeTextFile(
+      join(vaultDir, "vault-id.yaml"),
+      "name: my-vault\ntype: local_encryption\n",
+    );
+
+    // Create old-style symlink (secrets -> actualSecretsDir)
+    const vaultLogicalDir = join(dir, "vaults", "my-vault");
+    await ensureDir(vaultLogicalDir);
+    const logicalSecretsDir = join(vaultLogicalDir, "secrets");
+    await Deno.symlink(actualSecretsDir, logicalSecretsDir);
+
+    // Verify it's a symlink before migration
+    const beforeStat = await Deno.lstat(logicalSecretsDir);
+    assertEquals(beforeStat.isSymlink, true);
+
+    // Index — should migrate from symlink to directory of individual symlinks
+    const event = createVaultCreated(
+      "vault-id",
+      "local_encryption",
+      "my-vault",
+    );
+    await indexService.handleVaultCreated(event);
+
+    // Should now be a directory, not a symlink
+    const afterStat = await Deno.lstat(logicalSecretsDir);
+    assertEquals(afterStat.isSymlink, false);
+    assertEquals(afterStat.isDirectory, true);
+
+    // Individual key symlink should exist
+    const keyStat = await Deno.lstat(join(logicalSecretsDir, "my-key"));
+    assertEquals(keyStat.isSymlink, true);
+  });
+});
+
+Deno.test("path traversal protection: step name in handleWorkflowRunStarted", async () => {
+  await withTempDir(async (dir) => {
+    await setupRepoDir(dir);
+    const { indexService, workflowRepo, workflowRunRepo } = createIndexService(
+      dir,
+    );
+
+    // Create a workflow with a step whose name is a path traversal attempt
+    const step = Step.create({
+      name: "../../../malicious",
+      task: StepTask.model("test-model", "run"),
+    });
+    const job = Job.create({ name: "job1", steps: [step] });
+    const workflow = Workflow.create({ name: "my-workflow", jobs: [job] });
+    await workflowRepo.save(workflow);
+
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await workflowRunRepo.save(workflow.id, run);
+
+    const event = createWorkflowRunStarted(
+      workflow.id,
+      workflow.name,
+      run.id,
+    );
+    await assertRejects(
+      () => indexService.handleWorkflowRunStarted(event),
+      Error,
+      "Path traversal detected",
+    );
+  });
+});
