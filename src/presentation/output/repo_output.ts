@@ -111,6 +111,15 @@ export function renderRepoUpgrade(
   } else {
     logger
       .info`Upgraded swamp repository: ${data.previousVersion} \u2192 ${data.newVersion} (tool: ${data.tool})`;
+    logger.info("  Skills updated: " + data.skillsUpdated.join(", "));
+    logger.info(
+      "  Instructions: " +
+        (data.instructionsUpdated ? "updated" : "unchanged"),
+    );
+    logger.info(
+      "  Settings: " + (data.settingsUpdated ? "updated" : "unchanged"),
+    );
+    logger.info("  .gitignore: " + data.gitignoreAction);
   }
 }
 

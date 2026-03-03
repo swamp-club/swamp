@@ -155,8 +155,12 @@ export class RepoService {
     const isAlreadyInit = await this.isInitialized(repoPath);
 
     if (isAlreadyInit && !options.force) {
+      const existingMarker = await this.markerRepo.read(repoPath);
+      const currentTool = existingMarker?.tool ?? "claude";
       throw new UserError(
-        `Repository already initialized at ${repoPath.value}. Use --force to reinitialize.`,
+        `Repository already initialized at ${repoPath.value} (tool: "${currentTool}"). ` +
+          "To switch tools, run: swamp repo upgrade -t <tool>. " +
+          "To reinitialize from scratch, run: swamp repo --force -t <tool>",
       );
     }
 

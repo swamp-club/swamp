@@ -46,6 +46,10 @@ export function renderUpdateResult(
         logger.info("swamp updated successfully!");
         logger.info`${result.previousVersion} \u2192 ${result.newVersion}`;
         logger.info("SHA-256 integrity check passed");
+        logger.info("The swamp binary has been updated globally.");
+        logger.info(
+          "Run `swamp repo upgrade` in your repositories to update skills and settings.",
+        );
         break;
     }
     if (result.warning) {
