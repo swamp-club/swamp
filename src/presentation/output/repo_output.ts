@@ -45,6 +45,7 @@ export interface RepoUpgradeData {
   newVersion: string;
   upgradedAt: string;
   skillsUpdated: string[];
+  instructionsUpdated: boolean;
   settingsUpdated: boolean;
   gitignoreAction: string;
   tool: string;

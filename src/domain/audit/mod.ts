@@ -17,22 +17,29 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Base error for user-facing errors that should not show a stack trace.
- * Use this for validation errors, "model not found" messages, and other
- * expected error conditions where the stack trace would be noise.
- */
-export class UserError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UserError";
-  }
-}
+export {
+  type BashCommandEntry,
+  type BashCommandEntryData,
+  bashCommandEntryFromData,
+  bashCommandEntryToData,
+  createBashCommandEntry,
+} from "./audit_command_entry.ts";
 
-/**
- * Exhaustiveness check for switch statements.
- * TypeScript will error at compile time if a case is missing.
- */
-export function assertNever(value: never): never {
-  throw new Error(`Unexpected value: ${value}`);
-}
+export {
+  type AuditEntry,
+  type AuditEntryData,
+  auditEntryToData,
+  type AuditSource,
+  type AuditStatus,
+  createDirectAuditEntry,
+  createSwampAuditEntry,
+} from "./audit_entry.ts";
+
+export type { AuditRepository } from "./audit_repository.ts";
+
+export {
+  AuditService,
+  type AuditTimeline,
+  type AuditTimelineOptions,
+  isNoiseCommand,
+} from "./audit_service.ts";

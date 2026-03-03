@@ -17,22 +17,29 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Base error for user-facing errors that should not show a stack trace.
- * Use this for validation errors, "model not found" messages, and other
- * expected error conditions where the stack trace would be noise.
- */
-export class UserError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UserError";
-  }
-}
+import type { BashCommandEntry } from "./audit_command_entry.ts";
 
 /**
- * Exhaustiveness check for switch statements.
- * TypeScript will error at compile time if a case is missing.
+ * Repository interface for persisting and retrieving bash command audit entries.
  */
-export function assertNever(value: never): never {
-  throw new Error(`Unexpected value: ${value}`);
+export interface AuditRepository {
+  /**
+   * Appends a bash command entry to the audit log.
+   * Should never throw - errors are logged silently.
+   */
+  append(entry: BashCommandEntry): Promise<void>;
+
+  /**
+   * Finds all bash command entries within a time range.
+   */
+  findByTimeRange(
+    startTime: Date,
+    endTime: Date,
+  ): Promise<BashCommandEntry[]>;
+
+  /**
+   * Deletes audit files older than the given date.
+   * Returns the number of files deleted.
+   */
+  deleteOlderThan(date: Date): Promise<number>;
 }

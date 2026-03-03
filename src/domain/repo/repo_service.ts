@@ -32,7 +32,7 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
-import { UserError } from "../errors.ts";
+import { assertNever, UserError } from "../errors.ts";
 
 export type { AiTool } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
@@ -97,6 +97,7 @@ export interface RepoUpgradeResult {
   newVersion: string;
   upgradedAt: string;
   skillsUpdated: string[];
+  instructionsUpdated: boolean;
   settingsUpdated: boolean;
   gitignoreAction: GitignoreAction;
   tool: AiTool;
@@ -179,12 +180,38 @@ export class RepoService {
     const instructionsFileCreated = await this
       .createInstructionsFileIfNotExists(repoPath, tool);
 
-    // Create tool-specific settings
+    // Create or update tool-specific settings
     let settingsCreated = false;
-    if (tool === "claude") {
-      settingsCreated = await this.createClaudeSettingsIfNotExists(repoPath);
-    } else if (tool === "kiro") {
-      settingsCreated = await this.createKiroSettingsIfNotExists(repoPath);
+    switch (tool) {
+      case "claude":
+        settingsCreated = isAlreadyInit
+          ? await this.updateClaudeSettings(repoPath)
+          : await this.createClaudeSettingsIfNotExists(repoPath);
+        break;
+      case "cursor":
+        settingsCreated = isAlreadyInit
+          ? await this.updateCursorHooks(repoPath)
+          : await this.createCursorHooksIfNotExists(repoPath);
+        break;
+      case "kiro": {
+        const s = isAlreadyInit
+          ? await this.updateKiroSettings(repoPath)
+          : await this.createKiroSettingsIfNotExists(repoPath);
+        const h = isAlreadyInit
+          ? await this.updateKiroHooks(repoPath)
+          : await this.createKiroHooksIfNotExists(repoPath);
+        settingsCreated = s || h;
+        break;
+      }
+      case "opencode":
+        settingsCreated = isAlreadyInit
+          ? await this.updateOpenCodePlugin(repoPath)
+          : await this.createOpenCodePluginIfNotExists(repoPath);
+        break;
+      case "codex":
+        break;
+      default:
+        assertNever(tool);
     }
 
     // Manage .gitignore only when opted in
@@ -245,15 +272,34 @@ export class RepoService {
     await this.skillAssets.copySkillsTo(skillsDir);
     const skillsUpdated = this.skillAssets.getSkillNames();
 
-    // Create instructions file if it doesn't exist (e.g., when switching tools)
-    await this.createInstructionsFileIfNotExists(repoPath, tool);
+    // Update instructions file (managed by swamp, kept in sync on upgrade)
+    const instructionsUpdated = await this.updateInstructionsFile(
+      repoPath,
+      tool,
+    );
 
     // Update tool-specific settings
     let settingsUpdated = false;
-    if (tool === "claude") {
-      settingsUpdated = await this.updateClaudeSettings(repoPath);
-    } else if (tool === "kiro") {
-      settingsUpdated = await this.updateKiroSettings(repoPath);
+    switch (tool) {
+      case "claude":
+        settingsUpdated = await this.updateClaudeSettings(repoPath);
+        break;
+      case "cursor":
+        settingsUpdated = await this.updateCursorHooks(repoPath);
+        break;
+      case "kiro": {
+        const s = await this.updateKiroSettings(repoPath);
+        const h = await this.updateKiroHooks(repoPath);
+        settingsUpdated = s || h;
+        break;
+      }
+      case "opencode":
+        settingsUpdated = await this.updateOpenCodePlugin(repoPath);
+        break;
+      case "codex":
+        break;
+      default:
+        assertNever(tool);
     }
 
     // Determine gitignore management: CLI flag > marker preference > default off
@@ -287,6 +333,7 @@ export class RepoService {
       newVersion: this.currentVersion.toString(),
       upgradedAt: updatedMarker.upgradedAt,
       skillsUpdated,
+      instructionsUpdated,
       settingsUpdated,
       gitignoreAction,
       tool,
@@ -328,6 +375,20 @@ export class RepoService {
   }
 
   /**
+   * Updates the tool-appropriate instructions file, overwriting if content changed.
+   */
+  private updateInstructionsFile(
+    repoPath: RepoPath,
+    tool: AiTool,
+  ): Promise<boolean> {
+    const filePath = join(repoPath.value, INSTRUCTIONS_FILES[tool]);
+    return this.overwriteIfChanged(
+      filePath,
+      this.generateInstructionsContent(tool),
+    );
+  }
+
+  /**
    * Generates the instructions content for the given tool.
    */
   private generateInstructionsContent(tool: AiTool): string {
@@ -366,22 +427,25 @@ Always start by using the \`swamp-model\` skill to work with swamp models.
 Use \`swamp --help\` to see available commands.
 `;
 
-    if (tool === "cursor") {
-      return `---
+    switch (tool) {
+      case "cursor":
+        return `---
 description: Swamp automation rules
 alwaysApply: true
 ---
 ${body}`;
-    }
-
-    if (tool === "kiro") {
-      return `---
+      case "kiro":
+        return `---
 inclusion: always
 ---
 ${body}`;
+      case "claude":
+      case "opencode":
+      case "codex":
+        return body;
+      default:
+        assertNever(tool);
     }
-
-    return body;
   }
 
   /**
@@ -463,6 +527,9 @@ ${body}`;
       "# Local telemetry (not needed for reconstruction)",
       ".swamp/telemetry/",
       "",
+      "# Audit command logs (local-only hook data)",
+      ".swamp/audit/",
+      "",
       "# Encryption keyfile (NEVER commit - allows decrypting secrets)",
       ".swamp/secrets/keyfile",
       "",
@@ -524,12 +591,14 @@ ${body}`;
       ".swamp/telemetry/",
       ".swamp/secrets/keyfile",
       ".swamp/bundles/",
+      ".swamp/audit/",
       ".claude/",
       ".cursor/skills/",
       ".agents/skills/",
       ".kiro/skills/",
       "# Feel free to modify",
       "# Local telemetry",
+      "# Audit command logs",
       "# Encryption keyfile",
       "# Cached extension bundles",
       "# Claude Code configuration",
@@ -587,6 +656,7 @@ ${body}`;
       "Bash(swamp data:*)",
       "Bash(swamp repo:*)",
       "Bash(swamp telemetry:*)",
+      "Bash(swamp audit:*)",
       "Bash(swamp init:*)",
       "Bash(swamp version:*)",
       "Bash(swamp completions:*)",
@@ -602,34 +672,92 @@ ${body}`;
       permissions: {
         allow: this.getClaudeAllowedCommands(),
       },
+      hooks: this.getClaudeHooks(),
     };
     return JSON.stringify(settings, null, 2) + "\n";
   }
 
   /**
-   * Creates settings.local.json if it doesn't already exist.
+   * Gets the hooks configuration for Claude settings.
    */
-  private async createClaudeSettingsIfNotExists(
-    repoPath: RepoPath,
-  ): Promise<boolean> {
-    const claudeDir = join(repoPath.value, ".claude");
-    const settingsPath = join(claudeDir, "settings.local.json");
+  private getClaudeHooks(): Record<string, unknown[]> {
+    return {
+      PostToolUse: [
+        {
+          matcher: "Bash",
+          hooks: [
+            {
+              type: "command",
+              command: "swamp audit record --from-hook",
+            },
+          ],
+        },
+      ],
+      PostToolUseFailure: [
+        {
+          matcher: "Bash",
+          hooks: [
+            {
+              type: "command",
+              command: "swamp audit record --from-hook",
+            },
+          ],
+        },
+      ],
+    };
+  }
 
+  /**
+   * Creates a file if it doesn't already exist, ensuring parent directories exist.
+   * Returns true if the file was created, false if it already existed.
+   */
+  private async createFileIfNotExists(
+    filePath: string,
+    content: string,
+  ): Promise<boolean> {
     try {
-      await Deno.stat(settingsPath);
-      // File exists, don't overwrite
+      await Deno.stat(filePath);
       return false;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        // Ensure .claude directory exists
-        await ensureDir(claudeDir);
-        // Create the file
-        const content = this.generateClaudeSettingsContent();
-        await Deno.writeTextFile(settingsPath, content);
+        await ensureDir(join(filePath, ".."));
+        await Deno.writeTextFile(filePath, content);
         return true;
       }
       throw error;
     }
+  }
+
+  /**
+   * Overwrites a managed file if its content has changed.
+   * Returns true if the file was written, false if content was identical.
+   */
+  private async overwriteIfChanged(
+    filePath: string,
+    newContent: string,
+  ): Promise<boolean> {
+    await ensureDir(join(filePath, ".."));
+    try {
+      const existing = await Deno.readTextFile(filePath);
+      if (existing === newContent) return false;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    await atomicWriteTextFile(filePath, newContent);
+    return true;
+  }
+
+  /**
+   * Creates settings.local.json if it doesn't already exist.
+   */
+  private createClaudeSettingsIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const settingsPath = join(repoPath.value, ".claude", "settings.local.json");
+    return this.createFileIfNotExists(
+      settingsPath,
+      this.generateClaudeSettingsContent(),
+    );
   }
 
   /**
@@ -643,7 +771,10 @@ ${body}`;
     // Ensure .claude directory exists
     await ensureDir(claudeDir);
 
-    let existingSettings: { permissions?: { allow?: string[] } } = {};
+    let existingSettings: {
+      permissions?: { allow?: string[] };
+      hooks?: Record<string, unknown[]>;
+    } = {};
     let settingsExisted = false;
 
     try {
@@ -664,9 +795,19 @@ ${body}`;
     const existingAllow = existingSettings.permissions?.allow ?? [];
     const mergedAllow = [...new Set([...existingAllow, ...ourCommands])];
 
+    // Merge hooks
+    const ourHooks = this.getClaudeHooks();
+    const mergedHooks = this.mergeHooks(
+      existingSettings.hooks ?? {},
+      ourHooks,
+    );
+
     // Check if anything changed
-    const hasChanges = mergedAllow.length !== existingAllow.length ||
+    const permissionsChanged = mergedAllow.length !== existingAllow.length ||
       !ourCommands.every((cmd) => existingAllow.includes(cmd));
+    const hooksChanged = JSON.stringify(existingSettings.hooks ?? {}) !==
+      JSON.stringify(mergedHooks);
+    const hasChanges = permissionsChanged || hooksChanged;
 
     if (!hasChanges && settingsExisted) {
       return false;
@@ -679,6 +820,7 @@ ${body}`;
         ...existingSettings.permissions,
         allow: mergedAllow,
       },
+      hooks: mergedHooks,
     };
     await atomicWriteTextFile(
       settingsPath,
@@ -702,24 +844,18 @@ ${body}`;
   /**
    * Creates .vscode/settings.local.json for Kiro if it doesn't already exist.
    */
-  private async createKiroSettingsIfNotExists(
+  private createKiroSettingsIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
-    const vscodeDir = join(repoPath.value, ".vscode");
-    const settingsPath = join(vscodeDir, "settings.local.json");
-
-    try {
-      await Deno.stat(settingsPath);
-      return false;
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        await ensureDir(vscodeDir);
-        const content = this.generateKiroSettingsContent();
-        await Deno.writeTextFile(settingsPath, content);
-        return true;
-      }
-      throw error;
-    }
+    const settingsPath = join(
+      repoPath.value,
+      ".vscode",
+      "settings.local.json",
+    );
+    return this.createFileIfNotExists(
+      settingsPath,
+      this.generateKiroSettingsContent(),
+    );
   }
 
   /**
@@ -769,6 +905,243 @@ ${body}`;
   }
 
   /**
+   * Generates the content for Cursor's .cursor/hooks.json.
+   */
+  private generateCursorHooksContent(): string {
+    const hooks = {
+      version: 1,
+      hooks: {
+        postToolUse: [
+          { command: "swamp audit record --from-hook --tool cursor" },
+        ],
+        postToolUseFailure: [
+          { command: "swamp audit record --from-hook --tool cursor" },
+        ],
+      },
+    };
+    return JSON.stringify(hooks, null, 2) + "\n";
+  }
+
+  /**
+   * Creates .cursor/hooks.json if it doesn't already exist.
+   */
+  private createCursorHooksIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const hooksPath = join(repoPath.value, ".cursor", "hooks.json");
+    return this.createFileIfNotExists(
+      hooksPath,
+      this.generateCursorHooksContent(),
+    );
+  }
+
+  /**
+   * Updates .cursor/hooks.json, merging new hook entries with existing ones.
+   */
+  private async updateCursorHooks(repoPath: RepoPath): Promise<boolean> {
+    const cursorDir = join(repoPath.value, ".cursor");
+    const hooksPath = join(cursorDir, "hooks.json");
+
+    await ensureDir(cursorDir);
+
+    let existingHooks: {
+      version?: number;
+      hooks?: Record<string, unknown[]>;
+    } = {};
+    let hooksExisted = false;
+
+    try {
+      const content = await Deno.readTextFile(hooksPath);
+      existingHooks = JSON.parse(content);
+      hooksExisted = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    const ourHooks: Record<string, unknown[]> = {
+      postToolUse: [
+        { command: "swamp audit record --from-hook --tool cursor" },
+      ],
+      postToolUseFailure: [
+        { command: "swamp audit record --from-hook --tool cursor" },
+      ],
+    };
+
+    const mergedHooks = this.mergeHooks(
+      existingHooks.hooks ?? {},
+      ourHooks,
+    );
+
+    const hooksChanged = JSON.stringify(existingHooks.hooks ?? {}) !==
+      JSON.stringify(mergedHooks);
+
+    if (!hooksChanged && hooksExisted) {
+      return false;
+    }
+
+    const newContent = {
+      version: existingHooks.version ?? 1,
+      hooks: mergedHooks,
+    };
+    await atomicWriteTextFile(
+      hooksPath,
+      JSON.stringify(newContent, null, 2) + "\n",
+    );
+    return true;
+  }
+
+  /**
+   * Generates the content for Kiro's .kiro/hooks/swamp-audit.json.
+   */
+  private generateKiroHookContent(): string {
+    const hook = {
+      name: "Swamp Audit",
+      description: "Records agent tool usage for swamp audit tracking",
+      version: "1",
+      when: { type: "postToolUse" },
+      then: {
+        type: "runCommand",
+        command: "swamp audit record --from-hook --tool kiro",
+      },
+    };
+    return JSON.stringify(hook, null, 2) + "\n";
+  }
+
+  /**
+   * Creates .kiro/hooks/swamp-audit.json if it doesn't already exist.
+   */
+  private createKiroHooksIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const hookPath = join(repoPath.value, ".kiro", "hooks", "swamp-audit.json");
+    return this.createFileIfNotExists(
+      hookPath,
+      this.generateKiroHookContent(),
+    );
+  }
+
+  /**
+   * Updates .kiro/hooks/swamp-audit.json, always overwriting with latest content.
+   */
+  private updateKiroHooks(repoPath: RepoPath): Promise<boolean> {
+    const hookPath = join(repoPath.value, ".kiro", "hooks", "swamp-audit.json");
+    return this.overwriteIfChanged(hookPath, this.generateKiroHookContent());
+  }
+
+  /**
+   * Generates the content for OpenCode's .opencode/plugins/swamp-audit.ts.
+   */
+  private generateOpenCodePluginContent(): string {
+    return `// Swamp audit plugin for OpenCode
+// Records bash tool invocations for the swamp audit timeline.
+// This is a managed file — it will be overwritten on swamp upgrade.
+
+import type { Plugin } from "@opencode-ai/plugin";
+
+const pendingCommands = new Map();
+
+export const SwampAudit: Plugin = async ({ directory }) => {
+  return {
+    "tool.execute.before": async (input, output) => {
+      if (input.tool !== "bash") return;
+      const command = output.args?.command;
+      if (command && input.sessionID) {
+        pendingCommands.set(input.sessionID, command);
+      }
+    },
+    "tool.execute.after": async (input) => {
+      if (input.tool !== "bash") return;
+      const command = pendingCommands.get(input.sessionID);
+      pendingCommands.delete(input.sessionID);
+      if (!command) return;
+
+      try {
+        const payload = JSON.stringify({
+          tool_name: "bash",
+          tool_input: { command },
+          cwd: directory,
+          session_id: input.sessionID,
+        });
+        const proc = Bun.spawn(
+          ["swamp", "audit", "record", "--from-hook", "--tool", "opencode"],
+          { stdin: new Blob([payload]) },
+        );
+        await proc.exited;
+      } catch {
+        // Must never throw — this is a hook
+      }
+    },
+  };
+};
+`;
+  }
+
+  /**
+   * Creates .opencode/plugins/swamp-audit.ts if it doesn't already exist.
+   */
+  private createOpenCodePluginIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const pluginPath = join(
+      repoPath.value,
+      ".opencode",
+      "plugins",
+      "swamp-audit.ts",
+    );
+    return this.createFileIfNotExists(
+      pluginPath,
+      this.generateOpenCodePluginContent(),
+    );
+  }
+
+  /**
+   * Updates .opencode/plugins/swamp-audit.ts, always overwriting with latest content.
+   */
+  private updateOpenCodePlugin(repoPath: RepoPath): Promise<boolean> {
+    const pluginPath = join(
+      repoPath.value,
+      ".opencode",
+      "plugins",
+      "swamp-audit.ts",
+    );
+    return this.overwriteIfChanged(
+      pluginPath,
+      this.generateOpenCodePluginContent(),
+    );
+  }
+
+  /**
+   * Merges hook configurations, adding our hooks without duplicating.
+   */
+  private mergeHooks(
+    existing: Record<string, unknown[]>,
+    ours: Record<string, unknown[]>,
+  ): Record<string, unknown[]> {
+    const merged = { ...existing };
+
+    for (const [event, ourEntries] of Object.entries(ours)) {
+      const existingEntries = merged[event] ?? [];
+      const mergedEntries = [...existingEntries];
+
+      for (const ourEntry of ourEntries) {
+        const ourJson = JSON.stringify(ourEntry);
+        const alreadyExists = mergedEntries.some(
+          (e) => JSON.stringify(e) === ourJson,
+        );
+        if (!alreadyExists) {
+          mergedEntries.push(ourEntry);
+        }
+      }
+
+      merged[event] = mergedEntries;
+    }
+
+    return merged;
+  }
+
+  /**
    * Creates the data directory structure for storing repository artifacts.
    */
   private async createDataDirectoryStructure(
@@ -785,6 +1158,7 @@ ${body}`;
       SWAMP_SUBDIRS.vault,
       SWAMP_SUBDIRS.secrets,
       SWAMP_SUBDIRS.telemetry,
+      SWAMP_SUBDIRS.audit,
     ];
 
     for (const subdir of subdirs) {
