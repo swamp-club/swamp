@@ -42,6 +42,8 @@ import { resolveLocalImports } from "../../domain/extensions/extension_import_re
 import { resolveWorkflowDependencies } from "../../domain/extensions/extension_dependency_resolver.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
+import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
+import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { CalVer } from "../../domain/models/calver.ts";
@@ -354,6 +356,20 @@ export const extensionPushCommand = new Command()
       );
     }
 
+    // 12b. Extract content metadata for registry (non-fatal)
+    let contentMetadata: ExtensionContentMetadata | undefined;
+    try {
+      contentMetadata = await extractContentMetadata(
+        allModelFiles,
+        modelsDir,
+        workflowFiles,
+      );
+      ctx.logger
+        .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows`;
+    } catch {
+      ctx.logger.debug`Content metadata extraction failed, skipping`;
+    }
+
     // 13. Pre-flight version check (skip in dry-run)
     if (!options.dryRun) {
       const extensionClient = new ExtensionApiClient(credentials.serverUrl);
@@ -519,10 +535,10 @@ export const extensionPushCommand = new Command()
         archiveBytes,
       );
 
-      // Phase 3: Confirm
+      // Phase 3: Confirm (include content metadata)
       ctx.logger.debug("Confirming push...");
       const confirmResult = await extensionClient.confirmPush(
-        pushMetadata,
+        { ...pushMetadata, contentMetadata },
         credentials.apiKey,
       );
 

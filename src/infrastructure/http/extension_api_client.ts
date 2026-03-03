@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../../domain/errors.ts";
+import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
 
 /** Metadata sent during push initiation and confirmation. */
 export interface PushMetadata {
@@ -28,6 +29,11 @@ export interface PushMetadata {
   platforms: string[];
   labels: string[];
   repository?: string;
+}
+
+/** Metadata sent during push confirmation (extends PushMetadata with content metadata). */
+export interface ConfirmPushMetadata extends PushMetadata {
+  contentMetadata?: ExtensionContentMetadata;
 }
 
 /** Response from the initiate push endpoint. */
@@ -196,7 +202,7 @@ export class ExtensionApiClient {
    * Phase 3: Confirm push — verify upload completed and persist version.
    */
   async confirmPush(
-    metadata: PushMetadata,
+    metadata: ConfirmPushMetadata,
     apiKey: string,
   ): Promise<ConfirmPushResult> {
     const res = await this.fetch("/api/v1/extensions/confirm", {
