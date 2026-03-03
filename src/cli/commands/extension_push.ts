@@ -137,18 +137,64 @@ export const extensionPushCommand = new Command()
       manifest.name = suggested;
     }
 
-    // 10. Show resolved bundle contents
+    // 9b. Extract content metadata early (for display and later registry push)
+    let contentMetadata: ExtensionContentMetadata | undefined;
+    try {
+      contentMetadata = await extractContentMetadata(
+        allModelFiles,
+        modelsDir,
+        workflowFiles,
+        allVaultFiles,
+        vaultsDir,
+      );
+      ctx.logger
+        .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults`;
+    } catch {
+      ctx.logger.debug`Content metadata extraction failed, skipping`;
+    }
+
+    // 10. Show resolved bundle contents (use extracted metadata for richer display)
+    // Build lookup maps keyed by the relative path from models/vaults dir
+    // to avoid false matches when files share a suffix (e.g. instance.ts).
+    const extractedModelsByFile = new Map(
+      (contentMetadata?.models ?? []).map((m) => [m.fileName, m]),
+    );
+    const extractedVaultsByFile = new Map(
+      (contentMetadata?.vaults ?? []).map((v) => [v.fileName, v]),
+    );
+
+    const resolvedModels = allModelFiles.map((f) => {
+      const relPath = relative(repoDir, f);
+      const extracted = extractedModelsByFile.get(relative(modelsDir, f));
+      return {
+        type: extracted?.type ?? relPath,
+        fileName: relPath,
+        globalArguments: extracted?.globalArguments,
+      };
+    });
+    const resolvedVaults = allVaultFiles.map((f) => {
+      const relPath = relative(repoDir, f);
+      const extracted = extractedVaultsByFile.get(relative(vaultsDir, f));
+      return {
+        type: extracted?.type ?? relPath,
+        fileName: relPath,
+        name: extracted?.name,
+        hasConfigSchema: extracted?.hasConfigSchema,
+        configFields: extracted?.configFields,
+      };
+    });
+
     renderExtensionPushResolved(
       {
         name: manifest.name,
         version: manifest.version,
         description: manifest.description,
         repository: manifest.repository,
-        modelFiles: allModelFiles.map((f) => relative(repoDir, f)),
+        models: resolvedModels,
         workflowFiles: workflowFiles.map((wf) =>
           relative(repoDir, wf.sourcePath)
         ),
-        vaultFiles: allVaultFiles.map((f) => relative(repoDir, f)),
+        vaults: resolvedVaults,
         additionalFiles: additionalFilePaths.map((f) => relative(repoDir, f)),
         platforms: manifest.platforms,
         labels: manifest.labels,
@@ -239,20 +285,6 @@ export const extensionPushCommand = new Command()
       throw new UserError(
         "Bundle compilation failed. Fix the errors above and try again.",
       );
-    }
-
-    // 12b. Extract content metadata for registry (non-fatal)
-    let contentMetadata: ExtensionContentMetadata | undefined;
-    try {
-      contentMetadata = await extractContentMetadata(
-        allModelFiles,
-        modelsDir,
-        workflowFiles,
-      );
-      ctx.logger
-        .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows`;
-    } catch {
-      ctx.logger.debug`Content metadata extraction failed, skipping`;
     }
 
     // 13. Pre-flight version check (skip in dry-run)

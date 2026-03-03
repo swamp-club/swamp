@@ -51,6 +51,7 @@ export interface ExtractedModel {
   fileName: string;
   type: string;
   version: string;
+  globalArguments: ExtractedArgument[];
   methods: ExtractedMethod[];
   resources: ExtractedResource[];
   files: ExtractedFile[];
@@ -80,8 +81,19 @@ export interface ExtractedWorkflow {
   jobs: ExtractedWorkflowJob[];
 }
 
-/** Content metadata extracted from all models and workflows in an extension. */
+/** Metadata extracted from a single vault TypeScript file. */
+export interface ExtractedVault {
+  fileName: string;
+  type: string;
+  name: string;
+  description: string;
+  hasConfigSchema: boolean;
+  configFields: ExtractedArgument[];
+}
+
+/** Content metadata extracted from all models, workflows, and vaults in an extension. */
 export interface ExtensionContentMetadata {
   models: ExtractedModel[];
   workflows: ExtractedWorkflow[];
+  vaults: ExtractedVault[];
 }

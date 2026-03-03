@@ -21,8 +21,25 @@ import type { OutputMode } from "./output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
+import type { ExtractedArgument } from "../../domain/extensions/extension_content.ts";
 
 const logger = getSwampLogger(["extension", "push"]);
+
+/** A model entry enriched with extracted metadata for the resolved display. */
+export interface ResolvedModelEntry {
+  type: string;
+  fileName: string;
+  globalArguments?: ExtractedArgument[];
+}
+
+/** A vault entry enriched with extracted metadata for the resolved display. */
+export interface ResolvedVaultEntry {
+  type: string;
+  fileName: string;
+  name?: string;
+  hasConfigSchema?: boolean;
+  configFields?: ExtractedArgument[];
+}
 
 /** Data for showing resolved extension contents before push. */
 export interface ExtensionPushResolvedData {
@@ -30,9 +47,9 @@ export interface ExtensionPushResolvedData {
   version: string;
   description: string | undefined;
   repository: string | undefined;
-  modelFiles: string[];
+  models: ResolvedModelEntry[];
   workflowFiles: string[];
-  vaultFiles: string[];
+  vaults: ResolvedVaultEntry[];
   additionalFiles: string[];
   platforms: string[];
   labels: string[];
@@ -74,10 +91,17 @@ export function renderExtensionPushResolved(
     if (data.repository) {
       logger.info`Repository: ${data.repository}`;
     }
-    if (data.modelFiles.length > 0) {
-      logger.info`Models (${data.modelFiles.length}):`;
-      for (const f of data.modelFiles) {
-        logger.info`  ${f}`;
+    if (data.models.length > 0) {
+      logger.info`Models (${data.models.length}):`;
+      for (const m of data.models) {
+        logger.info`  ${m.type} (${m.fileName})`;
+        if (m.globalArguments && m.globalArguments.length > 0) {
+          logger.info`    Global Arguments:`;
+          for (const arg of m.globalArguments) {
+            const opt = arg.required ? "" : " (optional)";
+            logger.info`      ${arg.name}: ${arg.type}${opt}`;
+          }
+        }
       }
     }
     if (data.workflowFiles.length > 0) {
@@ -86,10 +110,18 @@ export function renderExtensionPushResolved(
         logger.info`  ${f}`;
       }
     }
-    if (data.vaultFiles.length > 0) {
-      logger.info`Vaults (${data.vaultFiles.length}):`;
-      for (const f of data.vaultFiles) {
-        logger.info`  ${f}`;
+    if (data.vaults.length > 0) {
+      logger.info`Vaults (${data.vaults.length}):`;
+      for (const v of data.vaults) {
+        const nameLabel = v.name ? ` - ${v.name}` : "";
+        logger.info`  ${v.type}${nameLabel} (${v.fileName})`;
+        if (v.configFields && v.configFields.length > 0) {
+          logger.info`    Config Fields:`;
+          for (const field of v.configFields) {
+            const opt = field.required ? "" : " (optional)";
+            logger.info`      ${field.name}: ${field.type}${opt}`;
+          }
+        }
       }
     }
     if (data.additionalFiles.length > 0) {

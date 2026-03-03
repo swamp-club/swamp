@@ -50,9 +50,9 @@ Deno.test("renderExtensionPushResolved outputs JSON in json mode", () => {
         version: "2026.02.26.1",
         description: "Test extension",
         repository: undefined,
-        modelFiles: ["model.ts"],
+        models: [{ type: "@test/echo", fileName: "echo.ts" }],
         workflowFiles: [],
-        vaultFiles: [],
+        vaults: [],
         additionalFiles: [],
         platforms: [],
         labels: [],
@@ -63,6 +63,7 @@ Deno.test("renderExtensionPushResolved outputs JSON in json mode", () => {
   });
   const parsed = JSON.parse(output);
   assertStringIncludes(parsed.name, "@test/ext");
+  assertStringIncludes(parsed.models[0].type, "@test/echo");
 });
 
 Deno.test("renderExtensionPush outputs JSON in json mode", () => {
