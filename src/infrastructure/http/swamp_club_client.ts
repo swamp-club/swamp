@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ApiKeyData } from "../../domain/auth/api_key.ts";
 import { UserError } from "../../domain/errors.ts";
+
+export type { ApiKeyData };
 
 /** Response from BetterAuth sign-in endpoint. */
 export interface SignInResponse {
@@ -85,18 +88,29 @@ export class SwampClubClient {
 
   /**
    * Create an API key for the authenticated user.
-   * Requires a session token from sign-in.
+   *
+   * @param token - session token or API key depending on authMethod
+   * @param name - name for the new API key
+   * @param authMethod - "session" sends Authorization Bearer (default, used
+   *   during login with session token); "api-key" sends x-api-key header
+   *   (used by CLI commands with stored API key)
    */
   async createApiKey(
-    sessionToken: string,
+    token: string,
     name: string,
+    authMethod: "session" | "api-key" = "session",
   ): Promise<CreateApiKeyResponse> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (authMethod === "api-key") {
+      headers["x-api-key"] = token;
+    } else {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
     const res = await this.fetch("/api/auth/api-key/create", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${sessionToken}`,
-      },
+      headers,
       body: JSON.stringify({ name }),
     });
 
@@ -132,6 +146,75 @@ export class SwampClubClient {
     }
 
     return await res.json();
+  }
+
+  /**
+   * List all API keys for the authenticated user.
+   */
+  async listApiKeys(apiKey: string): Promise<ApiKeyData[]> {
+    const res = await this.fetch("/api/auth/api-key/list", {
+      method: "GET",
+      headers: { "x-api-key": apiKey },
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new UserError(
+        `Failed to list API keys (HTTP ${res.status}): ${body}`,
+      );
+    }
+
+    return await res.json();
+  }
+
+  /**
+   * Update an API key (e.g. to revoke by setting enabled=false).
+   */
+  async updateApiKey(
+    apiKey: string,
+    keyId: string,
+    enabled: boolean,
+  ): Promise<void> {
+    const res = await this.fetch("/api/auth/api-key/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify({ keyId, enabled }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new UserError(
+        `Failed to update API key (HTTP ${res.status}): ${body}`,
+      );
+    }
+
+    await res.body?.cancel();
+  }
+
+  /**
+   * Permanently delete an API key.
+   */
+  async deleteApiKey(apiKey: string, keyId: string): Promise<void> {
+    const res = await this.fetch("/api/auth/api-key/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify({ keyId }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new UserError(
+        `Failed to delete API key (HTTP ${res.status}): ${body}`,
+      );
+    }
+
+    await res.body?.cancel();
   }
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {

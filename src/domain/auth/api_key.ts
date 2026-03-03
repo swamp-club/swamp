@@ -17,19 +17,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Command } from "@cliffy/command";
-import { authApikeyCommand } from "./auth_apikey.ts";
-import { authLoginCommand } from "./auth_login.ts";
-import { authLogoutCommand } from "./auth_logout.ts";
-import { authWhoamiCommand } from "./auth_whoami.ts";
-
-export const authCommand = new Command()
-  .name("auth")
-  .description("Manage swamp-club authentication")
-  .action(function () {
-    this.showHelp();
-  })
-  .command("apikey", authApikeyCommand)
-  .command("login", authLoginCommand)
-  .command("logout", authLogoutCommand)
-  .command("whoami", authWhoamiCommand);
+/** Data returned for each API key from the swamp-club API. */
+export interface ApiKeyData {
+  id: string;
+  name: string | null;
+  start: string;
+  prefix: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  lastRefillAt: string | null;
+  rateLimitEnabled: boolean;
+  rateLimitTimeWindow: number;
+  rateLimitMax: number;
+  requestCount: number;
+  remaining: number | null;
+  refillAmount: number | null;
+  refillInterval: number | null;
+  metadata: Record<string, unknown> | null;
+  expiresAt: string | null;
+  permissions: Record<string, unknown> | null;
+  userId: string;
+}
