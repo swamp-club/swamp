@@ -610,6 +610,127 @@ Deno.test("CLI: workflow with forEach step depending on another forEach step", a
   });
 });
 
+// forEach with object items and static step name (no expression)
+
+Deno.test("CLI: workflow with forEach over object array and static step name uses index-based naming", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    await createShellModel(repoDir, "test-model");
+
+    // forEach over an array of objects with a static step name (no ${{ }} expression)
+    // This should use index-based naming instead of [object Object]
+    const workflowData = {
+      id: crypto.randomUUID(),
+      name: "test-foreach-object-items-static",
+      version: 1,
+      inputs: {
+        properties: {
+          servers: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                host: { type: "string" },
+                port: { type: "number" },
+              },
+            },
+          },
+        },
+        required: ["servers"],
+      },
+      jobs: [
+        {
+          name: "deploy-job",
+          steps: [
+            {
+              name: "deploy-server",
+              forEach: {
+                item: "server",
+                in: "${{ inputs.servers }}",
+              },
+              task: {
+                type: "model_method",
+                modelIdOrName: "test-model",
+                methodName: "execute",
+              },
+              dependsOn: [],
+              weight: 0,
+            },
+          ],
+          dependsOn: [],
+          weight: 0,
+        },
+      ],
+    };
+
+    const workflowDir = join(repoDir, ".swamp/workflows");
+    await ensureDir(workflowDir);
+    await Deno.writeTextFile(
+      join(workflowDir, `workflow-${workflowData.id}.yaml`),
+      stringifyYaml(workflowData as Record<string, unknown>),
+    );
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "test-foreach-object-items-static",
+        "--repo-dir",
+        repoDir,
+        "--input",
+        '{"servers": [{"host": "web1.example.com", "port": 8080}, {"host": "web2.example.com", "port": 8081}, {"host": "web3.example.com", "port": 8082}]}',
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Should succeed (no cyclic dependency error). stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    const job = output.jobs?.find(
+      (j: { name: string }) => j.name === "deploy-job",
+    );
+
+    const steps = job?.steps as { name: string; status: string }[];
+
+    // Filter to expanded steps only (the index-suffixed ones)
+    const expandedSteps = steps.filter(
+      (s) => /^deploy-server-\d+$/.test(s.name),
+    );
+
+    // Should have 3 expanded steps with index-based suffixes
+    assertEquals(
+      expandedSteps.length,
+      3,
+      `Expected 3 expanded steps, got ${expandedSteps.length}: ${
+        JSON.stringify(steps.map((s) => s.name))
+      }`,
+    );
+
+    const expandedNames = expandedSteps.map((s) => s.name);
+    for (let i = 0; i < 3; i++) {
+      assertEquals(
+        expandedNames.includes(`deploy-server-${i}`),
+        true,
+        `Missing deploy-server-${i}, got: ${JSON.stringify(expandedNames)}`,
+      );
+    }
+
+    // All expanded steps should succeed
+    for (const step of expandedSteps) {
+      assertEquals(
+        step.status,
+        "succeeded",
+        `Expected ${step.name} to succeed but got ${step.status}`,
+      );
+    }
+  });
+});
+
 // Mixed forEach and regular steps
 
 Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {

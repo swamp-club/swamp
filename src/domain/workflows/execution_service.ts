@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { Workflow, type WorkflowInput } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
@@ -1059,7 +1060,8 @@ export class WorkflowExecutionService {
 
       if (Array.isArray(items)) {
         // Array iteration: self.{item} = item value
-        for (const item of items) {
+        for (let index = 0; index < items.length; index++) {
+          const item = items[index];
           // Evaluate the step name with the forEach context
           const stepContext = {
             ...context,
@@ -1077,7 +1079,19 @@ export class WorkflowExecutionService {
             expandedName = step.name.replace(nameMatch[0], String(value));
           } else if (!nameHasExpression) {
             // Step name has no expression template — append item value for uniqueness
-            expandedName = `${step.name}-${String(item)}`;
+            if (
+              item !== null && typeof item === "object"
+            ) {
+              // Objects/arrays stringify to "[object Object]" which causes duplicate names
+              expandedName = `${step.name}-${index}`;
+              getLogger(["swamp", "workflows"]).warn(
+                "forEach step '{stepName}' uses index-based naming because item is an object. " +
+                  "Consider adding a ${{{{ self.{itemName}.<field> }}}} expression to the step name for better observability.",
+                { stepName: step.name, itemName },
+              );
+            } else {
+              expandedName = `${step.name}-${String(item)}`;
+            }
           }
 
           expandedSteps.push({
