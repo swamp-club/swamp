@@ -32,9 +32,6 @@ import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 
 const logger = getLogger(["swamp", "vaults", "loader"]);
 
-/** Reserved namespaces that user vault types cannot use. */
-const RESERVED_NAMESPACES = ["@swamp/", "@si/", "swamp/", "si/"];
-
 /** Pattern for valid user vault type: @namespace/name or namespace/name */
 const USER_VAULT_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
@@ -134,13 +131,6 @@ export class UserVaultLoader {
         }
 
         const userVault = parsed.data;
-
-        // Validate namespace
-        const namespaceError = this.validateUserNamespace(userVault.type);
-        if (namespaceError) {
-          result.failed.push({ file, error: namespaceError });
-          continue;
-        }
 
         // Register with the vault type registry
         if (vaultTypeRegistry.has(userVault.type)) {
@@ -249,19 +239,6 @@ export class UserVaultLoader {
     return await import(
       `data:application/javascript;base64,${encoded}`
     );
-  }
-
-  /**
-   * Validates that a user-defined vault type follows namespace conventions.
-   * Must not use reserved namespaces (@swamp/, @si/).
-   */
-  private validateUserNamespace(type: string): string | undefined {
-    for (const reserved of RESERVED_NAMESPACES) {
-      if (type.toLowerCase().startsWith(reserved)) {
-        return `Vault type '${type}' uses a reserved namespace. User vaults cannot use 'swamp' or 'si' namespaces (with or without '@' prefix).`;
-      }
-    }
-    return undefined;
   }
 
   /**

@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { assertStringIncludes } from "@std/assert/string-includes";
 import { join } from "@std/path";
 import { UserVaultLoader } from "./user_vault_loader.ts";
 import { VaultTypeRegistry } from "./vault_type_registry.ts";
@@ -74,19 +73,22 @@ export const vault = {
   }
 });
 
-Deno.test("UserVaultLoader - rejects vault with reserved namespace", async () => {
+Deno.test("UserVaultLoader - allows @swamp/* namespace for local vaults", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "vault_loader_test_" });
   try {
-    const vaultFile = join(tmpDir, "bad_vault.ts");
+    const vaultFile = join(tmpDir, "swamp_vault.ts");
     await Deno.writeTextFile(
       vaultFile,
       `
+import { z } from "npm:zod";
+
 export const vault = {
   type: "@swamp/my-vault",
-  name: "Bad Vault",
-  description: "Uses reserved namespace",
+  name: "Swamp Vault",
+  description: "Local dev vault using @swamp namespace",
+  configSchema: z.object({ endpoint: z.string() }),
   createProvider: (name: string, _config: Record<string, unknown>) => ({
-    get: async (_key: string) => "",
+    get: async (_key: string) => "test-secret",
     put: async (_key: string, _value: string) => {},
     list: async () => [],
     getName: () => name,
@@ -98,9 +100,9 @@ export const vault = {
     const loader = new UserVaultLoader(new StubDenoRuntime());
     const result = await loader.loadVaults(tmpDir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "reserved namespace");
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.loaded[0], "swamp_vault.ts");
+    assertEquals(result.failed.length, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -196,20 +198,23 @@ export const vault = {
   }
 });
 
-Deno.test("UserVaultLoader - rejects non-@ vault with reserved swamp namespace", async () => {
+Deno.test("UserVaultLoader - allows swamp/* namespace for local vaults", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "vault_loader_test_" });
   try {
-    const vaultFile = join(tmpDir, "bad_vault.ts");
+    const vaultFile = join(tmpDir, "swamp_vault.ts");
     await Deno.writeTextFile(
       vaultFile,
       `
+import { z } from "npm:zod";
+
 export const vault = {
   type: "swamp/my-vault",
-  name: "Bad Vault",
-  description: "Uses reserved namespace without @",
-  createProvider: (name, _config) => ({
-    get: async (_key) => "",
-    put: async (_key, _value) => {},
+  name: "Swamp Vault",
+  description: "Local dev vault using swamp namespace",
+  configSchema: z.object({ endpoint: z.string() }),
+  createProvider: (name: string, _config: Record<string, unknown>) => ({
+    get: async (_key: string) => "test-secret",
+    put: async (_key: string, _value: string) => {},
     list: async () => [],
     getName: () => name,
   }),
@@ -220,28 +225,31 @@ export const vault = {
     const loader = new UserVaultLoader(new StubDenoRuntime());
     const result = await loader.loadVaults(tmpDir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "reserved namespace");
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.loaded[0], "swamp_vault.ts");
+    assertEquals(result.failed.length, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
-Deno.test("UserVaultLoader - rejects non-@ vault with reserved si namespace", async () => {
+Deno.test("UserVaultLoader - allows si/* namespace for local vaults", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "vault_loader_test_" });
   try {
-    const vaultFile = join(tmpDir, "bad_vault.ts");
+    const vaultFile = join(tmpDir, "si_vault.ts");
     await Deno.writeTextFile(
       vaultFile,
       `
+import { z } from "npm:zod";
+
 export const vault = {
   type: "si/my-vault",
-  name: "Bad Vault",
-  description: "Uses reserved si namespace without @",
-  createProvider: (name, _config) => ({
-    get: async (_key) => "",
-    put: async (_key, _value) => {},
+  name: "SI Vault",
+  description: "Local dev vault using si namespace",
+  configSchema: z.object({ endpoint: z.string() }),
+  createProvider: (name: string, _config: Record<string, unknown>) => ({
+    get: async (_key: string) => "test-secret",
+    put: async (_key: string, _value: string) => {},
     list: async () => [],
     getName: () => name,
   }),
@@ -252,9 +260,9 @@ export const vault = {
     const loader = new UserVaultLoader(new StubDenoRuntime());
     const result = await loader.loadVaults(tmpDir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "reserved namespace");
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.loaded[0], "si_vault.ts");
+    assertEquals(result.failed.length, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
