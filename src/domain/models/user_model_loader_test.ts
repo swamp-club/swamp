@@ -1804,7 +1804,7 @@ export const model = {
   });
 });
 
-Deno.test("UserModelLoader rejects unscoped swamp/* namespace (no @ prefix)", async () => {
+Deno.test("UserModelLoader allows swamp/* namespace for local models", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1830,17 +1830,16 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "reserved_swamp.ts": modelCode }, async (dir) => {
+  await withTempModels({ "swamp_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "reserved namespace");
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
   });
 });
 
-Deno.test("UserModelLoader rejects unscoped si/* namespace (no @ prefix)", async () => {
+Deno.test("UserModelLoader allows si/* namespace for local models", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1866,13 +1865,12 @@ export const model = {
 };
 `;
 
-  await withTempModels({ "reserved_si.ts": modelCode }, async (dir) => {
+  await withTempModels({ "si_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "reserved namespace");
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
   });
 });
 
