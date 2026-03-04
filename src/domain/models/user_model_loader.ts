@@ -428,11 +428,6 @@ export class UserModelLoader {
   private validateUserNamespace(rawType: string): string | undefined {
     const normalized = ModelType.create(rawType).normalized;
 
-    // Check for reserved built-in namespaces
-    if (ModelType.isReservedNamespace(normalized)) {
-      return `Model type '${rawType}' uses a reserved namespace. User models cannot use 'swamp' or 'si' namespaces.`;
-    }
-
     // Must start with '@'
     if (!ModelType.isUserNamespace(normalized)) {
       return `Model type '${rawType}' must use '@' prefix. Expected format: @<namespace>/<name> (e.g., @myorg/my-model)`;
