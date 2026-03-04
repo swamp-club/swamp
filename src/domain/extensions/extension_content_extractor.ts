@@ -67,7 +67,7 @@ export async function extractContentMetadata(
   for (const wf of workflowFiles) {
     try {
       const content = await Deno.readTextFile(wf.sourcePath);
-      const workflow = extractWorkflowFromYaml(content);
+      const workflow = extractWorkflowFromYaml(content, wf.archiveName);
       if (workflow) {
         workflows.push(workflow);
       }
@@ -513,7 +513,10 @@ function extractFiles(content: string): ExtractedFile[] {
  * Extracts workflow metadata from a YAML file content.
  * Returns null if the content doesn't contain a valid workflow structure.
  */
-function extractWorkflowFromYaml(content: string): ExtractedWorkflow | null {
+function extractWorkflowFromYaml(
+  content: string,
+  fileName: string,
+): ExtractedWorkflow | null {
   const parsed = parseYaml(content);
   if (!parsed || typeof parsed !== "object") return null;
 
@@ -576,7 +579,7 @@ function extractWorkflowFromYaml(content: string): ExtractedWorkflow | null {
     }
   }
 
-  return { id, name, description, jobs };
+  return { fileName, id, name, description, jobs };
 }
 
 /**

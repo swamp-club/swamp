@@ -39,11 +39,13 @@ import {
   renderExtensionPushCancelled,
   renderExtensionPushCompilationErrors,
   renderExtensionPushDryRun,
+  renderExtensionPushNamespaceErrors,
   renderExtensionPushQualityErrors,
   renderExtensionPushResolved,
   renderExtensionPushSafetyErrors,
   renderExtensionPushSafetyWarnings,
 } from "../../presentation/output/extension_push_output.ts";
+import { validateContentNamespaces } from "../../domain/extensions/extension_namespace_validator.ts";
 
 interface ExtensionPushOptions extends GlobalOptions {
   repoDir: string;
@@ -151,6 +153,27 @@ export const extensionPushCommand = new Command()
         .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults`;
     } catch {
       ctx.logger.debug`Content metadata extraction failed, skipping`;
+    }
+
+    // 9c. Validate content namespaces
+    if (contentMetadata) {
+      const namespaceResult = validateContentNamespaces(
+        manifest.name,
+        contentMetadata,
+      );
+      if (!namespaceResult.valid) {
+        const slashIndex = manifest.name.indexOf("/");
+        const expectedNamespace = manifest.name.slice(0, slashIndex + 1);
+        renderExtensionPushNamespaceErrors(
+          expectedNamespace,
+          namespaceResult.mismatches,
+          ctx.outputMode,
+        );
+        throw new UserError(
+          "Extension content uses namespaces that don't match the extension package. " +
+            "All model types, vault types, and workflow names must use the same namespace as the extension.",
+        );
+      }
     }
 
     // 10. Show resolved bundle contents (use extracted metadata for richer display)

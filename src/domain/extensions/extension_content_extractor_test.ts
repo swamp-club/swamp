@@ -369,6 +369,7 @@ Deno.test("extractContentMetadata parses workflow YAML", async () => {
       [{ sourcePath: wfFile, archiveName: "workflow.yaml" }],
     );
     assertEquals(result.workflows.length, 1);
+    assertEquals(result.workflows[0].fileName, "workflow.yaml");
     assertEquals(result.workflows[0].id, "abc-123");
     assertEquals(result.workflows[0].name, "test-workflow");
     assertEquals(result.workflows[0].description, "A test workflow");
@@ -448,6 +449,7 @@ Deno.test("extractContentMetadata parses workflow with multiple jobs and steps",
       tmpDir,
       [{ sourcePath: wfFile, archiveName: "multi.yaml" }],
     );
+    assertEquals(result.workflows[0].fileName, "multi.yaml");
     assertEquals(result.workflows[0].jobs.length, 2);
     assertEquals(result.workflows[0].jobs[0].steps.length, 1);
     assertEquals(result.workflows[0].jobs[1].steps.length, 2);
@@ -522,6 +524,7 @@ Deno.test("extractContentMetadata skips unparseable files gracefully", async () 
     assertEquals(result.models.length, 1);
     assertEquals(result.models[0].type, "test/good");
     assertEquals(result.workflows.length, 1);
+    assertEquals(result.workflows[0].fileName, "good.yaml");
     assertEquals(result.workflows[0].name, "good-workflow");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

@@ -22,6 +22,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
 import type { ExtractedArgument } from "../../domain/extensions/extension_content.ts";
+import type { NamespaceMismatch } from "../../domain/extensions/extension_namespace_validator.ts";
 
 const logger = getSwampLogger(["extension", "push"]);
 
@@ -172,6 +173,31 @@ export function renderExtensionPushSafetyErrors(
     logger.error`Safety errors (push blocked):`;
     for (const e of errors) {
       logger.error`  ${e.file}: ${e.message}`;
+    }
+  }
+}
+
+/**
+ * Renders namespace mismatch errors.
+ */
+export function renderExtensionPushNamespaceErrors(
+  expectedNamespace: string,
+  mismatches: NamespaceMismatch[],
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify(
+        { namespaceErrors: { expectedNamespace, mismatches } },
+        null,
+        2,
+      ),
+    );
+  } else {
+    logger.error`Namespace errors (push blocked):`;
+    logger.error`  All content must use namespace "${expectedNamespace}"`;
+    for (const m of mismatches) {
+      logger.error`  ${m.kind}: "${m.identifier}" in ${m.fileName}`;
     }
   }
 }

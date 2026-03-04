@@ -75,6 +75,7 @@ export interface ExtractedWorkflowJob {
 
 /** Metadata extracted from a single workflow YAML file. */
 export interface ExtractedWorkflow {
+  fileName: string;
   id: string;
   name: string;
   description: string;

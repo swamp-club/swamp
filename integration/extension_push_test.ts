@@ -245,7 +245,7 @@ Deno.test("extension push --dry-run archives multiple workflows with unique name
 
     const wf1Content = stringifyYaml({
       id: "a0a0a0a0-1111-4111-a111-111111111111",
-      name: "alpha-workflow",
+      name: "@test/alpha-workflow",
       version: 1,
       jobs: [{
         name: "main",
@@ -265,7 +265,7 @@ Deno.test("extension push --dry-run archives multiple workflows with unique name
     });
     const wf2Content = stringifyYaml({
       id: "b0b0b0b0-2222-4222-b222-222222222222",
-      name: "beta-workflow",
+      name: "@test/beta-workflow",
       version: 1,
       jobs: [{
         name: "main",
@@ -285,7 +285,7 @@ Deno.test("extension push --dry-run archives multiple workflows with unique name
     });
     const wf3Content = stringifyYaml({
       id: "c0c0c0c0-3333-4333-b333-333333333333",
-      name: "gamma-workflow",
+      name: "@test/gamma-workflow",
       version: 1,
       jobs: [{
         name: "main",
@@ -677,7 +677,7 @@ Deno.test("extension push --dry-run resolves workflows from extensions/workflows
       join(extWfDir, "ext-wf.yaml"),
       stringifyYaml({
         id: "d0d0d0d0-4444-4444-a444-444444444444",
-        name: "ext-wf",
+        name: "@test/ext-wf",
         version: 1,
         jobs: [{
           name: "main",
