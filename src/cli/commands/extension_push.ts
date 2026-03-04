@@ -51,6 +51,7 @@ interface ExtensionPushOptions extends GlobalOptions {
   repoDir: string;
   yes?: boolean;
   dryRun?: boolean;
+  releaseNotes?: string;
 }
 
 async function promptConfirmation(message: string): Promise<boolean> {
@@ -74,6 +75,10 @@ export const extensionPushCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-y, --yes", "Skip confirmation prompts")
   .option("--dry-run", "Build archive locally without pushing to registry")
+  .option(
+    "--release-notes <text:string>",
+    "Per-version release notes (max 5000 chars)",
+  )
   .action(async function (options: ExtensionPushOptions, manifestPath: string) {
     const ctx = createContext(options, ["extension", "push"]);
     ctx.logger.debug`Starting extension push`;
@@ -207,12 +212,14 @@ export const extensionPushCommand = new Command()
       };
     });
 
+    const resolvedReleaseNotes = options.releaseNotes ?? manifest.releaseNotes;
     renderExtensionPushResolved(
       {
         name: manifest.name,
         version: manifest.version,
         description: manifest.description,
         repository: manifest.repository,
+        releaseNotes: resolvedReleaseNotes,
         models: resolvedModels,
         workflowFiles: workflowFiles.map((wf) =>
           relative(repoDir, wf.sourcePath)
@@ -469,6 +476,7 @@ export const extensionPushCommand = new Command()
 
       // 17. Three-phase push
       const extensionClient = new ExtensionApiClient(credentials.serverUrl);
+      const releaseNotes = options.releaseNotes ?? manifest.releaseNotes;
       const pushMetadata = {
         name: manifest.name,
         version: manifest.version,
@@ -477,6 +485,7 @@ export const extensionPushCommand = new Command()
         platforms: manifest.platforms,
         labels: manifest.labels,
         repository: manifest.repository || undefined,
+        ...(releaseNotes ? { releaseNotes } : {}),
       };
 
       // Phase 1: Initiate

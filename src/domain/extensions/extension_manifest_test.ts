@@ -273,6 +273,22 @@ models:
   assertStringIncludes((error as Error).message, "Invalid");
 });
 
+Deno.test("parseExtensionManifest parses valid manifest with releaseNotes", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+releaseNotes: "Fixed a critical bug in the deploy step"
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(
+    manifest.releaseNotes,
+    "Fixed a critical bug in the deploy step",
+  );
+});
+
 Deno.test("parseExtensionManifest defaults optional fields", () => {
   const yaml = `
 manifestVersion: 1
@@ -284,6 +300,7 @@ models:
   const manifest = parseExtensionManifest(yaml);
   assertEquals(manifest.description, undefined);
   assertEquals(manifest.repository, undefined);
+  assertEquals(manifest.releaseNotes, undefined);
   assertEquals(manifest.workflows, []);
   assertEquals(manifest.vaults, []);
   assertEquals(manifest.additionalFiles, []);

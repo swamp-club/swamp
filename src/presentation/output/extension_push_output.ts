@@ -48,6 +48,7 @@ export interface ExtensionPushResolvedData {
   version: string;
   description: string | undefined;
   repository: string | undefined;
+  releaseNotes: string | undefined;
   models: ResolvedModelEntry[];
   workflowFiles: string[];
   vaults: ResolvedVaultEntry[];
@@ -91,6 +92,9 @@ export function renderExtensionPushResolved(
     }
     if (data.repository) {
       logger.info`Repository: ${data.repository}`;
+    }
+    if (data.releaseNotes) {
+      logger.info`Release Notes: ${data.releaseNotes}`;
     }
     if (data.models.length > 0) {
       logger.info`Models (${data.models.length}):`;
