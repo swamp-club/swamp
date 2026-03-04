@@ -6,7 +6,6 @@
   - [No 'model' or 'extension' export found](#no-model-or-extension-export-found)
   - [Unknown resource spec / Unknown file spec](#unknown-resource-spec-or-unknown-file-spec)
   - [Model type already registered](#model-type-already-registered)
-  - [Model type must use '@' prefix](#model-type-must-use--prefix)
   - [Uses a reserved namespace](#uses-a-reserved-namespace)
   - [Cannot extend unregistered model type](#cannot-extend-unregistered-model-type)
   - [Method already exists](#method-x-already-exists-on-model-type-y)
@@ -76,19 +75,6 @@ type: "@user/echo"; // May conflict with other users
 type: "@myorg/echo"; // Use your own namespace
 ```
 
-### "Model type must use '@' prefix"
-
-User-defined models must start with `@`:
-
-```typescript
-// Wrong - missing @ prefix
-type: "mycompany/echo";
-
-// Correct
-type: "@mycompany/echo";
-type: "@user/echo";
-```
-
 ### "Uses a reserved namespace"
 
 Reserved namespaces (`swamp`, `si`) are for built-in types only:
@@ -102,7 +88,8 @@ type: "@si/auth";
 
 // Correct - use any other namespace
 type: "@myorg/my-model";
-type: "@user/my-model";
+type: "myorg/my-model";
+type: "digitalocean/app-platform";
 ```
 
 ### "Cannot extend unregistered model type: ..."

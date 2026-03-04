@@ -28,10 +28,11 @@ export const vault = {
 
 ## Type Naming
 
-- Must match `@namespace/name` pattern (e.g., `@hashicorp/vault`,
-  `@openbao/vault`)
+- Must match `@namespace/name` or `namespace/name` pattern (e.g.,
+  `@hashicorp/vault`, `hashicorp/vault`)
 - Lowercase letters, numbers, and hyphens only
-- Reserved namespaces (`@swamp/`, `@si/`) are not allowed
+- Reserved namespaces (`swamp`, `si`) are not allowed (with or without `@`
+  prefix)
 
 ## File Location
 
@@ -231,7 +232,8 @@ export const vault = {
 
 1. **Import**: Use `import { z } from "npm:zod";` (same as extension models)
 2. **Export**: Must be `export const vault` (named export, not default)
-3. **Namespaces**: `@swamp/` and `@si/` are reserved for built-in types
+3. **Namespaces**: `swamp` and `si` namespaces are reserved for built-in types
+   (with or without `@` prefix)
 4. **Config**: User-defined vaults always use `--config <json>` on
    `vault create`
 5. **Bundling**: Files are bundled by Deno before import — standard Deno imports

@@ -1505,7 +1505,7 @@ export const model = {
 
 // --- Namespace validation tests ---
 
-Deno.test("UserModelLoader rejects model without @ prefix", async () => {
+Deno.test("UserModelLoader accepts non-@ prefixed model", async () => {
   const modelCode = `
 import { z } from "npm:zod@4";
 
@@ -1535,9 +1535,8 @@ export const model = {
     const loader = createTestLoader();
     const result = await loader.loadModels(dir);
 
-    assertEquals(result.loaded.length, 0);
-    assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "must use '@' prefix");
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
   });
 });
 
@@ -1837,7 +1836,7 @@ export const model = {
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "must use '@' prefix");
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
   });
 });
 
@@ -1873,7 +1872,78 @@ export const model = {
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
-    assertStringIncludes(result.failed[0].error, "must use '@' prefix");
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  });
+});
+
+Deno.test("UserModelLoader accepts non-@ model like digitalocean/app-platform", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "digitalocean/app-platform",
+  version: "2026.02.09.1",
+  globalArguments: z.object({ token: z.string() }),
+  resources: {
+    "data": {
+      description: "Data output",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "app_platform.ts": modelCode }, async (dir) => {
+    const loader = createTestLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.failed.length, 0);
+  });
+});
+
+Deno.test("UserModelLoader rejects single-segment non-@ model type", async () => {
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "mymodel",
+  version: "2026.02.09.1",
+  globalArguments: z.object({ message: z.string() }),
+  resources: {
+    "data": {
+      description: "Data output",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "single_segment.ts": modelCode }, async (dir) => {
+    const loader = createTestLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "at least 2 segments");
   });
 });
 

@@ -33,10 +33,10 @@ import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 const logger = getLogger(["swamp", "vaults", "loader"]);
 
 /** Reserved namespaces that user vault types cannot use. */
-const RESERVED_NAMESPACES = ["@swamp/", "@si/"];
+const RESERVED_NAMESPACES = ["@swamp/", "@si/", "swamp/", "si/"];
 
-/** Pattern for valid user vault type: @namespace/name */
-const USER_VAULT_TYPE_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
+/** Pattern for valid user vault type: @namespace/name or namespace/name */
+const USER_VAULT_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
 /**
  * Schema for validating user vault exports.
@@ -46,7 +46,7 @@ const UserVaultSchema = z.object({
     (t) => USER_VAULT_TYPE_PATTERN.test(t),
     {
       message:
-        "Vault type must match @namespace/name (e.g., @myorg/custom-vault)",
+        "Vault type must match @namespace/name or namespace/name (e.g., @myorg/custom-vault or myorg/custom-vault)",
     },
   ),
   name: z.string(),
@@ -258,7 +258,7 @@ export class UserVaultLoader {
   private validateUserNamespace(type: string): string | undefined {
     for (const reserved of RESERVED_NAMESPACES) {
       if (type.toLowerCase().startsWith(reserved)) {
-        return `Vault type '${type}' uses a reserved namespace. User vaults cannot use '@swamp' or '@si' namespaces.`;
+        return `Vault type '${type}' uses a reserved namespace. User vaults cannot use 'swamp' or 'si' namespaces (with or without '@' prefix).`;
       }
     }
     return undefined;

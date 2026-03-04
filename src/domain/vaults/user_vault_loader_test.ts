@@ -160,3 +160,102 @@ Deno.test("VaultTypeRegistry standalone - rejects duplicate registration", () =>
   }
   assertEquals(threw, true);
 });
+
+Deno.test("UserVaultLoader - loads valid non-@ vault type", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vault_loader_test_" });
+  try {
+    const vaultFile = join(tmpDir, "custom_vault.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      `
+import { z } from "npm:zod";
+
+export const vault = {
+  type: "hashicorp/vault",
+  name: "HashiCorp Vault",
+  description: "A test vault without @ prefix",
+  configSchema: z.object({ endpoint: z.string() }),
+  createProvider: (name, _config) => ({
+    get: async (_key) => "test-secret",
+    put: async (_key, _value) => {},
+    list: async () => [],
+    getName: () => name,
+  }),
+};
+`,
+    );
+
+    const loader = new UserVaultLoader(new StubDenoRuntime());
+    const result = await loader.loadVaults(tmpDir);
+
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.loaded[0], "custom_vault.ts");
+    assertEquals(result.failed.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("UserVaultLoader - rejects non-@ vault with reserved swamp namespace", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vault_loader_test_" });
+  try {
+    const vaultFile = join(tmpDir, "bad_vault.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      `
+export const vault = {
+  type: "swamp/my-vault",
+  name: "Bad Vault",
+  description: "Uses reserved namespace without @",
+  createProvider: (name, _config) => ({
+    get: async (_key) => "",
+    put: async (_key, _value) => {},
+    list: async () => [],
+    getName: () => name,
+  }),
+};
+`,
+    );
+
+    const loader = new UserVaultLoader(new StubDenoRuntime());
+    const result = await loader.loadVaults(tmpDir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("UserVaultLoader - rejects non-@ vault with reserved si namespace", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vault_loader_test_" });
+  try {
+    const vaultFile = join(tmpDir, "bad_vault.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      `
+export const vault = {
+  type: "si/my-vault",
+  name: "Bad Vault",
+  description: "Uses reserved si namespace without @",
+  createProvider: (name, _config) => ({
+    get: async (_key) => "",
+    put: async (_key, _value) => {},
+    list: async () => [],
+    getName: () => name,
+  }),
+};
+`,
+    );
+
+    const loader = new UserVaultLoader(new StubDenoRuntime());
+    const result = await loader.loadVaults(tmpDir);
+
+    assertEquals(result.loaded.length, 0);
+    assertEquals(result.failed.length, 1);
+    assertStringIncludes(result.failed[0].error, "reserved namespace");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

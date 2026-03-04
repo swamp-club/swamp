@@ -366,7 +366,8 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    `npm:lodash-es@4.17.21`, not `npm:lodash-es`). Swamp does not use a lockfile
    during bundling, so unpinned versions may resolve differently across runs.
    `npm:zod@4` is the one exception — it is externalized and provided by swamp.
-4. **Type naming**: Use `@<namespace>/<name>` format (e.g., `@user/my-model`)
+4. **Type naming**: Use `@<namespace>/<name>` or `<namespace>/<name>` format
+   (e.g., `@user/my-model` or `myorg/my-model`)
 5. **No type annotations**: Avoid TypeScript types in execute parameters
 6. **File naming**: Use snake_case (`my_model.ts`)
 
@@ -374,13 +375,15 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
 
 User-defined models can use any namespace except reserved ones (`swamp`, `si`):
 
-| Type              | Valid? | Notes                    |
-| ----------------- | ------ | ------------------------ |
-| `@user/my-model`  | ✅     | Valid namespace          |
-| `@myorg/deploy`   | ✅     | Custom namespace allowed |
-| `@user/aws/s3`    | ✅     | Nested paths allowed     |
-| `mycompany/model` | ❌     | Missing `@` prefix       |
-| `@swamp/my-model` | ❌     | Reserved namespace       |
+| Type                        | Valid? | Notes                       |
+| --------------------------- | ------ | --------------------------- |
+| `@user/my-model`            | ✅     | Valid namespace             |
+| `@myorg/deploy`             | ✅     | Custom namespace allowed    |
+| `myorg/my-model`            | ✅     | Non-@ format allowed        |
+| `digitalocean/app-platform` | ✅     | Non-@ multi-segment allowed |
+| `@user/aws/s3`              | ✅     | Nested paths allowed        |
+| `swamp/my-model`            | ❌     | Reserved namespace          |
+| `si/my-model`               | ❌     | Reserved namespace          |
 
 ## Verify
 

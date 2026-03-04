@@ -418,9 +418,8 @@ export class UserModelLoader {
    * Validates that a user-defined model type follows the required namespace conventions.
    *
    * Requirements:
-   * - Must not use reserved namespaces (swamp, si)
-   * - Must start with '@' (user namespace prefix)
-   * - Must have at least 2 segments (e.g., "@myorg/echo")
+   * - Must not use reserved namespaces (swamp, si) for non-@ types
+   * - Must have at least 2 segments (e.g., "@myorg/echo" or "myorg/echo")
    *
    * @param rawType - The raw type string from the user model
    * @returns Error message if validation fails, undefined if valid
@@ -428,15 +427,18 @@ export class UserModelLoader {
   private validateUserNamespace(rawType: string): string | undefined {
     const normalized = ModelType.create(rawType).normalized;
 
-    // Must start with '@'
-    if (!ModelType.isUserNamespace(normalized)) {
-      return `Model type '${rawType}' must use '@' prefix. Expected format: @<namespace>/<name> (e.g., @myorg/my-model)`;
-    }
-
     // Must have at least 2 segments
     const segmentCount = ModelType.getSegmentCount(normalized);
     if (segmentCount < 2) {
-      return `Model type '${rawType}' must have at least 2 segments. Expected format: @<namespace>/<name> (e.g., @myorg/my-model)`;
+      return `Model type '${rawType}' must have at least 2 segments. Expected format: @<namespace>/<name> or <namespace>/<name> (e.g., @myorg/my-model or myorg/my-model)`;
+    }
+
+    // Non-@ types must not use reserved namespaces
+    if (
+      !ModelType.isUserNamespace(normalized) &&
+      ModelType.isReservedNamespace(normalized)
+    ) {
+      return `Model type '${rawType}' uses a reserved namespace. 'swamp' and 'si' namespaces are reserved for built-in types.`;
     }
 
     return undefined;
