@@ -32,6 +32,8 @@ import type { ExtensionContentMetadata } from "../../domain/extensions/extension
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
+import { isOrganizationAuthorized } from "../../domain/auth/organization_authorization.ts";
 import { CalVer } from "../../domain/models/calver.ts";
 import {
   type CompilationError,
@@ -118,30 +120,33 @@ export const extensionPushCommand = new Command()
       );
     }
 
-    // 4. Validate namespace matches username
+    // 4. Validate namespace matches one of the user's organizations
     const namespacePart = manifest.name.slice(1, manifest.name.indexOf("/"));
-    if (namespacePart !== credentials.username) {
-      if (ctx.outputMode === "json") {
-        throw new UserError(
-          `Extension namespace "@${namespacePart}" does not match authenticated user "${credentials.username}". ` +
-            `Use "@${credentials.username}/${
-              manifest.name.split("/")[1]
-            }" instead.`,
-        );
-      }
-      const suggested = `@${credentials.username}/${
-        manifest.name.split("/")[1]
-      }`;
-      const confirmed = await promptConfirmation(
-        `Extension namespace "@${namespacePart}" does not match your username "${credentials.username}". ` +
-          `Would you like to push as "${suggested}" instead?`,
+    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? credentials.serverUrl;
+    const swampClubClient = new SwampClubClient(serverUrl);
+    let userOrganizations: string[];
+    try {
+      userOrganizations = await swampClubClient.getUserOrganizations(
+        credentials.apiKey,
       );
-      if (!confirmed) {
-        renderExtensionPushCancelled(ctx.outputMode);
-        return;
-      }
-      // Update name for the push
-      manifest.name = suggested;
+    } catch (error) {
+      throw new UserError(
+        `Unable to fetch organizations from server: ${
+          error instanceof Error ? error.message : String(error)
+        }. ` +
+          `Check your network connection and try again.`,
+      );
+    }
+    const effectiveOrgs = userOrganizations.length > 0
+      ? userOrganizations
+      : [credentials.username];
+
+    if (!isOrganizationAuthorized(namespacePart, effectiveOrgs)) {
+      const orgList = effectiveOrgs.join(", ");
+      throw new UserError(
+        `Extension namespace "@${namespacePart}" is not an organization you belong to. ` +
+          `Your organizations: ${orgList}`,
+      );
     }
 
     // 9b. Extract content metadata early (for display and later registry push)

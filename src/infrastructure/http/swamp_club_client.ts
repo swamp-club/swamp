@@ -36,6 +36,14 @@ export interface CreateApiKeyResponse {
   key: string;
 }
 
+/** Organization membership from the /api/whoami endpoint. */
+export interface WhoamiOrganization {
+  slug: string;
+  name: string;
+  role: string;
+  personal: boolean;
+}
+
 /** Response from the /api/whoami endpoint. */
 export interface WhoamiResponse {
   authenticated: boolean;
@@ -43,6 +51,7 @@ export interface WhoamiResponse {
   username?: string;
   email?: string;
   name?: string;
+  organizations?: WhoamiOrganization[];
 }
 
 /**
@@ -132,6 +141,15 @@ export class SwampClubClient {
     }
 
     return await res.json();
+  }
+
+  /**
+   * Get the list of organization slugs the user belongs to.
+   * Falls back to an empty array if the server doesn't return organizations.
+   */
+  async getUserOrganizations(apiKey: string): Promise<string[]> {
+    const whoami = await this.whoami(apiKey);
+    return (whoami.organizations ?? []).map((org) => org.slug);
   }
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {
