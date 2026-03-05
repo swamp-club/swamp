@@ -104,6 +104,11 @@ dependencies:
 
 ## Push Workflow
 
+> **Before you push:** Your extension must pass
+> `swamp extension fmt <manifest> --check`. The push command enforces this
+> automatically — if your code has formatting or lint issues, the push will be
+> rejected. Run `swamp extension fmt <manifest>` to auto-fix before pushing.
+
 ### Commands
 
 ```bash

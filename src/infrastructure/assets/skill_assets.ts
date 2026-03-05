@@ -106,6 +106,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-extension-model",
   },
   {
+    relativePath: "swamp-extension-model/references/publishing.md",
+    name: "swamp-extension-model",
+  },
+  {
     relativePath: "swamp-vault/SKILL.md",
     name: "swamp-vault",
   },
@@ -119,6 +123,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   {
     relativePath: "swamp-vault/references/examples.md",
+    name: "swamp-vault",
+  },
+  {
+    relativePath: "swamp-vault/references/user-defined-vaults.md",
     name: "swamp-vault",
   },
   {
