@@ -53,7 +53,7 @@ Deno.test("RepoService.init creates marker file", async () => {
   });
 });
 
-Deno.test("RepoService.init creates CLAUDE.md by default", async () => {
+Deno.test("RepoService.init creates CLAUDE.md with section markers", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -62,29 +62,39 @@ Deno.test("RepoService.init creates CLAUDE.md by default", async () => {
 
     assertEquals(result.instructionsFileCreated, true);
 
-    // Check CLAUDE.md exists
+    // Check CLAUDE.md exists with markers
     const claudeMdPath = join(tempDir, "CLAUDE.md");
     const content = await Deno.readTextFile(claudeMdPath);
     assertStringIncludes(content, "swamp");
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    assertStringIncludes(content, "<!-- END swamp managed section -->");
   });
 });
 
-Deno.test("RepoService.init does not overwrite existing CLAUDE.md", async () => {
+Deno.test("RepoService.init merges managed section into existing CLAUDE.md", async () => {
   await withTempDir(async (tempDir) => {
-    // Create existing CLAUDE.md
+    // Create existing CLAUDE.md with user content
     const claudeMdPath = join(tempDir, "CLAUDE.md");
-    await Deno.writeTextFile(claudeMdPath, "# Existing Content");
+    await Deno.writeTextFile(claudeMdPath, "# Existing Content\n");
 
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
     const result = await service.init(repoPath);
 
-    assertEquals(result.instructionsFileCreated, false);
+    assertEquals(result.instructionsFileCreated, true);
 
-    // Check content is unchanged
+    // Check managed section was prepended and user content preserved
     const content = await Deno.readTextFile(claudeMdPath);
-    assertEquals(content, "# Existing Content");
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    assertStringIncludes(content, "<!-- END swamp managed section -->");
+    assertStringIncludes(content, "# Existing Content");
   });
 });
 
@@ -686,7 +696,7 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to codex", async
   });
 });
 
-Deno.test("RepoService.upgrade overwrites instructions file with managed content", async () => {
+Deno.test("RepoService.upgrade prepends managed section when file has no swamp content", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -694,19 +704,30 @@ Deno.test("RepoService.upgrade overwrites instructions file with managed content
     // Init with claude
     await service.init(repoPath);
 
-    // Write stale content to the instructions file
+    // Replace CLAUDE.md with unrelated content (no swamp signature, no markers)
     const instructionsPath = join(tempDir, "CLAUDE.md");
-    await Deno.writeTextFile(instructionsPath, "# Old content");
+    await Deno.writeTextFile(instructionsPath, "# Old content\n");
 
-    // Upgrade — should overwrite with current template
+    // Upgrade — should prepend managed section
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, true);
 
     const content = await Deno.readTextFile(instructionsPath);
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
     assertStringIncludes(content, "# Project");
-    assertStringIncludes(content, "swamp");
+    assertStringIncludes(content, "# Old content");
+
+    // Managed section should come before user content
+    const beginIdx = content.indexOf(
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    const userIdx = content.indexOf("# Old content");
+    assertEquals(beginIdx < userIdx, true);
   });
 });
 
@@ -715,14 +736,22 @@ Deno.test("RepoService.upgrade returns instructionsUpdated false when content is
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    // Init with claude — instructions file is created with current template
+    // Init with claude — instructions file is created with markers
     await service.init(repoPath);
 
-    // Upgrade with same version — instructions content hasn't changed
+    // Upgrade with same version — managed section hasn't changed
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
 
     assertEquals(result.instructionsUpdated, false);
+
+    // Verify markers are still present
+    const content = await Deno.readTextFile(join(tempDir, "CLAUDE.md"));
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    assertStringIncludes(content, "<!-- END swamp managed section -->");
   });
 });
 
@@ -1547,5 +1576,385 @@ Deno.test("RepoService.init with opencode force reinit overwrites plugin", async
     const content = await Deno.readTextFile(pluginPath);
     assertStringIncludes(content, '"--from-hook"');
     assertStringIncludes(content, '"opencode"');
+  });
+});
+
+// Managed instructions section tests
+
+Deno.test("RepoService.upgrade with markers preserves user content before and after section", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Add user content before and after the managed section
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const original = await Deno.readTextFile(claudeMdPath);
+    const withUserContent = "# My Project Notes\n\n" + original +
+      "\n## My Custom Rules\n\nDo things my way.\n";
+    await Deno.writeTextFile(claudeMdPath, withUserContent);
+
+    // Upgrade — should replace only managed section
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    // Content hasn't actually changed in the managed section, so no update
+    assertEquals(result.instructionsUpdated, false);
+
+    const content = await Deno.readTextFile(claudeMdPath);
+    assertStringIncludes(content, "# My Project Notes");
+    assertStringIncludes(content, "## My Custom Rules");
+    assertStringIncludes(content, "Do things my way.");
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade with markers replaces only managed section when template changes", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Add user content after the managed section
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const original = await Deno.readTextFile(claudeMdPath);
+    const withUserContent = original + "\n## My Custom Rules\n\nDo my thing.\n";
+    await Deno.writeTextFile(claudeMdPath, withUserContent);
+
+    // Tamper with the managed section to simulate old template
+    const tampered = withUserContent.replace(
+      "Use `swamp --help` to see available commands.",
+      "Use `swamp help` to see available commands.",
+    );
+    await Deno.writeTextFile(claudeMdPath, tampered);
+
+    // Upgrade — should replace managed section, preserve user content
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+
+    const content = await Deno.readTextFile(claudeMdPath);
+    // Template restored
+    assertStringIncludes(
+      content,
+      "Use `swamp --help` to see available commands.",
+    );
+    // User content preserved
+    assertStringIncludes(content, "## My Custom Rules");
+    assertStringIncludes(content, "Do my thing.");
+  });
+});
+
+Deno.test("RepoService.upgrade migrates legacy content (template-only) to markers", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Simulate legacy CLAUDE.md (no markers, just raw template)
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const legacyContent = `# Project
+
+This repository is managed with [swamp](https://github.com/systeminit/swamp).
+
+## Rules
+
+1. **Extension models for service integrations.** Old rule text.
+
+## Skills
+
+- \`swamp-model\` - Work with swamp models
+
+## Getting Started
+
+Always start by using the \`swamp-model\` skill to work with swamp models.
+
+## Commands
+
+Use \`swamp --help\` to see available commands.
+`;
+    await Deno.writeTextFile(claudeMdPath, legacyContent);
+
+    // Upgrade — should migrate to markers
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+
+    const content = await Deno.readTextFile(claudeMdPath);
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    assertStringIncludes(content, "<!-- END swamp managed section -->");
+    // Updated template content
+    assertStringIncludes(content, "swamp-workflow");
+  });
+});
+
+Deno.test("RepoService.upgrade migrates legacy content and preserves user additions after template", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Simulate legacy CLAUDE.md with user additions after
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const legacyWithUserContent = `# Project
+
+This repository is managed with [swamp](https://github.com/systeminit/swamp).
+
+## Commands
+
+Use \`swamp --help\` to see available commands.
+
+## My Team Standards
+
+Always write tests.
+`;
+    await Deno.writeTextFile(claudeMdPath, legacyWithUserContent);
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+
+    const content = await Deno.readTextFile(claudeMdPath);
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    // User content preserved
+    assertStringIncludes(content, "## My Team Standards");
+    assertStringIncludes(content, "Always write tests.");
+  });
+});
+
+Deno.test("RepoService.upgrade migrates legacy content and preserves user additions before template", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Simulate legacy CLAUDE.md with user additions before
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const legacyWithUserBefore = `## My Project Setup
+
+Run npm install first.
+
+# Project
+
+This repository is managed with [swamp](https://github.com/systeminit/swamp).
+
+## Commands
+
+Use \`swamp --help\` to see available commands.
+`;
+    await Deno.writeTextFile(claudeMdPath, legacyWithUserBefore);
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+
+    const content = await Deno.readTextFile(claudeMdPath);
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    // User content before preserved
+    assertStringIncludes(content, "## My Project Setup");
+    assertStringIncludes(content, "Run npm install first.");
+  });
+});
+
+Deno.test("RepoService.upgrade cursor files are still fully overwritten (no markers)", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "cursor" });
+
+    // Replace cursor instructions with stale content
+    const mdcPath = join(tempDir, ".cursor", "rules", "swamp.mdc");
+    await Deno.writeTextFile(mdcPath, "---\nalwaysApply: true\n---\nold");
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "cursor" });
+
+    assertEquals(result.instructionsUpdated, true);
+
+    const content = await Deno.readTextFile(mdcPath);
+    // Full overwrite — should not have markers
+    assertEquals(
+      content.includes("<!-- BEGIN swamp managed section"),
+      false,
+    );
+    // Should have current template
+    assertStringIncludes(content, "## Skills");
+    assertStringIncludes(content, "alwaysApply: true");
+  });
+});
+
+Deno.test("RepoService.upgrade kiro files are still fully overwritten (no markers)", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "kiro" });
+
+    // Replace kiro instructions with stale content
+    const steeringPath = join(
+      tempDir,
+      ".kiro",
+      "steering",
+      "swamp-rules.md",
+    );
+    await Deno.writeTextFile(
+      steeringPath,
+      "---\ninclusion: always\n---\nold content",
+    );
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "kiro" });
+
+    assertEquals(result.instructionsUpdated, true);
+
+    const content = await Deno.readTextFile(steeringPath);
+    // Full overwrite — should not have markers
+    assertEquals(
+      content.includes("<!-- BEGIN swamp managed section"),
+      false,
+    );
+    // Should have current template
+    assertStringIncludes(content, "## Skills");
+    assertStringIncludes(content, "inclusion: always");
+  });
+});
+
+Deno.test("RepoService.init with opencode creates AGENTS.md with markers", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "opencode" });
+
+    const agentsMdPath = join(tempDir, "AGENTS.md");
+    const content = await Deno.readTextFile(agentsMdPath);
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    assertStringIncludes(content, "<!-- END swamp managed section -->");
+    assertStringIncludes(content, "swamp");
+  });
+});
+
+Deno.test("RepoService.upgrade recovers when END marker is missing from CLAUDE.md", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Simulate user accidentally deleting the END marker
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const original = await Deno.readTextFile(claudeMdPath);
+    const corrupted = original.replace(
+      "<!-- END swamp managed section -->",
+      "",
+    );
+    await Deno.writeTextFile(claudeMdPath, corrupted);
+
+    // Upgrade should recover — falls through to prepend
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+
+    const content = await Deno.readTextFile(claudeMdPath);
+    // Both markers now present
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    assertStringIncludes(content, "<!-- END swamp managed section -->");
+  });
+});
+
+Deno.test("RepoService.upgrade legacy migration with partial template match avoids duplication", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Simulate legacy CLAUDE.md where user modified the end of the template
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const legacyWithEditedEnd = `# Project
+
+This repository is managed with [swamp](https://github.com/systeminit/swamp).
+
+## Commands
+
+Use \`swamp --help\` to see commands.
+
+## My Custom Section
+
+User content here.
+`;
+    await Deno.writeTextFile(claudeMdPath, legacyWithEditedEnd);
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+
+    const content = await Deno.readTextFile(claudeMdPath);
+    // Should have markers
+    assertStringIncludes(
+      content,
+      "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
+    );
+    assertStringIncludes(content, "<!-- END swamp managed section -->");
+
+    // Should NOT have duplicate "# Project" headings
+    const projectCount = content.split("# Project").length - 1;
+    assertEquals(
+      projectCount,
+      1,
+      "Expected exactly one '# Project' heading, not duplicated",
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade with duplicate managed sections throws clear error", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Simulate duplicate markers (e.g., from a bad merge)
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const original = await Deno.readTextFile(claudeMdPath);
+    const duplicated = original + "\n" + original;
+    await Deno.writeTextFile(claudeMdPath, duplicated);
+
+    const upgradeService = new RepoService("0.2.0");
+    await assertRejects(
+      () => upgradeService.upgrade(repoPath),
+      Error,
+      "multiple swamp managed sections",
+    );
   });
 });

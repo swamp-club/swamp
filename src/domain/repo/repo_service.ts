@@ -41,6 +41,11 @@ const GITIGNORE_SECTION_BEGIN = "# BEGIN swamp managed section - DO NOT EDIT";
 const GITIGNORE_SECTION_END = "# END swamp managed section";
 const GITIGNORE_LEGACY_HEADER = "# Swamp managed defaults";
 
+const INSTRUCTIONS_SECTION_BEGIN =
+  "<!-- BEGIN swamp managed section - DO NOT EDIT -->";
+const INSTRUCTIONS_SECTION_END = "<!-- END swamp managed section -->";
+const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
+
 /**
  * Describes what happened to the .gitignore during init/upgrade.
  * - "created": a new .gitignore file was created with the managed section
@@ -351,6 +356,7 @@ export class RepoService {
 
   /**
    * Creates the tool-appropriate instructions file if it doesn't already exist.
+   * For shared-file tools, creates with section markers from the start.
    */
   private async createInstructionsFileIfNotExists(
     repoPath: RepoPath,
@@ -358,18 +364,24 @@ export class RepoService {
   ): Promise<boolean> {
     const filePath = join(repoPath.value, INSTRUCTIONS_FILES[tool]);
 
+    // For shared-file tools, always ensure the managed section exists
+    // (merges into existing file or creates new one)
+    if (this.usesSharedInstructionsFile(tool)) {
+      return this.ensureInstructionsSection(filePath);
+    }
+
+    // For tool-specific files, only create if missing
     try {
       await Deno.stat(filePath);
-      // File exists, don't overwrite
       return false;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        // Ensure parent directory exists (for cursor: .cursor/rules/)
         const parentDir = join(filePath, "..");
         await ensureDir(parentDir);
-
-        const content = this.generateInstructionsContent(tool);
-        await Deno.writeTextFile(filePath, content);
+        await Deno.writeTextFile(
+          filePath,
+          this.generateInstructionsContent(tool),
+        );
         return true;
       }
       throw error;
@@ -377,24 +389,165 @@ export class RepoService {
   }
 
   /**
-   * Updates the tool-appropriate instructions file, overwriting if content changed.
+   * Updates the tool-appropriate instructions file.
+   * For tool-specific files (cursor/kiro): overwrites entirely.
+   * For shared files (claude/opencode/codex): merges using section markers.
    */
   private updateInstructionsFile(
     repoPath: RepoPath,
     tool: AiTool,
   ): Promise<boolean> {
     const filePath = join(repoPath.value, INSTRUCTIONS_FILES[tool]);
-    return this.overwriteIfChanged(
-      filePath,
-      this.generateInstructionsContent(tool),
-    );
+    if (!this.usesSharedInstructionsFile(tool)) {
+      return this.overwriteIfChanged(
+        filePath,
+        this.generateInstructionsContent(tool),
+      );
+    }
+    return this.ensureInstructionsSection(filePath);
   }
 
   /**
-   * Generates the instructions content for the given tool.
+   * Ensures the shared instructions file contains an up-to-date managed section.
+   *
+   * - If no file exists: creates with managed section.
+   * - If file has markers: replaces content between markers.
+   * - If file has legacy swamp content (no markers): migrates to marked section.
+   * - If file has no swamp content: prepends managed section.
    */
-  private generateInstructionsContent(tool: AiTool): string {
-    const body = `# Project
+  private async ensureInstructionsSection(filePath: string): Promise<boolean> {
+    const newSection = this.buildInstructionsSection();
+
+    let existingContent: string | null = null;
+    try {
+      existingContent = await Deno.readTextFile(filePath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    // Case 1: No file exists — create with managed section
+    if (existingContent === null) {
+      await ensureDir(join(filePath, ".."));
+      await Deno.writeTextFile(filePath, newSection + "\n");
+      return true;
+    }
+
+    // Case 2: File has markers — replace managed section
+    // Only proceed if both BEGIN and END markers are present;
+    // a missing END marker (accidental deletion) falls through to case 4.
+    if (
+      existingContent.includes(INSTRUCTIONS_SECTION_BEGIN) &&
+      existingContent.includes(INSTRUCTIONS_SECTION_END)
+    ) {
+      const updatedContent = this.replaceManagedSection(
+        existingContent,
+        newSection,
+        INSTRUCTIONS_SECTION_BEGIN,
+        INSTRUCTIONS_SECTION_END,
+      );
+      if (updatedContent === existingContent) {
+        return false;
+      }
+      await atomicWriteTextFile(filePath, updatedContent);
+      return true;
+    }
+
+    // Case 3: File has legacy swamp content (no markers) — migrate
+    if (this.hasLegacyInstructionsContent(existingContent)) {
+      const updatedContent = this.migrateLegacyInstructions(
+        existingContent,
+        newSection,
+      );
+      await atomicWriteTextFile(filePath, updatedContent);
+      return true;
+    }
+
+    // Case 4: File has no swamp content — prepend managed section
+    const separator = existingContent.startsWith("\n") ? "" : "\n";
+    await atomicWriteTextFile(
+      filePath,
+      newSection + "\n" + separator + existingContent,
+    );
+    return true;
+  }
+
+  /**
+   * Detects legacy swamp-generated instructions content (without markers).
+   */
+  private hasLegacyInstructionsContent(content: string): boolean {
+    return content.includes(LEGACY_INSTRUCTIONS_SIGNATURE);
+  }
+
+  /**
+   * Migrates legacy instructions content to the marked section format.
+   * Finds the old template boundaries and replaces with the marked section,
+   * preserving any user content before/after.
+   * Falls back to prepend if boundaries can't be found.
+   */
+  private migrateLegacyInstructions(
+    content: string,
+    newSection: string,
+  ): string {
+    // Find start: "# Project\n\nThis repository is managed with [swamp]"
+    const startPattern =
+      /# Project\n\nThis repository is managed with \[swamp\]/;
+    const startMatch = startPattern.exec(content);
+
+    if (!startMatch) {
+      // Can't find boundaries — prepend
+      const separator = content.startsWith("\n") ? "" : "\n";
+      return newSection + "\n" + separator + content;
+    }
+
+    // Find end: "Use `swamp --help` to see available commands.\n"
+    const endMarker = "Use `swamp --help` to see available commands.\n";
+    const endIndex = content.indexOf(endMarker, startMatch.index);
+
+    if (endIndex === -1) {
+      // Start matched but end didn't — the user edited the template.
+      // Replace from the start match to end-of-content to avoid duplication,
+      // preserving any content before the legacy template.
+      const before = content.substring(0, startMatch.index);
+      const prefix = before.length > 0 ? before : "";
+      return prefix + newSection + "\n";
+    }
+
+    const endSlice = endIndex + endMarker.length;
+
+    const before = content.substring(0, startMatch.index);
+    const after = content.substring(endSlice);
+
+    const prefix = before.length > 0 ? before : "";
+    const suffix = after.length > 0 ? after : "\n";
+
+    return prefix + newSection + "\n" + suffix;
+  }
+
+  /**
+   * Returns true if the tool shares its instructions file with user content
+   * (CLAUDE.md, AGENTS.md) and needs section markers to avoid overwriting.
+   */
+  private usesSharedInstructionsFile(tool: AiTool): boolean {
+    switch (tool) {
+      case "claude":
+      case "opencode":
+      case "codex":
+        return true;
+      case "cursor":
+      case "kiro":
+        return false;
+      default:
+        assertNever(tool);
+    }
+  }
+
+  /**
+   * Generates the raw instructions body without any frontmatter or markers.
+   */
+  private generateInstructionsBody(): string {
+    return `# Project
 
 This repository is managed with [swamp](https://github.com/systeminit/swamp).
 
@@ -428,6 +581,23 @@ Always start by using the \`swamp-model\` skill to work with swamp models.
 
 Use \`swamp --help\` to see available commands.
 `;
+  }
+
+  /**
+   * Wraps the instructions body in BEGIN/END markers for shared files.
+   */
+  private buildInstructionsSection(): string {
+    const body = this.generateInstructionsBody();
+    return INSTRUCTIONS_SECTION_BEGIN + "\n" + body +
+      INSTRUCTIONS_SECTION_END;
+  }
+
+  /**
+   * Generates the full instructions content for tool-specific files (cursor/kiro).
+   * Shared-file tools should use buildInstructionsSection() instead.
+   */
+  private generateInstructionsContent(tool: AiTool): string {
+    const body = this.generateInstructionsBody();
 
     switch (tool) {
       case "cursor":
@@ -485,6 +655,8 @@ ${body}`;
       const updatedContent = this.replaceManagedSection(
         existingContent,
         newSection,
+        GITIGNORE_SECTION_BEGIN,
+        GITIGNORE_SECTION_END,
       );
       if (updatedContent === existingContent) {
         return "unchanged";
@@ -547,19 +719,37 @@ ${body}`;
   /**
    * Replaces the managed section between BEGIN and END markers.
    * Preserves all content outside the markers exactly as-is.
+   * Works for both gitignore and instructions files.
    */
   private replaceManagedSection(
     content: string,
     newSection: string,
+    beginMarker: string,
+    endMarker: string,
   ): string {
-    const beginIndex = content.indexOf(GITIGNORE_SECTION_BEGIN);
-    const endIndex = content.indexOf(GITIGNORE_SECTION_END);
+    const beginIndex = content.indexOf(beginMarker);
+    const endIndex = content.indexOf(endMarker);
 
     if (beginIndex === -1 || endIndex === -1) {
       throw new Error("Internal error: managed section markers not found");
     }
 
-    const endOfEndMarker = endIndex + GITIGNORE_SECTION_END.length;
+    if (endIndex < beginIndex) {
+      throw new Error(
+        "Internal error: managed section END marker appears before BEGIN marker",
+      );
+    }
+
+    // Detect duplicate marker pairs
+    const secondBegin = content.indexOf(beginMarker, beginIndex + 1);
+    if (secondBegin !== -1) {
+      throw new UserError(
+        "Found multiple swamp managed sections in file. " +
+          "Please remove the duplicate section and run the command again.",
+      );
+    }
+
+    const endOfEndMarker = endIndex + endMarker.length;
     // Consume the trailing newline after END marker if present
     const nextChar = content[endOfEndMarker];
     const endSlice = nextChar === "\n" ? endOfEndMarker + 1 : endOfEndMarker;
