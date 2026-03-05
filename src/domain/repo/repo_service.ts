@@ -454,7 +454,17 @@ export class RepoService {
       return true;
     }
 
-    // Case 3: File has legacy swamp content (no markers) — migrate
+    // Case 3: Orphaned BEGIN marker (END was accidentally deleted).
+    // Strip the orphaned BEGIN before falling through to prepend,
+    // so we don't end up with duplicate BEGIN markers.
+    if (existingContent.includes(INSTRUCTIONS_SECTION_BEGIN)) {
+      existingContent = existingContent.replace(
+        INSTRUCTIONS_SECTION_BEGIN + "\n",
+        "",
+      ).replace(INSTRUCTIONS_SECTION_BEGIN, "");
+    }
+
+    // Case 4: File has legacy swamp content (no markers) — migrate
     if (this.hasLegacyInstructionsContent(existingContent)) {
       const updatedContent = this.migrateLegacyInstructions(
         existingContent,
@@ -464,7 +474,7 @@ export class RepoService {
       return true;
     }
 
-    // Case 4: File has no swamp content — prepend managed section
+    // Case 5: File has no swamp content — prepend managed section
     const separator = existingContent.startsWith("\n") ? "" : "\n";
     await atomicWriteTextFile(
       filePath,
@@ -507,11 +517,12 @@ export class RepoService {
 
     if (endIndex === -1) {
       // Start matched but end didn't — the user edited the template.
-      // Replace from the start match to end-of-content to avoid duplication,
-      // preserving any content before the legacy template.
-      const before = content.substring(0, startMatch.index);
-      const prefix = before.length > 0 ? before : "";
-      return prefix + newSection + "\n";
+      // We can't determine where the legacy template ends, so prepend the
+      // new managed section to preserve ALL existing content (including user
+      // additions). This may leave some duplicate template text in the file,
+      // but that's preferable to silently deleting user content.
+      const separator = content.startsWith("\n") ? "" : "\n";
+      return newSection + "\n" + separator + content;
     }
 
     const endSlice = endIndex + endMarker.length;
@@ -742,7 +753,8 @@ ${body}`;
 
     // Detect duplicate marker pairs
     const secondBegin = content.indexOf(beginMarker, beginIndex + 1);
-    if (secondBegin !== -1) {
+    const secondEnd = content.indexOf(endMarker, endIndex + 1);
+    if (secondBegin !== -1 || secondEnd !== -1) {
       throw new UserError(
         "Found multiple swamp managed sections in file. " +
           "Please remove the duplicate section and run the command again.",

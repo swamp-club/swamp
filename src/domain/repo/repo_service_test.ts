@@ -1888,10 +1888,27 @@ Deno.test("RepoService.upgrade recovers when END marker is missing from CLAUDE.m
       "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
     );
     assertStringIncludes(content, "<!-- END swamp managed section -->");
+
+    // Must have exactly one of each marker (no duplicates)
+    const beginCount =
+      content.split("<!-- BEGIN swamp managed section - DO NOT EDIT -->")
+        .length - 1;
+    assertEquals(
+      beginCount,
+      1,
+      "Expected exactly one BEGIN marker, not duplicated",
+    );
+    const endCount =
+      content.split("<!-- END swamp managed section -->").length - 1;
+    assertEquals(
+      endCount,
+      1,
+      "Expected exactly one END marker, not duplicated",
+    );
   });
 });
 
-Deno.test("RepoService.upgrade legacy migration with partial template match avoids duplication", async () => {
+Deno.test("RepoService.upgrade legacy migration with partial template match preserves user content", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -1920,19 +1937,34 @@ User content here.
     assertEquals(result.instructionsUpdated, true);
 
     const content = await Deno.readTextFile(claudeMdPath);
-    // Should have markers
+    // Should have markers (new managed section was prepended)
     assertStringIncludes(
       content,
       "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
     );
     assertStringIncludes(content, "<!-- END swamp managed section -->");
 
-    // Should NOT have duplicate "# Project" headings
-    const projectCount = content.split("# Project").length - 1;
-    assertEquals(
-      projectCount,
-      1,
-      "Expected exactly one '# Project' heading, not duplicated",
+    // Exactly one set of markers (no duplicates)
+    const beginCount =
+      content.split("<!-- BEGIN swamp managed section - DO NOT EDIT -->")
+        .length - 1;
+    assertEquals(beginCount, 1, "Expected exactly one BEGIN marker");
+    const endCount =
+      content.split("<!-- END swamp managed section -->").length - 1;
+    assertEquals(endCount, 1, "Expected exactly one END marker");
+
+    // User content MUST be preserved — this is the critical invariant.
+    // When the legacy template end marker can't be found, we prepend
+    // the new section rather than risk deleting user content.
+    assertStringIncludes(
+      content,
+      "## My Custom Section",
+      "User section heading should be preserved after migration",
+    );
+    assertStringIncludes(
+      content,
+      "User content here.",
+      "User content body should be preserved after migration",
     );
   });
 });
@@ -1949,6 +1981,29 @@ Deno.test("RepoService.upgrade with duplicate managed sections throws clear erro
     const original = await Deno.readTextFile(claudeMdPath);
     const duplicated = original + "\n" + original;
     await Deno.writeTextFile(claudeMdPath, duplicated);
+
+    const upgradeService = new RepoService("0.2.0");
+    await assertRejects(
+      () => upgradeService.upgrade(repoPath),
+      Error,
+      "multiple swamp managed sections",
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade with duplicate END markers throws clear error", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Simulate duplicate END marker (e.g., from a bad merge)
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const original = await Deno.readTextFile(claudeMdPath);
+    const withDuplicateEnd = original +
+      "\n<!-- END swamp managed section -->\n";
+    await Deno.writeTextFile(claudeMdPath, withDuplicateEnd);
 
     const upgradeService = new RepoService("0.2.0");
     await assertRejects(
