@@ -433,6 +433,11 @@ export function createResourceWriter(
   getHandles: () => DataHandle[];
 } {
   const handles: DataHandle[] = [];
+  const writerLogger = getLogger([
+    "swamp",
+    "data-writer",
+    ...(definitionName ? [definitionName] : []),
+  ]);
 
   const writeResource = async (
     specName: string,
@@ -457,9 +462,9 @@ export function createResourceWriter(
           `${i.message} at "${i.path.join(".")}"`
         ).join("; ")
         : String(validationResult.error);
-      logger.warn(
-        "Resource '{specName}' data does not match schema: {error}",
-        { specName, error: formattedError },
+      writerLogger.warn(
+        "Resource '{specName}' (instance '{name}') data does not match schema: {error}",
+        { specName, name, error: formattedError },
       );
     }
 
