@@ -96,7 +96,7 @@ export const schema = z.object({ name: z.string() });
   });
 });
 
-Deno.test("bundleExtension resolves npm imports without creating deno.lock", async () => {
+Deno.test("bundleExtension inlines non-zod npm packages", async () => {
   const tsCode = `
 import { z } from "npm:zod@4";
 import { parse, stringify } from "npm:yaml@2.7.1";
@@ -122,8 +122,15 @@ export const model = {
   try {
     const js = await bundleExtension(path, DENO_PATH);
 
-    // Bundle should succeed — yaml is externalized (not inlined)
+    // Bundle should succeed — yaml is inlined into the bundle
     assertEquals(js.length > 0, true);
+
+    // yaml package should be inlined (bundle > 10KB with yaml code included)
+    assertEquals(
+      js.length > 10_000,
+      true,
+      "yaml should be inlined into the bundle, making it larger than 10KB",
+    );
 
     // No deno.lock should be created in the source directory
     let lockExists = true;

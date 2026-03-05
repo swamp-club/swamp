@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { checkExtensionQuality } from "./extension_quality_checker.ts";
+import {
+  checkExtensionQuality,
+  stripCommentsAndStrings,
+} from "./extension_quality_checker.ts";
 
 const DENO_PATH = Deno.execPath();
 
@@ -111,4 +114,161 @@ Deno.test("checkExtensionQuality passes when file list is empty", async () => {
   const result = await checkExtensionQuality([], DENO_PATH);
   assertEquals(result.passed, true);
   assertEquals(result.issues, []);
+});
+
+Deno.test("checkExtensionQuality rejects await import()", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'const mod = await import("npm:@aws-sdk/client-s3@3");\nexport const x = mod;\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(result.passed, false);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality rejects bare import()", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'const mod = import("npm:some-pkg@1.0.0");\nexport const x = mod;\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(result.passed, false);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality allows static import from", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'import { z } from "npm:zod@4";\nexport const schema = z.string();\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(result.passed, true);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality allows static import * as", async () => {
+  await withTempFiles(
+    {
+      "helpers.ts": "export const SEP = '/';\n",
+      "model.ts":
+        'import * as helpers from "./helpers.ts";\nexport const sep = helpers.SEP;\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality allows export from", async () => {
+  await withTempFiles(
+    {
+      "model.ts": 'export { z } from "npm:zod@4";\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(result.passed, true);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality ignores import() in comments", async () => {
+  await withTempFiles(
+    {
+      "model.ts": '// do not use import("npm:pkg")\nexport const x = 1;\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality ignores import() in string literals", async () => {
+  await withTempFiles(
+    {
+      "model.ts": 'export const msg = "use import() for dynamic loading";\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality ignores import() in block comments", async () => {
+  await withTempFiles(
+    {
+      "model.ts": '/* import("npm:pkg") */\nexport const x = 1;\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("stripCommentsAndStrings removes single-line comments", () => {
+  assertEquals(
+    stripCommentsAndStrings('code(); // import("pkg")'),
+    "code(); ",
+  );
+});
+
+Deno.test("stripCommentsAndStrings removes string contents", () => {
+  assertEquals(
+    stripCommentsAndStrings('const s = "import(pkg)";'),
+    "const s = ;",
+  );
+});
+
+Deno.test("stripCommentsAndStrings removes block comments", () => {
+  assertEquals(
+    stripCommentsAndStrings("code /* import(x) */ more"),
+    "code  more",
+  );
+});
+
+Deno.test("stripCommentsAndStrings preserves bare code", () => {
+  assertEquals(
+    stripCommentsAndStrings("await import(url)"),
+    "await import(url)",
+  );
 });

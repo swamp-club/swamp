@@ -109,11 +109,14 @@ if `connection.ts` imports `./helpers.ts`, both files are included.
 
 ### Bundles
 
-Each model entry point is compiled using `deno bundle` with all npm packages
-externalized (`--external npm:*`). This means npm dependencies resolve at
-runtime via Deno's native npm resolver, preserving correct CJS/ESM interop and
-ensuring extensions share the host's zod instance. Bundles are JavaScript files
-stored alongside their source counterparts under `bundles/`.
+Each model entry point is compiled using `deno bundle` with only `zod`
+externalized (`--external npm:zod@4 --external npm:zod`). All other npm
+packages are inlined into the bundle, which ensures they work in the compiled
+binary where only swamp's own embedded dependency graph is available. Zod is
+externalized so extensions share the same zod instance as swamp (required for
+schema `instanceof` checks). Dynamic `import()` calls are not supported — all
+imports must be static top-level imports. Bundles are JavaScript files stored
+alongside their source counterparts under `bundles/`.
 
 ### Workflows
 

@@ -388,14 +388,19 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    Deno-compatible import (`npm:`, `jsr:`, `https://`) can also be used — swamp
    bundles all dependencies automatically (see
    [references/examples.md](references/examples.md#using-external-dependencies))
-3. **Pin npm versions**: Always pin explicit versions for npm imports (e.g.,
+3. **Static imports only**: All npm imports must be static top-level imports
+   (e.g., `import { x } from "npm:pkg@1"`). Dynamic `import()` calls are not
+   supported — the bundler cannot correctly handle CJS/ESM interop for
+   dynamically imported packages. The quality checker rejects dynamic imports
+   during `extension push`.
+4. **Pin npm versions**: Always pin explicit versions for npm imports (e.g.,
    `npm:lodash-es@4.17.21`, not `npm:lodash-es`). Swamp does not use a lockfile
    during bundling, so unpinned versions may resolve differently across runs.
    `npm:zod@4` is the one exception — it is externalized and provided by swamp.
-4. **Type naming**: Use `@<namespace>/<name>` or `<namespace>/<name>` format
+5. **Type naming**: Use `@<namespace>/<name>` or `<namespace>/<name>` format
    (e.g., `@user/my-model` or `myorg/my-model`)
-5. **No type annotations**: Avoid TypeScript types in execute parameters
-6. **File naming**: Use snake_case (`my_model.ts`)
+6. **No type annotations**: Avoid TypeScript types in execute parameters
+7. **File naming**: Use snake_case (`my_model.ts`)
 
 ## Namespace Rules
 
