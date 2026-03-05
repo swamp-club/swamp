@@ -109,8 +109,10 @@ if `connection.ts` imports `./helpers.ts`, both files are included.
 
 ### Bundles
 
-Each model entry point is compiled using `deno bundle` with `zod` externalized
-(so extensions share the host's zod instance). Bundles are JavaScript files
+Each model entry point is compiled using `deno bundle` with all npm packages
+externalized (`--external npm:*`). This means npm dependencies resolve at
+runtime via Deno's native npm resolver, preserving correct CJS/ESM interop and
+ensuring extensions share the host's zod instance. Bundles are JavaScript files
 stored alongside their source counterparts under `bundles/`.
 
 ### Workflows

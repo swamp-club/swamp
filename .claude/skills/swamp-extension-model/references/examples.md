@@ -81,23 +81,26 @@ export const model = {
 **How bundling works:**
 
 - On first run (or after editing), swamp runs `deno bundle` to transpile your
-  TypeScript and resolve all `npm:` imports into a single `.js` file
+  TypeScript into a `.js` file
 - The bundle is cached to `.swamp/bundles/` — subsequent runs skip bundling
   unless the source file's modification time is newer than the cached bundle
-- `npm:zod` is externalized (not bundled) so your model shares the same zod
-  instance as swamp, which is required for schema validation to work
-- All other npm imports are fully resolved and inlined into the bundle
+- All `npm:` packages are externalized (`--packages external`) — they are left
+  as `npm:` specifiers in the output and resolved at runtime by Deno's native
+  npm resolver, preserving correct CJS/ESM interop
+- This ensures your model shares the same zod instance as swamp, which is
+  required for schema validation to work
+- Local `.ts` code and other imports are still transpiled and bundled
 
 **Import rules:**
 
-| Import                                   | Bundled? | Notes                            |
-| ---------------------------------------- | -------- | -------------------------------- |
-| `npm:zod@4`                              | No       | Shared with swamp (externalized) |
-| `npm:lodash-es@4.17.21`                  | Yes      | Resolved and inlined             |
-| `npm:@aws-sdk/client-s3@3.750.0`         | Yes      | Resolved and inlined             |
-| `jsr:@std/path`                          | Yes      | Resolved and inlined             |
-| `https://deno.land/std@0.224.0/async/..` | Yes      | Resolved and inlined             |
-| Any other Deno-compatible import         | Yes      | Resolved and inlined             |
+| Import                                   | Bundled? | Notes                                     |
+| ---------------------------------------- | -------- | ----------------------------------------- |
+| `npm:zod@4`                              | No       | Externalized, resolved at runtime by Deno |
+| `npm:lodash-es@4.17.21`                  | No       | Externalized, resolved at runtime by Deno |
+| `npm:@aws-sdk/client-s3@3.750.0`         | No       | Externalized, resolved at runtime by Deno |
+| `jsr:@std/path`                          | Yes      | Resolved and inlined                      |
+| `https://deno.land/std@0.224.0/async/..` | Yes      | Resolved and inlined                      |
+| Local `.ts` imports                      | Yes      | Transpiled and inlined                    |
 
 ## CRUD Lifecycle Model (VPC)
 

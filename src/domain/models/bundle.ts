@@ -25,8 +25,8 @@ const logger = getLogger(["swamp", "models", "bundle"]);
  * Bundles a TypeScript extension file into JavaScript using `deno bundle` subprocess.
  *
  * Transpiles TypeScript syntax (interfaces, type annotations, generics) and
- * resolves npm imports, while externalizing zod so extensions share the same
- * instance as swamp (preserving instanceof checks).
+ * externalizes all npm packages so they resolve at runtime via Deno's native
+ * npm resolver (preserving correct CJS/ESM interop and zod instanceof checks).
  *
  * @param absolutePath - Absolute filesystem path to the TypeScript file
  * @param denoPath - Absolute path to the deno binary to use for bundling
@@ -49,9 +49,7 @@ export async function bundleExtension(
         "bundle",
         "--no-lock",
         "--external",
-        "npm:zod@4",
-        "--external",
-        "npm:zod",
+        "npm:*",
         "--platform",
         "deno",
         "-o",

@@ -122,7 +122,7 @@ export const model = {
   try {
     const js = await bundleExtension(path, DENO_PATH);
 
-    // Bundle should succeed and contain inlined yaml library code
+    // Bundle should succeed — yaml is externalized (not inlined)
     assertEquals(js.length > 0, true);
 
     // No deno.lock should be created in the source directory
