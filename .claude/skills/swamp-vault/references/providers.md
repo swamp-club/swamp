@@ -21,7 +21,7 @@
 
 ```yaml
 # .swamp/vault/local_encryption/{id}.yaml
-id: abc-123
+id: 8f4e2d1c-9a3b-4c5d-ae7f-0a1b2c3d4e5f
 name: dev-vault
 type: local_encryption
 config:
@@ -62,7 +62,7 @@ createdAt: 2025-02-01T...
 
 ```yaml
 # .swamp/vault/aws-sm/{id}.yaml
-id: def-456
+id: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
 name: prod-vault
 type: aws-sm
 config:
@@ -109,7 +109,7 @@ automatically registers a default `aws-sm` vault.
 
 ```yaml
 # .swamp/vault/azure-kv/{id}.yaml
-id: ghi-789
+id: 4d5e6f7a-8b9c-4d0e-1f2a-3b4c5d6e7f8a
 name: azure-secrets
 type: azure-kv
 config:
@@ -156,7 +156,7 @@ converted to hyphens when stored.
 
 ```yaml
 # .swamp/vault/1password/{id}.yaml
-id: jkl-012
+id: 6f7a8b9c-0d1e-4f2a-3b4c-5d6e7f8a9b0c
 name: op-secrets
 type: 1password
 config:

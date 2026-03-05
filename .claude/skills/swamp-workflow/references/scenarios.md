@@ -71,7 +71,7 @@ swamp workflow create provision-networking --json
 
 ```yaml
 # workflows/provision-networking/workflow.yaml
-id: provision-networking-id
+id: a9b0c1d2-e3f4-4a5b-6c7d-8e9f0a1b2c3d
 name: provision-networking
 description: Provision complete networking stack
 version: 1
@@ -161,7 +161,7 @@ swamp model create command/shell sg-lookup --json
 
 ```yaml
 # workflows/parallel-lookups/workflow.yaml
-id: parallel-lookups-id
+id: b0c1d2e3-f4a5-4b6c-7d8e-9f0a1b2c3d4e
 name: parallel-lookups
 description: Run multiple lookups in parallel
 version: 1
@@ -457,7 +457,7 @@ Pass data between workflows → inputs
 
 ```yaml
 # workflows/notify-team/workflow.yaml
-id: notify-team-id
+id: c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f
 name: notify-team
 description: Send team notification
 version: 1

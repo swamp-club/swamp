@@ -8,6 +8,18 @@ description: Manage swamp vaults for secure secret storage. Use when creating va
 Manage secure secret storage through swamp vaults. All commands support `--json`
 for machine-readable output.
 
+## CRITICAL: Vault Creation Rules
+
+- **Never generate vault IDs** — no `uuidgen`, `crypto.randomUUID()`, or manual
+  UUIDs. Swamp assigns IDs automatically via `swamp vault create`.
+- **Never write a vault YAML file from scratch** — always use
+  `swamp vault create <type> <name> --json` first, then edit the scaffold at the
+  returned `path`, preserving the assigned `id`.
+- **Never modify the `id` field** in an existing vault file.
+
+Correct flow: `swamp vault create <type> <name> --json` → edit config if needed
+→ store secrets.
+
 ## Quick Reference
 
 | Task              | Command                                            |
@@ -75,10 +87,10 @@ swamp vault create @hashicorp/vault my-hcv --config '{"address": "https://vault.
 
 ```json
 {
-  "id": "abc-123",
+  "id": "8f4e2d1c-9a3b-4c5d-ae7f-0a1b2c3d4e5f",
   "name": "dev-secrets",
   "type": "local_encryption",
-  "path": ".swamp/vault/local_encryption/abc-123.yaml"
+  "path": ".swamp/vault/local_encryption/8f4e2d1c-9a3b-4c5d-ae7f-0a1b2c3d4e5f.yaml"
 }
 ```
 

@@ -145,7 +145,7 @@ swamp data list my-model --json
 
 ```json
 {
-  "modelId": "abc-123",
+  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
   "modelName": "my-model",
   "modelType": "my-type",
   "groups": [
@@ -201,7 +201,7 @@ swamp data get my-model execution-log --no-content --json
 {
   "id": "uuid",
   "name": "execution-log",
-  "modelId": "abc-123",
+  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
   "modelName": "my-model",
   "modelType": "my-type",
   "version": 5,
@@ -218,7 +218,7 @@ swamp data get my-model execution-log --no-content --json
   "createdAt": "2025-01-15T10:30:00Z",
   "size": 1024,
   "checksum": "sha256:...",
-  "contentPath": ".swamp/data/my-type/abc-123/execution-log/5/raw",
+  "contentPath": ".swamp/data/my-type/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/execution-log/5/raw",
   "content": "..."
 }
 ```
@@ -254,7 +254,7 @@ swamp data versions my-model state --json
 ```json
 {
   "dataName": "state",
-  "modelId": "abc-123",
+  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
   "modelName": "my-model",
   "modelType": "my-type",
   "versions": [
@@ -302,13 +302,13 @@ swamp data gc --dry-run --json
   "expiredData": [
     {
       "type": "my-type",
-      "modelId": "abc-123",
+      "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
       "dataName": "cache",
       "reason": "lifetime:ephemeral"
     },
     {
       "type": "other-type",
-      "modelId": "def-456",
+      "modelId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
       "dataName": "log",
       "reason": "lifetime:1h"
     }

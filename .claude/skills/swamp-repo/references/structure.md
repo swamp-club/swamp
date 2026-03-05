@@ -185,8 +185,8 @@ Versioned data artifacts produced by model methods:
 Execution records for each workflow run:
 
 ```yaml
-id: run-123
-workflowId: wf-456
+id: e3f4a5b6-c7d8-4e9f-0a1b-2c3d4e5f6a7b
+workflowId: f4a5b6c7-d8e9-4f0a-1b2c-3d4e5f6a7b8c
 status: succeeded
 startedAt: "2025-01-15T10:30:00Z"
 completedAt: "2025-01-15T10:30:05Z"

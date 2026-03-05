@@ -33,7 +33,7 @@ swamp vault edit prod-secrets
 ```
 
 ```yaml
-id: abc-123
+id: 8f4e2d1c-9a3b-4c5d-ae7f-0a1b2c3d4e5f
 name: prod-secrets
 type: aws
 config:
@@ -240,7 +240,7 @@ swamp vault edit prod-secrets-aws
 Configure:
 
 ```yaml
-id: new-id
+id: 7a8b9c0d-1e2f-4a3b-4c5d-6e7f8a9b0c1d
 name: prod-secrets-aws
 type: aws
 config:

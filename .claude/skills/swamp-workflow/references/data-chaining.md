@@ -357,7 +357,7 @@ the updated state (creating a new version), so the stored data stays current for
 subsequent workflows.
 
 ```yaml
-id: update-networking
+id: d2e3f4a5-b6c7-4d8e-9f0a-1b2c3d4e5f6a
 name: update-networking
 description: Update networking resources (e.g., enable DNS, modify tags)
 version: 1

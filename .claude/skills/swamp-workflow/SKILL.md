@@ -8,6 +8,18 @@ description: Work with swamp workflows for AI-native automation. Use when search
 Work with swamp workflows through the CLI. All commands support `--json` for
 machine-readable output.
 
+## CRITICAL: Workflow Creation Rules
+
+- **Never generate workflow IDs** — no `uuidgen`, `crypto.randomUUID()`, or
+  manual UUIDs. Swamp assigns IDs automatically via `swamp workflow create`.
+- **Never write a workflow YAML file from scratch** — always use
+  `swamp workflow create <name> --json` first, then edit the scaffold at the
+  returned `path`, preserving the assigned `id`.
+- **Never modify the `id` field** in an existing workflow file.
+
+Correct flow: `swamp workflow create <name> --json` → edit the YAML → validate →
+run.
+
 ## Quick Reference
 
 | Task               | Command                                                |
@@ -79,18 +91,19 @@ swamp workflow create my-deploy-workflow --json
 
 ```json
 {
-  "id": "abc-123",
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "name": "my-deploy-workflow",
-  "path": "workflows/workflow-abc-123.yaml"
+  "path": "workflows/workflow-3fa85f64-5717-4562-b3fc-2c963f66afa6.yaml"
 }
 ```
 
-After creation, edit the YAML file at the returned `path` to add jobs and steps.
+The `id` is auto-assigned and **must not be changed**. Edit the YAML file at the
+returned `path` to add jobs and steps.
 
 **Example workflow file:**
 
 ```yaml
-id: abc-123
+id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
 name: my-deploy-workflow
 description: Deploy workflow with build and deploy jobs
 version: 1
@@ -135,7 +148,7 @@ jobs:
 
 **Recommended:** Use `swamp workflow get <name> --json` to get the file path,
 then edit directly with the Edit tool, then validate with
-`swamp workflow validate <name> --json`. Never modify the `id` field.
+`swamp workflow validate <name> --json`.
 
 **Alternative methods:**
 
@@ -157,7 +170,7 @@ swamp workflow delete my-workflow --json
 ```json
 {
   "deleted": true,
-  "workflowId": "abc-123",
+  "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "workflowName": "my-workflow",
   "runsDeleted": 5
 }
@@ -176,7 +189,7 @@ swamp workflow validate --json  # Validate all
 
 ```json
 {
-  "workflowId": "abc-123",
+  "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "workflowName": "my-workflow",
   "validations": [
     { "name": "Schema validation", "passed": true },
@@ -209,8 +222,8 @@ swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated work
 
 ```json
 {
-  "id": "run-456",
-  "workflowId": "abc-123",
+  "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "workflowName": "my-workflow",
   "status": "succeeded",
   "jobs": [
@@ -223,7 +236,11 @@ swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated work
           "status": "succeeded",
           "duration": 2,
           "dataArtifacts": [
-            { "dataId": "data-789", "name": "output", "version": 1 }
+            {
+              "dataId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+              "name": "output",
+              "version": 1
+            }
           ]
         }
       ],
@@ -231,7 +248,7 @@ swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated work
     }
   ],
   "duration": 5,
-  "path": "workflows/workflow-abc-123/workflow-run-456-timestamp.yaml"
+  "path": "workflows/workflow-3fa85f64-5717-4562-b3fc-2c963f66afa6/workflow-7c9e6679-7425-40de-944b-e07fc1f90ae7-timestamp.yaml"
 }
 ```
 
@@ -251,8 +268,8 @@ swamp workflow history search "deploy" --json
   "query": "",
   "results": [
     {
-      "runId": "run-456",
-      "workflowId": "abc-123",
+      "runId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "workflowName": "my-workflow",
       "status": "succeeded",
       "startedAt": "2025-01-15T10:30:00Z",
@@ -272,8 +289,8 @@ swamp workflow history get my-workflow --json
 
 ```json
 {
-  "runId": "run-456",
-  "workflowId": "abc-123",
+  "runId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "workflowName": "my-workflow",
   "status": "succeeded",
   "startedAt": "2025-01-15T10:30:00Z",
@@ -286,15 +303,15 @@ swamp workflow history get my-workflow --json
 
 ```bash
 swamp workflow history logs my-workflow --json        # Latest run logs
-swamp workflow history logs run-456 --json            # Specific run logs
-swamp workflow history logs run-456 build.compile --json  # Specific step logs
+swamp workflow history logs 7c9e6679-7425-40de-944b-e07fc1f90ae7 --json            # Specific run logs
+swamp workflow history logs 7c9e6679-7425-40de-944b-e07fc1f90ae7 build.compile --json  # Specific step logs
 ```
 
 **Output shape:**
 
 ```json
 {
-  "runId": "run-456",
+  "runId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "step": "build.compile",
   "logs": "Building application...\nCompilation complete.",
   "exitCode": 0

@@ -16,7 +16,7 @@ for the child workflow to complete before continuing.
 **Child workflow** (`notify-team`):
 
 ```yaml
-id: def-456
+id: e7f8a9b0-c1d2-4e3f-a4b5-c6d7e8f9a0b1
 name: notify-team
 description: Send notifications to the team
 inputs:
@@ -43,7 +43,7 @@ jobs:
 **Parent workflow** (`deploy-and-notify`):
 
 ```yaml
-id: abc-123
+id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
 name: deploy-and-notify
 description: Deploy then notify the team
 inputs:
