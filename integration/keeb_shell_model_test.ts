@@ -132,7 +132,7 @@ Deno.test("CLI: command/shell model executes simple shell commands", async () =>
   });
 });
 
-Deno.test("CLI: command/shell model handles failing commands", async () => {
+Deno.test("CLI: command/shell model reports failure on non-zero exit code", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
@@ -151,7 +151,7 @@ Deno.test("CLI: command/shell model handles failing commands", async () => {
     });
     await definitionRepo.save(SHELL_MODEL_TYPE, definition);
 
-    // Execute the model
+    // Execute the model — should fail because `false` exits with code 1
     const result = await runCliCommand(
       [
         "model",
@@ -168,13 +168,9 @@ Deno.test("CLI: command/shell model handles failing commands", async () => {
 
     assertEquals(
       result.code,
-      0,
-      `swamp command should succeed even when shell command fails. stderr: ${result.stderr}`,
+      1,
+      `swamp command should fail when shell command exits non-zero. stderr: ${result.stderr}`,
     );
-
-    const output = JSON.parse(result.stdout);
-    assertEquals(output.modelName, "failing-shell");
-    assertEquals(output.data.attributes.exitCode, 1); // Shell command failed
   });
 });
 

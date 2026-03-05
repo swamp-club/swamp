@@ -11,6 +11,7 @@ Detailed API documentation for extension model development.
 - [Reading Stored Data](#reading-stored-data)
 - [Lifetime Values](#lifetime-values)
 - [Standard Tags](#standard-tags)
+- [Error Handling](#error-handling)
 - [Logging API](#logging-api)
 
 ---
@@ -195,6 +196,38 @@ Tags are auto-applied based on the spec kind:
 | `type: "resource"`   | resources  | Auto-added to all resource data outputs  |
 | `type: "file"`       | files      | Auto-added to all file data outputs      |
 | `specName: "<name>"` | both       | Auto-added with the output spec key name |
+
+---
+
+## Error Handling
+
+Models should throw when execution fails. Throw **before** writing data — failed
+executions should not persist incorrect or misleading data.
+
+**Pattern: check for failure first, only write data on success.**
+
+```typescript
+execute: (async (args, context) => {
+  const result = await callExternalApi(args);
+
+  // Throw BEFORE writing data — don't persist failure data
+  if (result.status >= 400) {
+    throw new Error(`API request failed with status ${result.status}`);
+  }
+
+  const handle = await context.writeResource("result", "main", {
+    statusCode: result.status,
+    response: result.body,
+    timestamp: new Date().toISOString(),
+  });
+
+  return { dataHandles: [handle] };
+});
+```
+
+**Workflow integration:** When a model method throws, the workflow engine
+automatically marks the step as failed. Use `allowFailure: true` on a workflow
+step to catch exceptions and allow continued execution of subsequent steps.
 
 ---
 

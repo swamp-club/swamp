@@ -370,7 +370,7 @@ Deno.test("Workflow: step input override with CEL expression preserves type", as
         "--repo-dir",
         repoDir,
         "--input",
-        '{"customMessage": "from CEL"}',
+        '{"customMessage": "echo from CEL"}',
         "--json",
       ],
       Deno.cwd(),

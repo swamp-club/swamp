@@ -41,6 +41,9 @@ export const ShellInputAttributesSchema = z.object({
   env: z.record(z.string(), z.string()).optional().describe(
     "Environment variables",
   ),
+  ignoreExitCode: z.boolean().optional().describe(
+    "If true, non-zero exit codes will not cause the method to throw",
+  ),
 });
 
 /**
@@ -113,7 +116,11 @@ async function executeCommand(
     exitCode = -1;
   }
 
-  // Create data attributes for the result
+  if (exitCode !== 0 && !args.ignoreExitCode) {
+    throw new Error(`Command exited with code ${exitCode}`);
+  }
+
+  // Only persist data for successful executions
   const resultAttributes = {
     exitCode,
     executedAt: new Date().toISOString(),

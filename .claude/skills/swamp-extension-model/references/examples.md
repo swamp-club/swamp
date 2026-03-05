@@ -3,6 +3,7 @@
 ## Table of Contents
 
 - [CRUD Lifecycle Model (VPC)](#crud-lifecycle-model-vpc)
+- [Error Handling Model](#error-handling-model)
 - [Text Processor Model](#text-processor-model)
 - [Deployment Model](#deployment-model)
 - [Minimal Echo Model](#minimal-echo-model)
@@ -280,6 +281,80 @@ export const model = {
   `context.modelType` and `context.modelId` to locate the model's own data
 - `delete` returns `{ dataHandles: [] }` since no new data is produced
 - Always check for `null` content — the model may not have been created yet
+
+## Error Handling Model
+
+Models should throw when execution fails. Throw **before** writing data — failed
+executions should not persist incorrect or misleading data.
+
+**Pattern: check for failure first, only write data on success.**
+
+```typescript
+// extensions/models/health_check.ts
+import { z } from "npm:zod@4";
+
+const GlobalArgsSchema = z.object({
+  url: z.string().url(),
+  expectedStatus: z.number().default(200),
+});
+
+const ResultSchema = z.object({
+  url: z.string(),
+  statusCode: z.number(),
+  responseTimeMs: z.number(),
+  checkedAt: z.string(),
+});
+
+export const model = {
+  type: "@user/health-check",
+  version: "2026.03.05.1",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    result: {
+      description: "Health check result",
+      schema: ResultSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    check: {
+      description: "Check endpoint health",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const { url, expectedStatus } = context.globalArgs;
+        const start = Date.now();
+
+        const response = await fetch(url);
+        const responseTimeMs = Date.now() - start;
+
+        // Throw BEFORE writing data — don't persist failure data
+        if (response.status !== expectedStatus) {
+          throw new Error(
+            `Health check failed: expected status ${expectedStatus}, got ${response.status}`,
+          );
+        }
+
+        const handle = await context.writeResource("result", "main", {
+          url,
+          statusCode: response.status,
+          responseTimeMs,
+          checkedAt: new Date().toISOString(),
+        });
+
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+```
+
+**Key points:**
+
+- Throw before `writeResource()` — failed executions should not write data
+- The workflow engine catches the exception and marks the step as failed
+- Use `allowFailure: true` on a workflow step to continue execution after a
+  failure
 
 ## Text Processor Model
 

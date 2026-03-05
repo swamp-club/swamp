@@ -207,6 +207,32 @@ execute: (async (args, context) => {
 });
 ```
 
+### Error Handling
+
+Models should throw when execution fails. Throw **before** writing data — failed
+executions should not persist incorrect or misleading data.
+
+```typescript
+execute: (async (args, context) => {
+  const result = await callExternalApi(args);
+
+  // Throw BEFORE writing data — don't persist failure data
+  if (result.status >= 400) {
+    throw new Error(`API request failed with status ${result.status}`);
+  }
+
+  const handle = await context.writeResource("result", "main", {
+    statusCode: result.status,
+    response: result.body,
+  });
+
+  return { dataHandles: [handle] };
+});
+```
+
+The workflow engine catches exceptions and marks the step as failed. Use
+`allowFailure: true` on a workflow step to continue execution after a failure.
+
 For detailed API documentation on `writeResource`, `createFileWriter`,
 `DataWriter`, `DataHandle`, and `dataRepository`, see
 [references/api.md](references/api.md).

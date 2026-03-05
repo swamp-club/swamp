@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { assertNotEquals } from "@std/assert/not-equals";
 import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
@@ -396,24 +396,26 @@ Deno.test("shellModel.methods.execute captures stderr", async () => {
   assertStringIncludes(logContent, "error");
 });
 
-Deno.test("shellModel.methods.execute captures exit code", async () => {
+Deno.test("shellModel.methods.execute throws on non-zero exit code", async () => {
   const args: ShellInputAttributes = { run: "exit 42" };
 
-  const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(args, context);
-
-  const attrs = getResultAttributes(getResults(), "result");
-  assertEquals(attrs?.exitCode, 42);
+  const { context } = createTestContext();
+  await assertRejects(
+    () => shellModel.methods.execute.execute(args, context),
+    Error,
+    "Command exited with code 42",
+  );
 });
 
-Deno.test("shellModel.methods.execute handles command failure gracefully", async () => {
+Deno.test("shellModel.methods.execute throws on command failure", async () => {
   const args: ShellInputAttributes = { run: "false" };
 
-  const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(args, context);
-
-  const attrs = getResultAttributes(getResults(), "result");
-  assertEquals(attrs?.exitCode, 1);
+  const { context } = createTestContext();
+  await assertRejects(
+    () => shellModel.methods.execute.execute(args, context),
+    Error,
+    "Command exited with code 1",
+  );
 });
 
 Deno.test("shellModel.methods.execute respects workingDir", async () => {
@@ -490,19 +492,14 @@ Deno.test("ShellInputAttributesSchema rejects empty run command via schema", () 
   assertEquals(result.success, false);
 });
 
-Deno.test("shellModel.methods.execute handles nonexistent command", async () => {
+Deno.test("shellModel.methods.execute throws on nonexistent command", async () => {
   const args: ShellInputAttributes = { run: "nonexistent_command_12345" };
 
-  const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(args, context);
-
-  // Should return non-zero exit code and error in output
-  const attrs = getResultAttributes(getResults(), "result");
-  assertEquals(attrs?.exitCode !== 0, true);
-
-  // Check output contains error about nonexistent command
-  const logContent = getOutputLogContent(getResults());
-  assertStringIncludes(logContent, "nonexistent_command_12345");
+  const { context } = createTestContext();
+  await assertRejects(
+    () => shellModel.methods.execute.execute(args, context),
+    Error,
+  );
 });
 
 Deno.test("shellModel.methods.execute records execution duration", async () => {
@@ -609,11 +606,48 @@ Deno.test("shellModel.methods.execute redacts secrets from error messages on fai
   const args: ShellInputAttributes = {
     run: "echo error-secret >&2 && exit 1",
   };
-  const { context, getResults } = createTestContext({ redactor });
-  await shellModel.methods.execute.execute(args, context);
+  const { context } = createTestContext({ redactor });
+  await assertRejects(
+    () => shellModel.methods.execute.execute(args, context),
+    Error,
+    "Command exited with code 1",
+  );
+});
+
+Deno.test("shellModel.methods.execute ignoreExitCode suppresses throw", async () => {
+  const args: ShellInputAttributes = { run: "exit 42", ignoreExitCode: true };
+
+  const { context, getResults } = createTestContext();
+  const result = await shellModel.methods.execute.execute(args, context);
 
   const attrs = getResultAttributes(getResults(), "result");
-  // stderr should be redacted
-  assertNotEquals(attrs?.stderr, undefined);
-  assertEquals((attrs?.stderr as string).includes("error-secret"), false);
+  assertEquals(attrs?.exitCode, 42);
+  assertEquals(result.dataHandles !== undefined, true);
+});
+
+Deno.test("shellModel.methods.execute exit code 0 returns normally", async () => {
+  const args: ShellInputAttributes = { run: "true" };
+
+  const { context, getResults } = createTestContext();
+  const result = await shellModel.methods.execute.execute(args, context);
+
+  const attrs = getResultAttributes(getResults(), "result");
+  assertEquals(attrs?.exitCode, 0);
+  assertEquals(result.dataHandles !== undefined, true);
+});
+
+Deno.test("shellModel.methods.execute does not persist data on failure", async () => {
+  const args: ShellInputAttributes = {
+    run: "echo 'some output' && exit 1",
+  };
+
+  const { context, getResults } = createTestContext();
+  await assertRejects(
+    () => shellModel.methods.execute.execute(args, context),
+    Error,
+    "Command exited with code 1",
+  );
+
+  // No data should be written for a failed command
+  assertEquals(getResults().length, 0);
 });
