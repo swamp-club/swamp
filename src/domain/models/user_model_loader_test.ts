@@ -2063,6 +2063,67 @@ export class ProxmoxClient {
   });
 });
 
+Deno.test("UserModelLoader invalidates bundle cache when dependency changes", async () => {
+  const ts = Date.now();
+  const helperCode = `export const greeting = "hello";`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+import { greeting } from "./helper.ts";
+
+export const model = {
+  type: "@user/cache-dep-${ts}",
+  version: "2026.02.09.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [], greeting }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_cache_test_repo_" });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_cache_test_models_",
+  });
+  try {
+    // Write initial files
+    await Deno.writeTextFile(join(modelsDir, "helper.ts"), helperCode);
+    await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
+
+    // First load — populates cache
+    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader1.loadModels(modelsDir);
+
+    // Read the cached bundle content
+    const bundlePath = join(repoDir, ".swamp", "bundles", "model.js");
+    const cachedBundle1 = await Deno.readTextFile(bundlePath);
+
+    // Wait so mtime differs
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Modify only the dependency (not the entry point)
+    await Deno.writeTextFile(
+      join(modelsDir, "helper.ts"),
+      `export const greeting = "goodbye";`,
+    );
+
+    // Second load — should detect dependency change and rebundle
+    // (registration will fail since type is already registered, but
+    //  bundleWithCache runs before registration, so the bundle updates)
+    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader2.loadModels(modelsDir);
+
+    // The bundle should have been regenerated with the new dependency content
+    const cachedBundle2 = await Deno.readTextFile(bundlePath);
+    assertEquals(cachedBundle1 !== cachedBundle2, true);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
 Deno.test("UserModelLoader loads model with TypeScript-specific syntax", async () => {
   const typeId = `@user/ts-syntax-${Date.now()}`;
   const modelCode = `

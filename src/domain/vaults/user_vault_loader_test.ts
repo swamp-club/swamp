@@ -233,6 +233,70 @@ export const vault = {
   }
 });
 
+Deno.test("UserVaultLoader - invalidates bundle cache when dependency changes", async () => {
+  const ts = Date.now();
+  const helperCode = `export const vaultName = "original";`;
+  const vaultCode = `
+import { z } from "npm:zod";
+import { vaultName } from "./helper.ts";
+
+export const vault = {
+  type: "@test/cache-dep-vault-${ts}",
+  name: vaultName,
+  description: "Cache test vault",
+  createProvider: (name, _config) => ({
+    get: async (_key) => "secret",
+    put: async (_key, _value) => {},
+    list: async () => [],
+    getName: () => name,
+  }),
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "vault_cache_test_repo_" });
+  const vaultsDir = await Deno.makeTempDir({
+    prefix: "vault_cache_test_vaults_",
+  });
+  try {
+    // Write initial files
+    await Deno.writeTextFile(join(vaultsDir, "helper.ts"), helperCode);
+    await Deno.writeTextFile(join(vaultsDir, "my_vault.ts"), vaultCode);
+
+    // First load — populates cache
+    const loader1 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
+    await loader1.loadVaults(vaultsDir);
+
+    // Read the cached bundle content
+    const bundlePath = join(
+      repoDir,
+      ".swamp",
+      "vault-bundles",
+      "my_vault.js",
+    );
+    const cachedBundle1 = await Deno.readTextFile(bundlePath);
+
+    // Wait so mtime differs
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Modify only the dependency (not the entry point)
+    await Deno.writeTextFile(
+      join(vaultsDir, "helper.ts"),
+      `export const vaultName = "updated";`,
+    );
+
+    // Second load — should detect dependency change and rebundle
+    const loader2 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
+    await loader2.loadVaults(vaultsDir);
+
+    // The bundle should have been regenerated with the new dependency content
+    const cachedBundle2 = await Deno.readTextFile(bundlePath);
+    assertEquals(cachedBundle1 !== cachedBundle2, true);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(vaultsDir, { recursive: true });
+  }
+});
+
 Deno.test("UserVaultLoader - allows si/* namespace for local vaults", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "vault_loader_test_" });
   try {

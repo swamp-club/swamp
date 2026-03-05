@@ -21,6 +21,7 @@ import { z } from "zod";
 import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { bundleExtension } from "../models/bundle.ts";
+import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { VaultProvider } from "./vault_provider.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
@@ -113,7 +114,12 @@ export class UserVaultLoader {
     for (const file of files) {
       try {
         const absolutePath = resolve(vaultsDir, file);
-        const js = await this.bundleWithCache(absolutePath, file, denoPath);
+        const js = await this.bundleWithCache(
+          absolutePath,
+          file,
+          denoPath,
+          vaultsDir,
+        );
         const module = await this.importBundle(js, file);
 
         if (!module.vault) {
@@ -166,6 +172,7 @@ export class UserVaultLoader {
     absolutePath: string,
     relativePath: string,
     denoPath: string,
+    boundaryDir: string,
   ): Promise<string> {
     if (this.repoDir) {
       const bundlePath = join(
@@ -175,22 +182,32 @@ export class UserVaultLoader {
         relativePath.replace(/\.ts$/, ".js"),
       );
 
-      // Check mtime-based cache
+      // Check mtime-based cache against all local dependencies
       try {
-        const [sourceStat, bundleStat] = await Promise.all([
-          Deno.stat(absolutePath),
-          Deno.stat(bundlePath),
-        ]);
-
-        if (
-          sourceStat.mtime && bundleStat.mtime &&
-          bundleStat.mtime > sourceStat.mtime
-        ) {
-          logger.debug`Using cached vault bundle for ${relativePath}`;
-          return await Deno.readTextFile(bundlePath);
+        const bundleStat = await Deno.stat(bundlePath);
+        if (bundleStat.mtime) {
+          const { resolvedFiles } = await resolveLocalImports(
+            [absolutePath],
+            boundaryDir,
+          );
+          const depStats = await Promise.all(
+            resolvedFiles.map((f) => Deno.stat(f)),
+          );
+          const newestSourceMtime = depStats.reduce<Date | null>(
+            (max, s) => {
+              if (!s.mtime) return max;
+              if (!max) return s.mtime;
+              return s.mtime > max ? s.mtime : max;
+            },
+            null,
+          );
+          if (newestSourceMtime && bundleStat.mtime > newestSourceMtime) {
+            logger.debug`Using cached vault bundle for ${relativePath}`;
+            return await Deno.readTextFile(bundlePath);
+          }
         }
       } catch {
-        // Bundle doesn't exist yet or source stat failed — will rebundle
+        // Bundle doesn't exist, stat failed, or import resolution failed — rebundle
       }
 
       // Bundle and write to cache
