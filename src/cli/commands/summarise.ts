@@ -34,6 +34,7 @@ import {
  */
 export const summariseCommand = new Command()
   .name("summarise")
+  .alias("summarize")
   .description(
     "Show a high-level overview of repo activity (method executions, workflows, data)",
   )
