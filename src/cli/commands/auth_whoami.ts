@@ -61,6 +61,7 @@ export const authWhoamiCommand = new Command()
           username: whoami.username,
           email: whoami.email,
           name: whoami.name,
+          organizations: whoami.organizations,
         },
         null,
         2,
@@ -69,6 +70,12 @@ export const authWhoamiCommand = new Command()
       console.log(
         `${whoami.username} (${whoami.email}) on ${credentials.serverUrl}`,
       );
+      if (whoami.organizations && whoami.organizations.length > 0) {
+        const orgList = whoami.organizations
+          .map((org) => `${org.slug} (${org.role})`)
+          .join(", ");
+        console.log(`Organizations: ${orgList}`);
+      }
     }
 
     ctx.logger.debug("Auth whoami command completed");

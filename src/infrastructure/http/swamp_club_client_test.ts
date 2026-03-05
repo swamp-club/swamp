@@ -149,6 +149,73 @@ Deno.test("SwampClubClient - throws UserError on connection failure", async () =
   );
 });
 
+Deno.test("SwampClubClient - whoami returns organizations", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json({
+      authenticated: true,
+      id: "u1",
+      username: "testuser",
+      email: "test@example.com",
+      name: "Test User",
+      organizations: [
+        { slug: "testuser", name: "testuser", role: "owner", personal: true },
+        { slug: "bogcrew", name: "Bog Crew", role: "owner", personal: false },
+      ],
+    })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.whoami("swamp_key123");
+    assertEquals(result.organizations?.length, 2);
+    assertEquals(result.organizations?.[0].slug, "testuser");
+    assertEquals(result.organizations?.[1].slug, "bogcrew");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - getUserOrganizations returns org slugs", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json({
+      authenticated: true,
+      username: "testuser",
+      organizations: [
+        { slug: "testuser", name: "testuser", role: "owner", personal: true },
+        { slug: "bogcrew", name: "Bog Crew", role: "owner", personal: false },
+        {
+          slug: "marsh-ops",
+          name: "Marsh Ops",
+          role: "member",
+          personal: false,
+        },
+      ],
+    })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const orgs = await client.getUserOrganizations("swamp_key123");
+    assertEquals(orgs, ["testuser", "bogcrew", "marsh-ops"]);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - getUserOrganizations returns empty array when no organizations", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json({
+      authenticated: true,
+      username: "testuser",
+    })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const orgs = await client.getUserOrganizations("swamp_key123");
+    assertEquals(orgs, []);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
 Deno.test("SwampClubClient - sends x-api-key header for whoami", async () => {
   let capturedApiKey = "";
   const mock = startMockServer((req) => {
