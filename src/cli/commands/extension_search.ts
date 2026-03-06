@@ -52,7 +52,7 @@ export const extensionSearchCommand = new Command()
   .name("search")
   .description("Search the swamp extension registry")
   .arguments("[query:string]")
-  .option("--namespace <namespace:string>", "Filter by namespace")
+  .option("--collective <collective:string>", "Filter by collective")
   .option("--platform <platform:string>", "Filter by platform", {
     collect: true,
   })
@@ -65,7 +65,10 @@ export const extensionSearchCommand = new Command()
   .option("--page <page:number>", "Page number", { default: 1 })
   .example("Browse all extensions", "swamp extension search")
   .example("Search by keyword", "swamp extension search aws")
-  .example("Filter by namespace", "swamp extension search --namespace stack72")
+  .example(
+    "Filter by collective",
+    "swamp extension search --collective stack72",
+  )
   .example(
     "Filter by platform and label",
     "swamp extension search --platform aws --label networking",
@@ -102,7 +105,7 @@ export const extensionSearchCommand = new Command()
 
     const params: ExtensionSearchParams = {
       q: query,
-      namespace: options.namespace,
+      collective: options.collective,
       platform: options.platform,
       label: options.label,
       sort: options.sort,

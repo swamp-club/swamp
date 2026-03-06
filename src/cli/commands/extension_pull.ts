@@ -130,7 +130,7 @@ type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
 export function parseExtensionRef(ref: string): ExtensionRef {
   if (!ref.startsWith("@")) {
     throw new UserError(
-      `Invalid extension name: "${ref}". Extension names must start with "@" (e.g., @namespace/name).`,
+      `Invalid extension name: "${ref}". Extension names must start with "@" (e.g., @collective/name).`,
     );
   }
 
@@ -870,7 +870,7 @@ export const extensionPullCommand = new Command()
     // 3. Validate name format
     if (!SCOPED_NAME_PATTERN.test(ref.name)) {
       throw new UserError(
-        `Invalid extension name: "${ref.name}". Must match @namespace/name pattern (lowercase, alphanumeric, hyphens, underscores).`,
+        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores).`,
       );
     }
 

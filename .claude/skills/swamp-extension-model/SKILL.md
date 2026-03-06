@@ -102,7 +102,7 @@ export const model = {
 
 | Field             | Required | Description                                       |
 | ----------------- | -------- | ------------------------------------------------- |
-| `type`            | Yes      | Unique identifier (`@namespace/name`)             |
+| `type`            | Yes      | Unique identifier (`@collective/name`)            |
 | `version`         | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)               |
 | `globalArguments` | No       | Zod schema for global arguments                   |
 | `resources`       | No       | Resource output specs (JSON data with Zod schema) |
@@ -366,7 +366,7 @@ swamp extension push manifest.yaml --dry-run    # Validate without pushing
 swamp extension push manifest.yaml -y           # Skip confirmation prompts
 ```
 
-The manifest `name` namespace must match your authenticated username. Model
+The manifest `name` collective must match your authenticated username. Model
 paths are relative to `extensions/models/`; local imports are auto-resolved.
 
 **Optional metadata fields:**
@@ -397,24 +397,24 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    `npm:lodash-es@4.17.21`, not `npm:lodash-es`). Swamp does not use a lockfile
    during bundling, so unpinned versions may resolve differently across runs.
    `npm:zod@4` is the one exception — it is externalized and provided by swamp.
-5. **Type naming**: Use `@<namespace>/<name>` or `<namespace>/<name>` format
+5. **Type naming**: Use `@<collective>/<name>` or `<collective>/<name>` format
    (e.g., `@user/my-model` or `myorg/my-model`)
 6. **No type annotations**: Avoid TypeScript types in execute parameters
 7. **File naming**: Use snake_case (`my_model.ts`)
 
-## Namespace Rules
+## Collective Rules
 
-User-defined models can use any namespace except reserved ones (`swamp`, `si`):
+User-defined models can use any collective except reserved ones (`swamp`, `si`):
 
 | Type                        | Valid? | Notes                       |
 | --------------------------- | ------ | --------------------------- |
-| `@user/my-model`            | ✅     | Valid namespace             |
-| `@myorg/deploy`             | ✅     | Custom namespace allowed    |
+| `@user/my-model`            | ✅     | Valid collective            |
+| `@myorg/deploy`             | ✅     | Custom collective allowed   |
 | `myorg/my-model`            | ✅     | Non-@ format allowed        |
 | `digitalocean/app-platform` | ✅     | Non-@ multi-segment allowed |
 | `@user/aws/s3`              | ✅     | Nested paths allowed        |
-| `swamp/my-model`            | ❌     | Reserved namespace          |
-| `si/my-model`               | ❌     | Reserved namespace          |
+| `swamp/my-model`            | ❌     | Reserved collective         |
+| `si/my-model`               | ❌     | Reserved collective         |
 
 ## Verify
 

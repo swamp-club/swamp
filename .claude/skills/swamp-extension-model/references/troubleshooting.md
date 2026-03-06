@@ -6,7 +6,7 @@
   - [No 'model' or 'extension' export found](#no-model-or-extension-export-found)
   - [Unknown resource spec / Unknown file spec](#unknown-resource-spec-or-unknown-file-spec)
   - [Model type already registered](#model-type-already-registered)
-  - [Uses a reserved namespace](#uses-a-reserved-namespace)
+  - [Uses a reserved collective](#uses-a-reserved-collective)
   - [Cannot extend unregistered model type](#cannot-extend-unregistered-model-type)
   - [Method already exists](#method-x-already-exists-on-model-type-y)
   - [Duplicate method name](#duplicate-method-name-x-within-extension-methods-array)
@@ -64,7 +64,7 @@ export const model = {
 
 ### "Model type already registered"
 
-Type name conflicts with built-in or another user model. Use unique namespaced
+Type name conflicts with built-in or another user model. Use unique collective
 names:
 
 ```typescript
@@ -72,21 +72,21 @@ names:
 type: "@user/echo"; // May conflict with other users
 
 // Use
-type: "@myorg/echo"; // Use your own namespace
+type: "@myorg/echo"; // Use your own collective
 ```
 
-### "Uses a reserved namespace"
+### "Uses a reserved collective"
 
-Reserved namespaces (`swamp`, `si`) are for built-in types only:
+Reserved collectives (`swamp`, `si`) are for built-in types only:
 
 ```typescript
-// Wrong - reserved namespace
+// Wrong - reserved collective
 type: "swamp/my-model";
 type: "@swamp/my-model";
 type: "si/auth";
 type: "@si/auth";
 
-// Correct - use any other namespace
+// Correct - use any other collective
 type: "@myorg/my-model";
 type: "myorg/my-model";
 type: "digitalocean/app-platform";

@@ -36,6 +36,14 @@ export interface CreateApiKeyResponse {
   key: string;
 }
 
+/** An organization the user belongs to. */
+export interface WhoamiOrganization {
+  slug: string;
+  name: string;
+  role: string;
+  personal: boolean;
+}
+
 /** Response from the /api/whoami endpoint. */
 export interface WhoamiResponse {
   authenticated: boolean;
@@ -43,6 +51,18 @@ export interface WhoamiResponse {
   username?: string;
   email?: string;
   name?: string;
+  organizations?: WhoamiOrganization[];
+}
+
+/**
+ * Returns the user's collectives (organization slugs) from a whoami response.
+ * Returns undefined if the server doesn't include organizations.
+ */
+export function getCollectives(
+  whoami: WhoamiResponse,
+): string[] | undefined {
+  if (!whoami.organizations) return undefined;
+  return whoami.organizations.map((org) => org.slug);
 }
 
 /**

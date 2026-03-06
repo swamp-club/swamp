@@ -133,27 +133,27 @@ Deno.test("ModelType.getSegmentCount returns correct counts", () => {
   assertEquals(ModelType.getSegmentCount("single"), 1);
 });
 
-Deno.test("ModelType.isReservedNamespace identifies swamp as reserved", () => {
-  assertEquals(ModelType.isReservedNamespace("swamp/echo"), true);
-  assertEquals(ModelType.isReservedNamespace("swamp/foo/bar"), true);
-  assertEquals(ModelType.isReservedNamespace("@swamp/echo"), true);
-  assertEquals(ModelType.isReservedNamespace("@swamp/foo/bar"), true);
+Deno.test("ModelType.isReservedCollective identifies swamp as reserved", () => {
+  assertEquals(ModelType.isReservedCollective("swamp/echo"), true);
+  assertEquals(ModelType.isReservedCollective("swamp/foo/bar"), true);
+  assertEquals(ModelType.isReservedCollective("@swamp/echo"), true);
+  assertEquals(ModelType.isReservedCollective("@swamp/foo/bar"), true);
 });
 
-Deno.test("ModelType.isReservedNamespace identifies si as reserved", () => {
-  assertEquals(ModelType.isReservedNamespace("si/auth"), true);
-  assertEquals(ModelType.isReservedNamespace("si/foo/bar"), true);
-  assertEquals(ModelType.isReservedNamespace("@si/auth"), true);
-  assertEquals(ModelType.isReservedNamespace("@si/foo/bar"), true);
+Deno.test("ModelType.isReservedCollective identifies si as reserved", () => {
+  assertEquals(ModelType.isReservedCollective("si/auth"), true);
+  assertEquals(ModelType.isReservedCollective("si/foo/bar"), true);
+  assertEquals(ModelType.isReservedCollective("@si/auth"), true);
+  assertEquals(ModelType.isReservedCollective("@si/foo/bar"), true);
 });
 
-Deno.test("ModelType.isReservedNamespace returns false for user namespaces", () => {
-  assertEquals(ModelType.isReservedNamespace("@user/echo"), false);
-  assertEquals(ModelType.isReservedNamespace("@adam/foo"), false);
-  assertEquals(ModelType.isReservedNamespace("@mycompany/model"), false);
+Deno.test("ModelType.isReservedCollective returns false for user collectives", () => {
+  assertEquals(ModelType.isReservedCollective("@user/echo"), false);
+  assertEquals(ModelType.isReservedCollective("@adam/foo"), false);
+  assertEquals(ModelType.isReservedCollective("@mycompany/model"), false);
 });
 
-Deno.test("ModelType.isReservedNamespace returns false for non-reserved built-in", () => {
-  assertEquals(ModelType.isReservedNamespace("aws/ec2/vpc"), false);
-  assertEquals(ModelType.isReservedNamespace("docker/run"), false);
+Deno.test("ModelType.isReservedCollective returns false for non-reserved built-in", () => {
+  assertEquals(ModelType.isReservedCollective("aws/ec2/vpc"), false);
+  assertEquals(ModelType.isReservedCollective("docker/run"), false);
 });

@@ -303,7 +303,7 @@ export class UserModelLoader {
         const userModel = parsed.data;
 
         // Validate namespace before registration
-        const namespaceError = this.validateUserNamespace(userModel.type);
+        const namespaceError = this.validateUserCollective(userModel.type);
         if (namespaceError) {
           result.failed.push({ file, error: namespaceError });
           continue;
@@ -432,7 +432,7 @@ export class UserModelLoader {
   }
 
   /**
-   * Validates that a user-defined model type follows the required namespace conventions.
+   * Validates that a user-defined model type follows the required collective conventions.
    *
    * Requirements:
    * - Must have at least 2 segments (e.g., "@myorg/echo" or "myorg/echo")
@@ -440,13 +440,13 @@ export class UserModelLoader {
    * @param rawType - The raw type string from the user model
    * @returns Error message if validation fails, undefined if valid
    */
-  private validateUserNamespace(rawType: string): string | undefined {
+  private validateUserCollective(rawType: string): string | undefined {
     const normalized = ModelType.create(rawType).normalized;
 
     // Must have at least 2 segments
     const segmentCount = ModelType.getSegmentCount(normalized);
     if (segmentCount < 2) {
-      return `Model type '${rawType}' must have at least 2 segments. Expected format: @<namespace>/<name> or <namespace>/<name> (e.g., @myorg/my-model or myorg/my-model)`;
+      return `Model type '${rawType}' must have at least 2 segments. Expected format: @<collective>/<name> or <collective>/<name> (e.g., @myorg/my-model or myorg/my-model)`;
     }
 
     return undefined;

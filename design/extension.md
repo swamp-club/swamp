@@ -6,12 +6,12 @@ reusable automation models and workflows that others can pull into their reposit
 
 ## Name
 
-Every extension has a scoped name in the format `@namespace/name`. The namespace
-identifies the organization, and the name identifies the extension.
+Every extension has a scoped name in the format `@collective/name`. The collective
+identifies the collective, and the name identifies the extension.
 Both parts must be lowercase and may contain alphanumeric characters, hyphens,
 and underscores. The pattern is `@[a-z0-9_-]+/[a-z0-9_-]+`.
 
-The namespaces `@swamp` and `@si` are reserved for built-in extensions and
+The collectives `@swamp` and `@si` are reserved for built-in extensions and
 cannot be used by external authors.
 
 You cannot use another person's name in the extensions that you publish.
@@ -35,7 +35,7 @@ what the extension contains and how it should be packaged.
 ### Required Fields
 
 - `manifestVersion`: Must be `1` (the only supported version).
-- `name`: Scoped name (`@namespace/name`).
+- `name`: Scoped name (`@collective/name`).
 - `version`: CalVer version string.
 - At least one of `models` or `workflows` must be present.
 
@@ -51,7 +51,7 @@ what the extension contains and how it should be packaged.
   `["darwin-aarch64", "linux-x86_64"]`). Informational only — displayed during
   pull.
 - `tags`: Array of categorization labels (e.g., `["aws", "kubernetes"]`).
-- `dependencies`: Array of extension names (`@namespace/name`) that this
+- `dependencies`: Array of extension names (`@collective/name`) that this
   extension requires. Dependencies are pulled automatically.
 
 ### Example
@@ -156,7 +156,7 @@ dependencies are resolved and pulled automatically if not already installed.
 
 During push, the CLI also resolves which models a workflow references. It
 parses workflow YAML to find `model_method` and `workflow` step tasks, then
-looks up the corresponding model source files. Only user-namespaced models
+looks up the corresponding model source files. Only user-collective models
 (types starting with `@`) are bundled — built-in models are skipped.
 
 ## Safety
@@ -196,7 +196,7 @@ Extensions are distributed through the swamp registry at `https://swamp.club`.
 
 Push operations require authentication via an API key (Bearer token). Pull
 operations are unauthenticated. Users can only push extensions to their own
-namespace. You need to authenticate to Swamp Club via the CLI `swamp auth login`
+collective. You need to authenticate to Swamp Club via the CLI `swamp auth login`
 to get the correct API Key used for push.
 
 ### Push Protocol
