@@ -25,6 +25,7 @@ import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   containsExpression,
   extractExpressions,
+  extractInputReferencesFromCel,
   replaceExpressions,
 } from "./expression_parser.ts";
 import type { ExpressionLocation } from "./expression.ts";
@@ -200,11 +201,31 @@ export class ExpressionEvaluationService {
 
     // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
     // Runtime expressions are resolved at runtime only, never persisted
+    const providedInputKeys = inputValues
+      ? new Set(Object.keys(inputValues))
+      : new Set<string>();
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
       if (containsRuntimeExpression(expr.celExpression)) {
         // Leave runtime expressions (vault, env, and mixed) as raw
         continue;
+      }
+
+      // Skip expressions that reference inputs not provided by the user.
+      // This allows methods that don't need certain inputs to run without
+      // those inputs being provided (e.g., delete doesn't need create-time inputs).
+      const inputRefs = extractInputReferencesFromCel(expr.celExpression);
+      if (inputRefs.size > 0) {
+        let hasMissing = false;
+        for (const ref of inputRefs) {
+          if (!providedInputKeys.has(ref)) {
+            hasMissing = true;
+            break;
+          }
+        }
+        if (hasMissing) {
+          continue;
+        }
       }
 
       const value = this.celEvaluator.evaluate(expr.celExpression, ctx);

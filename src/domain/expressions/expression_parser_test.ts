@@ -22,6 +22,7 @@ import {
   containsExpression,
   extractCelExpression,
   extractExpressions,
+  extractInputReferences,
   isTaskInputsPath,
   replaceExpressions,
 } from "./expression_parser.ts";
@@ -303,5 +304,72 @@ Deno.test("isTaskInputsPath returns false for model definition attribute", () =>
   assertEquals(
     isTaskInputsPath("attributes.vpc_id"),
     false,
+  );
+});
+
+// Tests for extractInputReferences
+
+Deno.test("extractInputReferences finds dot notation references", () => {
+  const data = {
+    run: "echo ${{ inputs.region }}",
+  };
+  assertEquals(extractInputReferences(data), new Set(["region"]));
+});
+
+Deno.test("extractInputReferences finds bracket notation references", () => {
+  const data = {
+    run: 'deploy to ${{ inputs["environment-name"] }}',
+  };
+  assertEquals(
+    extractInputReferences(data),
+    new Set(["environment-name"]),
+  );
+});
+
+Deno.test("extractInputReferences deduplicates multiple refs to same input", () => {
+  const data = {
+    arg1: "${{ inputs.region }}",
+    arg2: "also uses ${{ inputs.region }}",
+  };
+  assertEquals(extractInputReferences(data), new Set(["region"]));
+});
+
+Deno.test("extractInputReferences returns empty set when no input references", () => {
+  const data = {
+    run: "echo hello",
+    value: "${{ self.name }}",
+  };
+  assertEquals(extractInputReferences(data), new Set());
+});
+
+Deno.test("extractInputReferences excludes cross-model references", () => {
+  const data = {
+    arg: "${{ model.vpc.input.cidr }}",
+  };
+  assertEquals(extractInputReferences(data), new Set());
+});
+
+Deno.test("extractInputReferences handles nested and array structures", () => {
+  const data = {
+    nested: {
+      deep: {
+        value: "${{ inputs.name }}",
+      },
+    },
+    list: ["${{ inputs.count }}", "plain", "${{ inputs.name }}"],
+  };
+  assertEquals(
+    extractInputReferences(data),
+    new Set(["name", "count"]),
+  );
+});
+
+Deno.test("extractInputReferences handles mixed dot and bracket notation", () => {
+  const data = {
+    cmd: '${{ inputs.region }} and ${{ inputs["drop-name"] }}',
+  };
+  assertEquals(
+    extractInputReferences(data),
+    new Set(["region", "drop-name"]),
   );
 });

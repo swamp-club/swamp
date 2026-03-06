@@ -36,6 +36,10 @@ import {
   createResourceWriter,
 } from "./data_writer.ts";
 import { coerceMethodArgs } from "./zod_type_coercion.ts";
+import {
+  containsExpression,
+  extractInputReferencesFromCel,
+} from "../expressions/expression_parser.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -125,10 +129,34 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       );
     }
 
-    // Populate context with global args and definition metadata
+    // Populate context with global args and definition metadata.
+    // Wrap globalArgs in a Proxy that throws a clear error when the method
+    // accesses a field with an unresolved ${{ inputs.* }} expression.
+    // This allows methods that don't need certain inputs to succeed while
+    // failing fast with a helpful message if they do.
+    const rawGlobalArgs = definition.globalArguments;
+    const globalArgsProxy = new Proxy(rawGlobalArgs, {
+      get(target, prop, receiver) {
+        const value = Reflect.get(target, prop, receiver);
+        if (
+          typeof prop === "string" && typeof value === "string" &&
+          containsExpression(value)
+        ) {
+          const refs = extractInputReferencesFromCel(value);
+          if (refs.size > 0) {
+            const missing = [...refs].join(", ");
+            throw new Error(
+              `Missing required input(s): ${missing} (needed by globalArguments.${prop})`,
+            );
+          }
+        }
+        return value;
+      },
+    });
+
     const enrichedContext: MethodContext = {
       ...context,
-      globalArgs: definition.globalArguments,
+      globalArgs: globalArgsProxy,
       definition: {
         id: definition.id,
         name: definition.name,
@@ -180,29 +208,63 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       );
     }
 
-    // Validate globalArguments against schema (after upgrade and runtime resolution)
-    // Coerce string values so CLI-provided "true"/"false"/numeric strings match
-    // the Zod schema types, then replace the definition's globalArguments with
-    // the parsed (correctly-typed) values so methods receive proper types.
+    // Validate globalArguments against schema (after upgrade and runtime resolution).
+    // GlobalArguments may contain unevaluated ${{ inputs.* }} expressions when
+    // the user didn't provide those inputs (e.g., running "delete" without
+    // create-time inputs). Strip unresolved fields before Zod validation so
+    // methods that don't need them can proceed. A Proxy on context.globalArgs
+    // will throw a clear error if the method actually accesses an unresolved field.
     if (modelDef.globalArguments) {
-      const coercedGlobalArgs = coerceMethodArgs(
-        currentDefinition.globalArguments,
-        modelDef.globalArguments,
-      );
-      const globalArgsResult = modelDef.globalArguments.safeParse(
-        coercedGlobalArgs,
-      );
-      if (!globalArgsResult.success) {
-        throw new Error(
-          `Global arguments validation failed: ${
-            formatZodError(globalArgsResult.error)
-          }`,
-        );
+      const rawGlobalArgs = currentDefinition.globalArguments;
+
+      // Identify globalArg fields with unresolved input expressions
+      let hasUnresolved = false;
+      const resolvedGlobalArgs: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(rawGlobalArgs)) {
+        if (
+          typeof value === "string" && containsExpression(value) &&
+          extractInputReferencesFromCel(value).size > 0
+        ) {
+          hasUnresolved = true;
+        } else {
+          resolvedGlobalArgs[key] = value;
+        }
       }
-      // Update definition with parsed values so methods receive correct types
-      const parsedGlobalArgs = globalArgsResult.data as Record<string, unknown>;
-      for (const [key, value] of Object.entries(parsedGlobalArgs)) {
-        currentDefinition.setGlobalArgument(key, value);
+
+      if (hasUnresolved) {
+        // Validate only the resolved fields — unresolved fields are guarded
+        // by a Proxy that throws when the method actually accesses them
+        const coercedGlobalArgs = coerceMethodArgs(
+          resolvedGlobalArgs,
+          modelDef.globalArguments,
+        );
+        // Apply coerced values for resolved fields
+        for (const [key, value] of Object.entries(coercedGlobalArgs)) {
+          currentDefinition.setGlobalArgument(key, value);
+        }
+      } else {
+        const coercedGlobalArgs = coerceMethodArgs(
+          rawGlobalArgs,
+          modelDef.globalArguments,
+        );
+        const globalArgsResult = modelDef.globalArguments.safeParse(
+          coercedGlobalArgs,
+        );
+        if (!globalArgsResult.success) {
+          throw new Error(
+            `Global arguments validation failed: ${
+              formatZodError(globalArgsResult.error)
+            }`,
+          );
+        }
+        // Update definition with parsed values so methods receive correct types
+        const parsedGlobalArgs = globalArgsResult.data as Record<
+          string,
+          unknown
+        >;
+        for (const [key, value] of Object.entries(parsedGlobalArgs)) {
+          currentDefinition.setGlobalArgument(key, value);
+        }
       }
     }
 

@@ -39,6 +39,8 @@ import {
 import { coerceInputTypes, parseInputs } from "../input_parser.ts";
 import { parseTags } from "./data_search.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
+import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
+import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { join } from "@std/path";
 import {
@@ -139,9 +141,23 @@ export const modelMethodRunCommand = new Command()
           inputs,
           definition.inputs,
         );
+
+        // Build effective schema: only require inputs referenced by the current method's arguments
+        const referencedInputs = extractInputReferences(
+          definition.getMethodArguments(methodName),
+        );
+        const originalRequired = definition.inputs.required ?? [];
+        const effectiveRequired = originalRequired.filter((name) =>
+          referencedInputs.has(name)
+        );
+        const effectiveSchema: InputsSchema = {
+          ...definition.inputs,
+          required: effectiveRequired,
+        };
+
         const validationResult = validationService.validate(
           inputsWithDefaults,
-          definition.inputs,
+          effectiveSchema,
         );
         if (!validationResult.valid) {
           const errorMessages = validationResult.errors

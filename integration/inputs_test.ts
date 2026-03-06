@@ -801,3 +801,193 @@ Deno.test("CLI: model method run with JSON input still works", async () => {
     assertEquals(output.modelName, "shell-env-json-compat");
   });
 });
+
+// Test: Method-aware required input filtering (#626)
+
+Deno.test("CLI: method succeeds when required inputs are not referenced by method", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    // Model has required inputs but execute method doesn't reference them
+    const modelData = {
+      type: "command/shell",
+      typeVersion: 1,
+      id: crypto.randomUUID(),
+      name: "unreferenced-inputs-model",
+      version: 1,
+      tags: {},
+      inputs: {
+        properties: {
+          dropletName: { type: "string" },
+          region: {
+            type: "string",
+            enum: ["nyc1", "sfo1", "ams3"],
+          },
+        },
+        required: ["dropletName", "region"],
+      },
+      globalArguments: {},
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo 'hello'",
+          },
+        },
+      },
+    };
+
+    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    await ensureDir(modelDir);
+    await Deno.writeTextFile(
+      join(modelDir, `${modelData.id}.yaml`),
+      stringifyYaml(modelData as Record<string, unknown>),
+    );
+
+    // Running without inputs should succeed since execute doesn't reference them
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "unreferenced-inputs-model",
+        "execute",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Should succeed without unreferenced inputs. stderr: ${result.stderr}`,
+    );
+  });
+});
+
+Deno.test("CLI: method validates required inputs that it references", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    // Model where execute references both required inputs
+    const modelData = {
+      type: "command/shell",
+      typeVersion: 1,
+      id: crypto.randomUUID(),
+      name: "referenced-inputs-model",
+      version: 1,
+      tags: {},
+      inputs: {
+        properties: {
+          dropletName: { type: "string" },
+          region: {
+            type: "string",
+            enum: ["nyc1", "sfo1", "ams3"],
+          },
+        },
+        required: ["dropletName", "region"],
+      },
+      globalArguments: {},
+      methods: {
+        execute: {
+          arguments: {
+            run:
+              "echo 'creating ${{ inputs.dropletName }} in ${{ inputs.region }}'",
+          },
+        },
+      },
+    };
+
+    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    await ensureDir(modelDir);
+    await Deno.writeTextFile(
+      join(modelDir, `${modelData.id}.yaml`),
+      stringifyYaml(modelData as Record<string, unknown>),
+    );
+
+    // Running without required inputs should fail since execute references them
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "referenced-inputs-model",
+        "execute",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code !== 0,
+      true,
+      "Should fail without referenced required inputs",
+    );
+    assertStringIncludes(result.stderr, "dropletName");
+    assertStringIncludes(result.stderr, "region");
+  });
+});
+
+Deno.test("CLI: inputs in globalArguments do not block methods that don't reference them", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    // Model where globalArguments references inputs but execute method does not
+    const modelData = {
+      type: "command/shell",
+      typeVersion: 1,
+      id: crypto.randomUUID(),
+      name: "global-input-model",
+      version: 1,
+      tags: {},
+      inputs: {
+        properties: {
+          apiToken: { type: "string" },
+          region: { type: "string" },
+        },
+        required: ["apiToken", "region"],
+      },
+      globalArguments: {
+        authHeader: "Bearer ${{ inputs.apiToken }}",
+      },
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo 'hello'",
+          },
+        },
+      },
+    };
+
+    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    await ensureDir(modelDir);
+    await Deno.writeTextFile(
+      join(modelDir, `${modelData.id}.yaml`),
+      stringifyYaml(modelData as Record<string, unknown>),
+    );
+
+    // Running without apiToken should succeed — execute doesn't reference it
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "global-input-model",
+        "execute",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Should succeed — globalArguments inputs not needed by execute. stderr: ${result.stderr}`,
+    );
+  });
+});

@@ -219,3 +219,61 @@ export function extractCelExpression(raw: string): string | null {
 export function isTaskInputsPath(path: string): boolean {
   return path.includes(".task.inputs.") || path.includes(".task.inputs[");
 }
+
+/**
+ * Pattern to match `inputs.fieldName` (dot notation) in CEL expressions.
+ * Uses negative lookbehind to exclude cross-model references like `model.foo.input.bar`.
+ */
+const INPUTS_DOT_PATTERN = /(?<!\.)inputs\.([a-zA-Z_][a-zA-Z0-9_]*)/g;
+
+/**
+ * Pattern to match `inputs["field-name"]` (bracket notation) in CEL expressions.
+ * Uses negative lookbehind to exclude cross-model references.
+ */
+const INPUTS_BRACKET_PATTERN = /(?<!\.)inputs\["([^"]+)"\]/g;
+
+/**
+ * Extracts input field names referenced in a single CEL expression string.
+ * Handles both dot notation (`inputs.fieldName`) and bracket notation
+ * (`inputs["field-name"]`). Excludes cross-model references.
+ *
+ * @param celExpression - The raw CEL expression (without `${{ }}` wrapper)
+ * @returns Set of unique input field names referenced
+ */
+export function extractInputReferencesFromCel(
+  celExpression: string,
+): Set<string> {
+  const inputNames = new Set<string>();
+  for (const match of celExpression.matchAll(INPUTS_DOT_PATTERN)) {
+    inputNames.add(match[1]);
+  }
+  for (const match of celExpression.matchAll(INPUTS_BRACKET_PATTERN)) {
+    inputNames.add(match[1]);
+  }
+  return inputNames;
+}
+
+/**
+ * Scans a data structure for `${{ ... }}` expressions and returns the unique
+ * set of `inputs.*` field names referenced. Handles both CEL syntaxes:
+ * - Dot notation: `inputs.fieldName`
+ * - Bracket notation: `inputs["field-name"]` (for hyphenated names)
+ *
+ * Excludes cross-model references like `model.foo.input.bar`.
+ *
+ * @param data - The data structure to scan (object, array, or primitive)
+ * @returns Set of unique input field names referenced
+ */
+export function extractInputReferences(data: unknown): Set<string> {
+  const expressions = extractExpressions(data);
+  const inputNames = new Set<string>();
+
+  for (const expr of expressions) {
+    const refs = extractInputReferencesFromCel(expr.celExpression);
+    for (const name of refs) {
+      inputNames.add(name);
+    }
+  }
+
+  return inputNames;
+}
