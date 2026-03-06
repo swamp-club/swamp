@@ -32,6 +32,8 @@ import { z } from "zod";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
+import { Data } from "../data/data.ts";
+import { UserError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
 
 /**
@@ -1128,4 +1130,403 @@ Deno.test("executeWorkflow - skips validation when model has no globalArguments 
   );
   // Should succeed without error
   assertEquals(result !== undefined, true);
+});
+
+// ---------- Resource Deletion Tracking Tests ----------
+
+/**
+ * Creates a mock DataRepo that returns specific data for findAllForModel.
+ */
+function createMockDataRepoWithData(
+  existingData: Data[],
+): UnifiedDataRepository & {
+  savedData: Array<{ data: Data; content: Uint8Array }>;
+} {
+  const savedData: Array<{ data: Data; content: Uint8Array }> = [];
+  return {
+    ...createMockDataRepo(),
+    findAllForModel: () => Promise.resolve(existingData),
+    save: (
+      _type: ModelType,
+      _modelId: string,
+      data: Data,
+      content: Uint8Array,
+    ) => {
+      savedData.push({ data, content });
+      return Promise.resolve({ version: data.version });
+    },
+    getContent: () => Promise.resolve(null),
+    savedData,
+  };
+}
+
+Deno.test("executeWorkflow - delete method writes deletion markers for existing resources", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const existingData = Data.create({
+    name: "my-resource",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test/model:create",
+    },
+    version: 3,
+  });
+
+  const mockRepo = createMockDataRepoWithData([existingData]);
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/delete-marker"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      delete: {
+        description: "Delete the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const contextWithRepo: MethodContext = {
+    ...context,
+    dataRepository: mockRepo,
+  };
+
+  await service.executeWorkflow(
+    definition,
+    model,
+    "delete",
+    contextWithRepo,
+  );
+
+  // Should have saved a deletion marker
+  assertEquals(mockRepo.savedData.length, 1);
+  const saved = mockRepo.savedData[0];
+  assertEquals(saved.data.lifecycle, "deleted");
+  assertEquals(saved.data.version, 4); // existingData.version + 1
+  assertEquals(saved.data.contentType, "application/json");
+
+  // Check the marker content
+  const content = JSON.parse(new TextDecoder().decode(saved.content));
+  assertEquals(typeof content.deletedAt, "string");
+  assertEquals(content.deletedByMethod, "delete");
+});
+
+Deno.test("executeWorkflow - read after delete throws UserError", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const deletedData = Data.create({
+    name: "my-resource",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test/model:create",
+    },
+    lifecycle: "deleted",
+  });
+
+  const markerContent = new TextEncoder().encode(JSON.stringify({
+    deletedAt: "2026-03-06T12:00:00.000Z",
+    deletedByMethod: "delete",
+  }));
+
+  const mockRepo = {
+    ...createMockDataRepo(),
+    findAllForModel: () => Promise.resolve([deletedData]),
+    getContent: () => Promise.resolve(markerContent),
+  };
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/read-after-delete"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      get: {
+        description: "Get the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const contextWithRepo: MethodContext = {
+    ...context,
+    dataRepository: mockRepo,
+  };
+
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "get", contextWithRepo),
+    UserError,
+    "was deleted at 2026-03-06T12:00:00.000Z",
+  );
+});
+
+Deno.test("executeWorkflow - update after delete throws UserError", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const deletedData = Data.create({
+    name: "my-resource",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test/model:create",
+    },
+    lifecycle: "deleted",
+  });
+
+  const mockRepo = {
+    ...createMockDataRepo(),
+    findAllForModel: () => Promise.resolve([deletedData]),
+    getContent: () => Promise.resolve(null),
+  };
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/update-after-delete"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      update: {
+        description: "Update the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const contextWithRepo: MethodContext = {
+    ...context,
+    dataRepository: mockRepo,
+  };
+
+  await assertRejects(
+    () =>
+      service.executeWorkflow(
+        definition,
+        model,
+        "update",
+        contextWithRepo,
+      ),
+    UserError,
+    "was deleted at",
+  );
+});
+
+Deno.test("executeWorkflow - create after delete succeeds (clears deletion state)", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  // The create method writes a new resource via writeResource, which defaults to lifecycle: "active"
+  // The fast-fail only applies to read/update, not create — so create should succeed
+  const model: ModelDefinition = {
+    type: ModelType.create("test/create-after-delete"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({ value: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      create: {
+        description: "Create the resource",
+        arguments: z.object({}),
+        execute: async (_args, context) => {
+          const handle = await context.writeResource!(
+            "my-resource",
+            "my-resource",
+            { value: "new" },
+          );
+          return { dataHandles: [handle] };
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  // Should succeed — create is not blocked by deleted resources
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "create",
+    context,
+  );
+  assertEquals(result.dataHandles !== undefined, true);
+  assertEquals(result.dataHandles!.length, 1);
+});
+
+Deno.test("executeWorkflow - delete skips already-deleted resources", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  // Resource already has lifecycle: deleted
+  const alreadyDeleted = Data.create({
+    name: "my-resource",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test/model:create",
+    },
+    lifecycle: "deleted",
+  });
+
+  const mockRepo = createMockDataRepoWithData([alreadyDeleted]);
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/delete-skip-deleted"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      delete: {
+        description: "Delete the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const contextWithRepo: MethodContext = {
+    ...context,
+    dataRepository: mockRepo,
+  };
+
+  await service.executeWorkflow(
+    definition,
+    model,
+    "delete",
+    contextWithRepo,
+  );
+
+  // Should NOT have written any new deletion markers
+  assertEquals(mockRepo.savedData.length, 0);
+});
+
+Deno.test("executeWorkflow - explicit kind overrides name inference for deletion check", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  // Method named "remove" but kind: "action" — should NOT trigger deletion markers
+  const existingData = Data.create({
+    name: "my-resource",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test/model:create",
+    },
+  });
+
+  const mockRepo = createMockDataRepoWithData([existingData]);
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/kind-override"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      remove: {
+        description: "Remove (but kind is action, not delete)",
+        kind: "action",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const contextWithRepo: MethodContext = {
+    ...context,
+    dataRepository: mockRepo,
+  };
+
+  await service.executeWorkflow(
+    definition,
+    model,
+    "remove",
+    contextWithRepo,
+  );
+
+  // kind: "action" should NOT trigger deletion markers
+  assertEquals(mockRepo.savedData.length, 0);
 });

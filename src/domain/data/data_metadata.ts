@@ -82,6 +82,14 @@ export function normalizeLifetime(lifetime: Lifetime): Lifetime {
 }
 
 /**
+ * Lifecycle state of a data entry.
+ * - "active": Normal, live data (default)
+ * - "deleted": Tombstone marker — the cloud resource was deleted
+ */
+export const DataLifecycleSchema = z.enum(["active", "deleted"]);
+export type DataLifecycle = z.infer<typeof DataLifecycleSchema>;
+
+/**
  * Owner types that can create data.
  */
 export const OwnerTypes = ["model-method", "workflow-step", "manual"] as const;
@@ -130,6 +138,7 @@ export const DataMetadataSchema = z.object({
   createdAt: z.string().datetime(),
   size: z.number().int().nonnegative().optional(),
   checksum: z.string().optional(),
+  lifecycle: DataLifecycleSchema.optional(),
 });
 
 export type DataMetadata = z.infer<typeof DataMetadataSchema>;

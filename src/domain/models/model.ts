@@ -371,6 +371,51 @@ export interface MethodResult {
 }
 
 /**
+ * Semantic kind of a model method.
+ * Used to drive lifecycle behavior (e.g., deletion markers, fast-fail on deleted resources).
+ */
+export type MethodKind =
+  | "create"
+  | "read"
+  | "update"
+  | "delete"
+  | "list"
+  | "action";
+
+/**
+ * Infers the semantic kind of a method from its name or explicit definition.
+ *
+ * @param methodName - The method name to infer from
+ * @param definition - Optional method definition with explicit kind
+ * @returns The inferred MethodKind, or undefined for unrecognized names
+ */
+export function inferMethodKind(
+  methodName: string,
+  definition?: { kind?: MethodKind },
+): MethodKind | undefined {
+  if (definition?.kind) {
+    return definition.kind;
+  }
+
+  const lower = methodName.toLowerCase();
+
+  if (lower === "create") return "create";
+  if (
+    lower === "get" || lower === "read" || lower === "describe" ||
+    lower === "show"
+  ) {
+    return "read";
+  }
+  if (lower === "update" || lower === "patch") return "update";
+  if (lower === "delete" || lower === "destroy" || lower === "remove") {
+    return "delete";
+  }
+  if (lower === "list" || lower === "search" || lower === "find") return "list";
+
+  return undefined;
+}
+
+/**
  * Definition of a model method.
  */
 export interface MethodDefinition<
@@ -380,6 +425,12 @@ export interface MethodDefinition<
    * Human-readable description of what the method does.
    */
   description: string;
+
+  /**
+   * Semantic kind of this method (create, read, update, delete, list, action).
+   * When omitted, inferred from the method name by `inferMethodKind()`.
+   */
+  kind?: MethodKind;
 
   /**
    * Zod schema for validating per-method arguments.

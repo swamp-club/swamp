@@ -177,6 +177,10 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
 
     const allData = await this.dataRepo.findAllGlobal();
     for (const { data, modelType, modelId } of allData) {
+      // Skip deletion markers — they are tombstones and should not be auto-expired
+      if (data.isDeleted) {
+        continue;
+      }
       try {
         const isExpired = await this.isExpired(data);
         if (isExpired) {

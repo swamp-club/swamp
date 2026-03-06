@@ -23,6 +23,7 @@ import {
   type DataHandle,
   type DataWriter,
   defineModel,
+  inferMethodKind,
   type MethodContext,
   type ModelDefinition,
   ModelRegistry,
@@ -630,4 +631,58 @@ Deno.test("ModelRegistry.register accepts model with no upgrades", () => {
 
   registry.register(model);
   assertEquals(registry.has("test/no-upgrades"), true);
+});
+
+// --- inferMethodKind tests ---
+
+Deno.test("inferMethodKind - returns explicit kind from definition", () => {
+  assertEquals(inferMethodKind("run", { kind: "create" }), "create");
+  assertEquals(inferMethodKind("do-something", { kind: "delete" }), "delete");
+});
+
+Deno.test("inferMethodKind - infers 'create' from method name", () => {
+  assertEquals(inferMethodKind("create"), "create");
+  assertEquals(inferMethodKind("Create"), "create");
+  assertEquals(inferMethodKind("CREATE"), "create");
+});
+
+Deno.test("inferMethodKind - infers 'read' from method names", () => {
+  assertEquals(inferMethodKind("get"), "read");
+  assertEquals(inferMethodKind("read"), "read");
+  assertEquals(inferMethodKind("describe"), "read");
+  assertEquals(inferMethodKind("show"), "read");
+  assertEquals(inferMethodKind("Get"), "read");
+  assertEquals(inferMethodKind("DESCRIBE"), "read");
+});
+
+Deno.test("inferMethodKind - infers 'update' from method names", () => {
+  assertEquals(inferMethodKind("update"), "update");
+  assertEquals(inferMethodKind("patch"), "update");
+  assertEquals(inferMethodKind("Update"), "update");
+});
+
+Deno.test("inferMethodKind - infers 'delete' from method names", () => {
+  assertEquals(inferMethodKind("delete"), "delete");
+  assertEquals(inferMethodKind("destroy"), "delete");
+  assertEquals(inferMethodKind("remove"), "delete");
+  assertEquals(inferMethodKind("Delete"), "delete");
+});
+
+Deno.test("inferMethodKind - infers 'list' from method names", () => {
+  assertEquals(inferMethodKind("list"), "list");
+  assertEquals(inferMethodKind("search"), "list");
+  assertEquals(inferMethodKind("find"), "list");
+  assertEquals(inferMethodKind("List"), "list");
+});
+
+Deno.test("inferMethodKind - returns undefined for unrecognized names", () => {
+  assertEquals(inferMethodKind("run"), undefined);
+  assertEquals(inferMethodKind("execute"), undefined);
+  assertEquals(inferMethodKind("sync"), undefined);
+  assertEquals(inferMethodKind("write"), undefined);
+});
+
+Deno.test("inferMethodKind - explicit kind overrides name inference", () => {
+  assertEquals(inferMethodKind("delete", { kind: "action" }), "action");
+  assertEquals(inferMethodKind("create", { kind: "read" }), "read");
 });

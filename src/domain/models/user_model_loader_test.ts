@@ -2207,3 +2207,57 @@ export const model = {
     assertEquals(content.retries, 3);
   });
 });
+
+// --- kind propagation tests ---
+
+Deno.test("UserModelLoader propagates method kind from model definition", async () => {
+  const typeId = `@user/kind-model-${Date.now()}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.03.06.1",
+  resources: {
+    "data": {
+      description: "Data output",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    create: {
+      description: "Create the resource",
+      kind: "create",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+    remove: {
+      description: "Remove (explicit delete kind)",
+      kind: "delete",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+    run: {
+      description: "Run without kind",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  await withTempModels({ "kind_model.ts": modelCode }, async (dir) => {
+    const loader = createTestLoader();
+    const result = await loader.loadModels(dir);
+
+    assertEquals(result.loaded.length, 1);
+
+    const modelDef = modelRegistry.get(typeId);
+    assertEquals(modelDef !== undefined, true);
+    assertEquals(modelDef!.methods.create.kind, "create");
+    assertEquals(modelDef!.methods.remove.kind, "delete");
+    assertEquals(modelDef!.methods.run.kind, undefined);
+  });
+});

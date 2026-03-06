@@ -629,3 +629,192 @@ Deno.test("Data roundtrip normalizes zero-duration: create with '0h' -> toData -
   const restored = Data.fromData(serialized);
   assertEquals(restored.lifetime, "workflow");
 });
+
+// --- Lifecycle tests ---
+
+Deno.test("Data.create defaults lifecycle to 'active'", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.lifecycle, "active");
+  assertEquals(data.isDeleted, false);
+});
+
+Deno.test("Data.create with lifecycle 'deleted'", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+  });
+  assertEquals(data.lifecycle, "deleted");
+  assertEquals(data.isDeleted, true);
+});
+
+Deno.test("Data.isDeleted returns true for deleted lifecycle", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+  });
+  assertEquals(data.isDeleted, true);
+});
+
+Deno.test("Data.isDeleted returns false for active lifecycle", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.isDeleted, false);
+});
+
+Deno.test("Data.withDeletionMarker creates a deleted version", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  const marker = data.withDeletionMarker({ version: 2 });
+
+  assertEquals(marker.id, data.id);
+  assertEquals(marker.name, data.name);
+  assertEquals(marker.version, 2);
+  assertEquals(marker.contentType, "application/json");
+  assertEquals(marker.streaming, false);
+  assertEquals(marker.lifecycle, "deleted");
+  assertEquals(marker.isDeleted, true);
+  assertEquals(marker.lifetime, data.lifetime);
+  assertEquals(marker.garbageCollection, data.garbageCollection);
+  assertEquals(marker.tags, data.tags);
+  assertEquals(marker.ownerDefinition, data.ownerDefinition);
+});
+
+Deno.test("Data toData includes lifecycle when deleted", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+  });
+
+  const serialized = data.toData();
+  assertEquals(serialized.lifecycle, "deleted");
+});
+
+Deno.test("Data toData omits lifecycle when active", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  const serialized = data.toData();
+  assertEquals(serialized.lifecycle, undefined);
+});
+
+Deno.test("Data.fromData defaults lifecycle to 'active' when missing", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  // Simulate old on-disk data without lifecycle field
+  const serialized = data.toData();
+  delete serialized.lifecycle;
+
+  const restored = Data.fromData(serialized);
+  assertEquals(restored.lifecycle, "active");
+  assertEquals(restored.isDeleted, false);
+});
+
+Deno.test("Data.fromData reads lifecycle 'deleted' from disk", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+  });
+
+  const serialized = data.toData();
+  const restored = Data.fromData(serialized);
+  assertEquals(restored.lifecycle, "deleted");
+  assertEquals(restored.isDeleted, true);
+});
+
+Deno.test("Data lifecycle roundtrip: deleted", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "lifecycle-roundtrip",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+  });
+
+  const serialized = data.toData();
+  assertEquals(serialized.lifecycle, "deleted");
+
+  const restored = Data.fromData(serialized);
+  assertEquals(restored.lifecycle, "deleted");
+  assertEquals(restored.isDeleted, true);
+});
+
+Deno.test("Data.withNewVersion preserves lifecycle", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+  });
+
+  const newVersion = data.withNewVersion({ version: 2 });
+  assertEquals(newVersion.lifecycle, "deleted");
+});

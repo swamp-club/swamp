@@ -20,6 +20,8 @@
 export { createDataId, type DataId, generateDataId } from "./data_id.ts";
 
 export {
+  type DataLifecycle,
+  DataLifecycleSchema,
   type DataMetadata,
   DataMetadataSchema,
   type GarbageCollectionPolicy,

@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  DataLifecycleSchema,
   GarbageCollectionSchema,
   type Lifetime,
   normalizeLifetime,
@@ -225,5 +226,29 @@ Deno.test("GarbageCollectionSchema - accepts '01d' (leading zero, value is 1)", 
 
 Deno.test("GarbageCollectionSchema - accepts '007h' (leading zeros, value is 7)", () => {
   const result = GarbageCollectionSchema.safeParse("007h");
+  assertEquals(result.success, true);
+});
+
+// --- DataLifecycleSchema ---
+
+Deno.test("DataLifecycleSchema - accepts 'active'", () => {
+  const result = DataLifecycleSchema.safeParse("active");
+  assertEquals(result.success, true);
+});
+
+Deno.test("DataLifecycleSchema - accepts 'deleted'", () => {
+  const result = DataLifecycleSchema.safeParse("deleted");
+  assertEquals(result.success, true);
+});
+
+Deno.test("DataLifecycleSchema - rejects invalid value", () => {
+  const result = DataLifecycleSchema.safeParse("unknown");
+  assertEquals(result.success, false);
+});
+
+Deno.test("DataLifecycleSchema - accepts undefined (optional in metadata)", () => {
+  // When used as .optional(), undefined should work
+  const optionalSchema = DataLifecycleSchema.optional();
+  const result = optionalSchema.safeParse(undefined);
   assertEquals(result.success, true);
 });

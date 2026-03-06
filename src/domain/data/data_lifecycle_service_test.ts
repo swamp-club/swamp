@@ -357,3 +357,78 @@ Deno.test("findExpiredData - returns empty array when no data exists", async () 
   const expired = await service.findExpiredData();
   assertEquals(expired.length, 0);
 });
+
+Deno.test("findExpiredData - skips deletion markers (lifecycle: deleted)", async () => {
+  const mockRepo = new MockDataRepository();
+  // Create a deleted data entry that would otherwise appear expired
+  const deletedData = Data.create({
+    name: "deleted-resource",
+    contentType: "application/json",
+    lifetime: "1h",
+    garbageCollection: 5,
+    tags: { type: "resource" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+    createdAt: new Date("2020-01-01T00:00:00Z"),
+    lifecycle: "deleted",
+  });
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      {
+        data: deletedData,
+        modelType: ModelType.create("test/model"),
+        modelId: "my-resource",
+      },
+    ]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const expired = await service.findExpiredData();
+  // Deletion markers should be skipped, not treated as expired
+  assertEquals(expired.length, 0);
+});
+
+Deno.test("findExpiredData - includes expired active data alongside deleted markers", async () => {
+  const mockRepo = new MockDataRepository();
+  const expiredActive = createMockData({
+    name: "active-expired",
+    lifetime: "1h",
+  });
+  const deletedData = Data.create({
+    name: "deleted-resource",
+    contentType: "application/json",
+    lifetime: "1h",
+    garbageCollection: 5,
+    tags: { type: "resource" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test-ref" },
+    createdAt: new Date("2020-01-01T00:00:00Z"),
+    lifecycle: "deleted",
+  });
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      {
+        data: expiredActive,
+        modelType: ModelType.create("test/model"),
+        modelId: "m1",
+      },
+      {
+        data: deletedData,
+        modelType: ModelType.create("test/model"),
+        modelId: "m2",
+      },
+    ]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const expired = await service.findExpiredData();
+  // Only the active expired data should be returned, not the deletion marker
+  assertEquals(expired.length, 1);
+  assertEquals(expired[0].dataName, "active-expired");
+});

@@ -18,15 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { z } from "zod";
-import type {
-  DataHandle,
-  FollowUpAction,
-  MethodContext,
-  MethodDefinition,
-  MethodResult,
-  ModelDefinition,
+import {
+  type DataHandle,
+  type FollowUpAction,
+  inferMethodKind,
+  type MethodContext,
+  type MethodDefinition,
+  type MethodResult,
+  type ModelDefinition,
 } from "./model.ts";
 import type { Definition } from "../definitions/definition.ts";
+import { UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
@@ -268,6 +270,46 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       }
     }
 
+    // Infer method kind for lifecycle checks
+    const methodKind = inferMethodKind(methodName, method);
+
+    // Fast-fail: reject read/update on deleted resources
+    if (methodKind === "read" || methodKind === "update") {
+      const resources = modelDef.resources ?? {};
+      if (Object.keys(resources).length > 0) {
+        const existingData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+        for (const data of existingData) {
+          if (data.isDeleted) {
+            // Read the deletion marker content for the timestamp
+            let deletedAt = "unknown";
+            try {
+              const content = await context.dataRepository.getContent(
+                context.modelType,
+                context.modelId,
+                data.name,
+              );
+              if (content) {
+                const marker = JSON.parse(
+                  new TextDecoder().decode(content),
+                );
+                if (marker.deletedAt) {
+                  deletedAt = marker.deletedAt;
+                }
+              }
+            } catch {
+              // Use default "unknown" timestamp
+            }
+            throw new UserError(
+              `Resource '${data.name}' was deleted at ${deletedAt} — run a 'create' method to re-create it first`,
+            );
+          }
+        }
+      }
+    }
+
     // Create writeResource and createFileWriter for this execution
     const definitionHash = await currentDefinition.computeHash();
     const resources = modelDef.resources ?? {};
@@ -345,6 +387,34 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       });
       output.markSucceeded();
       await context.outputRepository.save(modelDef.type, methodName, output);
+    }
+
+    // Write deletion markers after a successful delete method
+    if (methodKind === "delete") {
+      const resources = modelDef.resources ?? {};
+      if (Object.keys(resources).length > 0) {
+        const existingData = await context.dataRepository.findAllForModel(
+          context.modelType,
+          context.modelId,
+        );
+        for (const data of existingData) {
+          if (!data.isDeleted) {
+            const marker = data.withDeletionMarker({
+              version: data.version + 1,
+            });
+            const content = new TextEncoder().encode(JSON.stringify({
+              deletedAt: new Date().toISOString(),
+              deletedByMethod: methodName,
+            }));
+            await context.dataRepository.save(
+              context.modelType,
+              context.modelId,
+              marker,
+              content,
+            );
+          }
+        }
+      }
     }
 
     // Process follow-up actions

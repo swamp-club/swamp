@@ -29,6 +29,7 @@ import {
   FileOutputSpecSchema,
   type MethodContext,
   type MethodDefinition,
+  type MethodKind,
   type MethodResult,
   type ModelDefinition,
   modelRegistry,
@@ -68,8 +69,18 @@ type UserExecuteFn = (
 /**
  * Schema for validating user method exports.
  */
+const MethodKindSchema = z.enum([
+  "create",
+  "read",
+  "update",
+  "delete",
+  "list",
+  "action",
+]);
+
 const UserMethodSchema = z.object({
   description: z.string(),
+  kind: MethodKindSchema.optional(),
   arguments: z.custom<z.ZodTypeAny>((val) => val instanceof z.ZodType),
   execute: z.custom<UserExecuteFn>((val) => typeof val === "function"),
 }).passthrough();
@@ -502,6 +513,7 @@ export class UserModelLoader {
     for (const [name, method] of Object.entries(flatMethods)) {
       methods[name] = {
         description: method.description,
+        ...(method.kind ? { kind: method.kind as MethodKind } : {}),
         arguments: method.arguments,
         execute: this.wrapUserExecute(method.execute),
       };
@@ -546,6 +558,7 @@ export class UserModelLoader {
     for (const [name, method] of Object.entries(userModel.methods)) {
       methods[name] = {
         description: method.description,
+        ...(method.kind ? { kind: method.kind as MethodKind } : {}),
         arguments: method.arguments,
         execute: this.wrapUserExecute(method.execute),
       };

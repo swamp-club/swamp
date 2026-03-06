@@ -19,6 +19,7 @@
 
 import { createDataId, type DataId, generateDataId } from "./data_id.ts";
 import {
+  type DataLifecycle,
   type DataMetadata,
   DataMetadataSchema,
   type GarbageCollectionPolicy,
@@ -43,6 +44,7 @@ export interface CreateDataProps {
   createdAt?: Date;
   size?: number;
   checksum?: string;
+  lifecycle?: DataLifecycle;
 }
 
 /**
@@ -71,6 +73,7 @@ export class Data {
     readonly tags: Record<string, string>,
     readonly ownerDefinition: OwnerDefinition,
     readonly createdAt: Date,
+    readonly lifecycle: DataLifecycle,
     readonly size?: number,
     readonly checksum?: string,
   ) {}
@@ -87,6 +90,7 @@ export class Data {
     const version = props.version ?? 1;
     const createdAt = props.createdAt ?? new Date();
     const lifetime = normalizeLifetime(props.lifetime);
+    const lifecycle = props.lifecycle ?? "active";
 
     const validated = DataMetadataSchema.parse({
       id,
@@ -101,6 +105,7 @@ export class Data {
       createdAt: createdAt.toISOString(),
       size: props.size,
       checksum: props.checksum,
+      lifecycle: lifecycle === "active" ? undefined : lifecycle,
     });
 
     return new Data(
@@ -114,6 +119,7 @@ export class Data {
       { ...validated.tags },
       { ...validated.ownerDefinition },
       new Date(validated.createdAt),
+      validated.lifecycle ?? "active",
       validated.size,
       validated.checksum,
     );
@@ -142,6 +148,7 @@ export class Data {
       { ...validated.tags },
       { ...validated.ownerDefinition },
       new Date(validated.createdAt),
+      validated.lifecycle ?? "active",
       validated.size,
       validated.checksum,
     );
@@ -170,6 +177,9 @@ export class Data {
     if (this.checksum !== undefined) {
       data.checksum = this.checksum;
     }
+    if (this.lifecycle === "deleted") {
+      data.lifecycle = "deleted";
+    }
 
     return data;
   }
@@ -191,6 +201,32 @@ export class Data {
    */
   get type(): string {
     return this.tags.type;
+  }
+
+  /**
+   * Returns true if this data has been marked as deleted.
+   */
+  get isDeleted(): boolean {
+    return this.lifecycle === "deleted";
+  }
+
+  /**
+   * Creates a deletion marker version of this data.
+   * The marker has lifecycle "deleted", JSON content type, and streaming disabled.
+   */
+  withDeletionMarker(props: { version: number }): Data {
+    return Data.create({
+      id: this.id,
+      name: this.name,
+      version: props.version,
+      contentType: "application/json",
+      lifetime: this.lifetime,
+      garbageCollection: this.garbageCollection,
+      streaming: false,
+      tags: this.tags,
+      ownerDefinition: this.ownerDefinition,
+      lifecycle: "deleted",
+    });
   }
 
   /**
@@ -216,6 +252,7 @@ export class Data {
       createdAt: props.createdAt ?? new Date(),
       size: props.size,
       checksum: props.checksum,
+      lifecycle: this.lifecycle,
     });
   }
 }
