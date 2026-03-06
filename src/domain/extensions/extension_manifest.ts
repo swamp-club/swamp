@@ -23,7 +23,7 @@ import { CalVer } from "../models/calver.ts";
 import { ModelType } from "../models/model_type.ts";
 import { UserError } from "../errors.ts";
 
-/** Scoped name pattern: @namespace/name */
+/** Scoped name pattern: @collective/name */
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
 const ExtensionManifestSchemaV1 = z.object({
@@ -32,11 +32,11 @@ const ExtensionManifestSchemaV1 = z.object({
     (name) => SCOPED_NAME_PATTERN.test(name),
     {
       message:
-        "Extension name must be scoped: @namespace/name (lowercase, alphanumeric, hyphens, underscores)",
+        "Extension name must be scoped: @collective/name (lowercase, alphanumeric, hyphens, underscores)",
     },
   ).refine(
-    (name) => !ModelType.isReservedNamespace(name),
-    { message: "Cannot use reserved namespace (@swamp or @si)" },
+    (name) => !ModelType.isReservedCollective(name),
+    { message: "Cannot use reserved collective (@swamp or @si)" },
   ),
   version: z.string().refine(CalVer.isValid, {
     message: "Version must be valid CalVer format: YYYY.MM.DD.MICRO",
@@ -52,7 +52,7 @@ const ExtensionManifestSchemaV1 = z.object({
   releaseNotes: z.string().max(5000).optional(),
   dependencies: z.array(
     z.string().refine((dep) => dep.includes("/"), {
-      message: "Dependencies must include a slash (e.g., @namespace/name)",
+      message: "Dependencies must include a slash (e.g., @collective/name)",
     }),
   ).optional(),
 }).refine(

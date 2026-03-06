@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import type { ExtensionContentMetadata } from "./extension_content.ts";
-import { validateContentNamespaces } from "./extension_namespace_validator.ts";
+import { validateContentCollectives } from "./extension_collective_validator.ts";
 
 function makeMetadata(
   overrides: Partial<ExtensionContentMetadata> = {},
@@ -32,8 +32,8 @@ function makeMetadata(
   };
 }
 
-Deno.test("validateContentNamespaces — all content matches namespace — valid", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — all content matches collective — valid", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata({
       models: [{
@@ -66,8 +66,8 @@ Deno.test("validateContentNamespaces — all content matches namespace — valid
   assertEquals(result.mismatches.length, 0);
 });
 
-Deno.test("validateContentNamespaces — model type with wrong namespace — mismatch", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — model type with wrong collective — mismatch", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata({
       models: [{
@@ -88,8 +88,8 @@ Deno.test("validateContentNamespaces — model type with wrong namespace — mis
   assertEquals(result.mismatches[0].fileName, "echo.ts");
 });
 
-Deno.test("validateContentNamespaces — model type without @ prefix — mismatch", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — model type without @ prefix — mismatch", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata({
       models: [{
@@ -109,15 +109,15 @@ Deno.test("validateContentNamespaces — model type without @ prefix — mismatc
   assertEquals(result.mismatches[0].identifier, "aws/ec2");
 });
 
-Deno.test("validateContentNamespaces — vault type with wrong namespace — mismatch", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — vault type with wrong collective — mismatch", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata({
       vaults: [{
         fileName: "vault.ts",
         type: "@other/vault",
         name: "Other Vault",
-        description: "Wrong namespace",
+        description: "Wrong collective",
         hasConfigSchema: false,
         configFields: [],
       }],
@@ -129,15 +129,15 @@ Deno.test("validateContentNamespaces — vault type with wrong namespace — mis
   assertEquals(result.mismatches[0].identifier, "@other/vault");
 });
 
-Deno.test("validateContentNamespaces — workflow name with wrong namespace — mismatch", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — workflow name with wrong collective — mismatch", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata({
       workflows: [{
         fileName: "wf.yaml",
         id: "wf-1",
         name: "@swamp/reserved-workflow",
-        description: "Wrong namespace",
+        description: "Wrong collective",
         jobs: [],
       }],
     }),
@@ -148,15 +148,15 @@ Deno.test("validateContentNamespaces — workflow name with wrong namespace — 
   assertEquals(result.mismatches[0].identifier, "@swamp/reserved-workflow");
 });
 
-Deno.test("validateContentNamespaces — workflow name without namespace prefix — mismatch", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — workflow name without collective prefix — mismatch", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata({
       workflows: [{
         fileName: "plain.yaml",
         id: "wf-2",
         name: "plain-workflow",
-        description: "No namespace",
+        description: "No collective",
         jobs: [],
       }],
     }),
@@ -167,8 +167,8 @@ Deno.test("validateContentNamespaces — workflow name without namespace prefix 
   assertEquals(result.mismatches[0].identifier, "plain-workflow");
 });
 
-Deno.test("validateContentNamespaces — mixed mismatches — all collected", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — mixed mismatches — all collected", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata({
       models: [
@@ -202,8 +202,8 @@ Deno.test("validateContentNamespaces — mixed mismatches — all collected", ()
       workflows: [{
         fileName: "wf.yaml",
         id: "wf-1",
-        name: "no-namespace",
-        description: "Missing namespace",
+        name: "no-collective",
+        description: "Missing collective",
         jobs: [],
       }],
     }),
@@ -215,8 +215,8 @@ Deno.test("validateContentNamespaces — mixed mismatches — all collected", ()
   assertEquals(result.mismatches[2].kind, "workflow");
 });
 
-Deno.test("validateContentNamespaces — empty content — valid", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — empty content — valid", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata(),
   );
@@ -224,8 +224,8 @@ Deno.test("validateContentNamespaces — empty content — valid", () => {
   assertEquals(result.mismatches.length, 0);
 });
 
-Deno.test("validateContentNamespaces — partial mismatches — only wrong ones reported", () => {
-  const result = validateContentNamespaces(
+Deno.test("validateContentCollectives — partial mismatches — only wrong ones reported", () => {
+  const result = validateContentCollectives(
     "@stack72/my-extension",
     makeMetadata({
       models: [

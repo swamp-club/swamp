@@ -154,7 +154,7 @@ export const extensionRemoveCommand = new Command()
     // Validate name format
     if (!SCOPED_NAME_PATTERN.test(ref.name)) {
       throw new UserError(
-        `Invalid extension name: "${ref.name}". Must match @namespace/name pattern (lowercase, alphanumeric, hyphens, underscores).`,
+        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores).`,
       );
     }
 

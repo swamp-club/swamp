@@ -149,26 +149,26 @@ export class ModelType {
   }
 
   /**
-   * Reserved built-in namespaces that user extensions cannot use.
+   * Reserved built-in collectives that user extensions cannot use.
    */
-  private static readonly RESERVED_NAMESPACES = ["swamp", "si"];
+  private static readonly RESERVED_COLLECTIVES = ["swamp", "si"];
 
   /**
-   * Checks if a normalized type uses a reserved namespace.
-   * Reserved namespaces are: swamp, si (with or without @ prefix).
+   * Checks if a normalized type uses a reserved collective.
+   * Reserved collectives are: swamp, si (with or without @ prefix).
    */
-  static isReservedNamespace(normalized: string): boolean {
+  static isReservedCollective(normalized: string): boolean {
     // Check for @swamp/*, @si/*
     if (ModelType.isUserNamespace(normalized)) {
       const namespace = ModelType.getUserNamespace(normalized);
       return namespace !== undefined &&
-        ModelType.RESERVED_NAMESPACES.includes(namespace);
+        ModelType.RESERVED_COLLECTIVES.includes(namespace);
     }
     // Check for swamp/*, si/*
     const firstSlash = normalized.indexOf("/");
     const firstSegment = firstSlash === -1
       ? normalized
       : normalized.slice(0, firstSlash);
-    return ModelType.RESERVED_NAMESPACES.includes(firstSegment);
+    return ModelType.RESERVED_COLLECTIVES.includes(firstSegment);
   }
 }

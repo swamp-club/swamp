@@ -33,7 +33,7 @@ import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 
 const logger = getLogger(["swamp", "vaults", "loader"]);
 
-/** Pattern for valid user vault type: @namespace/name or namespace/name */
+/** Pattern for valid user vault type: @collective/name or collective/name */
 const USER_VAULT_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
 /**
@@ -44,7 +44,7 @@ const UserVaultSchema = z.object({
     (t) => USER_VAULT_TYPE_PATTERN.test(t),
     {
       message:
-        "Vault type must match @namespace/name or namespace/name (e.g., @myorg/custom-vault or myorg/custom-vault)",
+        "Vault type must match @collective/name or collective/name (e.g., @myorg/custom-vault or myorg/custom-vault)",
     },
   ),
   name: z.string(),

@@ -37,15 +37,19 @@ import {
   type CompilationError,
   renderExtensionPush,
   renderExtensionPushCancelled,
+  renderExtensionPushCollectiveErrors,
   renderExtensionPushCompilationErrors,
   renderExtensionPushDryRun,
-  renderExtensionPushNamespaceErrors,
   renderExtensionPushQualityErrors,
   renderExtensionPushResolved,
   renderExtensionPushSafetyErrors,
   renderExtensionPushSafetyWarnings,
 } from "../../presentation/output/extension_push_output.ts";
-import { validateContentNamespaces } from "../../domain/extensions/extension_namespace_validator.ts";
+import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
+import {
+  getCollectives,
+  SwampClubClient,
+} from "../../infrastructure/http/swamp_club_client.ts";
 
 interface ExtensionPushOptions extends GlobalOptions {
   repoDir: string;
@@ -118,30 +122,28 @@ export const extensionPushCommand = new Command()
       );
     }
 
-    // 4. Validate namespace matches username
-    const namespacePart = manifest.name.slice(1, manifest.name.indexOf("/"));
-    if (namespacePart !== credentials.username) {
-      if (ctx.outputMode === "json") {
-        throw new UserError(
-          `Extension namespace "@${namespacePart}" does not match authenticated user "${credentials.username}". ` +
-            `Use "@${credentials.username}/${
-              manifest.name.split("/")[1]
-            }" instead.`,
-        );
-      }
-      const suggested = `@${credentials.username}/${
-        manifest.name.split("/")[1]
-      }`;
-      const confirmed = await promptConfirmation(
-        `Extension namespace "@${namespacePart}" does not match your username "${credentials.username}". ` +
-          `Would you like to push as "${suggested}" instead?`,
+    // 4. Validate collective matches user's collectives (with username fallback)
+    const collectivePart = manifest.name.slice(1, manifest.name.indexOf("/"));
+    let collectives: string[] | undefined;
+    try {
+      const swampClubClient = new SwampClubClient(credentials.serverUrl);
+      const whoami = await swampClubClient.whoami(credentials.apiKey);
+      collectives = getCollectives(whoami);
+    } catch {
+      ctx.logger
+        .debug`Could not fetch collectives from server, falling back to username check`;
+    }
+    const isAllowed = collectives
+      ? collectives.includes(collectivePart)
+      : collectivePart === credentials.username;
+    if (!isAllowed) {
+      const collectivesList = collectives
+        ? collectives.map((c) => `@${c}`).join(", ")
+        : `@${credentials.username}`;
+      throw new UserError(
+        `Extension collective "@${collectivePart}" is not one of your collectives (${collectivesList}). ` +
+          `Use one of: ${collectivesList}`,
       );
-      if (!confirmed) {
-        renderExtensionPushCancelled(ctx.outputMode);
-        return;
-      }
-      // Update name for the push
-      manifest.name = suggested;
     }
 
     // 9b. Extract content metadata early (for display and later registry push)
@@ -160,23 +162,23 @@ export const extensionPushCommand = new Command()
       ctx.logger.debug`Content metadata extraction failed, skipping`;
     }
 
-    // 9c. Validate content namespaces
+    // 9c. Validate content collectives
     if (contentMetadata) {
-      const namespaceResult = validateContentNamespaces(
+      const collectiveResult = validateContentCollectives(
         manifest.name,
         contentMetadata,
       );
-      if (!namespaceResult.valid) {
+      if (!collectiveResult.valid) {
         const slashIndex = manifest.name.indexOf("/");
-        const expectedNamespace = manifest.name.slice(0, slashIndex + 1);
-        renderExtensionPushNamespaceErrors(
-          expectedNamespace,
-          namespaceResult.mismatches,
+        const expectedCollective = manifest.name.slice(0, slashIndex + 1);
+        renderExtensionPushCollectiveErrors(
+          expectedCollective,
+          collectiveResult.mismatches,
           ctx.outputMode,
         );
         throw new UserError(
-          "Extension content uses namespaces that don't match the extension package. " +
-            "All model types, vault types, and workflow names must use the same namespace as the extension.",
+          "Extension content uses collectives that don't match the extension package. " +
+            "All model types, vault types, and workflow names must use the same collective as the extension.",
         );
       }
     }

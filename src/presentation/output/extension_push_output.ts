@@ -22,7 +22,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
 import type { ExtractedArgument } from "../../domain/extensions/extension_content.ts";
-import type { NamespaceMismatch } from "../../domain/extensions/extension_namespace_validator.ts";
+import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 
 const logger = getSwampLogger(["extension", "push"]);
 
@@ -182,24 +182,24 @@ export function renderExtensionPushSafetyErrors(
 }
 
 /**
- * Renders namespace mismatch errors.
+ * Renders collective mismatch errors.
  */
-export function renderExtensionPushNamespaceErrors(
-  expectedNamespace: string,
-  mismatches: NamespaceMismatch[],
+export function renderExtensionPushCollectiveErrors(
+  expectedCollective: string,
+  mismatches: CollectiveMismatch[],
   mode: OutputMode,
 ): void {
   if (mode === "json") {
     console.log(
       JSON.stringify(
-        { namespaceErrors: { expectedNamespace, mismatches } },
+        { collectiveErrors: { expectedCollective, mismatches } },
         null,
         2,
       ),
     );
   } else {
-    logger.error`Namespace errors (push blocked):`;
-    logger.error`  All content must use namespace "${expectedNamespace}"`;
+    logger.error`Collective errors (push blocked):`;
+    logger.error`  All content must use collective "${expectedCollective}"`;
     for (const m of mismatches) {
       logger.error`  ${m.kind}: "${m.identifier}" in ${m.fileName}`;
     }

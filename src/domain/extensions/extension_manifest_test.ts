@@ -114,7 +114,7 @@ models:
   );
 });
 
-Deno.test("parseExtensionManifest rejects reserved namespace @swamp", () => {
+Deno.test("parseExtensionManifest rejects reserved collective @swamp", () => {
   const yaml = `
 manifestVersion: 1
 name: "@swamp/myext"
@@ -125,11 +125,11 @@ models:
   const error = assertThrows(() => parseExtensionManifest(yaml));
   assertStringIncludes(
     (error as Error).message,
-    "reserved namespace",
+    "reserved collective",
   );
 });
 
-Deno.test("parseExtensionManifest rejects reserved namespace @si", () => {
+Deno.test("parseExtensionManifest rejects reserved collective @si", () => {
   const yaml = `
 manifestVersion: 1
 name: "@si/myext"
@@ -140,7 +140,7 @@ models:
   const error = assertThrows(() => parseExtensionManifest(yaml));
   assertStringIncludes(
     (error as Error).message,
-    "reserved namespace",
+    "reserved collective",
   );
 });
 

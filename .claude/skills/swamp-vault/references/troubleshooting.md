@@ -112,8 +112,9 @@ op signin
 **Causes and solutions**:
 
 1. Missing `vault` export — ensure file has `export const vault = { ... }`
-2. Invalid type format — must match `@namespace/name` (e.g., `@hashicorp/vault`)
-3. Reserved namespace — cannot use `@swamp/` or `@si/` namespaces
+2. Invalid type format — must match `@collective/name` (e.g.,
+   `@hashicorp/vault`)
+3. Reserved collective — cannot use `@swamp/` or `@si/` collectives
 4. Duplicate type — another file already registered the same type
 5. Invalid `configSchema` — must be a Zod schema instance (`z.object({...})`)
 6. Missing `createProvider` — must be a function returning a VaultProvider

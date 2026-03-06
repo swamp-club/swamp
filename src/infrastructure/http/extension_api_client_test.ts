@@ -168,7 +168,7 @@ Deno.test("ExtensionApiClient.searchExtensions builds correct URL with params", 
   const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
   await client.searchExtensions({
     q: "aws",
-    namespace: "stack72",
+    collective: "stack72",
     sort: "new",
     perPage: 10,
     page: 2,
@@ -176,7 +176,7 @@ Deno.test("ExtensionApiClient.searchExtensions builds correct URL with params", 
   const url = new URL(capturedUrl);
   assertEquals(url.pathname, "/api/v1/extensions/search");
   assertEquals(url.searchParams.get("q"), "aws");
-  assertEquals(url.searchParams.get("namespace"), "stack72");
+  assertEquals(url.searchParams.get("collective"), "stack72");
   assertEquals(url.searchParams.get("sort"), "new");
   assertEquals(url.searchParams.get("perPage"), "10");
   assertEquals(url.searchParams.get("page"), "2");

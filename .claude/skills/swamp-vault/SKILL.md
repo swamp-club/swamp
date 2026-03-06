@@ -64,7 +64,7 @@ details on each built-in type.
 ### User-Defined Types
 
 Create custom vault implementations in `extensions/vaults/*.ts`. User-defined
-vaults follow the `@namespace/name` type format (e.g., `@hashicorp/vault`,
+vaults follow the `@collective/name` type format (e.g., `@hashicorp/vault`,
 `@openbao/vault`).
 
 See [references/user-defined-vaults.md](references/user-defined-vaults.md) for

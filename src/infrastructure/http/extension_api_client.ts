@@ -67,7 +67,7 @@ export interface ExtensionInfo {
 /** Parameters for the extension search endpoint. */
 export interface ExtensionSearchParams {
   q?: string;
-  namespace?: string;
+  collective?: string;
   platform?: string[];
   label?: string[];
   sort?: "relevance" | "new" | "updated" | "name";
@@ -232,7 +232,7 @@ export class ExtensionApiClient {
   ): Promise<ExtensionSearchResponse> {
     const qs = new URLSearchParams();
     if (params.q) qs.set("q", params.q);
-    if (params.namespace) qs.set("namespace", params.namespace);
+    if (params.collective) qs.set("collective", params.collective);
     if (params.sort) qs.set("sort", params.sort);
     if (params.perPage !== undefined) {
       qs.set("perPage", String(params.perPage));

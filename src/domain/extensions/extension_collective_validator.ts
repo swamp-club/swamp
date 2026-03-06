@@ -19,40 +19,40 @@
 
 import type { ExtensionContentMetadata } from "./extension_content.ts";
 
-/** A single content item whose namespace doesn't match the extension's namespace. */
-export interface NamespaceMismatch {
+/** A single content item whose collective doesn't match the extension's collective. */
+export interface CollectiveMismatch {
   kind: "model" | "vault" | "workflow";
   identifier: string;
   fileName: string;
 }
 
-/** Result of validating content namespaces against the extension namespace. */
-export interface NamespaceValidationResult {
+/** Result of validating content collectives against the extension collective. */
+export interface CollectiveValidationResult {
   valid: boolean;
-  mismatches: NamespaceMismatch[];
+  mismatches: CollectiveMismatch[];
 }
 
 /**
  * Validates that all content items (models, vaults, workflows) in an extension
- * use the same namespace as the extension package itself.
+ * use the same collective as the extension package itself.
  *
  * For example, if the extension is `@stack72/my-extension`, all model types,
  * vault types, and workflow names must start with `@stack72/`.
  */
-export function validateContentNamespaces(
+export function validateContentCollectives(
   extensionName: string,
   contentMetadata: ExtensionContentMetadata,
-): NamespaceValidationResult {
+): CollectiveValidationResult {
   const slashIndex = extensionName.indexOf("/");
   if (slashIndex === -1) {
     return { valid: true, mismatches: [] };
   }
-  const namespacePrefix = extensionName.slice(0, slashIndex + 1);
+  const collectivePrefix = extensionName.slice(0, slashIndex + 1);
 
-  const mismatches: NamespaceMismatch[] = [];
+  const mismatches: CollectiveMismatch[] = [];
 
   for (const model of contentMetadata.models) {
-    if (!model.type.startsWith(namespacePrefix)) {
+    if (!model.type.startsWith(collectivePrefix)) {
       mismatches.push({
         kind: "model",
         identifier: model.type,
@@ -62,7 +62,7 @@ export function validateContentNamespaces(
   }
 
   for (const vault of contentMetadata.vaults) {
-    if (!vault.type.startsWith(namespacePrefix)) {
+    if (!vault.type.startsWith(collectivePrefix)) {
       mismatches.push({
         kind: "vault",
         identifier: vault.type,
@@ -72,7 +72,7 @@ export function validateContentNamespaces(
   }
 
   for (const workflow of contentMetadata.workflows) {
-    if (!workflow.name.startsWith(namespacePrefix)) {
+    if (!workflow.name.startsWith(collectivePrefix)) {
       mismatches.push({
         kind: "workflow",
         identifier: workflow.name,

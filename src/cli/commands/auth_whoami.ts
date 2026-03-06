@@ -20,7 +20,10 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
-import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
+import {
+  getCollectives,
+  SwampClubClient,
+} from "../../infrastructure/http/swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -52,6 +55,8 @@ export const authWhoamiCommand = new Command()
       );
     }
 
+    const collectives = getCollectives(whoami);
+
     if (ctx.outputMode === "json") {
       console.log(JSON.stringify(
         {
@@ -61,6 +66,7 @@ export const authWhoamiCommand = new Command()
           username: whoami.username,
           email: whoami.email,
           name: whoami.name,
+          ...(collectives ? { collectives } : {}),
         },
         null,
         2,
@@ -69,6 +75,9 @@ export const authWhoamiCommand = new Command()
       console.log(
         `${whoami.username} (${whoami.email}) on ${credentials.serverUrl}`,
       );
+      if (collectives && collectives.length > 0) {
+        console.log(`Collectives: ${collectives.join(", ")}`);
+      }
     }
 
     ctx.logger.debug("Auth whoami command completed");

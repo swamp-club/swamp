@@ -31,26 +31,26 @@ dependencies:
 
 ### Field Reference
 
-| Field             | Required | Description                                                      |
-| ----------------- | -------- | ---------------------------------------------------------------- |
-| `manifestVersion` | Yes      | Must be `1`                                                      |
-| `name`            | Yes      | Scoped name: `@namespace/name` (lowercase, hyphens, underscores) |
-| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                |
-| `description`     | No       | Human-readable description                                       |
-| `models`          | No*      | Model file paths relative to `extensions/models/`                |
-| `workflows`       | No*      | Workflow file paths relative to `workflows/`                     |
-| `additionalFiles` | No       | Extra files relative to the manifest location                    |
-| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)    |
-| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)     |
-| `dependencies`    | No       | Other extensions this one depends on                             |
+| Field             | Required | Description                                                       |
+| ----------------- | -------- | ----------------------------------------------------------------- |
+| `manifestVersion` | Yes      | Must be `1`                                                       |
+| `name`            | Yes      | Scoped name: `@collective/name` (lowercase, hyphens, underscores) |
+| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                 |
+| `description`     | No       | Human-readable description                                        |
+| `models`          | No*      | Model file paths relative to `extensions/models/`                 |
+| `workflows`       | No*      | Workflow file paths relative to `workflows/`                      |
+| `additionalFiles` | No       | Extra files relative to the manifest location                     |
+| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)     |
+| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)      |
+| `dependencies`    | No       | Other extensions this one depends on                              |
 
 *At least one of `models` or `workflows` must be present with entries.
 
 ### Name Rules
 
-- Must match pattern `@namespace/name` (e.g., `@myorg/s3-tools`)
-- Namespace must match your authenticated username
-- Reserved namespaces (`@swamp`, `@si`) cannot be used
+- Must match pattern `@collective/name` (e.g., `@myorg/s3-tools`)
+- Collective must match your authenticated username
+- Reserved collectives (`@swamp`, `@si`) cannot be used
 - Allowed characters: lowercase letters, numbers, hyphens, underscores
 
 ### How Models Map to Manifest
@@ -128,7 +128,7 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo
 ### What Happens During Push
 
 1. **Parse manifest** — validates schema, checks required fields
-2. **Validate namespace** — confirms manifest name matches your username
+2. **Validate collective** — confirms manifest name matches your username
 3. **Resolve files** — collects model entry points, auto-resolves local imports,
    resolves workflow dependencies
 4. **Safety analysis** — scans all files for disallowed patterns and limits
@@ -218,7 +218,7 @@ the CLI will offer to bump the `MICRO` component automatically.
 | Error                            | Fix                                              |
 | -------------------------------- | ------------------------------------------------ |
 | "Not authenticated"              | Run `swamp auth login` first                     |
-| "namespace does not match"       | Manifest `name` must use `@your-username/...`    |
+| "collective does not match"      | Manifest `name` must use `@your-username/...`    |
 | "CalVer format" error            | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)    |
 | "at least one model or workflow" | Add a `models` or `workflows` array with entries |
 | "Model file not found"           | Check path is relative to `extensions/models/`   |
