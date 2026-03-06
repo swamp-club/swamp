@@ -230,7 +230,7 @@ Deno.test("checkExtensionQuality ignores import() in string literals", async () 
   );
 });
 
-Deno.test("checkExtensionQuality ignores import() in block comments", async () => {
+Deno.test("checkExtensionQuality ignores import() in single-line block comments", async () => {
   await withTempFiles(
     {
       "model.ts": '/* import("npm:pkg") */\nexport const x = 1;\n',
@@ -245,30 +245,112 @@ Deno.test("checkExtensionQuality ignores import() in block comments", async () =
   );
 });
 
-Deno.test("stripCommentsAndStrings removes single-line comments", () => {
-  assertEquals(
-    stripCommentsAndStrings('code(); // import("pkg")'),
-    "code(); ",
+Deno.test("checkExtensionQuality ignores import() in multi-line block comments", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        '/*\n * Do not use import("npm:pkg") dynamically\n */\nexport const x = 1;\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
   );
+});
+
+Deno.test("checkExtensionQuality catches import() inside template expression", async () => {
+  await withTempFiles(
+    {
+      "model.ts": 'export const x = `result: ${await import("npm:pkg")}`;\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality ignores import() in template literal text", async () => {
+  await withTempFiles(
+    {
+      "model.ts": "export const docs = `use import() for dynamic loading`;\n",
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality ignores import() in multi-line template literal text", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const docs = `\n  Example: await import("npm:pkg")\n`;\n',
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(
+        result.issues.some((i) => i.check === "dynamic-import"),
+        false,
+      );
+    },
+  );
+});
+
+Deno.test("stripCommentsAndStrings removes single-line comments", () => {
+  const result = stripCommentsAndStrings('code(); // import("pkg")');
+  assertEquals(result.includes("import"), false);
+  assertEquals(result.startsWith("code();"), true);
 });
 
 Deno.test("stripCommentsAndStrings removes string contents", () => {
-  assertEquals(
-    stripCommentsAndStrings('const s = "import(pkg)";'),
-    "const s = ;",
-  );
+  const result = stripCommentsAndStrings('const s = "import(pkg)";');
+  assertEquals(result.includes("import"), false);
+  assertEquals(result.includes("const s"), true);
 });
 
 Deno.test("stripCommentsAndStrings removes block comments", () => {
-  assertEquals(
-    stripCommentsAndStrings("code /* import(x) */ more"),
-    "code  more",
-  );
+  const result = stripCommentsAndStrings("code /* import(x) */ more");
+  assertEquals(result.includes("import"), false);
+  assertEquals(result.includes("code"), true);
+  assertEquals(result.includes("more"), true);
 });
 
 Deno.test("stripCommentsAndStrings preserves bare code", () => {
-  assertEquals(
-    stripCommentsAndStrings("await import(url)"),
-    "await import(url)",
-  );
+  const result = stripCommentsAndStrings("await import(url)");
+  assertEquals(result.includes("import"), true);
+  assertEquals(result.includes("await"), true);
+});
+
+Deno.test("stripCommentsAndStrings handles multi-line block comments", () => {
+  const source = '/*\n * import("pkg")\n */\nreal code';
+  const result = stripCommentsAndStrings(source);
+  const lines = result.split("\n");
+  // Line with import() inside comment should be blanked
+  assertEquals(lines[1].includes("import"), false);
+  // Line with real code should be preserved
+  assertEquals(lines[3], "real code");
+});
+
+Deno.test("stripCommentsAndStrings preserves code inside template expressions", () => {
+  const source = 'const x = `${import("pkg")}`;';
+  const result = stripCommentsAndStrings(source);
+  assertEquals(result.includes("import"), true);
+});
+
+Deno.test("stripCommentsAndStrings blanks template literal text", () => {
+  const source = "const x = `import(pkg)`;\n";
+  const result = stripCommentsAndStrings(source);
+  assertEquals(result.includes("import"), false);
+  assertEquals(result.includes("const x"), true);
 });
