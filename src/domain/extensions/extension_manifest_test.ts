@@ -114,7 +114,7 @@ models:
   );
 });
 
-Deno.test("parseExtensionManifest rejects reserved collective @swamp", () => {
+Deno.test("parseExtensionManifest accepts reserved collective @swamp", () => {
   const yaml = `
 manifestVersion: 1
 name: "@swamp/myext"
@@ -122,14 +122,11 @@ version: "2026.02.26.1"
 models:
   - foo.ts
 `;
-  const error = assertThrows(() => parseExtensionManifest(yaml));
-  assertStringIncludes(
-    (error as Error).message,
-    "reserved collective",
-  );
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.name, "@swamp/myext");
 });
 
-Deno.test("parseExtensionManifest rejects reserved collective @si", () => {
+Deno.test("parseExtensionManifest accepts reserved collective @si", () => {
   const yaml = `
 manifestVersion: 1
 name: "@si/myext"
@@ -137,11 +134,8 @@ version: "2026.02.26.1"
 models:
   - foo.ts
 `;
-  const error = assertThrows(() => parseExtensionManifest(yaml));
-  assertStringIncludes(
-    (error as Error).message,
-    "reserved collective",
-  );
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.name, "@si/myext");
 });
 
 Deno.test("parseExtensionManifest rejects invalid CalVer version", () => {

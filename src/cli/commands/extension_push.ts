@@ -25,6 +25,7 @@ import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveExtensionFiles } from "../resolve_extension_files.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { UserError } from "../../domain/errors.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { checkExtensionQuality } from "../../domain/extensions/extension_quality_checker.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
@@ -124,6 +125,7 @@ export const extensionPushCommand = new Command()
 
     // 4. Validate collective matches user's collectives (with username fallback)
     const collectivePart = manifest.name.slice(1, manifest.name.indexOf("/"));
+    const isReserved = ModelType.isReservedCollective(manifest.name);
     let collectives: string[] | undefined;
     try {
       const swampClubClient = new SwampClubClient(credentials.serverUrl);
@@ -133,6 +135,15 @@ export const extensionPushCommand = new Command()
       ctx.logger
         .debug`Could not fetch collectives from server, falling back to username check`;
     }
+
+    // For reserved collectives, we MUST verify membership via the server
+    if (isReserved && !collectives) {
+      throw new UserError(
+        `Extension uses reserved collective "@${collectivePart}". ` +
+          `Could not verify membership — please check your network connection and try again.`,
+      );
+    }
+
     const isAllowed = collectives
       ? collectives.includes(collectivePart)
       : collectivePart === credentials.username;

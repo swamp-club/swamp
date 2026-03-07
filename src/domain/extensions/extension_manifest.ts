@@ -20,7 +20,6 @@
 import { z } from "zod";
 import { parse as parseYaml } from "@std/yaml";
 import { CalVer } from "../models/calver.ts";
-import { ModelType } from "../models/model_type.ts";
 import { UserError } from "../errors.ts";
 
 /** Scoped name pattern: @collective/name */
@@ -34,9 +33,6 @@ const ExtensionManifestSchemaV1 = z.object({
       message:
         "Extension name must be scoped: @collective/name (lowercase, alphanumeric, hyphens, underscores)",
     },
-  ).refine(
-    (name) => !ModelType.isReservedCollective(name),
-    { message: "Cannot use reserved collective (@swamp or @si)" },
   ),
   version: z.string().refine(CalVer.isValid, {
     message: "Version must be valid CalVer format: YYYY.MM.DD.MICRO",
