@@ -412,3 +412,69 @@ Deno.test("CLI: command/shell model with self-reference expressions", async () =
     assertEquals(output.data.attributes.exitCode, 0);
   });
 });
+
+Deno.test("CLI: model method run succeeds when globalArguments has unresolvable cross-model resource expression", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+
+    // Create source model (no data — never executed)
+    const sourceModel = Definition.create({
+      name: "source-shell",
+      globalArguments: {
+        run: "echo source",
+      },
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo source",
+          },
+        },
+      },
+    });
+    await definitionRepo.save(SHELL_MODEL_TYPE, sourceModel);
+
+    // Create dependent model that references source model's resource state
+    // in globalArguments — this resource does NOT exist yet
+    const dependentModel = Definition.create({
+      name: "dependent-shell",
+      globalArguments: {
+        run: "echo hello",
+        workingDir:
+          "${{ model.source-shell.resource.state.result.attributes.stdout }}",
+      },
+      methods: {
+        execute: {
+          arguments: {
+            run: "echo hello",
+          },
+        },
+      },
+    });
+    await definitionRepo.save(SHELL_MODEL_TYPE, dependentModel);
+
+    // Run the dependent model directly — should succeed because:
+    // 1. The unresolvable resource expression in globalArguments.workingDir is skipped
+    // 2. The method only uses the "run" argument, not "workingDir"
+    const result = await runCliCommand(
+      [
+        "model",
+        "method",
+        "run",
+        "dependent-shell",
+        "execute",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Command should succeed. stderr: ${result.stderr}`,
+    );
+  });
+});

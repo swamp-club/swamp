@@ -29,7 +29,10 @@ import {
   replaceExpressions,
 } from "./expression_parser.ts";
 import type { ExpressionLocation } from "./expression.ts";
-import { extractModelRefs } from "./dependency_extractor.ts";
+import {
+  extractDependencies,
+  extractModelRefs,
+} from "./dependency_extractor.ts";
 import {
   buildEnvContext,
   type ExpressionContext,
@@ -215,17 +218,39 @@ export class ExpressionEvaluationService {
       // This allows methods that don't need certain inputs to run without
       // those inputs being provided (e.g., delete doesn't need create-time inputs).
       const inputRefs = extractInputReferencesFromCel(expr.celExpression);
+      let hasMissing = false;
       if (inputRefs.size > 0) {
-        let hasMissing = false;
         for (const ref of inputRefs) {
           if (!providedInputKeys.has(ref)) {
             hasMissing = true;
             break;
           }
         }
-        if (hasMissing) {
-          continue;
+      }
+
+      // Skip expressions referencing model resource/file data that isn't
+      // available in context (e.g., referenced model was never executed).
+      // This mirrors the inputs skip above — the raw expression is preserved
+      // so the Proxy on globalArgs will throw if the method actually needs it.
+      if (!hasMissing) {
+        const deps = extractDependencies(expr.celExpression);
+        for (const dep of deps) {
+          if (dep.type === "resource" || dep.type === "file") {
+            const modelData = ctx.model[dep.modelRef];
+            if (
+              !modelData ||
+              (dep.type === "resource" && !modelData.resource) ||
+              (dep.type === "file" && !modelData.file)
+            ) {
+              hasMissing = true;
+              break;
+            }
+          }
         }
+      }
+
+      if (hasMissing) {
+        continue;
       }
 
       const value = this.celEvaluator.evaluate(expr.celExpression, ctx);

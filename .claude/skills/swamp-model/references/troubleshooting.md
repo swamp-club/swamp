@@ -135,7 +135,15 @@ swamp model validate my-model --json
    vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
    ```
 
-2. **Model never executed**:
+2. **Model never executed** — expressions referencing `model.*.resource` or
+   `model.*.file` are automatically skipped when the referenced model has no
+   data. If a method accesses a skipped field, it throws a clear error:
+
+   ```
+   Unresolved expression in globalArguments.ssh_keys: ${{ model.ssh-key.resource... }}
+   ```
+
+   To fix, run the referenced model first:
 
    ```bash
    swamp model method run my-vpc create --json
@@ -157,6 +165,26 @@ swamp model validate my-model --json
    # Check actual attribute names
    swamp data get my-vpc vpc --json
    ```
+
+### "Unresolved expression in globalArguments"
+
+**Symptom**:
+`Error: Unresolved expression in globalArguments.<field>: ${{ ... }}`
+
+**Cause**: A `globalArguments` field contains a CEL expression that couldn't be
+resolved (e.g., the referenced model has no resource data), and the method tried
+to use that field.
+
+**Solutions**:
+
+1. **Run the referenced model first** so its data is available:
+
+   ```bash
+   swamp model method run <referenced-model> create --json
+   ```
+
+2. **Use a workflow** that runs models in the correct order — dependencies are
+   resolved automatically within a workflow run.
 
 ### "Model type not found"
 

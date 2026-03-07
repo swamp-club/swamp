@@ -38,10 +38,7 @@ import {
   createResourceWriter,
 } from "./data_writer.ts";
 import { coerceMethodArgs } from "./zod_type_coercion.ts";
-import {
-  containsExpression,
-  extractInputReferencesFromCel,
-} from "../expressions/expression_parser.ts";
+import { containsExpression } from "../expressions/expression_parser.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -133,8 +130,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
     // Populate context with global args and definition metadata.
     // Wrap globalArgs in a Proxy that throws a clear error when the method
-    // accesses a field with an unresolved ${{ inputs.* }} expression.
-    // This allows methods that don't need certain inputs to succeed while
+    // accesses a field with an unresolved ${{ ... }} expression.
+    // This allows methods that don't need certain fields to succeed while
     // failing fast with a helpful message if they do.
     const rawGlobalArgs = definition.globalArguments;
     const globalArgsProxy = new Proxy(rawGlobalArgs, {
@@ -144,13 +141,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           typeof prop === "string" && typeof value === "string" &&
           containsExpression(value)
         ) {
-          const refs = extractInputReferencesFromCel(value);
-          if (refs.size > 0) {
-            const missing = [...refs].join(", ");
-            throw new Error(
-              `Missing required input(s): ${missing} (needed by globalArguments.${prop})`,
-            );
-          }
+          throw new Error(
+            `Unresolved expression in globalArguments.${prop}: ${value}`,
+          );
         }
         return value;
       },
@@ -219,14 +212,12 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     if (modelDef.globalArguments) {
       const rawGlobalArgs = currentDefinition.globalArguments;
 
-      // Identify globalArg fields with unresolved input expressions
+      // Identify globalArg fields with unresolved expressions (inputs,
+      // model resource/file refs, or any other ${{ ... }} that wasn't evaluated)
       let hasUnresolved = false;
       const resolvedGlobalArgs: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(rawGlobalArgs)) {
-        if (
-          typeof value === "string" && containsExpression(value) &&
-          extractInputReferencesFromCel(value).size > 0
-        ) {
+        if (typeof value === "string" && containsExpression(value)) {
           hasUnresolved = true;
         } else {
           resolvedGlobalArgs[key] = value;

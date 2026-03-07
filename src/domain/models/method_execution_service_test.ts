@@ -1530,3 +1530,121 @@ Deno.test("executeWorkflow - explicit kind overrides name inference for deletion
   // kind: "action" should NOT trigger deletion markers
   assertEquals(mockRepo.savedData.length, 0);
 });
+
+// ---------- Unresolved Expression Tests ----------
+
+Deno.test("execute - Proxy throws for any unresolved expression in globalArgs", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/unresolved-expr"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          // Access the unresolved field — should throw
+          const _val = context.globalArgs.ssh_keys;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      name: "my-server",
+      ssh_keys:
+        '${{ string(model["test-ssh-key"].resource.state.key.attributes.id) }}',
+    },
+    methods: { run: { arguments: {} } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.execute(definition, model.methods.run, context),
+    Error,
+    "Unresolved expression in globalArguments.ssh_keys",
+  );
+});
+
+Deno.test("execute - Proxy allows access to resolved globalArgs fields", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let receivedName = "";
+  const model: ModelDefinition = {
+    type: ModelType.create("test/resolved-expr"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          receivedName = context.globalArgs.name as string;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      name: "my-server",
+      ssh_keys:
+        '${{ string(model["test-ssh-key"].resource.state.key.attributes.id) }}',
+    },
+    methods: { run: { arguments: {} } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await service.execute(definition, model.methods.run, context);
+  assertEquals(receivedName, "my-server");
+});
+
+Deno.test("executeWorkflow - skips validation for globalArgs with unresolved model resource expressions", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const schema = z.object({
+    name: z.string(),
+    ssh_keys: z.array(z.string()),
+  });
+
+  let receivedName = "";
+  const model: ModelDefinition = {
+    type: ModelType.create("test/unresolved-resource-expr"),
+    version: "1",
+    globalArguments: schema,
+    methods: {
+      update: {
+        description: "Update method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          receivedName = context.globalArgs.name as string;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      name: "my-server",
+      ssh_keys:
+        '${{ [string(model["test-ssh-key"].resource.state.key.attributes.id)] }}',
+    },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "update",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+  assertEquals(receivedName, "my-server");
+});
