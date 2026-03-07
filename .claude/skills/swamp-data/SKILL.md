@@ -10,21 +10,21 @@ machine-readable output.
 
 ## Quick Reference
 
-| Task                   | Command                                        |
-| ---------------------- | ---------------------------------------------- |
-| Search all data        | `swamp data search --json`                     |
-| Search with filters    | `swamp data search --type output --since 1d`   |
-| Search by workflow     | `swamp data search --workflow my-workflow`     |
-| Search by model        | `swamp data search --model my-model`           |
-| Free-text search       | `swamp data search vpc --json`                 |
-| List model data        | `swamp data list <model> --json`               |
-| List workflow data     | `swamp data list --workflow <name> --json`     |
-| Get specific data      | `swamp data get <model> <name> --json`         |
-| Get metadata only      | `swamp data get <model> <name> --no-content`   |
-| Get data via workflow  | `swamp data get --workflow <name> <data_name>` |
-| View version history   | `swamp data versions <model> <name> --json`    |
-| Run garbage collection | `swamp data gc --json`                         |
-| Preview GC (dry run)   | `swamp data gc --dry-run --json`               |
+| Task                   | Command                                               |
+| ---------------------- | ----------------------------------------------------- |
+| Search all data        | `swamp data search --json`                            |
+| Search with filters    | `swamp data search --type output --since 1d --json`   |
+| Search by workflow     | `swamp data search --workflow my-workflow --json`     |
+| Search by model        | `swamp data search --model my-model --json`           |
+| Free-text search       | `swamp data search vpc --json`                        |
+| List model data        | `swamp data list <model> --json`                      |
+| List workflow data     | `swamp data list --workflow <name> --json`            |
+| Get specific data      | `swamp data get <model> <name> --json`                |
+| Get metadata only      | `swamp data get <model> <name> --no-content --json`   |
+| Get data via workflow  | `swamp data get --workflow <name> <data_name> --json` |
+| View version history   | `swamp data versions <model> <name> --json`           |
+| Run garbage collection | `swamp data gc --json`                                |
+| Preview GC (dry run)   | `swamp data gc --dry-run --json`                      |
 
 ## Data Concepts
 

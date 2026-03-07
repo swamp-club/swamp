@@ -10,7 +10,7 @@
 
 1. Vault doesn't exist - Create it:
    ```bash
-   swamp vault create local_encryption my-vault
+   swamp vault create local_encryption my-vault --json
    ```
 
 2. Typo in vault name - List available vaults:
@@ -31,7 +31,7 @@
 
 1. Secret not stored yet:
    ```bash
-   swamp vault put dev-secrets API_KEY=your-value
+   swamp vault put dev-secrets API_KEY=your-value --json
    ```
 
 2. Wrong key name - List available keys:
@@ -155,7 +155,7 @@ swamp vault type search --json
 
 ```bash
 swamp vault create @myorg/my-vault my-vault \
-  --config '{"address": "https://example.com"}'
+  --config '{"address": "https://example.com"}' --json
 ```
 
 ### Expression Evaluation Errors
@@ -183,9 +183,9 @@ swamp vault create @myorg/my-vault my-vault \
 3. Test retrieval manually (won't display value, but confirms access):
    ```bash
    # Use the swamp/lets-get-sensitive model to test
-   swamp model create swamp/lets-get-sensitive test-get
+   swamp model create swamp/lets-get-sensitive test-get --json
    # Edit to set operation: get, vaultName, secretKey
-   swamp model method run test-get get
+   swamp model method run test-get get --json
    ```
 
 ## Vault Name Validation
@@ -204,7 +204,7 @@ names**: `dev-secrets`, `prod-vault`, `api-keys-v2`
 If vault symlinks are missing or broken:
 
 ```bash
-swamp repo index
+swamp repo index --json
 ```
 
 This rebuilds all logical views including `/vaults/{name}/` directories.

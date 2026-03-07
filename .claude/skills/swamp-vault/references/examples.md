@@ -56,16 +56,16 @@ swamp vault create local_encryption backend-secrets --json
 
 ```bash
 # Dev environment
-swamp vault put dev-secrets API_KEY=dev-key-12345
-swamp vault put dev-secrets DB_PASSWORD=dev-db-pass
+swamp vault put dev-secrets API_KEY=dev-key-12345 --json
+swamp vault put dev-secrets DB_PASSWORD=dev-db-pass --json
 
 # Staging environment
-swamp vault put staging-secrets API_KEY=staging-key-67890
-swamp vault put staging-secrets DB_PASSWORD=staging-db-pass
+swamp vault put staging-secrets API_KEY=staging-key-67890 --json
+swamp vault put staging-secrets DB_PASSWORD=staging-db-pass --json
 
 # Production environment (via AWS)
-swamp vault put prod-secrets API_KEY=prod-key-secure
-swamp vault put prod-secrets DB_PASSWORD=prod-db-secure
+swamp vault put prod-secrets API_KEY=prod-key-secure --json
+swamp vault put prod-secrets DB_PASSWORD=prod-db-secure --json
 ```
 
 ## Using Vaults in Models
@@ -182,11 +182,11 @@ Create a user-defined vault implementation, then use it like any built-in vault:
 ```bash
 # Create vault instance (user-defined types use --config)
 swamp vault create @hashicorp/vault my-hcv \
-  --config '{"address": "https://vault.example.com:8200", "path_prefix": "myapp/prod"}'
+  --config '{"address": "https://vault.example.com:8200", "path_prefix": "myapp/prod"}' --json
 
 # Store and retrieve secrets
-swamp vault put my-hcv db-password "s3cur3-p@ssw0rd"
-swamp vault list-keys my-hcv
+swamp vault put my-hcv db-password "s3cur3-p@ssw0rd" --json
+swamp vault list-keys my-hcv --json
 ```
 
 ### User-Defined Vault in Workflows
@@ -211,11 +211,11 @@ jobs:
 
 ```bash
 # Local vault for dev secrets
-swamp vault create local_encryption dev-secrets
+swamp vault create local_encryption dev-secrets --json
 
 # HashiCorp Vault for production
 swamp vault create @hashicorp/vault prod-hcv \
-  --config '{"address": "https://vault.prod.internal:8200", "path_prefix": "prod"}'
+  --config '{"address": "https://vault.prod.internal:8200", "path_prefix": "prod"}' --json
 ```
 
 Reference both in models:
@@ -255,7 +255,7 @@ swamp vault get prod-secrets API_KEY --json
 # Copy the value
 
 # Put into AWS vault
-swamp vault put prod-secrets-aws API_KEY=<copied-value>
+swamp vault put prod-secrets-aws API_KEY=<copied-value> --json
 ```
 
 **Step 3: Update model references**

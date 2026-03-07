@@ -74,11 +74,11 @@ createdAt: 2025-02-01T...
 
 ```bash
 # Explicit region
-swamp vault create aws-sm prod-vault --region us-east-1
+swamp vault create aws-sm prod-vault --region us-east-1 --json
 
 # From environment variable (logs a message confirming env var usage)
 export AWS_REGION=us-east-1
-swamp vault create aws-sm prod-vault
+swamp vault create aws-sm prod-vault --json
 ```
 
 ### Authentication
@@ -122,11 +122,11 @@ createdAt: 2025-02-01T...
 
 ```bash
 # Explicit vault URL
-swamp vault create azure-kv azure-secrets --vault-url https://myvault.vault.azure.net/
+swamp vault create azure-kv azure-secrets --vault-url https://myvault.vault.azure.net/ --json
 
 # From environment variable (logs a message confirming env var usage)
 export AZURE_KEYVAULT_URL=https://myvault.vault.azure.net/
-swamp vault create azure-kv azure-secrets
+swamp vault create azure-kv azure-secrets --json
 ```
 
 ### Authentication
@@ -169,15 +169,15 @@ createdAt: 2025-02-01T...
 
 ```bash
 # Explicit vault name
-swamp vault create 1password op-secrets --op-vault "my-vault"
+swamp vault create 1password op-secrets --op-vault "my-vault" --json
 
 # With account shorthand
-swamp vault create 1password op-secrets --op-vault "my-vault" --op-account "my-team"
+swamp vault create 1password op-secrets --op-vault "my-vault" --op-account "my-team" --json
 
 # From environment variables
 export OP_VAULT=my-vault
 export OP_ACCOUNT=my-team
-swamp vault create 1password op-secrets
+swamp vault create 1password op-secrets --json
 ```
 
 ### Authentication

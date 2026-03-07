@@ -10,12 +10,12 @@ submitted directly to GitHub with appropriate labels.
 
 ## Quick Reference
 
-| Task                  | Command                                                |
-| --------------------- | ------------------------------------------------------ |
-| Report a bug          | `swamp issue bug`                                      |
-| Request a feature     | `swamp issue feature`                                  |
-| Submit bug (CLI args) | `swamp issue bug --title "Title" --body "Description"` |
-| Submit feature (args) | `swamp issue feature --title "Title" --body "Desc"`    |
+| Task                  | Command                                                       |
+| --------------------- | ------------------------------------------------------------- |
+| Report a bug          | `swamp issue bug`                                             |
+| Request a feature     | `swamp issue feature`                                         |
+| Submit bug (CLI args) | `swamp issue bug --title "Title" --body "Description" --json` |
+| Submit feature (args) | `swamp issue feature --title "Title" --body "Desc" --json`    |
 
 ## Submitting a Bug Report
 
@@ -39,7 +39,7 @@ This opens your configured `$EDITOR` with a template containing:
 **Non-interactive mode:**
 
 ```bash
-swamp issue bug --title "CLI crashes on empty input" --body "When running..."
+swamp issue bug --title "CLI crashes on empty input" --body "When running..." --json
 swamp issue bug -t "Title" -b "Body" --json
 ```
 
@@ -66,7 +66,7 @@ This opens your editor with a template containing:
 **Non-interactive mode:**
 
 ```bash
-swamp issue feature --title "Add dark mode" --body "I'd like..."
+swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 swamp issue feature -t "Title" -b "Body" --json
 ```
 

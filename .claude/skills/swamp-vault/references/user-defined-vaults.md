@@ -51,7 +51,7 @@ User-defined vaults require `--config` with a JSON object:
 
 ```bash
 swamp vault create @hashicorp/vault my-hcv \
-  --config '{"address": "https://vault.example.com:8200", "path_prefix": "myapp"}'
+  --config '{"address": "https://vault.example.com:8200", "path_prefix": "myapp"}' --json
 ```
 
 The config JSON is validated against `configSchema` if provided.
@@ -181,10 +181,10 @@ Usage:
 
 ```bash
 swamp vault create @hashicorp/vault my-hcv \
-  --config '{"address": "https://vault.example.com:8200"}'
+  --config '{"address": "https://vault.example.com:8200"}' --json
 
-swamp vault put my-hcv db-password "s3cur3-p@ssw0rd"
-swamp vault list-keys my-hcv
+swamp vault put my-hcv db-password "s3cur3-p@ssw0rd" --json
+swamp vault list-keys my-hcv --json
 ```
 
 Works identically with OpenBao — just point `address` at the OpenBao server.

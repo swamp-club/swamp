@@ -10,14 +10,14 @@ machine-readable output.
 
 ## Quick Reference
 
-| Task                   | Command                     |
-| ---------------------- | --------------------------- |
-| Initialize repository  | `swamp repo init [path]`    |
-| Upgrade repository     | `swamp repo upgrade [path]` |
-| Rebuild symlink index  | `swamp repo index`          |
-| Verify symlinks        | `swamp repo index --verify` |
-| Remove broken symlinks | `swamp repo index --prune`  |
-| Start web interface    | `swamp repo webapp [path]`  |
+| Task                   | Command                            |
+| ---------------------- | ---------------------------------- |
+| Initialize repository  | `swamp repo init [path] --json`    |
+| Upgrade repository     | `swamp repo upgrade [path] --json` |
+| Rebuild symlink index  | `swamp repo index --json`          |
+| Verify symlinks        | `swamp repo index --verify --json` |
+| Remove broken symlinks | `swamp repo index --prune --json`  |
+| Start web interface    | `swamp repo webapp [path] --json`  |
 
 ## Repository Structure
 

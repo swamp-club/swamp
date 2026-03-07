@@ -335,9 +335,9 @@ swamp vault create aws prod-secrets --json  # Production uses AWS
 **2. Store secrets in each vault**
 
 ```bash
-swamp vault put dev-secrets API_KEY=dev-key-12345
-swamp vault put staging-secrets API_KEY=staging-key-67890
-swamp vault put prod-secrets API_KEY=prod-key-secure
+swamp vault put dev-secrets API_KEY=dev-key-12345 --json
+swamp vault put staging-secrets API_KEY=staging-key-67890 --json
+swamp vault put prod-secrets API_KEY=prod-key-secure --json
 ```
 
 **3. Create model with conditional vault access**

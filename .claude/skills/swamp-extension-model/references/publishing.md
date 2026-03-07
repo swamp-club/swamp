@@ -113,16 +113,16 @@ dependencies:
 
 ```bash
 # Full push to registry
-swamp extension push manifest.yaml
+swamp extension push manifest.yaml --json
 
 # Validate locally without pushing (builds archive, runs safety checks)
-swamp extension push manifest.yaml --dry-run
+swamp extension push manifest.yaml --dry-run --json
 
 # Skip all confirmation prompts
-swamp extension push manifest.yaml -y
+swamp extension push manifest.yaml -y --json
 
 # Specify a different repo directory
-swamp extension push manifest.yaml --repo-dir /path/to/repo
+swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 ```
 
 ### What Happens During Push
@@ -147,13 +147,13 @@ their local imports), then runs `deno fmt` and `deno lint --fix` on them.
 
 ```bash
 # Auto-fix formatting and lint issues
-swamp extension fmt manifest.yaml
+swamp extension fmt manifest.yaml --json
 
 # Check-only mode (exit non-zero if issues exist, does not modify files)
-swamp extension fmt manifest.yaml --check
+swamp extension fmt manifest.yaml --check --json
 
 # Specify a different repo directory
-swamp extension fmt manifest.yaml --repo-dir /path/to/repo
+swamp extension fmt manifest.yaml --repo-dir /path/to/repo --json
 ```
 
 ### What Happens During Fmt

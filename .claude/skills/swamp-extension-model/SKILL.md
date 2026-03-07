@@ -45,17 +45,17 @@ than wrapping CLI commands.
 
 | Task                | Command/Action                                          |
 | ------------------- | ------------------------------------------------------- |
-| Search community    | `swamp extension search <query>`                        |
+| Search community    | `swamp extension search <query> --json`                 |
 | Create model file   | Create `extensions/models/my_model.ts`                  |
 | Verify registration | `swamp model type search --json`                        |
 | Check schema        | `swamp model type describe @myorg/my-model --json`      |
 | Create instance     | `swamp model create @myorg/my-model my-instance --json` |
 | Run method          | `swamp model method run my-instance run --json`         |
 | Create manifest     | Create `manifest.yaml` with model/workflow entries      |
-| Format extension    | `swamp extension fmt manifest.yaml`                     |
-| Check formatting    | `swamp extension fmt manifest.yaml --check`             |
-| Push extension      | `swamp extension push manifest.yaml`                    |
-| Dry-run push        | `swamp extension push manifest.yaml --dry-run`          |
+| Format extension    | `swamp extension fmt manifest.yaml --json`              |
+| Check formatting    | `swamp extension fmt manifest.yaml --check --json`      |
+| Push extension      | `swamp extension push manifest.yaml --json`             |
+| Dry-run push        | `swamp extension push manifest.yaml --dry-run --json`   |
 
 ## Quick Start
 
@@ -361,9 +361,9 @@ models:
 **Push commands:**
 
 ```bash
-swamp extension push manifest.yaml              # Push to registry
-swamp extension push manifest.yaml --dry-run    # Validate without pushing
-swamp extension push manifest.yaml -y           # Skip confirmation prompts
+swamp extension push manifest.yaml --json           # Push to registry
+swamp extension push manifest.yaml --dry-run --json # Validate without pushing
+swamp extension push manifest.yaml -y --json        # Skip confirmation prompts
 ```
 
 The manifest `name` collective must match your authenticated username. Model
@@ -422,7 +422,7 @@ After creating your model:
 
 ```bash
 swamp model type search --json              # Model should appear
-swamp model type describe @myorg/my-model   # Check schema
+swamp model type describe @myorg/my-model --json  # Check schema
 ```
 
 ## When to Use Other Skills
