@@ -301,6 +301,24 @@ Models that manage real resources typically have `create`, `update`, and
 See [references/examples.md](references/examples.md#crud-lifecycle-model-vpc)
 for a complete VPC example with all three methods.
 
+### Optional Patterns for Cloud/API Models
+
+Two patterns are common for models that manage real cloud resources. Neither is
+required — ask the user whether they want them when creating a new extension
+model.
+
+- **[Polling to completion](references/examples.md#polling-to-completion)** —
+  When the provider's API is async, poll until the resource is fully provisioned
+  before returning. Useful when downstream models depend on attributes that
+  aren't populated until ready (IPs, ARNs, endpoints). Not needed when the API
+  returns complete state synchronously.
+
+- **[Idempotent creates](references/examples.md#idempotent-creates)** — Check
+  `context.dataRepository.getContent()` for existing state before creating, to
+  avoid duplicates on workflow re-runs. Useful for non-idempotent APIs
+  (droplets, EC2 instances). Not needed when the API is naturally idempotent
+  (tags, S3 buckets) or you intentionally want multiple instances.
+
 ## Extending Existing Model Types
 
 Add new methods to existing model types without changing their schema. Use

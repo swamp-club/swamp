@@ -3,6 +3,8 @@
 ## Table of Contents
 
 - [CRUD Lifecycle Model (VPC)](#crud-lifecycle-model-vpc)
+- [Polling to Completion](#polling-to-completion)
+- [Idempotent Creates](#idempotent-creates)
 - [Error Handling Model](#error-handling-model)
 - [Text Processor Model](#text-processor-model)
 - [Deployment Model](#deployment-model)
@@ -285,6 +287,392 @@ export const model = {
   `context.modelType` and `context.modelId` to locate the model's own data
 - `delete` returns `{ dataHandles: [] }` since no new data is produced
 - Always check for `null` content — the model may not have been created yet
+
+## Polling to Completion
+
+When integrating with cloud providers or async APIs, the create/update response
+often contains provisional state (e.g., `"ip": "pending"`, `"status": "new"`).
+If other models reference attributes that aren't populated until the resource is
+ready, consider polling until fully provisioned before returning. This ensures
+`writeResource()` stores complete data, so downstream CEL expressions resolve to
+real values — not placeholders.
+
+Not every model needs polling — if the API returns complete state synchronously,
+or no other model depends on post-provisioning attributes, you can skip it. When
+building a new extension model, swamp will ask whether you want to include
+polling support.
+
+### Helpers: Retry and Poll
+
+Extract reusable helpers into a `_lib/` directory so all models for the same
+provider share them:
+
+```typescript
+// extensions/models/_lib/provider.ts
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Check if an error is retryable (throttling, rate limits, transient). */
+function isRetryable(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return (
+    msg.includes("Throttling") ||
+    msg.includes("TooManyRequests") ||
+    msg.includes("rate limit") ||
+    msg.includes("429")
+  );
+}
+
+/**
+ * Retry an operation with exponential backoff on throttling errors.
+ */
+export async function withRetry<T>(
+  operation: () => Promise<T>,
+  operationName: string,
+  maxAttempts = 20,
+): Promise<T> {
+  const baseDelay = 1000;
+  const maxDelay = 90000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (isRetryable(error) && attempt < maxAttempts - 1) {
+        const exponentialDelay = Math.min(
+          baseDelay * Math.pow(2, attempt),
+          maxDelay,
+        );
+        const jitter = Math.random() * 0.3 * exponentialDelay;
+        console.log(
+          `[${operationName}] Retryable error on attempt ${attempt + 1}, ` +
+            `waiting ${Math.round(exponentialDelay + jitter)}ms`,
+        );
+        await delay(exponentialDelay + jitter);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error(`${operationName} failed after ${maxAttempts} attempts`);
+}
+
+/**
+ * Poll a status function until it returns a terminal state.
+ * Returns the final status result.
+ */
+export async function pollUntilReady<T>(
+  checkStatus: () => Promise<{ done: boolean; result: T; error?: string }>,
+  operationName: string,
+  maxPolls = 60,
+): Promise<T> {
+  const baseDelay = 1000;
+  const maxDelay = 90000;
+
+  for (let attempt = 0; attempt < maxPolls; attempt++) {
+    const status = await checkStatus();
+
+    if (status.error) {
+      throw new Error(`${operationName} failed: ${status.error}`);
+    }
+    if (status.done) {
+      return status.result;
+    }
+
+    const exponentialDelay = Math.min(
+      baseDelay * Math.pow(2, attempt),
+      maxDelay,
+    );
+    const jitter = Math.random() * 0.3 * exponentialDelay;
+    console.log(
+      `[${operationName}] In progress, waiting ` +
+        `${Math.round(exponentialDelay + jitter)}ms (poll ${attempt + 1})`,
+    );
+    await delay(exponentialDelay + jitter);
+  }
+
+  throw new Error(`${operationName} timed out after ${maxPolls} polls`);
+}
+```
+
+### Using the Helpers in a Model
+
+```typescript
+// extensions/models/load_balancer.ts
+import { z } from "npm:zod@4";
+import { pollUntilReady, withRetry } from "./_lib/provider.ts";
+
+const GlobalArgsSchema = z.object({
+  name: z.string(),
+  region: z.string().default("nyc1"),
+  apiToken: z.string(),
+});
+
+const LBSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  ip: z.string(),
+  status: z.string(),
+}).passthrough();
+
+async function apiCall(
+  method: string,
+  path: string,
+  token: string,
+  body?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`https://api.example.com/v2${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    throw new Error(`API error ${response.status}: ${await response.text()}`);
+  }
+  return await response.json();
+}
+
+export const model = {
+  type: "@user/load-balancer",
+  version: "2026.03.08.1",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    "lb": {
+      description: "Load balancer resource",
+      schema: LBSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    create: {
+      description: "Create a load balancer and wait until active",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const { name, region, apiToken } = context.globalArgs;
+
+        // 1. Call the create API
+        const createResult = await withRetry(
+          () =>
+            apiCall("POST", "/load_balancers", apiToken, {
+              name,
+              region,
+            }),
+          "lb create",
+        );
+
+        const lbId = (createResult as { load_balancer: { id: string } })
+          .load_balancer.id;
+        console.log(`[CREATE] Load balancer ${lbId} created, polling...`);
+
+        // 2. Poll until the resource reaches a ready state
+        const readyLb = await pollUntilReady(
+          async () => {
+            const resp = await withRetry(
+              () => apiCall("GET", `/load_balancers/${lbId}`, apiToken),
+              "lb status check",
+            );
+            const lb = (resp as { load_balancer: Record<string, unknown> })
+              .load_balancer;
+            return {
+              done: lb.status === "active",
+              result: lb,
+              error: lb.status === "errored"
+                ? `Load balancer entered error state`
+                : undefined,
+            };
+          },
+          "lb create",
+        );
+
+        // 3. Store the fully-populated resource — IP is real, not "pending"
+        const handle = await context.writeResource("lb", "main", readyLb);
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+```
+
+**Key points:**
+
+- The `create` method blocks until the load balancer is `active` — downstream
+  CEL expressions like `data.latest("web-lb", "lb").attributes.ip` always
+  resolve to the real IP, never `"pending"`
+- `withRetry` handles transient errors (throttling, rate limits) with
+  exponential backoff + jitter
+- `pollUntilReady` handles async provisioning by checking a status endpoint
+  until a terminal state is reached
+- Shared helpers in `_lib/` avoid duplicating retry/poll logic across models for
+  the same provider
+- The same pattern applies to `update` and `delete` — always wait for the
+  operation to finish before returning
+
+## Idempotent Creates
+
+When a workflow partially fails and is re-run, `create` methods execute again
+for resources that were already successfully created. For non-idempotent APIs
+(e.g., droplets, load balancers, EC2 instances), this creates duplicates.
+
+Not every model needs this — if the provider's API is naturally idempotent
+(e.g., "create tag" is a no-op if it exists), or if your model intentionally
+creates multiple instances, you can skip the check. When building a new
+extension model, swamp will ask whether you want to include idempotency support.
+
+**When needed, the check belongs in the model, not in swamp core**, because:
+
+- The model knows what the identifier field is called (`VpcId` vs `id` vs
+  `slug`)
+- The model knows how to verify existence (CloudControl GET vs REST
+  `/v2/droplets/{id}`)
+- The model knows whether the API is naturally idempotent (e.g., tags are,
+  droplets aren't)
+
+A generic `skip-if-data-exists` check in swamp would be fragile — stale data
+from a deleted resource would cause it to skip creation entirely, leaving you
+with no resource and no error.
+
+### Pattern: Check Existing State Before Creating
+
+```typescript
+// extensions/models/droplet.ts
+import { z } from "npm:zod@4";
+
+const GlobalArgsSchema = z.object({
+  name: z.string(),
+  region: z.string().default("nyc1"),
+  size: z.string().default("s-1vcpu-1gb"),
+  image: z.string().default("ubuntu-24-04-x64"),
+  apiToken: z.string(),
+});
+
+const DropletSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  status: z.string(),
+}).passthrough();
+
+async function apiCall(
+  method: string,
+  path: string,
+  token: string,
+  body?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`https://api.example.com/v2${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error("NOT_FOUND");
+    }
+    throw new Error(`API error ${response.status}: ${await response.text()}`);
+  }
+  return await response.json();
+}
+
+export const model = {
+  type: "@user/droplet",
+  version: "2026.03.08.1",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    "droplet": {
+      description: "Droplet resource state",
+      schema: DropletSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    create: {
+      description: "Create a droplet (idempotent — skips if already exists)",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const { name, region, size, image, apiToken } = context.globalArgs;
+        const instanceName = "main";
+
+        // 1. Check if we already have state for this instance
+        const existing = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          instanceName,
+        );
+
+        if (existing) {
+          const state = JSON.parse(new TextDecoder().decode(existing));
+          const id = state.id;
+
+          // 2. Verify the resource still exists at the provider
+          try {
+            const resp = await apiCall(
+              "GET",
+              `/droplets/${id}`,
+              apiToken,
+            );
+            const current =
+              (resp as { droplet: Record<string, unknown> }).droplet;
+            console.log(
+              `[CREATE] Droplet ${id} already exists, returning existing state`,
+            );
+            const handle = await context.writeResource(
+              "droplet",
+              instanceName,
+              current,
+            );
+            return { dataHandles: [handle] };
+          } catch (error) {
+            // 3. Resource gone — stale data, fall through to create
+            if (error instanceof Error && error.message === "NOT_FOUND") {
+              console.log(
+                `[CREATE] Stale state found for droplet ${id}, creating new`,
+              );
+            } else {
+              throw error;
+            }
+          }
+        }
+
+        // 4. No existing state or resource gone — create normally
+        const resp = await apiCall("POST", "/droplets", apiToken, {
+          name,
+          region,
+          size,
+          image,
+        });
+        const droplet = (resp as { droplet: Record<string, unknown> }).droplet;
+
+        const handle = await context.writeResource(
+          "droplet",
+          instanceName,
+          droplet,
+        );
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+```
+
+**Key points:**
+
+- `context.dataRepository.getContent()` is the primitive — it's already
+  available in every model method, no framework changes needed
+- The idempotency check verifies the resource **still exists at the provider**,
+  not just that local data exists — this prevents stale data from blocking
+  creation after a resource is externally deleted
+- Only catch `NOT_FOUND` errors from the verification GET — re-throw unexpected
+  errors so they surface properly
+- Combine with [polling to completion](#polling-to-completion) for the full
+  pattern: idempotent create + poll until ready before returning
 
 ## Error Handling Model
 
