@@ -5,6 +5,7 @@
 - [CRUD Lifecycle Model (VPC)](#crud-lifecycle-model-vpc)
 - [Polling to Completion](#polling-to-completion)
 - [Idempotent Creates](#idempotent-creates)
+- [Sync Method](#sync-method)
 - [Error Handling Model](#error-handling-model)
 - [Text Processor Model](#text-processor-model)
 - [Deployment Model](#deployment-model)
@@ -111,14 +112,16 @@ export const model = {
 
 ## CRUD Lifecycle Model (VPC)
 
-Models that manage real resources typically have `create`, `update`, and
-`delete` methods. Each method follows a distinct pattern:
+Models that manage real resources typically have `create`, `update`, `delete`,
+and `sync` methods. Each method follows a distinct pattern:
 
 - **`create`** — runs a command, stores the result via `writeResource()`
 - **`update`** — reads stored data to get the resource ID, modifies the
   resource, writes updated state via `writeResource()` (creates a new version)
 - **`delete`** — reads stored data to get the resource ID, cleans up, returns
   `{ dataHandles: [] }`
+- **`sync`** — reads stored data to get the resource ID, calls the live API to
+  get current state, writes refreshed state (or marks as `not_found`)
 
 ```typescript
 // extensions/models/vpc.ts
@@ -273,6 +276,65 @@ export const model = {
         return { dataHandles: [] };
       },
     },
+    sync: {
+      description: "Refresh stored VPC state from live AWS API",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const region = context.globalArgs.region;
+
+        // 1. Read stored data to get the VPC ID
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "vpc",
+        );
+
+        if (!content) {
+          throw new Error("No VPC data found - run create first");
+        }
+
+        const existingData = JSON.parse(new TextDecoder().decode(content));
+        const vpcId = existingData.VpcId;
+
+        // 2. Call the live API to get current state
+        const describeCmd = new Deno.Command("aws", {
+          args: [
+            "ec2",
+            "describe-vpcs",
+            "--vpc-ids",
+            vpcId,
+            "--region",
+            region,
+            "--output",
+            "json",
+          ],
+          stdout: "piped",
+          stderr: "piped",
+        });
+        const output = await describeCmd.output();
+
+        if (!output.success) {
+          const error = new TextDecoder().decode(output.stderr);
+          // 3. Resource gone — write not_found marker
+          if (error.includes("InvalidVpcID.NotFound")) {
+            const handle = await context.writeResource("vpc", "vpc", {
+              VpcId: vpcId,
+              status: "not_found",
+              syncedAt: new Date().toISOString(),
+            });
+            return { dataHandles: [handle] };
+          }
+          throw new Error(error);
+        }
+
+        // 4. Write refreshed state from live API
+        const liveData = JSON.parse(
+          new TextDecoder().decode(output.stdout),
+        ).Vpcs[0];
+        const handle = await context.writeResource("vpc", "vpc", liveData);
+        return { dataHandles: [handle] };
+      },
+    },
   },
 };
 ```
@@ -280,12 +342,15 @@ export const model = {
 **Key points:**
 
 - `create` stores data via `writeResource` — makes it available to other models
-  via CEL expressions and to update/delete methods via `dataRepository`
+  via CEL expressions and to update/delete/sync methods via `dataRepository`
 - `update` reads stored data, modifies the resource, writes updated state via
   `writeResource` (creates a new version)
 - `delete` reads stored data via `context.dataRepository.getContent()` using
   `context.modelType` and `context.modelId` to locate the model's own data
 - `delete` returns `{ dataHandles: [] }` since no new data is produced
+- `sync` reads the stored resource ID (zero-arg — no user input needed), calls
+  the live API, and writes refreshed state or a `not_found` marker for drift
+  detection
 - Always check for `null` content — the model may not have been created yet
 
 ## Polling to Completion
@@ -673,6 +738,116 @@ export const model = {
   errors so they surface properly
 - Combine with [polling to completion](#polling-to-completion) for the full
   pattern: idempotent create + poll until ready before returning
+
+## Sync Method
+
+Every CRUD model should include a `sync` method for drift detection. Unlike
+`get` (which requires the user to provide the resource ID as an argument),
+`sync` reads the ID from already-stored state, making it zero-arg. This means a
+workflow can call `sync` on every instance without knowing resource IDs up
+front.
+
+`sync` does not throw when the resource is gone — it writes a `not_found`
+marker. The purpose is detection, not failure.
+
+### Pattern: Read Stored ID, Refresh from Live API
+
+```typescript
+sync: {
+  description: "Refresh stored state from live API",
+  arguments: z.object({}),
+  execute: async (_args, context) => {
+    const instanceName = "main";
+
+    // 1. Read stored state to get the resource ID
+    const existing = await context.dataRepository.getContent(
+      context.modelType,
+      context.modelId,
+      instanceName,
+    );
+
+    if (!existing) {
+      throw new Error("No stored state — run create first");
+    }
+
+    const state = JSON.parse(new TextDecoder().decode(existing));
+    const id = state.id; // Adapt to your identifier field (VpcId, Name, etc.)
+
+    // 2. Call the live API
+    try {
+      const resp = await apiCall("GET", `/resources/${id}`, token);
+      const live = (resp as { resource: Record<string, unknown> }).resource;
+      const handle = await context.writeResource("state", instanceName, live);
+      return { dataHandles: [handle] };
+    } catch (error) {
+      // 3. Resource gone — write not_found marker for drift detection
+      if (error instanceof Error && error.message === "NOT_FOUND") {
+        const handle = await context.writeResource("state", instanceName, {
+          id,
+          status: "not_found",
+          syncedAt: new Date().toISOString(),
+        });
+        return { dataHandles: [handle] };
+      }
+      throw error;
+    }
+  },
+},
+```
+
+### Orchestrating Sync Across Models
+
+A "drift check" across your entire stack is a workflow — one step per model
+calling `sync`. After running this, `swamp data list` shows the refreshed state
+for everything, including which resources came back as `not_found`.
+
+```yaml
+# workflows/sync-all/workflow.yaml
+name: sync-all
+version: 1
+jobs:
+  - name: sync
+    steps:
+      - name: sync-vpc
+        task:
+          type: model_method
+          modelIdOrName: web-vpc
+          methodName: sync
+
+      - name: sync-droplet-1
+        task:
+          type: model_method
+          modelIdOrName: web-droplet
+          methodName: sync
+          inputs:
+            name: web-1
+
+      - name: sync-droplet-2
+        task:
+          type: model_method
+          modelIdOrName: web-droplet
+          methodName: sync
+          inputs:
+            name: web-2
+
+      - name: sync-lb
+        task:
+          type: model_method
+          modelIdOrName: web-lb
+          methodName: sync
+```
+
+**Key points:**
+
+- `sync` takes no method arguments — the resource ID comes from stored state
+- Unlike `get`, which requires the user to provide the resource ID, `sync` is
+  self-contained
+- On success, `writeResource` refreshes stored state with live data
+- On failure (resource gone), write a `not_found` marker so downstream logic can
+  detect drift
+- Enumerate instances with `swamp data list <model> --type resource --json` or
+  `swamp data search --model <name> --type resource --json` to discover what
+  needs syncing
 
 ## Error Handling Model
 

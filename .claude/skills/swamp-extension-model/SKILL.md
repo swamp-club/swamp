@@ -289,17 +289,28 @@ model examples.
 
 ## CRUD Lifecycle Models
 
-Models that manage real resources typically have `create`, `update`, and
-`delete` methods:
+Models that manage real resources typically have `create`, `update`, `delete`,
+and `sync` methods:
 
 - **`create`** — run a command/API call, store the result via `writeResource()`
 - **`update`** — read stored data via `context.dataRepository.getContent()`,
   modify the resource, write updated state
 - **`delete`** — read stored data, clean up the resource, return
   `{ dataHandles: [] }`
+- **`sync`** — read stored resource ID via
+  `context.dataRepository.getContent()`, call the live provider API to get
+  current state, write refreshed state via `writeResource()` (or mark as
+  `not_found` if the resource is gone)
+
+Unlike `get` (which requires the user to provide the resource ID as an
+argument), `sync` reads the ID from already-stored state, making it zero-arg.
+This makes `sync` suitable for automated drift detection — a workflow can call
+`sync` on every instance without knowing resource IDs up front.
 
 See [references/examples.md](references/examples.md#crud-lifecycle-model-vpc)
-for a complete VPC example with all three methods.
+for a complete VPC example with all four methods and
+[references/examples.md](references/examples.md#sync-method) for the standalone
+sync pattern with workflow examples.
 
 ### Optional Patterns for Cloud/API Models
 

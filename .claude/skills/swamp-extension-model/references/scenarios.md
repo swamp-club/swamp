@@ -197,7 +197,7 @@ globalArguments:
 ### What You'll Build
 
 - 1 extension model: `@user/s3-bucket`
-- Methods: `create`, `update`, `delete`
+- Methods: `create`, `update`, `delete`, `sync`
 
 ### Decision Tree
 
@@ -208,6 +208,7 @@ No existing model → Create extension model
 Full lifecycle management → create, update, delete methods
 Update reads existing state → Use dataRepository.getContent
 Delete cleans up → Return empty dataHandles
+Detect drift → sync method reads stored ID, refreshes from live API
 ```
 
 ### Step-by-Step
@@ -382,6 +383,83 @@ export const model = {
         return { dataHandles: [] };
       },
     },
+    sync: {
+      description: "Refresh stored bucket state from live AWS API",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        // Read stored data to get bucket name
+        const content = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "main",
+        );
+
+        if (!content) {
+          throw new Error("No bucket found - run create first");
+        }
+
+        const bucketData = JSON.parse(new TextDecoder().decode(content));
+        const bucketName = bucketData.Name;
+
+        // Check if bucket still exists
+        const headCmd = new Deno.Command("aws", {
+          args: [
+            "s3api",
+            "head-bucket",
+            "--bucket",
+            bucketName,
+          ],
+          stdout: "piped",
+          stderr: "piped",
+        });
+        const headOutput = await headCmd.output();
+
+        if (!headOutput.success) {
+          const error = new TextDecoder().decode(headOutput.stderr);
+          // Bucket gone — write not_found marker
+          if (error.includes("404") || error.includes("NoSuchBucket")) {
+            const handle = await context.writeResource("bucket", "main", {
+              Name: bucketName,
+              status: "not_found",
+              syncedAt: new Date().toISOString(),
+            });
+            return { dataHandles: [handle] };
+          }
+          throw new Error(error);
+        }
+
+        // Bucket exists — refresh state
+        const versioningCmd = new Deno.Command("aws", {
+          args: [
+            "s3api",
+            "get-bucket-versioning",
+            "--bucket",
+            bucketName,
+            "--output",
+            "json",
+          ],
+          stdout: "piped",
+          stderr: "piped",
+        });
+        const versioningOutput = await versioningCmd.output();
+        const versioning = versioningOutput.success
+          ? JSON.parse(new TextDecoder().decode(versioningOutput.stdout))
+          : {};
+
+        const refreshedData = {
+          ...bucketData,
+          Versioning: versioning.Status ?? "Disabled",
+          syncedAt: new Date().toISOString(),
+        };
+
+        const handle = await context.writeResource(
+          "bucket",
+          "main",
+          refreshedData,
+        );
+        return { dataHandles: [handle] };
+      },
+    },
   },
 };
 ```
@@ -396,7 +474,7 @@ inputs:
   properties:
     action:
       type: string
-      enum: ["create", "update", "delete"]
+      enum: ["create", "update", "delete", "sync"]
   required: ["action"]
 jobs:
   - name: execute
@@ -421,6 +499,13 @@ jobs:
           type: model_method
           modelIdOrName: my-bucket
           methodName: delete
+
+      - name: sync
+        condition: ${{ inputs.action == "sync" }}
+        task:
+          type: model_method
+          modelIdOrName: my-bucket
+          methodName: sync
 ```
 
 ---
