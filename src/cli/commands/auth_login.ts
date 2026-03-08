@@ -24,6 +24,7 @@ import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts"
 import { startCallbackServer } from "../../infrastructure/http/callback_server.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
+import { readSecretFromTty } from "../../infrastructure/io/stdin_reader.ts";
 import { Spinner } from "../../presentation/spinner.ts";
 import {
   renderAuthLoginSuccess,
@@ -55,37 +56,13 @@ async function readLine(prompt: string): Promise<string> {
 
 /** Read a password from stdin without echoing. */
 async function readPassword(prompt: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-
-  await Deno.stdout.write(encoder.encode(prompt));
-
-  // Attempt to disable echo for password input
-  Deno.stdin.setRaw(true);
   try {
-    const chars: number[] = [];
-    const buf = new Uint8Array(1);
-    while (true) {
-      const n = await Deno.stdin.read(buf);
-      if (n === null) break;
-      // Enter key
-      if (buf[0] === 13 || buf[0] === 10) break;
-      // Backspace
-      if (buf[0] === 127 || buf[0] === 8) {
-        chars.pop();
-        continue;
-      }
-      // Ctrl-C
-      if (buf[0] === 3) {
-        await Deno.stdout.write(encoder.encode("\n"));
-        throw new UserError("Cancelled.");
-      }
-      chars.push(buf[0]);
+    return await readSecretFromTty(prompt);
+  } catch (err) {
+    if (err instanceof Error && err.message === "Cancelled.") {
+      throw new UserError("Cancelled.");
     }
-    await Deno.stdout.write(encoder.encode("\n"));
-    return decoder.decode(new Uint8Array(chars));
-  } finally {
-    Deno.stdin.setRaw(false);
+    throw err;
   }
 }
 

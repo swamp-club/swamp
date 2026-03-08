@@ -54,6 +54,23 @@ swamp vault create local_encryption backend-secrets --json
 
 ### Store Secrets
 
+There are three ways to provide a secret value:
+
+```bash
+# 1. Inline KEY=VALUE
+swamp vault put dev-secrets API_KEY=dev-key-12345 --json
+
+# 2. Piped from stdin (useful in scripts/CI)
+echo "dev-db-pass" | swamp vault put dev-secrets DB_PASSWORD --json
+cat secret.txt | swamp vault put dev-secrets CERT --json
+
+# 3. Interactive prompt (TTY only, value is hidden)
+#    Just provide the key without a value — you'll be prompted:
+#    $ swamp vault put dev-secrets API_KEY
+#    Enter value for API_KEY: ********
+swamp vault put dev-secrets API_KEY
+```
+
 ```bash
 # Dev environment
 swamp vault put dev-secrets API_KEY=dev-key-12345 --json

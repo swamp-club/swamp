@@ -31,6 +31,7 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 | Edit vault config | `swamp vault edit <name_or_id>`                    |
 | Store a secret    | `swamp vault put <vault> KEY=VALUE --json`         |
 | Store from stdin  | `echo "val" \| swamp vault put <vault> KEY --json` |
+| Store interactive | `swamp vault put <vault> KEY` (prompts for value)  |
 | Get a secret      | `swamp vault get <vault> <key> --json`             |
 | List secret keys  | `swamp vault list-keys <vault> --json`             |
 
@@ -109,7 +110,8 @@ swamp vault put dev-secrets API_KEY=sk-1234567890 --json
 swamp vault put prod-secrets DB_PASSWORD=secret123 -f --json  # Skip confirmation
 ```
 
-**Piped value (recommended — keeps secrets out of shell history):**
+**Piped value (recommended for scripts/CI — keeps secrets out of shell
+history):**
 
 ```bash
 echo "$API_KEY" | swamp vault put dev-secrets API_KEY --json
@@ -117,8 +119,19 @@ cat ~/secrets/token.txt | swamp vault put dev-secrets TOKEN --json
 op read "op://vault/item/field" | swamp vault put dev-secrets SECRET --json
 ```
 
-When no `=` is present in the argument, the value is read from stdin. A single
-trailing newline is stripped automatically.
+**Interactive prompt (recommended for humans — value is hidden):**
+
+```bash
+swamp vault put dev-secrets API_KEY
+# Enter value for API_KEY: ********
+```
+
+When run interactively (TTY, no `=`, no piped stdin), the user is prompted to
+enter the value with echo suppressed. This keeps secrets out of both shell
+history and the visible terminal. Not available in `--json` mode.
+
+When no `=` is present and stdin is piped, the value is read from stdin. A
+single trailing newline is stripped automatically.
 
 **IMPORTANT — agent security:** Never ask the user to paste or type a secret
 value into conversation. Instead, instruct them to run `vault put` directly in

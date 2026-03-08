@@ -71,3 +71,47 @@ export async function readStdin(): Promise<string | null> {
   const decoder = new TextDecoder();
   return decoder.decode(result);
 }
+
+/**
+ * Reads a secret value from a TTY with echo suppression.
+ *
+ * Prompts the user and reads input character-by-character without echoing
+ * to the terminal. Supports backspace and Ctrl-C to cancel.
+ *
+ * Must only be called when stdin is a TTY (interactive terminal).
+ *
+ * @throws {Error} If the user cancels with Ctrl-C (throws with message "Cancelled.")
+ */
+export async function readSecretFromTty(prompt: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  await Deno.stdout.write(encoder.encode(prompt));
+
+  Deno.stdin.setRaw(true);
+  try {
+    const chars: number[] = [];
+    const buf = new Uint8Array(1);
+    while (true) {
+      const n = await Deno.stdin.read(buf);
+      if (n === null) break;
+      // Enter key
+      if (buf[0] === 13 || buf[0] === 10) break;
+      // Backspace
+      if (buf[0] === 127 || buf[0] === 8) {
+        chars.pop();
+        continue;
+      }
+      // Ctrl-C
+      if (buf[0] === 3) {
+        await Deno.stdout.write(encoder.encode("\n"));
+        throw new Error("Cancelled.");
+      }
+      chars.push(buf[0]);
+    }
+    await Deno.stdout.write(encoder.encode("\n"));
+    return decoder.decode(new Uint8Array(chars));
+  } finally {
+    Deno.stdin.setRaw(false);
+  }
+}

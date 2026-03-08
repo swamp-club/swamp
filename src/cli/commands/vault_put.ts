@@ -23,12 +23,15 @@ import {
   renderVaultPutCancelled,
   type VaultPutData,
 } from "../../presentation/output/vault_put_output.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createVaultSecretUpdated } from "../../domain/events/types.ts";
-import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
+import {
+  readSecretFromTty,
+  readStdin,
+} from "../../infrastructure/io/stdin_reader.ts";
 
 /**
  * Prompts user for confirmation in interactive mode.
@@ -151,19 +154,50 @@ export const vaultPutCommand = new Command()
       outputMode: ctx.outputMode,
     });
 
-    // Parse KEY=VALUE argument, or KEY with value from stdin.
+    // Parse KEY=VALUE argument, or KEY with value from stdin/interactive prompt.
     // Only consume stdin when the argument has no '=' — this preserves
     // the ability for promptConfirmation to read interactive input later.
     const parsed = parseKeyValue(keyValue);
+    let key: string;
+    let value: string;
     let stdinContent: string | null = null;
-    if (!parsed) {
+
+    if (parsed) {
+      key = parsed.key;
+      value = parsed.value;
+    } else if (!isStdinTty()) {
+      // Stdin is piped — read value from stdin
       stdinContent = await readStdin();
+      const resolved = resolveKeyValue(keyValue, stdinContent);
+      if ("error" in resolved) {
+        throw new UserError(resolved.error);
+      }
+      key = resolved.key;
+      value = resolved.value;
+    } else if (ctx.outputMode === "log") {
+      // Interactive TTY — prompt for the secret value
+      key = keyValue;
+      if (key.length === 0) {
+        throw new UserError("Key cannot be empty");
+      }
+      try {
+        value = await readSecretFromTty(`Enter value for ${key}: `);
+      } catch (err) {
+        if (err instanceof Error && err.message === "Cancelled.") {
+          renderVaultPutCancelled(ctx.outputMode);
+          return;
+        }
+        throw err;
+      }
+    } else {
+      // JSON mode, no piped input, no inline value — error
+      const resolved = resolveKeyValue(keyValue, null);
+      if ("error" in resolved) {
+        throw new UserError(resolved.error);
+      }
+      key = resolved.key;
+      value = resolved.value;
     }
-    const resolved = resolveKeyValue(keyValue, stdinContent);
-    if ("error" in resolved) {
-      throw new UserError(resolved.error);
-    }
-    const { key, value } = resolved;
     ctx.logger.debug`Parsed key: ${key}`;
 
     // Verify vault exists
