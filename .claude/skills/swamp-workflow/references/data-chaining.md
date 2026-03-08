@@ -416,3 +416,111 @@ jobs:
 | Create | Forward (VPC → subnets → RT) | Write new data via `writeResource()`                  |
 | Update | Forward (VPC → subnets → RT) | Read stored data, modify, write via `writeResource()` |
 | Delete | Reverse (RT → subnets → VPC) | Read stored data, clean up, return empty handles      |
+
+## Factory Model Patterns
+
+The factory pattern uses one model definition with `inputs` to create multiple
+named instances. Instead of maintaining 4 separate subnet model definitions, you
+define one `prod-subnet` model and call it 4 times with different inputs.
+
+For a complete walkthrough, see the
+[swamp-model scenarios](../../swamp-model/references/scenarios.md#scenario-5-factory-pattern-for-model-reuse).
+
+### Calling One Model Multiple Times
+
+Steps within a job run in parallel. Each step calls the same `modelIdOrName`
+with different inputs:
+
+```yaml
+jobs:
+  - name: create-subnets
+    steps:
+      - name: create-public-a
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: create
+          inputs:
+            instanceName: public-a
+            cidrBlock: "10.0.1.0/24"
+            availabilityZone: us-east-1a
+      - name: create-public-b
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: create
+          inputs:
+            instanceName: public-b
+            cidrBlock: "10.0.2.0/24"
+            availabilityZone: us-east-1b
+```
+
+The `instanceName` input flows into `name: ${{ inputs.instanceName }}` in the
+model's globalArguments, which sets the data instance name. This is how one
+model produces separately addressable data instances.
+
+### Referencing Factory Instance Data Downstream
+
+Each factory call creates a distinct data instance keyed by `instanceName`. Use
+`data.latest()` with the instance name to reference specific outputs:
+
+```yaml
+jobs:
+  - name: create-route-tables
+    dependsOn:
+      - job: create-subnets
+        condition:
+          type: succeeded
+    steps:
+      - name: create-public-rt
+        task:
+          type: model_method
+          modelIdOrName: prod-route-table
+          methodName: create
+          inputs:
+            instanceName: public-rt
+            subnetId: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
+```
+
+### Delete Steps for Factory Models
+
+Delete steps must provide `instanceName` because the `name` globalArgument
+(`name: ${{ inputs.instanceName }}`) determines which data instance to read and
+delete. Other inputs are only required if the delete method's implementation
+accesses those globalArguments at runtime.
+
+The system **selectively evaluates** globalArgument expressions — inputs that
+aren't provided are skipped, and a runtime error only occurs if the method code
+actually tries to access an unresolved value.
+
+**What breaks — missing `instanceName`:**
+
+```yaml
+# WRONG: No instanceName, so the system can't resolve which data instance to use
+- name: delete-public-a
+  task:
+    type: model_method
+    modelIdOrName: prod-subnet
+    methodName: delete
+    inputs:
+      identifier: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
+```
+
+**What works — `instanceName` provided:**
+
+```yaml
+# CORRECT: instanceName resolves the name globalArgument and keys the data instance
+- name: delete-public-a
+  task:
+    type: model_method
+    modelIdOrName: prod-subnet
+    methodName: delete
+    inputs:
+      instanceName: public-a
+      identifier: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
+```
+
+Whether you also need `cidrBlock`, `availabilityZone`, or other create-time
+inputs depends on your delete method implementation. If the method code accesses
+`globalArgs.CidrBlock`, you must provide `cidrBlock`. If it doesn't, the
+unresolved expression is silently skipped.

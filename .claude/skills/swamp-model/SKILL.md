@@ -170,6 +170,10 @@ methods:
 Inputs are provided at runtime with `--input` or `--input-file` and referenced
 in globalArguments using `${{ inputs.<name> }}` expressions.
 
+**Factory pattern:** Use inputs to create multiple instances from one model
+definition — see
+[references/scenarios.md#scenario-5](references/scenarios.md#scenario-5-factory-pattern-for-model-reuse).
+
 ## Edit a Model
 
 **Recommended:** Use `swamp model get <name> --json` to get the file path, then
