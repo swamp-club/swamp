@@ -39,12 +39,29 @@ import {
 } from "./data_writer.ts";
 import { coerceMethodArgs } from "./zod_type_coercion.ts";
 import { containsExpression } from "../expressions/expression_parser.ts";
+import type { Data } from "../data/data.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
  * Prevents infinite loops in misconfigured workflows.
  */
 const DEFAULT_MAX_FOLLOW_UP_DEPTH = 100;
+
+/**
+ * Filters data entries to only those belonging to declared resource specs.
+ * Uses the `specName` tag that `writeResource()` auto-injects on every write.
+ */
+function filterDeclaredResourceData(
+  allData: Data[],
+  declaredResources: Record<string, unknown>,
+): Data[] {
+  const specNames = new Set(Object.keys(declaredResources));
+  return allData.filter((d) =>
+    d.tags["type"] === "resource" &&
+    d.tags["specName"] !== undefined &&
+    specNames.has(d.tags["specName"])
+  );
+}
 
 /**
  * Formats a Zod error into a human-readable string.
@@ -264,7 +281,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // Infer method kind for lifecycle checks
     const methodKind = inferMethodKind(methodName, method);
 
-    // Fast-fail: reject read/update on deleted resources
+    // Fast-fail: reject read/update on deleted resources.
+    // Only check declared resource data (tagged with specName matching a
+    // declared resource spec). Block only when ALL declared resource data
+    // is deleted — old historical data entries should not cause false positives.
     if (methodKind === "read" || methodKind === "update") {
       const resources = modelDef.resources ?? {};
       if (Object.keys(resources).length > 0) {
@@ -272,31 +292,35 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           context.modelType,
           context.modelId,
         );
-        for (const data of existingData) {
-          if (data.isDeleted) {
-            // Read the deletion marker content for the timestamp
-            let deletedAt = "unknown";
-            try {
-              const content = await context.dataRepository.getContent(
-                context.modelType,
-                context.modelId,
-                data.name,
-              );
-              if (content) {
-                const marker = JSON.parse(
-                  new TextDecoder().decode(content),
-                );
-                if (marker.deletedAt) {
-                  deletedAt = marker.deletedAt;
-                }
-              }
-            } catch {
-              // Use default "unknown" timestamp
-            }
-            throw new UserError(
-              `Resource '${data.name}' was deleted at ${deletedAt} — run a 'create' method to re-create it first`,
+        const resourceData = filterDeclaredResourceData(
+          existingData,
+          resources,
+        );
+        if (
+          resourceData.length > 0 && resourceData.every((d) => d.isDeleted)
+        ) {
+          const deleted = resourceData[0];
+          let deletedAt = "unknown";
+          try {
+            const content = await context.dataRepository.getContent(
+              context.modelType,
+              context.modelId,
+              deleted.name,
             );
+            if (content) {
+              const marker = JSON.parse(
+                new TextDecoder().decode(content),
+              );
+              if (marker.deletedAt) {
+                deletedAt = marker.deletedAt;
+              }
+            }
+          } catch {
+            // Use default "unknown" timestamp
           }
+          throw new UserError(
+            `Resource '${deleted.name}' was deleted at ${deletedAt} — run a 'create' method to re-create it first`,
+          );
         }
       }
     }
@@ -380,7 +404,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       await context.outputRepository.save(modelDef.type, methodName, output);
     }
 
-    // Write deletion markers after a successful delete method
+    // Write deletion markers after a successful delete method.
+    // Only mark declared resource data — untagged or non-resource data is left alone.
     if (methodKind === "delete") {
       const resources = modelDef.resources ?? {};
       if (Object.keys(resources).length > 0) {
@@ -388,7 +413,11 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           context.modelType,
           context.modelId,
         );
-        for (const data of existingData) {
+        const resourceData = filterDeclaredResourceData(
+          existingData,
+          resources,
+        );
+        for (const data of resourceData) {
           if (!data.isDeleted) {
             const marker = data.withDeletionMarker({
               version: data.version + 1,
