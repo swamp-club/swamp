@@ -8,6 +8,9 @@ description: Debug and diagnose swamp issues using source code. Use when trouble
 Diagnose and troubleshoot swamp issues by fetching and reading the swamp source
 code. All commands support `--json` for machine-readable output.
 
+**Verify CLI syntax:** If unsure about exact flags or subcommands, run
+`swamp help source` for the complete, up-to-date CLI schema.
+
 ## Quick Reference
 
 | Task                | Command                                      |

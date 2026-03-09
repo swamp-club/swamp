@@ -8,6 +8,9 @@ description: Submit bug reports and feature requests for swamp. Use when the use
 Submit bug reports and feature requests through the swamp CLI. Issues are
 submitted directly to GitHub with appropriate labels.
 
+**Verify CLI syntax:** If unsure about exact flags or subcommands, run
+`swamp help issue` for the complete, up-to-date CLI schema.
+
 ## Quick Reference
 
 | Task                  | Command                                                       |

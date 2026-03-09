@@ -8,6 +8,9 @@ description: Manage model data lifecycle and garbage collection. Use when listin
 Manage model data lifecycle through the CLI. All commands support `--json` for
 machine-readable output.
 
+**Verify CLI syntax:** If unsure about exact flags or subcommands, run
+`swamp help data` for the complete, up-to-date CLI schema.
+
 ## Quick Reference
 
 | Task                   | Command                                               |

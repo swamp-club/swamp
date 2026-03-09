@@ -37,6 +37,7 @@ import { sourceCommand } from "./commands/source.ts";
 import { authCommand } from "./commands/auth.ts";
 import { extensionCommand } from "./commands/extension.ts";
 import { summariseCommand } from "./commands/summarise.ts";
+import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { type GlobalOptions, isStdinTty } from "./context.ts";
 import {
@@ -434,6 +435,9 @@ export async function runCli(args: string[]): Promise<void> {
     .command("auth", authCommand)
     .command("extension", extensionCommand)
     .command("summarise", summariseCommand);
+
+  // Register help command last — needs reference to the fully-built CLI tree
+  cli.command("help", createHelpCommand(cli));
 
   try {
     await cli.parse(args);

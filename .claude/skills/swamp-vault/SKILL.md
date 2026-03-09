@@ -16,6 +16,8 @@ for machine-readable output.
   `swamp vault create <type> <name> --json` first, then edit the scaffold at the
   returned `path`, preserving the assigned `id`.
 - **Never modify the `id` field** in an existing vault file.
+- **Verify CLI syntax**: If unsure about exact flags or subcommands, run
+  `swamp help vault` for the complete, up-to-date CLI schema.
 
 Correct flow: `swamp vault create <type> <name> --json` → edit config if needed
 → store secrets.

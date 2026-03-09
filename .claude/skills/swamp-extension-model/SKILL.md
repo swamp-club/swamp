@@ -41,6 +41,9 @@ specific service integrations. If the user wants to manage S3 buckets, EC2
 instances, or other resources, create a dedicated model for that service rather
 than wrapping CLI commands.
 
+**Verify CLI syntax:** If unsure about exact flags or subcommands, run
+`swamp help extension` for the complete, up-to-date CLI schema.
+
 ## Quick Reference
 
 | Task                | Command/Action                                          |
