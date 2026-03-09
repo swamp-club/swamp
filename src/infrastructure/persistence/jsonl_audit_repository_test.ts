@@ -121,6 +121,78 @@ Deno.test("JsonlAuditRepository.findByTimeRange returns entries in range", async
   });
 });
 
+Deno.test("JsonlAuditRepository.findByTimeRange reads correct UTC-dated file for same-day queries", async () => {
+  // Regression test for https://github.com/systeminit/swamp/issues/659
+  // Ensures date iteration uses UTC dates to match filenames written by append().
+  // The bug: setHours(0,0,0,0) uses local time, so in UTC+ timezones,
+  // toISOString() would produce the previous day's date, missing today's file.
+  await withTempDir(async (dir) => {
+    const repo = new JsonlAuditRepository(dir);
+    const auditDir = join(dir, ".swamp", "audit");
+    await Deno.mkdir(auditDir, { recursive: true });
+
+    // Write an entry to a file dated 2025-03-09 (UTC)
+    const entry = {
+      timestamp: "2025-03-09T00:30:00.000Z",
+      sessionId: "s1",
+      command: "aws s3 ls",
+      cwd: "/repo",
+    };
+    await Deno.writeTextFile(
+      join(auditDir, "commands-2025-03-09.jsonl"),
+      JSON.stringify(entry) + "\n",
+    );
+
+    // Query a range that starts and ends on March 9 UTC.
+    // Before the fix, in UTC+1, the date iteration would generate
+    // "2025-03-08" instead of "2025-03-09" and miss this file.
+    const startTime = new Date("2025-03-09T00:00:00.000Z");
+    const endTime = new Date("2025-03-09T23:59:59.999Z");
+
+    const result = await repo.findByTimeRange(startTime, endTime);
+
+    assertEquals(result.length, 1);
+    assertEquals(result[0].command, "aws s3 ls");
+  });
+});
+
+Deno.test("JsonlAuditRepository.findByTimeRange spans multiple UTC dates correctly", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonlAuditRepository(dir);
+    const auditDir = join(dir, ".swamp", "audit");
+    await Deno.mkdir(auditDir, { recursive: true });
+
+    // Write entries across two UTC dates
+    await Deno.writeTextFile(
+      join(auditDir, "commands-2025-03-09.jsonl"),
+      JSON.stringify({
+        timestamp: "2025-03-09T22:00:00.000Z",
+        sessionId: "s1",
+        command: "cmd-day1",
+        cwd: "/repo",
+      }) + "\n",
+    );
+    await Deno.writeTextFile(
+      join(auditDir, "commands-2025-03-10.jsonl"),
+      JSON.stringify({
+        timestamp: "2025-03-10T02:00:00.000Z",
+        sessionId: "s1",
+        command: "cmd-day2",
+        cwd: "/repo",
+      }) + "\n",
+    );
+
+    const startTime = new Date("2025-03-09T20:00:00.000Z");
+    const endTime = new Date("2025-03-10T03:00:00.000Z");
+
+    const result = await repo.findByTimeRange(startTime, endTime);
+
+    assertEquals(result.length, 2);
+    assertEquals(result[0].command, "cmd-day1");
+    assertEquals(result[1].command, "cmd-day2");
+  });
+});
+
 Deno.test("JsonlAuditRepository.findByTimeRange returns empty for missing directory", async () => {
   await withTempDir(async (dir) => {
     const repo = new JsonlAuditRepository(dir);

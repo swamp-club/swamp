@@ -87,10 +87,10 @@ export class JsonlAuditRepository implements AuditRepository {
 
       // Iterate date range to find relevant files
       const current = new Date(startTime);
-      current.setHours(0, 0, 0, 0);
+      current.setUTCHours(0, 0, 0, 0);
 
       const end = new Date(endTime);
-      end.setHours(23, 59, 59, 999);
+      end.setUTCHours(23, 59, 59, 999);
 
       while (current <= end) {
         const dateStr = current.toISOString().split("T")[0];
@@ -123,7 +123,7 @@ export class JsonlAuditRepository implements AuditRepository {
           }
         }
 
-        current.setDate(current.getDate() + 1);
+        current.setUTCDate(current.getUTCDate() + 1);
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
