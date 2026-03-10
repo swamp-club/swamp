@@ -52,10 +52,15 @@ import {
  * {repoDir}/.swamp/workflow-runs/{workflowId}/workflow-run-{runId}.yaml
  */
 export class YamlWorkflowRunRepository implements WorkflowRunRepository {
+  private readonly baseDir: string;
+
   constructor(
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
-  ) {}
+    baseDir?: string,
+  ) {
+    this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
+  }
 
   async findById(
     workflowId: WorkflowId,
@@ -140,7 +145,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     { run: WorkflowRun; workflowId: WorkflowId }[]
   > {
     const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
-    const workflowRunsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
+    const workflowRunsDir = this.baseDir;
 
     try {
       for await (const entry of Deno.readDir(workflowRunsDir)) {
@@ -171,7 +176,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const dir = this.getRunsDir(workflowId);
-    await assertSafePath(dir, swampPath(this.repoDir));
+    await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
     const path = this.getPath(workflowId, run.id);
@@ -241,7 +246,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   private getRunsDir(workflowId: WorkflowId): string {
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns, workflowId);
+    return join(this.baseDir, workflowId);
   }
 
   async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {

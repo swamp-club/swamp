@@ -38,8 +38,8 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "data"));
-  await ensureDir(join(dir, ".swamp", "definitions"));
-  await ensureDir(join(dir, ".swamp", "vault"));
+  await ensureDir(join(dir, "models"));
+  await ensureDir(join(dir, "vaults"));
 }
 
 const owner = {

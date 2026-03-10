@@ -23,7 +23,6 @@ import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
-import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
 import {
   createWorkflowId,
@@ -46,13 +45,18 @@ const logger = getLogger(["workflow-repo"]);
  * YAML-based implementation of WorkflowRepository.
  *
  * Stores workflows as YAML files in the directory structure:
- * {repoDir}/.swamp/workflows/workflow-{uuid}.yaml
+ * {repoDir}/workflows/workflow-{uuid}.yaml
  */
 export class YamlWorkflowRepository implements WorkflowRepository {
+  private readonly baseDir: string;
+
   constructor(
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
-  ) {}
+    baseDir?: string,
+  ) {
+    this.baseDir = baseDir ?? join(repoDir, "workflows");
+  }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
     const path = this.getPath(id);
@@ -116,7 +120,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
 
   async save(workflow: Workflow): Promise<void> {
     const dir = this.getWorkflowsDir();
-    await assertSafePath(dir, swampPath(this.repoDir));
+    await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
     const path = this.getPath(workflow.id);
@@ -188,7 +192,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
   }
 
   private getWorkflowsDir(): string {
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflows);
+    return this.baseDir;
   }
 
   /**

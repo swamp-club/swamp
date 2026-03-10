@@ -46,11 +46,11 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function initializeTestRepo(repoDir: string): Promise<void> {
   const subdirs = [
-    ".swamp/definitions",
+    "models",
     ".swamp/outputs",
     ".swamp/data",
     ".swamp/logs",
-    ".swamp/workflows",
+    "workflows",
     ".swamp/workflow-runs",
     ".swamp/workflows-evaluated",
     ".swamp/definitions-evaluated",
@@ -108,7 +108,7 @@ async function createShellModel(
     },
   };
 
-  const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+  const modelDir = join(repoDir, "models/command/shell");
   await ensureDir(modelDir);
   await Deno.writeTextFile(
     join(modelDir, `${modelData.id}.yaml`),
@@ -225,7 +225,7 @@ Deno.test("Workflow: step with valid input override succeeds", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -284,7 +284,7 @@ Deno.test("Workflow: step with type mismatch fails", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -355,7 +355,7 @@ Deno.test("Workflow: step input override with CEL expression preserves type", as
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),

@@ -44,11 +44,11 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function initializeTestRepo(repoDir: string): Promise<void> {
   const subdirs = [
-    ".swamp/definitions",
+    "models",
     ".swamp/outputs",
     ".swamp/data",
     ".swamp/logs",
-    ".swamp/workflows",
+    "workflows",
     ".swamp/workflow-runs",
     ".swamp/workflows-evaluated",
     ".swamp/definitions-evaluated",
@@ -118,7 +118,7 @@ async function createShellModelWithInputs(
     },
   };
 
-  const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+  const modelDir = join(repoDir, "models/command/shell");
   await ensureDir(modelDir);
   await Deno.writeTextFile(
     join(modelDir, `${modelData.id}.yaml`),
@@ -251,7 +251,7 @@ Deno.test("CLI: workflow run with valid input succeeds", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -314,7 +314,7 @@ Deno.test("CLI: workflow run with missing required input fails", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -359,7 +359,7 @@ Deno.test("CLI: workflow run with input-file works", async () => {
         },
       },
     };
-    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    const modelDir = join(repoDir, "models/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -398,7 +398,7 @@ Deno.test("CLI: workflow run with input-file works", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -461,7 +461,7 @@ Deno.test("CLI: input validation reports type mismatch", async () => {
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    const modelDir = join(repoDir, "models/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -518,7 +518,7 @@ Deno.test("CLI: input validation reports multiple errors", async () => {
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    const modelDir = join(repoDir, "models/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -623,7 +623,7 @@ Deno.test("CLI: workflow run with key=value input succeeds", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -679,7 +679,7 @@ Deno.test("CLI: model method run with multiple k=v and type coercion", async () 
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    const modelDir = join(repoDir, "models/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -740,7 +740,7 @@ Deno.test("CLI: model method run with @file input", async () => {
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    const modelDir = join(repoDir, "models/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -836,7 +836,7 @@ Deno.test("CLI: method succeeds when required inputs are not referenced by metho
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    const modelDir = join(repoDir, "models/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -899,7 +899,7 @@ Deno.test("CLI: method validates required inputs that it references", async () =
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    const modelDir = join(repoDir, "models/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),
@@ -962,7 +962,7 @@ Deno.test("CLI: inputs in globalArguments do not block methods that don't refere
       },
     };
 
-    const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+    const modelDir = join(repoDir, "models/command/shell");
     await ensureDir(modelDir);
     await Deno.writeTextFile(
       join(modelDir, `${modelData.id}.yaml`),

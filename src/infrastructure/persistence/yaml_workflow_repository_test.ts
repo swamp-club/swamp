@@ -26,7 +26,6 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -219,7 +218,7 @@ Deno.test("YamlWorkflowRepository.findAll skips broken YAML files", async () => 
     await repo.save(goodWorkflow);
 
     // Write a broken YAML file in the workflows directory
-    const workflowsDir = swampPath(dir, SWAMP_SUBDIRS.workflows);
+    const workflowsDir = join(dir, "workflows");
     await Deno.writeTextFile(
       join(workflowsDir, "workflow-00000000-0000-4000-8000-000000000000.yaml"),
       "this: is: not: valid: yaml: [",
@@ -241,7 +240,7 @@ Deno.test("YamlWorkflowRepository.findAll skips schema-invalid YAML files", asyn
     await repo.save(goodWorkflow);
 
     // Write a valid YAML file that fails schema validation (missing required fields)
-    const workflowsDir = swampPath(dir, SWAMP_SUBDIRS.workflows);
+    const workflowsDir = join(dir, "workflows");
     const invalidData = { description: "no name or id field" };
     await Deno.writeTextFile(
       join(
@@ -267,7 +266,7 @@ Deno.test("YamlWorkflowRepository.findByName skips broken YAML files", async () 
     await repo.save(goodWorkflow);
 
     // Write a broken YAML file in the workflows directory
-    const workflowsDir = swampPath(dir, SWAMP_SUBDIRS.workflows);
+    const workflowsDir = join(dir, "workflows");
     await Deno.writeTextFile(
       join(workflowsDir, "workflow-00000000-0000-4000-8000-000000000000.yaml"),
       "not valid yaml content {{{",

@@ -37,6 +37,7 @@ import { sourceCommand } from "./commands/source.ts";
 import { authCommand } from "./commands/auth.ts";
 import { extensionCommand } from "./commands/extension.ts";
 import { summariseCommand } from "./commands/summarise.ts";
+import { datastoreCommand } from "./commands/datastore.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { type GlobalOptions, isStdinTty } from "./context.ts";
@@ -69,6 +70,7 @@ import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.
 import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/output/update_notification_output.ts";
 import { getOutputModeFromArgs } from "./context.ts";
+import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -434,13 +436,17 @@ export async function runCli(args: string[]): Promise<void> {
     .command("issue", issueCommand)
     .command("auth", authCommand)
     .command("extension", extensionCommand)
-    .command("summarise", summariseCommand);
+    .command("summarise", summariseCommand)
+    .command("datastore", datastoreCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));
 
   try {
     await cli.parse(args);
+
+    // Flush datastore sync (push to S3 + release lock)
+    await flushDatastoreSync();
 
     // Record successful invocation
     if (telemetryCtx) {
@@ -488,6 +494,9 @@ export async function runCli(args: string[]): Promise<void> {
       }
     }
   } catch (error) {
+    // Release datastore lock even on failure (don't leave locks stuck)
+    await flushDatastoreSync();
+
     // Record error invocation before re-throwing
     if (telemetryCtx && error instanceof Error) {
       await telemetryCtx.service.recordError(commandInfo, startTime, error);

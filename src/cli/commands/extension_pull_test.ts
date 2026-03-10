@@ -134,7 +134,7 @@ Deno.test("detectConflicts uses nested path for bundles, not basename", async ()
 
     // Also create empty dirs for models and workflows
     const modelsDir = join(repoDir, "extensions", "models");
-    const workflowsDir = join(repoDir, ".swamp", "workflows");
+    const workflowsDir = join(repoDir, "workflows");
     await Deno.mkdir(modelsDir, { recursive: true });
     await Deno.mkdir(workflowsDir, { recursive: true });
 

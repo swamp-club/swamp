@@ -36,7 +36,12 @@ import {
  * This directory contains workflows with all expressions resolved.
  */
 export class YamlEvaluatedWorkflowRepository {
-  constructor(private readonly repoDir: string) {}
+  private readonly baseDir: string;
+
+  constructor(private readonly repoDir: string, baseDir?: string) {
+    this.baseDir = baseDir ??
+      swampPath(repoDir, SWAMP_SUBDIRS.workflowsEvaluated);
+  }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
     const path = this.getPath(id);
@@ -91,7 +96,7 @@ export class YamlEvaluatedWorkflowRepository {
 
   async save(workflow: Workflow): Promise<void> {
     const dir = this.getWorkflowsDir();
-    await assertSafePath(dir, swampPath(this.repoDir));
+    await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
     const path = this.getPath(workflow.id);
@@ -132,6 +137,6 @@ export class YamlEvaluatedWorkflowRepository {
   }
 
   private getWorkflowsDir(): string {
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowsEvaluated);
+    return this.baseDir;
   }
 }

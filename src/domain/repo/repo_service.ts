@@ -325,6 +325,9 @@ export class RepoService {
       gitignoreAction = "skipped";
     }
 
+    // Migrate from symlink-based layout to datastore layout
+    await this.migrateFromSymlinks(repoPath);
+
     await this.markerRepo.write(repoPath, updatedMarker);
 
     // createUpgradeMarker always sets upgradedAt, but TypeScript doesn't know this
@@ -709,18 +712,8 @@ ${body}`;
   private generateGitignoreSectionBody(tool: AiTool): string {
     return [
       "",
-      "# Local telemetry (not needed for reconstruction)",
-      ".swamp/telemetry/",
-      "",
-      "# Audit command logs (local-only hook data)",
-      ".swamp/audit/",
-      "",
-      "# Encryption keyfile (NEVER commit - allows decrypting secrets)",
-      ".swamp/secrets/keyfile",
-      "",
-      "# Cached extension bundles (regenerated at runtime)",
-      ".swamp/bundles/",
-      ".swamp/vault-bundles/",
+      "# Runtime data (not needed in version control)",
+      ".swamp/",
       "",
       GITIGNORE_TOOL_ENTRIES[tool],
       "",
@@ -1466,23 +1459,191 @@ export const SwampAudit: Plugin = async ({ directory }) => {
   private async createDataDirectoryStructure(
     repoPath: RepoPath,
   ): Promise<void> {
-    const subdirs = [
-      SWAMP_SUBDIRS.workflows,
+    // Top-level directories for source-of-truth files
+    const topLevelDirs = ["models", "workflows", "vaults"];
+    for (const dir of topLevelDirs) {
+      await ensureDir(join(repoPath.value, dir));
+    }
+
+    // Runtime data directories under .swamp/
+    const runtimeSubdirs = [
       SWAMP_SUBDIRS.data,
       SWAMP_SUBDIRS.outputs,
       SWAMP_SUBDIRS.workflowRuns,
       SWAMP_SUBDIRS.workflowsEvaluated,
-      SWAMP_SUBDIRS.definitions,
       SWAMP_SUBDIRS.definitionsEvaluated,
-      SWAMP_SUBDIRS.vault,
       SWAMP_SUBDIRS.secrets,
       SWAMP_SUBDIRS.telemetry,
       SWAMP_SUBDIRS.audit,
       SWAMP_SUBDIRS.vaultBundles,
     ];
 
-    for (const subdir of subdirs) {
+    for (const subdir of runtimeSubdirs) {
       await ensureDir(swampPath(repoPath.value, subdir));
+    }
+  }
+
+  /**
+   * Migrates to top-level directory layout:
+   * - Replaces `latest` symlinks in data dirs with text files
+   * - Removes old symlink directories at models/, workflows/, vaults/
+   * - Moves files from .swamp/definitions/ → models/
+   * - Moves files from .swamp/workflows/ → workflows/
+   * - Moves files from .swamp/vault/ → vaults/
+   */
+  private async migrateFromSymlinks(repoPath: RepoPath): Promise<void> {
+    // Replace latest symlinks with text files in data directory
+    const dataDir = swampPath(repoPath.value, SWAMP_SUBDIRS.data);
+    await this.replaceLatestSymlinks(dataDir);
+
+    // Clean up old symlink-based index directories
+    for (const dir of ["models", "workflows", "vaults"]) {
+      const dirPath = join(repoPath.value, dir);
+      try {
+        const stat = await Deno.lstat(dirPath);
+        if (stat.isSymlink) {
+          // Top-level symlink: remove it entirely
+          await Deno.remove(dirPath);
+        } else if (stat.isDirectory) {
+          // Real directory from old index: remove all symlinks inside
+          await this.removeSymlinksRecursively(dirPath);
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          // Non-fatal: continue
+        }
+      }
+    }
+
+    // Create top-level directories
+    for (const dir of ["models", "workflows", "vaults"]) {
+      await ensureDir(join(repoPath.value, dir));
+    }
+
+    // Move files from .swamp/definitions/ → models/
+    await this.moveDirectoryContents(
+      swampPath(repoPath.value, SWAMP_SUBDIRS.definitions),
+      join(repoPath.value, "models"),
+    );
+
+    // Move files from .swamp/workflows/ → workflows/
+    await this.moveDirectoryContents(
+      swampPath(repoPath.value, SWAMP_SUBDIRS.workflows),
+      join(repoPath.value, "workflows"),
+    );
+
+    // Move files from .swamp/vault/ → vaults/
+    await this.moveDirectoryContents(
+      swampPath(repoPath.value, SWAMP_SUBDIRS.vault),
+      join(repoPath.value, "vaults"),
+    );
+  }
+
+  /**
+   * Recursively moves all contents from source to destination directory,
+   * preserving directory structure. Removes empty source directories after moving.
+   */
+  private async moveDirectoryContents(
+    srcDir: string,
+    destDir: string,
+  ): Promise<void> {
+    try {
+      for await (const entry of Deno.readDir(srcDir)) {
+        const srcPath = join(srcDir, entry.name);
+        const destPath = join(destDir, entry.name);
+
+        if (entry.isDirectory) {
+          await ensureDir(destPath);
+          await this.moveDirectoryContents(srcPath, destPath);
+          // Remove the now-empty source directory
+          try {
+            await Deno.remove(srcPath);
+          } catch {
+            // Non-fatal: directory may not be empty
+          }
+        } else if (entry.isFile) {
+          // Only move if destination doesn't already exist
+          try {
+            await Deno.stat(destPath);
+          } catch (error) {
+            if (error instanceof Deno.errors.NotFound) {
+              await Deno.rename(srcPath, destPath);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        // Non-fatal: source directory might not exist
+      }
+    }
+
+    // Try to remove the now-empty source directory
+    try {
+      await Deno.remove(srcDir);
+    } catch {
+      // Non-fatal: directory may not exist or may not be empty
+    }
+  }
+
+  /**
+   * Recursively removes all symlinks from a directory, then removes
+   * any empty directories left behind. Used to clean up old symlink-based
+   * index structures (models/name/definition.yaml → ..., etc.).
+   */
+  private async removeSymlinksRecursively(dir: string): Promise<void> {
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        const fullPath = join(dir, entry.name);
+        const stat = await Deno.lstat(fullPath);
+
+        if (stat.isSymlink) {
+          await Deno.remove(fullPath);
+        } else if (stat.isDirectory) {
+          await this.removeSymlinksRecursively(fullPath);
+          // Try to remove the directory if it's now empty
+          try {
+            await Deno.remove(fullPath);
+          } catch {
+            // Non-fatal: directory may not be empty (has real files)
+          }
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        // Non-fatal: continue
+      }
+    }
+  }
+
+  /**
+   * Recursively replaces `latest` symlinks with text files containing
+   * the version number.
+   */
+  private async replaceLatestSymlinks(dir: string): Promise<void> {
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        const fullPath = join(dir, entry.name);
+
+        if (entry.name === "latest" && entry.isSymlink) {
+          try {
+            const target = await Deno.readLink(fullPath);
+            const version = parseInt(target.replace(/\/$/, ""), 10);
+            if (!isNaN(version)) {
+              await Deno.remove(fullPath);
+              await Deno.writeTextFile(fullPath, version.toString());
+            }
+          } catch {
+            // Non-fatal: skip this symlink
+          }
+        } else if (entry.isDirectory) {
+          await this.replaceLatestSymlinks(fullPath);
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        // Non-fatal: data directory might not exist yet
+      }
     }
   }
 }

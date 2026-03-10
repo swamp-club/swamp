@@ -22,6 +22,7 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { requireInitializedRepo } from "./repo_context.ts";
+import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
 import { UserError } from "../domain/errors.ts";
@@ -123,6 +124,9 @@ Deno.test("requireInitializedRepo - returns context for initialized repo (json m
     assertEquals(result.repoDir, dir);
     assertEquals(result.repoContext.definitionRepo !== undefined, true);
     assertEquals(result.repoContext.workflowRepo !== undefined, true);
+
+    // Clean up datastore sync (releases lock + heartbeat)
+    await flushDatastoreSync();
   });
 });
 
@@ -137,6 +141,8 @@ Deno.test("requireInitializedRepo - returns context for initialized repo (log mo
 
     assertEquals(result.repoDir, dir);
     assertEquals(result.repoContext !== undefined, true);
+
+    await flushDatastoreSync();
   });
 });
 
@@ -152,6 +158,8 @@ Deno.test("requireInitializedRepo - handles relative paths", async () => {
 
     // Should resolve to the absolute path
     assertEquals(result.repoDir, dir);
+
+    await flushDatastoreSync();
   });
 });
 
@@ -169,6 +177,8 @@ Deno.test("requireInitializedRepo - passes factory config", async () => {
 
     // Context should still be created
     assertEquals(result.repoContext !== undefined, true);
+
+    await flushDatastoreSync();
   });
 });
 
@@ -188,6 +198,8 @@ Deno.test("requireInitializedRepo - handles nested directory paths", async () =>
     });
 
     assertEquals(result.repoDir, nestedDir);
+
+    await flushDatastoreSync();
   });
 });
 

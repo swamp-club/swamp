@@ -28,7 +28,6 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { type AiTool, RepoService } from "../../domain/repo/repo_service.ts";
 import { VERSION } from "./version.ts";
-import { repoIndexCommand } from "./repo_index.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -155,5 +154,4 @@ export const repoCommand = new Command()
       )
       .action(repoInitAction),
   )
-  .command("upgrade", repoUpgradeCommand)
-  .command("index", repoIndexCommand);
+  .command("upgrade", repoUpgradeCommand);

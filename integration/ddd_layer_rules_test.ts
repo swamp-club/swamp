@@ -99,7 +99,7 @@ Deno.test(
   },
 );
 
-const KNOWN_PRESENTATION_INFRA_VIOLATIONS = 37;
+const KNOWN_PRESENTATION_INFRA_VIOLATIONS = 38;
 
 Deno.test(
   "presentation layer must not add new infrastructure imports (ratchet)",

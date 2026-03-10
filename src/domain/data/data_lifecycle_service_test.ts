@@ -29,7 +29,7 @@ class MockDataRepository {
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > = () => Promise.resolve([]);
   listVersions = () => Promise.resolve([]);
-  removeLatestSymlink = () => Promise.resolve();
+  removeLatestMarker = () => Promise.resolve();
   collectGarbage = () =>
     Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 });
 }

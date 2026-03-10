@@ -43,11 +43,11 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function initializeTestRepo(repoDir: string): Promise<void> {
   const subdirs = [
-    ".swamp/definitions",
+    "models",
     ".swamp/outputs",
     ".swamp/data",
     ".swamp/logs",
-    ".swamp/workflows",
+    "workflows",
     ".swamp/workflow-runs",
     ".swamp/workflows-evaluated",
   ];
@@ -102,7 +102,7 @@ async function createShellModel(repoDir: string, name: string): Promise<void> {
     },
   };
 
-  const modelDir = join(repoDir, ".swamp/definitions/command/shell");
+  const modelDir = join(repoDir, "models/command/shell");
   await ensureDir(modelDir);
   await Deno.writeTextFile(
     join(modelDir, `${modelData.id}.yaml`),
@@ -160,7 +160,7 @@ Deno.test("CLI: workflow with forEach over array creates multiple steps", async 
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -240,7 +240,7 @@ Deno.test("CLI: workflow with forEach single item array", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -308,7 +308,7 @@ Deno.test("CLI: workflow with forEach validates array minItems", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -381,7 +381,7 @@ Deno.test("CLI: workflow with forEach over object", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -447,7 +447,7 @@ Deno.test("CLI: workflow with forEach over empty object succeeds", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -539,7 +539,7 @@ Deno.test("CLI: workflow with forEach step depending on another forEach step", a
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -663,7 +663,7 @@ Deno.test("CLI: workflow with forEach over object array and static step name use
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),
@@ -801,7 +801,7 @@ Deno.test("CLI: workflow with mixed forEach and regular steps", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowData.id}.yaml`),

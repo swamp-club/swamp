@@ -74,7 +74,7 @@ export interface RebuildResult {
  *
  * Model View (`/models/{model-name}/`):
  * ```
- * definition.yaml → /.swamp/definitions/{type}/{id}.yaml
+ * definition.yaml → /models/{type}/{id}.yaml
  * type/
  *   logs/         → symlinks to data with type=log tag
  *   files/        → symlinks to data with type=file tag
@@ -86,7 +86,7 @@ export interface RebuildResult {
  *
  * Workflow View (`/workflows/{workflow-name}/`):
  * ```
- * workflow.yaml   → ../.swamp/workflows/workflow-{id}.yaml
+ * workflow.yaml   → ../workflows/workflow-{id}.yaml
  * runs/
  *   latest/       → {latest-timestamp}/
  *   {timestamp}/
@@ -99,7 +99,7 @@ export interface RebuildResult {
  *
  * Vault View (`/vaults/{vault-name}/`):
  * ```
- * vault.yaml      → ../.swamp/vault/{vault-type}/{id}.yaml
+ * vault.yaml      → ../vaults/{vault-type}/{id}.yaml
  * ```
  */
 export interface RepoIndexService {

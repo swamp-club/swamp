@@ -30,16 +30,14 @@ await initializeLogging({});
 const testData: WorkflowDeleteData = {
   id: "550e8400-e29b-41d4-a716-446655440000",
   name: "test-workflow",
-  workflowPath:
-    ".swamp/workflows/workflow-550e8400-e29b-41d4-a716-446655440000.yaml",
+  workflowPath: "workflows/workflow-550e8400-e29b-41d4-a716-446655440000.yaml",
   runsDeleted: 0,
 };
 
 const testDataWithRuns: WorkflowDeleteData = {
   id: "550e8400-e29b-41d4-a716-446655440000",
   name: "test-workflow",
-  workflowPath:
-    ".swamp/workflows/workflow-550e8400-e29b-41d4-a716-446655440000.yaml",
+  workflowPath: "workflows/workflow-550e8400-e29b-41d4-a716-446655440000.yaml",
   runsDeleted: 5,
 };
 

@@ -48,7 +48,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function setupRepoDir(dir: string): Promise<void> {
   await ensureDir(join(dir, ".swamp", "data"));
-  await ensureDir(join(dir, ".swamp", "definitions"));
+  await ensureDir(join(dir, "models"));
 }
 
 function createOwner(ref: string): OwnerDefinition {
@@ -192,7 +192,7 @@ Deno.test("Data Versioning: latest symlink points to newest version", async () =
     latest = await repo.findByName(type, modelId, "symlink-test");
     assertEquals(latest?.version, 3);
 
-    // Verify latest symlink exists in filesystem
+    // Verify latest marker file exists in filesystem (text file, not symlink)
     const latestPath = join(
       repoDir,
       ".swamp",
@@ -205,7 +205,9 @@ Deno.test("Data Versioning: latest symlink points to newest version", async () =
     assertEquals(existsSync(latestPath), true);
 
     const stat = await Deno.lstat(latestPath);
-    assertEquals(stat.isSymlink, true);
+    assertEquals(stat.isFile, true);
+    const latestContent = await Deno.readTextFile(latestPath);
+    assertEquals(latestContent.trim(), "3");
   });
 });
 

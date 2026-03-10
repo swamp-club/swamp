@@ -23,7 +23,6 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -65,11 +64,7 @@ Deno.test("YamlDefinitionRepository.findAll skips broken YAML files", async () =
     await repo.save(testType, goodDef);
 
     // Write a broken YAML file in the same type directory
-    const typeDir = swampPath(
-      dir,
-      SWAMP_SUBDIRS.definitions,
-      testType.toDirectoryPath(),
-    );
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
     await Deno.writeTextFile(
       join(typeDir, "broken.yaml"),
       "this: is: not: valid: yaml: [",
@@ -91,11 +86,7 @@ Deno.test("YamlDefinitionRepository.findAllGlobal skips broken YAML files", asyn
     await repo.save(testType, goodDef);
 
     // Write a broken YAML file in the same type directory
-    const typeDir = swampPath(
-      dir,
-      SWAMP_SUBDIRS.definitions,
-      testType.toDirectoryPath(),
-    );
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
     await Deno.writeTextFile(
       join(typeDir, "broken.yaml"),
       "not valid yaml content {{{",
@@ -117,11 +108,7 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal skips broken YAML files", a
     await repo.save(testType, goodDef);
 
     // Write a broken YAML file in the same type directory
-    const typeDir = swampPath(
-      dir,
-      SWAMP_SUBDIRS.definitions,
-      testType.toDirectoryPath(),
-    );
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
     await Deno.writeTextFile(
       join(typeDir, "broken.yaml"),
       "not valid yaml content {{{",
@@ -142,11 +129,7 @@ Deno.test("YamlDefinitionRepository.findAllGlobal skips schema-invalid YAML file
     await repo.save(testType, goodDef);
 
     // Write a valid YAML file that fails schema validation (missing required fields)
-    const typeDir = swampPath(
-      dir,
-      SWAMP_SUBDIRS.definitions,
-      testType.toDirectoryPath(),
-    );
+    const typeDir = join(dir, "models", testType.toDirectoryPath());
     const invalidData = { description: "no name or id field" };
     await Deno.writeTextFile(
       join(typeDir, "invalid-schema.yaml"),
