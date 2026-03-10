@@ -104,16 +104,41 @@ const datastoreLockReleaseCommand = new Command()
       return;
     }
 
-    // Direct delete — bypasses acquire/release to break stuck locks
+    // Re-verify the lock holder hasn't changed between inspect and delete.
+    // This guards against deleting a legitimately acquired lock.
     if (config.type === "s3") {
       const s3 = new S3Client({
         bucket: config.bucket,
         prefix: config.prefix,
         region: config.region,
       });
+      const recheck = await lock.inspect();
+      if (recheck?.nonce !== info.nonce) {
+        renderDatastoreLockRelease(
+          {
+            released: false,
+            reason:
+              "lock holder changed — aborting to avoid breaking an active lock",
+          },
+          ctx.outputMode,
+        );
+        return;
+      }
       await s3.deleteObject(".datastore.lock");
     } else {
       const lockPath = join(config.path, ".datastore.lock");
+      const recheck = await lock.inspect();
+      if (recheck?.nonce !== info.nonce) {
+        renderDatastoreLockRelease(
+          {
+            released: false,
+            reason:
+              "lock holder changed — aborting to avoid breaking an active lock",
+          },
+          ctx.outputMode,
+        );
+        return;
+      }
       try {
         await Deno.remove(lockPath);
       } catch (error) {

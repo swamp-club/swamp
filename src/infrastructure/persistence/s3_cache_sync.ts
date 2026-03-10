@@ -468,7 +468,7 @@ export class S3CacheSyncService {
    * Used by the write observer to determine the cache file path.
    */
   getCachePath(relativePath: string): string {
-    return join(this.cachePath, relativePath);
+    return assertSafePath(this.cachePath, relativePath);
   }
 
   /**

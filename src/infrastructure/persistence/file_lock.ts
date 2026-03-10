@@ -41,7 +41,7 @@ const DEFAULT_MAX_WAIT_MS = 60_000;
 const DEFAULT_LOCK_PATH = ".datastore.lock";
 
 /** Build a LockInfo for the current process. */
-function buildLockInfo(ttlMs: number): LockInfo {
+function buildLockInfo(ttlMs: number, nonce: string): LockInfo {
   const host = hostname();
   const user = Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? "unknown";
   return {
@@ -50,6 +50,7 @@ function buildLockInfo(ttlMs: number): LockInfo {
     pid: Deno.pid,
     acquiredAt: new Date().toISOString(),
     ttlMs,
+    nonce,
   };
 }
 
@@ -68,6 +69,7 @@ export class FileLock implements DistributedLock {
   private readonly maxWaitMs: number;
   private heartbeatId: number | undefined;
   private held = false;
+  private nonce: string | undefined;
 
   constructor(basePath: string, options?: LockOptions) {
     const lockFile = options?.lockKey ?? DEFAULT_LOCK_PATH;
@@ -83,8 +85,10 @@ export class FileLock implements DistributedLock {
 
     await ensureDir(dirname(this.lockPath));
 
+    const nonce = crypto.randomUUID();
+
     while (true) {
-      const info = buildLockInfo(this.ttlMs);
+      const info = buildLockInfo(this.ttlMs, nonce);
       const content = JSON.stringify(info, null, 2);
 
       try {
@@ -96,6 +100,7 @@ export class FileLock implements DistributedLock {
         await file.write(new TextEncoder().encode(content));
         file.close();
 
+        this.nonce = nonce;
         this.held = true;
         this.startHeartbeat();
         return;
@@ -105,28 +110,19 @@ export class FileLock implements DistributedLock {
         }
       }
 
-      // Lock file exists — check if stale
+      // Lock file exists — check if stale.
+      // Best-effort: if we accidentally delete a fresh lock, the nonce
+      // fencing in extend() ensures the old holder self-revokes.
       const existing = await this.readLockFile();
       if (existing) {
         const acquiredAt = new Date(existing.acquiredAt).getTime();
         if (Date.now() - acquiredAt > existing.ttlMs) {
-          // Stale lock — verify mtime hasn't changed since we read it
-          // (guards against another process refreshing between our read and delete)
           try {
-            const stat = await Deno.stat(this.lockPath);
-            const recheck = await this.readLockFile();
-            if (
-              recheck &&
-              recheck.acquiredAt === existing.acquiredAt &&
-              stat.mtime &&
-              Date.now() - stat.mtime.getTime() > existing.ttlMs
-            ) {
-              await Deno.remove(this.lockPath);
-            }
+            await Deno.remove(this.lockPath);
           } catch {
             // Another process may have already cleaned it up
           }
-          continue; // Retry — either we deleted or someone else refreshed
+          continue; // Retry atomic create
         }
       }
 
@@ -150,6 +146,7 @@ export class FileLock implements DistributedLock {
 
     if (!this.held) return;
     this.held = false;
+    this.nonce = undefined;
 
     try {
       await Deno.remove(this.lockPath);
@@ -172,11 +169,20 @@ export class FileLock implements DistributedLock {
   }
 
   private async extend(): Promise<void> {
-    if (!this.held) return;
+    if (!this.held || !this.nonce) return;
 
-    const info = buildLockInfo(this.ttlMs);
+    // Verify we still own the lock before extending (fencing).
+    // If another process acquired the lock (e.g., after we were paused
+    // beyond TTL), the nonce will differ and we must self-revoke.
+    const current = await this.readLockFile();
+    if (!current || current.nonce !== this.nonce) {
+      this.held = false;
+      this.stopHeartbeat();
+      return;
+    }
+
+    const info = buildLockInfo(this.ttlMs, this.nonce);
     const content = JSON.stringify(info, null, 2);
-    // Rewrite lockfile content with fresh timestamp
     await Deno.writeTextFile(this.lockPath, content);
 
     // If release() was called while the write was in flight,

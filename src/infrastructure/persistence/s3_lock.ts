@@ -40,7 +40,7 @@ const DEFAULT_MAX_WAIT_MS = 60_000;
 const DEFAULT_LOCK_KEY = ".datastore.lock";
 
 /** Build a LockInfo for the current process. */
-function buildLockInfo(ttlMs: number): LockInfo {
+function buildLockInfo(ttlMs: number, nonce: string): LockInfo {
   const host = hostname();
   const user = Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? "unknown";
   return {
@@ -49,6 +49,7 @@ function buildLockInfo(ttlMs: number): LockInfo {
     pid: Deno.pid,
     acquiredAt: new Date().toISOString(),
     ttlMs,
+    nonce,
   };
 }
 
@@ -78,6 +79,7 @@ export class S3Lock implements DistributedLock {
   private readonly maxWaitMs: number;
   private heartbeatId: number | undefined;
   private held = false;
+  private nonce: string | undefined;
 
   constructor(s3: S3Client, options?: LockOptions) {
     this.s3 = s3;
@@ -91,39 +93,36 @@ export class S3Lock implements DistributedLock {
   async acquire(): Promise<void> {
     const startTime = Date.now();
 
+    const nonce = crypto.randomUUID();
+
     while (true) {
-      const info = buildLockInfo(this.ttlMs);
+      const info = buildLockInfo(this.ttlMs, nonce);
       const body = encodeLockInfo(info);
 
       // Attempt conditional write — atomic create
       const created = await this.s3.putObjectConditional(this.lockKey, body);
       if (created) {
+        this.nonce = nonce;
         this.held = true;
         this.startHeartbeat();
         return;
       }
 
-      // Lock exists — check if stale
+      // Lock exists — check if stale.
+      // Best-effort: if we accidentally delete a fresh lock, the nonce
+      // fencing in extend() ensures the old holder self-revokes.
       const existing = await this.readLock();
       if (existing) {
         const head = await this.s3.headObject(this.lockKey);
         if (head.exists && head.lastModified) {
           const lockAge = Date.now() - head.lastModified.getTime();
           if (lockAge > existing.ttlMs) {
-            // Stale lock — verify it hasn't been refreshed since we checked
-            // by re-reading and confirming LastModified hasn't changed
-            const recheck = await this.s3.headObject(this.lockKey);
-            if (
-              recheck.exists && recheck.lastModified &&
-              recheck.lastModified.getTime() === head.lastModified.getTime()
-            ) {
-              try {
-                await this.s3.deleteObject(this.lockKey);
-              } catch {
-                // Another process may have already cleaned it up
-              }
+            try {
+              await this.s3.deleteObject(this.lockKey);
+            } catch {
+              // Another process may have already cleaned it up
             }
-            continue; // Retry — either we deleted or someone else refreshed
+            continue; // Retry conditional write
           }
         }
       }
@@ -144,6 +143,7 @@ export class S3Lock implements DistributedLock {
 
     if (!this.held) return;
     this.held = false;
+    this.nonce = undefined;
 
     try {
       await this.s3.deleteObject(this.lockKey);
@@ -166,12 +166,20 @@ export class S3Lock implements DistributedLock {
   }
 
   private async extend(): Promise<void> {
-    if (!this.held) return;
+    if (!this.held || !this.nonce) return;
 
-    const info = buildLockInfo(this.ttlMs);
+    // Verify we still own the lock before extending (fencing).
+    // If another process acquired the lock (e.g., after we were paused
+    // beyond TTL), the nonce will differ and we must self-revoke.
+    const current = await this.readLock();
+    if (!current || current.nonce !== this.nonce) {
+      this.held = false;
+      this.stopHeartbeat();
+      return;
+    }
+
+    const info = buildLockInfo(this.ttlMs, this.nonce);
     const body = encodeLockInfo(info);
-    // Overwrite the lock object with a fresh timestamp.
-    // Safe because we are the current holder.
     await this.s3.putObject(this.lockKey, body);
 
     // If release() was called while the write was in flight,

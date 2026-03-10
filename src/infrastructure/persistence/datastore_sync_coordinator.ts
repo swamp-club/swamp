@@ -68,9 +68,11 @@ export async function registerDatastoreSync(
     await lock.acquire();
 
     // Install SIGINT handler for best-effort lock release on Ctrl-C.
-    // We await the release before exiting to give it time to complete.
+    // Await release with a 5-second timeout to avoid hanging if S3 is unreachable.
     signalHandler = () => {
+      const forceExit = setTimeout(() => Deno.exit(130), 5_000);
       lock.release().catch(() => {}).finally(() => {
+        clearTimeout(forceExit);
         Deno.exit(130); // 128 + SIGINT(2)
       });
     };

@@ -37,6 +37,8 @@ export interface LockInfo {
   acquiredAt: string;
   /** Lock duration in ms before considered stale. */
   ttlMs: number;
+  /** Unique identifier for this lock acquisition (fencing token). */
+  nonce?: string;
 }
 
 /** Configuration for lock behavior. */
