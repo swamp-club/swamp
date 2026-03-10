@@ -138,6 +138,30 @@ models:
   assertEquals(manifest.name, "@si/myext");
 });
 
+Deno.test("parseExtensionManifest accepts multi-segment name", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@swamp/aws/ec2"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.name, "@swamp/aws/ec2");
+});
+
+Deno.test("parseExtensionManifest accepts deeply nested multi-segment name", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@swamp/aws/accessanalyzer/analyzer"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.name, "@swamp/aws/accessanalyzer/analyzer");
+});
+
 Deno.test("parseExtensionManifest rejects invalid CalVer version", () => {
   const yaml = `
 manifestVersion: 1

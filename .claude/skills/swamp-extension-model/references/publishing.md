@@ -34,7 +34,7 @@ dependencies:
 | Field             | Required | Description                                                       |
 | ----------------- | -------- | ----------------------------------------------------------------- |
 | `manifestVersion` | Yes      | Must be `1`                                                       |
-| `name`            | Yes      | Scoped name: `@collective/name` (lowercase, hyphens, underscores) |
+| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores) |
 | `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                 |
 | `description`     | No       | Human-readable description                                        |
 | `models`          | No*      | Model file paths relative to `extensions/models/`                 |
@@ -48,7 +48,7 @@ dependencies:
 
 ### Name Rules
 
-- Must match pattern `@collective/name` (e.g., `@myorg/s3-tools`)
+- Must match pattern `@collective/name` or `@collective/name/sub/path` (e.g., `@myorg/s3-tools`, `@myorg/aws/ec2`)
 - Collective must match your authenticated username
 - Reserved collectives (`@swamp`, `@si`) cannot be used
 - Allowed characters: lowercase letters, numbers, hyphens, underscores

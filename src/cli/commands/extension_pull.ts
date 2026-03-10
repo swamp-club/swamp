@@ -59,7 +59,7 @@ function isMacOsResourceFork(name: string): boolean {
 type AnyOptions = any;
 
 const DEFAULT_SERVER_URL = "https://swamp.club";
-const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
+const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 const MAX_DEPENDENCY_DEPTH = 10;
 const LOCK_RETRY_COUNT = 10;
 const LOCK_RETRY_DELAY_MS = 100;
@@ -870,7 +870,7 @@ export const extensionPullCommand = new Command()
     // 3. Validate name format
     if (!SCOPED_NAME_PATTERN.test(ref.name)) {
       throw new UserError(
-        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores).`,
+        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed).`,
       );
     }
 

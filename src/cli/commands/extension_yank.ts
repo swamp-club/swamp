@@ -31,7 +31,7 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
+const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
 function resolveServerUrl(): string {
@@ -80,7 +80,7 @@ export const extensionYankCommand = new Command()
 
     if (!SCOPED_NAME_PATTERN.test(ref.name)) {
       throw new UserError(
-        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores).`,
+        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed).`,
       );
     }
 

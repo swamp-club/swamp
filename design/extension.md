@@ -7,16 +7,18 @@ reusable automation models and workflows that others can pull into their reposit
 ## Name
 
 Every extension has a scoped name in the format `@collective/name`. The collective
-identifies the collective, and the name identifies the extension.
-Both parts must be lowercase and may contain alphanumeric characters, hyphens,
-and underscores. The pattern is `@[a-z0-9_-]+/[a-z0-9_-]+`.
+identifies the collective, and the name identifies the extension. Additional
+path segments are allowed for organizing related extensions hierarchically.
+All parts must be lowercase and may contain alphanumeric characters, hyphens,
+and underscores. The pattern is `@[a-z0-9_-]+/[a-z0-9_-]+(/[a-z0-9_-]+)*`.
 
 The collectives `@swamp` and `@si` are reserved for built-in extensions and
 cannot be used by external authors.
 
 You cannot use another person's name in the extensions that you publish.
 
-Examples: `@keeb/ssh`, `@acme/deploy`, `@myorg/aws-helpers`.
+Examples: `@keeb/ssh`, `@acme/deploy`, `@myorg/aws-helpers`, `@swamp/aws/ec2`,
+`@swamp/aws/accessanalyzer/analyzer`.
 
 ## Version
 
