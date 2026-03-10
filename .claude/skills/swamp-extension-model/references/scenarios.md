@@ -8,6 +8,7 @@ End-to-end scenarios showing how to build custom extension models.
 - [Scenario 2: Cloud Resource CRUD](#scenario-2-cloud-resource-crud)
 - [Scenario 3: Factory Model for Discovery](#scenario-3-factory-model-for-discovery)
 - [Scenario 4: Extending Built-in Models](#scenario-4-extending-built-in-models)
+- [Scenario 5: Extending an Existing Model Instead of Ad-Hoc Alternatives](#scenario-5-extending-an-existing-model-instead-of-ad-hoc-alternatives)
 
 ---
 
@@ -774,3 +775,343 @@ swamp model method run my-script dryRun --json
 | Only add new methods         | No overriding existing methods             |
 | Use `export const extension` | Distinguishes from new model definitions   |
 | Methods array format         | Allows multiple methods per extension file |
+
+---
+
+## Scenario 5: Extending an Existing Model Instead of Ad-Hoc Alternatives
+
+### User Request
+
+> "I already have a `@user/github-repo` model that can list my repos. Now I need
+> to search repos by topic, and also generate a summary report grouped by
+> language."
+
+### What You'll Build
+
+- 1 extension: adds a `search` method to `@user/github-repo`
+- 1 new model: `@user/github-repo-report` for data transformation
+
+### Starting Point
+
+Assume this model already exists and has a `list` method:
+
+```typescript
+// extensions/models/github_repo.ts
+import { z } from "npm:zod@4";
+
+const GlobalArgsSchema = z.object({
+  token: z.string(),
+  owner: z.string(),
+});
+
+const ReposSchema = z.object({
+  repos: z.array(z.object({
+    name: z.string(),
+    stars: z.number(),
+    language: z.string().nullable(),
+    url: z.string(),
+  })),
+  fetchedAt: z.string(),
+});
+
+export const model = {
+  type: "@user/github-repo",
+  version: "2026.03.10.1",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    "repos": {
+      description: "Repository listing",
+      schema: ReposSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    list: {
+      description: "List repositories for the configured owner",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const { token, owner } = context.globalArgs;
+        const response = await fetch(
+          `https://api.github.com/users/${owner}/repos?per_page=100`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github+json",
+            },
+          },
+        );
+
+        if (!response.ok) {
+          throw new Error(`GitHub API error: ${response.statusText}`);
+        }
+
+        const items = await response.json();
+        const handle = await context.writeResource("repos", "main", {
+          repos: items.map((r) => ({
+            name: r.full_name,
+            stars: r.stargazers_count,
+            language: r.language,
+            url: r.html_url,
+          })),
+          fetchedAt: new Date().toISOString(),
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+```
+
+### Decision Tree
+
+```
+User wants to search repos by topic
+├── @user/github-repo exists locally? → Yes
+├── Has a "search" method? → No
+├── Is search within this model's domain? → Yes (it's a repo operation)
+└── Extend the model with a search method
+
+User wants a summary report grouped by language
+├── Is this a repo operation? → No, it's a data transformation
+├── Should we pipe output through python3 -c? → NO
+└── Create a new @user/github-repo-report model
+```
+
+### Anti-Pattern A: Shelling Out to CLI Tools
+
+```bash
+# ❌ DON'T DO THIS — the @user/github-repo model already covers this domain.
+# Adding a method is better than falling back to CLI tools.
+gh search repos --topic=typescript --json name,stargazersCount,url
+```
+
+This bypasses swamp entirely — no data persistence, no CEL expressions, no
+workflow integration.
+
+### Correct Approach A: Extend the Existing Model
+
+```typescript
+// extensions/models/github_repo_search.ts
+import { z } from "npm:zod@4";
+
+export const extension = {
+  type: "@user/github-repo",
+  methods: [{
+    search: {
+      description: "Search repositories by topic, language, or query",
+      arguments: z.object({
+        query: z.string(),
+        topic: z.string().optional(),
+        language: z.string().optional(),
+        limit: z.number().default(30),
+      }),
+      execute: async (args, context) => {
+        const { token } = context.globalArgs;
+
+        const params = new URLSearchParams();
+        let q = args.query;
+        if (args.topic) q += ` topic:${args.topic}`;
+        if (args.language) q += ` language:${args.language}`;
+        params.set("q", q);
+        params.set("per_page", String(args.limit));
+
+        const response = await fetch(
+          `https://api.github.com/search/repositories?${params}`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.github+json",
+            },
+          },
+        );
+
+        if (!response.ok) {
+          throw new Error(`GitHub API error: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+
+        // Write to the model's existing "repos" resource spec
+        // using a different instance name to distinguish from "list"
+        const handle = await context.writeResource("repos", "search", {
+          repos: data.items.map((r) => ({
+            name: r.full_name,
+            stars: r.stargazers_count,
+            language: r.language,
+            url: r.html_url,
+          })),
+          fetchedAt: new Date().toISOString(),
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+  }],
+};
+```
+
+Now `search` is a first-class method on `@user/github-repo`:
+
+```bash
+swamp model method run my-repos search --json
+```
+
+And the results are accessible via CEL:
+
+```yaml
+searchResults: ${{ model.my-repos.resource.repos.search.attributes.repos }}
+```
+
+### Anti-Pattern B: Inline Script Processing
+
+```bash
+# ❌ DON'T DO THIS — fragile, untestable, breaks on special characters.
+swamp model output data my-repos --json | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+repos = data['data']['repos']
+by_lang = {}
+for r in repos:
+    lang = r.get('language') or 'Unknown'
+    by_lang.setdefault(lang, []).append(r['name'])
+for lang, names in sorted(by_lang.items()):
+    print(f'{lang}: {len(names)} repos')
+"
+```
+
+This is fragile (shell escaping), untestable, unreusable, and the output
+disappears — no persistence, no CEL access, no workflow integration.
+
+### Correct Approach B: Create a Report Model
+
+When you need to transform or aggregate model output, create a dedicated model
+that receives the data via CEL expressions in its globalArguments:
+
+```typescript
+// extensions/models/github_repo_report.ts
+import { z } from "npm:zod@4";
+
+const RepoEntrySchema = z.object({
+  name: z.string(),
+  stars: z.number(),
+  language: z.string().nullable(),
+  url: z.string(),
+});
+
+const GlobalArgsSchema = z.object({
+  repos: z.array(RepoEntrySchema),
+});
+
+const ReportSchema = z.object({
+  totalRepos: z.number(),
+  byLanguage: z.array(z.object({
+    language: z.string(),
+    count: z.number(),
+    repos: z.array(z.string()),
+  })),
+  generatedAt: z.string(),
+});
+
+export const model = {
+  type: "@user/github-repo-report",
+  version: "2026.03.10.1",
+  globalArguments: GlobalArgsSchema,
+  resources: {
+    "report": {
+      description: "Repository summary report",
+      schema: ReportSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    generate: {
+      description: "Generate a summary report grouped by language",
+      arguments: z.object({}),
+      execute: async (_args, context) => {
+        const { repos } = context.globalArgs;
+
+        // Group repos by language
+        const langMap = new Map<string, string[]>();
+        for (const repo of repos) {
+          const lang = repo.language || "Unknown";
+          const list = langMap.get(lang) || [];
+          list.push(repo.name);
+          langMap.set(lang, list);
+        }
+
+        const byLanguage = [...langMap.entries()]
+          .sort((a, b) => b[1].length - a[1].length)
+          .map(([language, names]) => ({
+            language,
+            count: names.length,
+            repos: names,
+          }));
+
+        const handle = await context.writeResource("report", "main", {
+          totalRepos: repos.length,
+          byLanguage,
+          generatedAt: new Date().toISOString(),
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+```
+
+**Model input YAML — data flows in via CEL:**
+
+```yaml
+# models/my-repo-report/input.yaml
+name: my-repo-report
+version: 1
+tags: {}
+globalArguments:
+  # Pull repo data from the github-repo model's output
+  repos: ${{ model.my-repos.resource.repos.main.attributes.repos }}
+methods:
+  generate:
+    arguments: {}
+```
+
+### Chaining Both in a Workflow
+
+```yaml
+# workflows/repo-report/workflow.yaml
+name: repo-report
+version: 1
+jobs:
+  - name: report
+    steps:
+      - name: list-repos
+        task:
+          type: model_method
+          modelIdOrName: my-repos
+          methodName: list
+
+      - name: generate-report
+        task:
+          type: model_method
+          modelIdOrName: my-repo-report
+          methodName: generate
+        needs: [list-repos]
+```
+
+### CEL Paths Used
+
+| Data           | CEL Path                                                          |
+| -------------- | ----------------------------------------------------------------- |
+| Listed repos   | `model.my-repos.resource.repos.main.attributes.repos`             |
+| Searched repos | `model.my-repos.resource.repos.search.attributes.repos`           |
+| Report summary | `model.my-repo-report.resource.report.main.attributes.byLanguage` |
+| Total count    | `model.my-repo-report.resource.report.main.attributes.totalRepos` |
+
+### Key Takeaways
+
+| Situation                                 | Do This                                 | Not This                                |
+| ----------------------------------------- | --------------------------------------- | --------------------------------------- |
+| Model exists but missing a method         | Add method via `export const extension` | Shell out to CLI tools                  |
+| Need to transform model output            | Create a new model for it               | Pipe through `python3 -c` / `deno eval` |
+| Data needs to flow between models         | CEL expressions in globalArguments      | Parse stdout in inline scripts          |
+| One-off command user doesn't want modeled | CLI tools are fine                      | —                                       |

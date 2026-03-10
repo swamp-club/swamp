@@ -14,6 +14,14 @@ When users ask you to build automation for specific services (AWS, APIs, etc.):
 4. If no type exists locally or in the community, create a dedicated extension
    model for that service
 5. Use the `swamp-extension-model` skill for guidance on creating models
+6. If an existing extension model covers the service domain but lacks the
+   specific method you need, add the method via `export const extension` rather
+   than falling back to CLI tools (like `gh`, `aws`, `kubectl`). See the
+   `swamp-extension-model` skill for how to extend models.
+7. When you need to transform or aggregate model output, create an extension
+   model for it. Don't pipe output through inline scripts (`python3 -c`,
+   `deno eval`, complex `jq` pipelines). If the transformation is worth doing,
+   it's worth modeling.
 
 The `command/shell` model is only for ad-hoc shell commands, NOT for building
 service integrations.

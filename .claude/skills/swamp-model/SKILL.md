@@ -396,6 +396,12 @@ swamp model method run my-deploy create --last-evaluated --json
 }
 ```
 
+## When to Extend vs. Shell Out
+
+Before reaching for CLI tools or inline scripts, check if an existing model
+covers the domain or if a new model should handle the transformation. See the
+`swamp-extension-model` skill's decision tree for the full guide.
+
 ## Model Outputs
 
 ### Search Outputs

@@ -8,18 +8,29 @@ description: Create user-defined TypeScript models for swamp. Use when users wan
 Create TypeScript models in `extensions/models/*.ts` that swamp loads at
 startup.
 
-## When to Create a Custom Model
+## When to Create or Extend a Model
 
-**Create an extension model when no built-in or community type exists for your
-use case.**
-
-Before creating a custom model, always check both local types and community
-extensions:
+Before writing any ad-hoc code, always check what already exists:
 
 1. Search local types: `swamp model type search <query>`
 2. Search community extensions: `swamp extension search <query>`
 3. If a community extension exists, install it instead of building from scratch
-4. Only create a custom model if nothing exists locally or in the community
+
+Then follow this decision tree:
+
+```
+Need to perform a service operation?
+├── Existing model has the method you need?
+│   └── Use it directly (see swamp-model skill)
+├── Existing model covers the domain but missing the method?
+│   └── Extend it — add the method via `export const extension`
+├── Need to transform or aggregate model output?
+│   └── Create a new model that receives data via CEL expressions
+├── No model exists for this domain?
+│   └── Create a new extension model
+└── Truly one-off operation the user doesn't want modeled?
+    └── CLI tools are acceptable
+```
 
 Extension models let you:
 
@@ -27,19 +38,16 @@ Extension models let you:
 - Define any automation logic you need
 - Create reusable components for your workflows
 
-**Example decision flow:**
-
-```
-User wants to work with S3 buckets
-swamp model type search S3 → no local results
-swamp extension search S3 → no community extension
-No existing model → Create extensions/models/s3_bucket.ts
-```
-
 **Important:** Do not default to generic CLI types (like `command/shell`) for
 specific service integrations. If the user wants to manage S3 buckets, EC2
 instances, or other resources, create a dedicated model for that service rather
-than wrapping CLI commands.
+than wrapping CLI commands. Do not pipe model output through inline scripts
+(`python3 -c`, `deno eval`, complex `jq` pipelines) — create an extension model
+instead.
+
+See
+[Scenario 5](references/scenarios.md#scenario-5-extending-an-existing-model-instead-of-ad-hoc-alternatives)
+for common anti-patterns and correct approaches.
 
 ## Quick Reference
 
