@@ -46,7 +46,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 async function setupRepoDir(dir: string): Promise<void> {
-  await ensureDir(join(dir, ".swamp", "definitions"));
+  await ensureDir(join(dir, "models"));
   await ensureDir(join(dir, ".swamp", "data"));
 }
 
@@ -55,7 +55,7 @@ async function setupRepoDir(dir: string): Promise<void> {
  */
 async function initializeTestRepo(repoDir: string): Promise<void> {
   const subdirs = [
-    ".swamp/definitions",
+    "models",
     ".swamp/outputs",
     ".swamp/data",
     ".swamp/logs",

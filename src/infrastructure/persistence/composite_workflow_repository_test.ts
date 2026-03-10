@@ -68,7 +68,7 @@ class InMemoryWorkflowRepository implements WorkflowRepository {
   }
 
   getPath(id: WorkflowId): string {
-    return `.swamp/workflows/workflow-${id}.yaml`;
+    return `workflows/workflow-${id}.yaml`;
   }
 }
 
@@ -223,5 +223,5 @@ Deno.test("CompositeWorkflowRepository getPath delegates to primary", () => {
 
   const id = createWorkflowId("test-id");
   const path = composite.getPath(id);
-  assertEquals(path, ".swamp/workflows/workflow-test-id.yaml");
+  assertEquals(path, "workflows/workflow-test-id.yaml");
 });

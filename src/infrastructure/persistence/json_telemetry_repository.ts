@@ -38,7 +38,11 @@ import {
  * Errors are silently logged to avoid breaking CLI execution.
  */
 export class JsonTelemetryRepository implements TelemetryRepository {
-  constructor(private readonly repoDir: string) {}
+  private readonly baseDir: string;
+
+  constructor(private readonly repoDir: string, baseDir?: string) {
+    this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.telemetry);
+  }
 
   /**
    * Saves a telemetry entry to a JSON file.
@@ -47,7 +51,7 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   async save(entry: TelemetryEntry): Promise<void> {
     try {
       const telemetryDir = this.getTelemetryDir();
-      await assertSafePath(telemetryDir, swampPath(this.repoDir));
+      await assertSafePath(telemetryDir, this.baseDir);
       await ensureDir(telemetryDir);
 
       const date = entry.startedAt.toISOString().split("T")[0];
@@ -239,6 +243,6 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   }
 
   private getTelemetryDir(): string {
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.telemetry);
+    return this.baseDir;
   }
 }

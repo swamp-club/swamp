@@ -49,13 +49,13 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function initializeTestRepo(repoDir: string): Promise<void> {
   const subdirs = [
-    ".swamp/definitions",
+    "models",
     ".swamp/outputs",
     ".swamp/data",
     ".swamp/logs",
-    ".swamp/workflows",
+    "workflows",
     ".swamp/workflow-runs",
-    ".swamp/vault",
+    "vaults",
     ".swamp/secrets",
   ];
   for (const subdir of subdirs) {

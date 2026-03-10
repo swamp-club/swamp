@@ -30,17 +30,20 @@ import { stringify as stringifyYaml } from "@std/yaml";
  * Call this before running any CLI commands that require an initialized repo.
  */
 export async function initializeTestRepo(repoDir: string): Promise<void> {
-  // Create the .swamp directory structure
-  const subdirs = [
-    ".swamp/definitions",
+  // Create top-level directories for source-of-truth files
+  const topLevelDirs = ["models", "workflows", "vaults"];
+  for (const dir of topLevelDirs) {
+    await ensureDir(join(repoDir, dir));
+  }
+
+  // Create runtime data directories under .swamp/
+  const runtimeSubdirs = [
     ".swamp/outputs",
     ".swamp/data",
-    ".swamp/workflows",
     ".swamp/workflow-runs",
-    ".swamp/vault",
     ".swamp/secrets",
   ];
-  for (const subdir of subdirs) {
+  for (const subdir of runtimeSubdirs) {
     await ensureDir(join(repoDir, subdir));
   }
 

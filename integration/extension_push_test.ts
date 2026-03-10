@@ -239,8 +239,8 @@ Deno.test("extension push --dry-run archives multiple workflows with unique name
       ].join("\n") + "\n",
     );
 
-    // Create workflow YAML files in .swamp/workflows/ (the real files)
-    const swampWfDir = join(tmpDir, ".swamp", "workflows");
+    // Create workflow YAML files in workflows/ (the real files)
+    const swampWfDir = join(tmpDir, "workflows");
     await Deno.mkdir(swampWfDir, { recursive: true });
 
     const wf1Content = stringifyYaml({

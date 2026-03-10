@@ -44,15 +44,15 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 async function initializeTestRepo(repoDir: string): Promise<void> {
   const subdirs = [
-    ".swamp/definitions",
+    "models",
     ".swamp/outputs",
     ".swamp/data",
     ".swamp/logs",
-    ".swamp/workflows",
+    "workflows",
     ".swamp/workflow-runs",
     ".swamp/workflows-evaluated",
     ".swamp/definitions-evaluated",
-    ".swamp/vault",
+    "vaults",
   ];
   for (const subdir of subdirs) {
     await ensureDir(join(repoDir, subdir));
@@ -126,7 +126,7 @@ Deno.test("CLI: workflow evaluate single workflow", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowId}.yaml`),
@@ -165,7 +165,7 @@ Deno.test("CLI: workflow evaluate all workflows", async () => {
     await initializeTestRepo(repoDir);
 
     // Create multiple workflows
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
 
     for (let i = 1; i <= 3; i++) {
@@ -250,7 +250,7 @@ Deno.test("CLI: workflow evaluate replaces input expressions", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowId}.yaml`),
@@ -308,7 +308,7 @@ Deno.test("CLI: workflow evaluate preserves vault expressions", async () => {
         masterKeyPath: join(repoDir, ".swamp/secrets/master.key"),
       },
     };
-    const vaultDir = join(repoDir, ".swamp/vault");
+    const vaultDir = join(repoDir, "vaults");
     await ensureDir(vaultDir);
     await Deno.writeTextFile(
       join(vaultDir, "test-vault.yaml"),
@@ -344,7 +344,7 @@ Deno.test("CLI: workflow evaluate preserves vault expressions", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowId}.yaml`),
@@ -408,7 +408,7 @@ Deno.test("CLI: workflow evaluate JSON output includes workflow data", async () 
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowId}.yaml`),
@@ -467,7 +467,7 @@ Deno.test("CLI: workflow evaluate does not execute workflow", async () => {
       ],
     };
 
-    const workflowDir = join(repoDir, ".swamp/workflows");
+    const workflowDir = join(repoDir, "workflows");
     await ensureDir(workflowDir);
     await Deno.writeTextFile(
       join(workflowDir, `workflow-${workflowId}.yaml`),

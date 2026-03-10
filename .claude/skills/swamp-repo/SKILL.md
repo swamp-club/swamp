@@ -1,6 +1,6 @@
 ---
 name: swamp-repo
-description: Manage swamp repositories. Use when initializing repos, upgrading swamp, rebuilding indexes, fixing symlinks, or starting the webapp. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "rebuild index", "repo index", "fix symlinks", "broken symlinks", "webapp", "swamp webapp", "repository structure", "logical views", ".swamp folder".
+description: Manage swamp repositories and datastores. Use when initializing repos, upgrading swamp, starting the webapp, or configuring datastores. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release".
 ---
 
 # Swamp Repository Skill
@@ -13,42 +13,42 @@ machine-readable output.
 
 ## Quick Reference
 
-| Task                   | Command                            |
-| ---------------------- | ---------------------------------- |
-| Initialize repository  | `swamp repo init [path] --json`    |
-| Upgrade repository     | `swamp repo upgrade [path] --json` |
-| Rebuild symlink index  | `swamp repo index --json`          |
-| Verify symlinks        | `swamp repo index --verify --json` |
-| Remove broken symlinks | `swamp repo index --prune --json`  |
-| Start web interface    | `swamp repo webapp [path] --json`  |
+| Task                       | Command                                                 |
+| -------------------------- | ------------------------------------------------------- |
+| Initialize repository      | `swamp repo init [path] --json`                         |
+| Upgrade repository         | `swamp repo upgrade [path] --json`                      |
+| Start web interface        | `swamp repo webapp [path] --json`                       |
+| Show datastore status      | `swamp datastore status --json`                         |
+| Setup filesystem datastore | `swamp datastore setup filesystem --path <path> --json` |
+| Setup S3 datastore         | `swamp datastore setup s3 --bucket <bucket> --json`     |
+| Sync with S3               | `swamp datastore sync --json`                           |
+| Check lock status          | `swamp datastore lock status --json`                    |
+| Force-release stuck lock   | `swamp datastore lock release --force --json`           |
 
 ## Repository Structure
 
-Swamp uses a dual-layer architecture:
-
 ```
 my-swamp-repo/
-├── .swamp/                  # Internal data storage
-│   ├── definitions/         # Model definitions by type
-│   ├── data/                # Model data by type
-│   ├── outputs/             # Method execution outputs
-│   ├── workflows/           # Workflow definitions
-│   └── workflow-runs/       # Workflow execution records
-├── models/                  # Logical view: models by name
-├── workflows/               # Logical view: workflows by name
-├── vaults/                  # Logical view: vaults by name
+├── models/                  # Model definitions (YAML)
+├── workflows/               # Workflow definitions (YAML)
+├── vaults/                  # Vault configurations (YAML)
 ├── extensions/              # Custom model extensions
 │   └── models/              # TypeScript model definitions
+├── .swamp/                  # Runtime data (datastore)
+│   ├── data/                # Versioned model data
+│   ├── outputs/             # Method execution outputs
+│   ├── workflow-runs/       # Workflow execution records
+│   └── ...                  # Other runtime artifacts
 ├── .swamp.yaml              # Repository metadata
 └── CLAUDE.md                # Agent instructions
 ```
 
-**Data Directory (`.swamp/`)**: Internal storage organized by entity type. This
-is the source of truth for all swamp data.
+**Top-level directories** (`models/`, `workflows/`, `vaults/`): Source-of-truth
+YAML files. These are committed to git and reviewed in PRs.
 
-**Logical Views**: Human-friendly symlinked directories that provide convenient
-exploration paths into `.swamp/`. These are automatically maintained by domain
-events when data changes.
+**`.swamp/` directory**: Runtime data only. Can be gitignored entirely. When an
+external datastore is configured, this data lives elsewhere (see Datastores
+section below).
 
 ## Initialize a Repository
 
@@ -100,60 +100,6 @@ swamp repo upgrade ./my-automation --json
 Run `swamp repo upgrade` after updating the swamp binary to ensure your
 repository has the latest skill files and configuration.
 
-## Rebuild Repository Index
-
-Rebuild, verify, or prune the logical view symlinks. Use this when symlinks
-become out of sync or corrupted.
-
-**Rebuild all symlinks:**
-
-```bash
-swamp repo index --json
-```
-
-**Output shape:**
-
-```json
-{
-  "action": "rebuild",
-  "models": { "created": 5, "updated": 2, "removed": 1 },
-  "workflows": { "created": 3, "updated": 0, "removed": 0 },
-  "vaults": { "created": 2, "updated": 0, "removed": 0 }
-}
-```
-
-**Verify symlink integrity:**
-
-```bash
-swamp repo index --verify --json
-```
-
-**Output shape:**
-
-```json
-{
-  "action": "verify",
-  "valid": true,
-  "broken": [],
-  "missing": []
-}
-```
-
-**Remove broken symlinks:**
-
-```bash
-swamp repo index --prune --json
-```
-
-**Output shape:**
-
-```json
-{
-  "action": "prune",
-  "removed": ["models/old-model", "workflows/deleted-workflow"]
-}
-```
-
 ## Start Web Interface
 
 Launch a local web server for browsing and managing the repository.
@@ -172,37 +118,97 @@ swamp repo webapp ./my-automation --json
 }
 ```
 
-## Logical View Details
+## Datastores
 
-### Models View (`/models/`)
+Runtime data (model data, workflow runs, outputs, audit logs) is stored in a
+configurable **datastore**. By default, this is the local `.swamp/` directory.
 
-```
-/models/{model-name}/
-  input.yaml → ../.swamp/definitions/{type}/{id}.yaml
-  resource.yaml → ../.swamp/data/{type}/{id}/resource/latest/raw
-  data.yaml → ../.swamp/data/{type}/{id}/data/latest/raw
-  outputs/ → ../.swamp/outputs/{type}/{id}/
-  logs/ → ../.swamp/data/{type}/{id}/ (filtered by type=log)
-  files/ → ../.swamp/data/{type}/{id}/ (filtered by type=file)
+### Checking Status
+
+```bash
+swamp datastore status --json
 ```
 
-### Workflows View (`/workflows/`)
+**Output shape:**
 
-```
-/workflows/{workflow-name}/
-  workflow.yaml → ../.swamp/workflows/{id}.yaml
-  runs/
-    latest → {most-recent-run}/
-    {timestamp}/
-      run.yaml → ../.swamp/workflow-runs/{id}/{run-id}.yaml
+```json
+{
+  "type": "filesystem",
+  "path": "/home/user/my-repo/.swamp",
+  "healthy": true,
+  "message": "OK",
+  "latencyMs": 1,
+  "directories": ["data", "outputs", "workflow-runs", "..."]
+}
 ```
 
-### Vaults View (`/vaults/`)
+### Setting Up a Filesystem Datastore
 
+Move runtime data to an external directory (e.g. shared NFS mount):
+
+```bash
+swamp datastore setup filesystem --path /mnt/shared/swamp-data --json
 ```
-/vaults/{vault-name}/
-  vault.yaml → ../.swamp/vault/{type}/{id}.yaml
-  secrets/ → ../.swamp/secrets/{type}/{vault-name}/ (local_encryption only)
+
+Migrates existing `.swamp/` runtime data to the new path and updates
+`.swamp.yaml`. Use `--skip-migration` to skip the data copy.
+
+### Setting Up an S3 Datastore
+
+Store runtime data in S3 for team collaboration:
+
+```bash
+swamp datastore setup s3 --bucket my-bucket --prefix my-project --region us-east-1 --json
+```
+
+Pushes existing local data to S3 and updates `.swamp.yaml`. Subsequent commands
+automatically pull before execution and push after. Use `--skip-migration` to
+skip the initial push.
+
+### Migrating Between Datastores
+
+Run `swamp datastore setup` again with the new backend type. Each setup command
+migrates existing data to the new backend.
+
+### Manual S3 Sync
+
+```bash
+swamp datastore sync --json         # Bidirectional sync
+swamp datastore sync --pull --json  # Pull-only
+swamp datastore sync --push --json  # Push-only
+```
+
+### Lock Management
+
+Both filesystem and S3 datastores use a distributed lock to prevent concurrent
+access. Locks auto-expire after 30 seconds if a process crashes.
+
+```bash
+swamp datastore lock status --json           # Show lock holder
+swamp datastore lock release --force --json  # Force-release stuck lock
+```
+
+**Lock status output shape:**
+
+```json
+{
+  "holder": "user@hostname",
+  "hostname": "hostname",
+  "pid": 12345,
+  "acquiredAt": "2026-03-10T12:00:00.000Z",
+  "ttlMs": 30000
+}
+```
+
+Returns `null` if no lock is held.
+
+### Environment Variable Override
+
+For CI/CD, override the datastore without modifying `.swamp.yaml`:
+
+```bash
+export SWAMP_DATASTORE=s3:my-bucket/my-prefix
+export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
 ```
 
 ## When to Use Other Skills
@@ -224,3 +230,4 @@ swamp repo webapp ./my-automation --json
   issues, index rebuild, and config problems
 - **Repository design**: See [design/repo.md](design/repo.md)
 - **Model structure**: See [design/models.md](design/models.md)
+- **Datastore design**: See [design/datastores.md](design/datastores.md)

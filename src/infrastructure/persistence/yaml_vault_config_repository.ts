@@ -21,7 +21,6 @@ import { ensureDir, walk } from "@std/fs";
 import { join, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
-import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
 import {
   VaultConfig,
@@ -40,14 +39,19 @@ import {
  * YAML-based repository for vault configurations.
  *
  * Stores vault configs as YAML files in the directory structure:
- * {repoDir}/.swamp/vault/{vault-type}/{id}.yaml
+ * {repoDir}/vaults/{vault-type}/{id}.yaml
  */
 export class YamlVaultConfigRepository {
   private readonly eventBus: EventBus | null;
+  private readonly baseDir: string;
 
-  constructor(repoDir: string, eventBus?: EventBus);
-  constructor(private readonly repoDir: string, eventBus?: EventBus) {
+  constructor(
+    private readonly repoDir: string,
+    eventBus?: EventBus,
+    baseDir?: string,
+  ) {
     this.eventBus = eventBus ?? null;
+    this.baseDir = baseDir ?? join(repoDir, "vaults");
   }
 
   /**
@@ -158,7 +162,7 @@ export class YamlVaultConfigRepository {
    */
   async save(config: VaultConfig): Promise<void> {
     const dir = this.getTypeDir(config.type);
-    await assertSafePath(dir, swampPath(this.repoDir));
+    await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
     const path = this.getPath(config.type, config.id);
@@ -226,7 +230,7 @@ export class YamlVaultConfigRepository {
    * Gets the base vault directory.
    */
   private getVaultDir(): string {
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.vault);
+    return this.baseDir;
   }
 
   /**

@@ -51,34 +51,6 @@ export interface RepoUpgradeData {
   tool: string;
 }
 
-/**
- * Data for repo index rebuild output.
- */
-export interface RepoIndexRebuildData {
-  path: string;
-  modelsIndexed: number;
-  workflowsIndexed: number;
-  workflowRunsIndexed: number;
-}
-
-/**
- * Data for repo index verify output.
- */
-export interface RepoIndexVerifyData {
-  path: string;
-  valid: boolean;
-  brokenLinks: string[];
-  missingTargets: string[];
-}
-
-/**
- * Data for repo index prune output.
- */
-export interface RepoIndexPruneData {
-  path: string;
-  removedLinks: string[];
-}
-
 export function renderRepoInit(data: RepoInitData, mode: OutputMode): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
@@ -120,41 +92,5 @@ export function renderRepoUpgrade(
       "  Settings: " + (data.settingsUpdated ? "updated" : "unchanged"),
     );
     logger.info("  .gitignore: " + data.gitignoreAction);
-  }
-}
-
-export function renderRepoIndexRebuild(
-  data: RepoIndexRebuildData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    const total = data.modelsIndexed + data.workflowsIndexed +
-      data.workflowRunsIndexed;
-    logger.info`Rebuilt repository index: ${total} entries indexed`;
-  }
-}
-
-export function renderRepoIndexVerify(
-  data: RepoIndexVerifyData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    const status = data.valid ? "VALID" : "INVALID";
-    logger.info`Index verification: ${status}`;
-  }
-}
-
-export function renderRepoIndexPrune(
-  data: RepoIndexPruneData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    logger.info`Pruned ${data.removedLinks.length} broken symlink(s)`;
   }
 }

@@ -59,25 +59,12 @@ import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { ExtensionWorkflowRepository } from "./extension_workflow_repository.ts";
 import { CompositeWorkflowRepository } from "./composite_workflow_repository.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
-import { SymlinkRepoIndexService } from "../repo/symlink_repo_index_service.ts";
+import { NoopRepoIndexService } from "../repo/noop_repo_index_service.ts";
 import type { RepoIndexService } from "../../domain/repo/repo_index_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
-import type {
-  DefinitionCreated,
-  DefinitionDeleted,
-  DefinitionUpdated,
-  VaultCreated,
-  VaultDeleted,
-  VaultSecretUpdated,
-  VaultUpdated,
-  WorkflowCreated,
-  WorkflowDeleted,
-  WorkflowRunCompleted,
-  WorkflowRunFailed,
-  WorkflowRunStarted,
-  WorkflowUpdated,
-} from "../../domain/events/types.ts";
 import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import { SWAMP_SUBDIRS } from "./paths.ts";
 
 // =============================================================================
 // Standalone Repository Factory Functions
@@ -95,8 +82,9 @@ import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
 export function createDefinitionRepository(
   repoDir: string,
   eventBus?: EventBus,
+  baseDir?: string,
 ): YamlDefinitionRepository {
-  return new YamlDefinitionRepository(repoDir, eventBus);
+  return new YamlDefinitionRepository(repoDir, eventBus, baseDir);
 }
 
 /**
@@ -154,8 +142,9 @@ export function createOutputRepository(repoDir: string): YamlOutputRepository {
 export function createWorkflowRepository(
   repoDir: string,
   eventBus?: EventBus,
+  baseDir?: string,
 ): YamlWorkflowRepository {
-  return new YamlWorkflowRepository(repoDir, eventBus);
+  return new YamlWorkflowRepository(repoDir, eventBus, baseDir);
 }
 
 /**
@@ -182,8 +171,9 @@ export function createWorkflowRunRepository(
 export function createVaultConfigRepository(
   repoDir: string,
   eventBus?: EventBus,
+  baseDir?: string,
 ): YamlVaultConfigRepository {
-  return new YamlVaultConfigRepository(repoDir, eventBus);
+  return new YamlVaultConfigRepository(repoDir, eventBus, baseDir);
 }
 
 // =============================================================================
@@ -197,6 +187,10 @@ export interface RepositoryFactoryConfig {
   repoDir: string;
   enableIndexing?: boolean;
   workflowsDir?: string;
+  definitionsDir?: string;
+  yamlWorkflowsDir?: string;
+  vaultsDir?: string;
+  datastoreResolver?: DatastorePathResolver;
 }
 
 /**
@@ -224,19 +218,34 @@ export interface RepositoryContext {
 export function createRepositoryContext(
   config: RepositoryFactoryConfig,
 ): RepositoryContext {
-  const { repoDir, enableIndexing = true, workflowsDir } = config;
+  const {
+    repoDir,
+    enableIndexing = true,
+    workflowsDir,
+    definitionsDir,
+    yamlWorkflowsDir,
+    vaultsDir,
+    datastoreResolver,
+  } = config;
+
+  // Helper to resolve datastore-tier base directories
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver ? datastoreResolver.resolvePath(subdir) : undefined;
 
   // Create event bus
   const eventBus = new EventBus();
 
   // Create repositories with event bus
+  // Definition and workflow repos are always local (not datastore tier)
   const definitionRepo = new YamlDefinitionRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
+    definitionsDir,
   );
   const yamlWorkflowRepo = new YamlWorkflowRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
+    yamlWorkflowsDir,
   );
 
   // Create composite workflow repo if extension workflows dir is provided
@@ -248,114 +257,38 @@ export function createRepositoryContext(
     extensionWorkflowRepo,
   );
 
+  // Datastore-tier repositories get resolved base directories
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
+    dsPath(SWAMP_SUBDIRS.workflowRuns),
   );
 
   // Evaluated definition repository (derived data, no events)
   const evaluatedDefinitionRepo = new YamlEvaluatedDefinitionRepository(
     repoDir,
+    dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
   );
 
   // Unified data repository
-  const unifiedDataRepo = new FileSystemUnifiedDataRepository(repoDir);
-  const outputRepo = new YamlOutputRepository(repoDir);
+  const unifiedDataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
+  const outputRepo = new YamlOutputRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.outputs),
+  );
 
   // Vault config repository with event bus
   const vaultConfigRepo = new YamlVaultConfigRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
+    vaultsDir,
   );
 
-  // Create index service (uses yaml repo directly for symlink management)
-  const indexService = new SymlinkRepoIndexService({
-    repoDir,
-    definitionRepo,
-    unifiedDataRepo,
-    workflowRepo: yamlWorkflowRepo,
-    workflowRunRepo,
-    vaultConfigRepo,
-  });
-
-  // Subscribe index service to events
-  if (enableIndexing) {
-    // Definition events
-    eventBus.subscribe<DefinitionCreated>(
-      "DefinitionCreated",
-      (event) =>
-        indexService.handleModelCreated({
-          type: "ModelCreated",
-          timestamp: event.timestamp,
-          modelType: event.modelType,
-          modelInputId: event.definitionId,
-          modelName: event.definitionName,
-        }),
-    );
-    eventBus.subscribe<DefinitionUpdated>(
-      "DefinitionUpdated",
-      (event) =>
-        indexService.handleModelUpdated({
-          type: "ModelUpdated",
-          timestamp: event.timestamp,
-          modelType: event.modelType,
-          modelInputId: event.definitionId,
-          modelName: event.definitionName,
-        }),
-    );
-    eventBus.subscribe<DefinitionDeleted>(
-      "DefinitionDeleted",
-      (event) =>
-        indexService.handleModelDeleted({
-          type: "ModelDeleted",
-          timestamp: event.timestamp,
-          modelType: event.modelType,
-          modelInputId: event.definitionId,
-          modelName: event.definitionName,
-        }),
-    );
-
-    eventBus.subscribe<WorkflowCreated>(
-      "WorkflowCreated",
-      (event) => indexService.handleWorkflowCreated(event),
-    );
-    eventBus.subscribe<WorkflowUpdated>(
-      "WorkflowUpdated",
-      (event) => indexService.handleWorkflowUpdated(event),
-    );
-    eventBus.subscribe<WorkflowDeleted>(
-      "WorkflowDeleted",
-      (event) => indexService.handleWorkflowDeleted(event),
-    );
-    eventBus.subscribe<WorkflowRunStarted>(
-      "WorkflowRunStarted",
-      (event) => indexService.handleWorkflowRunStarted(event),
-    );
-    eventBus.subscribe<WorkflowRunCompleted>(
-      "WorkflowRunCompleted",
-      (event) => indexService.handleWorkflowRunCompleted(event),
-    );
-    eventBus.subscribe<WorkflowRunFailed>(
-      "WorkflowRunFailed",
-      (event) => indexService.handleWorkflowRunFailed(event),
-    );
-    eventBus.subscribe<VaultCreated>(
-      "VaultCreated",
-      (event) => indexService.handleVaultCreated(event),
-    );
-    eventBus.subscribe<VaultUpdated>(
-      "VaultUpdated",
-      (event) => indexService.handleVaultUpdated(event),
-    );
-    eventBus.subscribe<VaultDeleted>(
-      "VaultDeleted",
-      (event) => indexService.handleVaultDeleted(event),
-    );
-    eventBus.subscribe<VaultSecretUpdated>(
-      "VaultSecretUpdated",
-      (event) => indexService.handleVaultSecretUpdated(event),
-    );
-  }
+  // Create index service (no-op — symlink-based indexing has been removed)
+  const indexService = new NoopRepoIndexService();
 
   return {
     eventBus,

@@ -56,7 +56,7 @@ Deno.test("resolveModelSymlink resolves existing symlink", async () => {
     const realTempDir = await Deno.realPath(tempDir);
 
     // Create a target file
-    const targetDir = join(realTempDir, ".swamp", "definitions", "test");
+    const targetDir = join(realTempDir, "models", "test");
     await ensureDir(targetDir);
     const targetFile = join(targetDir, "abc123.yaml");
     await Deno.writeTextFile(targetFile, "name: test-model\n");
