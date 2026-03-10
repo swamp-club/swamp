@@ -31,6 +31,7 @@
     "react/jsx-runtime": "npm:react@^18.3.1/jsx-runtime",
     "@types/react": "npm:@types/react@^18.3.28",
     "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@^3.1002.0",
+    "@aws-sdk/client-s3": "npm:@aws-sdk/client-s3@^3.1002.0",
     "@aws-sdk/client-secrets-manager": "npm:@aws-sdk/client-secrets-manager@^3.1002.0",
     "@azure/identity": "npm:@azure/identity@^4.13.0",
     "@azure/keyvault-secrets": "npm:@azure/keyvault-secrets@^4.10.0",

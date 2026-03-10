@@ -22,6 +22,7 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { SwampVersion } from "../../domain/repo/swamp_version.ts";
 import type { RepoPath } from "../../domain/repo/repo_path.ts";
 import { swampMarkerPath } from "./paths.ts";
+import type { DatastoreConfigData } from "../../domain/datastore/datastore_config.ts";
 
 /**
  * The AI coding tool to configure skills and instructions for.
@@ -45,6 +46,7 @@ export interface RepoMarkerData {
   tool?: AiTool;
   logLevel?: string;
   gitignoreManaged?: boolean;
+  datastore?: DatastoreConfigData;
 }
 
 /**

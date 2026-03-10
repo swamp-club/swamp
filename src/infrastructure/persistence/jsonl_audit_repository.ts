@@ -38,7 +38,11 @@ import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
  * Silent failure to avoid breaking CLI execution.
  */
 export class JsonlAuditRepository implements AuditRepository {
-  constructor(private readonly repoDir: string) {}
+  private readonly baseDir: string;
+
+  constructor(private readonly repoDir: string, baseDir?: string) {
+    this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.audit);
+  }
 
   /**
    * Appends a bash command entry to the day's JSONL file.
@@ -182,6 +186,6 @@ export class JsonlAuditRepository implements AuditRepository {
   }
 
   private getAuditDir(): string {
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.audit);
+    return this.baseDir;
   }
 }

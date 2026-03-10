@@ -235,7 +235,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
 
       if (!dryRun) {
         // Soft delete: remove latest symlink
-        await this.dataRepo.removeLatestSymlink(type, modelId, dataName);
+        await this.dataRepo.removeLatestMarker(type, modelId, dataName);
       }
 
       expiredEntries.push({

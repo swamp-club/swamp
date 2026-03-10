@@ -179,6 +179,90 @@ This means you get the feature you asked for, maintained over time, without
 having to worry about keeping a fork in sync. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the full details.
 
+## Datastores
+
+By default, swamp stores all runtime data (model data, workflow runs, outputs,
+audit logs, etc.) in the local `.swamp/` directory. You can configure a
+different datastore backend to share state across machines or centralise data.
+
+### Default (local filesystem)
+
+When you run `swamp repo init`, the datastore is `.swamp/` inside the repo. No
+extra configuration needed.
+
+### Setting up an external filesystem datastore
+
+Move runtime data to a directory outside the repo (e.g. a shared NFS mount):
+
+```bash
+swamp datastore setup filesystem --path /mnt/shared/swamp-data
+```
+
+This migrates existing `.swamp/` runtime data to the new path and updates
+`.swamp.yaml`. A file-based lock prevents concurrent access from multiple
+processes.
+
+### Setting up an S3 datastore
+
+Store runtime data in S3 for team collaboration:
+
+```bash
+swamp datastore setup s3 --bucket my-swamp-bucket --prefix my-project --region us-east-1
+```
+
+This pushes existing local data to S3 and updates `.swamp.yaml`. Subsequent
+commands automatically pull changes before execution and push changes after. A
+distributed lock (S3 conditional writes) prevents concurrent access.
+
+Use `--skip-migration` on either setup command to skip the initial data
+migration.
+
+### Migrating between datastores
+
+Run `swamp datastore setup` again with the new backend. For example, to move
+from a filesystem datastore to S3:
+
+```bash
+swamp datastore setup s3 --bucket my-bucket
+```
+
+Or from S3 back to local filesystem:
+
+```bash
+swamp datastore setup filesystem --path /path/to/data
+```
+
+Each setup command migrates existing data to the new backend.
+
+### Checking datastore status
+
+```bash
+swamp datastore status        # Shows type, health, and config
+swamp datastore sync          # Manual bidirectional sync (S3 only)
+swamp datastore sync --pull   # Pull-only from S3
+swamp datastore sync --push   # Push-only to S3
+```
+
+### Stuck locks
+
+If a process crashes without releasing the datastore lock, subsequent commands
+will wait up to 60 seconds before timing out (locks auto-expire after 30
+seconds). To inspect or force-release a stuck lock:
+
+```bash
+swamp datastore lock status           # Show who holds the lock
+swamp datastore lock release --force  # Force-release the lock
+```
+
+### Environment variable override
+
+For CI/CD, override the datastore without modifying `.swamp.yaml`:
+
+```bash
+export SWAMP_DATASTORE=s3:my-bucket/my-prefix
+export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
+```
+
 ## Log Level
 
 By default, swamp outputs at the `info` level. You can change this once rather

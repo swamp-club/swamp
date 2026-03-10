@@ -23,7 +23,6 @@ import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -47,15 +46,20 @@ const logger = getLogger(["definition-repo"]);
  * YAML-based implementation of DefinitionRepository.
  *
  * Stores definitions as YAML files in the directory structure:
- * {repoDir}/.swamp/definitions/{normalized-type}/{id}.yaml
+ * {repoDir}/models/{normalized-type}/{id}.yaml
  *
  * CEL expressions in attributes are preserved as-is (not evaluated on save).
  */
 export class YamlDefinitionRepository implements DefinitionRepository {
+  private readonly baseDir: string;
+
   constructor(
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
-  ) {}
+    baseDir?: string,
+  ) {
+    this.baseDir = baseDir ?? join(repoDir, "models");
+  }
 
   async findById(
     type: ModelType,
@@ -109,8 +113,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
-    const definitionsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.definitions);
-    return await this.searchDefinitionByName(definitionsDir, [], name);
+    return await this.searchDefinitionByName(this.baseDir, [], name);
   }
 
   /**
@@ -169,9 +172,8 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   async findAllGlobal(): Promise<
     { definition: Definition; type: ModelType }[]
   > {
-    const definitionsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.definitions);
     const results: { definition: Definition; type: ModelType }[] = [];
-    await this.collectAllDefinitions(definitionsDir, [], results);
+    await this.collectAllDefinitions(this.baseDir, [], results);
     return results;
   }
 
@@ -219,7 +221,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
   async save(type: ModelType, definition: Definition): Promise<void> {
     const dir = this.getTypeDir(type);
-    await assertSafePath(dir, swampPath(this.repoDir));
+    await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
     const path = this.getPath(type, definition.id);
@@ -283,8 +285,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       await Deno.remove(path);
 
       // Clean up empty parent directories
-      const definitionsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.definitions);
-      await cleanupEmptyParentDirs(path, definitionsDir);
+      await cleanupEmptyParentDirs(path, this.baseDir);
 
       // Emit event if we had a name
       if (this.eventBus && definitionName) {
@@ -311,10 +312,6 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   }
 
   private getTypeDir(type: ModelType): string {
-    return swampPath(
-      this.repoDir,
-      SWAMP_SUBDIRS.definitions,
-      type.toDirectoryPath(),
-    );
+    return join(this.baseDir, type.toDirectoryPath());
   }
 }

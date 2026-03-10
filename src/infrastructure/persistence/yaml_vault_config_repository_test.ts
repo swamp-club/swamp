@@ -168,7 +168,7 @@ Deno.test("YamlVaultConfigRepository - rejects malformed YAML config", async (t)
   await t.step("should reject YAML missing required 'id' field", async () => {
     const dir = await Deno.makeTempDir();
     try {
-      const vaultDir = join(dir, ".swamp", "vault", "mock");
+      const vaultDir = join(dir, "vaults", "mock");
       await ensureDir(vaultDir);
       // Write YAML missing the 'id' field
       await Deno.writeTextFile(
@@ -192,7 +192,7 @@ Deno.test("YamlVaultConfigRepository - rejects malformed YAML config", async (t)
     async () => {
       const dir = await Deno.makeTempDir();
       try {
-        const vaultDir = join(dir, ".swamp", "vault", "mock");
+        const vaultDir = join(dir, "vaults", "mock");
         await ensureDir(vaultDir);
         await Deno.writeTextFile(
           join(vaultDir, "bad.yaml"),
@@ -216,7 +216,7 @@ Deno.test("YamlVaultConfigRepository - rejects malformed YAML config", async (t)
     async () => {
       const dir = await Deno.makeTempDir();
       try {
-        const vaultDir = join(dir, ".swamp", "vault", "mock");
+        const vaultDir = join(dir, "vaults", "mock");
         await ensureDir(vaultDir);
         await Deno.writeTextFile(
           join(vaultDir, "bad.yaml"),
@@ -238,7 +238,7 @@ Deno.test("YamlVaultConfigRepository - rejects malformed YAML config", async (t)
   await t.step("should default config to empty object if missing", async () => {
     const dir = await Deno.makeTempDir();
     try {
-      const vaultDir = join(dir, ".swamp", "vault", "mock");
+      const vaultDir = join(dir, "vaults", "mock");
       await ensureDir(vaultDir);
       // Config field omitted - should default to {}
       await Deno.writeTextFile(

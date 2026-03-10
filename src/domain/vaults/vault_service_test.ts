@@ -449,7 +449,7 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
       const tempDir = await Deno.makeTempDir();
       try {
         // Create a vault config YAML with the old 'aws' type
-        const vaultDir = join(tempDir, ".swamp", "vault", "aws");
+        const vaultDir = join(tempDir, "vaults", "aws");
         await ensureDir(vaultDir);
         const vaultYaml = stringifyYaml({
           id: "test-vault-id",
@@ -480,7 +480,7 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
       const tempDir = await Deno.makeTempDir();
       try {
         // Create a vault config YAML with the old 'azure' type
-        const vaultDir = join(tempDir, ".swamp", "vault", "azure");
+        const vaultDir = join(tempDir, "vaults", "azure");
         await ensureDir(vaultDir);
         const vaultYaml = stringifyYaml({
           id: "test-vault-id",

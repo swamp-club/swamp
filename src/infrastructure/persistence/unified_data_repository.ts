@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, relative, resolve } from "@std/path";
+import { join, resolve } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -214,7 +214,7 @@ export interface UnifiedDataRepository {
    * @param modelId - The model input ID
    * @param dataName - The data name
    */
-  removeLatestSymlink(
+  removeLatestMarker(
     type: ModelType,
     modelId: string,
     dataName: string,
@@ -387,7 +387,11 @@ export interface UnifiedDataRepository {
  *   latest/            # Symlink -> 2/
  */
 export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
-  constructor(private readonly repoDir: string) {}
+  private readonly baseDir: string;
+
+  constructor(private readonly repoDir: string, baseDir?: string) {
+    this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
+  }
 
   async findAllGlobal(): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
@@ -641,7 +645,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       data.name,
       newVersion,
     );
-    const boundary = swampPath(this.repoDir);
+    const boundary = this.baseDir;
     await assertSafePath(metadataPath, boundary);
     const metadata = dataToSave.toData();
     // Remove undefined values
@@ -660,7 +664,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await atomicWriteFile(contentPath, content);
 
     // Update latest symlink
-    await this.updateLatestSymlink(type, modelId, data.name, newVersion);
+    await this.updateLatestMarker(type, modelId, data.name, newVersion);
 
     return { version: newVersion };
   }
@@ -687,7 +691,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
       latestVersion,
     );
-    await assertSafePath(contentPath, swampPath(this.repoDir));
+    await assertSafePath(contentPath, this.baseDir);
     const file = await Deno.open(contentPath, { append: true });
     try {
       await file.write(content);
@@ -799,7 +803,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       const versions = await this.listVersions(type, modelId, dataName);
       if (versions.length > 0) {
         const newLatest = Math.max(...versions);
-        await this.updateLatestSymlink(type, modelId, dataName, newLatest);
+        await this.updateLatestMarker(type, modelId, dataName, newLatest);
       } else {
         // No versions left, remove the data name directory
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
@@ -822,7 +826,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * Removes the latest symlink for expired data (soft delete).
    * Version directories remain on disk but data becomes inaccessible.
    */
-  async removeLatestSymlink(
+  async removeLatestMarker(
     type: ModelType,
     modelId: string,
     dataName: string,
@@ -912,7 +916,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     await atomicWriteTextFile(metadataPath, metadataContent);
 
     // Update latest symlink
-    await this.updateLatestSymlink(type, modelId, data.name, version);
+    await this.updateLatestMarker(type, modelId, data.name, version);
 
     return { size, checksum };
   }
@@ -954,17 +958,24 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       "latest",
     );
     try {
+      // Try reading as text file first (new format)
+      const content = Deno.readTextFileSync(latestPath);
+      const version = parseInt(content.trim(), 10);
+      if (!isNaN(version)) return version;
+    } catch {
+      // Not a text file or not found
+    }
+    try {
+      // Backward compat: try reading as symlink (old format)
       const linkTarget = Deno.readLinkSync(latestPath);
       const version = parseInt(linkTarget.replace(/\/$/, ""), 10);
-      return isNaN(version) ? null : version;
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        // Fall back to scanning versions
-        const versions = this.listVersionsSync(type, modelId, dataName);
-        return versions.length > 0 ? Math.max(...versions) : null;
-      }
-      throw error;
+      if (!isNaN(version)) return version;
+    } catch {
+      // Not a symlink either
     }
+    // Final fallback: scan version directories
+    const versions = this.listVersionsSync(type, modelId, dataName);
+    return versions.length > 0 ? Math.max(...versions) : null;
   }
 
   findByNameSync(
@@ -1139,7 +1150,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   private getBaseDir(): string {
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.data);
+    return this.baseDir;
   }
 
   private getTypeDir(type: ModelType): string {
@@ -1174,7 +1185,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
   ): Promise<{ version: number; versionDir: string }> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
-    await assertSafePath(dataNameDir, swampPath(this.repoDir));
+    await assertSafePath(dataNameDir, this.baseDir);
     await Deno.mkdir(dataNameDir, { recursive: true });
 
     const versions = await this.listVersions(type, modelId, dataName);
@@ -1239,48 +1250,45 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       "latest",
     );
     try {
+      // Try reading as a text file first (new format)
+      const content = await Deno.readTextFile(latestPath);
+      const version = parseInt(content.trim(), 10);
+      if (!isNaN(version)) return version;
+    } catch {
+      // Not a text file or not found
+    }
+    try {
+      // Backward compat: try reading as a symlink (old format)
       const linkTarget = await Deno.readLink(latestPath);
       const version = parseInt(linkTarget.replace(/\/$/, ""), 10);
-      return isNaN(version) ? null : version;
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        // Fall back to scanning versions
-        const versions = await this.listVersions(type, modelId, dataName);
-        return versions.length > 0 ? Math.max(...versions) : null;
-      }
-      throw error;
+      if (!isNaN(version)) return version;
+    } catch {
+      // Not a symlink either
     }
+    // Final fallback: scan version directories
+    const versions = await this.listVersions(type, modelId, dataName);
+    return versions.length > 0 ? Math.max(...versions) : null;
   }
 
-  private async updateLatestSymlink(
+  private async updateLatestMarker(
     type: ModelType,
     modelId: string,
     dataName: string,
     version: number,
   ): Promise<void> {
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
-    await assertSafePath(dataNameDir, swampPath(this.repoDir));
+    await assertSafePath(dataNameDir, this.baseDir);
     const latestPath = join(dataNameDir, "latest");
-    const target = version.toString();
 
-    // Use relative path for symlink
-    const relativeTarget = relative(dataNameDir, join(dataNameDir, target));
-
-    // Create temp symlink and atomically rename
-    const tempPath = `${latestPath}.tmp.${crypto.randomUUID()}`;
-
+    // Remove old symlink or file if it exists
     try {
-      await Deno.symlink(relativeTarget, tempPath, { type: "dir" });
-      await Deno.rename(tempPath, latestPath);
-    } catch (error) {
-      // Clean up temp symlink on failure
-      try {
-        await Deno.remove(tempPath);
-      } catch {
-        // Ignore cleanup errors
-      }
-      throw error;
+      await Deno.remove(latestPath);
+    } catch {
+      // Ignore if not found
     }
+
+    // Write version number as plain text
+    await atomicWriteTextFile(latestPath, version.toString());
   }
 
   private async computeChecksum(content: Uint8Array): Promise<string> {

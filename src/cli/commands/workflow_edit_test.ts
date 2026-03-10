@@ -53,7 +53,7 @@ Deno.test("resolveWorkflowSymlink resolves existing symlink", async () => {
     const realTempDir = await Deno.realPath(tempDir);
 
     // Create a target file
-    const targetDir = join(realTempDir, ".swamp", "workflows");
+    const targetDir = join(realTempDir, "workflows");
     await ensureDir(targetDir);
     const targetFile = join(targetDir, "workflow-abc123.yaml");
     await Deno.writeTextFile(targetFile, "name: test-workflow\n");

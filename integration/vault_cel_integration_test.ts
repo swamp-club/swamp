@@ -46,13 +46,13 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 async function setupRepoDir(dir: string): Promise<void> {
-  await ensureDir(join(dir, ".swamp", "definitions"));
-  await ensureDir(join(dir, ".swamp", "vault"));
+  await ensureDir(join(dir, "models"));
+  await ensureDir(join(dir, "vaults"));
   await ensureDir(join(dir, ".swamp", "secrets"));
   await ensureDir(join(dir, ".swamp", "data"));
   await ensureDir(join(dir, ".swamp", "outputs"));
   await ensureDir(join(dir, ".swamp", "logs"));
-  await ensureDir(join(dir, ".swamp", "workflows"));
+  await ensureDir(join(dir, "workflows"));
   await ensureDir(join(dir, ".swamp", "workflow-runs"));
 
   // Create the .swamp.yaml marker file for CLI commands
@@ -510,7 +510,7 @@ Deno.test("Vault CEL: definition files don't leak secrets via model evaluate", a
     await definitionRepo.save(modelType, definition);
 
     // Read all files in the definitions directory
-    const definitionsDir = join(repoDir, ".swamp", "definitions");
+    const definitionsDir = join(repoDir, "models");
 
     async function checkDirectoryForSecret(dir: string): Promise<boolean> {
       try {

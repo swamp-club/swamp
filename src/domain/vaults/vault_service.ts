@@ -35,6 +35,7 @@ import {
   type OnePasswordVaultConfig,
   OnePasswordVaultProvider,
 } from "./onepassword_vault_provider.ts";
+import { join } from "@std/path";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
 /**
@@ -48,16 +49,24 @@ export class VaultService {
    * This is the preferred way to create a VaultService that should have access to
    * all configured vaults.
    *
-   * Vaults are loaded from .swamp/vault/ directory (created via `swamp vault create`).
+   * Vaults are loaded from the vaults/ directory (created via `swamp vault create`).
    * Note: Vaults are NOT configured in .swamp.yaml - use the CLI to create vaults.
    *
    * @param repoDir - The repository directory containing vault configurations
    * @returns A VaultService with all configured vaults loaded
    */
-  static async fromRepository(repoDir: string): Promise<VaultService> {
+  static async fromRepository(
+    repoDir: string,
+    vaultsDir?: string,
+  ): Promise<VaultService> {
     const vaultService = new VaultService();
     try {
-      const vaultRepo = new YamlVaultConfigRepository(repoDir);
+      const effectiveVaultsDir = vaultsDir ?? join(repoDir, "vaults");
+      const vaultRepo = new YamlVaultConfigRepository(
+        repoDir,
+        undefined,
+        effectiveVaultsDir,
+      );
       const vaultConfigs = await vaultRepo.findAll();
       for (const vaultConfig of vaultConfigs) {
         // Auto-remap renamed vault types so old configs load transparently

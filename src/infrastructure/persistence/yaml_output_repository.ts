@@ -47,7 +47,11 @@ import { modelRegistry } from "../../domain/models/model.ts";
  * {repoDir}/.swamp/outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml
  */
 export class YamlOutputRepository implements OutputRepository {
-  constructor(private readonly repoDir: string) {}
+  private readonly baseDir: string;
+
+  constructor(private readonly repoDir: string, baseDir?: string) {
+    this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.outputs);
+  }
 
   async findById(
     type: ModelType,
@@ -163,7 +167,7 @@ export class YamlOutputRepository implements OutputRepository {
     output: ModelOutput,
   ): Promise<void> {
     const dir = this.getMethodDir(type, method);
-    await assertSafePath(dir, swampPath(this.repoDir));
+    await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
 
     const path = this.getPath(type, method, output);
@@ -195,7 +199,7 @@ export class YamlOutputRepository implements OutputRepository {
             await Deno.remove(path);
 
             // Clean up empty parent directories
-            const outputsDir = swampPath(this.repoDir, SWAMP_SUBDIRS.outputs);
+            const outputsDir = this.baseDir;
             await cleanupEmptyParentDirs(path, outputsDir);
             return;
           }
@@ -219,7 +223,7 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   private getOutputsDir(): string {
-    return swampPath(this.repoDir, SWAMP_SUBDIRS.outputs);
+    return this.baseDir;
   }
 
   private getTypeDir(type: ModelType): string {

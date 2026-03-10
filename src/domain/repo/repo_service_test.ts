@@ -121,16 +121,26 @@ Deno.test("RepoService.init creates data directory structure", async () => {
 
     await service.init(repoPath);
 
-    // Check all data subdirectories exist
+    // Check top-level directories exist
+    const topLevelDirs = [
+      "models",
+      "workflows",
+      "vaults",
+    ];
+
+    for (const dir of topLevelDirs) {
+      const dirPath = join(tempDir, dir);
+      const stat = await Deno.stat(dirPath);
+      assertEquals(stat.isDirectory, true, `${dir} should exist`);
+    }
+
+    // Check runtime data subdirectories exist under .swamp/
     const expectedDirs = [
-      ".swamp/workflows",
       ".swamp/data",
       ".swamp/outputs",
       ".swamp/workflow-runs",
       ".swamp/workflows-evaluated",
-      ".swamp/definitions",
       ".swamp/definitions-evaluated",
-      ".swamp/vault",
       ".swamp/secrets",
       ".swamp/telemetry",
     ];
@@ -430,8 +440,7 @@ Deno.test("RepoService.init always creates .gitignore with managed section", asy
       "# BEGIN swamp managed section - DO NOT EDIT",
     );
     assertStringIncludes(content, "# END swamp managed section");
-    assertStringIncludes(content, ".swamp/telemetry/");
-    assertStringIncludes(content, ".swamp/secrets/keyfile");
+    assertStringIncludes(content, ".swamp/");
     assertStringIncludes(content, ".claude/");
 
     // Check marker persists the preference
@@ -477,7 +486,7 @@ Deno.test("RepoService.init appends managed section to existing .gitignore", asy
       content,
       "# BEGIN swamp managed section - DO NOT EDIT",
     );
-    assertStringIncludes(content, ".swamp/telemetry/");
+    assertStringIncludes(content, ".swamp/");
     assertStringIncludes(content, "# END swamp managed section");
   });
 });
@@ -827,8 +836,7 @@ Deno.test("RepoService.upgrade creates .gitignore when marker has gitignoreManag
       content,
       "# BEGIN swamp managed section - DO NOT EDIT",
     );
-    assertStringIncludes(content, ".swamp/telemetry/");
-    assertStringIncludes(content, ".swamp/secrets/keyfile");
+    assertStringIncludes(content, ".swamp/");
     assertStringIncludes(content, ".claude/");
     assertStringIncludes(content, "# END swamp managed section");
   });
@@ -895,8 +903,7 @@ Deno.test("RepoService.init includes tool-specific gitignore entries", async () 
         `${tool} gitignore should include ${expectedEntry}`,
       );
       // All tools should have common entries within managed section
-      assertStringIncludes(content, ".swamp/telemetry/");
-      assertStringIncludes(content, ".swamp/secrets/keyfile");
+      assertStringIncludes(content, ".swamp/");
       assertStringIncludes(
         content,
         "# BEGIN swamp managed section - DO NOT EDIT",
@@ -1036,7 +1043,7 @@ Deno.test("RepoService.init migrates legacy gitignore format", async () => {
       "# BEGIN swamp managed section - DO NOT EDIT",
     );
     assertStringIncludes(content, "# END swamp managed section");
-    assertStringIncludes(content, ".swamp/telemetry/");
+    assertStringIncludes(content, ".swamp/");
     assertStringIncludes(content, ".claude/");
   });
 });
@@ -1289,7 +1296,7 @@ Deno.test("RepoService.init kiro gitignore contains .kiro/skills/", async () => 
     const content = await Deno.readTextFile(gitignorePath);
     assertStringIncludes(content, ".kiro/skills/");
     assertStringIncludes(content, "# Kiro skills (managed by swamp)");
-    assertStringIncludes(content, ".swamp/telemetry/");
+    assertStringIncludes(content, ".swamp/");
   });
 });
 
