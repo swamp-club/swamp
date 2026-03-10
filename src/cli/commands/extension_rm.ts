@@ -43,7 +43,7 @@ import {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
+const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
 async function promptConfirmation(message: string): Promise<boolean> {
   const encoder = new TextEncoder();
@@ -154,7 +154,7 @@ export const extensionRemoveCommand = new Command()
     // Validate name format
     if (!SCOPED_NAME_PATTERN.test(ref.name)) {
       throw new UserError(
-        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores).`,
+        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed).`,
       );
     }
 

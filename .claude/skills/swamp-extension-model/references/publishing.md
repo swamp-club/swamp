@@ -31,24 +31,25 @@ dependencies:
 
 ### Field Reference
 
-| Field             | Required | Description                                                       |
-| ----------------- | -------- | ----------------------------------------------------------------- |
-| `manifestVersion` | Yes      | Must be `1`                                                       |
-| `name`            | Yes      | Scoped name: `@collective/name` (lowercase, hyphens, underscores) |
-| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                 |
-| `description`     | No       | Human-readable description                                        |
-| `models`          | No*      | Model file paths relative to `extensions/models/`                 |
-| `workflows`       | No*      | Workflow file paths relative to `workflows/`                      |
-| `additionalFiles` | No       | Extra files relative to the manifest location                     |
-| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)     |
-| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)      |
-| `dependencies`    | No       | Other extensions this one depends on                              |
+| Field             | Required | Description                                                                                      |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `manifestVersion` | Yes      | Must be `1`                                                                                      |
+| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores) |
+| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                |
+| `description`     | No       | Human-readable description                                                                       |
+| `models`          | No*      | Model file paths relative to `extensions/models/`                                                |
+| `workflows`       | No*      | Workflow file paths relative to `workflows/`                                                     |
+| `additionalFiles` | No       | Extra files relative to the manifest location                                                    |
+| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                    |
+| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                     |
+| `dependencies`    | No       | Other extensions this one depends on                                                             |
 
 *At least one of `models` or `workflows` must be present with entries.
 
 ### Name Rules
 
-- Must match pattern `@collective/name` (e.g., `@myorg/s3-tools`)
+- Must match pattern `@collective/name` or `@collective/name/sub/path` (e.g.,
+  `@myorg/s3-tools`, `@myorg/aws/ec2`)
 - Collective must match your authenticated username
 - Reserved collectives (`@swamp`, `@si`) cannot be used
 - Allowed characters: lowercase letters, numbers, hyphens, underscores

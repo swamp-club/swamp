@@ -22,8 +22,8 @@ import { parse as parseYaml } from "@std/yaml";
 import { CalVer } from "../models/calver.ts";
 import { UserError } from "../errors.ts";
 
-/** Scoped name pattern: @collective/name */
-const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+$/;
+/** Scoped name pattern: @collective/name or @collective/name/subname/... */
+const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
 const ExtensionManifestSchemaV1 = z.object({
   manifestVersion: z.literal(1),
@@ -31,7 +31,7 @@ const ExtensionManifestSchemaV1 = z.object({
     (name) => SCOPED_NAME_PATTERN.test(name),
     {
       message:
-        "Extension name must be scoped: @collective/name (lowercase, alphanumeric, hyphens, underscores)",
+        "Extension name must be scoped: @collective/name (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed)",
     },
   ),
   version: z.string().refine(CalVer.isValid, {
