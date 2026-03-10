@@ -190,7 +190,7 @@ The safety analyzer scans all files before push. Issues are classified as
 | Disallowed extensions       | Only `.ts`, `.json`, `.md`, `.yaml`, `.yml`, `.txt` |
 | File too large              | Individual files must be under 1 MB                 |
 | Total size exceeded         | All files combined must be under 10 MB              |
-| Too many files              | Maximum 100 files per extension                     |
+| Too many files              | Maximum 150 files per extension                     |
 
 ### Warnings (prompted)
 

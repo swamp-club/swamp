@@ -42,7 +42,7 @@ const ALLOWED_EXTENSIONS = new Set([
   ".txt",
 ]);
 
-const MAX_FILE_COUNT = 100;
+const MAX_FILE_COUNT = 150;
 const MAX_INDIVIDUAL_FILE_SIZE = 1_000_000; // 1 MB
 const MAX_TOTAL_SIZE = 10_000_000; // 10 MB
 const LONG_LINE_THRESHOLD = 500;

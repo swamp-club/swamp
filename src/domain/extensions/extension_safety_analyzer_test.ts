@@ -153,12 +153,12 @@ Deno.test("analyzeExtensionSafety errors on symlinks", async () => {
   }
 });
 
-Deno.test("analyzeExtensionSafety errors on file count > 100", async () => {
-  // Generate 101 fake paths — we don't need real files for count check
+Deno.test("analyzeExtensionSafety errors on file count > 150", async () => {
+  // Generate 151 fake paths — we don't need real files for count check
   const tmpDir = await Deno.makeTempDir();
   try {
     const paths: string[] = [];
-    for (let i = 0; i < 101; i++) {
+    for (let i = 0; i < 151; i++) {
       const p = join(tmpDir, `file${i}.ts`);
       await Deno.writeTextFile(p, `export const x${i} = ${i};\n`);
       paths.push(p);
@@ -166,7 +166,7 @@ Deno.test("analyzeExtensionSafety errors on file count > 100", async () => {
 
     const result = await analyzeExtensionSafety(paths);
     assertEquals(
-      result.errors.some((e) => e.message.includes("100")),
+      result.errors.some((e) => e.message.includes("150")),
       true,
     );
   } finally {

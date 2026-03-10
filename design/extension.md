@@ -174,7 +174,7 @@ after pull.
 - Symlinks
 - Individual file size exceeding 1 MB
 - Total extension size exceeding 10 MB
-- File count exceeding 100
+- File count exceeding 150
 - Use of `eval()` or `new Function()` (code injection)
 
 ### Warnings (prompt user)
