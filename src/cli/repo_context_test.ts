@@ -21,7 +21,10 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
-import { requireInitializedRepo } from "./repo_context.ts";
+import {
+  requireInitializedRepo,
+  resolveDatastoreForRepo,
+} from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
@@ -200,6 +203,35 @@ Deno.test("requireInitializedRepo - handles nested directory paths", async () =>
     assertEquals(result.repoDir, nestedDir);
 
     await flushDatastoreSync();
+  });
+});
+
+// ============================================================================
+// resolveDatastoreForRepo Tests
+// ============================================================================
+
+Deno.test("resolveDatastoreForRepo - returns config for initialized repo without acquiring lock", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const result = await resolveDatastoreForRepo(dir);
+
+    assertEquals(result.repoDir, dir);
+    assertEquals(result.datastoreConfig.type, "filesystem");
+
+    // flushDatastoreSync should be a no-op (no lock was acquired)
+    await flushDatastoreSync();
+  });
+});
+
+Deno.test("resolveDatastoreForRepo - throws UserError for non-initialized repo", async () => {
+  await withTempDir(async (dir) => {
+    const error = await assertRejects(
+      () => resolveDatastoreForRepo(dir),
+      UserError,
+    );
+
+    assertStringIncludes(error.message, "Not a swamp repository");
   });
 });
 

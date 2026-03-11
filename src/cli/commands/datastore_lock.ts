@@ -21,7 +21,7 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {
   createDatastoreLock,
-  requireInitializedRepo,
+  resolveDatastoreForRepo,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -48,12 +48,9 @@ const datastoreLockStatusCommand = new Command()
       "status",
     ]);
 
-    const { datastoreResolver } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
-    });
-
-    const config = datastoreResolver.config();
+    const { datastoreConfig: config } = await resolveDatastoreForRepo(
+      options.repoDir ?? ".",
+    );
     const lock = createDatastoreLock(config);
     const info = await lock.inspect();
 
@@ -87,12 +84,9 @@ const datastoreLockReleaseCommand = new Command()
       );
     }
 
-    const { datastoreResolver } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
-    });
-
-    const config = datastoreResolver.config();
+    const { datastoreConfig: config } = await resolveDatastoreForRepo(
+      options.repoDir ?? ".",
+    );
     const lock = createDatastoreLock(config);
     const info = await lock.inspect();
 

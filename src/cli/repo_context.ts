@@ -69,6 +69,42 @@ export interface RepoValidationContext {
 }
 
 /**
+ * Lightweight repo + datastore resolution without acquiring the datastore lock.
+ *
+ * Used by breakglass commands (lock status, lock release) that need the
+ * datastore config to inspect/release a lock but must not acquire it.
+ */
+export interface DatastoreResolutionResult {
+  repoDir: string;
+  datastoreConfig: DatastoreConfig;
+}
+
+export async function resolveDatastoreForRepo(
+  repoDir: string,
+): Promise<DatastoreResolutionResult> {
+  const repoPath = RepoPath.create(repoDir);
+  const service = new RepoService(VERSION);
+  const isInit = await service.isInitialized(repoPath);
+
+  if (!isInit) {
+    throw new UserError(
+      `Not a swamp repository: ${repoPath.value}. To initialize a new repository, run 'swamp repo init', or specify an existing repository with 'swamp <command> --repo-dir /path/to/repo'.`,
+    );
+  }
+
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(repoPath);
+
+  const datastoreConfig = resolveDatastoreConfig(
+    marker,
+    undefined,
+    repoPath.value,
+  );
+
+  return { repoDir: repoPath.value, datastoreConfig };
+}
+
+/**
  * Validates that a directory is an initialized swamp repository.
  *
  * Throws a UserError with helpful instructions if the directory
@@ -83,19 +119,11 @@ export async function requireInitializedRepo(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
-  const { repoDir } = options;
+  const { repoDir, datastoreConfig } = await resolveDatastoreForRepo(
+    options.repoDir,
+  );
 
   const repoPath = RepoPath.create(repoDir);
-  const service = new RepoService(VERSION);
-  const isInit = await service.isInitialized(repoPath);
-
-  if (!isInit) {
-    throw new UserError(
-      `Not a swamp repository: ${repoPath.value}. To initialize a new repository, run 'swamp repo init', or specify an existing repository with 'swamp <command> --repo-dir /path/to/repo'.`,
-    );
-  }
-
-  // Read marker to resolve workflowsDir and datastore config
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
 
@@ -104,12 +132,6 @@ export async function requireInitializedRepo(
     ? workflowsDirRel
     : resolve(repoPath.value, workflowsDirRel);
 
-  // Resolve datastore configuration
-  const datastoreConfig = resolveDatastoreConfig(
-    marker,
-    undefined,
-    repoPath.value,
-  );
   const datastoreResolver = new DefaultDatastorePathResolver(
     repoPath.value,
     datastoreConfig,
