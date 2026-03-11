@@ -30,7 +30,15 @@ import {
  */
 export const WorkflowSchema = z.object({
   id: z.string().uuid(),
-  name: z.string().min(1),
+  name: z.string().min(1).refine(
+    (name) =>
+      !name.includes("..") && !name.includes("/") && !name.includes("\\") &&
+      !name.includes("\0"),
+    {
+      message:
+        "Workflow name must not contain '..', '/', '\\', or null bytes (path traversal)",
+    },
+  ),
   description: z.string().optional(),
   tags: z.record(z.string(), z.string()).default({}),
   inputs: InputsSchemaSchema,
@@ -102,7 +110,10 @@ export class Workflow {
       version,
     };
 
-    // Only validate with schema if jobs exist
+    // Always validate the name (path traversal protection)
+    WorkflowSchema.shape.name.parse(data.name);
+
+    // Only validate full schema if jobs exist (jobs.min(1) requires at least one)
     if (jobs.length > 0) {
       WorkflowSchema.parse(data);
     }

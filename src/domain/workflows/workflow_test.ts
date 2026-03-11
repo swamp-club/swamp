@@ -404,6 +404,41 @@ Deno.test("Workflow.fromData and toData roundtrip with tags", () => {
   assertEquals(restored.tags, { env: "prod", region: "us-east-1" });
 });
 
+// Path traversal validation tests
+
+Deno.test("Workflow.create rejects name with '..'", () => {
+  assertThrows(
+    () =>
+      Workflow.create({ name: "../../etc/passwd", jobs: [createTestJob("j")] }),
+    Error,
+    "path traversal",
+  );
+});
+
+Deno.test("Workflow.create rejects name with '/'", () => {
+  assertThrows(
+    () => Workflow.create({ name: "a/b", jobs: [createTestJob("j")] }),
+    Error,
+    "path traversal",
+  );
+});
+
+Deno.test("Workflow.create rejects name with '\\'", () => {
+  assertThrows(
+    () => Workflow.create({ name: "a\\b", jobs: [createTestJob("j")] }),
+    Error,
+    "path traversal",
+  );
+});
+
+Deno.test("Workflow.create rejects path traversal even without jobs", () => {
+  assertThrows(
+    () => Workflow.create({ name: "../../../tmp/evil" }),
+    Error,
+    "path traversal",
+  );
+});
+
 Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
   // Simulate legacy data without tags field — Zod .default({}) fills it in
   const data = {
