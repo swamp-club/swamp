@@ -62,15 +62,69 @@ async function reviewSkill(skillDir: string): Promise<ReviewResult> {
 
   const stdout = new TextDecoder().decode(output.stdout);
 
-  // npx may write download/install progress to stdout before the JSON.
-  // Extract the JSON object by finding the first '{' character.
+  // npx may write download/install progress to stdout before/after the JSON.
+  // Extract the JSON object by finding the first '{' and its matching '}'.
   const jsonStart = stdout.indexOf("{");
   if (jsonStart === -1) {
     throw new Error(
       `tessl review returned no JSON for ${skillDir}: ${stdout}`,
     );
   }
-  return JSON.parse(stdout.slice(jsonStart)) as ReviewResult;
+
+  let depth = 0;
+  let jsonEnd = -1;
+  for (let i = jsonStart; i < stdout.length; i++) {
+    if (stdout[i] === "{") depth++;
+    else if (stdout[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        jsonEnd = i + 1;
+        break;
+      }
+    }
+  }
+  if (jsonEnd === -1) {
+    throw new Error(
+      `tessl review returned malformed JSON for ${skillDir}: ${stdout}`,
+    );
+  }
+
+  const parsed = JSON.parse(stdout.slice(jsonStart, jsonEnd)) as Record<
+    string,
+    unknown
+  >;
+
+  // Validate required fields are present and scores are finite numbers
+  const descScore =
+    (parsed.descriptionJudge as Record<string, unknown> | undefined)
+      ?.normalizedScore;
+  const contScore =
+    (parsed.contentJudge as Record<string, unknown> | undefined)
+      ?.normalizedScore;
+
+  if (
+    typeof descScore !== "number" || !Number.isFinite(descScore) ||
+    typeof contScore !== "number" || !Number.isFinite(contScore)
+  ) {
+    throw new Error(
+      `Invalid scores from tessl for ${skillDir}: desc=${descScore}, content=${contScore}`,
+    );
+  }
+
+  const validation = parsed.validation as
+    | Record<string, unknown>
+    | undefined;
+  if (typeof validation?.overallPassed !== "boolean") {
+    throw new Error(
+      `Invalid validation result from tessl for ${skillDir}`,
+    );
+  }
+
+  return {
+    validation: { overallPassed: validation.overallPassed },
+    descriptionJudge: { normalizedScore: descScore },
+    contentJudge: { normalizedScore: contScore },
+  };
 }
 
 function buildSummaryTable(scores: SkillScore[], allPassed: boolean): string {
@@ -135,8 +189,9 @@ async function main(): Promise<void> {
       console.log(
         `    ${name}: ${(averageScore * 100).toFixed(0)}% (desc=${(descriptionScore * 100).toFixed(0)}%, content=${(contentScore * 100).toFixed(0)}%)`,
       );
-    } catch (error) {
-      console.error(`    Failed to review ${name}: ${error}`);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error(`    Failed to review ${name}: ${msg}`);
       scores.push({
         name,
         descriptionScore: 0,
