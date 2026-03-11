@@ -84,9 +84,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
     try {
       for await (const entry of Deno.readDir(dir)) {
-        if (entry.isFile && entry.name.endsWith(".yaml")) {
+        if (
+          (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
+        ) {
           const path = join(dir, entry.name);
           try {
+            if (entry.isSymlink) {
+              await assertSafePath(path, this.repoDir);
+            }
             const content = await Deno.readTextFile(path);
             const data = parseYaml(content) as DefinitionData;
             definitions.push(Definition.fromData(data));
@@ -128,16 +133,21 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       for await (const entry of Deno.readDir(currentDir)) {
         const fullPath = join(currentDir, entry.name);
 
-        if (entry.isFile && entry.name.endsWith(".yaml")) {
+        if (
+          (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
+        ) {
           // Found a YAML file, check if it matches the name
           try {
+            if (entry.isSymlink) {
+              await assertSafePath(fullPath, this.repoDir);
+            }
             const content = await Deno.readTextFile(fullPath);
             const data = parseYaml(content) as DefinitionData;
             const definition = Definition.fromData(data);
 
             if (definition.name === name) {
-              // Reconstruct the model type from the path segments
-              const typeStr = pathSegments.join("/");
+              // Prefer the type from the YAML, fall back to path-based type
+              const typeStr = definition.type ?? pathSegments.join("/");
               return { definition, type: ModelType.create(typeStr) };
             }
           } catch (parseError) {
@@ -189,15 +199,20 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       for await (const entry of Deno.readDir(currentDir)) {
         const fullPath = join(currentDir, entry.name);
 
-        if (entry.isFile && entry.name.endsWith(".yaml")) {
+        if (
+          (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
+        ) {
           // Found a YAML file, add it to results
           try {
+            if (entry.isSymlink) {
+              await assertSafePath(fullPath, this.repoDir);
+            }
             const content = await Deno.readTextFile(fullPath);
             const data = parseYaml(content) as DefinitionData;
             const definition = Definition.fromData(data);
 
-            // Reconstruct the model type from the path segments
-            const typeStr = pathSegments.join("/");
+            // Prefer the type from the YAML, fall back to path-based type
+            const typeStr = definition.type ?? pathSegments.join("/");
             results.push({ definition, type: ModelType.create(typeStr) });
           } catch (parseError) {
             logger
