@@ -139,6 +139,7 @@ export const DataMetadataSchema = z.object({
   size: z.number().int().nonnegative().optional(),
   checksum: z.string().optional(),
   lifecycle: DataLifecycleSchema.optional(),
+  renamedTo: z.string().min(1).optional(),
 });
 
 export type DataMetadata = z.infer<typeof DataMetadataSchema>;

@@ -301,6 +301,30 @@ export interface UnifiedDataRepository {
     modelId: string,
   ): Promise<GarbageCollectionResult>;
 
+  /**
+   * Renames a data instance by copying the latest version to a new name
+   * and writing a tombstone with a forward reference on the old name.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param oldName - The current data name
+   * @param newName - The new data name
+   * @returns The rename result with version info
+   */
+  rename(
+    type: ModelType,
+    modelId: string,
+    oldName: string,
+    newName: string,
+  ): Promise<
+    {
+      oldName: string;
+      newName: string;
+      copiedVersion: number;
+      newVersion: number;
+    }
+  >;
+
   // --- Sync read methods (for CEL expression evaluation) ---
 
   /**
@@ -495,11 +519,21 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return false;
   }
 
-  async findByName(
+  findByName(
     type: ModelType,
     modelId: string,
     dataName: string,
     version?: number,
+  ): Promise<Data | null> {
+    return this.findByNameWithDepth(type, modelId, dataName, version, 0);
+  }
+
+  private async findByNameWithDepth(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number | undefined,
+    depth: number,
   ): Promise<Data | null> {
     const versionToRead = version ?? (await this.getLatestVersion(
       type,
@@ -517,7 +551,21 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       const content = await Deno.readTextFile(metadataPath);
       const metadata = parseYaml(content) as DataMetadata;
-      return Data.fromData(metadata);
+      const data = Data.fromData(metadata);
+
+      // Follow forward references for latest lookups (not explicit version requests)
+      if (version === undefined && data.isRenamed && data.renamedTo) {
+        if (depth >= 5) return null;
+        return this.findByNameWithDepth(
+          type,
+          modelId,
+          data.renamedTo,
+          undefined,
+          depth + 1,
+        );
+      }
+
+      return data;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         return null;
@@ -584,6 +632,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   async findAllForModel(type: ModelType, modelId: string): Promise<Data[]> {
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
+    const seen = new Set<string>();
 
     try {
       for await (const entry of Deno.readDir(dataDir)) {
@@ -591,7 +640,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         const dataName = entry.name;
 
         const data = await this.findByName(type, modelId, dataName);
-        if (data) {
+        if (data && !seen.has(data.name)) {
+          seen.add(data.name);
           results.push(data);
         }
       }
@@ -844,6 +894,124 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
   }
 
+  async rename(
+    type: ModelType,
+    modelId: string,
+    oldName: string,
+    newName: string,
+  ): Promise<
+    {
+      oldName: string;
+      newName: string;
+      copiedVersion: number;
+      newVersion: number;
+    }
+  > {
+    // Read the latest version of old data
+    const oldData = await this.findByName(type, modelId, oldName);
+    if (!oldData) {
+      throw new Error(`Data "${oldName}" not found`);
+    }
+    if (oldData.isDeleted) {
+      throw new Error(`Data "${oldName}" is already deleted or renamed`);
+    }
+
+    // Verify new name doesn't already have active data
+    const existingNew = await this.findByName(type, modelId, newName);
+    if (existingNew && !existingNew.isDeleted) {
+      throw new Error(`Data "${newName}" already exists`);
+    }
+
+    // Read the content to copy
+    const content = await this.getContent(
+      type,
+      modelId,
+      oldName,
+      oldData.version,
+    );
+    if (!content) {
+      throw new Error(
+        `Content not found for "${oldName}" version ${oldData.version}`,
+      );
+    }
+
+    // Create new data under the new name with a fresh ID
+    const newData = Data.create({
+      name: newName,
+      contentType: oldData.contentType,
+      lifetime: oldData.lifetime,
+      garbageCollection: oldData.garbageCollection,
+      streaming: oldData.streaming,
+      tags: { ...oldData.tags },
+      ownerDefinition: { ...oldData.ownerDefinition },
+    });
+
+    // Save under the new name
+    const { version: newVersion } = await this.save(
+      type,
+      modelId,
+      newData,
+      content,
+    );
+
+    // Write a tombstone with forward reference on the old name
+    const versions = await this.listVersions(type, modelId, oldName);
+    const nextTombstoneVersion = Math.max(...versions) + 1;
+    const tombstone = oldData.withRenameMarker({
+      version: nextTombstoneVersion,
+      renamedTo: newName,
+    });
+
+    // Save tombstone metadata and content
+    const { version: tombstoneVersion } = await this.atomicAllocateVersionDir(
+      type,
+      modelId,
+      oldName,
+    );
+    const tombstoneData = tombstone.withNewVersion({
+      version: tombstoneVersion,
+    });
+
+    const tombstoneContent = new TextEncoder().encode(
+      JSON.stringify({
+        renamedTo: newName,
+        renamedAt: new Date().toISOString(),
+      }),
+    );
+
+    const metadataPath = this.getMetadataPath(
+      type,
+      modelId,
+      oldName,
+      tombstoneVersion,
+    );
+    const boundary = this.baseDir;
+    await assertSafePath(metadataPath, boundary);
+    const metadata = tombstoneData.toData();
+    const cleanData = JSON.parse(JSON.stringify(metadata));
+    const metadataYaml = stringifyYaml(cleanData as Record<string, unknown>);
+    await atomicWriteTextFile(metadataPath, metadataYaml);
+
+    const contentPath = this.getContentPath(
+      type,
+      modelId,
+      oldName,
+      tombstoneVersion,
+    );
+    await assertSafePath(contentPath, boundary);
+    await atomicWriteFile(contentPath, tombstoneContent);
+
+    // Update latest marker to point to tombstone
+    await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
+
+    return {
+      oldName,
+      newName,
+      copiedVersion: oldData.version,
+      newVersion,
+    };
+  }
+
   async allocateVersion(
     type: ModelType,
     modelId: string,
@@ -984,6 +1152,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Data | null {
+    return this.findByNameSyncWithDepth(type, modelId, dataName, version, 0);
+  }
+
+  private findByNameSyncWithDepth(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number | undefined,
+    depth: number,
+  ): Data | null {
     const versionToRead = version ??
       this.getLatestVersionSync(type, modelId, dataName);
     if (versionToRead === null) return null;
@@ -997,7 +1175,21 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       const content = Deno.readTextFileSync(metadataPath);
       const metadata = parseYaml(content) as DataMetadata;
-      return Data.fromData(metadata);
+      const data = Data.fromData(metadata);
+
+      // Follow forward references for latest lookups (not explicit version requests)
+      if (version === undefined && data.isRenamed && data.renamedTo) {
+        if (depth >= 5) return null;
+        return this.findByNameSyncWithDepth(
+          type,
+          modelId,
+          data.renamedTo,
+          undefined,
+          depth + 1,
+        );
+      }
+
+      return data;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         return null;
@@ -1063,6 +1255,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   findAllForModelSync(type: ModelType, modelId: string): Data[] {
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
+    const seen = new Set<string>();
 
     try {
       for (const entry of Deno.readDirSync(dataDir)) {
@@ -1070,7 +1263,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         const dataName = entry.name;
 
         const data = this.findByNameSync(type, modelId, dataName);
-        if (data) {
+        if (data && !seen.has(data.name)) {
+          seen.add(data.name);
           results.push(data);
         }
       }

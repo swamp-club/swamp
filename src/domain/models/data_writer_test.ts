@@ -61,6 +61,9 @@ function createMockRepo(): UnifiedDataRepository {
     listVersionsSync: () => [],
     getContentSync: () => null,
     findAllForModelSync: () => [],
+    rename: () => {
+      throw new Error("not implemented");
+    },
   };
 }
 

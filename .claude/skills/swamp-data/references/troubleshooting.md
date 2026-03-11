@@ -8,9 +8,9 @@
   - ["Data ownership validation failed"](#data-ownership-validation-failed)
   - ["Version not found"](#version-not-found)
   - ["GC deleted data I needed"](#gc-deleted-data-i-needed)
+- [Rename Issues](#rename-issues)
 - [Expression Debugging](#expression-debugging)
 - [Data Recovery](#data-recovery)
-- [Index and Symlink Issues](#index-and-symlink-issues)
 
 ## Common Errors
 
@@ -154,6 +154,54 @@ swamp data gc --dry-run --json
 
 3. **Restore from backup** if available (`.swamp/data/` directory)
 
+## Rename Issues
+
+### "Old name and new name must be different"
+
+**Symptom**: `swamp data rename` fails with this error
+
+**Solution**: Provide a different new name. The old and new names cannot be
+identical.
+
+### Forward reference not resolving after rename
+
+**Symptom**: `swamp data get model old-name` returns null after rename
+
+**Causes**:
+
+1. A model re-ran and wrote new data to the old name, overwriting the forward
+   reference tombstone
+2. The rename chain is too deep (more than 5 levels)
+
+**Solutions**:
+
+```bash
+# Check if the forward reference still exists
+swamp data versions <model> <old-name> --json
+# Look for the latest version — it should have lifecycle: "deleted" and renamedTo set
+
+# If overwritten, re-run the rename
+swamp data rename <model> <old-name> <new-name>
+```
+
+### Data appears twice in list after rename
+
+**Symptom**: `swamp data list` shows the same data under both old and new names
+
+**Solution**: This is a bug — the deduplication logic should prevent this. File
+a bug report with `swamp issue`.
+
+### "Model not found" during rename
+
+**Symptom**: `swamp data rename <model> old new` fails with "Model not found"
+
+**Solution**: The first argument must be a valid model ID or name. Check
+available models:
+
+```bash
+swamp model search --json
+```
+
 ## Expression Debugging
 
 ### Step 1: Verify Data Exists
@@ -237,26 +285,7 @@ Data is stored in `.swamp/data/`. Structure:
   latest → 2/     # Symlink to latest
 ```
 
-## Index and Symlink Issues
-
-### Broken Symlinks in models/ Directory
-
-**Symptom**: `ls models/<name>/resource.yaml` shows broken symlink
-
-**Solution**:
-
-```bash
-# Verify and rebuild index
-swamp repo index --verify --json
-
-# Prune broken symlinks
-swamp repo index --prune --json
-
-# Full rebuild
-swamp repo index --json
-```
-
-### Data Not Appearing After Method Run
+## Data Not Appearing After Method Run
 
 **Symptom**: Method succeeded but `swamp data list` doesn't show new data
 
@@ -269,24 +298,8 @@ swamp model output get <model-name> --json
 # Look for artifacts in output
 ```
 
-2. **Rebuild index**:
-
-```bash
-swamp repo index --json
-```
-
-3. **Check data directory directly**:
+2. **Check data directory directly**:
 
 ```bash
 ls -la .swamp/data/<type>/<model-id>/
-```
-
-### Stale Search Results
-
-**Symptom**: `swamp data search` returns outdated results
-
-**Solution**: Rebuild the search index:
-
-```bash
-swamp repo index --json
 ```
