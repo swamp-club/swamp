@@ -8,8 +8,9 @@ can then validate are correct. Each model has a Type, which specifies metadata,
 attributes, methods, and inputs (variables/parameters as JsonSchema). Model
 definitions contain attributes and can be configured using inputs (variables).
 Methods take the definition and produce data (with data tags like "resource",
-"log", or "file"). Model definitions and data are stored as YAML files in the
-`.swamp/` directory. Definitions support a CEL expression language for dynamic
+"log", or "file"). Model definitions are stored as YAML files in the top-level
+`models/` directory, while runtime data is stored in the datastore (default
+`.swamp/`). Definitions support a CEL expression language for dynamic
 configuration.
 
 Swamp also has workflows, which allow for executing workflow steps in parallel
@@ -24,33 +25,26 @@ All this is stored in a 'swamp repo', which is a git repository.
 
 ## Storage Architecture
 
-A swamp repo uses a dual-layer storage architecture:
+A swamp repo separates source-of-truth files from runtime data:
 
-### Internal Storage Directory (`.swamp/`)
+### Source-of-Truth Files (Top-Level Directories)
 
-The `.swamp/` directory is the internal storage format optimized for swamp's
-software architecture. Aggregate repositories (ModelRepository,
-WorkflowRepository, WorkflowRunRepository) persist domain objects here.
+Model definitions, workflow definitions, and vault configurations are stored in
+top-level directories that are tracked in git:
 
-Both agents and humans can explore the `.swamp/` directory directly, but its
-layout reflects swamp's internal domain model rather than user-facing concerns.
+- **`models/`** — Model definitions organized by normalized type:
+  `models/{type}/{id}.yaml`
+- **`workflows/`** — Workflow definitions: `workflows/workflow-{id}.yaml`
+- **`vaults/`** — Vault configurations: `vaults/{vault-type}/{id}.yaml`
 
-### Logical Views
+These directories are the primary way to explore and understand the repository.
 
-Logical views are symlinked directories that provide human/agent-friendly
-perspectives into the `.swamp/` directory. They are automatically maintained by
-the RepoIndexService whenever aggregate repositories mutate data.
+### Runtime Data (Datastore)
 
-**Model View (`/models/`):** Explore models by name, with easy access to
-definitions, data (resources, logs, files), and outputs for each model.
-
-**Workflow View (`/workflows/`):** Explore workflows by name, with access to
-workflow definitions and run history.
-
-These views allow exploration of the same underlying data from different
-perspectives. For example, a method output can be viewed from the model's
-perspective (`/models/{name}/outputs/`) or from the workflow run that triggered
-it (`/workflows/{name}/runs/{run}/steps/{step}/`).
+Runtime data (versioned model data, workflow runs, method outputs, secrets,
+telemetry) is managed through a datastore abstraction. The default datastore
+uses the `.swamp/` directory, but it can be configured to use an external
+filesystem path or S3. See [./datastores.md] for details.
 
 See [./repo.md] for detailed architecture documentation.
 

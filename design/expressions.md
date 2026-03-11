@@ -232,10 +232,11 @@ attributes:
 
 > **Warning:** Values accessed via `env` are **not redacted or filtered**. If
 > you use an environment variable as a model attribute, its value will be
-> **stored on disk** in `.swamp/data/` as part of the model output data and
-> will be visible in the output of `swamp data get`. This includes any
-> sensitive environment variables present at runtime (e.g.
-> `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, database passwords).
+> **stored on disk** in the datastore `data/` directory (default
+> `.swamp/data/`) as part of the model output data and will be visible in the
+> output of `swamp data get`. This includes any sensitive environment variables
+> present at runtime (e.g. `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, database
+> passwords).
 
 ### Use `vault.get()` for Sensitive Values
 
@@ -243,7 +244,7 @@ For API keys, tokens, passwords, and other secrets, always use
 `vault.get()` instead of `env`. Vault values are fetched at runtime and are
 **never persisted** in model output data.
 
-**Wrong — secret will be stored in `.swamp/data/` on disk:**
+**Wrong — secret will be stored in the datastore `data/` directory on disk:**
 
 ```yaml
 attributes:
@@ -267,14 +268,13 @@ registering custom types, functions, etc in their swamp repo.
 ## Runtime Guidance
 
 When loading the YAML, first parse the CEL expressions. Then take the data
-structures they emit and embed them in the data structure. Write those to a
-directory in the repository called `/.swamp/definitions-evaluated/` whose
-structure is the same as `/.swamp/definitions/`. This directory should be in a
+structures they emit and embed them in the data structure. Write those to the
+datastore at `definitions-evaluated/` (default `.swamp/definitions-evaluated/`),
+whose structure mirrors the `models/` directory. This directory should be in a
 swamp repo's .gitignore file.
 
-The same is true for `/.swamp/workflows-evaluated/`, and it should also be in
-.gitignore.
+The same is true for `workflows-evaluated/` (default
+`.swamp/workflows-evaluated/`), and it should also be in .gitignore.
 
-These evaluated directories are internal working directories in the data layer,
-used by the expression evaluation system. They are not exposed through logical
-views.
+These evaluated directories are internal working directories in the datastore,
+used by the expression evaluation system.

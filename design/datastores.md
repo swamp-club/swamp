@@ -2,9 +2,11 @@
 
 A datastore in swamp determines where runtime data is stored. Runtime data
 includes versioned model data, workflow runs, method outputs, audit logs,
-telemetry, encrypted secrets, and cached bundles. Source-of-truth files (model
-definitions, workflow definitions, vault configs) always live in the top-level
-`models/`, `workflows/`, `vaults/` directories and are never part of the
+telemetry, encrypted secrets, and cached bundles.
+
+**Important:** Source-of-truth files (model definitions, workflow definitions,
+vault configs) always live in the top-level `models/`, `workflows/`, `vaults/`
+directories of the repository and are tracked in git. They are never part of the
 datastore.
 
 ## Backends

@@ -256,7 +256,7 @@ When pulled, extension files are extracted to their destinations:
 | ----------------- | ---------------------------------------------------------------------- |
 | `models/`         | `{modelsDir}` (from `.swamp.yaml`, default `extensions/models/`)       |
 | `workflows/`      | `{workflowsDir}` (from `.swamp.yaml`, default `extensions/workflows/`) |
-| `bundles/`        | `.swamp/bundles/`                                                      |
+| `bundles/`        | Datastore `bundles/` (default `.swamp/bundles/`)                       |
 | `files/`          | `{modelsDir}`                                                          |
 
 If files already exist at the destination and `--force` is not set, the user is

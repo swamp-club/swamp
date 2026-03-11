@@ -10,7 +10,7 @@ retrieval and storage during workflow execution.
 The vault system is built around a named vault architecture where:
 
 - **Named Vaults**: Each vault instance has a user-defined name configured in
-  `/.swamp/vault/{vault type}/{id}.yaml`
+  `vaults/{vault-type}/{id}.yaml`
 - **Vault Types**: The underlying storage system (AWS Secrets Manager, HashiCorp
   Vault, etc.) is specified per vault
 - **Clean Interface**: All vaults implement a common interface for consistent
@@ -18,46 +18,26 @@ The vault system is built around a named vault architecture where:
 - **Expression Integration**: Vaults are accessed through CEL expressions using
   `${{ vault.get(vault_name, key) }}` syntax
 
-## Logical Views
-
-The RepoIndexService maintains a vault-centric logical view at `/vaults/` that
-provides human/agent-friendly exploration of vaults by name.
-
-### Vault View Structure
-
-```
-/vaults/{vault-name}/
-  vault.yaml   → symlink to /.swamp/vault/{vault-type}/{id}.yaml
-  secrets/     → symlink to /.swamp/secrets/{vault-type}/{vault-name}/ (local vaults only)
-```
-
-Since vault names are unique across all types, the logical view uses a flat
-structure that allows exploring vault definitions using human-readable names
-without needing to know the vault type.
-
-For vault types that store secrets locally (e.g., `local_encryption`), a
-`secrets/` symlink is included to provide access to the encrypted secret files.
-Remote vault types (e.g., `aws`) do not have a local secrets directory.
-
 ## Secret Storage
 
-Vault secrets are stored in `.swamp/secrets/` organized by vault type and name:
+Vault secrets are stored in the datastore `secrets/` directory (default
+`.swamp/secrets/`), organized by vault type and name:
 
 ```
-.swamp/
-├── vault/
-│   └── {vault-type}/
-│       └── {id}.yaml              # Vault configuration
-└── secrets/
-    └── {vault-type}/
-        └── {vault-name}/
-            ├── .key               # Encryption key (for local_encryption with auto_generate)
-            └── {secret-key}.enc   # Encrypted secret files
+vaults/
+  {vault-type}/
+    {id}.yaml                        # Vault configuration (top-level, tracked in git)
+
+.swamp/secrets/                      # Datastore path (default)
+  {vault-type}/
+    {vault-name}/
+      .key                           # Encryption key (for local_encryption with auto_generate)
+      {secret-key}.enc               # Encrypted secret files
 ```
 
-The secrets path is computed at runtime from `base_dir` + vault type + vault
-name. The vault configuration stores the `base_dir` (repository root), and the
-full path is derived as `{base_dir}/.swamp/secrets/{vault-type}/{vault-name}/`.
+The secrets path is computed at runtime through the datastore path resolver. The
+vault configuration stores the `base_dir` (repository root), and the full path
+is derived through the datastore abstraction. See [./datastores.md] for details.
 
 ## Vault Provider Interface
 

@@ -6,28 +6,27 @@ writing files, etc.
 
 ## Repository Exploration
 
-Agents can explore a swamp repository through two layers:
+Agents can explore a swamp repository through the following layers:
 
-### Logical Views (Recommended)
+### Source-of-Truth Directories
 
-The logical views provide human/agent-friendly exploration:
+The top-level directories contain source-of-truth files tracked in git:
 
-- **`/models/{name}/`** - Model-centric view with definitions, data (resources,
-  logs, files), and outputs organized by model name
-- **`/workflows/{name}/`** - Workflow-centric view with definitions and run
-  history organized by workflow name
+- **`models/`** — Model definitions organized by normalized type
+- **`workflows/`** — Workflow definitions
+- **`vaults/`** — Vault configurations
 
-These views use symlinks to reference data in the internal data directory. They
-are the recommended way to explore and understand the repository structure.
+These are the primary directories for exploring and understanding the repository
+structure.
 
-### Internal Storage Directory (Direct Access)
+### Runtime Data (Datastore)
 
-The `/.swamp/` directory contains the internal storage format. Agents can access
-it directly when needed, but the layout reflects swamp's internal architecture
-rather than user-facing concerns.
+Runtime data (versioned model data, workflow runs, method outputs) is stored in
+the datastore. The default datastore uses `.swamp/`, but it can be configured to
+use an external path or S3. See [./datastores.md] for details.
 
 ### CLI Abstraction
 
 The CLI commands (`swamp model`, `swamp workflow`, etc.) abstract away the
 storage layer entirely. Agents should prefer using CLI commands for operations,
-and use the logical views for exploration and understanding context.
+and use the top-level directories for exploration and understanding context.

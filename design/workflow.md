@@ -18,13 +18,14 @@ weighted topological sort, so thtat htye have maximum paralleism through the
 workflow. Like steps, jobs also have conditions that trigger them.
 
 Workflows are specified in YAML files, that are validated with Zod, in the
-`/.swamp/workflows/` directory of the repository, with their `{uuid}.yaml`.
-Workflow run output is stored in `/.swamp/workflow-runs/` at
-`/.swamp/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
+top-level `workflows/` directory of the repository, as
+`workflows/workflow-{uuid}.yaml`. Workflow run output is stored in the datastore
+at `workflow-runs/{workflow-uuid}/{run-uuid}.yaml` (default path:
+`.swamp/workflow-runs/`).
 
 ## Workflow Definition
 
-Workflows are specified in `/.swamp/workflows/{uuid}.yaml`. They have a unique
+Workflows are specified in `workflows/workflow-{uuid}.yaml`. They have a unique
 id, a globally unique name, a set of jobs, and optionally workflow inputs.
 
 ### Workflow Inputs
@@ -145,7 +146,7 @@ steps:
 With `environments: ["dev", "staging", "prod"]`, the above produces:
 
 ```
-.swamp/data/scanner/{id}/
+data/scanner/{id}/
   result-dev/
     1/content.json
     latest → 1
@@ -184,45 +185,11 @@ order should be topologically sorted for dependencies, and weighted so it does
 not vary between identical inputs. (If the inputs are identical, the run order
 should be deterministic.)
 
-The output of the run will be written to a workflow run log, kept in
-`/.swamp/workflow-runs/{workflow-uuid}/{run-uuid}.yaml`.
+The output of the run will be written to a workflow run log, kept in the
+datastore at `workflow-runs/{workflow-uuid}/{run-uuid}.yaml` (default path:
+`.swamp/workflow-runs/`).
 
-## Logical Views
-
-The RepoIndexService maintains a workflow-centric logical view at `/workflows/`
-that provides human/agent-friendly exploration of workflows by name.
-
-### Workflow View Structure
-
-```
-/workflows/{workflow-name}/
-  workflow.yaml   → symlink to /.swamp/workflows/{uuid}.yaml
-  runs/
-    {run-id}/
-      run.yaml    → symlink to /.swamp/workflow-runs/{workflow-uuid}/{run-uuid}.yaml
-      steps/
-        {step-name}/
-          output.yaml → symlink to step output
-          model/      → symlink to /models/{model-name}/ (for model method steps)
-```
-
-This structure allows exploring workflow definitions and their run history using
-human-readable names.
-
-### Cross-View References
-
-When a workflow step executes a model method, the data appears in both views:
-
-- **Model view:** `/models/{model-name}/outputs/{method}/` contains the method
-  output and generated data
-- **Workflow view:** `/workflows/{workflow-name}/runs/{run-id}/steps/{step}/`
-  contains a symlink to the same output, plus a reference to the model's logical
-  view
-
-This enables exploration from either the model's perspective or the workflow's
-perspective.
-
-### Domain Events
+## Domain Events
 
 The WorkflowRepository and WorkflowRunRepository emit domain events:
 
@@ -239,6 +206,5 @@ The WorkflowRepository and WorkflowRunRepository emit domain events:
 - `WorkflowRunCompleted` - Emitted when a workflow run completes successfully
 - `WorkflowRunFailed` - Emitted when a workflow run fails
 
-The RepoIndexService subscribes to these events and updates the logical views
-accordingly, ensuring the `/workflows/` view stays synchronized with the data
-directory.
+The RepoIndexService subscribes to these events (currently a noop
+implementation). See [./repo.md] for details on domain events.

@@ -131,10 +131,10 @@ first method execution and persisted with the new CalVer `typeVersion`.
 
 ## Definitions
 
-Definitions are specified as YAML files that live in the `/.swamp/definitions/`
+Definitions are specified as YAML files that live in the top-level `models/`
 directory of a repository, underneath the normalized type as a directory. The
 file name is `${id}.yaml`. For example,
-`.swamp/definitions/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
+`models/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
 
 The valid shape of a definition is specified with a Zod 4 schema as part of the
 type.
@@ -239,14 +239,17 @@ CEL function. Versions will be auto-incrementing integers, starting at 1.
 Data can only be written by a model instantiated from the same definition that
 originally wrote the data. This is called the _owner_ of the data.
 
-The raw data will be written to
-`.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/raw`.
+The raw data will be written to the datastore at
+`data/{normalized-type}/{model-id}/{data-name}/{version}/raw` (default path:
+`.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/raw`).
 
-The metadata will be written to
-`.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/metadata.yaml`.
+The metadata will be written to the datastore at
+`data/{normalized-type}/{model-id}/{data-name}/{version}/metadata.yaml`.
 
 There will be a symlink to the latest version at
-`.swamp/data/{normalized-type}/{model-id}/{data-name}/latest/`.
+`data/{normalized-type}/{model-id}/{data-name}/latest/`.
+
+See [./datastores.md] for how the datastore path is resolved.
 
 ## Data Output API
 
@@ -311,31 +314,13 @@ Lightweight reference to data already persisted:
 ## Output
 
 Each method invocation produces an output record, which gets tracked in the
-`/.swamp/outputs/` directory of a repository (which should not be tracked in
-git). The output record should track the state of the method execution, and the
-list of artifacts produced by the method. It should track state as the method
+datastore `outputs/` directory (default `.swamp/outputs/`, not tracked in git).
+The output record should track the state of the method execution, and the list
+of artifacts produced by the method. It should track state as the method
 executes. It should be structured as
-`/.swamp/outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml`.
+`outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml`.
 
-## Logical Views
-
-The RepoIndexService maintains a model-centric logical view at `/models/` that
-provides human/agent-friendly exploration of models by name.
-
-### Model View Structure
-
-```
-/models/{model-name}/
-  definition.yaml                → symlink to /.swamp/definitions/{type}/{id}.yaml
-  {data-tag-key}/{data-tag-value}/  → symlink to /.swamp/data for the data as tagged
-  outputs/
-    {method}/                    → symlinks to /.swamp/outputs/{type}/{method}/{id}-*.yaml
-```
-
-This structure allows exploring all artifacts for a model in one place, using
-the model's human-readable name rather than UUIDs or type-based paths.
-
-### Domain Events
+## Domain Events
 
 The ModelRepository emits domain events when model data changes:
 
@@ -344,6 +329,5 @@ The ModelRepository emits domain events when model data changes:
 - `ModelUpdated` - Emitted when a model definition or data is modified
 - `ModelDeleted` - Emitted when a model is deleted
 
-The RepoIndexService subscribes to these events and updates the logical views
-accordingly, ensuring the `/models/` view stays synchronized with the data
-directory.
+The RepoIndexService subscribes to these events (currently a noop
+implementation). See [./repo.md] for details on domain events.

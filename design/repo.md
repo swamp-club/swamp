@@ -20,36 +20,18 @@ The compiled swamp binary should include everything it needs to initialize a
 repository, including the skill files, so that they can be written out by the
 cli.
 
-## Internal storage directory (.swamp/)
+## Repository Layout
 
-Swamp repos store information from the various infrastructure repositories (in
-the domain driven design sense) in the `.swamp/` directory. This is the internal
-format for swamp data.
+Source-of-truth files live in top-level directories tracked in git:
 
-Both agents and humans are free to explore the `.swamp/` directory, but it is
-laid out in a way that is useful for swamp's internal software architecture.
+- **`models/`** — Model definitions: `models/{normalized-type}/{id}.yaml`
+- **`workflows/`** — Workflow definitions: `workflows/workflow-{id}.yaml`
+- **`vaults/`** — Vault configurations: `vaults/{vault-type}/{id}.yaml`
 
-## Logical view
-
-The swamp repo represents a logical view into the `.swamp/` directory that is
-useful for humans and agents. It is constructed by making symlinks into
-information in the `.swamp/` directory, laid out in ways that make sense for
-exploration of the information.
-
-For example, a person might want to explore the outputs of a given method run on
-a model both from the perspective of that model and from the perspective of the
-workflow that triggered it. There should be a logical directory called 'models'
-that shows the model perspective, and one called 'workflows' that shows it from
-the perspective of workflows and workflow runs.
-
-### Constructing logical views
-
-Logical views should be constructed automatically when any mutation occurs in an
-entity repository, by calling an logical index service that maintains the tree.
-
-So any time a change is made through a given entities repository, the index
-service will analyze the repo and update the logical views, ensuring they are
-always up to date.
+Runtime data (versioned model data, workflow runs, method outputs, secrets) is
+stored through a datastore abstraction. The default datastore uses the `.swamp/`
+directory, but it can be configured to use an external filesystem path or S3.
+See [./datastores.md] for details.
 
 ## Configuration
 
@@ -64,8 +46,11 @@ attributes to control the behaviour of the swamp operations.
 
 ## RepoIndexService
 
-The RepoIndexService is a domain event handler that maintains the logical views
-(read models) whenever aggregate repositories mutate data.
+The RepoIndexService is a domain event handler that responds to aggregate
+repository mutations. It is currently a noop implementation
+(`NoopRepoIndexService`) — the old symlink-based logical views have been
+removed. Domain events are still emitted by repositories and can be used for
+future event-driven features.
 
 ### Domain Events
 
@@ -93,50 +78,35 @@ Aggregate repositories emit domain events when data changes:
 
 When an aggregate repository emits an event:
 
-1. The repository persists the aggregate to the `.swamp/` directory
+1. The repository persists the aggregate (definitions to top-level directories,
+   runtime data to the datastore)
 2. The repository emits the appropriate domain event
-3. The RepoIndexService receives the event
-4. The RepoIndexService updates the relevant logical views (symlinks)
+3. The RepoIndexService receives the event (currently a noop)
 
-### Logical View Structure
+### Directory Structure
 
-The RepoIndexService maintains two primary logical views:
-
-**Model View (`/models/`):**
+**Model definitions (`models/`):**
 
 ```
-/models/{model-name}/
-  definition.yaml              → /.swamp/definitions/{type}/{id}.yaml
-  type/
-    logs/                      → symlinks to data with type=log tag
-    files/                     → symlinks to data with type=file tag
-    resources/                 → symlinks to data with type=resource tag
-  {tag-key}/{tag-value}/       → data organized by custom tag key/value pairs
-  outputs/
-    {method}/                  → /.swamp/outputs/{type}/{method}/
+models/{normalized-type}/{id}.yaml
 ```
 
-See [./models.md] for detailed data structure including versioning, metadata,
-and data tags.
+These are real files (not symlinks) tracked in git.
 
-**Workflow View (`/workflows/`):**
+**Workflow definitions (`workflows/`):**
 
 ```
-/workflows/{workflow-name}/
-  workflow.yaml              → /.swamp/workflows/workflow-{id}.yaml
-  runs/
-    latest/                  → {latest-timestamp}/
-    {timestamp}/
-      run.yaml               → /.swamp/workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
-      steps/
-        {step-name}/
-          output.yaml        → symlink to step output
-          model/             → ../models/{model-name}/ (for model method steps)
+workflows/workflow-{id}.yaml
 ```
 
-### Symlink Naming Conventions
+These are real files (not symlinks) tracked in git.
 
-- Model logical views use the model's unique `name` as the directory name
-- Workflow logical views use the workflow's unique `name` as the directory name
-- Run directories use a shortened run ID or timestamp-based identifier
-- All symlinks point to absolute paths within the `.swamp/` directory
+**Runtime data (datastore, default `.swamp/`):**
+
+```
+.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/
+.swamp/outputs/{normalized-type}/{method}/{definition-id}-{timestamp}.yaml
+.swamp/workflow-runs/{workflow-id}/{run-id}.yaml
+```
+
+See [./datastores.md] for how the datastore path is resolved.
