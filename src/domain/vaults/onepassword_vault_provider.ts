@@ -247,6 +247,7 @@ export class OnePasswordVaultProvider implements VaultProvider {
     try {
       const command = new Deno.Command("op", {
         args: ["--version"],
+        stdin: "null",
         stdout: "piped",
         stderr: "piped",
       });
@@ -275,6 +276,7 @@ export class OnePasswordVaultProvider implements VaultProvider {
   private async runOp(args: string[]): Promise<string> {
     const command = new Deno.Command("op", {
       args,
+      stdin: "null",
       stdout: "piped",
       stderr: "piped",
     });
