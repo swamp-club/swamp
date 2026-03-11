@@ -218,6 +218,7 @@ Deno.test("resolveDatastoreForRepo - returns config for initialized repo without
 
     assertEquals(result.repoDir, dir);
     assertEquals(result.datastoreConfig.type, "filesystem");
+    assertEquals(result.marker !== null, true);
 
     // flushDatastoreSync should be a no-op (no lock was acquired)
     await flushDatastoreSync();

@@ -151,6 +151,53 @@ Deno.test("FileLock - inspect returns null when no lock exists", async () => {
   });
 });
 
+Deno.test("FileLock - forceRelease deletes lock when nonce matches", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 5000 });
+    await lock.acquire();
+
+    const info = await lock.inspect();
+    assertEquals(info !== null, true);
+
+    // forceRelease with matching nonce should succeed
+    const released = await lock.forceRelease(info!.nonce!);
+    assertEquals(released, true);
+
+    // Lock should be gone
+    const afterRelease = await lock.inspect();
+    assertEquals(afterRelease, null);
+
+    // Clean up the lock's internal state (heartbeat)
+    await lock.release();
+  });
+});
+
+Deno.test("FileLock - forceRelease returns false when nonce does not match", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 5000 });
+    await lock.acquire();
+
+    // forceRelease with wrong nonce should fail
+    const released = await lock.forceRelease("wrong-nonce");
+    assertEquals(released, false);
+
+    // Lock should still be held
+    const info = await lock.inspect();
+    assertEquals(info !== null, true);
+
+    await lock.release();
+  });
+});
+
+Deno.test("FileLock - forceRelease returns false when no lock exists", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { ttlMs: 5000 });
+
+    const released = await lock.forceRelease("some-nonce");
+    assertEquals(released, false);
+  });
+});
+
 Deno.test("FileLock - custom lock key", async () => {
   await withTempDir(async (dir) => {
     const lock = new FileLock(dir, {

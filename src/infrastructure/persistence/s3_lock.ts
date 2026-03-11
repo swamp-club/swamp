@@ -165,6 +165,15 @@ export class S3Lock implements DistributedLock {
     return await this.readLock();
   }
 
+  async forceRelease(expectedNonce: string): Promise<boolean> {
+    const current = await this.readLock();
+    if (!current || current.nonce !== expectedNonce) {
+      return false;
+    }
+    await this.s3.deleteObject(this.lockKey);
+    return true;
+  }
+
   private async extend(): Promise<void> {
     if (!this.held || !this.nonce) return;
 

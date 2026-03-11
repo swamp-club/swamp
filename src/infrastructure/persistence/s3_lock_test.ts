@@ -194,6 +194,46 @@ Deno.test("S3Lock - inspect returns null when no lock exists", async () => {
   assertEquals(info, null);
 });
 
+Deno.test("S3Lock - forceRelease deletes lock when nonce matches", async () => {
+  const mock = createMockS3Client();
+  const lock = new S3Lock(mock, { ttlMs: 5000 });
+  await lock.acquire();
+
+  const info = await lock.inspect();
+  assertEquals(info !== null, true);
+
+  const released = await lock.forceRelease(info!.nonce!);
+  assertEquals(released, true);
+
+  // Lock should be gone
+  assertEquals(mock.storage.has(".datastore.lock"), false);
+
+  // Clean up internal state (heartbeat)
+  await lock.release();
+});
+
+Deno.test("S3Lock - forceRelease returns false when nonce does not match", async () => {
+  const mock = createMockS3Client();
+  const lock = new S3Lock(mock, { ttlMs: 5000 });
+  await lock.acquire();
+
+  const released = await lock.forceRelease("wrong-nonce");
+  assertEquals(released, false);
+
+  // Lock should still exist
+  assertEquals(mock.storage.has(".datastore.lock"), true);
+
+  await lock.release();
+});
+
+Deno.test("S3Lock - forceRelease returns false when no lock exists", async () => {
+  const mock = createMockS3Client();
+  const lock = new S3Lock(mock, { ttlMs: 5000 });
+
+  const released = await lock.forceRelease("some-nonce");
+  assertEquals(released, false);
+});
+
 Deno.test("S3Lock - custom lock key", async () => {
   const mock = createMockS3Client();
   const lock = new S3Lock(mock, {

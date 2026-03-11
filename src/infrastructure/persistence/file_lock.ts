@@ -168,6 +168,21 @@ export class FileLock implements DistributedLock {
     return await this.readLockFile();
   }
 
+  async forceRelease(expectedNonce: string): Promise<boolean> {
+    const current = await this.readLockFile();
+    if (!current || current.nonce !== expectedNonce) {
+      return false;
+    }
+    try {
+      await Deno.remove(this.lockPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+    return true;
+  }
+
   private async extend(): Promise<void> {
     if (!this.held || !this.nonce) return;
 

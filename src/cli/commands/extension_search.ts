@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
@@ -119,6 +123,7 @@ export const extensionSearchCommand = new Command()
 
     const response = await client.searchExtensions(params);
 
+    const effectiveMode = interactiveOutputMode(ctx);
     const result = await renderExtensionSearch(
       {
         extensions: response.extensions.map((ext) => ({
@@ -132,7 +137,7 @@ export const extensionSearchCommand = new Command()
         })),
         meta: response.meta,
       },
-      ctx.outputMode,
+      effectiveMode,
     );
 
     if (result?.action === "install") {

@@ -34,7 +34,10 @@ import {
 } from "../infrastructure/persistence/repository_factory.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
-import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
+import {
+  type RepoMarkerData,
+  RepoMarkerRepository,
+} from "../infrastructure/persistence/repo_marker_repository.ts";
 import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
@@ -77,6 +80,7 @@ export interface RepoValidationContext {
 export interface DatastoreResolutionResult {
   repoDir: string;
   datastoreConfig: DatastoreConfig;
+  marker: RepoMarkerData | null;
 }
 
 export async function resolveDatastoreForRepo(
@@ -101,7 +105,7 @@ export async function resolveDatastoreForRepo(
     repoPath.value,
   );
 
-  return { repoDir: repoPath.value, datastoreConfig };
+  return { repoDir: repoPath.value, datastoreConfig, marker };
 }
 
 /**
@@ -119,13 +123,11 @@ export async function requireInitializedRepo(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
-  const { repoDir, datastoreConfig } = await resolveDatastoreForRepo(
+  const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
     options.repoDir,
   );
 
   const repoPath = RepoPath.create(repoDir);
-  const markerRepo = new RepoMarkerRepository();
-  const marker = await markerRepo.read(repoPath);
 
   const workflowsDirRel = resolveWorkflowsDir(marker);
   const workflowsDir = isAbsolute(workflowsDirRel)

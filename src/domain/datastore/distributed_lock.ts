@@ -73,6 +73,19 @@ export interface DistributedLock {
 
   /** Read the current lock info without acquiring. */
   inspect(): Promise<LockInfo | null>;
+
+  /**
+   * Force-release a lock only if its nonce matches the expected value.
+   *
+   * This is a breakglass operation for releasing stuck locks. The nonce check
+   * reduces the TOCTOU window but cannot fully eliminate it — between the
+   * final nonce verification and the actual delete, another process could
+   * theoretically acquire a new lock. Each backend minimises this window
+   * as much as the underlying storage allows.
+   *
+   * @returns true if the lock was deleted, false if the nonce didn't match.
+   */
+  forceRelease(expectedNonce: string): Promise<boolean>;
 }
 
 /** Thrown when a lock cannot be acquired within the configured timeout. */
