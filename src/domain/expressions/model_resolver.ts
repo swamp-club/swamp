@@ -447,9 +447,11 @@ export class ModelResolver {
         }
 
         // Populate model.resource and model.file eagerly (backward compat)
+        // Skip renamed-tombstoned entries to avoid duplicates
         const modelData = context.model[modelName];
         if (modelData) {
           for (const data of items) {
+            if (data.isRenamed) continue;
             const latestRecord = this.dataToRecord(
               data,
               modelType,

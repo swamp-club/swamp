@@ -27,6 +27,7 @@ machine-readable output.
 | Get data via workflow  | `swamp data get --workflow <name> <data_name> --json` |
 | View version history   | `swamp data versions <model> <name> --json`           |
 | Run garbage collection | `swamp data gc --json`                                |
+| Rename data instance   | `swamp data rename <model> <old> <new>`               |
 | Preview GC (dry run)   | `swamp data gc --dry-run --json`                      |
 
 ## Data Concepts
@@ -286,6 +287,48 @@ swamp data versions my-model state --json
   "total": 3
 }
 ```
+
+## Rename Data
+
+Data instance names are permanent once created — deleting and recreating under a
+new name loses version history and breaks any workflows or expressions that
+reference the old name. Use `data rename` to non-destructively rename with
+backwards-compatible forwarding. The old name becomes a forward reference that
+transparently resolves to the new name.
+
+**When to rename:**
+
+- Refactoring naming conventions (e.g., `web-vpc` → `dev-web-vpc`)
+- Reorganizing data after a model's purpose evolves
+- Fixing typos in data names without losing history
+
+```bash
+# Rename a data instance
+swamp data rename my-model old-name new-name
+
+# With explicit repo directory
+swamp data rename my-model old-name new-name --repo-dir ./my-repo
+```
+
+**What happens:**
+
+1. Latest version of `old-name` is copied to `new-name` (version 1)
+2. A tombstone is written on `old-name` with a `renamedTo` forward reference
+3. Future lookups of `old-name` transparently resolve to `new-name`
+4. Historical versions of `old-name` remain accessible via
+   `data.version("model", "old-name", N)`
+
+**Forward reference behavior:**
+
+- `data.latest("model", "old-name")` → resolves to `new-name` automatically
+- `data.version("model", "old-name", 2)` → returns original version 2 (no
+  forwarding)
+- `model.<name>.resource.<spec>.<old-name>` → resolves to new name in
+  expressions
+
+**Important:** After renaming, update any workflows or models that produce data
+under the old name. If a model re-runs and writes to the old name, it will
+overwrite the forward reference.
 
 ## Garbage Collection
 

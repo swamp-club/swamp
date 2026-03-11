@@ -7,6 +7,7 @@
 - [Cross-Model Data References](#cross-model-data-references)
 - [Data Discovery Patterns](#data-discovery-patterns)
 - [Version Management](#version-management)
+- [Rename Scenarios](#rename-scenarios)
 - [Garbage Collection Scenarios](#garbage-collection-scenarios)
 - [Workflow Data Access](#workflow-data-access)
 
@@ -166,6 +167,53 @@ jobs:
           modelIdOrName: app-config
           methodName: rollback
 ```
+
+## Rename Scenarios
+
+### Basic Rename
+
+```bash
+# Rename a data instance
+swamp data rename my-vpc web-vpc dev-web-vpc
+
+# Output:
+# Renamed "web-vpc" -> "dev-web-vpc" for my-vpc (aws/vpc)
+# Version 3 copied as v1 under new name
+# Old name "web-vpc" now forwards to "dev-web-vpc"
+# WARNING: Any workflows or models that produce data under "web-vpc"
+#          will overwrite the forward reference. Update them to use
+#          "dev-web-vpc" instead.
+```
+
+### Verify Forward Reference Works
+
+```bash
+# Old name transparently resolves to new name
+swamp data get my-vpc web-vpc --json
+# Returns the data under "dev-web-vpc"
+
+# Historical versions still accessible
+swamp data versions my-vpc web-vpc --json
+# Shows old versions before the rename
+```
+
+### After Rename: Update References
+
+After renaming, update workflows and model inputs to use the new name:
+
+```yaml
+# Before rename
+globalArguments:
+  vpcId: ${{ model.my-vpc.resource.vpc.web-vpc.attributes.VpcId }}
+
+# After rename — update to new name
+globalArguments:
+  vpcId: ${{ model.my-vpc.resource.vpc.dev-web-vpc.attributes.VpcId }}
+```
+
+The old expression still works via forward reference, but updating is
+recommended to avoid surprises if the model re-runs and overwrites the forward
+reference.
 
 ## Garbage Collection Scenarios
 

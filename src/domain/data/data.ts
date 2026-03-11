@@ -45,6 +45,7 @@ export interface CreateDataProps {
   size?: number;
   checksum?: string;
   lifecycle?: DataLifecycle;
+  renamedTo?: string;
 }
 
 /**
@@ -76,6 +77,7 @@ export class Data {
     readonly lifecycle: DataLifecycle,
     readonly size?: number,
     readonly checksum?: string,
+    readonly renamedTo?: string,
   ) {}
 
   /**
@@ -106,6 +108,7 @@ export class Data {
       size: props.size,
       checksum: props.checksum,
       lifecycle: lifecycle === "active" ? undefined : lifecycle,
+      renamedTo: props.renamedTo,
     });
 
     return new Data(
@@ -122,6 +125,7 @@ export class Data {
       validated.lifecycle ?? "active",
       validated.size,
       validated.checksum,
+      validated.renamedTo,
     );
   }
 
@@ -151,6 +155,7 @@ export class Data {
       validated.lifecycle ?? "active",
       validated.size,
       validated.checksum,
+      validated.renamedTo,
     );
   }
 
@@ -179,6 +184,9 @@ export class Data {
     }
     if (this.lifecycle === "deleted") {
       data.lifecycle = "deleted";
+    }
+    if (this.renamedTo !== undefined) {
+      data.renamedTo = this.renamedTo;
     }
 
     return data;
@@ -211,6 +219,13 @@ export class Data {
   }
 
   /**
+   * Returns true if this data has been renamed (tombstoned with a forward reference).
+   */
+  get isRenamed(): boolean {
+    return this.lifecycle === "deleted" && this.renamedTo !== undefined;
+  }
+
+  /**
    * Creates a deletion marker version of this data.
    * The marker has lifecycle "deleted", JSON content type, and streaming disabled.
    */
@@ -226,6 +241,26 @@ export class Data {
       tags: this.tags,
       ownerDefinition: this.ownerDefinition,
       lifecycle: "deleted",
+    });
+  }
+
+  /**
+   * Creates a rename marker version of this data.
+   * The marker has lifecycle "deleted" and a forward reference to the new name.
+   */
+  withRenameMarker(props: { version: number; renamedTo: string }): Data {
+    return Data.create({
+      id: this.id,
+      name: this.name,
+      version: props.version,
+      contentType: "application/json",
+      lifetime: this.lifetime,
+      garbageCollection: this.garbageCollection,
+      streaming: false,
+      tags: this.tags,
+      ownerDefinition: this.ownerDefinition,
+      lifecycle: "deleted",
+      renamedTo: props.renamedTo,
     });
   }
 
@@ -253,6 +288,7 @@ export class Data {
       size: props.size,
       checksum: props.checksum,
       lifecycle: this.lifecycle,
+      renamedTo: this.renamedTo,
     });
   }
 }

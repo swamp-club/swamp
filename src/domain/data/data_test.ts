@@ -818,3 +818,132 @@ Deno.test("Data.withNewVersion preserves lifecycle", () => {
   const newVersion = data.withNewVersion({ version: 2 });
   assertEquals(newVersion.lifecycle, "deleted");
 });
+
+// --- Rename marker tests ---
+
+Deno.test("Data.withRenameMarker creates a deleted version with forward reference", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "old-name",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  const marker = data.withRenameMarker({ version: 2, renamedTo: "new-name" });
+
+  assertEquals(marker.id, data.id);
+  assertEquals(marker.name, data.name);
+  assertEquals(marker.version, 2);
+  assertEquals(marker.contentType, "application/json");
+  assertEquals(marker.streaming, false);
+  assertEquals(marker.lifecycle, "deleted");
+  assertEquals(marker.isDeleted, true);
+  assertEquals(marker.isRenamed, true);
+  assertEquals(marker.renamedTo, "new-name");
+  assertEquals(marker.lifetime, data.lifetime);
+  assertEquals(marker.garbageCollection, data.garbageCollection);
+  assertEquals(marker.tags, data.tags);
+  assertEquals(marker.ownerDefinition, data.ownerDefinition);
+});
+
+Deno.test("Data.isRenamed returns false for active data", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+  assertEquals(data.isRenamed, false);
+});
+
+Deno.test("Data.isRenamed returns false for deleted data without renamedTo", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+  });
+  assertEquals(data.isRenamed, false);
+  assertEquals(data.isDeleted, true);
+});
+
+Deno.test("Data.isRenamed returns true for deleted data with renamedTo", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "old-name",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+    renamedTo: "new-name",
+  });
+  assertEquals(data.isRenamed, true);
+  assertEquals(data.renamedTo, "new-name");
+});
+
+Deno.test("Data toData/fromData roundtrip preserves renamedTo", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "old-name",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+    renamedTo: "new-name",
+  });
+
+  const serialized = data.toData();
+  assertEquals(serialized.renamedTo, "new-name");
+  assertEquals(serialized.lifecycle, "deleted");
+
+  const restored = Data.fromData(serialized);
+  assertEquals(restored.renamedTo, "new-name");
+  assertEquals(restored.isRenamed, true);
+});
+
+Deno.test("Data.withNewVersion preserves renamedTo", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "old-name",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    lifecycle: "deleted",
+    renamedTo: "new-name",
+  });
+
+  const newVersion = data.withNewVersion({ version: 2 });
+  assertEquals(newVersion.renamedTo, "new-name");
+  assertEquals(newVersion.isRenamed, true);
+});
+
+Deno.test("Data toData omits renamedTo when not set", () => {
+  const owner = createTestOwner();
+  const data = Data.create({
+    name: "test-data",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+  });
+
+  const serialized = data.toData();
+  assertEquals(serialized.renamedTo, undefined);
+});

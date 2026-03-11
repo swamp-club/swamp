@@ -217,11 +217,15 @@ export const dataGetCommand = new Command()
           );
         }
 
+        // Use the resolved data name (may differ from the argument if a
+        // forward reference was followed during rename resolution).
+        const resolvedName = data.name;
+
         const repoDir = options.repoDir ?? ".";
         const absoluteContentPath = dataRepo.getContentPath(
           modelType,
           definition.id,
-          dataName,
+          resolvedName,
           data.version,
         );
 
@@ -248,7 +252,7 @@ export const dataGetCommand = new Command()
           const rawContent = await dataRepo.getContent(
             modelType,
             definition.id,
-            dataName,
+            resolvedName,
             data.version,
           );
           if (rawContent) {
