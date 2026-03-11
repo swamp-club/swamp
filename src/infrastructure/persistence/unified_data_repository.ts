@@ -1027,11 +1027,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           newVersion,
         );
         await Deno.remove(newVersionDir, { recursive: true });
-        // If this was the only version, clean up the data name directory
+        // If this was the only version, clean up the data name directory.
+        // Otherwise, reset the latest marker to the highest remaining version
+        // to avoid a corrupted marker pointing to the deleted version.
         const remaining = await this.listVersions(type, modelId, newName);
         if (remaining.length === 0) {
           const dataNameDir = this.getDataNameDir(type, modelId, newName);
           await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+        } else {
+          const maxRemaining = Math.max(...remaining);
+          await this.updateLatestMarker(type, modelId, newName, maxRemaining);
         }
       } catch (rollbackError) {
         logger
