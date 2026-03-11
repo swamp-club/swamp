@@ -22,6 +22,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { getSwampLogger } from "../logging/logger.ts";
 import {
   Data,
   type DataId,
@@ -30,6 +31,8 @@ import {
   type OwnerDefinition,
 } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+
+const logger = getSwampLogger(["data", "repository"]);
 
 /**
  * Error thrown when ownership validation fails.
@@ -555,7 +558,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
       // Follow forward references for latest lookups (not explicit version requests)
       if (version === undefined && data.isRenamed && data.renamedTo) {
-        if (depth >= 5) return null;
+        if (depth >= 5) {
+          logger
+            .warn`Rename chain depth exceeded for "${dataName}" (model ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
+          return null;
+        }
         return this.findByNameWithDepth(
           type,
           modelId,
@@ -954,55 +961,86 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       content,
     );
 
-    // Write a tombstone with forward reference on the old name
-    const versions = await this.listVersions(type, modelId, oldName);
-    const nextTombstoneVersion = Math.max(...versions) + 1;
-    const tombstone = oldData.withRenameMarker({
-      version: nextTombstoneVersion,
-      renamedTo: newName,
-    });
-
-    // Save tombstone metadata and content
-    const { version: tombstoneVersion } = await this.atomicAllocateVersionDir(
-      type,
-      modelId,
-      oldName,
-    );
-    const tombstoneData = tombstone.withNewVersion({
-      version: tombstoneVersion,
-    });
-
-    const tombstoneContent = new TextEncoder().encode(
-      JSON.stringify({
+    // Write a tombstone with forward reference on the old name.
+    // If this fails, roll back the newly saved data to avoid an inconsistent
+    // state where both old and new names have valid active data.
+    try {
+      const versions = await this.listVersions(type, modelId, oldName);
+      const nextTombstoneVersion = Math.max(...versions) + 1;
+      const tombstone = oldData.withRenameMarker({
+        version: nextTombstoneVersion,
         renamedTo: newName,
-        renamedAt: new Date().toISOString(),
-      }),
-    );
+      });
 
-    const metadataPath = this.getMetadataPath(
-      type,
-      modelId,
-      oldName,
-      tombstoneVersion,
-    );
-    const boundary = this.baseDir;
-    await assertSafePath(metadataPath, boundary);
-    const metadata = tombstoneData.toData();
-    const cleanData = JSON.parse(JSON.stringify(metadata));
-    const metadataYaml = stringifyYaml(cleanData as Record<string, unknown>);
-    await atomicWriteTextFile(metadataPath, metadataYaml);
+      // Save tombstone metadata and content
+      const { version: tombstoneVersion } = await this.atomicAllocateVersionDir(
+        type,
+        modelId,
+        oldName,
+      );
+      const tombstoneData = tombstone.withNewVersion({
+        version: tombstoneVersion,
+      });
 
-    const contentPath = this.getContentPath(
-      type,
-      modelId,
-      oldName,
-      tombstoneVersion,
-    );
-    await assertSafePath(contentPath, boundary);
-    await atomicWriteFile(contentPath, tombstoneContent);
+      const tombstoneContent = new TextEncoder().encode(
+        JSON.stringify({
+          renamedTo: newName,
+          renamedAt: new Date().toISOString(),
+        }),
+      );
 
-    // Update latest marker to point to tombstone
-    await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
+      const metadataPath = this.getMetadataPath(
+        type,
+        modelId,
+        oldName,
+        tombstoneVersion,
+      );
+      const boundary = this.baseDir;
+      await assertSafePath(metadataPath, boundary);
+      const metadata = tombstoneData.toData();
+      const cleanData = JSON.parse(JSON.stringify(metadata));
+      const metadataYaml = stringifyYaml(
+        cleanData as Record<string, unknown>,
+      );
+      await atomicWriteTextFile(metadataPath, metadataYaml);
+
+      const contentPath = this.getContentPath(
+        type,
+        modelId,
+        oldName,
+        tombstoneVersion,
+      );
+      await assertSafePath(contentPath, boundary);
+      await atomicWriteFile(contentPath, tombstoneContent);
+
+      // Update latest marker to point to tombstone
+      await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
+    } catch (tombstoneError) {
+      // Roll back: remove the newly created data under the new name
+      logger
+        .warn`Tombstone write failed during rename "${oldName}" -> "${newName}". Rolling back new data.`;
+      try {
+        const newVersionDir = this.getPath(
+          type,
+          modelId,
+          newName,
+          newVersion,
+        );
+        await Deno.remove(newVersionDir, { recursive: true });
+        // If this was the only version, clean up the data name directory
+        const remaining = await this.listVersions(type, modelId, newName);
+        if (remaining.length === 0) {
+          const dataNameDir = this.getDataNameDir(type, modelId, newName);
+          await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+        }
+      } catch (rollbackError) {
+        logger
+          .error`Rollback also failed during rename "${oldName}" -> "${newName}": ${
+          String(rollbackError)
+        }. Manual cleanup may be needed.`;
+      }
+      throw tombstoneError;
+    }
 
     return {
       oldName,
@@ -1179,7 +1217,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
       // Follow forward references for latest lookups (not explicit version requests)
       if (version === undefined && data.isRenamed && data.renamedTo) {
-        if (depth >= 5) return null;
+        if (depth >= 5) {
+          logger
+            .warn`Rename chain depth exceeded for "${dataName}" (model ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
+          return null;
+        }
         return this.findByNameSyncWithDepth(
           type,
           modelId,
