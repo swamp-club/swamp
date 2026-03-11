@@ -61,7 +61,16 @@ async function reviewSkill(skillDir: string): Promise<ReviewResult> {
   }
 
   const stdout = new TextDecoder().decode(output.stdout);
-  return JSON.parse(stdout) as ReviewResult;
+
+  // npx may write download/install progress to stdout before the JSON.
+  // Extract the JSON object by finding the first '{' character.
+  const jsonStart = stdout.indexOf("{");
+  if (jsonStart === -1) {
+    throw new Error(
+      `tessl review returned no JSON for ${skillDir}: ${stdout}`,
+    );
+  }
+  return JSON.parse(stdout.slice(jsonStart)) as ReviewResult;
 }
 
 function buildSummaryTable(scores: SkillScore[], allPassed: boolean): string {

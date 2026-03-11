@@ -16,9 +16,9 @@ submitted directly to GitHub with appropriate labels.
 Both commands support interactive mode (opens `$EDITOR` with a template) and
 non-interactive mode with `--title` and `--body` flags.
 
-| Command | Labels | Template sections |
-|---------|--------|-------------------|
-| `swamp issue bug` | `bug`, `external` | Title, description, steps to reproduce, environment |
+| Command               | Labels                    | Template sections                                         |
+| --------------------- | ------------------------- | --------------------------------------------------------- |
+| `swamp issue bug`     | `bug`, `external`         | Title, description, steps to reproduce, environment       |
 | `swamp issue feature` | `enhancement`, `external` | Title, problem statement, proposed solution, alternatives |
 
 **Non-interactive examples:**
@@ -39,8 +39,8 @@ swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 }
 ```
 
-**Verify submission:** Check the returned `url` or run
-`gh issue view <number>` to confirm the issue was created.
+**Verify submission:** Check the returned `url` or run `gh issue view <number>`
+to confirm the issue was created.
 
 ## Requirements
 
