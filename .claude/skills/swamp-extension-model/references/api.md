@@ -26,13 +26,31 @@ Write structured JSON data:
 | Parameter      | Description                                                     |
 | -------------- | --------------------------------------------------------------- |
 | `specName`     | Must match a key in the model's `resources`                     |
-| `instanceName` | The instance name (any non-empty string)                        |
+| `instanceName` | The instance name (must be unique across all specs — see below) |
 | `data`         | JSON data to write (validated against the resource's Zod schema |
 | `overrides`    | Optional overrides (see below)                                  |
 
 Data is validated against the resource's Zod schema (warns on mismatch, doesn't
 throw). The `instanceName` you pass here is used in CEL:
 `model.<defName>.resource.<specName>.<instanceName>.attributes.<field>`.
+
+**Instance name uniqueness:** Instance names map directly to storage paths on
+disk. If two different specs use the same instance name (e.g.,
+`writeResource("summary", "bixu", ...)` and
+`writeResource("repo", "bixu", ...)`), the second write overwrites the first.
+When a model has multiple resource specs, prefix instance names with the spec
+name or use another strategy to ensure uniqueness across all specs within a
+method execution.
+
+```typescript
+// Wrong — "bixu" collides across specs on disk
+await context.writeResource("summary", "bixu", summaryData);
+await context.writeResource("repo", "bixu", repoData); // overwrites!
+
+// Correct — prefix ensures unique storage paths
+await context.writeResource("summary", `summary-${user}`, summaryData);
+await context.writeResource("repo", `repo-${repo}`, repoData);
+```
 
 **ResourceWriteOverrides** (optional):
 

@@ -111,6 +111,29 @@ The same method name appears in multiple elements of the `methods` array within
 a single extension file. Each method name must be unique across all array
 elements.
 
+### "Duplicate data instance name"
+
+This error occurs when two `writeResource` or `createFileWriter` calls within
+the same method execution use the same instance name, even across different
+specs. Instance names map to storage paths on disk — the path has no spec
+component, so `writeResource("summary", "bixu", ...)` and
+`writeResource("repo", "bixu", ...)` both write to the same `bixu/` directory,
+and the second overwrites the first.
+
+**Fix:** Use unique instance names across all specs within a method. Prefix with
+the spec name or another distinguishing value:
+
+```typescript
+// Wrong — same instance name across specs
+await context.writeResource("summary", user.name, summaryData);
+await context.writeResource("repo", repo.name, repoData);
+// Fails when user.name === repo.name (e.g., both are "bixu")
+
+// Correct — prefix ensures uniqueness
+await context.writeResource("summary", `summary-${user.name}`, summaryData);
+await context.writeResource("repo", `repo-${repo.name}`, repoData);
+```
+
 ### "No such key: &lt;specName&gt;" in CEL expressions
 
 This occurs when a CEL expression like
