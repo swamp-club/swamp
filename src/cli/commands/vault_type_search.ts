@@ -27,7 +27,11 @@ import {
 import {
   renderVaultTypeDescribe,
 } from "../../presentation/output/vault_type_describe_output.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -67,7 +71,8 @@ function displayVaultTypeDescribe(
   options: AnyOptions,
 ): void {
   const ctx = createContext(options as GlobalOptions, ["vault", "type-search"]);
-  renderVaultTypeDescribe(item, ctx.outputMode);
+  const effectiveMode = interactiveOutputMode(ctx);
+  renderVaultTypeDescribe(item, effectiveMode);
 }
 
 export async function vaultTypeSearchAction(
@@ -78,18 +83,19 @@ export async function vaultTypeSearchAction(
     "vault",
     "type-search",
   ]);
+  const effectiveMode = interactiveOutputMode(ctx);
   ctx.logger.debug`Searching vault types with query: ${query ?? "(none)"}`;
 
   const allTypes = getAllVaultTypes();
 
-  if (ctx.outputMode === "json") {
+  if (effectiveMode === "json") {
     // Non-interactive: filter and output JSON
     const filteredTypes = filterVaultTypes(allTypes, query ?? "");
     const data: VaultTypeSearchData = {
       query: query ?? "",
       results: filteredTypes,
     };
-    await renderVaultTypeSearch(data, ctx.outputMode);
+    await renderVaultTypeSearch(data, effectiveMode);
   } else {
     // Interactive: show fuzzy search UI
     const data: VaultTypeSearchData = {
@@ -97,7 +103,7 @@ export async function vaultTypeSearchAction(
       results: allTypes,
     };
 
-    const selected = await renderVaultTypeSearch(data, ctx.outputMode);
+    const selected = await renderVaultTypeSearch(data, effectiveMode);
 
     if (selected) {
       ctx.logger.debug`Selected vault type: ${selected.type}`;

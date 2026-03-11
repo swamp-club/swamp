@@ -27,7 +27,11 @@ import {
 import {
   renderVaultDescribe,
 } from "../../presentation/output/vault_describe_output.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import type { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
@@ -83,10 +87,11 @@ async function displayVaultDescribe(
   options: AnyOptions,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["vault", "search"]);
+  const effectiveMode = interactiveOutputMode(ctx);
   const config = await getVaultConfig(repo, item.name);
 
   if (config) {
-    renderVaultDescribe(config, ctx.outputMode);
+    renderVaultDescribe(config, effectiveMode);
   }
 }
 
@@ -97,23 +102,24 @@ export const vaultSearchCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["vault", "search"]);
+    const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching vaults with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: effectiveMode,
     });
     const repo = repoContext.vaultConfigRepo;
     const allVaults = await getAllVaults(repo);
 
-    if (ctx.outputMode === "json") {
+    if (effectiveMode === "json") {
       // Non-interactive: filter and output JSON
       const filteredVaults = filterVaults(allVaults, query ?? "");
       const data: VaultSearchData = {
         query: query ?? "",
         results: filteredVaults,
       };
-      await renderVaultSearch(data, ctx.outputMode);
+      await renderVaultSearch(data, effectiveMode);
     } else {
       // Interactive: show fuzzy search UI
       const data: VaultSearchData = {
@@ -121,7 +127,7 @@ export const vaultSearchCommand = new Command()
         results: allVaults,
       };
 
-      const selected = await renderVaultSearch(data, ctx.outputMode);
+      const selected = await renderVaultSearch(data, effectiveMode);
 
       if (selected) {
         ctx.logger.debug`Selected vault: ${selected.name}`;

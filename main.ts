@@ -20,13 +20,17 @@
 import { runCli } from "./src/cli/mod.ts";
 import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
 import { renderError } from "./src/presentation/output/error_output.ts";
+import { flushDatastoreSync } from "./src/infrastructure/persistence/datastore_sync_coordinator.ts";
+import { getOutputModeFromArgs } from "./src/cli/context.ts";
 
 if (import.meta.main) {
   try {
     await runCli(Deno.args);
   } catch (error) {
+    // Release datastore lock if still held (safety net for uncaught errors)
+    await flushDatastoreSync();
     await initializeLogging({
-      jsonMode: Deno.args.includes("--json"),
+      jsonMode: getOutputModeFromArgs(Deno.args) === "json",
     });
     renderError(error);
     Deno.exit(1);

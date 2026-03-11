@@ -27,7 +27,11 @@ import {
   type DataGetData,
   renderDataGet,
 } from "../../presentation/output/data_get_output.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -331,11 +335,12 @@ export const dataSearchCommand = new Command()
   .option("--limit <n:number>", "Max results", { default: 50 })
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["data", "search"]);
+    const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching data with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: effectiveMode,
     });
     const definitionRepo = repoContext.definitionRepo;
     const dataRepo = repoContext.unifiedDataRepo;
@@ -419,11 +424,11 @@ export const dataSearchCommand = new Command()
       limited,
     };
 
-    const selected = await renderDataSearch(data, ctx.outputMode);
+    const selected = await renderDataSearch(data, effectiveMode);
 
     if (selected) {
       const repoDir = options.repoDir ?? ".";
-      await displayDataDetail(selected, dataRepo, repoDir, ctx.outputMode);
+      await displayDataDetail(selected, dataRepo, repoDir, effectiveMode);
     }
 
     ctx.logger.debug("Data search command completed");

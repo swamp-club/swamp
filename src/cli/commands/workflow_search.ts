@@ -29,7 +29,11 @@ import {
 } from "../../presentation/output/workflow_get_output.ts";
 import { renderWorkflowActionSelect } from "../../presentation/output/workflow_action_select_output.tsx";
 import { renderInputFileSelect } from "../../presentation/output/input_file_select_output.tsx";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
@@ -84,6 +88,7 @@ async function displayWorkflowGet(
   options: AnyOptions,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
+  const effectiveMode = interactiveOutputMode(ctx);
   const workflow = await repo.findByName(item.name);
 
   if (!workflow) {
@@ -107,7 +112,7 @@ async function displayWorkflowGet(
     path: repo.getPath(workflow.id),
   };
 
-  renderWorkflowGet(data, ctx.outputMode);
+  renderWorkflowGet(data, effectiveMode);
 }
 
 /**
@@ -171,6 +176,7 @@ async function executeWorkflowFromSearch(
   options: AnyOptions,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
+  const effectiveMode = interactiveOutputMode(ctx);
   const workflow = await repo.findByName(item.name);
 
   if (!workflow) {
@@ -192,7 +198,7 @@ async function executeWorkflowFromSearch(
         hasDefaults: allHaveDefaults,
         searchDir: repoDir,
       },
-      ctx.outputMode,
+      effectiveMode,
     );
 
     if (!selection) {
@@ -259,11 +265,12 @@ export const workflowSearchCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
+    const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
 
     const { repoDir, repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: effectiveMode,
     });
     const repo = repoContext.workflowRepo;
     const runRepo = repoContext.workflowRunRepo;
@@ -271,7 +278,7 @@ export const workflowSearchCommand = new Command()
     const allWorkflows = await repo.findAll();
     const searchItems = allWorkflows.map(toSearchItem);
 
-    if (ctx.outputMode === "json") {
+    if (effectiveMode === "json") {
       // Non-interactive: filter and output JSON
       const filteredWorkflows = filterWorkflows(searchItems, query ?? "");
 
@@ -283,7 +290,7 @@ export const workflowSearchCommand = new Command()
           query: query ?? "",
           results: filteredWorkflows,
         };
-        await renderWorkflowSearch(data, ctx.outputMode);
+        await renderWorkflowSearch(data, effectiveMode);
       }
     } else {
       // Interactive: show fuzzy search UI
@@ -292,7 +299,7 @@ export const workflowSearchCommand = new Command()
         results: searchItems,
       };
 
-      const selected = await renderWorkflowSearch(data, ctx.outputMode);
+      const selected = await renderWorkflowSearch(data, effectiveMode);
 
       if (selected) {
         ctx.logger.debug`Selected workflow: ${selected.name}`;
@@ -309,7 +316,7 @@ export const workflowSearchCommand = new Command()
             workflowDescription: selected.description,
             hasInputs,
           },
-          ctx.outputMode,
+          effectiveMode,
         );
 
         if (!action) {

@@ -29,7 +29,11 @@ import {
   type WorkflowHistorySearchData,
   type WorkflowHistorySearchItem,
 } from "../../presentation/output/workflow_history_search_output.tsx";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
@@ -185,11 +189,12 @@ export async function workflowRunSearchAction(
     options as GlobalOptions,
     ["workflow", "run", "search"],
   );
+  const effectiveMode = interactiveOutputMode(ctx);
   ctx.logger.debug`Searching workflow runs with query: ${query ?? "(none)"}`;
 
   const { repoContext } = await requireInitializedRepo({
     repoDir: options.repoDir ?? ".",
-    outputMode: ctx.outputMode,
+    outputMode: effectiveMode,
   });
   const workflowRepo = repoContext.workflowRepo;
   const runRepo = repoContext.workflowRunRepo;
@@ -226,14 +231,14 @@ export async function workflowRunSearchAction(
     limit: options.limit as number | undefined,
   });
 
-  if (ctx.outputMode === "json") {
+  if (effectiveMode === "json") {
     // Non-interactive: also apply query text filter
     const filteredRuns = filterByQuery(searchItems, query ?? "");
     const data: WorkflowHistorySearchData = {
       query: query ?? "",
       results: filteredRuns,
     };
-    await renderWorkflowHistorySearch(data, ctx.outputMode);
+    await renderWorkflowHistorySearch(data, effectiveMode);
   } else {
     // Interactive: show fuzzy search UI
     const data: WorkflowHistorySearchData = {
@@ -241,7 +246,7 @@ export async function workflowRunSearchAction(
       results: searchItems,
     };
 
-    const selected = await renderWorkflowHistorySearch(data, ctx.outputMode);
+    const selected = await renderWorkflowHistorySearch(data, effectiveMode);
 
     if (selected) {
       ctx.logger.debug`Selected run: ${selected.runId}`;
@@ -256,7 +261,7 @@ export async function workflowRunSearchAction(
           createWorkflowRunId(selected.runId),
         );
         const runData = toRunData(run, path);
-        renderWorkflowRun(runData, ctx.outputMode);
+        renderWorkflowRun(runData, effectiveMode);
       }
     } else {
       ctx.logger.debug`Search cancelled`;

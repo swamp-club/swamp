@@ -28,7 +28,11 @@ import {
   renderModelGet,
 } from "../../presentation/output/model_get_output.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
@@ -128,11 +132,14 @@ export async function modelSearchAction(
   query?: string,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["model", "search"]);
+  // Use interactiveOutputMode to fall back to JSON in non-TTY contexts,
+  // preventing Ink from crashing with "Raw mode is not supported"
+  const effectiveMode = interactiveOutputMode(ctx);
   ctx.logger.debug`Searching models with query: ${query ?? "(none)"}`;
 
   const { repoContext } = await requireInitializedRepo({
     repoDir: options.repoDir ?? ".",
-    outputMode: ctx.outputMode,
+    outputMode: effectiveMode,
   });
   const definitionRepo = repoContext.definitionRepo;
 
@@ -140,7 +147,7 @@ export async function modelSearchAction(
   const allResults = await definitionRepo.findAllGlobal();
   const allModels = toModelSearchItems(allResults);
 
-  if (ctx.outputMode === "json") {
+  if (effectiveMode === "json") {
     // Non-interactive: filter and output JSON
     const filteredModels = filterModels(allModels, query ?? "");
 
@@ -149,14 +156,14 @@ export async function modelSearchAction(
       await displayModelGet(
         filteredModels[0],
         definitionRepo,
-        ctx.outputMode,
+        effectiveMode,
       );
     } else {
       const data: ModelSearchData = {
         query: query ?? "",
         results: filteredModels,
       };
-      await renderModelSearch(data, ctx.outputMode);
+      await renderModelSearch(data, effectiveMode);
     }
   } else {
     // Interactive: show fuzzy search UI
@@ -165,12 +172,12 @@ export async function modelSearchAction(
       results: allModels,
     };
 
-    const selected = await renderModelSearch(data, ctx.outputMode);
+    const selected = await renderModelSearch(data, effectiveMode);
 
     if (selected) {
       ctx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
       // Display the full model details
-      await displayModelGet(selected, definitionRepo, ctx.outputMode);
+      await displayModelGet(selected, definitionRepo, effectiveMode);
     } else {
       ctx.logger.debug`Search cancelled`;
     }

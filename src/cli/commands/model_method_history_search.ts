@@ -27,7 +27,11 @@ import {
   renderModelOutputGet,
 } from "../../presentation/output/model_output_get_output.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -96,11 +100,12 @@ export const modelMethodHistorySearchCommand = new Command()
       "history",
       "search",
     ]);
+    const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching method history with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: effectiveMode,
     });
     const definitionRepo = repoContext.definitionRepo;
     const outputRepo = repoContext.outputRepo;
@@ -112,14 +117,14 @@ export const modelMethodHistorySearchCommand = new Command()
       definitionRepo,
     );
 
-    if (ctx.outputMode === "json") {
+    if (effectiveMode === "json") {
       // Non-interactive: filter and output JSON
       const filteredOutputs = filterOutputs(allOutputs, query ?? "");
       const data: ModelOutputSearchData = {
         query: query ?? "",
         results: filteredOutputs,
       };
-      await renderModelOutputSearch(data, ctx.outputMode);
+      await renderModelOutputSearch(data, effectiveMode);
     } else {
       // Interactive: show fuzzy search UI
       const data: ModelOutputSearchData = {
@@ -127,7 +132,7 @@ export const modelMethodHistorySearchCommand = new Command()
         results: allOutputs,
       };
 
-      const selected = await renderModelOutputSearch(data, ctx.outputMode);
+      const selected = await renderModelOutputSearch(data, effectiveMode);
 
       if (selected) {
         ctx.logger.debug`Selected output: ${selected.id}`;
@@ -135,7 +140,7 @@ export const modelMethodHistorySearchCommand = new Command()
           selected,
           definitionRepo,
           outputRepo,
-          ctx.outputMode,
+          effectiveMode,
         );
       } else {
         ctx.logger.debug`Search cancelled`;

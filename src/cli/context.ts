@@ -71,6 +71,19 @@ export function createContext(
 }
 
 /**
+ * Returns the effective output mode for commands that use interactive Ink UIs.
+ * Falls back to "json" when stdin is not a TTY, since Ink requires raw mode
+ * on stdin and will crash with "Raw mode is not supported" in non-TTY contexts
+ * (piped input, CI, AI agents).
+ */
+export function interactiveOutputMode(ctx: CommandContext): OutputMode {
+  if (ctx.outputMode === "json" || !isStdinTty()) {
+    return "json";
+  }
+  return "log";
+}
+
+/**
  * Determines the output mode from raw CLI arguments.
  * Used for error handling before the CLI has fully parsed options.
  */

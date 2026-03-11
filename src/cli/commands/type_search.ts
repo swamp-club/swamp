@@ -24,7 +24,11 @@ import {
   type TypeSearchItem,
 } from "../../presentation/output/type_search_output.tsx";
 import { renderTypeDescribe } from "../../presentation/output/type_describe_output.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  interactiveOutputMode,
+} from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -70,6 +74,7 @@ function filterTypes(types: TypeSearchItem[], query: string): TypeSearchItem[] {
  */
 function displayTypeDescribe(item: TypeSearchItem, options: AnyOptions): void {
   const ctx = createContext(options as GlobalOptions, ["type", "search"]);
+  const effectiveMode = interactiveOutputMode(ctx);
   const modelType = ModelType.create(item.normalized);
   const definition = modelRegistry.get(modelType);
 
@@ -97,7 +102,7 @@ function displayTypeDescribe(item: TypeSearchItem, options: AnyOptions): void {
       globalArguments,
       methods,
     },
-    ctx.outputMode,
+    effectiveMode,
   );
 }
 
@@ -107,11 +112,12 @@ export const typeSearchCommand = new Command()
   .arguments("[query:string]")
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["type", "search"]);
+    const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching types with query: ${query ?? "(none)"}`;
 
     const allTypes = getAllTypes();
 
-    if (ctx.outputMode === "json") {
+    if (effectiveMode === "json") {
       // Non-interactive: filter and output JSON
       const filteredTypes = filterTypes(allTypes, query ?? "");
       const data: TypeSearchData = {
@@ -122,7 +128,7 @@ export const typeSearchCommand = new Command()
         data.hint =
           `No local types matched. Try: swamp extension search ${query}`;
       }
-      await renderTypeSearch(data, ctx.outputMode);
+      await renderTypeSearch(data, effectiveMode);
     } else {
       // Interactive: show fuzzy search UI
       const data: TypeSearchData = {
@@ -130,7 +136,7 @@ export const typeSearchCommand = new Command()
         results: allTypes,
       };
 
-      const selected = await renderTypeSearch(data, ctx.outputMode);
+      const selected = await renderTypeSearch(data, effectiveMode);
 
       if (selected) {
         ctx.logger.debug`Selected type: ${selected.normalized}`;
