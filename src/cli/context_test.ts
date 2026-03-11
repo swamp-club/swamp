@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   createContext,
   getOutputModeFromArgs,
+  getRepoDirFromArgs,
   type GlobalOptions,
 } from "./context.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -88,4 +89,56 @@ Deno.test("getOutputModeFromArgs returns json when --json is present", () => {
   assertEquals(getOutputModeFromArgs(["--json"]), "json");
   assertEquals(getOutputModeFromArgs(["model", "create", "--json"]), "json");
   assertEquals(getOutputModeFromArgs(["--json", "model", "create"]), "json");
+});
+
+// ============================================================================
+// getRepoDirFromArgs Tests
+// ============================================================================
+
+Deno.test("getRepoDirFromArgs returns cwd when no --repo-dir flag", () => {
+  assertEquals(getRepoDirFromArgs([]), Deno.cwd());
+  assertEquals(getRepoDirFromArgs(["model", "create"]), Deno.cwd());
+});
+
+Deno.test("getRepoDirFromArgs parses --repo-dir with space separator", () => {
+  const result = getRepoDirFromArgs([
+    "model",
+    "run",
+    "--repo-dir",
+    "/tmp/my-repo",
+  ]);
+  assertEquals(result, "/tmp/my-repo");
+});
+
+Deno.test("getRepoDirFromArgs parses --repo-dir with equals separator", () => {
+  const result = getRepoDirFromArgs([
+    "model",
+    "run",
+    "--repo-dir=/tmp/my-repo",
+  ]);
+  assertEquals(result, "/tmp/my-repo");
+});
+
+Deno.test("getRepoDirFromArgs resolves relative paths to absolute", () => {
+  const result = getRepoDirFromArgs(["--repo-dir", "./relative/path"]);
+  assertEquals(result.startsWith("/"), true);
+  assertEquals(result.endsWith("relative/path"), true);
+});
+
+Deno.test("getRepoDirFromArgs returns cwd when --repo-dir is last arg with no value", () => {
+  assertEquals(getRepoDirFromArgs(["model", "run", "--repo-dir"]), Deno.cwd());
+});
+
+Deno.test("getRepoDirFromArgs finds flag among other args", () => {
+  const result = getRepoDirFromArgs([
+    "model",
+    "method",
+    "run",
+    "--json",
+    "--repo-dir",
+    "/tmp/my-repo",
+    "my-model",
+    "my-method",
+  ]);
+  assertEquals(result, "/tmp/my-repo");
 });

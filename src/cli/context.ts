@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Logger } from "@logtape/logtape";
+import { resolve } from "@std/path";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 
@@ -92,4 +93,23 @@ export function getOutputModeFromArgs(args: string[]): OutputMode {
     return "json";
   }
   return "log";
+}
+
+/**
+ * Pre-parses --repo-dir from raw CLI arguments before Cliffy option parsing.
+ *
+ * Supports both `--repo-dir <value>` and `--repo-dir=<value>` forms.
+ * Returns the resolved absolute path, defaulting to cwd when not specified.
+ */
+export function getRepoDirFromArgs(args: string[]): string {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--repo-dir" && i + 1 < args.length) {
+      return resolve(args[i + 1]);
+    }
+    if (arg.startsWith("--repo-dir=")) {
+      return resolve(arg.slice("--repo-dir=".length));
+    }
+  }
+  return Deno.cwd();
 }

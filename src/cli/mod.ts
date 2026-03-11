@@ -40,7 +40,11 @@ import { summariseCommand } from "./commands/summarise.ts";
 import { datastoreCommand } from "./commands/datastore.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
-import { type GlobalOptions, isStdinTty } from "./context.ts";
+import {
+  getRepoDirFromArgs,
+  type GlobalOptions,
+  isStdinTty,
+} from "./context.ts";
 import {
   ModelNameType,
   ModelTypeType,
@@ -137,22 +141,21 @@ export function isUpdateCheckDisabledByEnv(): boolean {
 /**
  * Load user models from configured directory.
  */
-async function loadUserModels(): Promise<void> {
-  const cwd = Deno.cwd();
+async function loadUserModels(repoDir: string): Promise<void> {
   const markerRepo = new RepoMarkerRepository();
 
   try {
-    const repoPath = RepoPath.create(cwd);
+    const repoPath = RepoPath.create(repoDir);
     const marker = await markerRepo.read(repoPath);
 
     const modelsDir = resolveModelsDir(marker);
     // Handle both absolute and relative paths (cross-platform)
     const absoluteModelsDir = isAbsolute(modelsDir)
       ? modelsDir
-      : resolve(cwd, modelsDir);
+      : resolve(repoDir, modelsDir);
 
     const denoRuntime = new EmbeddedDenoRuntime();
-    const loader = new UserModelLoader(denoRuntime, cwd);
+    const loader = new UserModelLoader(denoRuntime, repoDir);
     const result = await loader.loadModels(absoluteModelsDir);
 
     // Log extension successes at debug level
@@ -179,21 +182,20 @@ async function loadUserModels(): Promise<void> {
 /**
  * Load user vault implementations from configured directory.
  */
-async function loadUserVaults(): Promise<void> {
-  const cwd = Deno.cwd();
+async function loadUserVaults(repoDir: string): Promise<void> {
   const markerRepo = new RepoMarkerRepository();
 
   try {
-    const repoPath = RepoPath.create(cwd);
+    const repoPath = RepoPath.create(repoDir);
     const marker = await markerRepo.read(repoPath);
 
     const vaultsDir = resolveVaultsDir(marker);
     const absoluteVaultsDir = isAbsolute(vaultsDir)
       ? vaultsDir
-      : resolve(cwd, vaultsDir);
+      : resolve(repoDir, vaultsDir);
 
     const denoRuntime = new EmbeddedDenoRuntime();
-    const loader = new UserVaultLoader(denoRuntime, cwd);
+    const loader = new UserVaultLoader(denoRuntime, repoDir);
     const result = await loader.loadVaults(absoluteVaultsDir);
 
     // Log successes at debug level
@@ -269,11 +271,12 @@ interface TelemetryContext {
  * Initialize telemetry service if in a swamp repository.
  * Lazy-migrates repoId if missing from marker file.
  */
-async function initTelemetryService(): Promise<TelemetryContext | null> {
+async function initTelemetryService(
+  repoDir: string,
+): Promise<TelemetryContext | null> {
   try {
-    const cwd = Deno.cwd();
     const markerRepo = new RepoMarkerRepository();
-    const repoPath = RepoPath.create(cwd);
+    const repoPath = RepoPath.create(repoDir);
 
     const marker = await markerRepo.read(repoPath);
     if (!marker) {
@@ -313,7 +316,7 @@ async function initTelemetryService(): Promise<TelemetryContext | null> {
       // Auth file unreadable — continue without auth
     }
 
-    const repository = new JsonTelemetryRepository(cwd);
+    const repository = new JsonTelemetryRepository(repoDir);
     const service = new TelemetryService(repository, VERSION);
     const telemetryEndpoint = resolveTelemetryEndpoint(
       marker.telemetryEndpoint,
@@ -340,6 +343,9 @@ export async function runCli(args: string[]): Promise<void> {
   // Capture start time for telemetry
   const startTime = new Date();
 
+  // Pre-parse --repo-dir so startup functions use the correct repository
+  const repoDir = getRepoDirFromArgs(args);
+
   // Pre-parse check for telemetry disable flag
   const telemetryDisabled = isTelemetryDisabled(args) ||
     isTelemetryDisabledByEnv();
@@ -350,18 +356,18 @@ export async function runCli(args: string[]): Promise<void> {
   // Initialize telemetry service (only if in a swamp repo)
   let telemetryCtx: TelemetryContext | null = null;
   if (!telemetryDisabled) {
-    telemetryCtx = await initTelemetryService();
+    telemetryCtx = await initTelemetryService(repoDir);
   }
 
   // Load user models and vaults before setting up CLI
-  await loadUserModels();
-  await loadUserVaults();
+  await loadUserModels(repoDir);
+  await loadUserVaults(repoDir);
 
   // Read marker for resolveLogLevel (used in globalAction closure)
   let marker: RepoMarkerData | null = null;
   try {
     const markerRepo = new RepoMarkerRepository();
-    const repoPath = RepoPath.create(Deno.cwd());
+    const repoPath = RepoPath.create(repoDir);
     marker = await markerRepo.read(repoPath);
   } catch {
     // Not in a swamp repo - marker stays null
