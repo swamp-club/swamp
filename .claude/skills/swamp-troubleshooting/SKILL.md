@@ -1,6 +1,6 @@
 ---
 name: swamp-troubleshooting
-description: Debug and diagnose swamp issues using source code. Use when troubleshooting swamp bugs, unexpected behavior, or errors. Triggers on "debug swamp", "swamp bug", "swamp error", "unexpected behavior", "swamp issue", "troubleshoot swamp", "diagnose swamp", "swamp not working", "swamp broken", "fix swamp", "swamp problem", "swamp crash", "source code", "read swamp source".
+description: Debug and diagnose swamp issues by analyzing error messages, reading source code, tracing execution flow, and identifying root causes. Use when troubleshooting swamp bugs, unexpected behavior, or errors. Triggers on "debug swamp", "swamp bug", "swamp error", "unexpected behavior", "swamp issue", "troubleshoot swamp", "diagnose swamp", "swamp not working", "swamp broken", "fix swamp", "swamp problem", "swamp crash", "source code", "read swamp source".
 ---
 
 # Swamp Troubleshooting Skill

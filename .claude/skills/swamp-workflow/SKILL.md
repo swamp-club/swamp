@@ -1,6 +1,6 @@
 ---
 name: swamp-workflow
-description: Work with swamp workflows for AI-native automation. Use when searching for workflows, creating new workflows, validating workflow definitions, running workflows, or viewing run history. Triggers on "swamp workflow", "workflow", "run workflow", "create workflow", "job", "step", "automate", "automation", "pipeline", "orchestrate", "run history", "execute workflow", "workflow logs", "workflow failure", "debug workflow".
+description: Work with swamp workflows for AI-native automation — define jobs and steps in YAML, wire models together with dependencies, validate DAGs, and inspect run history. Use when searching for workflows, creating new workflows, validating workflow definitions, running workflows, or viewing run history. Triggers on "swamp workflow", "run workflow", "create workflow", "automate", "automation", "orchestrate", "run history", "execute workflow", "workflow logs", "workflow failure", "debug workflow".
 ---
 
 # Swamp Workflow Skill

@@ -60,12 +60,33 @@ jobs:
             echo "All dependencies are up to date"
           fi
 
+  skill-review:
+    name: Skill Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Review skills
+        run: deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/review_skills.ts
+
   claude-review:
     # NOTE: For this to block merges, enable branch protection on main with:
     # "Require a pull request before merging" + "Require approving reviews"
     # Claude will use --request-changes to block or --approve to allow
     name: Claude Code Review
-    needs: [test, deps-audit]
+    needs: [test, deps-audit, skill-review]
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false
     concurrency:
@@ -123,7 +144,7 @@ jobs:
 
   claude-adversarial-review:
     name: Adversarial Code Review
-    needs: [test, deps-audit]
+    needs: [test, deps-audit, skill-review]
     runs-on: ubuntu-latest
     if: github.event.pull_request.draft == false
     concurrency:
@@ -254,7 +275,7 @@ jobs:
 
   auto-merge:
     name: Auto-merge PR
-    needs: [test, deps-audit, claude-review, claude-adversarial-review]
+    needs: [test, deps-audit, skill-review, claude-review, claude-adversarial-review]
     runs-on: ubuntu-latest
     # Only auto-merge PRs from the same repo (not forks) for security
     # Skip auto-merge if PR has the 'hold' label

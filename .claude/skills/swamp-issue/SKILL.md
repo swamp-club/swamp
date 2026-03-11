@@ -1,6 +1,6 @@
 ---
 name: swamp-issue
-description: Submit bug reports and feature requests for swamp. Use when the user wants to report a bug, request a feature, or provide feedback about swamp. Triggers on "bug report", "feature request", "report bug", "request feature", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue".
+description: Create GitHub issues for swamp — file bug reports with reproduction steps or submit feature requests with implementation context. Use when the user wants to report a bug, request a feature, or provide feedback about swamp. Triggers on "bug report", "feature request", "report bug", "request feature", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue".
 ---
 
 # Swamp Issue Submission Skill
@@ -11,79 +11,24 @@ submitted directly to GitHub with appropriate labels.
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
 `swamp help issue` for the complete, up-to-date CLI schema.
 
-## Quick Reference
+## Commands
 
-| Task                  | Command                                                       |
-| --------------------- | ------------------------------------------------------------- |
-| Report a bug          | `swamp issue bug`                                             |
-| Request a feature     | `swamp issue feature`                                         |
-| Submit bug (CLI args) | `swamp issue bug --title "Title" --body "Description" --json` |
-| Submit feature (args) | `swamp issue feature --title "Title" --body "Desc" --json`    |
+Both commands support interactive mode (opens `$EDITOR` with a template) and
+non-interactive mode with `--title` and `--body` flags.
 
-## Submitting a Bug Report
+| Command | Labels | Template sections |
+|---------|--------|-------------------|
+| `swamp issue bug` | `bug`, `external` | Title, description, steps to reproduce, environment |
+| `swamp issue feature` | `enhancement`, `external` | Title, problem statement, proposed solution, alternatives |
 
-Report bugs you've encountered while using swamp. The interactive mode opens
-your editor with a template to guide your bug report.
-
-**Interactive mode (recommended):**
-
-```bash
-swamp issue bug
-```
-
-This opens your configured `$EDITOR` with a template containing:
-
-- Title section for a brief description
-- Description section for details
-- Steps to reproduce
-- Environment information
-- Additional context
-
-**Non-interactive mode:**
+**Non-interactive examples:**
 
 ```bash
 swamp issue bug --title "CLI crashes on empty input" --body "When running..." --json
-swamp issue bug -t "Title" -b "Body" --json
-```
-
-**Labels applied:** `bug`, `external`
-
-## Submitting a Feature Request
-
-Request new features or improvements to swamp.
-
-**Interactive mode (recommended):**
-
-```bash
-swamp issue feature
-```
-
-This opens your editor with a template containing:
-
-- Title section for a brief description
-- Problem statement (what pain point this solves)
-- Proposed solution
-- Alternatives considered
-- Additional context
-
-**Non-interactive mode:**
-
-```bash
 swamp issue feature --title "Add dark mode" --body "I'd like..." --json
-swamp issue feature -t "Title" -b "Body" --json
 ```
 
-**Labels applied:** `enhancement`, `external`
-
-## JSON Output
-
-Both commands support `--json` for machine-readable output:
-
-```bash
-swamp issue bug --title "My Bug" --body "Details" --json
-```
-
-**Output shape:**
+**Output shape** (both commands with `--json`):
 
 ```json
 {
@@ -94,40 +39,14 @@ swamp issue bug --title "My Bug" --body "Details" --json
 }
 ```
 
+**Verify submission:** Check the returned `url` or run
+`gh issue view <number>` to confirm the issue was created.
+
 ## Requirements
 
 - **GitHub CLI (`gh`)**: Must be installed and authenticated
   - Install: https://cli.github.com/
   - Authenticate: `gh auth login`
-
-## Best Practices for Bug Reports
-
-When submitting a bug report, include:
-
-1. **Clear title**: Summarize the bug in one line
-2. **Steps to reproduce**: Numbered list of actions that trigger the bug
-3. **Expected vs actual behavior**: What should happen vs what does happen
-4. **Environment details**: swamp version, OS, shell
-5. **Error messages**: Include any error output (use code blocks)
-
-**Example bug title:**
-
-- Good: "CLI crashes when running workflow with missing input file"
-- Bad: "It doesn't work"
-
-## Best Practices for Feature Requests
-
-When submitting a feature request, include:
-
-1. **Clear title**: Summarize the feature in one line
-2. **Problem statement**: What pain point this addresses
-3. **Proposed solution**: How the feature would work
-4. **Alternatives**: Other approaches you've considered
-
-**Example feature title:**
-
-- Good: "Add --dry-run flag to workflow run command"
-- Bad: "Make it better"
 
 ## For AI Agents: Formatting Issue Content
 

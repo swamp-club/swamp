@@ -182,12 +182,30 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-data reference files", async ()
       "references",
       "troubleshooting.md",
     );
+    const expressionsPath = join(
+      dir,
+      "swamp-data",
+      "references",
+      "expressions.md",
+    );
+    const dataOwnershipPath = join(
+      dir,
+      "swamp-data",
+      "references",
+      "data-ownership.md",
+    );
 
     const examplesStat = await Deno.stat(examplesPath);
     assertEquals(examplesStat.isFile, true);
 
     const troubleshootingStat = await Deno.stat(troubleshootingPath);
     assertEquals(troubleshootingStat.isFile, true);
+
+    const expressionsStat = await Deno.stat(expressionsPath);
+    assertEquals(expressionsStat.isFile, true);
+
+    const dataOwnershipStat = await Deno.stat(dataOwnershipPath);
+    assertEquals(dataOwnershipStat.isFile, true);
   });
 });
 
@@ -209,6 +227,18 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-model reference files", async (
       "references",
       "scenarios.md",
     );
+    const expressionsPath = join(
+      dir,
+      "swamp-model",
+      "references",
+      "expressions.md",
+    );
+    const dataOwnershipPath = join(
+      dir,
+      "swamp-model",
+      "references",
+      "data-ownership.md",
+    );
 
     const examplesStat = await Deno.stat(examplesPath);
     assertEquals(examplesStat.isFile, true);
@@ -218,6 +248,12 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-model reference files", async (
 
     const scenariosStat = await Deno.stat(scenariosPath);
     assertEquals(scenariosStat.isFile, true);
+
+    const expressionsStat = await Deno.stat(expressionsPath);
+    assertEquals(expressionsStat.isFile, true);
+
+    const dataOwnershipStat = await Deno.stat(dataOwnershipPath);
+    assertEquals(dataOwnershipStat.isFile, true);
   });
 });
 

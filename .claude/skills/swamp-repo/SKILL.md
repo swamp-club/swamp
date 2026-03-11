@@ -1,6 +1,6 @@
 ---
 name: swamp-repo
-description: Manage swamp repositories and datastores. Use when initializing repos, upgrading swamp, starting the webapp, or configuring datastores. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release".
+description: Manage swamp repositories and datastores — initializing repos, upgrading swamp, syncing data, releasing stuck locks. Use when initializing repos, upgrading swamp, starting the webapp, or configuring datastores. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release".
 ---
 
 # Swamp Repository Skill
@@ -167,8 +167,10 @@ skip the initial push.
 
 ### Migrating Between Datastores
 
-Run `swamp datastore setup` again with the new backend type. Each setup command
-migrates existing data to the new backend.
+1. Check current status: `swamp datastore status --json`
+2. Run setup with new backend: `swamp datastore setup <type> ... --json`
+3. Verify health: `swamp datastore status --json` — confirm `healthy: true`
+4. If unhealthy: check error message, fix credentials/paths, re-run setup
 
 ### Manual S3 Sync
 

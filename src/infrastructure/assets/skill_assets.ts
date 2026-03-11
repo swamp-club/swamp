@@ -35,7 +35,15 @@ export interface SkillInfo {
 const BUNDLED_SKILLS: SkillInfo[] = [
   { relativePath: "swamp-data/SKILL.md", name: "swamp-data" },
   {
+    relativePath: "swamp-data/references/data-ownership.md",
+    name: "swamp-data",
+  },
+  {
     relativePath: "swamp-data/references/examples.md",
+    name: "swamp-data",
+  },
+  {
+    relativePath: "swamp-data/references/expressions.md",
     name: "swamp-data",
   },
   {
@@ -48,7 +56,15 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-model",
   },
   {
+    relativePath: "swamp-model/references/data-ownership.md",
+    name: "swamp-model",
+  },
+  {
     relativePath: "swamp-model/references/examples.md",
+    name: "swamp-model",
+  },
+  {
+    relativePath: "swamp-model/references/expressions.md",
     name: "swamp-model",
   },
   {
