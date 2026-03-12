@@ -135,11 +135,15 @@ export class SwampClubClient {
    * Call /api/whoami to verify identity.
    * Authenticates using the x-api-key header.
    */
-  async whoami(apiKey: string): Promise<WhoamiResponse> {
-    const res = await this.fetch("/api/whoami", {
-      method: "GET",
-      headers: { "x-api-key": apiKey },
-    });
+  async whoami(
+    apiKey: string,
+    signal?: AbortSignal,
+  ): Promise<WhoamiResponse> {
+    const res = await this.fetch(
+      "/api/whoami",
+      { method: "GET", headers: { "x-api-key": apiKey } },
+      signal,
+    );
 
     if (!res.ok) {
       await res.body?.cancel();
@@ -154,14 +158,26 @@ export class SwampClubClient {
     return await res.json();
   }
 
-  private async fetch(path: string, init: RequestInit): Promise<Response> {
+  private async fetch(
+    path: string,
+    init: RequestInit,
+    callerSignal?: AbortSignal,
+  ): Promise<Response> {
     const url = `${this.serverUrl}${path}`;
+    const timeoutSignal = AbortSignal.timeout(15000);
+    const signal = callerSignal
+      ? AbortSignal.any([callerSignal, timeoutSignal])
+      : timeoutSignal;
     try {
-      return await fetch(url, {
-        ...init,
-        signal: AbortSignal.timeout(15000),
-      });
+      return await fetch(url, { ...init, signal });
     } catch (error) {
+      // Re-throw AbortError from caller signal without wrapping
+      if (
+        callerSignal?.aborted && error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        throw error;
+      }
       if (error instanceof DOMException && error.name === "TimeoutError") {
         throw new UserError(
           `Request to ${this.serverUrl} timed out. Is the server running?`,

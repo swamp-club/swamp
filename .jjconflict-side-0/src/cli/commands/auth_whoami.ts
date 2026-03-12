@@ -19,12 +19,14 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
-import {
-  getCollectives,
-  SwampClubClient,
-} from "../../infrastructure/http/swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { consumeStream } from "../../libswamp/stream.ts";
+import {
+  type AuthWhoamiEvent,
+  createAuthDeps,
+  whoami,
+} from "../../libswamp/auth/whoami.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -33,52 +35,53 @@ export const authWhoamiCommand = new Command()
   .name("whoami")
   .description("Show current authenticated identity")
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["auth", "whoami"]);
-    ctx.logger.debug("Executing auth whoami command");
+    const cliCtx = createContext(options as GlobalOptions, ["auth", "whoami"]);
+    cliCtx.logger.debug("Executing auth whoami command");
 
-    const repo = new AuthRepository();
-    const credentials = await repo.load();
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createAuthDeps({
+      serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
+    });
 
-    if (!credentials) {
-      throw new UserError(
-        "Not authenticated. Run 'swamp auth login' to sign in.",
-      );
-    }
+    await consumeStream<AuthWhoamiEvent>(whoami(ctx, deps), {
+      loading_credentials: () => {
+        cliCtx.logger.debug("Loading stored credentials");
+      },
+      contacting_server: (e) => {
+        cliCtx.logger.debug(`Contacting ${e.serverUrl}`);
+      },
+      completed: (e) => {
+        if (cliCtx.outputMode === "json") {
+          console.log(JSON.stringify(
+            {
+              authenticated: true,
+              serverUrl: e.identity.serverUrl,
+              id: e.identity.id,
+              username: e.identity.username,
+              email: e.identity.email,
+              name: e.identity.name,
+              ...(e.identity.collectives
+                ? { collectives: e.identity.collectives }
+                : {}),
+            },
+            null,
+            2,
+          ));
+        } else {
+          console.log(
+            `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
+          );
+          if (e.identity.collectives && e.identity.collectives.length > 0) {
+            console.log(
+              `Collectives: ${e.identity.collectives.join(", ")}`,
+            );
+          }
+        }
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    });
 
-    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? credentials.serverUrl;
-    const client = new SwampClubClient(serverUrl);
-    const whoami = await client.whoami(credentials.apiKey);
-
-    if (!whoami.authenticated) {
-      throw new UserError(
-        "Stored API key is no longer valid. Run 'swamp auth login' to re-authenticate.",
-      );
-    }
-
-    const collectives = getCollectives(whoami);
-
-    if (ctx.outputMode === "json") {
-      console.log(JSON.stringify(
-        {
-          authenticated: true,
-          serverUrl: credentials.serverUrl,
-          id: whoami.id,
-          username: whoami.username,
-          email: whoami.email,
-          name: whoami.name,
-          ...(collectives ? { collectives } : {}),
-        },
-        null,
-        2,
-      ));
-    } else {
-      console.log(
-        `${whoami.username} (${whoami.email}) on ${credentials.serverUrl}`,
-      );
-      if (collectives && collectives.length > 0) {
-        console.log(`Collectives: ${collectives.join(", ")}`);
-      }
-    }
-
-    ctx.logger.debug("Auth whoami command completed");
+    cliCtx.logger.debug("Auth whoami command completed");
   });
