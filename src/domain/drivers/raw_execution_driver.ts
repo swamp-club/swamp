@@ -100,6 +100,7 @@ export class RawExecutionDriver implements ExecutionDriver {
       this.definition.name,
       this.context.vaultService,
       this.methodName,
+      this.context.onEvent,
     );
 
     const {

@@ -18,11 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import {
-  type ArtifactInfo,
-  type ModelMethodRunData,
-  renderModelMethodRun,
-} from "../../presentation/output/model_method_run_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {
   acquireModelLocks,
@@ -30,30 +25,30 @@ import {
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { ModelOutput } from "../../domain/models/model_output.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import {
-  getRunLogger,
-  runFileSink,
-} from "../../infrastructure/logging/logger.ts";
-import { coerceInputTypes, parseInputs } from "../input_parser.ts";
+import { runFileSink } from "../../infrastructure/logging/logger.ts";
+import { parseInputs } from "../input_parser.ts";
 import { parseTags } from "./data_search.ts";
-import { InputValidationService } from "../../domain/inputs/mod.ts";
-import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
-import type { InputsSchema } from "../../domain/definitions/definition.ts";
-import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { join } from "@std/path";
 import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { modelMethodHistoryCommand } from "./model_method_history.ts";
 import { modelMethodDescribeCommand } from "./model_method_describe.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import {
+  consumeStream,
+  createLibSwampContext,
+  modelMethodRun,
+  type ModelMethodRunDeps,
+} from "../../libswamp/mod.ts";
+import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -117,11 +112,6 @@ export const modelMethodRunCommand = new Command()
           repoDir: options.repoDir ?? ".",
           outputMode: ctx.outputMode,
         });
-      const definitionRepo = repoContext.definitionRepo;
-      const unifiedDataRepo = repoContext.unifiedDataRepo;
-      const outputRepo = repoContext.outputRepo;
-      const executionService = new DefaultMethodExecutionService();
-      const vaultService = await VaultService.fromRepository(repoDir);
 
       ctx.logger
         .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
@@ -137,352 +127,111 @@ export const modelMethodRunCommand = new Command()
         ? parseTags(options.tag as string[])
         : undefined;
 
-      // Look up the model definition (reads YAML from models/ — no lock needed)
-      ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-      const result = await findDefinitionByIdOrName(
-        definitionRepo,
+      const deps: ModelMethodRunDeps = {
+        repoDir,
+        lookupDefinition: (idOrName) =>
+          findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
+        getModelDef: (type) => resolveModelType(type, getAutoResolver()),
+        createEvaluationService: () =>
+          new ExpressionEvaluationService(
+            repoContext.definitionRepo,
+            repoDir,
+            { dataRepo: repoContext.unifiedDataRepo },
+          ),
+        loadEvaluatedDefinition: (type, name) =>
+          repoContext.evaluatedDefinitionRepo.findByName(type, name),
+        saveEvaluatedDefinition: (type, definition) =>
+          repoContext.evaluatedDefinitionRepo.save(type, definition),
+        createExecutionService: () => new DefaultMethodExecutionService(),
+        createVaultService: () => VaultService.fromRepository(repoDir),
+        dataRepo: repoContext.unifiedDataRepo,
+        definitionRepo: repoContext.definitionRepo,
+        outputRepo: repoContext.outputRepo,
+        createRunLog: async (modelType, method, definitionId) => {
+          const redactor = new SecretRedactor();
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const logFilePath = join(
+            swampPath(repoDir, SWAMP_SUBDIRS.outputs),
+            modelType.normalized,
+            method,
+            `${definitionId}-${timestamp}.log`,
+          );
+          const logCategory: string[] = [];
+          await runFileSink.register(
+            logCategory,
+            logFilePath,
+            redactor,
+            swampPath(repoDir),
+          );
+          return {
+            logFilePath,
+            redactor,
+            cleanup: () => runFileSink.unregister(logCategory),
+          };
+        },
+      };
+
+      const libCtx = createLibSwampContext();
+      const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+        modelName: modelIdOrName,
+        methodName,
+      });
+
+      // Pre-lookup for per-model lock acquisition (reads YAML — no lock needed)
+      const preResult = await findDefinitionByIdOrName(
+        repoContext.definitionRepo,
         modelIdOrName,
       );
-      if (!result) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
+      let flushModelLocks: (() => Promise<void>) | null = null;
+      if (preResult) {
+        flushModelLocks = await acquireModelLocks(datastoreConfig, [
+          {
+            modelType: preResult.type.normalized,
+            modelId: preResult.definition.id,
+          },
+        ]);
       }
-      const { definition, type: modelType } = result;
-
-      // Acquire per-model lock (only blocks other operations on this same model).
-      // For S3 datastores, also pulls model-scoped files and pushes on flush.
-      const flushModelLocks = await acquireModelLocks(datastoreConfig, [
-        { modelType: modelType.normalized, modelId: definition.id },
-      ]);
-
-      // Coerce k=v string inputs to match schema types before validation
-      const coercedInputs = definition.inputs
-        ? coerceInputTypes(inputs, definition.inputs)
-        : inputs;
-      Object.assign(inputs, coercedInputs);
-
-      // Validate inputs against model's input schema if provided
-      if (definition.inputs) {
-        const validationService = new InputValidationService();
-        const inputsWithDefaults = validationService.applyDefaults(
-          inputs,
-          definition.inputs,
-        );
-
-        // Build effective schema: only require inputs referenced by the current method's arguments
-        const referencedInputs = extractInputReferences(
-          definition.getMethodArguments(methodName),
-        );
-        const originalRequired = definition.inputs.required ?? [];
-        const effectiveRequired = originalRequired.filter((name) =>
-          referencedInputs.has(name)
-        );
-        const effectiveSchema: InputsSchema = {
-          ...definition.inputs,
-          required: effectiveRequired,
-        };
-
-        const validationResult = validationService.validate(
-          inputsWithDefaults,
-          effectiveSchema,
-        );
-        if (!validationResult.valid) {
-          const errorMessages = validationResult.errors
-            .map((e) => `  ${e.message}`)
-            .join("\n");
-          throw new UserError(`Input validation failed:\n${errorMessages}`);
-        }
-        // Use inputs with defaults applied
-        Object.assign(inputs, inputsWithDefaults);
-      }
-
-      // Create run logger for real-time output
-      const runLogger = getRunLogger(definition.name, methodName);
-
-      // Create secret redactor — populated during vault resolution, used by log sink and data writers
-      const redactor = new SecretRedactor();
-
-      // Register run file sink target for log persistence
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const logFilePath = join(
-        swampPath(repoDir, SWAMP_SUBDIRS.outputs),
-        modelType.normalized,
-        methodName,
-        `${definition.id}-${timestamp}.log`,
-      );
-      const runLogCategory: string[] = [];
-      const logBoundary = swampPath(repoDir);
-      await runFileSink.register(
-        runLogCategory,
-        logFilePath,
-        redactor,
-        logBoundary,
-      );
-
-      runLogger.info("Found model {name} ({type})", {
-        name: definition.name,
-        type: modelType.normalized,
-      });
-
-      // Get the model definition from registry (auto-resolve if needed)
-      const modelDef = await resolveModelType(modelType, getAutoResolver());
-      if (!modelDef) {
-        throw new UserError(`Unknown model type: ${modelType.normalized}`);
-      }
-
-      // Validate method exists on the model
-      const method = modelDef.methods[methodName];
-      if (!method) {
-        const availableMethods = Object.keys(modelDef.methods).join(", ");
-        throw new UserError(
-          `Unknown method '${methodName}' for type '${modelType.normalized}'. Available methods: ${
-            availableMethods || "none"
-          }`,
-        );
-      }
-
-      const evaluationService = new ExpressionEvaluationService(
-        definitionRepo,
-        repoDir,
-        { dataRepo: unifiedDataRepo },
-      );
-
-      const lastEvaluated = options.lastEvaluated as boolean;
-      let evaluatedDefinition = definition;
-
-      if (lastEvaluated) {
-        // Load previously-evaluated definition from cache
-        runLogger.info("Loading last evaluated definition");
-        const evaluatedDefRepo = repoContext.evaluatedDefinitionRepo;
-        const lastEval = await evaluatedDefRepo.findByName(
-          modelType,
-          definition.name,
-        );
-        if (!lastEval) {
-          throw new UserError(
-            `No previously evaluated definition found for "${definition.name}".\n\n` +
-              `Run the method without --last-evaluated first to generate evaluated data:\n` +
-              `  swamp model method run ${definition.name} ${methodName}`,
-          );
-        }
-        evaluatedDefinition = lastEval;
-      } else {
-        // Evaluate CEL expressions (vault expressions left raw for persistence)
-        if (
-          evaluationService.hasDefinitionExpressions(definition) ||
-          Object.keys(inputs).length > 0
-        ) {
-          runLogger.info("Evaluating expressions");
-          const evalResult = await evaluationService.evaluateDefinition(
-            definition,
-            modelType,
-            inputs,
-          );
-          evaluatedDefinition = evalResult.definition;
-        }
-
-        // Save evaluated definition (with vault expressions still raw) for --last-evaluated
-        const evaluatedDefRepo = repoContext.evaluatedDefinitionRepo;
-        await evaluatedDefRepo.save(modelType, evaluatedDefinition);
-      }
-
-      // Merge CLI inputs directly into method arguments
-      // Inputs not handled by the definition's inputs schema go to method args
-      const definitionInputKeys = definition.inputs
-        ? Object.keys(
-          (definition.inputs as { properties?: Record<string, unknown> })
-            .properties || {},
-        )
-        : [];
-      const overrideInputs = Object.fromEntries(
-        Object.entries(inputs).filter(([key]) =>
-          !definitionInputKeys.includes(key)
-        ),
-      );
-      if (Object.keys(overrideInputs).length > 0) {
-        for (const [key, value] of Object.entries(overrideInputs)) {
-          evaluatedDefinition.setMethodArgument(methodName, key, value);
-        }
-      }
-
-      // Resolve runtime expressions (vault and env) at runtime (never persisted)
-      evaluatedDefinition = await evaluationService
-        .resolveRuntimeExpressionsInDefinition(evaluatedDefinition, redactor);
-
-      runLogger.info("Executing method {method}", { method: methodName });
-
-      // Create ModelOutput for tracking (use original definition for provenance)
-      const definitionHash = await definition.computeHash();
-      const output = ModelOutput.create({
-        definitionId: definition.id,
-        methodName,
-        provenance: {
-          definitionHash,
-          modelVersion: modelDef.version,
-          triggeredBy: "manual",
-        },
-      });
-
-      // Mark as running, set log file path, and save
-      output.markRunning();
-      output.setLogFile(logFilePath);
-      await outputRepo.save(modelType, methodName, output);
-
-      // Track artifacts for output
-      const dataArtifacts: ArtifactInfo[] = [];
-
-      let methodError: UserError | undefined;
 
       try {
-        try {
-          // Execute the method (use workflow execution to handle follow-up actions)
-          // Use evaluatedDefinition which has vault expressions resolved
-          const execResult = await executionService.executeWorkflow(
-            evaluatedDefinition,
-            modelDef,
+        await consumeStream(
+          modelMethodRun(libCtx, deps, {
+            modelIdOrName,
             methodName,
-            {
-              repoDir,
-              modelType,
-              modelId: evaluatedDefinition.id,
-              globalArgs: evaluatedDefinition.globalArguments,
-              definition: {
-                id: evaluatedDefinition.id,
-                name: evaluatedDefinition.name,
-                version: evaluatedDefinition.version,
-                tags: evaluatedDefinition.tags,
-              },
-              methodName,
-              logger: runLogger,
-              dataRepository: unifiedDataRepo,
-              definitionRepository: definitionRepo,
-              runtimeTags,
-              vaultService,
-              redactor,
-              skipCheckNames: options.skipCheck as string[] | undefined,
-              skipCheckLabels: options.skipCheckLabel as string[] | undefined,
-              skipAllChecks: options.skipChecks as boolean | undefined,
-              driver: (options.driver as string | undefined) ??
-                evaluatedDefinition.driver,
-              driverConfig: evaluatedDefinition.driverConfig,
-            },
-          );
-
-          runLogger.info("Method executed");
-
-          // Data is already persisted by DataWriter — extract artifact info from handles
-          if (execResult.dataHandles && execResult.dataHandles.length > 0) {
-            for (const handle of execResult.dataHandles) {
-              const dataPath = unifiedDataRepo.getPath(
-                modelType,
-                definition.id,
-                handle.name,
-                handle.version,
-              );
-
-              runLogger.info("Data saved to {path}", {
-                path: dataPath,
-                name: handle.name,
-              });
-
-              // Track artifact in output
-              output.addDataArtifact({
-                dataId: handle.dataId,
-                name: handle.name,
-                version: handle.version,
-                tags: handle.tags,
-              });
-
-              // Parse content if JSON for display purposes
-              let attributes: Record<string, unknown> | undefined;
-              if (handle.metadata.contentType === "application/json") {
-                try {
-                  const content = await unifiedDataRepo.getContent(
-                    modelType,
-                    evaluatedDefinition.id,
-                    handle.name,
-                    handle.version,
-                  );
-                  if (content) {
-                    const text = new TextDecoder().decode(content);
-                    attributes = JSON.parse(text) as Record<string, unknown>;
-                  }
-                } catch {
-                  // Not valid JSON, skip attributes
-                }
-              }
-
-              dataArtifacts.push({
-                id: handle.dataId,
-                path: dataPath,
-                attributes,
-              });
-            }
-          }
-
-          // Mark output as succeeded and save
-          output.markSucceeded();
-          await outputRepo.save(modelType, methodName, output);
-        } catch (error) {
-          // Mark output as failed and save
-          const errorMessage = error instanceof Error
-            ? error.message
-            : String(error);
-          const errorStack = error instanceof Error ? error.stack : undefined;
-          output.markFailed({ message: errorMessage, stack: errorStack });
-          await outputRepo.save(modelType, methodName, output);
-
-          runLogger.error("Method {method} failed: {error}", {
-            method: methodName,
-            model: definition.name,
-            error: errorMessage,
-          });
-          methodError = new UserError(errorMessage);
-        }
-      } finally {
-        // Unregister run file sink target
-        runFileSink.unregister(runLogCategory);
-
-        // Release per-model lock (and push to S3 for S3 datastores)
-        // Best-effort — don't replace the original error if flush fails
-        try {
-          await flushModelLocks();
-        } catch (releaseError) {
-          const releaseMsg = releaseError instanceof Error
-            ? releaseError.message
-            : String(releaseError);
-          runLogger.warn(
-            "Failed to release locks during cleanup: {error}",
-            { error: releaseMsg },
-          );
-        }
-      }
-
-      if (methodError) {
-        throw methodError;
-      }
-
-      // JSON mode: use existing render function
-      if (ctx.outputMode === "json") {
-        const data: ModelMethodRunData = {
-          modelId: definition.id,
-          modelName: definition.name,
-          type: modelType.normalized,
-          methodName,
-          data: dataArtifacts.length > 0 ? dataArtifacts[0] : undefined,
-          logs: dataArtifacts.length > 1 ? dataArtifacts.slice(1) : undefined,
-        };
-
-        renderModelMethodRun(data, ctx.outputMode);
-      } else {
-        // Interactive/stream: summary as final log line
-        runLogger.with({ summary: true }).info(
-          "Method {method} completed on {model}",
-          {
-            method: methodName,
-            model: definition.name,
-            artifacts: dataArtifacts.length,
-          },
+            inputs,
+            lastEvaluated: options.lastEvaluated as boolean,
+            runtimeTags,
+            skipCheckNames: options.skipCheck as string[] | undefined,
+            skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+            skipAllChecks: options.skipChecks as boolean | undefined,
+            driver: options.driver as string | undefined,
+          }),
+          renderer.handlers(),
         );
+
+        if (renderer.runFailed()) {
+          Deno.exit(1);
+        }
+      } catch (error) {
+        if (error instanceof UserError) {
+          throw error;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(`Method execution failed: ${message}`);
+      } finally {
+        if (flushModelLocks) {
+          try {
+            await flushModelLocks();
+          } catch (releaseError) {
+            ctx.logger.warn(
+              "Failed to release locks during cleanup: {error}",
+              {
+                error: releaseError instanceof Error
+                  ? releaseError.message
+                  : String(releaseError),
+              },
+            );
+          }
+        }
       }
 
       ctx.logger.debug("Method run command completed");

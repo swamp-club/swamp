@@ -19,12 +19,13 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import {
-  getCollectives,
-  SwampClubClient,
-} from "../../infrastructure/http/swamp_club_client.ts";
-import { UserError } from "../../domain/errors.ts";
+  consumeStream,
+  createAuthDeps,
+  createLibSwampContext,
+  whoami,
+} from "../../libswamp/mod.ts";
+import { createAuthWhoamiRenderer } from "../../presentation/renderers/auth_whoami.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -33,58 +34,16 @@ export const authWhoamiCommand = new Command()
   .name("whoami")
   .description("Show current authenticated identity")
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["auth", "whoami"]);
-    ctx.logger.debug("Executing auth whoami command");
+    const cliCtx = createContext(options as GlobalOptions, ["auth", "whoami"]);
+    cliCtx.logger.debug("Executing auth whoami command");
 
-    const repo = new AuthRepository();
-    const credentials = await repo.load();
-
-    if (!credentials) {
-      throw new UserError(
-        "Not authenticated. Run 'swamp auth login' to sign in.",
-      );
-    }
-
-    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? credentials.serverUrl;
-    const client = new SwampClubClient(serverUrl);
-    const whoami = await client.whoami(credentials.apiKey);
-
-    if (!whoami.authenticated) {
-      throw new UserError(
-        "Stored API key is no longer valid. Run 'swamp auth login' to re-authenticate.",
-      );
-    }
-
-    const collectives = getCollectives(whoami);
-
-    // Refresh cached collectives in auth.json so they stay current
-    await repo.save({
-      ...credentials,
-      collectives: collectives ?? [],
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createAuthDeps({
+      serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
     });
 
-    if (ctx.outputMode === "json") {
-      console.log(JSON.stringify(
-        {
-          authenticated: true,
-          serverUrl: credentials.serverUrl,
-          id: whoami.id,
-          username: whoami.username,
-          email: whoami.email,
-          name: whoami.name,
-          ...(collectives ? { collectives } : {}),
-        },
-        null,
-        2,
-      ));
-    } else {
-      console.log(
-        `${whoami.username} (${whoami.email}) on ${credentials.serverUrl}`,
-      );
-      if (collectives && collectives.length > 0) {
-        console.log(`Collectives: ${collectives.join(", ")}`);
-      }
-    }
+    const renderer = createAuthWhoamiRenderer(cliCtx.outputMode);
+    await consumeStream(whoami(ctx, deps), renderer.handlers());
 
-    ctx.logger.debug("Auth whoami command completed");
+    cliCtx.logger.debug("Auth whoami command completed");
   });
