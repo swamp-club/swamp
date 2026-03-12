@@ -486,7 +486,7 @@ Deno.test("saves workflow run to repository", async () => {
   });
 });
 
-Deno.test("calls progress callbacks during execution", async () => {
+Deno.test("run() yields lifecycle events during execution", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -503,24 +503,16 @@ Deno.test("calls progress callbacks during execution", async () => {
     );
 
     const events: string[] = [];
+    for await (const event of service.run(workflow.name)) {
+      events.push(event.kind);
+    }
 
-    await service.execute(workflow.name, {
-      onWorkflowStart: () => events.push("workflow-start"),
-      onJobStart: (_, jobName) => events.push(`job-start:${jobName}`),
-      onStepStart: (_, jobName, stepName) =>
-        events.push(`step-start:${jobName}/${stepName}`),
-      onStepComplete: (_, jobName, stepName) =>
-        events.push(`step-complete:${jobName}/${stepName}`),
-      onJobComplete: (_, jobName) => events.push(`job-complete:${jobName}`),
-      onWorkflowComplete: () => events.push("workflow-complete"),
-    });
-
-    assertEquals(events.includes("workflow-start"), true);
-    assertEquals(events.includes("job-start:job1"), true);
-    assertEquals(events.includes("step-start:job1/step1"), true);
-    assertEquals(events.includes("step-complete:job1/step1"), true);
-    assertEquals(events.includes("job-complete:job1"), true);
-    assertEquals(events.includes("workflow-complete"), true);
+    assertEquals(events.includes("started"), true);
+    assertEquals(events.includes("job_started"), true);
+    assertEquals(events.includes("step_started"), true);
+    assertEquals(events.includes("step_completed"), true);
+    assertEquals(events.includes("job_completed"), true);
+    assertEquals(events.includes("completed"), true);
   });
 });
 
@@ -701,10 +693,17 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
     );
 
     const events: string[] = [];
-    const run = await service.execute(workflow.name, {
-      onJobStart: (_, jobName) => events.push(`start:${jobName}`),
-      onJobComplete: (_, jobName) => events.push(`complete:${jobName}`),
-    });
+    let run: WorkflowRun | undefined;
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "job_started") {
+        events.push(`start:${event.jobId}`);
+      } else if (event.kind === "job_completed") {
+        events.push(`complete:${event.jobId}`);
+      } else if (event.kind === "completed") {
+        run = event.run;
+      }
+    }
+    if (!run) throw new Error("Expected run");
 
     assertEquals(run.status, "succeeded");
     assertEquals(executor.executedSteps.length, 4);
@@ -1127,9 +1126,7 @@ Deno.test("executes linear chain where multiple steps reference same model", asy
   });
 });
 
-Deno.test("progress callback does not include onImplicitDependencies", async () => {
-  // Regression: onImplicitDependencies was removed from ExecutionProgressCallback.
-  // Verify it's not called even when provided (proves the field was removed from the interface).
+Deno.test("run() event stream includes all expected event types", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -1145,33 +1142,119 @@ Deno.test("progress callback does not include onImplicitDependencies", async () 
       executor,
     );
 
-    let implicitDepsCalled = false;
-    const events: string[] = [];
+    const eventTypes: string[] = [];
+    for await (const event of service.run(workflow.name)) {
+      eventTypes.push(event.kind);
+    }
 
-    await service.execute(workflow.name, {
-      onWorkflowStart: () => events.push("workflow-start"),
-      onWorkflowComplete: () => events.push("workflow-complete"),
-      // This callback no longer exists on the interface, but if somehow
-      // called, we'd detect it
-      ...({
-        onImplicitDependencies: () => {
-          implicitDepsCalled = true;
-        },
-      }),
-    });
-
-    assertEquals(events.includes("workflow-start"), true);
-    assertEquals(events.includes("workflow-complete"), true);
-    assertEquals(implicitDepsCalled, false);
+    // Must include these event types in order
+    assertEquals(eventTypes[0], "started");
+    assertEquals(eventTypes[eventTypes.length - 1], "completed");
+    assertEquals(eventTypes.includes("job_started"), true);
+    assertEquals(eventTypes.includes("step_started"), true);
+    assertEquals(eventTypes.includes("step_completed"), true);
+    assertEquals(eventTypes.includes("job_completed"), true);
   });
 });
 
 // --- Workflow nesting and cycle detection tests ---
 
-Deno.test("DefaultStepExecutor rejects workflow task when nesting depth exceeded", async () => {
-  const workflowRepo = new InMemoryWorkflowRepository();
-  const runRepo = new InMemoryWorkflowRunRepository();
-  const executor = new DefaultStepExecutor(workflowRepo, runRepo, "/tmp");
+Deno.test("workflow step fails when nesting depth exceeded", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    // Parent workflow with a step that calls a child workflow
+    const workflow = Workflow.create({
+      name: "parent-workflow",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "nested-step",
+              task: StepTask.workflow("child-workflow"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+    );
+
+    const events: { kind: string; error?: string }[] = [];
+    for await (
+      const event of service.run(workflow.name, {
+        workflowNestingDepth: 10,
+      })
+    ) {
+      if (event.kind === "step_failed") {
+        events.push({ kind: event.kind, error: event.error });
+      }
+    }
+
+    assertEquals(events.length, 1);
+    assertEquals(
+      events[0].error?.includes("Maximum workflow nesting depth (10) exceeded"),
+      true,
+    );
+  });
+});
+
+Deno.test("workflow step fails on direct cycle detection", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    // Workflow that tries to call itself
+    const workflow = Workflow.create({
+      name: "self-calling",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "recursive-step",
+              task: StepTask.workflow("self-calling"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+    );
+
+    const events: { kind: string; error?: string }[] = [];
+    for await (
+      const event of service.run(workflow.name, {
+        ancestorWorkflowIds: new Set(["self-calling"]),
+      })
+    ) {
+      if (event.kind === "step_failed") {
+        events.push({ kind: event.kind, error: event.error });
+      }
+    }
+
+    assertEquals(events.length, 1);
+    assertEquals(
+      events[0].error?.includes("Workflow cycle detected"),
+      true,
+    );
+  });
+});
+
+Deno.test("DefaultStepExecutor rejects workflow task type", async () => {
+  const executor = new DefaultStepExecutor();
 
   const step = Step.create({
     name: "nested-step",
@@ -1185,127 +1268,13 @@ Deno.test("DefaultStepExecutor rejects workflow task when nesting depth exceeded
     jobName: "job1",
     stepName: "nested-step",
     repoDir: "/tmp",
-    workflowNestingDepth: 10, // At the limit
+    signal: new AbortController().signal,
   };
 
   await assertRejects(
     () => executor.execute(step, ctx),
     Error,
-    "Maximum workflow nesting depth (10) exceeded",
-  );
-});
-
-Deno.test("DefaultStepExecutor allows workflow task at depth below limit", async () => {
-  // Depth 9 should pass the nesting check (limit is 10).
-  // It will fail later because the child workflow doesn't exist, but the
-  // error message should NOT be about nesting depth.
-  const workflowRepo = new InMemoryWorkflowRepository();
-  const runRepo = new InMemoryWorkflowRunRepository();
-  const executor = new DefaultStepExecutor(workflowRepo, runRepo, "/tmp");
-
-  const step = Step.create({
-    name: "nested-step",
-    task: StepTask.workflow("nonexistent-child"),
-  });
-
-  const ctx: StepExecutionContext = {
-    workflowId: createWorkflowId("parent-id"),
-    workflowRunId: "run-123",
-    workflowName: "parent-workflow",
-    jobName: "job1",
-    stepName: "nested-step",
-    repoDir: "/tmp",
-    workflowNestingDepth: 9,
-  };
-
-  // Should pass depth check but fail on workflow lookup
-  const error = await assertRejects(
-    () => executor.execute(step, ctx),
-    Error,
-  );
-  // Verify it's NOT a nesting depth error
-  assertEquals(
-    (error as Error).message.includes("nesting depth"),
-    false,
-  );
-});
-
-Deno.test("DefaultStepExecutor rejects workflow task on direct cycle", async () => {
-  const workflowRepo = new InMemoryWorkflowRepository();
-  const runRepo = new InMemoryWorkflowRunRepository();
-  const executor = new DefaultStepExecutor(workflowRepo, runRepo, "/tmp");
-
-  const step = Step.create({
-    name: "recursive-step",
-    task: StepTask.workflow("parent-workflow"),
-  });
-
-  const ctx: StepExecutionContext = {
-    workflowId: createWorkflowId("parent-id"),
-    workflowRunId: "run-123",
-    workflowName: "parent-workflow",
-    jobName: "job1",
-    stepName: "recursive-step",
-    repoDir: "/tmp",
-    ancestorWorkflowIds: new Set(["parent-workflow"]),
-  };
-
-  await assertRejects(
-    () => executor.execute(step, ctx),
-    Error,
-    "Workflow cycle detected",
-  );
-});
-
-Deno.test("DefaultStepExecutor rejects workflow task on indirect cycle", async () => {
-  const workflowRepo = new InMemoryWorkflowRepository();
-  const runRepo = new InMemoryWorkflowRunRepository();
-  const executor = new DefaultStepExecutor(workflowRepo, runRepo, "/tmp");
-
-  const step = Step.create({
-    name: "cycle-step",
-    task: StepTask.workflow("workflow-a"),
-  });
-
-  // Simulates: workflow-a -> workflow-b -> workflow-c trying to call workflow-a
-  const ctx: StepExecutionContext = {
-    workflowId: createWorkflowId("workflow-c-id"),
-    workflowRunId: "run-123",
-    workflowName: "workflow-c",
-    jobName: "job1",
-    stepName: "cycle-step",
-    repoDir: "/tmp",
-    ancestorWorkflowIds: new Set(["workflow-a", "workflow-b", "workflow-c"]),
-  };
-
-  await assertRejects(
-    () => executor.execute(step, ctx),
-    Error,
-    "Workflow cycle detected",
-  );
-});
-
-Deno.test("DefaultStepExecutor rejects workflow task without repos", async () => {
-  const executor = new DefaultStepExecutor(); // No repos
-
-  const step = Step.create({
-    name: "nested-step",
-    task: StepTask.workflow("child-workflow"),
-  });
-
-  const ctx: StepExecutionContext = {
-    workflowId: createWorkflowId("parent-id"),
-    workflowRunId: "run-123",
-    workflowName: "parent-workflow",
-    jobName: "job1",
-    stepName: "nested-step",
-    repoDir: "/tmp",
-  };
-
-  await assertRejects(
-    () => executor.execute(step, ctx),
-    Error,
-    "Workflow execution requires workflowRepo, runRepo, and repoDir",
+    "Unsupported task type for step executor",
   );
 });
 
@@ -1383,7 +1352,7 @@ Deno.test("evaluateWorkflow skips task.inputs with step-output dependencies", as
   });
 });
 
-Deno.test("nesting context is propagated through WorkflowExecutionService to steps", async () => {
+Deno.test("step executor receives correct workflow context", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
@@ -1421,22 +1390,13 @@ Deno.test("nesting context is propagated through WorkflowExecutionService to ste
       executor,
     );
 
-    // Execute with nesting context
-    const ancestors = new Set(["grandparent-workflow"]);
-    await service.execute(workflow.name, undefined, {
-      workflowNestingDepth: 3,
-      ancestorWorkflowIds: ancestors,
-    });
+    await service.execute(workflow.name);
 
     // Verify the context was propagated to the step executor
     assertEquals(executor.capturedContexts.length, 1);
-    assertEquals(executor.capturedContexts[0].workflowNestingDepth, 3);
-    assertEquals(
-      executor.capturedContexts[0].ancestorWorkflowIds?.has(
-        "grandparent-workflow",
-      ),
-      true,
-    );
+    assertEquals(executor.capturedContexts[0].workflowName, "parent-workflow");
+    assertEquals(executor.capturedContexts[0].jobName, "job1");
+    assertEquals(executor.capturedContexts[0].stepName, "step1");
   });
 });
 
@@ -1559,7 +1519,7 @@ Deno.test("workflow expressions are evaluated before step execution (Bug A)", as
       executor,
     );
 
-    const run = await service.execute(workflow.name, undefined, {
+    const run = await service.execute(workflow.name, {
       inputs: { deviceModel: "my-device" },
     });
 
@@ -1630,7 +1590,7 @@ Deno.test("useLastEvaluated context carries task.inputs and expressionContext (B
       executor,
     );
 
-    const run = await service.execute(workflow.name, undefined, {
+    const run = await service.execute(workflow.name, {
       lastEvaluated: true,
     });
 

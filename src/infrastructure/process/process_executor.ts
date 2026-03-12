@@ -38,6 +38,10 @@ export interface ProcessExecutorOptions {
   logger?: Logger;
   /** Secret redactor for stripping vault secrets from streamed output. */
   redactor?: SecretRedactor;
+  /** Optional callback for streaming output lines to an event stream. */
+  onOutput?: (line: string, stream: "stdout" | "stderr") => void;
+  /** Optional abort signal — when aborted, the subprocess is killed. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -148,13 +152,51 @@ export async function executeProcess(
       }, options.timeoutMs);
     }
 
+    // Kill subprocess when abort signal fires
+    let abortHandler: (() => void) | undefined;
+    if (options.signal) {
+      if (options.signal.aborted) {
+        try {
+          process.kill("SIGTERM");
+        } catch {
+          // Process may have already exited
+        }
+      } else {
+        abortHandler = () => {
+          try {
+            process.kill("SIGTERM");
+          } catch {
+            // Process may have already exited
+          }
+        };
+        options.signal.addEventListener("abort", abortHandler, { once: true });
+      }
+    }
+
     try {
       const logger = options.logger;
       const redact = (line: string) =>
         options.redactor?.hasSecrets ? options.redactor.redact(line) : line;
+      const onOutput = options.onOutput;
       const [stdoutResult, stderrResult, status] = await Promise.all([
-        streamLines(process.stdout, (line) => logger.info(redact(line))),
-        streamLines(process.stderr, (line) => logger.warn(redact(line))),
+        streamLines(process.stdout, (line) => {
+          const redacted = redact(line);
+          if (onOutput) {
+            onOutput(redacted, "stdout");
+            logger.debug(redacted);
+          } else {
+            logger.info(redacted);
+          }
+        }),
+        streamLines(process.stderr, (line) => {
+          const redacted = redact(line);
+          if (onOutput) {
+            onOutput(redacted, "stderr");
+            logger.debug(redacted);
+          } else {
+            logger.warn(redacted);
+          }
+        }),
         process.status,
       ]);
 
@@ -165,10 +207,18 @@ export async function executeProcess(
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
       }
+      if (abortHandler && options.signal) {
+        options.signal.removeEventListener("abort", abortHandler);
+      }
     }
 
     if (timedOut) {
       throw new Error(`Command timed out after ${options.timeoutMs}ms`);
+    }
+
+    // Re-throw as AbortError if signal was responsible for the kill
+    if (options.signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
     }
   } else if (options.timeoutMs) {
     // Buffered with timeout
