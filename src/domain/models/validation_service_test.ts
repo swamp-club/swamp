@@ -1442,3 +1442,32 @@ Deno.test("validateModel warns when appliesTo references nonexistent method", as
   assertStringIncludes(selResult?.error ?? "", "creat");
   assertStringIncludes(selResult?.error ?? "", "unknown method");
 });
+
+Deno.test("validateModel warns when appliesTo is empty array", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const model: ModelDefinition = {
+    ...testModelWithChecks,
+    checks: {
+      "dead-check": {
+        description: "Empty appliesTo means it never runs",
+        appliesTo: [],
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+
+  const results = await service.validateModel(
+    definition,
+    model,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, false);
+  assertStringIncludes(selResult?.error ?? "", "empty appliesTo");
+  assertStringIncludes(selResult?.error ?? "", "will never run");
+});

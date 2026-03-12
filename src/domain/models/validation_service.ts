@@ -862,6 +862,11 @@ export class DefaultModelValidationService implements ModelValidationService {
       const availableMethods = new Set(Object.keys(modelDef.methods));
       for (const [checkName, check] of Object.entries(modelDef.checks)) {
         if (check.appliesTo) {
+          if (check.appliesTo.length === 0) {
+            errors.push(
+              `Check "${checkName}" has empty appliesTo array — it will never run. Remove appliesTo to run on all mutating methods`,
+            );
+          }
           for (const methodName of check.appliesTo) {
             if (!availableMethods.has(methodName)) {
               errors.push(
