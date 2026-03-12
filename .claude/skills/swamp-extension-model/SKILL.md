@@ -46,21 +46,19 @@ than wrapping CLI commands.
 
 ## Quick Reference
 
-| Task                 | Command/Action                                                |
-| -------------------- | ------------------------------------------------------------- |
-| Search community     | `swamp extension search <query> --json`                       |
-| Create model file    | Create `extensions/models/my_model.ts`                        |
-| Verify registration  | `swamp model type search --json`                              |
-| Check schema         | `swamp model type describe @myorg/my-model --json`            |
-| Create instance      | `swamp model create @myorg/my-model my-instance --json`       |
-| Run method           | `swamp model method run my-instance run --json`               |
-| Validate with checks | `swamp model validate my-instance --json`                     |
-| Skip all checks      | `swamp model method run my-instance run --skip-checks --json` |
-| Create manifest      | Create `manifest.yaml` with model/workflow entries            |
-| Format extension     | `swamp extension fmt manifest.yaml --json`                    |
-| Check formatting     | `swamp extension fmt manifest.yaml --check --json`            |
-| Push extension       | `swamp extension push manifest.yaml --json`                   |
-| Dry-run push         | `swamp extension push manifest.yaml --dry-run --json`         |
+| Task                | Command/Action                                          |
+| ------------------- | ------------------------------------------------------- |
+| Search community    | `swamp extension search <query> --json`                 |
+| Create model file   | Create `extensions/models/my_model.ts`                  |
+| Verify registration | `swamp model type search --json`                        |
+| Check schema        | `swamp model type describe @myorg/my-model --json`      |
+| Create instance     | `swamp model create @myorg/my-model my-instance --json` |
+| Run method          | `swamp model method run my-instance run --json`         |
+| Create manifest     | Create `manifest.yaml` with model/workflow entries      |
+| Format extension    | `swamp extension fmt manifest.yaml --json`              |
+| Check formatting    | `swamp extension fmt manifest.yaml --check --json`      |
+| Push extension      | `swamp extension push manifest.yaml --json`             |
+| Dry-run push        | `swamp extension push manifest.yaml --dry-run --json`   |
 
 ## Quick Start
 
@@ -85,18 +83,6 @@ export const model = {
       schema: OutputSchema,
       lifetime: "infinite",
       garbageCollection: 10,
-    },
-  },
-  checks: {
-    "non-empty-message": {
-      description: "Ensure message is not empty",
-      labels: ["policy"],
-      execute: async (context) => {
-        if (!context.globalArgs.message.trim()) {
-          return { pass: false, errors: ["message must not be empty"] };
-        }
-        return { pass: true };
-      },
     },
   },
   methods: {
@@ -350,87 +336,11 @@ model.
 
 ## Pre-flight Checks
 
-Pre-flight checks run automatically before any mutating method (`create`,
-`update`, `delete`, `action`). They validate that conditions are met before the
-method executes — avoiding half-completed operations.
-
-### CheckDefinition Interface
-
-```typescript
-checks: {
-  "check-name": {
-    description: "Human-readable description of what is validated",
-    labels: ["policy", "live"],          // optional categorization tags
-    appliesTo: ["create", "update"],     // optional: limit to specific methods
-    execute: async (context: MethodContext): Promise<CheckResult> => {
-      // context has: globalArgs, definition, methodName, repoDir, logger,
-      //              dataRepository, modelType, modelId
-      // NOTE: writeResource and createFileWriter are NOT available in checks
-      return { pass: true };
-      // or: return { pass: false, errors: ["Reason check failed"] };
-    },
-  },
-},
-```
-
-### CheckResult
-
-```typescript
-interface CheckResult {
-  pass: boolean;
-  errors?: string[]; // human-readable failure reasons when pass is false
-}
-```
-
-### Example: Value/Policy Validation
-
-```typescript
-checks: {
-  "valid-region": {
-    description: "Ensure the target region is an allowed region",
-    labels: ["policy"],
-    execute: async (context) => {
-      const allowed = ["us-east-1", "us-west-2", "eu-west-1"];
-      const region = context.globalArgs.region;
-      if (!allowed.includes(region)) {
-        return {
-          pass: false,
-          errors: [`Region "${region}" is not in the allowed list: ${allowed.join(", ")}`],
-        };
-      }
-      return { pass: true };
-    },
-  },
-},
-```
-
-### Labels Convention
-
-Use labels to categorize checks for selective skipping:
-
-- `policy` — business rules and constraints
-- `live` — checks that make live API calls
-- `dependency` — cross-model dependency validation
-
-### appliesTo Scoping
-
-If `appliesTo` is omitted, the check runs before all mutating methods. To scope
-a check to specific methods, list them explicitly:
-
-```typescript
-appliesTo: ["create"],           // only on create
-appliesTo: ["create", "update"], // on create and update, not delete
-```
-
-### Skipping Checks
-
-Users can skip checks at runtime:
-
-```bash
-swamp model method run my-model create --skip-checks          # skip all checks
-swamp model method run my-model create --skip-check valid-region  # skip by name
-swamp model method run my-model create --skip-check-label live    # skip by label
-```
+Checks run automatically before mutating methods (`create`, `update`, `delete`,
+`action`). Define them on `checks` in the model export — see the Quick Start
+example above. For the full `CheckDefinition` interface, labels conventions,
+`appliesTo` scoping, and extension checks, see
+[references/checks.md](references/checks.md).
 
 ## Extending Existing Model Types
 
@@ -458,30 +368,8 @@ export const extension = {
 };
 ```
 
-Extensions can also add pre-flight checks to the target model type. The `checks`
-field is an array of `Record<string, CheckDefinition>` objects, following the
-same array-of-records pattern as `methods`:
-
-```typescript
-// extensions/models/vpc_policy.ts
-export const extension = {
-  type: "aws/ec2/vpc",
-  methods: [{/* ... */}],
-  checks: [{
-    "no-cidr-overlap": {
-      description: "Ensure CIDR does not overlap with existing VPCs",
-      labels: ["policy"],
-      execute: async (context) => {
-        // validation logic
-        return { pass: true };
-      },
-    },
-  }],
-};
-```
-
-Check names must not conflict with checks already defined on the target model
-type — conflicts throw an error at registration time.
+Extensions can also add pre-flight checks — see
+[references/checks.md](references/checks.md#extension-checks) for the format.
 
 **Extension rules:**
 
@@ -597,6 +485,9 @@ swamp model type describe @myorg/my-model --json  # Check schema
 
 - **API Reference**: See [references/api.md](references/api.md) for detailed
   `writeResource`, `createFileWriter`, `DataWriter`, and logging API docs
+- **Pre-flight Checks**: See [references/checks.md](references/checks.md) for
+  `CheckDefinition` interface, `CheckResult`, labels, scoping, and extension
+  checks
 - **Examples**: See [references/examples.md](references/examples.md) for
   complete model examples (CRUD lifecycle, data chaining, extensions, etc.)
 - **Scenarios**: See [references/scenarios.md](references/scenarios.md) for
