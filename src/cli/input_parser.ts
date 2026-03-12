@@ -18,11 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse as parseYaml } from "@std/yaml";
-import type {
-  InputsSchema,
-  JsonSchemaProperty,
-} from "../domain/definitions/definition.ts";
 import { UserError } from "../domain/errors.ts";
+
+// Re-export coerceInputTypes from domain layer for backward compatibility
+export { coerceInputTypes } from "../domain/inputs/input_coercion.ts";
 
 /**
  * Result of parsing inputs.
@@ -163,55 +162,6 @@ export function deepMerge(
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * Coerces string input values to match their declared types in an InputsSchema.
- * Only coerces values that are strings and have a declared type in the schema.
- * Without a schema, values are returned unchanged.
- */
-export function coerceInputTypes(
-  inputs: Record<string, unknown>,
-  schema?: InputsSchema,
-): Record<string, unknown> {
-  const properties = schema?.properties ?? schema;
-  if (!properties) {
-    return inputs;
-  }
-
-  const result: Record<string, unknown> = { ...inputs };
-
-  for (const [key, value] of Object.entries(result)) {
-    if (typeof value !== "string") {
-      continue;
-    }
-
-    const propSchema = properties[key] as JsonSchemaProperty | undefined;
-    if (!propSchema?.type) {
-      continue;
-    }
-
-    switch (propSchema.type) {
-      case "number":
-      case "integer": {
-        const num = Number(value);
-        if (!Number.isNaN(num)) {
-          result[key] = propSchema.type === "integer" ? Math.trunc(num) : num;
-        }
-        break;
-      }
-      case "boolean": {
-        if (value === "true") {
-          result[key] = true;
-        } else if (value === "false") {
-          result[key] = false;
-        }
-        break;
-      }
-    }
-  }
-
-  return result;
 }
 
 /**

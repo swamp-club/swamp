@@ -17,38 +17,28 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
-
 /**
- * Artifact information for method output.
+ * Read-model projection of a data artifact produced by a model method run.
  */
-export interface ArtifactInfo {
+export interface DataArtifactView {
   id: string;
+  name: string;
   path: string;
   attributes?: Record<string, unknown>;
 }
 
-export interface ModelMethodRunData {
+/**
+ * Read-model projection of a completed model method run.
+ * Presentation-oriented view with computed fields (duration, artifacts).
+ */
+export interface ModelMethodRunView {
   modelId: string;
   modelName: string;
-  type: string;
+  modelType: string;
   methodName: string;
-  // Artifact outputs (all optional, depends on what the method produces)
-  resource?: ArtifactInfo;
-  data?: ArtifactInfo;
-  file?: ArtifactInfo;
-  logs?: ArtifactInfo[];
-}
-
-export function renderModelMethodRun(
-  data: ModelMethodRunData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    // Log mode also uses JSON output since model_method_run.ts command
-    // already handles log mode output via runLogger.
-    console.log(JSON.stringify(data, null, 2));
-  }
+  status: "succeeded" | "failed";
+  duration?: number;
+  outputId: string;
+  logFile?: string;
+  dataArtifacts: DataArtifactView[];
 }
