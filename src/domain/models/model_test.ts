@@ -24,6 +24,7 @@ import {
   type DataWriter,
   defineModel,
   inferMethodKind,
+  isMutatingKind,
   type MethodContext,
   type ModelDefinition,
   ModelRegistry,
@@ -688,4 +689,19 @@ Deno.test("inferMethodKind - returns undefined for unrecognized names", () => {
 Deno.test("inferMethodKind - explicit kind overrides name inference", () => {
   assertEquals(inferMethodKind("delete", { kind: "action" }), "action");
   assertEquals(inferMethodKind("create", { kind: "read" }), "read");
+});
+
+// --- isMutatingKind tests ---
+
+Deno.test("isMutatingKind - returns true for create/update/delete/action/undefined", () => {
+  assertEquals(isMutatingKind("create"), true);
+  assertEquals(isMutatingKind("update"), true);
+  assertEquals(isMutatingKind("delete"), true);
+  assertEquals(isMutatingKind("action"), true);
+  assertEquals(isMutatingKind(undefined), true);
+});
+
+Deno.test("isMutatingKind - returns false for read/list", () => {
+  assertEquals(isMutatingKind("read"), false);
+  assertEquals(isMutatingKind("list"), false);
 });

@@ -249,6 +249,91 @@ step to catch exceptions and allow continued execution of subsequent steps.
 
 ---
 
+## CheckDefinition API
+
+Pre-flight checks are defined in the model's `checks` field and run
+automatically before mutating methods (`create`, `update`, `delete`, `action`).
+
+### execute Signature
+
+```typescript
+execute: async (context: MethodContext): Promise<CheckResult>
+```
+
+### MethodContext Fields Available in Checks
+
+| Field                    | Description                                    |
+| ------------------------ | ---------------------------------------------- |
+| `context.globalArgs`     | Validated global arguments from the definition |
+| `context.definition`     | `{ id, name, version, tags }`                  |
+| `context.methodName`     | Name of the method being invoked               |
+| `context.repoDir`        | Repository root path                           |
+| `context.logger`         | LogTape Logger for diagnostic output           |
+| `context.dataRepository` | For reading previously stored data             |
+| `context.modelType`      | The model type string                          |
+| `context.modelId`        | The model instance ID                          |
+
+**Important:** `context.writeResource` and `context.createFileWriter` are **NOT
+available** in check execute functions. Checks must not produce data output —
+they only inspect state and return a pass/fail result.
+
+### CheckResult
+
+```typescript
+interface CheckResult {
+  pass: boolean;
+  errors?: string[]; // required when pass is false; human-readable reasons
+}
+```
+
+### Three Common Patterns
+
+**1. Value/policy validation** — inspect `context.globalArgs` directly:
+
+```typescript
+execute: async (context) => {
+  if (context.globalArgs.budget < 0) {
+    return { pass: false, errors: ["budget must be non-negative"] };
+  }
+  return { pass: true };
+},
+```
+
+**2. Cross-model validation** — read other model's stored data via
+`context.dataRepository`:
+
+```typescript
+execute: async (context) => {
+  const content = await context.dataRepository.getContent(
+    "aws/vpc",
+    context.globalArgs.vpcId,
+    "state",
+  );
+  if (!content) {
+    return { pass: false, errors: [`VPC ${context.globalArgs.vpcId} has no stored state`] };
+  }
+  return { pass: true };
+},
+```
+
+**3. Live API checks** — call an external API to verify conditions:
+
+```typescript
+execute: async (context) => {
+  const res = await fetch(`https://api.example.com/quotas/${context.globalArgs.region}`);
+  const quota = await res.json();
+  if (quota.remaining < 1) {
+    return { pass: false, errors: [`No quota remaining in region ${context.globalArgs.region}`] };
+  }
+  return { pass: true };
+},
+```
+
+Label live checks with `labels: ["live"]` so users can skip them in offline
+environments using `--skip-check-label live`.
+
+---
+
 ## Logging API
 
 Model methods have access to a pre-configured LogTape logger via

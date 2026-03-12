@@ -1872,3 +1872,350 @@ Deno.test("executeWorkflow - skips validation for globalArgs with unresolved mod
   assertEquals(result !== undefined, true);
   assertEquals(receivedName, "my-server");
 });
+
+// ---------- Pre-flight Check Tests ----------
+
+function createCheckModel(
+  checks: Record<
+    string,
+    {
+      description: string;
+      labels?: string[];
+      appliesTo?: string[];
+      execute: (
+        context: MethodContext,
+      ) => Promise<{ pass: boolean; errors?: string[] }>;
+    }
+  >,
+): ModelDefinition {
+  return {
+    type: ModelType.create("test/check-model"),
+    version: "1",
+    methods: {
+      create: {
+        description: "Create resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      delete: {
+        description: "Delete resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      get: {
+        description: "Get resource",
+        kind: "read",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+      list: {
+        description: "List resources",
+        kind: "list",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks,
+  };
+}
+
+Deno.test("executeWorkflow - checks pass, method executes", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "valid-check": {
+      description: "Always passes",
+      execute: () => Promise.resolve({ pass: true }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "create",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - check fails, UserError thrown", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "bad-check": {
+      description: "Always fails",
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Something is wrong"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+    "bad-check",
+  );
+});
+
+Deno.test("executeWorkflow - multiple checks, all failures collected", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "check-a": {
+      description: "Fails with error A",
+      execute: () => Promise.resolve({ pass: false, errors: ["Error A"] }),
+    },
+    "check-b": {
+      description: "Passes",
+      execute: () => Promise.resolve({ pass: true }),
+    },
+    "check-c": {
+      description: "Fails with error C",
+      execute: () => Promise.resolve({ pass: false, errors: ["Error C"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  try {
+    await service.executeWorkflow(definition, model, "create", context);
+    throw new Error("Expected UserError");
+  } catch (error) {
+    assertEquals(error instanceof UserError, true);
+    const msg = (error as UserError).message;
+    assertEquals(msg.includes("check-a"), true);
+    assertEquals(msg.includes("Error A"), true);
+    assertEquals(msg.includes("check-c"), true);
+    assertEquals(msg.includes("Error C"), true);
+  }
+});
+
+Deno.test("executeWorkflow - read method skips checks", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "should-not-run": {
+      description: "Should not run for read",
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Should not run"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "get",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - list method skips checks", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "should-not-run": {
+      description: "Should not run for list",
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Should not run"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "list",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - skipAllChecks bypasses all checks", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "failing-check": {
+      description: "Fails",
+      execute: () => Promise.resolve({ pass: false, errors: ["Fail"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    skipAllChecks: true,
+  });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "create",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - skipCheckNames skips named check", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "skip-me": {
+      description: "Should be skipped",
+      execute: () => Promise.resolve({ pass: false, errors: ["Fail"] }),
+    },
+    "run-me": {
+      description: "Should run and pass",
+      execute: () => Promise.resolve({ pass: true }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    skipCheckNames: ["skip-me"],
+  });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "create",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - skipCheckLabels skips checks with matching label", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "slow-check": {
+      description: "Slow check",
+      labels: ["slow", "api"],
+      execute: () => Promise.resolve({ pass: false, errors: ["Fail"] }),
+    },
+    "fast-check": {
+      description: "Fast check",
+      labels: ["offline"],
+      execute: () => Promise.resolve({ pass: true }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    skipCheckLabels: ["slow"],
+  });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "create",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - appliesTo filters check by method name", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "create-only": {
+      description: "Only applies to create",
+      appliesTo: ["create"],
+      execute: () => Promise.resolve({ pass: false, errors: ["Fail"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  // Should not run for delete
+  const { context: deleteCtx } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "delete",
+    deleteCtx,
+  );
+  assertEquals(result !== undefined, true);
+
+  // Should run and fail for create
+  const { context: createCtx } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", createCtx),
+    UserError,
+    "create-only",
+  );
+});
+
+Deno.test("executeWorkflow - no checks defined, method executes normally", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/no-checks"),
+    version: "1",
+    methods: {
+      create: {
+        description: "Create",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "create",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - check throws exception, treated as failure", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "throwing-check": {
+      description: "Throws an exception",
+      execute: () => {
+        throw new Error("Unexpected API error");
+      },
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+    "Unexpected API error",
+  );
+});

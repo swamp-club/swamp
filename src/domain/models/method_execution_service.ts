@@ -22,6 +22,7 @@ import {
   type DataHandle,
   type FollowUpAction,
   inferMethodKind,
+  isMutatingKind,
   type MethodContext,
   type MethodDefinition,
   type MethodResult,
@@ -280,6 +281,81 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
     // Infer method kind for lifecycle checks
     const methodKind = inferMethodKind(methodName, method);
+
+    // Run pre-flight checks for mutating methods
+    if (
+      modelDef.checks && !context.skipAllChecks &&
+      isMutatingKind(methodKind)
+    ) {
+      const applicableChecks = Object.entries(modelDef.checks).filter(
+        ([name, check]) => {
+          // Exclude if check name is in skipCheckNames
+          if (context.skipCheckNames?.includes(name)) return false;
+          // Exclude if any check label is in skipCheckLabels
+          if (
+            context.skipCheckLabels &&
+            check.labels?.some((l) => context.skipCheckLabels!.includes(l))
+          ) {
+            return false;
+          }
+          // Exclude if appliesTo is defined and doesn't include this method
+          if (check.appliesTo && !check.appliesTo.includes(methodName)) {
+            return false;
+          }
+          return true;
+        },
+      );
+
+      if (applicableChecks.length > 0) {
+        context.logger.info(
+          `Running ${applicableChecks.length} pre-flight check(s)`,
+        );
+
+        const failures: Array<{ checkName: string; errors: string[] }> = [];
+
+        for (const [checkName, check] of applicableChecks) {
+          try {
+            const checkResult = await check.execute({
+              ...context,
+              methodName,
+              globalArgs: currentDefinition.globalArguments,
+              definition: {
+                id: currentDefinition.id,
+                name: currentDefinition.name,
+                version: currentDefinition.version,
+                tags: currentDefinition.tags,
+              },
+            });
+            if (!checkResult.pass) {
+              failures.push({
+                checkName,
+                errors: checkResult.errors ?? ["Check failed"],
+              });
+            }
+          } catch (error) {
+            failures.push({
+              checkName,
+              errors: [
+                error instanceof Error ? error.message : String(error),
+              ],
+            });
+          }
+        }
+
+        if (failures.length > 0) {
+          const lines = [
+            `Pre-flight checks failed for "${currentDefinition.name}" → ${methodName}:`,
+          ];
+          for (const failure of failures) {
+            lines.push(`  ${failure.checkName}:`);
+            for (const err of failure.errors) {
+              lines.push(`    - ${err}`);
+            }
+          }
+          throw new UserError(lines.join("\n"));
+        }
+      }
+    }
 
     // Fast-fail: reject read/update on deleted resources.
     // Only check declared resource data (tagged with specName matching a

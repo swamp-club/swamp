@@ -81,6 +81,17 @@ export const modelMethodRunCommand = new Command()
     "Add tag to produced data (KEY=VALUE, repeatable)",
     { collect: true },
   )
+  .option(
+    "--skip-check <name:string>",
+    "Skip a specific pre-flight check by name",
+    { collect: true },
+  )
+  .option(
+    "--skip-check-label <label:string>",
+    "Skip pre-flight checks with this label",
+    { collect: true },
+  )
+  .option("--skip-checks", "Skip all pre-flight checks", { default: false })
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -329,6 +340,9 @@ export const modelMethodRunCommand = new Command()
             runtimeTags,
             vaultService,
             redactor,
+            skipCheckNames: options.skipCheck as string[] | undefined,
+            skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+            skipAllChecks: options.skipChecks as boolean | undefined,
           },
         );
 

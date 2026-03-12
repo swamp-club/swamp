@@ -25,10 +25,14 @@ import {
   type ValidationItemData,
 } from "../../presentation/output/model_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requireInitializedRepo,
+  requireInitializedRepoReadOnly,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import {
+  type CheckValidationContext,
   DefaultModelValidationService,
   type ValidationResult,
 } from "../../domain/models/validation_service.ts";
@@ -55,18 +59,49 @@ export const modelValidateCommand = new Command()
   .description("Validate a model definition against its schema")
   .arguments("[model_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--label <label:string>",
+    "Only run checks with this label",
+    { collect: true },
+  )
+  .option(
+    "--method <method:string>",
+    "Only run checks that apply to this method",
+  )
   .action(
     async function (options: AnyOptions, modelIdOrName?: string) {
       const ctx = createContext(options as GlobalOptions, [
         "model",
         "validate",
       ]);
-      const { repoContext } = await requireInitializedRepoReadOnly({
-        repoDir: options.repoDir ?? ".",
-        outputMode: ctx.outputMode,
-      });
+
+      const labels = options.label as string[] | undefined;
+      const method = options.method as string | undefined;
+      const hasCheckOptions = (labels && labels.length > 0) || method;
+
+      // Use read-write repo if check options are provided (checks may need full access)
+      const { repoDir, repoContext } = hasCheckOptions
+        ? await requireInitializedRepo({
+          repoDir: options.repoDir ?? ".",
+          outputMode: ctx.outputMode,
+        })
+        : await requireInitializedRepoReadOnly({
+          repoDir: options.repoDir ?? ".",
+          outputMode: ctx.outputMode,
+        });
       const definitionRepo = repoContext.definitionRepo;
       const validationService = new DefaultModelValidationService();
+
+      // Build check context if model has checks and we have the necessary repos
+      const buildCheckContext = (): CheckValidationContext | undefined => {
+        return {
+          repoDir,
+          dataRepository: repoContext.unifiedDataRepo,
+          definitionRepository: definitionRepo,
+          labels,
+          method,
+        };
+      };
 
       // If no argument provided, validate all models
       if (!modelIdOrName) {
@@ -88,6 +123,7 @@ export const modelValidateCommand = new Command()
             definition,
             modelDef,
             definitionRepo,
+            buildCheckContext(),
           );
 
           const validations = toValidationItemData(validationResults);
@@ -141,6 +177,7 @@ export const modelValidateCommand = new Command()
         definition,
         modelDef,
         definitionRepo,
+        buildCheckContext(),
       );
 
       const validations = toValidationItemData(results);

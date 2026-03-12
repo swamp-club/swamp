@@ -25,6 +25,8 @@ import { resolveLocalImports } from "./local_import_resolver.ts";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
 import {
+  type CheckDefinition,
+  type CheckResult,
   type DataHandle,
   FileOutputSpecSchema,
   type MethodContext,
@@ -101,6 +103,15 @@ const UserUpgradeSchema = z.object({
 /**
  * Schema for validating user model exports.
  */
+const UserCheckSchema = z.object({
+  description: z.string(),
+  labels: z.array(z.string()).optional(),
+  appliesTo: z.array(z.string()).optional(),
+  execute: z.custom<(context: MethodContext) => Promise<CheckResult>>(
+    (val) => typeof val === "function",
+  ),
+});
+
 const UserModelSchema = z.object({
   type: z.string(),
   version: z.string().refine(CalVer.isValid, {
@@ -111,6 +122,7 @@ const UserModelSchema = z.object({
   resources: z.record(z.string(), ResourceOutputSpecSchema).optional(),
   files: z.record(z.string(), FileOutputSpecSchema).optional(),
   methods: z.record(z.string(), UserMethodSchema),
+  checks: z.record(z.string(), UserCheckSchema).optional(),
   upgrades: z.array(UserUpgradeSchema).optional(),
 });
 
@@ -573,6 +585,21 @@ export class UserModelLoader {
       }),
     );
 
+    // Pass through checks directly (no wrapping needed)
+    const checks: Record<string, CheckDefinition> | undefined = userModel.checks
+      ? Object.fromEntries(
+        Object.entries(userModel.checks).map(([name, check]) => [
+          name,
+          {
+            description: check.description,
+            labels: check.labels,
+            appliesTo: check.appliesTo,
+            execute: check.execute,
+          },
+        ]),
+      )
+      : undefined;
+
     return {
       type: modelType,
       version: userModel.version,
@@ -580,6 +607,7 @@ export class UserModelLoader {
       resources: userModel.resources,
       files: userModel.files,
       methods,
+      ...(checks ? { checks } : {}),
       ...(upgrades && upgrades.length > 0 ? { upgrades } : {}),
     };
   }

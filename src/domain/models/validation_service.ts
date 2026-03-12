@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { z } from "zod";
-import type { ModelDefinition } from "./model.ts";
+import type { MethodContext, ModelDefinition } from "./model.ts";
 import { modelRegistry } from "./model.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { DefinitionSchema } from "../definitions/definition.ts";
@@ -173,6 +173,17 @@ function formatZodError(error: z.ZodError): string {
 }
 
 /**
+ * Context for running check validations during `model validate`.
+ */
+export interface CheckValidationContext {
+  repoDir: string;
+  dataRepository: MethodContext["dataRepository"];
+  definitionRepository: DefinitionRepository;
+  labels?: string[];
+  method?: string;
+}
+
+/**
  * Domain service interface for model validation.
  */
 export interface ModelValidationService {
@@ -184,12 +195,14 @@ export interface ModelValidationService {
    * @param definition - The definition to validate
    * @param modelDef - The model definition containing schemas
    * @param definitionRepo - Optional definition repository for resolving model references in expressions
+   * @param checkContext - Optional context for running pre-flight checks
    * @returns Array of validation results
    */
   validateModel(
     definition: Definition,
     modelDef: ModelDefinition,
     definitionRepo?: DefinitionRepository,
+    checkContext?: CheckValidationContext,
   ): Promise<ValidationResult[]>;
 }
 
@@ -211,10 +224,11 @@ export interface ExpressionPathError {
  * Default implementation of the model validation service.
  */
 export class DefaultModelValidationService implements ModelValidationService {
-  validateModel(
+  async validateModel(
     definition: Definition,
     modelDef: ModelDefinition,
     definitionRepo?: DefinitionRepository,
+    checkContext?: CheckValidationContext,
   ): Promise<ValidationResult[]> {
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
@@ -229,7 +243,90 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
     }
 
-    return Promise.all(validations);
+    const results = await Promise.all(validations);
+
+    // Run pre-flight checks if context provided and model has checks
+    if (modelDef.checks && checkContext) {
+      const checkResults = await this.runCheckValidations(
+        definition,
+        modelDef,
+        checkContext,
+      );
+      results.push(...checkResults);
+    }
+
+    return results;
+  }
+
+  private async runCheckValidations(
+    definition: Definition,
+    modelDef: ModelDefinition,
+    checkContext: CheckValidationContext,
+  ): Promise<ValidationResult[]> {
+    const checks = modelDef.checks!;
+    const results: ValidationResult[] = [];
+
+    for (const [name, check] of Object.entries(checks)) {
+      // Filter by labels if provided
+      if (
+        checkContext.labels && checkContext.labels.length > 0 &&
+        (!check.labels ||
+          !check.labels.some((l) => checkContext.labels!.includes(l)))
+      ) {
+        continue;
+      }
+
+      // Filter by method if provided
+      if (
+        checkContext.method && check.appliesTo &&
+        !check.appliesTo.includes(checkContext.method)
+      ) {
+        continue;
+      }
+
+      try {
+        const context: MethodContext = {
+          repoDir: checkContext.repoDir,
+          modelType: modelDef.type,
+          modelId: definition.id,
+          globalArgs: definition.globalArguments,
+          definition: {
+            id: definition.id,
+            name: definition.name,
+            version: definition.version,
+            tags: definition.tags,
+          },
+          methodName: checkContext.method ?? "",
+          logger: {
+            debug() {},
+            info() {},
+            warn() {},
+            error() {},
+            fatal() {},
+            with() {
+              return this;
+            },
+          } as unknown as MethodContext["logger"],
+          dataRepository: checkContext.dataRepository,
+          definitionRepository: checkContext.definitionRepository,
+        };
+
+        const checkResult = await check.execute(context);
+        if (checkResult.pass) {
+          results.push(ValidationResult.pass(`Check: ${name}`));
+        } else {
+          const errors = checkResult.errors ?? ["Check failed"];
+          results.push(
+            ValidationResult.fail(`Check: ${name}`, errors.join("; ")),
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        results.push(ValidationResult.fail(`Check: ${name}`, message));
+      }
+    }
+
+    return results;
   }
 
   private validateWithSchema(

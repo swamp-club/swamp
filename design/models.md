@@ -187,6 +187,93 @@ called.
 Methods can also instantiate a model, from either an existing definition by name
 or by supplying the definiton directly, then can invoke methods on those models.
 
+## Pre-flight Checks
+
+Pre-flight checks are optional guards that run automatically before any
+_mutating_ method invocation. Mutating methods are those that change real
+resource state: `create`, `update`, `delete`, and `action`. Read-only methods
+(`sync`, `get`, etc.) do not trigger checks.
+
+Checks give models a way to enforce invariants — policy constraints, dependency
+readiness, quota availability — before execution begins, avoiding
+half-completed operations.
+
+### CheckDefinition
+
+Each check is declared as a named entry in the model's optional `checks` field
+(`checks?: Record<string, CheckDefinition>`):
+
+```typescript
+interface CheckDefinition {
+  description: string;
+  labels?: string[];
+  appliesTo?: string[];   // method names; if omitted, applies to all mutating methods
+  execute: (context: MethodContext) => Promise<CheckResult>;
+}
+
+interface CheckResult {
+  pass: boolean;
+  errors?: string[];
+}
+```
+
+The `execute` function receives the same `MethodContext` as a method's execute
+function, with one restriction: `writeResource` and `createFileWriter` are **not
+available**. Checks inspect state only — they do not produce data output.
+
+### isMutatingKind
+
+The `isMutatingKind(methodName)` helper determines whether a method name is
+considered mutating. It returns `true` for `create`, `update`, `delete`, and
+`action`. This is used internally to decide whether to run checks.
+
+### Labels and appliesTo
+
+**Labels** categorize checks for selective skipping. Common conventions:
+
+- `policy` — business rules and constraints (value validation, allowed values)
+- `live` — checks that make live API calls (quota, existence checks)
+- `dependency` — cross-model dependency validation (required upstream state)
+
+**appliesTo** limits a check to specific methods. If omitted, the check runs
+before all mutating methods. Use this to scope expensive or irrelevant checks:
+
+```typescript
+// Only validate quota before create, not before update or delete
+appliesTo: ["create"],
+```
+
+### Skip Options
+
+Users can bypass checks at runtime using CLI flags on `model method run`:
+
+| Flag                         | Behavior                                   |
+| ---------------------------- | ------------------------------------------ |
+| `--skip-checks`              | Skip all pre-flight checks                 |
+| `--skip-check <name>`        | Skip a specific check by name (repeatable) |
+| `--skip-check-label <label>` | Skip all checks with a label (repeatable)  |
+
+### Three Common Patterns
+
+1. **Value/policy validation** — inspect `context.globalArgs` for invalid or
+   disallowed values. No I/O. Always fast.
+
+2. **Cross-model validation** — use `context.dataRepository` to read stored
+   state from another model instance and verify a dependency exists or is in
+   the right state.
+
+3. **Live API checks** — call an external API to verify quota, existence, or
+   reachability. Label these `live` so users can skip them in offline
+   environments.
+
+### model validate Integration
+
+`swamp model validate` runs checks as part of the validation pipeline. Two new
+flags control check execution:
+
+- `--label <label>` — only run checks matching this label
+- `--method <method>` — simulate validation for a specific method context
+
 ## Data
 
 Models produce two kinds of output data: **resources** and **files**.

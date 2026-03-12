@@ -111,6 +111,35 @@ Based on the error message or symptoms:
 4. **Vault/secret issues**: Check `src/domain/vaults/`
 5. **Data persistence issues**: Check `src/infrastructure/persistence/`
 6. **Output formatting issues**: Check `src/presentation/output/`
+7. **Pre-flight check failures**: See below
+
+#### Pre-flight Check Failures
+
+When a method fails with a check-related error (e.g., "Pre-flight check failed:
+..."):
+
+- Read the error messages returned by the failing check — they describe exactly
+  what condition was not met.
+- To identify which check failed, look at the check name in the error output.
+- To skip a specific check temporarily:
+  ```bash
+  swamp model method run <name> <method> --skip-check <check-name> --json
+  ```
+- To skip all checks (e.g., in an offline environment where live API checks
+  can't run):
+  ```bash
+  swamp model method run <name> <method> --skip-checks --json
+  ```
+- To skip all checks with a given label (e.g., `live` checks):
+  ```bash
+  swamp model method run <name> <method> --skip-check-label live --json
+  ```
+- To run only the checks (without running the method) to diagnose:
+  ```bash
+  swamp model validate <name> --method <method> --json
+  ```
+- Check source at `src/domain/models/` for the check's `execute` function to
+  understand what it validates.
 
 ### 5. Explain and Suggest Fixes
 

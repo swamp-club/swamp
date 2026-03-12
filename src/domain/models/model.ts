@@ -250,6 +250,13 @@ export interface MethodContext {
     tags?: Record<string, string>;
     resolvedVarySuffix?: string;
   }>;
+
+  /** Check names to skip during pre-flight checks. */
+  skipCheckNames?: string[];
+  /** Skip checks that have any of these labels. */
+  skipCheckLabels?: string[];
+  /** Skip all pre-flight checks. */
+  skipAllChecks?: boolean;
 }
 
 /**
@@ -416,6 +423,33 @@ export function inferMethodKind(
 }
 
 /**
+ * Result of a pre-flight check execution.
+ */
+export interface CheckResult {
+  pass: boolean;
+  errors?: string[];
+}
+
+/**
+ * Definition of a pre-flight check on a model.
+ * Checks run automatically before mutating method execution.
+ */
+export interface CheckDefinition {
+  description: string;
+  labels?: string[];
+  appliesTo?: string[];
+  execute(context: MethodContext): Promise<CheckResult>;
+}
+
+/**
+ * Returns true if the method kind is mutating (create/update/delete/action/undefined).
+ * Read and list methods are non-mutating.
+ */
+export function isMutatingKind(kind: MethodKind | undefined): boolean {
+  return kind !== "read" && kind !== "list";
+}
+
+/**
  * Definition of a model method.
  */
 export interface MethodDefinition<
@@ -512,6 +546,12 @@ export interface ModelDefinition<
    * Available methods on this model.
    */
   methods: Record<string, MethodDefinition>;
+
+  /**
+   * Pre-flight checks that run before mutating method execution.
+   * Keys are check names, values are check definitions.
+   */
+  checks?: Record<string, CheckDefinition>;
 
   /**
    * Ordered list of upgrade functions for migrating definitions between versions.

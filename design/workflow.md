@@ -78,6 +78,12 @@ Each step has a name, a descirption, and a task (which is either a method on a
 model to run or a nested workflow to invoke). Each step has dependency logic that
 is identical to jobs, only for steps rather than jobs.
 
+When a step invokes a mutating model method (`create`, `update`, `delete`,
+`action`), the model's pre-flight checks run automatically before execution. If
+any check fails, the step fails immediately without executing the method. Use
+`allowFailure: true` on the step to allow the workflow to continue past a
+pre-flight failure.
+
 ## Allow Failure
 
 Steps can be marked with `allowFailure: true` to indicate that their failure
