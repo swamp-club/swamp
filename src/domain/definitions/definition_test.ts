@@ -230,6 +230,7 @@ Deno.test("Definition.toData returns correct structure", () => {
       type: "object",
       properties: { name: { type: "string" } },
     },
+    checks: undefined,
   });
 });
 

@@ -332,6 +332,27 @@ execute: async (context) => {
 Label live checks with `labels: ["live"]` so users can skip them in offline
 environments using `--skip-check-label live`.
 
+### Extension Checks via modelRegistry.extend()
+
+The `modelRegistry.extend()` method accepts an optional third parameter
+`checks?: Record<string, CheckDefinition>` to add checks to an existing model
+type:
+
+```typescript
+modelRegistry.extend("aws/ec2/vpc", {}, {
+  "my-custom-check": {
+    description: "Custom policy check added by extension",
+    labels: ["policy"],
+    execute: async (context) => {
+      return { pass: true };
+    },
+  },
+});
+```
+
+Check names must be unique -- conflicts with existing checks on the target model
+throw an error at registration time.
+
 ---
 
 ## Logging API

@@ -243,6 +243,11 @@ export class DefaultModelValidationService implements ModelValidationService {
       );
     }
 
+    // Validate definition-level check selection (require/skip)
+    validations.push(
+      this.validateCheckSelection(definition, modelDef),
+    );
+
     const results = await Promise.all(validations);
 
     // Run pre-flight checks if context provided and model has checks
@@ -265,8 +270,15 @@ export class DefaultModelValidationService implements ModelValidationService {
   ): Promise<ValidationResult[]> {
     const checks = modelDef.checks!;
     const results: ValidationResult[] = [];
+    const defChecks = definition.checkSelection;
+    const skippedCheckNames = new Set(defChecks?.skip ?? []);
 
     for (const [name, check] of Object.entries(checks)) {
+      // Definition-level skip always wins
+      if (skippedCheckNames.has(name)) {
+        continue;
+      }
+
       // Filter by labels if provided
       if (
         checkContext.labels && checkContext.labels.length > 0 &&
@@ -822,6 +834,68 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     return null;
+  }
+
+  /**
+   * Validates that definition-level check selection (require/skip) references
+   * checks that exist on the model definition.
+   */
+  private validateCheckSelection(
+    definition: Definition,
+    modelDef: ModelDefinition,
+  ): Promise<ValidationResult> {
+    const selection = definition.checkSelection;
+    if (!selection) {
+      return Promise.resolve(ValidationResult.pass("Check selection"));
+    }
+
+    const availableChecks = modelDef.checks
+      ? new Set(Object.keys(modelDef.checks))
+      : new Set<string>();
+
+    const errors: string[] = [];
+
+    // Validate required check names exist
+    if (selection.require) {
+      for (const name of selection.require) {
+        if (!availableChecks.has(name)) {
+          errors.push(
+            `Required check "${name}" not found on model type "${modelDef.type.normalized}"`,
+          );
+        }
+      }
+    }
+
+    // Validate skipped check names exist
+    if (selection.skip) {
+      for (const name of selection.skip) {
+        if (!availableChecks.has(name)) {
+          errors.push(
+            `Skipped check "${name}" not found on model type "${modelDef.type.normalized}"`,
+          );
+        }
+      }
+    }
+
+    // Warn about overlap between require and skip (skip wins)
+    if (selection.require && selection.skip) {
+      const overlap = selection.require.filter((n) =>
+        selection.skip!.includes(n)
+      );
+      for (const name of overlap) {
+        errors.push(
+          `Check "${name}" is in both require and skip lists — skip takes precedence`,
+        );
+      }
+    }
+
+    if (errors.length === 0) {
+      return Promise.resolve(ValidationResult.pass("Check selection"));
+    }
+
+    return Promise.resolve(
+      ValidationResult.fail("Check selection", errors.join("; ")),
+    );
   }
 
   /**

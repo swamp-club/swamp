@@ -115,7 +115,7 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
     assertEquals(output.modelName, "valid-echo-definition");
     assertEquals(output.type, "command/shell");
     assertEquals(output.passed, true);
-    assertEquals(output.validations.length, 4); // Definition schema + Global arguments + Method arguments + Expression paths
+    assertEquals(output.validations.length, 5); // Definition schema + Global arguments + Method arguments + Expression paths + Check selection
     assertEquals(
       output.validations.every((v: { passed: boolean }) => v.passed),
       true,
@@ -158,8 +158,8 @@ Deno.test("CLI: model validate passes for valid echo model definition", async ()
     // Parse and verify JSON output
     const output = JSON.parse(result.stdout);
     assertEquals(output.passed, true);
-    // Echo model validates: Definition schema, Global arguments, Method arguments, Expression paths
-    assertEquals(output.validations.length, 4);
+    // Echo model validates: Definition schema, Global arguments, Method arguments, Expression paths, Check selection
+    assertEquals(output.validations.length, 5);
   });
 });
 

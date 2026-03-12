@@ -2219,3 +2219,144 @@ Deno.test("executeWorkflow - check throws exception, treated as failure", async 
     "Unexpected API error",
   );
 });
+
+// ---------- Definition-Level Check Selection Tests ----------
+
+Deno.test("executeWorkflow - required check is immune to skipAllChecks", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "required-check": {
+      description: "Must run",
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Required failed"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    checks: { require: ["required-check"] },
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    skipAllChecks: true,
+  });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+    "required-check",
+  );
+});
+
+Deno.test("executeWorkflow - required check is immune to skipCheckNames", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "required-check": {
+      description: "Must run",
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Required failed"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    checks: { require: ["required-check"] },
+  });
+  const { context } = createTestContext({
+    modelType: model.type,
+    skipCheckNames: ["required-check"],
+  });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+    "required-check",
+  );
+});
+
+Deno.test("executeWorkflow - definition-level skip always wins", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "skipped-check": {
+      description: "Definition says skip",
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Should not run"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    checks: { skip: ["skipped-check"] },
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "create",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - definition-level skip wins over require", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "conflicted-check": {
+      description: "Both required and skipped",
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Should not run"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    checks: { require: ["conflicted-check"], skip: ["conflicted-check"] },
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  // Skip wins, so check should not run, method should succeed
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "create",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - required check still respects appliesTo", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "create-only-required": {
+      description: "Only applies to create",
+      appliesTo: ["create"],
+      execute: () =>
+        Promise.resolve({ pass: false, errors: ["Create check failed"] }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    checks: { require: ["create-only-required"] },
+  });
+
+  // Should not run for delete even though required
+  const { context: deleteCtx } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "delete",
+    deleteCtx,
+  );
+  assertEquals(result !== undefined, true);
+
+  // Should run and fail for create
+  const { context: createCtx } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", createCtx),
+    UserError,
+    "create-only-required",
+  );
+});

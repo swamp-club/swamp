@@ -283,23 +283,28 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     const methodKind = inferMethodKind(methodName, method);
 
     // Run pre-flight checks for mutating methods
-    if (
-      modelDef.checks && !context.skipAllChecks &&
-      isMutatingKind(methodKind)
-    ) {
+    if (modelDef.checks && isMutatingKind(methodKind)) {
+      const defChecks = currentDefinition.checkSelection;
+      const requiredCheckNames = new Set(defChecks?.require ?? []);
+      const skippedCheckNames = new Set(defChecks?.skip ?? []);
+
       const applicableChecks = Object.entries(modelDef.checks).filter(
         ([name, check]) => {
-          // Exclude if check name is in skipCheckNames
+          // Definition-level skip always wins
+          if (skippedCheckNames.has(name)) return false;
+          // Respect appliesTo for all checks (including required)
+          if (check.appliesTo && !check.appliesTo.includes(methodName)) {
+            return false;
+          }
+          // Required checks are immune to CLI skip flags
+          if (requiredCheckNames.has(name)) return true;
+          // Non-required: honor CLI skip flags
+          if (context.skipAllChecks) return false;
           if (context.skipCheckNames?.includes(name)) return false;
-          // Exclude if any check label is in skipCheckLabels
           if (
             context.skipCheckLabels &&
             check.labels?.some((l) => context.skipCheckLabels!.includes(l))
           ) {
-            return false;
-          }
-          // Exclude if appliesTo is defined and doesn't include this method
-          if (check.appliesTo && !check.appliesTo.includes(methodName)) {
             return false;
           }
           return true;

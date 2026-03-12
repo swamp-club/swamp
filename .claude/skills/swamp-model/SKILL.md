@@ -147,6 +147,34 @@ methods:
       run: "echo 'Hello, world!'"
 ```
 
+### Definition-Level Check Selection
+
+Definitions can control which pre-flight checks run via the `checks` field:
+
+```yaml
+id: 550e8400-e29b-41d4-a716-446655440000
+name: my-vpc
+version: 1
+tags: {}
+checks:
+  require:
+    - no-cidr-overlap # Must run, immune to --skip-checks CLI flags
+  skip:
+    - slow-api-check # Always skipped
+globalArguments:
+  cidrBlock: "10.0.0.0/16"
+methods:
+  create:
+    arguments: {}
+```
+
+- `require` checks are immune to `--skip-checks`, `--skip-check`, and
+  `--skip-check-label` CLI flags
+- `skip` always wins over `require` if both list the same check
+- `require` checks still respect `appliesTo` method scoping
+- `model validate` honors definition-level `skip` lists and warns on
+  require/skip overlap; errors if a referenced check does not exist on the model
+
 ### Model Inputs Schema
 
 Models can define an `inputs` schema for runtime parameterization:

@@ -225,6 +225,7 @@ function formatUserModelError(error: z.ZodError): string {
 const UserExtensionSchema = z.object({
   type: z.string(),
   methods: z.array(z.record(z.string(), UserMethodSchema)),
+  checks: z.array(z.record(z.string(), UserCheckSchema)).optional(),
 });
 
 /**
@@ -531,9 +532,39 @@ export class UserModelLoader {
       };
     }
 
+    // Flatten checks array into a single record (if provided)
+    let checks: Record<string, CheckDefinition> | undefined;
+    if (ext.checks && ext.checks.length > 0) {
+      const flatChecks: Record<string, z.infer<typeof UserCheckSchema>> = {};
+      for (const checkRecord of ext.checks) {
+        for (const [name, check] of Object.entries(checkRecord)) {
+          if (flatChecks[name]) {
+            result.failed.push({
+              file,
+              error:
+                `Duplicate check name '${name}' within extension checks array`,
+            });
+            return;
+          }
+          flatChecks[name] = check;
+        }
+      }
+      checks = Object.fromEntries(
+        Object.entries(flatChecks).map(([name, check]) => [
+          name,
+          {
+            description: check.description,
+            labels: check.labels,
+            appliesTo: check.appliesTo,
+            execute: check.execute,
+          },
+        ]),
+      );
+    }
+
     // Extend the model
     try {
-      modelRegistry.extend(ext.type, methods);
+      modelRegistry.extend(ext.type, methods, checks);
       result.extended.push(file);
     } catch (error) {
       result.failed.push({ file, error: String(error) });

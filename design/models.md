@@ -266,10 +266,51 @@ Users can bypass checks at runtime using CLI flags on `model method run`:
    reachability. Label these `live` so users can skip them in offline
    environments.
 
+### Extension Checks
+
+Extensions can add checks to existing model types via the optional third
+parameter of `modelRegistry.extend()`:
+
+```typescript
+modelRegistry.extend("aws/ec2/vpc", {}, {
+  "no-cidr-overlap": {
+    description: "Ensure CIDR does not overlap",
+    labels: ["policy"],
+    execute: async (context) => { return { pass: true }; },
+  },
+});
+```
+
+Check name conflicts with checks already defined on the target type throw an
+error at registration time. Extension checks follow the same `CheckDefinition`
+interface and participate in all check selection mechanisms.
+
+### Definition-Level Check Selection
+
+Definition authors can control which checks run via a `checks` field in the
+YAML definition:
+
+```yaml
+checks:
+  require:
+    - no-cidr-overlap
+  skip:
+    - slow-api-check
+```
+
+- **`require`** — checks listed here are immune to `--skip-checks`,
+  `--skip-check <name>`, and `--skip-check-label <label>` CLI flags. They still
+  respect `appliesTo` method scoping.
+- **`skip`** — checks listed here are always skipped. `skip` wins over `require`
+  if the same check appears in both.
+- Validation (`model validate`) warns on require/skip overlap and errors if a
+  referenced check does not exist on the model type.
+
 ### model validate Integration
 
-`swamp model validate` runs checks as part of the validation pipeline. Two new
-flags control check execution:
+`swamp model validate` runs checks as part of the validation pipeline. It honors
+definition-level `skip` lists in addition to CLI flags. Two flags control check
+execution:
 
 - `--label <label>` — only run checks matching this label
 - `--method <method>` — simulate validation for a specific method context

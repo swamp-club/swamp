@@ -117,6 +117,22 @@ export const MethodDataSchema = z.object({
   arguments: z.record(z.string(), z.unknown()).optional(),
 });
 
+/**
+ * Schema for definition-level check selection (require/skip).
+ */
+export const CheckSelectionSchema = z.object({
+  require: z.array(z.string()).optional(),
+  skip: z.array(z.string()).optional(),
+}).optional();
+
+/**
+ * Type for definition-level check selection.
+ */
+export type CheckSelection = {
+  require?: string[];
+  skip?: string[];
+};
+
 export const DefinitionSchema = z.object({
   type: z.string().optional(),
   typeVersion: z.preprocess(
@@ -138,6 +154,7 @@ export const DefinitionSchema = z.object({
   globalArguments: z.record(z.string(), z.unknown()).default({}),
   methods: z.record(z.string(), MethodDataSchema).default({}),
   inputs: InputsSchemaSchema,
+  checks: CheckSelectionSchema,
 });
 
 /**
@@ -166,6 +183,7 @@ export interface CreateDefinitionProps {
   globalArguments?: Record<string, unknown>;
   methods?: Record<string, MethodData>;
   inputs?: InputsSchema;
+  checks?: CheckSelection;
 }
 
 /**
@@ -188,6 +206,7 @@ export class Definition {
     private _globalArguments: Record<string, unknown>,
     private _methods: Record<string, MethodData>,
     private _inputs: InputsSchema | undefined,
+    private _checks: CheckSelection | undefined,
   ) {}
 
   /**
@@ -210,6 +229,7 @@ export class Definition {
       globalArguments: props.globalArguments ?? {},
       methods: props.methods ?? {},
       inputs: props.inputs,
+      checks: props.checks,
     });
 
     return new Definition(
@@ -222,6 +242,7 @@ export class Definition {
       validated.globalArguments,
       validated.methods,
       validated.inputs,
+      validated.checks,
     );
   }
 
@@ -243,6 +264,7 @@ export class Definition {
       validated.globalArguments,
       validated.methods,
       validated.inputs,
+      validated.checks,
     );
   }
 
@@ -270,6 +292,7 @@ export class Definition {
       structuredClone(newGlobalArguments),
       structuredClone(original._methods),
       original._inputs ? structuredClone(original._inputs) : undefined,
+      original._checks ? structuredClone(original._checks) : undefined,
     );
   }
 
@@ -299,6 +322,13 @@ export class Definition {
    */
   get inputs(): InputsSchema | undefined {
     return this._inputs ? structuredClone(this._inputs) : undefined;
+  }
+
+  /**
+   * Returns a copy of the check selection (require/skip lists).
+   */
+  get checkSelection(): CheckSelection | undefined {
+    return this._checks ? structuredClone(this._checks) : undefined;
   }
 
   /**
@@ -383,6 +413,7 @@ export class Definition {
       globalArguments: structuredClone(this._globalArguments),
       methods: structuredClone(this._methods),
       inputs: this._inputs ? structuredClone(this._inputs) : undefined,
+      checks: this._checks ? structuredClone(this._checks) : undefined,
     };
   }
 

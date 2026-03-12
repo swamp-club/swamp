@@ -629,17 +629,19 @@ export class ModelRegistry {
   }
 
   /**
-   * Extends an existing model with additional methods.
+   * Extends an existing model with additional methods and/or checks.
    * Creates a new merged ModelDefinition (immutable — doesn't mutate the existing object).
    *
    * @param type - The model type to extend (raw or normalized)
    * @param methods - Additional methods to add
+   * @param checks - Optional additional checks to add
    * @throws If the target type is not registered
-   * @throws If any method name conflicts with existing methods
+   * @throws If any method or check name conflicts with existing ones
    */
   extend(
     type: string | ModelType,
     methods: Record<string, MethodDefinition>,
+    checks?: Record<string, CheckDefinition>,
   ): void {
     const modelType = typeof type === "string" ? ModelType.create(type) : type;
     const key = modelType.normalized;
@@ -658,10 +660,24 @@ export class ModelRegistry {
       }
     }
 
+    // Check for check name conflicts
+    if (checks) {
+      for (const checkName of Object.keys(checks)) {
+        if (existing.checks?.[checkName]) {
+          throw new Error(
+            `Check '${checkName}' already exists on model type '${key}'`,
+          );
+        }
+      }
+    }
+
     // Create a new merged ModelDefinition (immutable)
     const merged: ModelDefinition = {
       ...existing,
       methods: { ...existing.methods, ...methods },
+      ...(checks || existing.checks
+        ? { checks: { ...(existing.checks ?? {}), ...(checks ?? {}) } }
+        : {}),
     };
 
     this.models.set(key, merged);
