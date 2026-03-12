@@ -25,7 +25,7 @@ import {
   type WorkflowValidateData,
 } from "../../presentation/output/workflow_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createWorkflowId,
@@ -76,7 +76,7 @@ export const workflowValidateCommand = new Command()
       "workflow",
       "validate",
     ]);
-    const { repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

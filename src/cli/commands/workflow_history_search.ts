@@ -34,7 +34,7 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   createWorkflowId,
@@ -134,7 +134,7 @@ export async function workflowHistorySearchAction(
   const effectiveMode = interactiveOutputMode(ctx);
   ctx.logger.debug`Searching workflow history with query: ${query ?? "(none)"}`;
 
-  const { repoContext } = await requireInitializedRepo({
+  const { repoContext } = await requireInitializedRepoReadOnly({
     repoDir: options.repoDir ?? ".",
     outputMode: effectiveMode,
   });

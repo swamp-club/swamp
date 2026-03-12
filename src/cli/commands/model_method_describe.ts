@@ -23,7 +23,7 @@ import {
   renderModelMethodDescribe,
 } from "../../presentation/output/model_method_describe_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -56,7 +56,7 @@ export const modelMethodDescribeCommand = new Command()
         "method",
         "describe",
       ]);
-      const { repoContext } = await requireInitializedRepo({
+      const { repoContext } = await requireInitializedRepoReadOnly({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,
       });

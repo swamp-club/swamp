@@ -34,7 +34,7 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -268,7 +268,7 @@ export const workflowSearchCommand = new Command()
     const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepo({
+    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: effectiveMode,
     });

@@ -32,7 +32,7 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import type { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
 
@@ -105,7 +105,7 @@ export const vaultSearchCommand = new Command()
     const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching vaults with query: ${query ?? "(none)"}`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: effectiveMode,
     });

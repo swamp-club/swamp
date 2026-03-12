@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { SummaryService } from "../../domain/summary/summary_service.ts";
 import { parseDuration } from "./data_search.ts";
 import {
@@ -46,7 +46,7 @@ export const summariseCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["summarise"]);
     ctx.logger.debug`Generating activity summary`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

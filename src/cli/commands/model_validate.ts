@@ -25,7 +25,7 @@ import {
   type ValidationItemData,
 } from "../../presentation/output/model_validate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import {
@@ -61,7 +61,7 @@ export const modelValidateCommand = new Command()
         "model",
         "validate",
       ]);
-      const { repoContext } = await requireInitializedRepo({
+      const { repoContext } = await requireInitializedRepoReadOnly({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,
       });

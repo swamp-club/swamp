@@ -23,7 +23,7 @@ import {
   renderDataGet,
 } from "../../presentation/output/data_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
@@ -75,7 +75,7 @@ export const dataGetCommand = new Command()
         );
       }
 
-      const { repoContext } = await requireInitializedRepo({
+      const { repoContext } = await requireInitializedRepoReadOnly({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,
       });

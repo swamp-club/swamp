@@ -109,10 +109,102 @@ export async function resolveDatastoreForRepo(
 }
 
 /**
+ * Validates that a directory is an initialized swamp repository without
+ * acquiring the datastore lock or performing sync operations.
+ *
+ * Use this for read-only commands (search, get, list, validate, etc.)
+ * that do not modify the datastore. This allows read-only operations to
+ * run concurrently with write operations like workflow runs.
+ *
+ * For S3 datastores, this reads from the local cache without pulling
+ * latest from S3. The cache reflects whatever was last synced by a
+ * write command. For filesystem datastores, reads see writes immediately.
+ *
+ * @param options - The repo directory and output mode
+ * @param factoryConfig - Optional factory configuration overrides
+ * @returns The validated repo context
+ * @throws UserError if not initialized
+ */
+export async function requireInitializedRepoReadOnly(
+  options: RequireRepoOptions,
+  factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
+): Promise<RepoValidationContext> {
+  const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
+    options.repoDir,
+  );
+
+  const repoPath = RepoPath.create(repoDir);
+
+  const workflowsDirRel = resolveWorkflowsDir(marker);
+  const workflowsDir = isAbsolute(workflowsDirRel)
+    ? workflowsDirRel
+    : resolve(repoPath.value, workflowsDirRel);
+
+  const datastoreResolver = new DefaultDatastorePathResolver(
+    repoPath.value,
+    datastoreConfig,
+  );
+
+  // Verify datastore is accessible
+  if (datastoreConfig.type === "filesystem") {
+    try {
+      const stat = await Deno.stat(datastoreConfig.path);
+      if (!stat.isDirectory) {
+        throw new UserError(
+          `Datastore path is not a directory: ${datastoreConfig.path}`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        // Directory doesn't exist yet - that's OK, it will be created
+      } else if (error instanceof UserError) {
+        throw error;
+      } else {
+        throw new UserError(
+          `Cannot access datastore at ${datastoreConfig.path}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    // No lock acquisition — read-only path
+  } else if (datastoreConfig.type === "s3") {
+    // Ensure local cache directory exists for S3 datastore
+    await ensureDir(datastoreConfig.cachePath);
+    // No lock acquisition or sync — read-only path reads from local cache
+  }
+
+  // Compute top-level directories for definitions, workflows, and vaults
+  const definitionsDir = join(repoPath.value, "models");
+  const yamlWorkflowsDir = join(repoPath.value, "workflows");
+  const vaultsDir = join(repoPath.value, "vaults");
+
+  // Create repository context with the validated directory and datastore resolver
+  const repoContext = createRepositoryContext({
+    repoDir: repoPath.value,
+    workflowsDir,
+    definitionsDir,
+    yamlWorkflowsDir,
+    vaultsDir,
+    datastoreResolver,
+    ...factoryConfig,
+  });
+
+  return {
+    repoDir: repoPath.value,
+    repoContext,
+    datastoreResolver,
+  };
+}
+
+/**
  * Validates that a directory is an initialized swamp repository.
  *
- * Throws a UserError with helpful instructions if the directory
- * is not initialized.
+ * Acquires the datastore lock and performs sync operations (pull on start,
+ * push on end). Use this for commands that modify the datastore.
+ *
+ * For read-only commands, use requireInitializedRepoReadOnly() instead
+ * to avoid blocking on the datastore lock.
  *
  * @param options - The repo directory and output mode
  * @param factoryConfig - Optional factory configuration overrides

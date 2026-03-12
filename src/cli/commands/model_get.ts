@@ -23,7 +23,7 @@ import {
   renderModelGet,
 } from "../../presentation/output/model_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -42,7 +42,7 @@ export const modelGetCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["model", "get"]);
     ctx.logger.debug`Getting model: ${modelIdOrName}`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

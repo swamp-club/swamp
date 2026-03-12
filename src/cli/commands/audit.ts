@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { AuditService } from "../../domain/audit/audit_service.ts";
 import { createBashCommandEntry } from "../../domain/audit/audit_command_entry.ts";
 import { JsonlAuditRepository } from "../../infrastructure/persistence/jsonl_audit_repository.ts";
@@ -150,7 +150,7 @@ export const auditCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["audit"]);
     ctx.logger.debug`Fetching audit timeline`;
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { TelemetryService } from "../../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../../infrastructure/persistence/json_telemetry_repository.ts";
 import {
@@ -37,7 +37,7 @@ export const telemetryStatsCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["telemetry", "stats"]);
     ctx.logger.debug`Fetching telemetry stats`;
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

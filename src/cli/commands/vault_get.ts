@@ -23,7 +23,7 @@ import {
   type VaultGetData,
 } from "../../presentation/output/vault_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   SWAMP_DATA_DIR,
@@ -56,7 +56,7 @@ export const vaultGetCommand = new Command()
       const ctx = createContext(options as GlobalOptions, ["vault", "get"]);
       ctx.logger.debug`Getting vault: ${vaultNameOrId}`;
 
-      const { repoContext } = await requireInitializedRepo({
+      const { repoContext } = await requireInitializedRepoReadOnly({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,
       });

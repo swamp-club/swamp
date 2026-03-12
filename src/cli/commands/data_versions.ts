@@ -24,7 +24,7 @@ import {
   renderDataVersions,
 } from "../../presentation/output/data_versions_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -47,7 +47,7 @@ export const dataVersionsCommand = new Command()
       ctx.logger
         .debug`Listing versions: model=${modelIdOrName}, name=${dataName}`;
 
-      const { repoContext } = await requireInitializedRepo({
+      const { repoContext } = await requireInitializedRepoReadOnly({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,
       });

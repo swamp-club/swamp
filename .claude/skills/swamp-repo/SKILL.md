@@ -183,7 +183,11 @@ swamp datastore sync --push --json  # Push-only
 ### Lock Management
 
 Both filesystem and S3 datastores use a distributed lock to prevent concurrent
-access. Locks auto-expire after 30 seconds if a process crashes.
+write access. Write commands (create, edit, delete, run, gc) acquire the lock
+via `requireInitializedRepo()`. Read-only commands (search, get, list, validate,
+history) use `requireInitializedRepoReadOnly()` which skips the lock, allowing
+them to run concurrently with write operations. Locks auto-expire after 30
+seconds if a process crashes.
 
 ```bash
 swamp datastore lock status --json           # Show lock holder

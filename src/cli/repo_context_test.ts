@@ -23,6 +23,7 @@ import { join } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   requireInitializedRepo,
+  requireInitializedRepoReadOnly,
   resolveDatastoreForRepo,
 } from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -235,6 +236,89 @@ Deno.test("resolveDatastoreForRepo - throws UserError for non-initialized repo",
     assertStringIncludes(error.message, "Not a swamp repository");
   });
 });
+
+// ============================================================================
+// requireInitializedRepoReadOnly Tests
+// ============================================================================
+
+Deno.test("requireInitializedRepoReadOnly - returns context for initialized repo", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const result = await requireInitializedRepoReadOnly({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    assertEquals(result.repoDir, dir);
+    assertEquals(result.repoContext.definitionRepo !== undefined, true);
+    assertEquals(result.repoContext.workflowRepo !== undefined, true);
+
+    // flushDatastoreSync should be a no-op (no lock was acquired)
+    await flushDatastoreSync();
+  });
+});
+
+Deno.test("requireInitializedRepoReadOnly - throws UserError for non-initialized repo", async () => {
+  await withTempDir(async (dir) => {
+    const error = await assertRejects(
+      () =>
+        requireInitializedRepoReadOnly({
+          repoDir: dir,
+          outputMode: "json",
+        }),
+      UserError,
+    );
+
+    assertStringIncludes(error.message, "Not a swamp repository");
+  });
+});
+
+Deno.test("requireInitializedRepoReadOnly - does not block concurrent access", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    // Acquire the lock via the write path
+    const _writeResult = await requireInitializedRepo({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    // Read-only path should still succeed despite the lock being held
+    const readResult = await requireInitializedRepoReadOnly({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    assertEquals(readResult.repoDir, dir);
+    assertEquals(readResult.repoContext !== undefined, true);
+
+    // Clean up the write lock
+    await flushDatastoreSync();
+  });
+});
+
+Deno.test("requireInitializedRepoReadOnly - passes factory config", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const result = await requireInitializedRepoReadOnly(
+      {
+        repoDir: dir,
+        outputMode: "json",
+      },
+      { enableIndexing: false },
+    );
+
+    assertEquals(result.repoContext !== undefined, true);
+
+    // No flush needed — no lock acquired
+  });
+});
+
+// ============================================================================
+// Marker File Edge Cases
+// ============================================================================
 
 Deno.test("requireInitializedRepo - checks .swamp marker file", async () => {
   await withTempDir(async (dir) => {

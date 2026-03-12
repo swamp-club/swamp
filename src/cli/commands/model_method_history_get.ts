@@ -23,7 +23,7 @@ import {
   renderModelOutputGet,
 } from "../../presentation/output/model_output_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -49,7 +49,7 @@ export const modelMethodHistoryGetCommand = new Command()
     ]);
     ctx.logger.debug`Getting method run: ${outputIdOrModelName}`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

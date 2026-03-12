@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { getDatastoreDirectories } from "../../domain/datastore/datastore_config.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { S3DatastoreVerifier } from "../../infrastructure/persistence/s3_datastore_verifier.ts";
@@ -43,7 +43,7 @@ export const datastoreStatusCommand = new Command()
       "status",
     ]);
 
-    const { datastoreResolver } = await requireInitializedRepo({
+    const { datastoreResolver } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

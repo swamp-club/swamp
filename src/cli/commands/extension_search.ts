@@ -23,7 +23,7 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
@@ -142,7 +142,7 @@ export const extensionSearchCommand = new Command()
 
     if (result?.action === "install") {
       const repoDir = ".";
-      await requireInitializedRepo({
+      await requireInitializedRepoReadOnly({
         repoDir,
         outputMode: ctx.outputMode,
       });

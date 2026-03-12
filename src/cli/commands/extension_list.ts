@@ -20,7 +20,7 @@
 import { Command } from "@cliffy/command";
 import { resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
   RepoMarkerRepository,
@@ -45,7 +45,7 @@ export const extensionListCommand = new Command()
     ctx.logger.debug`Starting extension list`;
 
     const repoDir = options.repoDir ?? ".";
-    await requireInitializedRepo({
+    await requireInitializedRepoReadOnly({
       repoDir,
       outputMode: ctx.outputMode,
     });

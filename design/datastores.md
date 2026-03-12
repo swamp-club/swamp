@@ -105,17 +105,35 @@ time.
 When an S3 datastore is configured, synchronization happens automatically:
 
 ```
-requireInitializedRepo()           ← called at command start
-  ├─ acquire distributed lock
-  └─ pullChanged()                 ← download new/modified files from S3
+Write commands (create, edit, delete, run, gc, etc.):
 
-  ─── command executes ───
-  (reads/writes local cache)
+  requireInitializedRepo()           ← called at command start
+    ├─ acquire distributed lock
+    └─ pullChanged()                 ← download new/modified files from S3
 
-flushDatastoreSync()               ← called after command completes
-  ├─ pushChanged()                 ← upload new/modified files to S3
-  └─ release distributed lock
+    ─── command executes ───
+    (reads/writes local cache)
+
+  flushDatastoreSync()               ← called after command completes
+    ├─ pushChanged()                 ← upload new/modified files to S3
+    └─ release distributed lock
+
+Read-only commands (search, get, list, validate, history, etc.):
+
+  requireInitializedRepoReadOnly()   ← called at command start
+    └─ (no lock, no sync)
+
+    ─── command executes ───
+    (reads local cache directly)
+
+    (no flush needed)
 ```
+
+Read-only commands skip the lock and sync entirely, allowing them to run
+concurrently with write operations. On filesystem datastores, reads see writes
+immediately (same directory). On S3 datastores, reads see whatever was last
+synced to the local cache by a write command; users can run
+`swamp datastore sync --pull` to refresh manually.
 
 ### Index
 
@@ -151,9 +169,13 @@ the local cache. Data is pushed on the next successful connection.
 
 ## Concurrency Control
 
-Both backends use a distributed lock to prevent concurrent access. The lock is
-acquired at command start and released at command end (on both success and error
-paths).
+Both backends use a distributed lock to prevent concurrent write access. The
+lock is acquired by write commands at command start and released at command end
+(on both success and error paths). Read-only commands
+(`requireInitializedRepoReadOnly`) bypass the lock entirely, allowing concurrent
+reads alongside writes. This is safe because all file writes use atomic
+write-to-temp-then-rename (`atomicWriteTextFile`), so reads never see
+partial/corrupt files.
 
 ### DistributedLock Interface
 
@@ -245,11 +267,13 @@ migrates data from the current location to the new one.
 
 ### Health Verification
 
-`requireInitializedRepo()` verifies the datastore is accessible before every
-command:
+`requireInitializedRepo()` (write commands) and
+`requireInitializedRepoReadOnly()` (read-only commands) both verify the
+datastore is accessible before every command:
 
 - **Filesystem**: checks the directory exists, is a directory, and is writable
-- **S3**: issues a `HeadBucket` request, parses errors into helpful messages
+- **S3**: ensures the local cache directory exists (write commands additionally
+  issue a `HeadBucket` request and pull changed files)
 
 `swamp datastore status` shows the current config, health, latency, directories,
 and exclude patterns.

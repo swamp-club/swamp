@@ -23,7 +23,7 @@ import {
   type WorkflowGetData,
 } from "../../presentation/output/workflow_get_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   createWorkflowId,
   type WorkflowId,
@@ -57,7 +57,7 @@ export const workflowGetCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["workflow", "get"]);
     ctx.logger.debug`Getting workflow: ${workflowIdOrName}`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

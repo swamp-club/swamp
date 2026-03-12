@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   findDefinitionByIdOrName,
@@ -52,7 +52,7 @@ export const modelMethodHistoryLogsCommand = new Command()
     ]);
     ctx.logger.debug`Getting logs for method run: ${outputIdOrModelName}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepo({
+    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

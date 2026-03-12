@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -52,7 +52,7 @@ export const workflowHistoryLogsCommand = new Command()
     );
     ctx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepo({
+    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });

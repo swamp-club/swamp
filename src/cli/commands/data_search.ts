@@ -32,7 +32,7 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
@@ -338,7 +338,7 @@ export const dataSearchCommand = new Command()
     const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching data with query: ${query ?? "(none)"}`;
 
-    const { repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: effectiveMode,
     });

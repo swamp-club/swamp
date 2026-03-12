@@ -23,7 +23,7 @@ import {
   type VaultListKeysData,
 } from "../../presentation/output/vault_list_keys_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -47,7 +47,7 @@ export const vaultListKeysCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["vault", "list-keys"]);
     ctx.logger.debug`Listing secret keys in vault: ${vaultName}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepo({
+    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });
