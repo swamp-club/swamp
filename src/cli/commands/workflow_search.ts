@@ -34,7 +34,10 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requireInitializedRepo,
+  requireInitializedRepoReadOnly,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -268,7 +271,12 @@ export const workflowSearchCommand = new Command()
     const effectiveMode = interactiveOutputMode(ctx);
     ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
+    // Interactive mode can trigger workflow execution (a write operation),
+    // so it needs the full lock. JSON mode is always read-only.
+    const initRepo = effectiveMode === "log"
+      ? requireInitializedRepo
+      : requireInitializedRepoReadOnly;
+    const { repoDir, repoContext } = await initRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: effectiveMode,
     });
