@@ -25,7 +25,7 @@ import {
   type WorkflowEvaluateItemData,
 } from "../../presentation/output/workflow_evaluate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -64,7 +64,7 @@ export const workflowEvaluateCommand = new Command()
         "workflow",
         "evaluate",
       ]);
-      const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
+      const { repoDir, repoContext } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,
       });

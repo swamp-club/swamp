@@ -25,7 +25,7 @@ import {
   renderModelEvaluateSingle,
 } from "../../presentation/output/model_evaluate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -45,7 +45,7 @@ export const modelEvaluateCommand = new Command()
         "model",
         "evaluate",
       ]);
-      const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
+      const { repoDir, repoContext } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
         outputMode: ctx.outputMode,
       });
