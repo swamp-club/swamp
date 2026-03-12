@@ -331,7 +331,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                 tags: currentDefinition.tags,
               },
             });
-            if (!checkResult.pass) {
+            if (!checkResult || typeof checkResult.pass !== "boolean") {
+              failures.push({
+                checkName,
+                errors: [
+                  "Check returned invalid result (expected { pass: boolean })",
+                ],
+              });
+            } else if (!checkResult.pass) {
               failures.push({
                 checkName,
                 errors: checkResult.errors ?? ["Check failed"],

@@ -2360,3 +2360,24 @@ Deno.test("executeWorkflow - required check still respects appliesTo", async () 
     "create-only-required",
   );
 });
+
+Deno.test("executeWorkflow - check returning invalid result treated as failure", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createCheckModel({
+    "bad-check": {
+      description: "Returns garbage",
+      execute: () => Promise.resolve(undefined as unknown as { pass: boolean }),
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "create", context),
+    UserError,
+    "invalid result",
+  );
+});

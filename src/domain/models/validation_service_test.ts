@@ -1361,3 +1361,84 @@ Deno.test("validateModel check selection on model without checks", async () => {
   assertEquals(selResult?.passed, false);
   assertStringIncludes(selResult?.error ?? "", "nonexistent");
 });
+
+Deno.test("validateModel skips checks with appliesTo when no method specified", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  // always-fail has appliesTo: ["create"], so without --method it should be skipped
+  const results = await service.validateModel(
+    definition,
+    testModelWithChecks,
+    undefined,
+    createCheckContext(), // no method specified
+  );
+
+  const checkResults = results.filter((r) => r.name.startsWith("Check:"));
+  // always-pass has no appliesTo → runs; always-fail has appliesTo → skipped
+  assertEquals(checkResults.length, 1);
+  assertEquals(checkResults[0].name, "Check: always-pass");
+  assertEquals(checkResults[0].passed, true);
+});
+
+Deno.test("validateModel handles check returning invalid result", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const model: ModelDefinition = {
+    ...testModelWithChecks,
+    checks: {
+      "bad-check": {
+        description: "Returns garbage",
+        execute: () =>
+          Promise.resolve(undefined as unknown as { pass: boolean }),
+      },
+    },
+  };
+
+  const results = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext(),
+  );
+
+  const checkResult = results.find((r) => r.name === "Check: bad-check");
+  assertEquals(checkResult?.passed, false);
+  assertStringIncludes(checkResult?.error ?? "", "invalid result");
+});
+
+Deno.test("validateModel warns when appliesTo references nonexistent method", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+  });
+
+  const model: ModelDefinition = {
+    ...testModelWithChecks,
+    checks: {
+      "typo-check": {
+        description: "Has a typo in appliesTo",
+        appliesTo: ["creat"], // typo — "create" is the real method
+        execute: () => Promise.resolve({ pass: true }),
+      },
+    },
+  };
+
+  const results = await service.validateModel(
+    definition,
+    model,
+  );
+
+  const selResult = results.find((r) => r.name === "Check selection");
+  assertEquals(selResult?.passed, false);
+  assertStringIncludes(selResult?.error ?? "", "creat");
+  assertStringIncludes(selResult?.error ?? "", "unknown method");
+});

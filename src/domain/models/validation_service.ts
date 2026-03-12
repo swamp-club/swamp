@@ -288,12 +288,16 @@ export class DefaultModelValidationService implements ModelValidationService {
         continue;
       }
 
-      // Filter by method if provided
-      if (
-        checkContext.method && check.appliesTo &&
-        !check.appliesTo.includes(checkContext.method)
-      ) {
-        continue;
+      // Filter by method: if --method given, only run matching checks.
+      // If no --method given, skip checks that have an explicit appliesTo
+      // (they only make sense in the context of a specific method).
+      if (check.appliesTo) {
+        if (!checkContext.method) {
+          continue;
+        }
+        if (!check.appliesTo.includes(checkContext.method)) {
+          continue;
+        }
       }
 
       try {
@@ -324,7 +328,14 @@ export class DefaultModelValidationService implements ModelValidationService {
         };
 
         const checkResult = await check.execute(context);
-        if (checkResult.pass) {
+        if (!checkResult || typeof checkResult.pass !== "boolean") {
+          results.push(
+            ValidationResult.fail(
+              `Check: ${name}`,
+              "Check returned invalid result (expected { pass: boolean })",
+            ),
+          );
+        } else if (checkResult.pass) {
           results.push(ValidationResult.pass(`Check: ${name}`));
         } else {
           const errors = checkResult.errors ?? ["Check failed"];
@@ -844,8 +855,26 @@ export class DefaultModelValidationService implements ModelValidationService {
     definition: Definition,
     modelDef: ModelDefinition,
   ): Promise<ValidationResult> {
+    const errors: string[] = [];
+
+    // Validate appliesTo references existing methods
+    if (modelDef.checks) {
+      const availableMethods = new Set(Object.keys(modelDef.methods));
+      for (const [checkName, check] of Object.entries(modelDef.checks)) {
+        if (check.appliesTo) {
+          for (const methodName of check.appliesTo) {
+            if (!availableMethods.has(methodName)) {
+              errors.push(
+                `Check "${checkName}" references unknown method "${methodName}" in appliesTo`,
+              );
+            }
+          }
+        }
+      }
+    }
+
     const selection = definition.checkSelection;
-    if (!selection) {
+    if (!selection && errors.length === 0) {
       return Promise.resolve(ValidationResult.pass("Check selection"));
     }
 
@@ -853,10 +882,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       ? new Set(Object.keys(modelDef.checks))
       : new Set<string>();
 
-    const errors: string[] = [];
-
     // Validate required check names exist
-    if (selection.require) {
+    if (selection?.require) {
       for (const name of selection.require) {
         if (!availableChecks.has(name)) {
           errors.push(
@@ -867,7 +894,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     // Validate skipped check names exist
-    if (selection.skip) {
+    if (selection?.skip) {
       for (const name of selection.skip) {
         if (!availableChecks.has(name)) {
           errors.push(
@@ -878,7 +905,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     // Warn about overlap between require and skip (skip wins)
-    if (selection.require && selection.skip) {
+    if (selection?.require && selection.skip) {
       const overlap = selection.require.filter((n) =>
         selection.skip!.includes(n)
       );
