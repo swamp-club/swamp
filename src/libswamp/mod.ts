@@ -32,4 +32,6 @@ export {
   type StreamEvent,
   withDefaults,
 } from "./stream.ts";
+export { AsyncQueue } from "./stream/async_queue.ts";
+export { merge } from "./stream/merge.ts";
 export { assertCompletes, assertErrors, collect } from "./testing.ts";

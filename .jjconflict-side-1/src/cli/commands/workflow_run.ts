@@ -19,139 +19,28 @@
 
 import { Command } from "@cliffy/command";
 import {
-  type JobRunData,
   renderWorkflowRun,
-  type StepArtifactsData,
-  type StepRunData,
-  type WorkflowRunData,
 } from "../../presentation/output/workflow_run_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import {
-  type ExecutionProgressCallback,
-  WorkflowExecutionService,
-} from "../../domain/workflows/execution_service.ts";
-import type {
-  StepRun,
-  WorkflowRun,
-} from "../../domain/workflows/workflow_run.ts";
+import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
 import { coerceInputTypes, parseInputs } from "../input_parser.ts";
 import { parseTags } from "./data_search.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { workflowRunSearchCommand } from "./workflow_run_search.ts";
+import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
+import {
+  workflowRun,
+  type WorkflowRunDeps,
+  type WorkflowRunEvent,
+} from "../../libswamp/workflows/run.ts";
+import { createLibSwampContext } from "../../libswamp/context.ts";
+import { getWorkflowRunLogger } from "../../infrastructure/logging/logger.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Extracts artifact data from a step's output for verbose mode.
- * Only returns artifacts if there's actual content to display.
- */
-function extractStepArtifacts(step: StepRun): StepArtifactsData | undefined {
-  if (step.output === undefined || step.output === null) {
-    return undefined;
-  }
-
-  const output = step.output as Record<string, unknown>;
-
-  // Shell command output: { stdout, exitCode }
-  if (
-    typeof output.stdout === "string" || typeof output.exitCode === "number"
-  ) {
-    const artifacts: StepArtifactsData = {};
-    if (output.stdout) artifacts.stdout = output.stdout as string;
-    if (output.stderr) artifacts.stderr = output.stderr as string;
-    if (typeof output.exitCode === "number") {
-      artifacts.exitCode = output.exitCode;
-    }
-
-    // Only return if there's actual content
-    return Object.keys(artifacts).length > 0 ? artifacts : undefined;
-  }
-
-  // Model method output: { type, model, method, resourceId, resourcePath, resourceAttributes }
-  if (output.type === "model_method") {
-    const attrs = output.resourceAttributes as
-      | Record<string, unknown>
-      | undefined;
-    // Only include if attributes exist and have content
-    if (attrs && Object.keys(attrs).length > 0) {
-      return { dataAttributes: attrs };
-    }
-    return undefined;
-  }
-
-  return undefined;
-}
-
-/**
- * Converts a WorkflowRun to WorkflowRunData for presentation.
- */
-function toRunData(
-  run: WorkflowRun,
-  path?: string,
-  verbose?: boolean,
-): WorkflowRunData {
-  const startTime = run.startedAt?.getTime();
-  const endTime = run.completedAt?.getTime();
-
-  return {
-    id: run.id,
-    workflowId: run.workflowId,
-    workflowName: run.workflowName,
-    status: run.status,
-    jobs: run.jobs.map((job): JobRunData => {
-      const jobStart = job.startedAt?.getTime();
-      const jobEnd = job.completedAt?.getTime();
-
-      return {
-        name: job.jobName,
-        status: job.status,
-        steps: job.steps.map((step): StepRunData => {
-          const stepStart = step.startedAt?.getTime();
-          const stepEnd = step.completedAt?.getTime();
-
-          const stepData: StepRunData = {
-            name: step.stepName,
-            status: step.status,
-            error: step.error,
-            duration: stepStart && stepEnd ? stepEnd - stepStart : undefined,
-          };
-
-          // Include artifacts in verbose mode
-          if (verbose) {
-            const artifacts = extractStepArtifacts(step);
-            if (artifacts) {
-              stepData.artifacts = artifacts;
-            }
-          }
-
-          // Include data artifacts if present
-          if (step.dataArtifacts && step.dataArtifacts.length > 0) {
-            stepData.dataArtifacts = step.dataArtifacts.map((a) => ({
-              dataId: a.dataId,
-              name: a.name,
-              version: a.version,
-              tags: a.tags,
-            }));
-          }
-
-          if (step.allowedFailure) {
-            stepData.allowedFailure = true;
-          }
-
-          return stepData;
-        }),
-        duration: jobStart && jobEnd ? jobEnd - jobStart : undefined,
-      };
-    }),
-    duration: startTime && endTime ? endTime - startTime : undefined,
-    path,
-  };
-}
 
 export const workflowRunCommand = new Command()
   .name("run")
@@ -184,12 +73,6 @@ export const workflowRunCommand = new Command()
     const workflowRepo = repoContext.workflowRepo;
     const runRepo = repoContext.workflowRunRepo;
 
-    const executionService = new WorkflowExecutionService(
-      workflowRepo,
-      runRepo,
-      repoDir,
-    );
-
     const lastEvaluated = options.lastEvaluated as boolean;
 
     // Parse input values
@@ -204,7 +87,7 @@ export const workflowRunCommand = new Command()
       : undefined;
 
     try {
-      // Look up workflow first to get its data
+      // Look up workflow first to get its data for input validation
       const workflow = await workflowRepo.findByName(workflowIdOrName) ??
         await workflowRepo.findById(createWorkflowId(workflowIdOrName));
 
@@ -240,58 +123,144 @@ export const workflowRunCommand = new Command()
         Object.assign(inputs, inputsWithDefaults);
       }
 
-      if (ctx.outputMode === "json") {
-        // JSON mode: execute with debug logging, output final result
-        const progress: ExecutionProgressCallback = {
-          onJobStart: (_run, jobName) => {
-            ctx.logger.debug`Job started: ${jobName}`;
-          },
-          onStepStart: (_run, jobName, stepName) => {
-            ctx.logger.debug`Step started: ${jobName}/${stepName}`;
-          },
-          onStepFail: (_run, jobName, stepName, error) => {
-            ctx.logger.debug`Step failed: ${jobName}/${stepName}: ${error}`;
-          },
-        };
+      const deps: WorkflowRunDeps = {
+        workflowRepo,
+        runRepo,
+        repoDir,
+        lookupWorkflow: async (repo, idOrName) => {
+          return await repo.findByName(idOrName) ??
+            await repo.findById(createWorkflowId(idOrName));
+        },
+        createExecutionService: (wfRepo, rnRepo, dir) =>
+          new WorkflowExecutionService(wfRepo, rnRepo, dir),
+      };
 
-        const run = await executionService.execute(workflow.name, progress, {
+      const libCtx = createLibSwampContext();
+      const isLogMode = ctx.outputMode !== "json";
+      let workflowName = workflowIdOrName;
+      let failed = false;
+
+      await consumeStream<WorkflowRunEvent>(
+        workflowRun(libCtx, deps, {
+          workflowIdOrName,
           lastEvaluated,
           inputs,
           runtimeTags,
-        });
+          enableStepLogging: isLogMode,
+          verbose: ctx.verbosity === "verbose",
+        }),
+        withDefaults<WorkflowRunEvent>({
+          started: (e) => {
+            workflowName = e.workflowName;
+            if (isLogMode) {
+              getWorkflowRunLogger(e.workflowName).info("Starting workflow");
+            } else {
+              ctx.logger.debug`Workflow started: ${e.workflowName}`;
+            }
+          },
+          job_started: (e) => {
+            if (isLogMode) {
+              getWorkflowRunLogger(workflowName, e.jobId).info("Job started");
+            } else {
+              ctx.logger.debug`Job started: ${e.jobId}`;
+            }
+          },
+          job_completed: (e) => {
+            if (isLogMode) {
+              getWorkflowRunLogger(workflowName, e.jobId).info("Job completed");
+            }
+          },
+          job_skipped: (e) => {
+            if (isLogMode) {
+              getWorkflowRunLogger(workflowName, e.jobId).info("Job skipped");
+            }
+          },
+          step_started: (e) => {
+            if (isLogMode) {
+              getWorkflowRunLogger(workflowName, e.jobId, e.stepId).info(
+                "Step started",
+              );
+            } else {
+              ctx.logger.debug`Step started: ${e.jobId}/${e.stepId}`;
+            }
+          },
+          step_completed: (e) => {
+            if (isLogMode) {
+              getWorkflowRunLogger(workflowName, e.jobId, e.stepId).info(
+                "Step completed",
+              );
+            }
+          },
+          step_skipped: (e) => {
+            if (isLogMode) {
+              getWorkflowRunLogger(workflowName, e.jobId, e.stepId).info(
+                "Step skipped",
+              );
+            }
+          },
+          step_failed: (e) => {
+            if (isLogMode) {
+              getWorkflowRunLogger(workflowName, e.jobId, e.stepId).error(
+                "Step failed: {error}",
+                { error: e.error },
+              );
+            } else {
+              ctx.logger.debug`Step failed: ${e.jobId}/${e.stepId}: ${e.error}`;
+            }
+          },
+          completed: (e) => {
+            if (isLogMode) {
+              const wfLogger = getWorkflowRunLogger(workflowName);
+              if (e.run.status === "failed") {
+                wfLogger.error("Workflow {status}", { status: e.run.status });
+              } else {
+                wfLogger.with({ summary: true }).info("Workflow {status}", {
+                  status: e.run.status,
+                });
 
-        // Get the path for the run
-        const path = runRepo.getPath(workflow.id, run.id);
+                // Collect unique data artifact names across all steps
+                const artifactNames = new Set<string>();
+                for (const job of e.run.jobs) {
+                  for (const step of job.steps) {
+                    if (step.dataArtifacts) {
+                      for (const artifact of step.dataArtifacts) {
+                        artifactNames.add(artifact.name);
+                      }
+                    }
+                  }
+                }
 
-        const data = toRunData(
-          run,
-          path,
-          ctx.verbosity === "verbose",
-        );
-        renderWorkflowRun(data, ctx.outputMode);
+                if (artifactNames.size > 0) {
+                  wfLogger.info("");
+                  wfLogger.info("View produced data:");
+                  wfLogger.info(
+                    "  swamp data list --workflow {workflowName}",
+                    { workflowName },
+                  );
+                  for (const name of artifactNames) {
+                    wfLogger.info(
+                      "  swamp data get --workflow {workflowName} {artifactName}",
+                      { workflowName, artifactName: name },
+                    );
+                  }
+                }
+              }
+            } else {
+              renderWorkflowRun(e.run, ctx.outputMode);
+            }
+            ctx.logger.debug`Workflow run completed: status=${e.run.status}`;
+            if (e.run.status === "failed") {
+              failed = true;
+            }
+          },
+          error: (e) => {
+            throw new UserError(e.error.message);
+          },
+        }),
+      );
 
-        ctx.logger.debug`Workflow run completed: status=${run.status}`;
-
-        // Exit with code 1 if workflow failed
-        if (run.status === "failed") {
-          Deno.exit(1);
-        }
-      } else {
-        // Default: LogTape-based output with step logging
-        const progress = createLogProgressCallback(workflow.name);
-        const run = await executionService.execute(workflow.name, progress, {
-          enableStepLogging: true,
-          lastEvaluated,
-          inputs,
-          runtimeTags,
-        });
-
-        ctx.logger.debug`Workflow run completed: status=${run.status}`;
-
-        // Exit with code 1 if workflow failed
-        if (run.status === "failed") {
-          Deno.exit(1);
-        }
+      if (failed) {
+        Deno.exit(1);
       }
     } catch (error) {
       if (error instanceof UserError) {

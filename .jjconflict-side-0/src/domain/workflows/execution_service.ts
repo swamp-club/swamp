@@ -77,6 +77,7 @@ import {
 import { join } from "@std/path";
 import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import { merge } from "../../libswamp/stream/merge.ts";
 /**
  * Context for step execution.
  */
@@ -89,9 +90,7 @@ export interface StepExecutionContext {
   repoDir: string;
   /** Expression context for evaluating ${{ }} expressions */
   expressionContext?: ExpressionContext;
-  /** Progress callback for streaming output */
-  progress?: ExecutionProgressCallback;
-  /** Current workflow run for progress callbacks */
+  /** Current workflow run (for log file references in model outputs) */
   workflowRun?: WorkflowRun;
   /** The step being executed (for accessing data output overrides) */
   step?: Step;
@@ -101,10 +100,6 @@ export interface StepExecutionContext {
   useLastEvaluated?: boolean;
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: { name: string; value: unknown };
-  /** Current workflow nesting depth for recursion guard (max 10) */
-  workflowNestingDepth?: number;
-  /** Set of ancestor workflow IDs for cycle detection */
-  ancestorWorkflowIds?: Set<string>;
   /** Tags from the workflow definition, merged into data writer tag overrides */
   workflowTags?: Record<string, string>;
   /** Runtime tags from --tag CLI flags, passed to method execution context */
@@ -149,112 +144,18 @@ const MAX_WORKFLOW_NESTING_DEPTH = 10;
 export class DefaultStepExecutor implements StepExecutor {
   private readonly validationService = new DefaultModelValidationService();
 
-  constructor(
-    private readonly workflowRepo?: WorkflowRepository,
-    private readonly runRepo?: WorkflowRunRepository,
-    private readonly repoDir?: string,
-  ) {}
-
   async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     const task = step.task.data;
 
     if (task.type === "model_method") {
       return await this.executeModelMethod(task, ctx);
-    } else if (task.type === "workflow") {
-      return await this.executeWorkflowTask(task, ctx);
     }
 
-    throw new Error(`Unknown task type: ${(task as { type: string }).type}`);
-  }
-
-  private async executeWorkflowTask(
-    task: {
-      workflowIdOrName: string;
-      inputs?: Record<string, unknown>;
-    },
-    ctx: StepExecutionContext,
-  ): Promise<unknown> {
-    if (!this.workflowRepo || !this.runRepo || !this.repoDir) {
-      throw new Error(
-        "Workflow execution requires workflowRepo, runRepo, and repoDir to be provided to DefaultStepExecutor",
-      );
-    }
-
-    // Recursion guard
-    const depth = ctx.workflowNestingDepth ?? 0;
-    if (depth >= MAX_WORKFLOW_NESTING_DEPTH) {
-      throw new Error(
-        `Maximum workflow nesting depth (${MAX_WORKFLOW_NESTING_DEPTH}) exceeded. ` +
-          `Workflow "${task.workflowIdOrName}" cannot be invoked at depth ${
-            depth + 1
-          }.`,
-      );
-    }
-
-    // Cycle detection
-    const ancestors = ctx.ancestorWorkflowIds ?? new Set<string>();
-    if (ancestors.has(task.workflowIdOrName)) {
-      const chain = [...ancestors, task.workflowIdOrName].join(" -> ");
-      throw new Error(
-        `Workflow cycle detected: ${chain}. ` +
-          `A workflow cannot invoke itself directly or indirectly.`,
-      );
-    }
-
-    // Evaluate inputs using the expression context
-    let evaluatedInputs = task.inputs;
-    if (task.inputs && ctx.expressionContext) {
-      const evalService = new ExpressionEvaluationService(
-        new YamlDefinitionRepository(ctx.repoDir),
-        ctx.repoDir,
-      );
-      evaluatedInputs = evalService.evaluateData(
-        task.inputs,
-        ctx.expressionContext,
-      ) as Record<string, unknown>;
-    }
-
-    // Create a child WorkflowExecutionService with nesting context
-    const childAncestors = new Set(ancestors);
-    childAncestors.add(ctx.workflowName);
-
-    const childExecutor = new DefaultStepExecutor(
-      this.workflowRepo,
-      this.runRepo,
-      this.repoDir,
+    throw new Error(
+      `Unsupported task type for step executor: ${
+        (task as { type: string }).type
+      }`,
     );
-
-    const childService = new WorkflowExecutionService(
-      this.workflowRepo,
-      this.runRepo,
-      this.repoDir,
-      childExecutor,
-    );
-
-    const childRun = await childService.execute(
-      task.workflowIdOrName,
-      ctx.progress,
-      {
-        enableStepLogging: ctx.enableStepLogging,
-        inputs: evaluatedInputs,
-        workflowNestingDepth: depth + 1,
-        ancestorWorkflowIds: childAncestors,
-      },
-    );
-
-    // Propagate child workflow failure to the parent step
-    if (childRun.status === "failed") {
-      throw new Error(
-        `Nested workflow "${task.workflowIdOrName}" failed.`,
-      );
-    }
-
-    return {
-      type: "workflow",
-      workflow: task.workflowIdOrName,
-      runId: childRun.id,
-      status: childRun.status,
-    };
   }
 
   private async executeModelMethod(
@@ -718,23 +619,36 @@ export class DefaultStepExecutor implements StepExecutor {
 }
 
 /**
- * Progress callback for workflow execution.
+ * Events emitted by the workflow execution generator.
  */
-export interface ExecutionProgressCallback {
-  onWorkflowStart?(run: WorkflowRun): void;
-  onJobStart?(run: WorkflowRun, jobName: string): void;
-  onJobComplete?(run: WorkflowRun, jobName: string): void;
-  onJobSkip?(run: WorkflowRun, jobName: string): void;
-  onStepStart?(run: WorkflowRun, jobName: string, stepName: string): void;
-  onStepComplete?(run: WorkflowRun, jobName: string, stepName: string): void;
-  onStepSkip?(run: WorkflowRun, jobName: string, stepName: string): void;
-  onStepFail?(
-    run: WorkflowRun,
-    jobName: string,
-    stepName: string,
-    error: string,
-  ): void;
-  onWorkflowComplete?(run: WorkflowRun): void;
+export type WorkflowExecutionEvent =
+  | { step: "started"; runId: string; workflowName: string; logPath: string }
+  | { step: "job_started"; jobId: string }
+  | { step: "job_completed"; jobId: string; status: string }
+  | { step: "job_skipped"; jobId: string }
+  | { step: "step_started"; jobId: string; stepId: string }
+  | { step: "step_completed"; jobId: string; stepId: string }
+  | { step: "step_skipped"; jobId: string; stepId: string }
+  | {
+    step: "step_failed";
+    jobId: string;
+    stepId: string;
+    error: string;
+    allowedFailure?: boolean;
+  }
+  | { step: "completed"; run: WorkflowRun };
+
+/**
+ * Internal options bundle passed through runJob/runStep to reduce parameter count.
+ */
+interface StepOptions {
+  enableStepLogging?: boolean;
+  lastEvaluated?: boolean;
+  workflowNestingDepth?: number;
+  ancestorWorkflowIds?: Set<string>;
+  workflowTags?: Record<string, string>;
+  runtimeTags?: Record<string, string>;
+  secretRedactor?: SecretRedactor;
 }
 
 /**
@@ -753,8 +667,7 @@ export class WorkflowExecutionService {
     private readonly repoDir: string,
     executor?: StepExecutor,
   ) {
-    this.executor = executor ??
-      new DefaultStepExecutor(workflowRepo, runRepo, repoDir);
+    this.executor = executor ?? new DefaultStepExecutor();
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
     this.dataRepo = new FileSystemUnifiedDataRepository(repoDir);
     this.modelResolver = new ModelResolver(this.definitionRepo, {
@@ -764,15 +677,10 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Executes a workflow by ID or name.
-   *
-   * @param idOrName - Workflow ID or name
-   * @param progress - Optional progress callback
-   * @returns The workflow run
+   * Executes a workflow by ID or name, yielding progress events.
    */
-  async execute(
+  async *run(
     idOrName: string,
-    progress?: ExecutionProgressCallback,
     options?: {
       enableStepLogging?: boolean;
       lastEvaluated?: boolean;
@@ -781,7 +689,7 @@ export class WorkflowExecutionService {
       workflowNestingDepth?: number;
       ancestorWorkflowIds?: Set<string>;
     },
-  ): Promise<WorkflowRun> {
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     // Look up workflow
     let workflow = await this.lookupWorkflow(idOrName);
     if (!workflow) {
@@ -865,9 +773,24 @@ export class WorkflowExecutionService {
 
     // Start execution
     run.start();
-    progress?.onWorkflowStart?.(run);
+    yield {
+      step: "started",
+      runId: run.id,
+      workflowName: workflow.name,
+      logPath: workflowLogPath,
+    };
 
     await this.saveRun(workflow.id, run);
+
+    const stepOpts: StepOptions = {
+      enableStepLogging: options?.enableStepLogging,
+      lastEvaluated: options?.lastEvaluated,
+      workflowNestingDepth: options?.workflowNestingDepth,
+      ancestorWorkflowIds: options?.ancestorWorkflowIds,
+      workflowTags: workflow.tags,
+      runtimeTags: options?.runtimeTags,
+      secretRedactor,
+    };
 
     // Sort jobs topologically
     const jobNodes: GraphNode[] = workflow.jobs.map((job) => ({
@@ -880,53 +803,62 @@ export class WorkflowExecutionService {
 
     // Execute jobs level by level
     for (const level of sortedJobs.levels) {
-      // Execute jobs in parallel within each level
-      await Promise.all(
-        level.map((jobName) =>
-          this.executeJob(
-            workflow,
-            run,
-            jobName,
-            expressionContext,
-            progress,
-            options?.enableStepLogging,
-            options?.lastEvaluated,
-            options?.workflowNestingDepth,
-            options?.ancestorWorkflowIds,
-            workflow.tags,
-            options?.runtimeTags,
-            secretRedactor,
-          )
-        ),
+      // Merge parallel job generators within each level
+      const jobStreams = level.map((jobName) =>
+        this.runJob(
+          workflow,
+          run,
+          jobName,
+          expressionContext,
+          stepOpts,
+        )
       );
+      for await (const event of merge(jobStreams)) {
+        yield event;
+      }
       await this.saveRun(workflow.id, run);
     }
 
     // Complete workflow
     run.complete();
-    progress?.onWorkflowComplete?.(run);
+    yield { step: "completed", run };
     await this.saveRun(workflow.id, run);
 
     // Unregister workflow log file sink
     runFileSink.unregister(workflowLogCategory);
-
-    return run;
   }
 
-  private async executeJob(
+  /**
+   * Executes a workflow by ID or name.
+   * Convenience wrapper around run() that drains the event stream
+   * and returns the final WorkflowRun.
+   */
+  async execute(
+    idOrName: string,
+    options?: {
+      enableStepLogging?: boolean;
+      lastEvaluated?: boolean;
+      inputs?: Record<string, unknown>;
+      runtimeTags?: Record<string, string>;
+      workflowNestingDepth?: number;
+      ancestorWorkflowIds?: Set<string>;
+    },
+  ): Promise<WorkflowRun> {
+    let result: WorkflowRun | undefined;
+    for await (const event of this.run(idOrName, options)) {
+      if (event.step === "completed") result = event.run;
+    }
+    if (!result) throw new Error("Workflow run did not complete");
+    return result;
+  }
+
+  private async *runJob(
     workflow: Workflow,
     run: WorkflowRun,
     jobName: string,
     expressionContext: ExpressionContext | undefined,
-    progress?: ExecutionProgressCallback,
-    enableStepLogging?: boolean,
-    lastEvaluated?: boolean,
-    workflowNestingDepth?: number,
-    ancestorWorkflowIds?: Set<string>,
-    workflowTags?: Record<string, string>,
-    runtimeTags?: Record<string, string>,
-    secretRedactor?: SecretRedactor,
-  ): Promise<void> {
+    options: StepOptions,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     const job = workflow.getJob(jobName);
     if (!job) {
       throw new Error(`Job not found: ${jobName}`);
@@ -941,17 +873,17 @@ export class WorkflowExecutionService {
     const shouldRun = this.shouldJobRun(job, run);
     if (!shouldRun) {
       jobRun.skip();
-      progress?.onJobSkip?.(run, jobName);
+      yield { step: "job_skipped", jobId: jobName };
       return;
     }
 
     // Start job
     jobRun.start();
-    progress?.onJobStart?.(run, jobName);
+    yield { step: "job_started", jobId: jobName };
 
     // Expand forEach steps if we have expression context
     let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
-    if (expressionContext && !lastEvaluated) {
+    if (expressionContext && !options.lastEvaluated) {
       expandedStepsMap = this.expandForEachSteps(job, expressionContext);
     }
 
@@ -999,48 +931,39 @@ export class WorkflowExecutionService {
     for (const level of sortedSteps.levels) {
       if (jobFailed) break;
 
-      // Execute steps in parallel within each level
-      const stepResults = await Promise.allSettled(
-        level.map((stepName) => {
-          // Find the expanded step info if applicable
-          let forEachVar: { name: string; value: unknown } | undefined;
-          let originalStep: Step | undefined;
+      // Merge parallel step generators within each level
+      const stepStreams = level.map((stepName) => {
+        // Find the expanded step info if applicable
+        let forEachVar: { name: string; value: unknown } | undefined;
+        let originalStep: Step | undefined;
 
-          if (expandedStepsMap) {
-            for (const [, expanded] of expandedStepsMap) {
-              const found = expanded.find((e) => e.expandedName === stepName);
-              if (found) {
-                forEachVar = found.forEachVar;
-                originalStep = found.step;
-                break;
-              }
+        if (expandedStepsMap) {
+          for (const [, expanded] of expandedStepsMap) {
+            const found = expanded.find((e) => e.expandedName === stepName);
+            if (found) {
+              forEachVar = found.forEachVar;
+              originalStep = found.step;
+              break;
             }
           }
+        }
 
-          return this.executeExpandedStep(
-            workflow,
-            run,
-            job,
-            jobRun,
-            stepName,
-            originalStep,
-            forEachVar,
-            expressionContext,
-            progress,
-            enableStepLogging,
-            lastEvaluated,
-            workflowNestingDepth,
-            ancestorWorkflowIds,
-            workflowTags,
-            runtimeTags,
-            secretRedactor,
-          );
-        }),
-      );
+        return this.runStep(
+          workflow,
+          run,
+          job,
+          jobRun,
+          stepName,
+          originalStep,
+          forEachVar,
+          expressionContext,
+          options,
+        );
+      });
 
-      // Check for failures
-      for (const result of stepResults) {
-        if (result.status === "rejected") {
+      for await (const event of merge(stepStreams)) {
+        yield event;
+        if (event.step === "step_failed" && !event.allowedFailure) {
           jobFailed = true;
         }
       }
@@ -1052,7 +975,7 @@ export class WorkflowExecutionService {
     } else {
       jobRun.succeed();
     }
-    progress?.onJobComplete?.(run, jobName);
+    yield { step: "job_completed", jobId: jobName, status: jobRun.status };
   }
 
   /**
@@ -1188,148 +1111,11 @@ export class WorkflowExecutionService {
     return result;
   }
 
-  private async executeStep(
-    workflow: Workflow,
-    run: WorkflowRun,
-    job: Job,
-    jobRun: JobRun,
-    stepName: string,
-    expressionContext: ExpressionContext | undefined,
-    progress?: ExecutionProgressCallback,
-    enableStepLogging?: boolean,
-    lastEvaluated?: boolean,
-    workflowNestingDepth?: number,
-    ancestorWorkflowIds?: Set<string>,
-  ): Promise<void> {
-    const step = job.getStep(stepName);
-    if (!step) {
-      throw new Error(`Step not found: ${stepName}`);
-    }
-
-    const stepRun = jobRun.getStep(stepName);
-    if (!stepRun) {
-      throw new Error(`Step run not found: ${stepName}`);
-    }
-
-    // Check if step's trigger condition is met
-    const shouldRun = this.shouldStepRun(step, jobRun);
-    if (!shouldRun) {
-      stepRun.skip();
-      progress?.onStepSkip?.(run, job.name, stepName);
-      return;
-    }
-
-    // Start step
-    stepRun.start();
-    progress?.onStepStart?.(run, job.name, stepName);
-
-    try {
-      const ctx: StepExecutionContext = {
-        workflowId: workflow.id,
-        workflowRunId: run.id,
-        workflowName: workflow.name,
-        jobName: job.name,
-        stepName,
-        repoDir: this.repoDir,
-        expressionContext,
-        progress,
-        workflowRun: run,
-        step,
-        enableStepLogging,
-        useLastEvaluated: lastEvaluated,
-        workflowNestingDepth,
-        ancestorWorkflowIds,
-      };
-
-      const output = await this.executor.execute(step, ctx);
-
-      // Track data artifacts and update expression context if this was a model method
-      if (step.task.isModelMethod() && output && typeof output === "object") {
-        const taskOutput = output as {
-          model?: string;
-          resources?: Record<string, Record<string, DataRecord>>;
-          files?: Record<string, Record<string, FileDataRecord>>;
-          dataArtifacts?: Array<{
-            dataId: string;
-            name: string;
-            version: number;
-            tags: Record<string, string>;
-          }>;
-        };
-
-        // Track data artifacts in step run
-        if (taskOutput.dataArtifacts) {
-          for (const artifact of taskOutput.dataArtifacts) {
-            stepRun.addDataArtifact(artifact);
-          }
-        }
-
-        // Update expression context for subsequent steps (only when not using --last-evaluated)
-        if (expressionContext && taskOutput.model) {
-          // Create model entry if it doesn't exist
-          if (!expressionContext.model[taskOutput.model]) {
-            expressionContext.model[taskOutput.model] = {
-              input: {
-                id: "",
-                name: taskOutput.model,
-                version: 1,
-                tags: {},
-                globalArguments: {},
-              },
-            };
-          }
-          const modelData = expressionContext.model[taskOutput.model];
-
-          // Update resource context (specName → instanceName → record)
-          if (taskOutput.resources) {
-            if (!modelData.resource) modelData.resource = {};
-            for (
-              const [specName, instances] of Object.entries(
-                taskOutput.resources,
-              )
-            ) {
-              if (!modelData.resource[specName]) {
-                modelData.resource[specName] = {};
-              }
-              Object.assign(modelData.resource[specName], instances);
-            }
-          }
-          // Update file context (specName → instanceName → record)
-          if (taskOutput.files) {
-            if (!modelData.file) modelData.file = {};
-            for (
-              const [specName, instances] of Object.entries(taskOutput.files)
-            ) {
-              if (!modelData.file[specName]) {
-                modelData.file[specName] = {};
-              }
-              Object.assign(modelData.file[specName], instances);
-            }
-          }
-        }
-      }
-
-      stepRun.succeed(output);
-      progress?.onStepComplete?.(run, job.name, stepName);
-    } catch (error) {
-      const errorMessage = error instanceof Error
-        ? error.message
-        : String(error);
-      stepRun.fail(errorMessage);
-      progress?.onStepFail?.(run, job.name, stepName, errorMessage);
-      if (step.allowFailure) {
-        stepRun.markAllowedFailure();
-        return;
-      }
-      throw error;
-    }
-  }
-
   /**
-   * Executes a step that may have been expanded from a forEach.
-   * Handles both regular steps and forEach-expanded steps.
+   * Executes a step (regular or forEach-expanded), yielding events.
+   * Catches errors internally to preserve allSettled semantics via merge().
    */
-  private async executeExpandedStep(
+  private async *runStep(
     workflow: Workflow,
     run: WorkflowRun,
     job: Job,
@@ -1338,15 +1124,8 @@ export class WorkflowExecutionService {
     originalStep: Step | undefined,
     forEachVar: { name: string; value: unknown } | undefined,
     expressionContext: ExpressionContext | undefined,
-    progress?: ExecutionProgressCallback,
-    enableStepLogging?: boolean,
-    lastEvaluated?: boolean,
-    workflowNestingDepth?: number,
-    ancestorWorkflowIds?: Set<string>,
-    workflowTags?: Record<string, string>,
-    runtimeTags?: Record<string, string>,
-    secretRedactor?: SecretRedactor,
-  ): Promise<void> {
+    options: StepOptions,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
     if (!step) {
@@ -1370,14 +1149,14 @@ export class WorkflowExecutionService {
       const shouldRun = this.shouldStepRun(step, jobRun);
       if (!shouldRun) {
         stepRun.skip();
-        progress?.onStepSkip?.(run, job.name, stepName);
+        yield { step: "step_skipped", jobId: job.name, stepId: stepName };
         return;
       }
     }
 
     // Start step
     stepRun.start();
-    progress?.onStepStart?.(run, job.name, stepName);
+    yield { step: "step_started", jobId: job.name, stepId: stepName };
 
     try {
       // Build the expression context with forEach variable
@@ -1399,6 +1178,23 @@ export class WorkflowExecutionService {
         };
       }
 
+      const task = step.task.data;
+
+      // Handle workflow tasks inline to forward nested workflow events
+      if (task.type === "workflow") {
+        yield* this.runWorkflowStep(
+          workflow,
+          job,
+          stepRun,
+          stepName,
+          task,
+          stepExprContext,
+          options,
+        );
+        return;
+      }
+
+      // Model method tasks delegate to the step executor
       const ctx: StepExecutionContext = {
         workflowId: workflow.id,
         workflowRunId: run.id,
@@ -1407,17 +1203,14 @@ export class WorkflowExecutionService {
         stepName,
         repoDir: this.repoDir,
         expressionContext: stepExprContext,
-        progress,
         workflowRun: run,
         step,
-        enableStepLogging,
-        useLastEvaluated: lastEvaluated,
+        enableStepLogging: options.enableStepLogging,
+        useLastEvaluated: options.lastEvaluated,
         forEachVariable: forEachVar,
-        workflowNestingDepth,
-        ancestorWorkflowIds,
-        workflowTags,
-        runtimeTags,
-        secretRedactor,
+        workflowTags: options.workflowTags,
+        runtimeTags: options.runtimeTags,
+        secretRedactor: options.secretRedactor,
       };
 
       const output = await this.executor.execute(step, ctx);
@@ -1489,19 +1282,147 @@ export class WorkflowExecutionService {
       }
 
       stepRun.succeed(output);
-      progress?.onStepComplete?.(run, job.name, stepName);
+      yield { step: "step_completed", jobId: job.name, stepId: stepName };
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
       stepRun.fail(errorMessage);
-      progress?.onStepFail?.(run, job.name, stepName, errorMessage);
-      if (step.allowFailure) {
+      const isAllowed = !!step.allowFailure;
+      if (isAllowed) {
         stepRun.markAllowedFailure();
-        return;
       }
-      throw error;
+      yield {
+        step: "step_failed",
+        jobId: job.name,
+        stepId: stepName,
+        error: errorMessage,
+        allowedFailure: isAllowed || undefined,
+      };
+      // Do not re-throw: merge() continues draining all step generators
+      // (allSettled semantics). The job generator tracks failure via step_failed events.
     }
+  }
+
+  /**
+   * Handles a workflow task step, forwarding child workflow events
+   * to the parent stream.
+   */
+  private async *runWorkflowStep(
+    workflow: Workflow,
+    job: Job,
+    stepRun: import("./workflow_run.ts").StepRun,
+    stepName: string,
+    task: { workflowIdOrName: string; inputs?: Record<string, unknown> },
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    // Recursion guard
+    const depth = options.workflowNestingDepth ?? 0;
+    if (depth >= MAX_WORKFLOW_NESTING_DEPTH) {
+      const errorMessage =
+        `Maximum workflow nesting depth (${MAX_WORKFLOW_NESTING_DEPTH}) exceeded. ` +
+        `Workflow "${task.workflowIdOrName}" cannot be invoked at depth ${
+          depth + 1
+        }.`;
+      stepRun.fail(errorMessage);
+      yield {
+        step: "step_failed",
+        jobId: job.name,
+        stepId: stepName,
+        error: errorMessage,
+      };
+      return;
+    }
+
+    // Cycle detection
+    const ancestors = options.ancestorWorkflowIds ?? new Set<string>();
+    if (ancestors.has(task.workflowIdOrName)) {
+      const chain = [...ancestors, task.workflowIdOrName].join(" -> ");
+      const errorMessage = `Workflow cycle detected: ${chain}. ` +
+        `A workflow cannot invoke itself directly or indirectly.`;
+      stepRun.fail(errorMessage);
+      yield {
+        step: "step_failed",
+        jobId: job.name,
+        stepId: stepName,
+        error: errorMessage,
+      };
+      return;
+    }
+
+    // Evaluate inputs using the expression context
+    let evaluatedInputs = task.inputs;
+    if (task.inputs && expressionContext) {
+      const evalService = new ExpressionEvaluationService(
+        new YamlDefinitionRepository(this.repoDir),
+        this.repoDir,
+      );
+      evaluatedInputs = evalService.evaluateData(
+        task.inputs,
+        expressionContext,
+      ) as Record<string, unknown>;
+    }
+
+    // Create a child WorkflowExecutionService with nesting context
+    const childAncestors = new Set(ancestors);
+    childAncestors.add(workflow.name);
+
+    const childService = new WorkflowExecutionService(
+      this.workflowRepo,
+      this.runRepo,
+      this.repoDir,
+    );
+
+    let childRun: WorkflowRun | undefined;
+    try {
+      for await (
+        const event of childService.run(task.workflowIdOrName, {
+          enableStepLogging: options.enableStepLogging,
+          inputs: evaluatedInputs,
+          workflowNestingDepth: depth + 1,
+          ancestorWorkflowIds: childAncestors,
+        })
+      ) {
+        if (event.step === "completed") {
+          childRun = event.run;
+        } else {
+          yield event; // Forward child events to parent stream
+        }
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
+      stepRun.fail(errorMessage);
+      yield {
+        step: "step_failed",
+        jobId: job.name,
+        stepId: stepName,
+        error: errorMessage,
+      };
+      return;
+    }
+
+    if (!childRun || childRun.status === "failed") {
+      const errorMessage = `Nested workflow "${task.workflowIdOrName}" failed.`;
+      stepRun.fail(errorMessage);
+      yield {
+        step: "step_failed",
+        jobId: job.name,
+        stepId: stepName,
+        error: errorMessage,
+      };
+      return;
+    }
+
+    stepRun.succeed({
+      type: "workflow",
+      workflow: task.workflowIdOrName,
+      runId: childRun.id,
+      status: childRun.status,
+    });
+    yield { step: "step_completed", jobId: job.name, stepId: stepName };
   }
 
   private shouldJobRun(job: Job, run: WorkflowRun): boolean {
