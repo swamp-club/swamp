@@ -23,7 +23,7 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
@@ -141,8 +141,9 @@ export const extensionSearchCommand = new Command()
     );
 
     if (result?.action === "install") {
+      // Install writes files to the repo, so acquire the datastore lock
       const repoDir = ".";
-      await requireInitializedRepoReadOnly({
+      await requireInitializedRepo({
         repoDir,
         outputMode: ctx.outputMode,
       });
