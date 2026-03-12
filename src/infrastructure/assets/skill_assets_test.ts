@@ -348,6 +348,23 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model api file", asyn
   });
 });
 
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model checks file", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const checksPath = join(
+      dir,
+      "swamp-extension-model",
+      "references",
+      "checks.md",
+    );
+
+    const checksStat = await Deno.stat(checksPath);
+    assertEquals(checksStat.isFile, true);
+  });
+});
+
 Deno.test("SkillAssets.copySkillsTo copies swamp-workflow nested-workflows file", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();

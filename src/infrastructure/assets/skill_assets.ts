@@ -126,6 +126,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-extension-model",
   },
   {
+    relativePath: "swamp-extension-model/references/checks.md",
+    name: "swamp-extension-model",
+  },
+  {
     relativePath: "swamp-vault/SKILL.md",
     name: "swamp-vault",
   },
