@@ -128,7 +128,7 @@ Deno.test("CLI: command/shell model executes simple shell commands", async () =>
 
     const output = JSON.parse(result.stdout);
     assertEquals(output.modelName, "simple-shell");
-    assertEquals(output.data.attributes.exitCode, 0);
+    assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
   });
 });
 
@@ -409,7 +409,7 @@ Deno.test("CLI: command/shell model with self-reference expressions", async () =
 
     const output = JSON.parse(result.stdout);
     assertEquals(output.modelName, "self-ref-shell");
-    assertEquals(output.data.attributes.exitCode, 0);
+    assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
   });
 });
 

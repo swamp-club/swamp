@@ -249,6 +249,7 @@ function createTestContext(
 ): { context: MethodContext; getResults: () => MockWriterResult[] } {
   const { writeResource, createFileWriter, getResults } = createMockWriters();
   const context: MethodContext = {
+    signal: new AbortController().signal,
     repoDir: ".",
     modelType: ModelType.create("swamp/echo"),
     modelId: crypto.randomUUID(),
