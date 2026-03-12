@@ -458,15 +458,16 @@ export const extension = {
 };
 ```
 
-Extensions can also add pre-flight checks to the target model type via an
-optional third parameter:
+Extensions can also add pre-flight checks to the target model type. The `checks`
+field is an array of `Record<string, CheckDefinition>` objects, following the
+same array-of-records pattern as `methods`:
 
 ```typescript
 // extensions/models/vpc_policy.ts
 export const extension = {
   type: "aws/ec2/vpc",
   methods: [{/* ... */}],
-  checks: {
+  checks: [{
     "no-cidr-overlap": {
       description: "Ensure CIDR does not overlap with existing VPCs",
       labels: ["policy"],
@@ -475,19 +476,20 @@ export const extension = {
         return { pass: true };
       },
     },
-  },
+  }],
 };
 ```
 
 Check names must not conflict with checks already defined on the target model
-type -- conflicts throw an error at registration time.
+type — conflicts throw an error at registration time.
 
 **Extension rules:**
 
 - Extensions **cannot** change the target model's Zod schema
 - Extensions **only** add new methods — no overriding existing methods
 - `methods` is always an array of `Record<string, MethodDef>` objects
-- Extension checks follow the same `CheckDefinition` interface as model checks
+- `checks` is always an array of `Record<string, CheckDefinition>` objects
+- Check and method names must not conflict with existing ones on the target type
 
 ## Model Discovery
 

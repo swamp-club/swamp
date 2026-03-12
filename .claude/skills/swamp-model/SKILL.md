@@ -168,12 +168,15 @@ methods:
     arguments: {}
 ```
 
-- `require` checks are immune to `--skip-checks`, `--skip-check`, and
-  `--skip-check-label` CLI flags
-- `skip` always wins over `require` if both list the same check
+**Precedence rules:**
+
+- `skip` always wins — even over `require` for the same check name
+- `require` makes checks immune to `--skip-checks`, `--skip-check <name>`, and
+  `--skip-check-label <label>` CLI flags (e.g., `--skip-checks` skips
+  non-required checks but required checks still run)
 - `require` checks still respect `appliesTo` method scoping
-- `model validate` honors definition-level `skip` lists and warns on
-  require/skip overlap; errors if a referenced check does not exist on the model
+- `model validate` honors `skip` lists and warns on require/skip overlap;
+  validation errors if a check name doesn't exist on the model type
 
 ### Model Inputs Schema
 
