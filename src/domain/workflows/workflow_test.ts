@@ -439,6 +439,52 @@ Deno.test("Workflow.create rejects path traversal even without jobs", () => {
   );
 });
 
+// Driver field tests
+
+Deno.test("Workflow.create defaults driver to undefined", () => {
+  const workflow = Workflow.create({ name: "test-workflow" });
+  assertEquals(workflow.driver, undefined);
+  assertEquals(workflow.driverConfig, undefined);
+});
+
+Deno.test("Workflow.create uses provided driver and driverConfig", () => {
+  const workflow = Workflow.create({
+    name: "test-workflow",
+    driver: "docker",
+    driverConfig: { image: "node:18" },
+    jobs: [createTestJob("job1")],
+  });
+  assertEquals(workflow.driver, "docker");
+  assertEquals(workflow.driverConfig, { image: "node:18" });
+});
+
+Deno.test("Workflow.toData includes driver and driverConfig", () => {
+  const workflow = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    driver: "docker",
+    driverConfig: { timeout: 60 },
+    jobs: [createTestJob("job1")],
+  });
+  const data = workflow.toData();
+  assertEquals(data.driver, "docker");
+  assertEquals(data.driverConfig, { timeout: 60 });
+});
+
+Deno.test("Workflow.fromData and toData roundtrip with driver", () => {
+  const original = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "driver-workflow",
+    driver: "docker",
+    driverConfig: { image: "deno:latest" },
+    jobs: [createTestJob("job1")],
+  });
+  const data = original.toData();
+  const restored = Workflow.fromData(data);
+  assertEquals(restored.driver, "docker");
+  assertEquals(restored.driverConfig, { image: "deno:latest" });
+});
+
 Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
   // Simulate legacy data without tags field — Zod .default({}) fills it in
   const data = {

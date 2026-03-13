@@ -231,6 +231,8 @@ Deno.test("Definition.toData returns correct structure", () => {
       properties: { name: { type: "string" } },
     },
     checks: undefined,
+    driver: undefined,
+    driverConfig: undefined,
   });
 });
 
@@ -478,6 +480,68 @@ Deno.test("Definition.withUpgradedGlobalArguments updates globalArguments and ty
   // Original should be unchanged
   assertEquals(original.globalArguments, { message: "old" });
   assertEquals(original.typeVersion, "2025.01.15.1");
+});
+
+// --- driver/driverConfig tests ---
+
+Deno.test("Definition.create sets undefined driver by default", () => {
+  const definition = Definition.create({ name: "test-definition" });
+  assertEquals(definition.driver, undefined);
+  assertEquals(definition.driverConfig, undefined);
+});
+
+Deno.test("Definition.create uses provided driver and driverConfig", () => {
+  const definition = Definition.create({
+    name: "test-definition",
+    driver: "docker",
+    driverConfig: { image: "node:18" },
+  });
+  assertEquals(definition.driver, "docker");
+  assertEquals(definition.driverConfig, { image: "node:18" });
+});
+
+Deno.test("Definition.toData includes driver and driverConfig", () => {
+  const definition = Definition.create({
+    name: "test-definition",
+    driver: "docker",
+    driverConfig: { image: "deno:latest" },
+  });
+  const data = definition.toData();
+  assertEquals(data.driver, "docker");
+  assertEquals(data.driverConfig, { image: "deno:latest" });
+});
+
+Deno.test("Definition.fromData round-trips driver and driverConfig", () => {
+  const definition = Definition.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-definition",
+    driver: "docker",
+    driverConfig: { timeout: 30 },
+  });
+  const data = definition.toData();
+  const restored = Definition.fromData(data);
+  assertEquals(restored.driver, "docker");
+  assertEquals(restored.driverConfig, { timeout: 30 });
+});
+
+Deno.test("Definition.withUpgradedGlobalArguments preserves driver", () => {
+  const original = Definition.create({
+    name: "test-definition",
+    type: "swamp/echo",
+    typeVersion: "2025.01.15.1",
+    driver: "docker",
+    driverConfig: { image: "node:18" },
+    globalArguments: { message: "hello" },
+  });
+
+  const upgraded = Definition.withUpgradedGlobalArguments(
+    original,
+    { content: "world" },
+    "2026.02.09.1",
+  );
+
+  assertEquals(upgraded.driver, "docker");
+  assertEquals(upgraded.driverConfig, { image: "node:18" });
 });
 
 Deno.test("Legacy numeric typeVersion coerced to undefined", () => {

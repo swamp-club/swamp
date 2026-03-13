@@ -162,6 +162,53 @@ Deno.test("Job.toData returns correct structure", () => {
   assertEquals(data.weight, 3);
 });
 
+// Driver field tests
+
+Deno.test("Job.create defaults driver to undefined", () => {
+  const step = createTestStep("step1");
+  const job = Job.create({ name: "test", steps: [step] });
+  assertEquals(job.driver, undefined);
+  assertEquals(job.driverConfig, undefined);
+});
+
+Deno.test("Job.create uses provided driver and driverConfig", () => {
+  const step = createTestStep("step1");
+  const job = Job.create({
+    name: "test",
+    steps: [step],
+    driver: "docker",
+    driverConfig: { image: "node:18" },
+  });
+  assertEquals(job.driver, "docker");
+  assertEquals(job.driverConfig, { image: "node:18" });
+});
+
+Deno.test("Job.toData includes driver and driverConfig", () => {
+  const step = createTestStep("step1");
+  const job = Job.create({
+    name: "test",
+    steps: [step],
+    driver: "docker",
+    driverConfig: { timeout: 30 },
+  });
+  const data = job.toData();
+  assertEquals(data.driver, "docker");
+  assertEquals(data.driverConfig, { timeout: 30 });
+});
+
+Deno.test("Job.fromData and toData roundtrip with driver", () => {
+  const step = createTestStep("step1");
+  const original = Job.create({
+    name: "test",
+    steps: [step],
+    driver: "raw",
+  });
+  const data = original.toData();
+  const restored = Job.fromData(data);
+  assertEquals(restored.driver, "raw");
+  assertEquals(restored.driverConfig, undefined);
+});
+
 Deno.test("Job.fromData and toData roundtrip correctly", () => {
   const original = Job.create({
     name: "complex-job",

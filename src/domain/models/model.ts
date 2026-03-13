@@ -228,6 +228,17 @@ export interface MethodContext {
   redactor?: SecretRedactor;
 
   /**
+   * The execution driver type for this execution.
+   * Defaults to "raw" (in-process) when not specified.
+   */
+  driver?: string;
+
+  /**
+   * Configuration for the execution driver.
+   */
+  driverConfig?: Record<string, unknown>;
+
+  /**
    * Tags merged into every writer created during execution.
    * Used by workflow steps to inject workflow-specific tags.
    */

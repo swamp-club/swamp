@@ -92,6 +92,10 @@ export const modelMethodRunCommand = new Command()
     { collect: true },
   )
   .option("--skip-checks", "Skip all pre-flight checks", { default: false })
+  .option(
+    "--driver <driver:string>",
+    "Override execution driver (e.g. raw, docker)",
+  )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -343,6 +347,9 @@ export const modelMethodRunCommand = new Command()
             skipCheckNames: options.skipCheck as string[] | undefined,
             skipCheckLabels: options.skipCheckLabel as string[] | undefined,
             skipAllChecks: options.skipChecks as boolean | undefined,
+            driver: (options.driver as string | undefined) ??
+              evaluatedDefinition.driver,
+            driverConfig: evaluatedDefinition.driverConfig,
           },
         );
 

@@ -227,6 +227,51 @@ Deno.test("Step.fromData and toData roundtrip with allowFailure", () => {
   assertEquals(restored.allowFailure, original.allowFailure);
 });
 
+// driver field tests
+
+Deno.test("Step.create defaults driver to undefined", () => {
+  const task = StepTask.model("test-model", "run");
+  const step = Step.create({ name: "basic", task });
+  assertEquals(step.driver, undefined);
+  assertEquals(step.driverConfig, undefined);
+});
+
+Deno.test("Step.create uses provided driver and driverConfig", () => {
+  const task = StepTask.model("test-model", "run");
+  const step = Step.create({
+    name: "isolated",
+    task,
+    driver: "docker",
+    driverConfig: { image: "node:18" },
+  });
+  assertEquals(step.driver, "docker");
+  assertEquals(step.driverConfig, { image: "node:18" });
+});
+
+Deno.test("Step.toData includes driver and driverConfig", () => {
+  const step = Step.create({
+    name: "isolated",
+    task: StepTask.model("test-model", "run"),
+    driver: "docker",
+    driverConfig: { timeout: 30 },
+  });
+  const data = step.toData();
+  assertEquals(data.driver, "docker");
+  assertEquals(data.driverConfig, { timeout: 30 });
+});
+
+Deno.test("Step.fromData and toData roundtrip with driver", () => {
+  const original = Step.create({
+    name: "isolated",
+    task: StepTask.model("test-model", "run"),
+    driver: "raw",
+  });
+  const data = original.toData();
+  const restored = Step.fromData(data);
+  assertEquals(restored.driver, "raw");
+  assertEquals(restored.driverConfig, undefined);
+});
+
 // forEach field tests
 
 Deno.test("Step.create creates step with forEach", () => {

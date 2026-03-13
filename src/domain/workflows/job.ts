@@ -24,6 +24,10 @@ import {
   TriggerConditionSchema,
 } from "./trigger_condition.ts";
 import { Step, type StepData, StepSchema } from "./step.ts";
+import {
+  DriverConfigFieldSchema,
+  DriverFieldSchema,
+} from "../drivers/driver_config.ts";
 
 /**
  * Schema for job dependency with condition.
@@ -47,6 +51,8 @@ export const JobSchema = z.object({
   steps: z.array(StepSchema).min(1),
   dependsOn: z.array(JobDependencySchema).default([]),
   weight: z.number().default(0),
+  driver: DriverFieldSchema,
+  driverConfig: DriverConfigFieldSchema,
 });
 
 /**
@@ -76,6 +82,8 @@ export interface CreateJobProps {
   steps: Step[];
   dependsOn?: JobDependency[];
   weight?: number;
+  driver?: string;
+  driverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -95,6 +103,8 @@ export class Job {
     private _steps: Step[],
     private _dependsOn: JobDependency[],
     readonly weight: number,
+    readonly driver: string | undefined,
+    readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
 
   /**
@@ -114,6 +124,8 @@ export class Job {
         condition: d.condition.toData(),
       })),
       weight: props.weight ?? 0,
+      driver: props.driver,
+      driverConfig: props.driverConfig,
     });
 
     return Job.fromData(data);
@@ -136,6 +148,8 @@ export class Job {
       steps,
       dependsOn,
       validated.weight,
+      validated.driver,
+      validated.driverConfig,
     );
   }
 
@@ -180,6 +194,8 @@ export class Job {
         condition: d.condition.toData() as TriggerConditionData,
       })),
       weight: this.weight,
+      driver: this.driver,
+      driverConfig: this.driverConfig,
     };
   }
 }

@@ -26,6 +26,10 @@ import {
 import { StepTask, StepTaskSchema } from "./step_task.ts";
 import { DataOutputOverrideSchema } from "../models/data_output_override.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
+import {
+  DriverConfigFieldSchema,
+  DriverFieldSchema,
+} from "../drivers/driver_config.ts";
 
 /**
  * Schema for step dependency with condition.
@@ -65,6 +69,8 @@ export const StepSchema = z.object({
   weight: z.number().default(0),
   dataOutputOverrides: z.array(DataOutputOverrideSchema).optional(),
   allowFailure: z.boolean().default(false),
+  driver: DriverFieldSchema,
+  driverConfig: DriverConfigFieldSchema,
 });
 
 /**
@@ -105,6 +111,8 @@ export interface CreateStepProps {
   weight?: number;
   dataOutputOverrides?: DataOutputOverride[];
   allowFailure?: boolean;
+  driver?: string;
+  driverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -128,6 +136,8 @@ export class Step {
     readonly weight: number,
     private _dataOutputOverrides: DataOutputOverride[],
     readonly allowFailure: boolean,
+    readonly driver: string | undefined,
+    readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
 
   /**
@@ -146,6 +156,8 @@ export class Step {
       weight: props.weight ?? 0,
       dataOutputOverrides: props.dataOutputOverrides,
       allowFailure: props.allowFailure ?? false,
+      driver: props.driver,
+      driverConfig: props.driverConfig,
     });
 
     return Step.fromData(data);
@@ -186,6 +198,8 @@ export class Step {
       validated.weight,
       dataOutputOverrides,
       validated.allowFailure,
+      validated.driver,
+      validated.driverConfig,
     );
   }
 
@@ -243,6 +257,8 @@ export class Step {
         }))
         : undefined,
       allowFailure: this.allowFailure,
+      driver: this.driver,
+      driverConfig: this.driverConfig,
     };
   }
 }

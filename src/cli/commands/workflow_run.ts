@@ -172,6 +172,10 @@ export const workflowRunCommand = new Command()
     "Add tag to produced data (KEY=VALUE, repeatable)",
     { collect: true },
   )
+  .option(
+    "--driver <driver:string>",
+    "Override execution driver (e.g. raw, docker)",
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
@@ -254,10 +258,12 @@ export const workflowRunCommand = new Command()
           },
         };
 
+        const driverOverride = options.driver as string | undefined;
         const run = await executionService.execute(workflow.name, progress, {
           lastEvaluated,
           inputs,
           runtimeTags,
+          driver: driverOverride,
         });
 
         // Get the path for the run
@@ -278,12 +284,14 @@ export const workflowRunCommand = new Command()
         }
       } else {
         // Default: LogTape-based output with step logging
+        const driverOverride = options.driver as string | undefined;
         const progress = createLogProgressCallback(workflow.name);
         const run = await executionService.execute(workflow.name, progress, {
           enableStepLogging: true,
           lastEvaluated,
           inputs,
           runtimeTags,
+          driver: driverOverride,
         });
 
         ctx.logger.debug`Workflow run completed: status=${run.status}`;

@@ -52,6 +52,10 @@ import {
 } from "./completion_types.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
+import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
+
+// Import driver types barrel to trigger built-in driver registration
+import "../domain/drivers/driver_types.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   type RepoMarkerData,
@@ -87,6 +91,8 @@ import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 export { resolveWorkflowsDir };
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 export { resolveVaultsDir };
+import { resolveDriversDir } from "./resolve_drivers_dir.ts";
+export { resolveDriversDir };
 
 /**
  * Resolves the log level.
@@ -215,6 +221,43 @@ async function loadUserVaults(repoDir: string): Promise<void> {
     // Not in a swamp repo or other error - log at debug level for troubleshooting
     if (Deno.env.get("SWAMP_DEBUG")) {
       console.debug(`Skipping user vaults: ${error}`);
+    }
+  }
+}
+
+async function loadUserDrivers(repoDir: string): Promise<void> {
+  const markerRepo = new RepoMarkerRepository();
+
+  try {
+    const repoPath = RepoPath.create(repoDir);
+    const marker = await markerRepo.read(repoPath);
+
+    const driversDir = resolveDriversDir(marker);
+    const absoluteDriversDir = isAbsolute(driversDir)
+      ? driversDir
+      : resolve(repoDir, driversDir);
+
+    const denoRuntime = new EmbeddedDenoRuntime();
+    const loader = new UserDriverLoader(denoRuntime, repoDir);
+    const result = await loader.loadDrivers(absoluteDriversDir);
+
+    // Log successes at debug level
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      for (const file of result.loaded) {
+        console.debug(`Loaded user driver type from ${file}`);
+      }
+    }
+
+    // Log failures as warnings (don't block CLI startup)
+    for (const failure of result.failed) {
+      console.error(
+        `Warning: Failed to load user driver ${failure.file}: ${failure.error}`,
+      );
+    }
+  } catch (error) {
+    // Not in a swamp repo or other error - log at debug level for troubleshooting
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      console.debug(`Skipping user drivers: ${error}`);
     }
   }
 }
@@ -359,9 +402,10 @@ export async function runCli(args: string[]): Promise<void> {
     telemetryCtx = await initTelemetryService(repoDir);
   }
 
-  // Load user models and vaults before setting up CLI
+  // Load user models, vaults, and drivers before setting up CLI
   await loadUserModels(repoDir);
   await loadUserVaults(repoDir);
+  await loadUserDrivers(repoDir);
 
   // Read marker for resolveLogLevel (used in globalAction closure)
   let marker: RepoMarkerData | null = null;

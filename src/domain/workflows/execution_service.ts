@@ -111,6 +111,10 @@ export interface StepExecutionContext {
   runtimeTags?: Record<string, string>;
   /** Secret redactor for stripping vault secrets from persisted data and logs */
   secretRedactor?: SecretRedactor;
+  /** Execution driver override from workflow/CLI level */
+  driver?: string;
+  /** Execution driver config override from workflow/CLI level */
+  driverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -514,6 +518,8 @@ export class DefaultStepExecutor implements StepExecutor {
           dataOutputOverrides: stepDataOutputOverrides,
           vaultService,
           redactor: ctx.secretRedactor,
+          driver: ctx.driver ?? evaluatedDefinition.driver,
+          driverConfig: ctx.driverConfig ?? evaluatedDefinition.driverConfig,
         },
       );
 
@@ -780,6 +786,8 @@ export class WorkflowExecutionService {
       runtimeTags?: Record<string, string>;
       workflowNestingDepth?: number;
       ancestorWorkflowIds?: Set<string>;
+      /** Execution driver override (from CLI --driver flag) */
+      driver?: string;
     },
   ): Promise<WorkflowRun> {
     // Look up workflow
@@ -896,6 +904,7 @@ export class WorkflowExecutionService {
             workflow.tags,
             options?.runtimeTags,
             secretRedactor,
+            options?.driver,
           )
         ),
       );
@@ -926,6 +935,7 @@ export class WorkflowExecutionService {
     workflowTags?: Record<string, string>,
     runtimeTags?: Record<string, string>,
     secretRedactor?: SecretRedactor,
+    driver?: string,
   ): Promise<void> {
     const job = workflow.getJob(jobName);
     if (!job) {
@@ -1034,6 +1044,7 @@ export class WorkflowExecutionService {
             workflowTags,
             runtimeTags,
             secretRedactor,
+            driver,
           );
         }),
       );
@@ -1346,6 +1357,7 @@ export class WorkflowExecutionService {
     workflowTags?: Record<string, string>,
     runtimeTags?: Record<string, string>,
     secretRedactor?: SecretRedactor,
+    driver?: string,
   ): Promise<void> {
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
@@ -1418,6 +1430,9 @@ export class WorkflowExecutionService {
         workflowTags,
         runtimeTags,
         secretRedactor,
+        driver: step.driver ?? job.driver ?? workflow.driver ?? driver,
+        driverConfig: step.driverConfig ?? job.driverConfig ??
+          workflow.driverConfig,
       };
 
       const output = await this.executor.execute(step, ctx);

@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import {
+  DriverConfigFieldSchema,
+  DriverFieldSchema,
+} from "../drivers/driver_config.ts";
 
 /**
  * Branded type for Definition IDs.
@@ -155,6 +159,8 @@ export const DefinitionSchema = z.object({
   methods: z.record(z.string(), MethodDataSchema).default({}),
   inputs: InputsSchemaSchema,
   checks: CheckSelectionSchema,
+  driver: DriverFieldSchema,
+  driverConfig: DriverConfigFieldSchema,
 });
 
 /**
@@ -184,6 +190,8 @@ export interface CreateDefinitionProps {
   methods?: Record<string, MethodData>;
   inputs?: InputsSchema;
   checks?: CheckSelection;
+  driver?: string;
+  driverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -207,6 +215,8 @@ export class Definition {
     private _methods: Record<string, MethodData>,
     private _inputs: InputsSchema | undefined,
     private _checks: CheckSelection | undefined,
+    readonly driver: string | undefined,
+    readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
 
   /**
@@ -230,6 +240,8 @@ export class Definition {
       methods: props.methods ?? {},
       inputs: props.inputs,
       checks: props.checks,
+      driver: props.driver,
+      driverConfig: props.driverConfig,
     });
 
     return new Definition(
@@ -243,6 +255,8 @@ export class Definition {
       validated.methods,
       validated.inputs,
       validated.checks,
+      validated.driver,
+      validated.driverConfig,
     );
   }
 
@@ -265,6 +279,8 @@ export class Definition {
       validated.methods,
       validated.inputs,
       validated.checks,
+      validated.driver,
+      validated.driverConfig,
     );
   }
 
@@ -293,6 +309,10 @@ export class Definition {
       structuredClone(original._methods),
       original._inputs ? structuredClone(original._inputs) : undefined,
       original._checks ? structuredClone(original._checks) : undefined,
+      original.driver,
+      original.driverConfig
+        ? structuredClone(original.driverConfig)
+        : undefined,
     );
   }
 
@@ -414,6 +434,10 @@ export class Definition {
       methods: structuredClone(this._methods),
       inputs: this._inputs ? structuredClone(this._inputs) : undefined,
       checks: this._checks ? structuredClone(this._checks) : undefined,
+      driver: this.driver,
+      driverConfig: this.driverConfig
+        ? structuredClone(this.driverConfig)
+        : undefined,
     };
   }
 

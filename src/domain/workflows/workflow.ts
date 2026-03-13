@@ -24,6 +24,10 @@ import {
   type InputsSchema,
   InputsSchemaSchema,
 } from "../definitions/definition.ts";
+import {
+  DriverConfigFieldSchema,
+  DriverFieldSchema,
+} from "../drivers/driver_config.ts";
 
 /**
  * Zod schema for Workflow aggregate root.
@@ -44,6 +48,8 @@ export const WorkflowSchema = z.object({
   inputs: InputsSchemaSchema,
   jobs: z.array(JobSchema).min(1),
   version: z.number().int().positive().default(1),
+  driver: DriverFieldSchema,
+  driverConfig: DriverConfigFieldSchema,
 });
 
 /**
@@ -67,6 +73,8 @@ export interface CreateWorkflowProps {
   inputs?: InputsSchema;
   jobs?: Job[];
   version?: number;
+  driver?: string;
+  driverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -88,6 +96,8 @@ export class Workflow {
     readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
     readonly version: number,
+    readonly driver: string | undefined,
+    readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
 
   /**
@@ -108,6 +118,8 @@ export class Workflow {
       inputs: props.inputs,
       jobs: jobs.map((j) => j.toData()),
       version,
+      driver: props.driver,
+      driverConfig: props.driverConfig,
     };
 
     // Always validate the name (path traversal protection)
@@ -126,6 +138,8 @@ export class Workflow {
       data.inputs,
       jobs,
       data.version,
+      data.driver,
+      data.driverConfig,
     );
   }
 
@@ -144,6 +158,8 @@ export class Workflow {
       validated.inputs,
       jobs,
       validated.version,
+      validated.driver,
+      validated.driverConfig,
     );
   }
 
@@ -183,6 +199,8 @@ export class Workflow {
       inputs: this.inputs,
       jobs: this._jobs.map((j) => j.toData()) as JobData[],
       version: this.version,
+      driver: this.driver,
+      driverConfig: this.driverConfig,
     };
   }
 }
