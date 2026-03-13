@@ -35,3 +35,50 @@ export {
 export { AsyncQueue } from "./stream/async_queue.ts";
 export { merge } from "./stream/merge.ts";
 export { assertCompletes, assertErrors, collect } from "./testing.ts";
+
+// Auth operations
+export {
+  type AuthDeps,
+  type AuthWhoamiEvent,
+  createAuthDeps,
+  whoami,
+  type WhoamiIdentity,
+} from "./auth/whoami.ts";
+
+// Workflow operations
+export {
+  extractStepArtifacts,
+  inputValidationFailed,
+  toRunData,
+  workflowExecutionFailed,
+  workflowNotFound,
+  workflowRun,
+  type WorkflowRunDeps,
+  type WorkflowRunEvent,
+  type WorkflowRunInput,
+} from "./workflows/run.ts";
+export {
+  type DataArtifactRefData,
+  type JobRunView,
+  type StepArtifactsData,
+  type StepRunView,
+  type WorkflowRunView,
+} from "./workflows/workflow_run_view.ts";
+
+// Model operations
+export {
+  methodExecutionFailed,
+  modelMethodRun,
+  type ModelMethodRunDeps,
+  type ModelMethodRunEvent,
+  type ModelMethodRunInput,
+  modelNotFound,
+  noEvaluatedDefinition,
+  type RunLog,
+  unknownMethod,
+  unknownModelType,
+} from "./models/run.ts";
+export {
+  type DataArtifactView,
+  type ModelMethodRunView,
+} from "./models/model_method_run_view.ts";

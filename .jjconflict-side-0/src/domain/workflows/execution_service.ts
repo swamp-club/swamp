@@ -77,7 +77,7 @@ import {
 import { join } from "@std/path";
 import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
-import { merge } from "../../libswamp/stream/merge.ts";
+import { merge } from "../../infrastructure/stream/merge.ts";
 /**
  * Context for step execution.
  */

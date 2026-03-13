@@ -20,60 +20,20 @@
 import type { OutputMode } from "./output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
-/**
- * Artifact data included when --verbose is set.
- */
-export interface StepArtifactsData {
-  stdout?: string;
-  stderr?: string;
-  exitCode?: number;
-  dataAttributes?: Record<string, unknown>;
-}
+// Re-export view-model types from libswamp with backward-compatible aliases.
+// The canonical definitions now live in libswamp/workflows/workflow_run_view.ts.
+export {
+  type DataArtifactRefData,
+  type JobRunView as JobRunData,
+  type StepArtifactsData,
+  type StepRunView as StepRunData,
+  type WorkflowRunView as WorkflowRunData,
+} from "../../libswamp/mod.ts";
 
-/**
- * Reference to a Data artifact produced by a step.
- */
-export interface DataArtifactRefData {
-  dataId: string;
-  name: string;
-  version: number;
-  tags: Record<string, string>;
-}
-
-export interface StepRunData {
-  name: string;
-  status: "pending" | "running" | "succeeded" | "failed" | "skipped";
-  error?: string;
-  duration?: number;
-  /** Output ID if this step produced an output (for model methods) */
-  outputId?: string;
-  /** Step artifacts included when --verbose is set */
-  artifacts?: StepArtifactsData;
-  /** Data artifacts produced by this step */
-  dataArtifacts?: DataArtifactRefData[];
-  /** Whether this step's failure was allowed (did not fail the job) */
-  allowedFailure?: boolean;
-}
-
-export interface JobRunData {
-  name: string;
-  status: "pending" | "running" | "succeeded" | "failed" | "skipped";
-  steps: StepRunData[];
-  duration?: number;
-}
-
-export interface WorkflowRunData {
-  id: string;
-  workflowId: string;
-  workflowName: string;
-  status: "pending" | "running" | "succeeded" | "failed";
-  jobs: JobRunData[];
-  duration?: number;
-  path?: string;
-}
+import type { WorkflowRunView } from "../../libswamp/mod.ts";
 
 export function renderWorkflowRun(
-  data: WorkflowRunData,
+  data: WorkflowRunView,
   mode: OutputMode,
 ): void {
   if (mode === "json") {
@@ -83,7 +43,7 @@ export function renderWorkflowRun(
   }
 }
 
-function renderLogWorkflowRun(data: WorkflowRunData): void {
+function renderLogWorkflowRun(data: WorkflowRunView): void {
   const logger = getSwampLogger(["workflow", "run"]);
 
   logger.info("Workflow: {workflowName} (Run ID: {id})", {

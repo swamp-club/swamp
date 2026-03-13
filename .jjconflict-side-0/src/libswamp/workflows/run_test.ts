@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   extractStepArtifacts,
+  inputValidationFailed,
   toRunData,
   workflowExecutionFailed,
   workflowNotFound,
@@ -314,4 +315,223 @@ Deno.test("extractStepArtifacts returns undefined for no output", () => {
   const run = WorkflowRun.create(workflow);
   const step = run.getJob("job1")!.getStep("step1")!;
   assertEquals(extractStepArtifacts(step), undefined);
+});
+
+// --- Input coercion and validation tests ---
+
+/**
+ * Creates a fake execution service that captures the options passed to run().
+ */
+function createCapturingFakeService(
+  events: WorkflowExecutionEvent[],
+  captured: { options?: Record<string, unknown> },
+) {
+  return {
+    async *run(
+      _idOrName: string,
+      options?: Record<string, unknown>,
+    ): AsyncGenerator<WorkflowExecutionEvent> {
+      captured.options = options;
+      for (const event of events) {
+        yield event;
+      }
+    },
+    execute(): Promise<WorkflowRun> {
+      throw new Error("not implemented");
+    },
+  };
+}
+
+function createTestDepsWithCapture(
+  workflow: Workflow | null,
+  events: WorkflowExecutionEvent[],
+  captured: { options?: Record<string, unknown> },
+): WorkflowRunDeps {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+
+  return {
+    workflowRepo,
+    runRepo,
+    repoDir: "/tmp/test",
+    lookupWorkflow: (_repo, _idOrName) => Promise.resolve(workflow),
+    createExecutionService: () =>
+      // deno-lint-ignore no-explicit-any
+      createCapturingFakeService(events, captured) as any,
+  };
+}
+
+Deno.test("workflowRun coerces string inputs to match schema types", async () => {
+  const workflow = Workflow.create({
+    name: "coerce-wf",
+    inputs: {
+      properties: {
+        count: { type: "number" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const captured: { options?: Record<string, unknown> } = {};
+  const deps = createTestDepsWithCapture(workflow, [
+    {
+      step: "started",
+      runId: run.id,
+      workflowName: "coerce-wf",
+      logPath: "/tmp/log",
+    },
+    { step: "completed", run },
+  ], captured);
+
+  const ctx = createLibSwampContext();
+  await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "coerce-wf",
+    inputs: { count: "42" },
+  }));
+
+  assertEquals(captured.options?.inputs, { count: 42 });
+});
+
+Deno.test("workflowRun yields error for missing required input", async () => {
+  const workflow = Workflow.create({
+    name: "required-wf",
+    inputs: {
+      properties: {
+        name: { type: "string" },
+      },
+      required: ["name"],
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+
+  const deps = createTestDeps(workflow, []);
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "required-wf",
+    inputs: {},
+  }));
+
+  const steps = events.map((e) => e.step);
+  assertEquals(steps.includes("evaluating_workflow"), false);
+
+  const last = events[events.length - 1];
+  assertEquals(last.step, "error");
+  if (last.step === "error") {
+    assertEquals(last.error.code, "input_validation_failed");
+  }
+});
+
+Deno.test("workflowRun applies default values from schema", async () => {
+  const workflow = Workflow.create({
+    name: "defaults-wf",
+    inputs: {
+      properties: {
+        region: { type: "string", default: "us-east-1" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const captured: { options?: Record<string, unknown> } = {};
+  const deps = createTestDepsWithCapture(workflow, [
+    {
+      step: "started",
+      runId: run.id,
+      workflowName: "defaults-wf",
+      logPath: "/tmp/log",
+    },
+    { step: "completed", run },
+  ], captured);
+
+  const ctx = createLibSwampContext();
+  await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "defaults-wf",
+    inputs: {},
+  }));
+
+  assertEquals(captured.options?.inputs, { region: "us-east-1" });
+});
+
+Deno.test("workflowRun with lastEvaluated skips validation but still coerces", async () => {
+  const workflow = Workflow.create({
+    name: "last-eval-wf",
+    inputs: {
+      properties: {
+        count: { type: "number" },
+      },
+      required: ["count"],
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({ name: "step1", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const captured: { options?: Record<string, unknown> } = {};
+  // Empty inputs would fail validation, but lastEvaluated skips it
+  const deps = createTestDepsWithCapture(workflow, [
+    {
+      step: "started",
+      runId: run.id,
+      workflowName: "last-eval-wf",
+      logPath: "/tmp/log",
+    },
+    { step: "completed", run },
+  ], captured);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "last-eval-wf",
+    lastEvaluated: true,
+    inputs: { count: "7" },
+  }));
+
+  // Should not error — validation was skipped
+  const steps = events.map((e) => e.step);
+  assertEquals(steps.includes("error"), false);
+  assertEquals(steps.includes("evaluating_workflow"), true);
+  // But coercion should still apply
+  assertEquals(captured.options?.inputs, { count: 7 });
+});
+
+Deno.test("inputValidationFailed returns correct error structure", () => {
+  const error = inputValidationFailed([
+    { path: "name", message: "name is required" },
+  ]);
+  assertEquals(error.code, "input_validation_failed");
+  assertEquals(error.message, "Input validation failed:\n  name is required");
 });

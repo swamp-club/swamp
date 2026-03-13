@@ -19,14 +19,13 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { UserError } from "../../domain/errors.ts";
-import { createLibSwampContext } from "../../libswamp/context.ts";
-import { consumeStream } from "../../libswamp/stream.ts";
 import {
-  type AuthWhoamiEvent,
+  consumeStream,
   createAuthDeps,
+  createLibSwampContext,
   whoami,
-} from "../../libswamp/auth/whoami.ts";
+} from "../../libswamp/mod.ts";
+import { createAuthWhoamiRenderer } from "../../presentation/renderers/auth_whoami.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -43,45 +42,8 @@ export const authWhoamiCommand = new Command()
       serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
     });
 
-    await consumeStream<AuthWhoamiEvent>(whoami(ctx, deps), {
-      loading_credentials: () => {
-        cliCtx.logger.debug("Loading stored credentials");
-      },
-      contacting_server: (e) => {
-        cliCtx.logger.debug(`Contacting ${e.serverUrl}`);
-      },
-      completed: (e) => {
-        if (cliCtx.outputMode === "json") {
-          console.log(JSON.stringify(
-            {
-              authenticated: true,
-              serverUrl: e.identity.serverUrl,
-              id: e.identity.id,
-              username: e.identity.username,
-              email: e.identity.email,
-              name: e.identity.name,
-              ...(e.identity.collectives
-                ? { collectives: e.identity.collectives }
-                : {}),
-            },
-            null,
-            2,
-          ));
-        } else {
-          console.log(
-            `${e.identity.username} (${e.identity.email}) on ${e.identity.serverUrl}`,
-          );
-          if (e.identity.collectives && e.identity.collectives.length > 0) {
-            console.log(
-              `Collectives: ${e.identity.collectives.join(", ")}`,
-            );
-          }
-        }
-      },
-      error: (e) => {
-        throw new UserError(e.error.message);
-      },
-    });
+    const renderer = createAuthWhoamiRenderer(cliCtx.outputMode);
+    await consumeStream(whoami(ctx, deps), renderer.handlers());
 
     cliCtx.logger.debug("Auth whoami command completed");
   });
