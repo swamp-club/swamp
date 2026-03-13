@@ -35,3 +35,32 @@ export {
 export { AsyncQueue } from "./stream/async_queue.ts";
 export { merge } from "./stream/merge.ts";
 export { assertCompletes, assertErrors, collect } from "./testing.ts";
+
+// Auth operations
+export {
+  type AuthDeps,
+  type AuthWhoamiEvent,
+  createAuthDeps,
+  whoami,
+  type WhoamiIdentity,
+} from "./auth/whoami.ts";
+
+// Workflow operations
+export {
+  extractStepArtifacts,
+  inputValidationFailed,
+  toRunData,
+  workflowExecutionFailed,
+  workflowNotFound,
+  workflowRun,
+  type WorkflowRunDeps,
+  type WorkflowRunEvent,
+  type WorkflowRunInput,
+} from "./workflows/run.ts";
+export {
+  type DataArtifactRefData,
+  type JobRunView,
+  type StepArtifactsData,
+  type StepRunView,
+  type WorkflowRunView,
+} from "./workflows/workflow_run_view.ts";

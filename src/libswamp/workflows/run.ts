@@ -28,9 +28,9 @@ import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { StepRun } from "../../domain/workflows/workflow_run.ts";
 import type {
   StepArtifactsData,
-  StepRunData,
-  WorkflowRunData,
-} from "../../presentation/output/workflow_run_output.ts";
+  StepRunView,
+  WorkflowRunView,
+} from "./workflow_run_view.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -39,7 +39,11 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
-import type { InputValidationService } from "../../domain/inputs/mod.ts";
+import {
+  coerceInputTypes,
+  type InputValidationError,
+  InputValidationService,
+} from "../../domain/inputs/mod.ts";
 
 /**
  * Events emitted by the libswamp workflow run generator.
@@ -61,7 +65,7 @@ export type WorkflowRunEvent =
     error: string;
     allowedFailure?: boolean;
   }
-  | { step: "completed"; run: WorkflowRunData }
+  | { step: "completed"; run: WorkflowRunView }
   | { step: "error"; error: SwampError };
 
 /**
@@ -75,12 +79,6 @@ export interface WorkflowRunDeps {
     repo: WorkflowRepository,
     idOrName: string,
   ) => Promise<Workflow | null>;
-  validateInputs?: (
-    service: InputValidationService,
-    inputs: Record<string, unknown>,
-    workflow: Workflow,
-    lastEvaluated: boolean,
-  ) => Record<string, unknown>;
   createExecutionService: (
     workflowRepo: WorkflowRepository,
     runRepo: WorkflowRunRepository,
@@ -146,7 +144,7 @@ export function toRunData(
   run: WorkflowRun,
   path?: string,
   verbose?: boolean,
-): WorkflowRunData {
+): WorkflowRunView {
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
 
@@ -166,7 +164,7 @@ export function toRunData(
           const stepStart = step.startedAt?.getTime();
           const stepEnd = step.completedAt?.getTime();
 
-          const stepData: StepRunData = {
+          const stepData: StepRunView = {
             name: step.stepName,
             status: step.status,
             error: step.error,
@@ -247,6 +245,8 @@ export async function* workflowRun(
   deps: WorkflowRunDeps,
   input: WorkflowRunInput,
 ): AsyncGenerator<WorkflowRunEvent> {
+  let resolvedInput = input;
+
   yield { step: "validating_inputs" };
 
   // Look up workflow
@@ -262,6 +262,34 @@ export async function* workflowRun(
     return;
   }
 
+  // Coerce and validate inputs
+  if (workflow.inputs && !input.lastEvaluated) {
+    const coercedInputs = coerceInputTypes(
+      input.inputs ?? {},
+      workflow.inputs,
+    );
+    const validationService = new InputValidationService();
+    const inputsWithDefaults = validationService.applyDefaults(
+      coercedInputs,
+      workflow.inputs,
+    );
+    const result = validationService.validate(
+      inputsWithDefaults,
+      workflow.inputs,
+    );
+    if (!result.valid) {
+      yield { step: "error", error: inputValidationFailed(result.errors) };
+      return;
+    }
+    resolvedInput = { ...input, inputs: inputsWithDefaults };
+  } else if (workflow.inputs) {
+    // lastEvaluated: still coerce types but skip validation
+    resolvedInput = {
+      ...input,
+      inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
+    };
+  }
+
   yield { step: "evaluating_workflow" };
 
   const service = deps.createExecutionService(
@@ -272,14 +300,14 @@ export async function* workflowRun(
 
   try {
     for await (
-      const event of service.run(input.workflowIdOrName, {
-        enableStepLogging: input.enableStepLogging,
-        lastEvaluated: input.lastEvaluated,
-        inputs: input.inputs,
-        runtimeTags: input.runtimeTags,
+      const event of service.run(resolvedInput.workflowIdOrName, {
+        enableStepLogging: resolvedInput.enableStepLogging,
+        lastEvaluated: resolvedInput.lastEvaluated,
+        inputs: resolvedInput.inputs,
+        runtimeTags: resolvedInput.runtimeTags,
       })
     ) {
-      const mapped = mapEvent(event, deps, input);
+      const mapped = mapEvent(event, deps, resolvedInput);
       if (mapped) {
         yield mapped;
       }
@@ -299,6 +327,20 @@ export function workflowNotFound(idOrName: string): SwampError {
   return {
     code: "workflow_not_found",
     message: `Workflow not found: ${idOrName}`,
+  };
+}
+
+/**
+ * Creates a SwampError for input validation failure.
+ */
+export function inputValidationFailed(
+  errors: InputValidationError[],
+): SwampError {
+  const messages = errors.map((e) => `  ${e.message}`).join("\n");
+  return {
+    code: "input_validation_failed",
+    message: `Input validation failed:\n${messages}`,
+    details: errors,
   };
 }
 

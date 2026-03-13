@@ -17,4 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export { merge } from "../../infrastructure/stream/merge.ts";
+import type { EventHandlers, StreamEvent } from "../libswamp/mod.ts";
+
+/**
+ * A mode-specific object that translates libswamp event streams into
+ * user-facing output. Each renderer produces `EventHandlers<E>` for
+ * use with `consumeStream()`.
+ */
+export interface Renderer<E extends StreamEvent> {
+  /** Returns exhaustiveness-checked handlers for consumeStream(). */
+  handlers(): EventHandlers<E>;
+}
