@@ -34,6 +34,16 @@ export const DOCKER_RUNNER_SCRIPT = `\
 // Runner script for swamp Docker bundle execution
 // This file is generated — do not edit manually.
 
+// Chunked base64 encoder safe for large buffers (avoids spread RangeError)
+function toBase64(bytes) {
+  const CHUNK = 32768;
+  const parts = [];
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    parts.push(String.fromCharCode(...bytes.slice(i, i + CHUNK)));
+  }
+  return btoa(parts.join(""));
+}
+
 const request = JSON.parse(await Deno.readTextFile("/swamp/request.json"));
 
 const { model } = await import("/swamp/bundle.js");
@@ -87,7 +97,7 @@ const context = {
         // Base64 encode binary content for JSON transport
         const b64 = typeof content === "string"
           ? btoa(content)
-          : btoa(String.fromCharCode(...new Uint8Array(content)));
+          : toBase64(new Uint8Array(content));
         files.push({ specName, name, content: b64 });
         return {
           dataId: crypto.randomUUID(),
@@ -133,7 +143,7 @@ const context = {
         files.push({
           specName,
           name,
-          content: btoa(String.fromCharCode(...merged)),
+          content: toBase64(merged),
         });
         return {
           dataId: crypto.randomUUID(),

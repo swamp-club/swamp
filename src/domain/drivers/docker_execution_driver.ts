@@ -28,6 +28,9 @@ import type {
 import { streamLines } from "../../infrastructure/process/process_executor.ts";
 import { DOCKER_RUNNER_SCRIPT } from "./docker_runner.ts";
 
+/** Grace period (ms) before sending SIGKILL after SIGTERM on timeout. */
+const SIGKILL_GRACE_MS = 5_000;
+
 /**
  * Zod schema for Docker driver configuration.
  */
@@ -111,6 +114,7 @@ export class DockerExecutionDriver implements ExecutionDriver {
   ): Promise<ExecutionResult> {
     const start = performance.now();
     const logs: string[] = [];
+    let killTimeoutId: number | undefined;
 
     const run = request.methodArgs.run as string;
     const containerName = `swamp-${crypto.randomUUID().slice(0, 8)}`;
@@ -136,6 +140,14 @@ export class DockerExecutionDriver implements ExecutionDriver {
           } catch {
             // Process may have already exited
           }
+          // Force-kill after 5s grace period if SIGTERM is ignored
+          killTimeoutId = setTimeout(() => {
+            try {
+              process.kill("SIGKILL");
+            } catch {
+              // Process may have already exited
+            }
+          }, SIGKILL_GRACE_MS);
         }, this.config.timeout);
       }
 
@@ -225,6 +237,9 @@ export class DockerExecutionDriver implements ExecutionDriver {
         if (timeoutId !== undefined) {
           clearTimeout(timeoutId);
         }
+        if (killTimeoutId !== undefined) {
+          clearTimeout(killTimeoutId);
+        }
       }
     } catch (error) {
       const durationMs = performance.now() - start;
@@ -249,6 +264,7 @@ export class DockerExecutionDriver implements ExecutionDriver {
     const start = performance.now();
     const logs: string[] = [];
     let tempDir: string | undefined;
+    let killTimeoutId: number | undefined;
 
     try {
       // Create temp dir with bundle files
@@ -295,6 +311,14 @@ export class DockerExecutionDriver implements ExecutionDriver {
           } catch {
             // Process may have already exited
           }
+          // Force-kill after 5s grace period if SIGTERM is ignored
+          killTimeoutId = setTimeout(() => {
+            try {
+              process.kill("SIGKILL");
+            } catch {
+              // Process may have already exited
+            }
+          }, SIGKILL_GRACE_MS);
         }, this.config.timeout);
       }
 
@@ -345,6 +369,9 @@ export class DockerExecutionDriver implements ExecutionDriver {
         if (timeoutId !== undefined) {
           clearTimeout(timeoutId);
         }
+        if (killTimeoutId !== undefined) {
+          clearTimeout(killTimeoutId);
+        }
       }
     } catch (error) {
       const durationMs = performance.now() - start;
@@ -394,36 +421,41 @@ export class DockerExecutionDriver implements ExecutionDriver {
 
     // Convert resources to pending outputs
     if (Array.isArray(parsed.resources)) {
-      for (
-        const res of parsed.resources as Array<{
-          specName: string;
-          name: string;
-          data: Record<string, unknown>;
-        }>
-      ) {
+      for (const res of parsed.resources as Array<Record<string, unknown>>) {
+        if (
+          typeof res?.specName !== "string" || typeof res?.name !== "string"
+        ) {
+          continue; // Skip malformed entries
+        }
         outputs.push({
           kind: "pending",
           specName: res.specName,
           name: res.name,
           type: "resource",
-          content: encoder.encode(JSON.stringify(res.data)),
+          content: encoder.encode(JSON.stringify(res.data ?? {})),
         });
       }
     }
 
     // Convert files to pending outputs (base64 decode)
     if (Array.isArray(parsed.files)) {
-      for (
-        const file of parsed.files as Array<{
-          specName: string;
-          name: string;
-          content: string;
-        }>
-      ) {
-        const decoded = Uint8Array.from(
-          atob(file.content),
-          (c) => c.charCodeAt(0),
-        );
+      for (const file of parsed.files as Array<Record<string, unknown>>) {
+        if (
+          typeof file?.specName !== "string" ||
+          typeof file?.name !== "string" ||
+          typeof file?.content !== "string"
+        ) {
+          continue; // Skip malformed entries
+        }
+        let decoded: Uint8Array;
+        try {
+          decoded = Uint8Array.from(
+            atob(file.content),
+            (c) => c.charCodeAt(0),
+          );
+        } catch {
+          continue; // Skip entries with invalid base64
+        }
         outputs.push({
           kind: "pending",
           specName: file.specName,

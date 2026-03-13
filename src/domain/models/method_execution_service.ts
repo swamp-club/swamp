@@ -566,6 +566,12 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       );
       const driverResult = await driver.execute(executionRequest);
 
+      if (driverResult.outputs.some((o) => o.kind === "pending")) {
+        throw new Error(
+          "Raw driver unexpectedly produced pending outputs — " +
+            "this is a bug; raw driver should only produce persisted outputs",
+        );
+      }
       currentHandles = await processDriverOutputs(driverResult.outputs);
       result = {
         dataHandles: currentHandles,
