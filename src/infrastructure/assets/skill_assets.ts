@@ -130,6 +130,18 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-extension-model",
   },
   {
+    relativePath: "swamp-extension-model/references/docker-execution.md",
+    name: "swamp-extension-model",
+  },
+  {
+    relativePath: "swamp-model/references/execution-drivers.md",
+    name: "swamp-model",
+  },
+  {
+    relativePath: "swamp-workflow/references/execution-drivers.md",
+    name: "swamp-workflow",
+  },
+  {
     relativePath: "swamp-vault/SKILL.md",
     name: "swamp-vault",
   },

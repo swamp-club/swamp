@@ -214,11 +214,12 @@ swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated work
 
 **Options:**
 
-| Flag               | Description                                                        |
-| ------------------ | ------------------------------------------------------------------ |
-| `--input <json>`   | Input values as JSON string                                        |
-| `--input-file <f>` | Input values from YAML file                                        |
-| `--last-evaluated` | Use previously evaluated workflow (skip eval and input validation) |
+| Flag                | Description                                                        |
+| ------------------- | ------------------------------------------------------------------ |
+| `--input <json>`    | Input values as JSON string                                        |
+| `--input-file <f>`  | Input values from YAML file                                        |
+| `--last-evaluated`  | Use previously evaluated workflow (skip eval and input validation) |
+| `--driver <driver>` | Override execution driver for all steps (e.g. `raw`, `docker`)     |
 
 **Output shape:**
 
@@ -476,3 +477,6 @@ End-to-end workflow creation:
   [references/data-chaining.md](references/data-chaining.md) for `model.*` vs
   `data.latest()` expression guidance, delete/update workflow ordering, and
   command/shell chaining examples
+- **Execution drivers**: See
+  [references/execution-drivers.md](references/execution-drivers.md) for
+  per-step driver overrides and Docker execution

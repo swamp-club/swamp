@@ -495,7 +495,6 @@ swamp model type describe @myorg/my-model --json  # Check schema
 - **Publishing**: See [references/publishing.md](references/publishing.md) for
   manifest schema, push workflow, safety rules, and CalVer versioning
 - **Troubleshooting**: See
-  [references/troubleshooting.md](references/troubleshooting.md) for common
-  errors and fixes
-- **Built-in example**: See `src/domain/models/echo/echo_model.ts` for reference
-- **Model design**: See [design/models.md](design/models.md) for concepts
+  [references/troubleshooting.md](references/troubleshooting.md)
+- **Docker execution**: See
+  [references/docker-execution.md](references/docker-execution.md)

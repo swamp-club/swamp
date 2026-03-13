@@ -338,14 +338,15 @@ checks.
 
 **Options:**
 
-| Flag                         | Description                                     |
-| ---------------------------- | ----------------------------------------------- |
-| `--input <json>`             | Input values as JSON string                     |
-| `--input-file <f>`           | Input values from YAML file                     |
-| `--last-evaluated`           | Use previously evaluated model (skip eval)      |
-| `--skip-checks`              | Skip all pre-flight checks                      |
-| `--skip-check <name>`        | Skip a specific check by name (repeatable)      |
-| `--skip-check-label <label>` | Skip all checks with a given label (repeatable) |
+| Flag                         | Description                                      |
+| ---------------------------- | ------------------------------------------------ |
+| `--input <json>`             | Input values as JSON string                      |
+| `--input-file <f>`           | Input values from YAML file                      |
+| `--last-evaluated`           | Use previously evaluated model (skip eval)       |
+| `--skip-checks`              | Skip all pre-flight checks                       |
+| `--skip-check <name>`        | Skip a specific check by name (repeatable)       |
+| `--skip-check-label <label>` | Skip all checks with a given label (repeatable)  |
+| `--driver <driver>`          | Override execution driver (e.g. `raw`, `docker`) |
 
 **Output shape:**
 
@@ -495,5 +496,5 @@ validation.
 - **Data chaining**: See
   [references/data-chaining.md](references/data-chaining.md) for command/shell
   model examples and chaining patterns
-- **Model design**: See [design/models.md](design/models.md) for data structures
-  and concepts
+- **Execution drivers**: See
+  [references/execution-drivers.md](references/execution-drivers.md)
