@@ -21,6 +21,10 @@ import {
   type DriverTypeInfo,
   driverTypeRegistry,
 } from "./driver_type_registry.ts";
+import {
+  DockerDriverConfigSchema,
+  DockerExecutionDriver,
+} from "./docker_execution_driver.ts";
 
 export type { DriverTypeInfo } from "./driver_type_registry.ts";
 
@@ -41,6 +45,8 @@ const BUILT_IN_DRIVER_TYPES: DriverTypeInfo[] = [
     description:
       "Execute model methods in isolated Docker containers. Provides process-level isolation and reproducibility.",
     isBuiltIn: true,
+    configSchema: DockerDriverConfigSchema,
+    createDriver: (config) => new DockerExecutionDriver(config),
   },
 ];
 

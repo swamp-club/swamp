@@ -45,7 +45,13 @@ export {
   type MethodExecutor,
   RawExecutionDriver,
 } from "./raw_execution_driver.ts";
-export { DockerExecutionDriver } from "./docker_execution_driver.ts";
+export {
+  type DockerDriverConfig,
+  DockerDriverConfigSchema,
+  DockerExecutionDriver,
+} from "./docker_execution_driver.ts";
+
+export { DOCKER_RUNNER_SCRIPT } from "./docker_runner.ts";
 
 export {
   type DriverLoadResult,

@@ -17,26 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { DockerExecutionDriver } from "./docker_execution_driver.ts";
-import type { ExecutionDriver, ExecutionRequest } from "./execution_driver.ts";
-
-function createTestRequest(): ExecutionRequest {
-  return {
-    protocolVersion: 1,
-    modelType: "test/model",
-    modelId: "test-id",
-    methodName: "create",
-    globalArgs: {},
-    methodArgs: {},
-    definitionMeta: {
-      id: "def-id",
-      name: "test-def",
-      version: 1,
-      tags: {},
-    },
-  };
-}
+import type { ExecutionDriver } from "./execution_driver.ts";
 
 Deno.test("ExecutionDriver - type conformance for raw driver", () => {
   // Verify the interface contract is satisfied using a minimal mock
@@ -53,17 +36,9 @@ Deno.test("ExecutionDriver - type conformance for raw driver", () => {
   assertEquals(driver.type, "raw");
 });
 
-Deno.test("ExecutionDriver - type conformance for docker driver stub", () => {
-  const driver: ExecutionDriver = new DockerExecutionDriver();
+Deno.test("ExecutionDriver - type conformance for docker driver", () => {
+  const driver: ExecutionDriver = new DockerExecutionDriver({
+    image: "test:latest",
+  });
   assertEquals(driver.type, "docker");
-});
-
-Deno.test("DockerExecutionDriver - execute throws not implemented", () => {
-  const driver = new DockerExecutionDriver();
-
-  assertThrows(
-    () => driver.execute(createTestRequest()),
-    Error,
-    "not yet implemented",
-  );
 });

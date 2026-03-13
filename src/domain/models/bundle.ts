@@ -21,6 +21,16 @@ import { getLogger } from "@logtape/logtape";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
 
+/** Options for controlling bundle output. */
+export interface BundleOptions {
+  /**
+   * When true, inline all dependencies (including zod) so the bundle is
+   * fully self-contained — no network or shared module graph required.
+   * Used for out-of-process execution (e.g., Docker containers).
+   */
+  selfContained?: boolean;
+}
+
 /**
  * Bundles a TypeScript extension file into JavaScript using `deno bundle` subprocess.
  *
@@ -31,13 +41,19 @@ const logger = getLogger(["swamp", "models", "bundle"]);
  * bundle time, which ensures they work in the compiled binary where only
  * swamp's own embedded dependency graph is available.
  *
+ * When `options.selfContained` is true, zod is also inlined, producing a
+ * bundle that needs no external modules at all. This is used for Docker
+ * execution where the container has no access to swamp's module graph.
+ *
  * @param absolutePath - Absolute filesystem path to the TypeScript file
  * @param denoPath - Absolute path to the deno binary to use for bundling
+ * @param options - Optional bundle configuration
  * @returns Bundled JavaScript source code as a string
  */
 export async function bundleExtension(
   absolutePath: string,
   denoPath: string,
+  options?: BundleOptions,
 ): Promise<string> {
   logger.debug`Bundling extension: ${absolutePath}`;
 
@@ -47,20 +63,19 @@ export async function bundleExtension(
   });
 
   try {
+    const args = ["bundle", "--no-lock"];
+
+    // Externalize zod by default so in-process extensions share the
+    // host's zod instance (required for `instanceof` schema checks).
+    // Self-contained bundles inline everything for out-of-process use.
+    if (!options?.selfContained) {
+      args.push("--external", "npm:zod@4", "--external", "npm:zod");
+    }
+
+    args.push("--platform", "deno", "-o", tempFile, absolutePath);
+
     const command = new Deno.Command(denoPath, {
-      args: [
-        "bundle",
-        "--no-lock",
-        "--external",
-        "npm:zod@4",
-        "--external",
-        "npm:zod",
-        "--platform",
-        "deno",
-        "-o",
-        tempFile,
-        absolutePath,
-      ],
+      args,
       stdout: "piped",
       stderr: "piped",
     });

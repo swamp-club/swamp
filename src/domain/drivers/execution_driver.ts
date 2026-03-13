@@ -75,6 +75,8 @@ export type DriverOutput =
     type: "resource" | "file";
     content: Uint8Array;
     tags?: Record<string, string>;
+    /** Execution metadata from the driver (exit code, timing, etc.). */
+    metadata?: Record<string, unknown>;
   };
 
 /**

@@ -284,6 +284,7 @@ export class UserModelLoader {
     const modelFiles: Array<{
       file: string;
       module: Record<string, unknown>;
+      absolutePath: string;
     }> = [];
     const extensionFiles: Array<{
       file: string;
@@ -302,7 +303,7 @@ export class UserModelLoader {
         const module = await this.importBundle(js, file);
 
         if (module.model) {
-          modelFiles.push({ file, module });
+          modelFiles.push({ file, module, absolutePath });
         } else if (module.extension) {
           extensionFiles.push({ file, module });
         }
@@ -313,7 +314,7 @@ export class UserModelLoader {
     }
 
     // Pass 1: Process all model exports (register new types)
-    for (const { file, module } of modelFiles) {
+    for (const { file, module, absolutePath } of modelFiles) {
       try {
         const parsed = UserModelSchema.safeParse(module.model);
         if (!parsed.success) {
@@ -334,6 +335,20 @@ export class UserModelLoader {
         }
 
         const modelDef = this.convertToModelDefinition(userModel);
+
+        // Create self-contained bundle for out-of-process drivers (e.g., Docker).
+        // This inlines all deps including zod so the bundle runs without network.
+        try {
+          modelDef.bundleSource = await bundleExtension(
+            absolutePath,
+            denoPath,
+            { selfContained: true },
+          );
+        } catch (error) {
+          logger
+            .warn`Failed to create self-contained bundle for ${file}: ${error}`;
+          // Non-fatal — model still works with raw driver
+        }
 
         if (!modelRegistry.has(modelDef.type)) {
           modelRegistry.register(modelDef);
