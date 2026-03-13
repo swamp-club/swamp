@@ -849,6 +849,7 @@ export async function pullExtension(
 
 export const extensionPullCommand = new Command()
   .name("pull")
+  .alias("install")
   .description("Pull an extension from the swamp registry")
   .arguments("<extension:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
