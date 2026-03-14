@@ -214,6 +214,16 @@ export interface MethodContext {
   ) => Promise<DataHandle>;
 
   /**
+   * Read a previously stored resource by instance name.
+   * Returns the parsed JSON object, or null if no data exists.
+   * Vault reference expressions are returned as-is (not resolved).
+   */
+  readResource?: (
+    instanceName: string,
+    version?: number,
+  ) => Promise<Record<string, unknown> | null>;
+
+  /**
    * Create a file writer — returns DataWriter for binary/streaming content.
    */
   createFileWriter?: (

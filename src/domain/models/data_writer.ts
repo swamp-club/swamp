@@ -572,6 +572,46 @@ export function createResourceWriter(
 }
 
 /**
+ * Creates a readResource function bound to a specific execution context.
+ *
+ * The returned function reads previously stored resource data by instance name,
+ * returning the parsed JSON object or null if no data exists.
+ *
+ * @param repo - The unified data repository
+ * @param modelType - The model type
+ * @param modelId - The model ID (definition ID)
+ * @returns A readResource function
+ */
+export function createResourceReader(
+  repo: UnifiedDataRepository,
+  modelType: ModelType,
+  modelId: string,
+): (
+  instanceName: string,
+  version?: number,
+) => Promise<Record<string, unknown> | null> {
+  return async (
+    instanceName: string,
+    version?: number,
+  ): Promise<Record<string, unknown> | null> => {
+    const content = await repo.getContent(
+      modelType,
+      modelId,
+      instanceName,
+      version,
+    );
+    if (!content || content.length === 0) return null;
+    try {
+      return JSON.parse(new TextDecoder().decode(content));
+    } catch {
+      throw new Error(
+        `Failed to parse stored data for instance '${instanceName}': content is not valid JSON`,
+      );
+    }
+  };
+}
+
+/**
  * Creates a createFileWriter function bound to a specific execution context.
  *
  * The returned function creates DefaultDataWriter instances for writing

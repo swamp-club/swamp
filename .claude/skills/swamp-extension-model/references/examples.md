@@ -183,17 +183,12 @@ export const model = {
         const region = context.globalArgs.region;
 
         // 1. Read stored data to get the resource ID
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "vpc",
-        );
+        const existingData = await context.readResource!("vpc");
 
-        if (!content) {
+        if (!existingData) {
           throw new Error("No VPC data found - run create first");
         }
 
-        const existingData = JSON.parse(new TextDecoder().decode(content));
         const vpcId = existingData.VpcId;
 
         // 2. Modify the resource
@@ -245,17 +240,12 @@ export const model = {
         const region = context.globalArgs.region;
 
         // Read back stored data to get the VPC ID
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "vpc",
-        );
+        const vpcData = await context.readResource!("vpc");
 
-        if (!content) {
+        if (!vpcData) {
           throw new Error("No VPC data found - nothing to delete");
         }
 
-        const vpcData = JSON.parse(new TextDecoder().decode(content));
         const vpcId = vpcData.VpcId;
 
         const cmd = new Deno.Command("aws", {
@@ -283,17 +273,12 @@ export const model = {
         const region = context.globalArgs.region;
 
         // 1. Read stored data to get the VPC ID
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "vpc",
-        );
+        const existingData = await context.readResource!("vpc");
 
-        if (!content) {
+        if (!existingData) {
           throw new Error("No VPC data found - run create first");
         }
 
-        const existingData = JSON.parse(new TextDecoder().decode(content));
         const vpcId = existingData.VpcId;
 
         // 2. Call the live API to get current state
@@ -345,8 +330,8 @@ export const model = {
   via CEL expressions and to update/delete/sync methods via `dataRepository`
 - `update` reads stored data, modifies the resource, writes updated state via
   `writeResource` (creates a new version)
-- `delete` reads stored data via `context.dataRepository.getContent()` using
-  `context.modelType` and `context.modelId` to locate the model's own data
+- `delete` reads stored data via `context.readResource()` to locate the model's
+  own data
 - `delete` returns `{ dataHandles: [] }` since no new data is produced
 - `sync` reads the stored resource ID (zero-arg — no user input needed), calls
   the live API, and writes refreshed state or a `not_found` marker for drift
@@ -666,15 +651,10 @@ export const model = {
         const instanceName = "main";
 
         // 1. Check if we already have state for this instance
-        const existing = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          instanceName,
-        );
+        const existing = await context.readResource!(instanceName);
 
         if (existing) {
-          const state = JSON.parse(new TextDecoder().decode(existing));
-          const id = state.id;
+          const id = existing.id;
 
           // 2. Verify the resource still exists at the provider
           try {
@@ -729,8 +709,8 @@ export const model = {
 
 **Key points:**
 
-- `context.dataRepository.getContent()` is the primitive — it's already
-  available in every model method, no framework changes needed
+- `context.readResource()` reads stored JSON data by instance name — returns
+  parsed object or `null` if no data exists
 - The idempotency check verifies the resource **still exists at the provider**,
   not just that local data exists — this prevents stale data from blocking
   creation after a resource is externally deleted
@@ -760,17 +740,12 @@ sync: {
     const instanceName = "main";
 
     // 1. Read stored state to get the resource ID
-    const existing = await context.dataRepository.getContent(
-      context.modelType,
-      context.modelId,
-      instanceName,
-    );
+    const state = await context.readResource!(instanceName);
 
-    if (!existing) {
+    if (!state) {
       throw new Error("No stored state — run create first");
     }
 
-    const state = JSON.parse(new TextDecoder().decode(existing));
     const id = state.id; // Adapt to your identifier field (VpcId, Name, etc.)
 
     // 2. Call the live API
