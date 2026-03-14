@@ -162,25 +162,40 @@ The execute function returns `{ dataHandles?: DataHandle[] }`.
 ## Reading Stored Data
 
 Delete and update methods need to read back previously stored resource data
-(e.g., to get a resource ID for cleanup). Use `context.dataRepository` with
-`context.modelType` and `context.modelId`:
+(e.g., to get a resource ID for cleanup). Use `context.readResource()`:
+
+```typescript
+const data = await context.readResource!("<instanceName>");
+if (!data) {
+  throw new Error("No data found - nothing to delete");
+}
+// data is Record<string, unknown> — the parsed JSON object
+```
+
+**Signature:**
+
+```typescript
+readResource(
+  instanceName: string,  // instance name used when writing
+  version?: number,      // optional specific version (defaults to latest)
+): Promise<Record<string, unknown> | null>
+```
+
+- Returns the parsed JSON object, or `null` if no data exists
+- Vault reference expressions are returned as-is (not resolved)
+
+**Low-level alternative for binary data:**
+
+For non-JSON content (binary files, raw bytes), use `context.dataRepository`
+directly:
 
 ```typescript
 const content = await context.dataRepository.getContent(
   context.modelType,
   context.modelId,
-  "<instanceName>", // instance name used when writing
+  "<instanceName>",
 );
 // Returns Uint8Array | null
-```
-
-To parse the content:
-
-```typescript
-if (!content) {
-  throw new Error("No data found - nothing to delete");
-}
-const data = JSON.parse(new TextDecoder().decode(content));
 ```
 
 **Key dataRepository methods for model authors:**

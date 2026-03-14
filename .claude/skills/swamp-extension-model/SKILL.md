@@ -200,6 +200,7 @@ execute: (async (args, context) => {
   // context.logger         - LogTape Logger
   // context.dataRepository - For advanced data operations
   // context.writeResource  - Write structured JSON data
+  // context.readResource   - Read stored JSON data by instance name
   // context.createFileWriter - Create a writer for files
 
   const handle = await context.writeResource("result", "main", {
@@ -297,14 +298,13 @@ Models that manage real resources typically have `create`, `update`, `delete`,
 and `sync` methods:
 
 - **`create`** — run a command/API call, store the result via `writeResource()`
-- **`update`** — read stored data via `context.dataRepository.getContent()`,
-  modify the resource, write updated state
-- **`delete`** — read stored data, clean up the resource, return
-  `{ dataHandles: [] }`
-- **`sync`** — read stored resource ID via
-  `context.dataRepository.getContent()`, call the live provider API to get
-  current state, write refreshed state via `writeResource()` (or mark as
-  `not_found` if the resource is gone)
+- **`update`** — read stored data via `context.readResource()`, modify the
+  resource, write updated state
+- **`delete`** — read stored data via `context.readResource()`, clean up the
+  resource, return `{ dataHandles: [] }`
+- **`sync`** — read stored resource ID via `context.readResource()`, call the
+  live provider API to get current state, write refreshed state via
+  `writeResource()` (or mark as `not_found` if the resource is gone)
 
 Unlike `get` (which requires the user to provide the resource ID as an
 argument), `sync` reads the ID from already-stored state, making it zero-arg.
@@ -329,10 +329,10 @@ model.
   returns complete state synchronously.
 
 - **[Idempotent creates](references/examples.md#idempotent-creates)** — Check
-  `context.dataRepository.getContent()` for existing state before creating, to
-  avoid duplicates on workflow re-runs. Useful for non-idempotent APIs
-  (droplets, EC2 instances). Not needed when the API is naturally idempotent
-  (tags, S3 buckets) or you intentionally want multiple instances.
+  `context.readResource()` for existing state before creating, to avoid
+  duplicates on workflow re-runs. Useful for non-idempotent APIs (droplets, EC2
+  instances). Not needed when the API is naturally idempotent (tags, S3 buckets)
+  or you intentionally want multiple instances.
 
 ## Pre-flight Checks
 

@@ -364,6 +364,55 @@ Deno.test("execute error message includes Zod details", async () => {
   }
 });
 
+Deno.test("readResource is available on context during method execution", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let contextHadReadResource = false;
+  const readTestModel: ModelDefinition = {
+    type: ModelType.create("test/read"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({}),
+    resources: {
+      "item": {
+        description: "Test item",
+        schema: z.object({ value: z.string() }),
+        lifetime: "ephemeral",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      check: {
+        description: "Check readResource availability",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          contextHadReadResource = typeof context.readResource === "function";
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    methods: { check: { arguments: {} } },
+  });
+
+  const mockReadResource = (
+    _instanceName: string,
+    _version?: number,
+  ): Promise<Record<string, unknown> | null> => Promise.resolve(null);
+
+  const { context } = createTestContext({ readResource: mockReadResource });
+  await service.execute(
+    definition,
+    readTestModel.methods.check,
+    context,
+  );
+
+  assertEquals(contextHadReadResource, true);
+});
+
 // ---------- Workflow Tests ----------
 
 /**

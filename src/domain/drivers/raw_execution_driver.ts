@@ -32,6 +32,7 @@ import type {
 } from "../models/model.ts";
 import {
   createFileWriterFactory,
+  createResourceReader,
   createResourceWriter,
 } from "../models/data_writer.ts";
 
@@ -116,10 +117,17 @@ export class RawExecutionDriver implements ExecutionDriver {
       this.definition.name,
     );
 
+    const readResource = createResourceReader(
+      this.context.dataRepository,
+      this.context.modelType,
+      this.context.modelId,
+    );
+
     this.contextWithWriters = {
       ...this.context,
       methodName: this.methodName,
       writeResource,
+      readResource,
       createFileWriter,
     };
 

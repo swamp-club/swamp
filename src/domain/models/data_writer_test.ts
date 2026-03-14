@@ -21,6 +21,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   createFileWriterFactory,
+  createResourceReader,
   createResourceWriter,
   processSensitiveResourceData,
   sanitizeVaultKey,
@@ -766,6 +767,93 @@ Deno.test("sanitizeVaultKey: replaces slashes with dashes", () => {
 
 Deno.test("sanitizeVaultKey: removes @ prefix", () => {
   assertEquals(sanitizeVaultKey("@user/aws/ec2"), "user-aws-ec2");
+});
+
+// --- createResourceReader tests ---
+
+Deno.test("createResourceReader: returns parsed JSON for existing data", async () => {
+  const data = { name: "test", count: 42 };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+  };
+
+  const readResource = createResourceReader(repo, modelType, modelId);
+  const result = await readResource("my-instance");
+  assertEquals(result, { name: "test", count: 42 });
+});
+
+Deno.test("createResourceReader: returns null for missing data", async () => {
+  const repo = createMockRepo();
+  const readResource = createResourceReader(repo, modelType, modelId);
+  const result = await readResource("nonexistent");
+  assertEquals(result, null);
+});
+
+Deno.test("createResourceReader: passes version parameter through to getContent", async () => {
+  let capturedVersion: number | undefined;
+  const data = { value: "versioned" };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const repo = {
+    ...createMockRepo(),
+    getContent: (
+      _type: ModelType,
+      _modelId: string,
+      _dataName: string,
+      version?: number,
+    ) => {
+      capturedVersion = version;
+      return Promise.resolve(encoded);
+    },
+  };
+
+  const readResource = createResourceReader(repo, modelType, modelId);
+  await readResource("my-instance", 3);
+  assertEquals(capturedVersion, 3);
+});
+
+Deno.test("createResourceReader: preserves vault reference strings as-is", async () => {
+  const data = {
+    name: "my-resource",
+    secret: "vault.get('my-vault', 'my-key')",
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+  };
+
+  const readResource = createResourceReader(repo, modelType, modelId);
+  const result = await readResource("my-instance");
+  assertEquals(result?.secret, "vault.get('my-vault', 'my-key')");
+});
+
+Deno.test("createResourceReader: returns null for empty content", async () => {
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(new Uint8Array([])),
+  };
+  const readResource = createResourceReader(repo, modelType, modelId);
+  const result = await readResource("empty-instance");
+  assertEquals(result, null);
+});
+
+Deno.test("createResourceReader: throws descriptive error for invalid JSON", async () => {
+  const repo = {
+    ...createMockRepo(),
+    getContent: () =>
+      Promise.resolve(new TextEncoder().encode("{name: invalid")),
+  };
+  const readResource = createResourceReader(repo, modelType, modelId);
+  const err = await assertRejects(
+    () => readResource("bad-instance"),
+    Error,
+  );
+  assertStringIncludes(
+    err.message,
+    "Failed to parse stored data for instance 'bad-instance'",
+  );
 });
 
 Deno.test("sanitizeVaultKey: replaces backslashes", () => {

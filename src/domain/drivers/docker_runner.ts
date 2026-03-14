@@ -88,6 +88,10 @@ const context = {
       metadata: {},
     };
   },
+  readResource: async (_instanceName, _version) => {
+    console.error("[WARN] readResource is not available in Docker execution mode");
+    return null;
+  },
   createFileWriter: (specName, name) => {
     const chunks = [];
     return {

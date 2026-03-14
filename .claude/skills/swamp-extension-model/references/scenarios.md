@@ -108,17 +108,12 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored customer ID
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "primary",
-        );
+        const stored = await context.readResource!("primary");
 
-        if (!content) {
+        if (!stored) {
           throw new Error("No customer found - run create first");
         }
 
-        const stored = JSON.parse(new TextDecoder().decode(content));
         const customerId = stored.id;
 
         const response = await fetch(
@@ -206,7 +201,7 @@ swamp model type search S3 → no local results
 swamp extension search S3 → no community extension
 No existing model → Create extension model
 Full lifecycle management → create, update, delete methods
-Update reads existing state → Use dataRepository.getContent
+Update reads existing state → Use context.readResource
 Delete cleans up → Return empty dataHandles
 Detect drift → sync method reads stored ID, refreshes from live API
 ```
@@ -299,13 +294,9 @@ export const model = {
         const { bucketName, versioning } = context.globalArgs;
 
         // Read existing data
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "main",
-        );
+        const existingData = await context.readResource!("main");
 
-        if (!content) {
+        if (!existingData) {
           throw new Error("No bucket found - run create first");
         }
 
@@ -325,8 +316,7 @@ export const model = {
           await cmd.output();
         }
 
-        // Re-read and store updated state
-        const existingData = JSON.parse(new TextDecoder().decode(content));
+        // Store updated state
         const updatedData = {
           ...existingData,
           Versioning: versioning ? "Enabled" : "Suspended",
@@ -346,18 +336,12 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored data to get bucket name
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "main",
-        );
+        const bucketData = await context.readResource!("main");
 
-        if (!content) {
+        if (!bucketData) {
           context.logger.info("No bucket found - nothing to delete");
           return { dataHandles: [] };
         }
-
-        const bucketData = JSON.parse(new TextDecoder().decode(content));
 
         const cmd = new Deno.Command("aws", {
           args: [
@@ -388,17 +372,12 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored data to get bucket name
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "main",
-        );
+        const bucketData = await context.readResource!("main");
 
-        if (!content) {
+        if (!bucketData) {
           throw new Error("No bucket found - run create first");
         }
 
-        const bucketData = JSON.parse(new TextDecoder().decode(content));
         const bucketName = bucketData.Name;
 
         // Check if bucket still exists
