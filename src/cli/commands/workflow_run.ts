@@ -26,8 +26,15 @@ import {
   type WorkflowRunData,
 } from "../../presentation/output/workflow_run_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  acquireModelLocks,
+  requireInitializedRepo,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import {
   type ExecutionProgressCallback,
   WorkflowExecutionService,
@@ -181,18 +188,12 @@ export const workflowRunCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
     ctx.logger.debug`Running workflow: ${workflowIdOrName}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepo({
+    // First try unlocked to resolve workflow and model references
+    const unlocked = await requireInitializedRepoUnlocked({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });
-    const workflowRepo = repoContext.workflowRepo;
-    const runRepo = repoContext.workflowRunRepo;
-
-    const executionService = new WorkflowExecutionService(
-      workflowRepo,
-      runRepo,
-      repoDir,
-    );
+    const workflowRepo = unlocked.repoContext.workflowRepo;
 
     const lastEvaluated = options.lastEvaluated as boolean;
 
@@ -206,6 +207,10 @@ export const workflowRunCommand = new Command()
     const runtimeTags = options.tag
       ? parseTags(options.tag as string[])
       : undefined;
+
+    let flushModelLocks: (() => Promise<void>) | null = null;
+    let repoDir: string;
+    let repoContext: typeof unlocked.repoContext;
 
     try {
       // Look up workflow first to get its data
@@ -244,6 +249,65 @@ export const workflowRunCommand = new Command()
         Object.assign(inputs, inputsWithDefaults);
       }
 
+      // Try to extract model references for per-model locking
+      const modelRefs = await extractModelReferencesFromWorkflow(
+        workflow,
+        workflowRepo,
+      );
+
+      if (modelRefs !== null && modelRefs.length > 0) {
+        // Resolve model references to { modelType, modelId }
+        const definitionRepo = unlocked.repoContext.definitionRepo;
+        const resolvedModels: Array<
+          { modelType: string; modelId: string }
+        > = [];
+
+        for (const ref of modelRefs) {
+          const lookupResult = await findDefinitionByIdOrName(
+            definitionRepo,
+            ref,
+          );
+          if (lookupResult) {
+            resolvedModels.push({
+              modelType: lookupResult.type.normalized,
+              modelId: lookupResult.definition.id,
+            });
+          }
+        }
+
+        if (resolvedModels.length > 0) {
+          flushModelLocks = await acquireModelLocks(
+            unlocked.datastoreConfig,
+            resolvedModels,
+          );
+        }
+
+        repoDir = unlocked.repoDir;
+        repoContext = unlocked.repoContext;
+      } else if (modelRefs === null) {
+        // Dynamic references — fall back to global lock
+        const logger = getSwampLogger(["workflow", "run"]);
+        logger
+          .info`Workflow contains dynamic model references — using global lock`;
+        const globalResult = await requireInitializedRepo({
+          repoDir: options.repoDir ?? ".",
+          outputMode: ctx.outputMode,
+        });
+        repoDir = globalResult.repoDir;
+        repoContext = globalResult.repoContext;
+      } else {
+        // No model references
+        repoDir = unlocked.repoDir;
+        repoContext = unlocked.repoContext;
+      }
+
+      const runRepo = repoContext.workflowRunRepo;
+      const executionService = new WorkflowExecutionService(
+        repoContext.workflowRepo,
+        runRepo,
+        repoDir,
+      );
+
       if (ctx.outputMode === "json") {
         // JSON mode: execute with debug logging, output final result
         const progress: ExecutionProgressCallback = {
@@ -278,6 +342,9 @@ export const workflowRunCommand = new Command()
 
         ctx.logger.debug`Workflow run completed: status=${run.status}`;
 
+        // Release per-model locks
+        if (flushModelLocks) await flushModelLocks();
+
         // Exit with code 1 if workflow failed
         if (run.status === "failed") {
           Deno.exit(1);
@@ -296,12 +363,18 @@ export const workflowRunCommand = new Command()
 
         ctx.logger.debug`Workflow run completed: status=${run.status}`;
 
+        // Release per-model locks
+        if (flushModelLocks) await flushModelLocks();
+
         // Exit with code 1 if workflow failed
         if (run.status === "failed") {
           Deno.exit(1);
         }
       }
     } catch (error) {
+      // Release per-model locks on error
+      if (flushModelLocks) await flushModelLocks();
+
       if (error instanceof UserError) {
         throw error;
       }

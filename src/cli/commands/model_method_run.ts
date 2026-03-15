@@ -24,7 +24,10 @@ import {
   renderModelMethodRun,
 } from "../../presentation/output/model_method_run_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  acquireModelLocks,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
@@ -108,10 +111,11 @@ export const modelMethodRunCommand = new Command()
         "method",
         "run",
       ]);
-      const { repoDir, repoContext } = await requireInitializedRepo({
-        repoDir: options.repoDir ?? ".",
-        outputMode: ctx.outputMode,
-      });
+      const { repoDir, repoContext, datastoreConfig } =
+        await requireInitializedRepoUnlocked({
+          repoDir: options.repoDir ?? ".",
+          outputMode: ctx.outputMode,
+        });
       const definitionRepo = repoContext.definitionRepo;
       const unifiedDataRepo = repoContext.unifiedDataRepo;
       const outputRepo = repoContext.outputRepo;
@@ -132,7 +136,7 @@ export const modelMethodRunCommand = new Command()
         ? parseTags(options.tag as string[])
         : undefined;
 
-      // Look up the model definition
+      // Look up the model definition (reads YAML from models/ — no lock needed)
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
       const result = await findDefinitionByIdOrName(
         definitionRepo,
@@ -142,6 +146,12 @@ export const modelMethodRunCommand = new Command()
         throw new UserError(`Model not found: ${modelIdOrName}`);
       }
       const { definition, type: modelType } = result;
+
+      // Acquire per-model lock (only blocks other operations on this same model).
+      // For S3 datastores, also pulls model-scoped files and pushes on flush.
+      const flushModelLocks = await acquireModelLocks(datastoreConfig, [
+        { modelType: modelType.normalized, modelId: definition.id },
+      ]);
 
       // Coerce k=v string inputs to match schema types before validation
       const coercedInputs = definition.inputs
@@ -451,6 +461,9 @@ export const modelMethodRunCommand = new Command()
 
       // Unregister run file sink target
       runFileSink.unregister(runLogCategory);
+
+      // Release per-model lock (and push to S3 for S3 datastores)
+      await flushModelLocks();
 
       ctx.logger.debug("Method run command completed");
     },

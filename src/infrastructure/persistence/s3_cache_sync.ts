@@ -207,6 +207,65 @@ export class S3CacheSyncService {
   }
 
   /**
+   * Pulls only new or modified files from S3 for a specific model.
+   *
+   * Filters the index to entries whose key starts with the model prefix
+   * (`data/{modelType}/{modelId}/`), then downloads only those that are
+   * missing locally or have a different size.
+   *
+   * Used by per-model locking to avoid pulling the entire datastore.
+   */
+  async pullChangedForModel(
+    modelType: string,
+    modelId: string,
+  ): Promise<number> {
+    await this.pullIndex();
+
+    const prefix = `data/${modelType}/${modelId}/`;
+
+    // Build list of files that need pulling (model-scoped only)
+    const toPull: string[] = [];
+    for (const [rel, entry] of Object.entries(this.index?.entries ?? {})) {
+      if (!rel.startsWith(prefix)) continue;
+
+      const localPath = assertSafePath(this.cachePath, rel);
+      try {
+        const stat = await Deno.stat(localPath);
+        if (stat.size === entry.size) {
+          continue; // Unchanged
+        }
+      } catch {
+        // File doesn't exist locally — needs pull
+      }
+      toPull.push(rel);
+    }
+
+    // Download concurrently in batches
+    let pulled = 0;
+    for (let i = 0; i < toPull.length; i += MAX_CONCURRENCY) {
+      const batch = toPull.slice(i, i + MAX_CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map(async (rel) => {
+          await this.pullFile(rel);
+          // Store the pulled file's local mtime so subsequent pushes have a baseline
+          try {
+            const localPath = join(this.cachePath, rel);
+            const stat = await Deno.stat(localPath);
+            if (stat.mtime && this.index) {
+              this.index.entries[rel].localMtime = stat.mtime.toISOString();
+            }
+          } catch {
+            // Non-fatal: mtime recording is best-effort
+          }
+        }),
+      );
+      pulled += results.filter((r) => r.status === "fulfilled").length;
+    }
+
+    return pulled;
+  }
+
+  /**
    * Downloads all files from S3 to the local cache.
    */
   async pullAll(): Promise<number> {
