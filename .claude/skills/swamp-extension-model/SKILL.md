@@ -46,19 +46,20 @@ than wrapping CLI commands.
 
 ## Quick Reference
 
-| Task                | Command/Action                                          |
-| ------------------- | ------------------------------------------------------- |
-| Search community    | `swamp extension search <query> --json`                 |
-| Create model file   | Create `extensions/models/my_model.ts`                  |
-| Verify registration | `swamp model type search --json`                        |
-| Check schema        | `swamp model type describe @myorg/my-model --json`      |
-| Create instance     | `swamp model create @myorg/my-model my-instance --json` |
-| Run method          | `swamp model method run my-instance run --json`         |
-| Create manifest     | Create `manifest.yaml` with model/workflow entries      |
-| Format extension    | `swamp extension fmt manifest.yaml --json`              |
-| Check formatting    | `swamp extension fmt manifest.yaml --check --json`      |
-| Push extension      | `swamp extension push manifest.yaml --json`             |
-| Dry-run push        | `swamp extension push manifest.yaml --dry-run --json`   |
+| Task                | Command/Action                                                       |
+| ------------------- | -------------------------------------------------------------------- |
+| Search community    | `swamp extension search <query> --json`                              |
+| Create model file   | Create `extensions/models/my_model.ts`                               |
+| Verify registration | `swamp model type search --json`                                     |
+| Check schema        | `swamp model type describe @myorg/my-model --json`                   |
+| Create instance     | `swamp model create @myorg/my-model my-instance --json`              |
+| Create with args    | `swamp model create @myorg/my-model inst --global-arg message=hi -j` |
+| Run method          | `swamp model method run my-instance run --json`                      |
+| Create manifest     | Create `manifest.yaml` with model/workflow entries                   |
+| Format extension    | `swamp extension fmt manifest.yaml --json`                           |
+| Check formatting    | `swamp extension fmt manifest.yaml --check --json`                   |
+| Push extension      | `swamp extension push manifest.yaml --json`                          |
+| Dry-run push        | `swamp extension push manifest.yaml --dry-run --json`                |
 
 ## Quick Start
 
