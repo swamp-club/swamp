@@ -19,8 +19,8 @@ machine-readable output.
 - **Verify CLI syntax**: If unsure about exact flags or subcommands, run
   `swamp help model` for the complete, up-to-date CLI schema.
 
-Correct flow: `swamp model create <type> <name> --json` → edit the YAML →
-validate → run.
+Correct flow: `swamp model create <type> <name> --json` → set global args with
+`--global-arg` or edit the YAML → validate → run.
 
 ## Quick Reference
 
@@ -29,6 +29,7 @@ validate → run.
 | Search model types  | `swamp model type search [query] --json`                           |
 | Describe a type     | `swamp model type describe <type> --json`                          |
 | Create model input  | `swamp model create <type> <name> --json`                          |
+| Create with args    | `swamp model create <type> <name> --global-arg key=value --json`   |
 | Search models       | `swamp model search [query] --json`                                |
 | Get model details   | `swamp model get <id_or_name> --json`                              |
 | Edit model input    | `swamp model edit [id_or_name]`                                    |
@@ -119,6 +120,22 @@ swamp model type describe command/shell --json
 
 ```bash
 swamp model create command/shell my-shell --json
+```
+
+Set globalArguments at creation time with `--global-arg` (repeatable):
+
+```bash
+swamp model create aws/ec2/vpc my-vpc \
+  --global-arg region=us-east-1 \
+  --global-arg cidrBlock=10.0.0.0/16 \
+  --json
+```
+
+Dot notation creates nested objects:
+
+```bash
+--global-arg config.db.host=localhost --global-arg config.db.port=5432
+# → globalArguments: { config: { db: { host: "localhost", port: "5432" } } }
 ```
 
 **Output shape:**

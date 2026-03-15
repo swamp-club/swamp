@@ -29,6 +29,7 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { toMethodDescribeData, zodToJsonSchema } from "./type_describe.ts";
+import { parseKeyValueInputs } from "../input_parser.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
 import { modelSearchAction, modelSearchCommand } from "./model_search.ts";
@@ -47,6 +48,11 @@ export const modelCreateCommand = new Command()
   .description("Create a new model definition")
   .arguments("<type:model_type> <name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--global-arg <arg:string>",
+    "Set global argument (key=value, repeatable)",
+    { collect: true },
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, typeArg: string, name: string) {
     const ctx = createContext(options as GlobalOptions, ["model", "create"]);
@@ -84,10 +90,33 @@ export const modelCreateCommand = new Command()
 
     // Create and save the definition
     const modelDef = modelRegistry.get(modelType);
+
+    // Parse --global-arg options
+    const globalArgEntries: string[] = options.globalArg ?? [];
+    let globalArguments: Record<string, unknown> | undefined =
+      globalArgEntries.length > 0
+        ? await parseKeyValueInputs(globalArgEntries)
+        : undefined;
+
+    // Validate global arguments against model type schema if present
+    if (globalArguments && modelDef?.globalArguments) {
+      const result = modelDef.globalArguments.safeParse(globalArguments);
+      if (!result.success) {
+        const issues = result.error.issues.map((i) =>
+          `  ${i.path.join(".")}: ${i.message}`
+        ).join("\n");
+        throw new UserError(
+          `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
+        );
+      }
+      globalArguments = result.data as Record<string, unknown>;
+    }
+
     const definition = Definition.create({
       name,
       type: modelType.normalized,
       typeVersion: modelDef?.version,
+      globalArguments,
     });
     await definitionRepo.save(modelType, definition);
 
