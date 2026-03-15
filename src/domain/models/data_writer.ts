@@ -35,6 +35,7 @@ import type {
 } from "./model.ts";
 import type { GarbageCollectionPolicy, Lifetime } from "../data/mod.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
+import type { SecretRedactor } from "../secrets/mod.ts";
 import {
   extractSensitiveFields,
   getNestedValue,
@@ -572,20 +573,86 @@ export function createResourceWriter(
 }
 
 /**
+ * Regex matching vault expression strings produced by `processSensitiveResourceData()`.
+ * Captures the vault name (group 1) and key (group 2).
+ */
+const VAULT_REF_REGEX =
+  /^\$\{\{\s*vault\.get\(\s*'([^']+)'\s*,\s*'([^']+)'\s*\)\s*\}\}$/;
+
+/**
+ * Recursively walks an object/array and resolves any string values that match
+ * the vault expression pattern `${{ vault.get('name', 'key') }}`.
+ *
+ * Resolved secret values are registered with the optional `redactor` to prevent
+ * log leakage (mirrors the pattern in `model_resolver.ts`).
+ *
+ * @param data - The object to walk (mutated in place)
+ * @param vaultService - The vault service for retrieving secrets
+ * @param redactor - Optional secret redactor to register resolved values
+ */
+export async function resolveVaultRefsInData(
+  data: Record<string, unknown>,
+  vaultService: VaultService,
+  redactor?: SecretRedactor,
+): Promise<void> {
+  await walkAndResolve(data, vaultService, redactor);
+}
+
+async function walkAndResolve(
+  obj: unknown,
+  vaultService: VaultService,
+  redactor?: SecretRedactor,
+): Promise<unknown> {
+  if (typeof obj === "string") {
+    const match = VAULT_REF_REGEX.exec(obj);
+    if (match) {
+      const [, vaultName, key] = match;
+      const value = await vaultService.get(vaultName, key);
+      redactor?.addSecret(value);
+      return value;
+    }
+    return obj;
+  }
+
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      obj[i] = await walkAndResolve(obj[i], vaultService, redactor);
+    }
+    return obj;
+  }
+
+  if (obj !== null && typeof obj === "object") {
+    const record = obj as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      record[key] = await walkAndResolve(record[key], vaultService, redactor);
+    }
+    return record;
+  }
+
+  return obj;
+}
+
+/**
  * Creates a readResource function bound to a specific execution context.
  *
  * The returned function reads previously stored resource data by instance name,
  * returning the parsed JSON object or null if no data exists.
+ * When a VaultService is provided, vault reference expressions are automatically
+ * resolved to their original secret values.
  *
  * @param repo - The unified data repository
  * @param modelType - The model type
  * @param modelId - The model ID (definition ID)
+ * @param vaultService - Optional vault service for resolving vault references
+ * @param redactor - Optional secret redactor to register resolved secrets
  * @returns A readResource function
  */
 export function createResourceReader(
   repo: UnifiedDataRepository,
   modelType: ModelType,
   modelId: string,
+  vaultService?: VaultService,
+  redactor?: SecretRedactor,
 ): (
   instanceName: string,
   version?: number,
@@ -601,13 +668,26 @@ export function createResourceReader(
       version,
     );
     if (!content || content.length === 0) return null;
+    let parsed: unknown;
     try {
-      return JSON.parse(new TextDecoder().decode(content));
+      parsed = JSON.parse(new TextDecoder().decode(content));
     } catch {
       throw new Error(
         `Failed to parse stored data for instance '${instanceName}': content is not valid JSON`,
       );
     }
+    if (
+      parsed === null || typeof parsed !== "object" || Array.isArray(parsed)
+    ) {
+      throw new Error(
+        `Stored data for instance '${instanceName}' is not a JSON object`,
+      );
+    }
+    const data = parsed as Record<string, unknown>;
+    if (vaultService) {
+      await resolveVaultRefsInData(data, vaultService, redactor);
+    }
+    return data;
   };
 }
 

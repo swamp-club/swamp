@@ -121,6 +121,8 @@ export class RawExecutionDriver implements ExecutionDriver {
       this.context.dataRepository,
       this.context.modelType,
       this.context.modelId,
+      this.context.vaultService,
+      this.context.redactor,
     );
 
     this.contextWithWriters = {

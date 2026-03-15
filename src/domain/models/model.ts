@@ -216,7 +216,7 @@ export interface MethodContext {
   /**
    * Read a previously stored resource by instance name.
    * Returns the parsed JSON object, or null if no data exists.
-   * Vault reference expressions are returned as-is (not resolved).
+   * Vault reference expressions are automatically resolved when a vault service is available.
    */
   readResource?: (
     instanceName: string,

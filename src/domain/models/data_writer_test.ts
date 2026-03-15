@@ -24,6 +24,7 @@ import {
   createResourceReader,
   createResourceWriter,
   processSensitiveResourceData,
+  resolveVaultRefsInData,
   sanitizeVaultKey,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
@@ -813,10 +814,10 @@ Deno.test("createResourceReader: passes version parameter through to getContent"
   assertEquals(capturedVersion, 3);
 });
 
-Deno.test("createResourceReader: preserves vault reference strings as-is", async () => {
+Deno.test("createResourceReader: preserves vault reference strings without VaultService", async () => {
   const data = {
     name: "my-resource",
-    secret: "vault.get('my-vault', 'my-key')",
+    secret: "${{ vault.get('my-vault', 'my-key') }}",
   };
   const encoded = new TextEncoder().encode(JSON.stringify(data));
   const repo = {
@@ -826,7 +827,89 @@ Deno.test("createResourceReader: preserves vault reference strings as-is", async
 
   const readResource = createResourceReader(repo, modelType, modelId);
   const result = await readResource("my-instance");
-  assertEquals(result?.secret, "vault.get('my-vault', 'my-key')");
+  assertEquals(result?.secret, "${{ vault.get('my-vault', 'my-key') }}");
+});
+
+Deno.test("createResourceReader: resolves vault references when VaultService provided", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "my-key", "resolved-secret");
+
+  const data = {
+    name: "my-resource",
+    secret: "${{ vault.get('test-vault', 'my-key') }}",
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  const result = await readResource("my-instance");
+  assertEquals(result?.name, "my-resource");
+  assertEquals(result?.secret, "resolved-secret");
+});
+
+Deno.test("createResourceReader: resolves vault references in nested objects", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "nested-key", "nested-secret");
+
+  const data = {
+    config: {
+      region: "us-east-1",
+      token: "${{ vault.get('test-vault', 'nested-key') }}",
+    },
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  const result = await readResource("my-instance");
+  const config = result?.config as Record<string, unknown>;
+  assertEquals(config.region, "us-east-1");
+  assertEquals(config.token, "nested-secret");
+});
+
+Deno.test("createResourceReader: mixed vault and non-vault strings work correctly", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "secret-key", "the-secret");
+
+  const data = {
+    name: "plain-string",
+    secret: "${{ vault.get('test-vault', 'secret-key') }}",
+    count: 42,
+    nested: { flag: true },
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  const result = await readResource("my-instance");
+  assertEquals(result?.name, "plain-string");
+  assertEquals(result?.secret, "the-secret");
+  assertEquals(result?.count, 42);
+  assertEquals((result?.nested as Record<string, unknown>).flag, true);
 });
 
 Deno.test("createResourceReader: returns null for empty content", async () => {
@@ -856,6 +939,32 @@ Deno.test("createResourceReader: throws descriptive error for invalid JSON", asy
   );
 });
 
+Deno.test("createResourceReader: throws when stored data is an array", async () => {
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(new TextEncoder().encode("[1, 2, 3]")),
+  };
+  const readResource = createResourceReader(repo, modelType, modelId);
+  const err = await assertRejects(
+    () => readResource("array-instance"),
+    Error,
+  );
+  assertStringIncludes(err.message, "is not a JSON object");
+});
+
+Deno.test("createResourceReader: throws when stored data is a primitive", async () => {
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(new TextEncoder().encode("42")),
+  };
+  const readResource = createResourceReader(repo, modelType, modelId);
+  const err = await assertRejects(
+    () => readResource("primitive-instance"),
+    Error,
+  );
+  assertStringIncludes(err.message, "is not a JSON object");
+});
+
 Deno.test("sanitizeVaultKey: replaces backslashes", () => {
   assertEquals(sanitizeVaultKey("a\\b\\c"), "a-b-c");
 });
@@ -874,6 +983,90 @@ Deno.test("sanitizeVaultKey: handles full namespaced model type path", () => {
   assertEquals(
     sanitizeVaultKey(raw),
     `user-aws-ec2-keypair-${modelId}-create-KeyMaterial`,
+  );
+});
+
+// --- resolveVaultRefsInData tests ---
+
+Deno.test("resolveVaultRefsInData: resolves top-level vault expressions", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "k1", "secret-value");
+
+  const data: Record<string, unknown> = {
+    plain: "hello",
+    secret: "${{ vault.get('test-vault', 'k1') }}",
+  };
+
+  await resolveVaultRefsInData(data, vaultService);
+  assertEquals(data.plain, "hello");
+  assertEquals(data.secret, "secret-value");
+});
+
+Deno.test("resolveVaultRefsInData: resolves nested vault expressions", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "nested", "nested-secret");
+
+  const data: Record<string, unknown> = {
+    outer: {
+      inner: "${{ vault.get('test-vault', 'nested') }}",
+      keep: "unchanged",
+    },
+  };
+
+  await resolveVaultRefsInData(data, vaultService);
+  const outer = data.outer as Record<string, unknown>;
+  assertEquals(outer.inner, "nested-secret");
+  assertEquals(outer.keep, "unchanged");
+});
+
+Deno.test("resolveVaultRefsInData: resolves vault expressions in arrays", async () => {
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "arr-key", "arr-secret");
+
+  const data: Record<string, unknown> = {
+    items: ["plain", "${{ vault.get('test-vault', 'arr-key') }}"],
+  };
+
+  await resolveVaultRefsInData(data, vaultService);
+  assertEquals(data.items, ["plain", "arr-secret"]);
+});
+
+Deno.test("resolveVaultRefsInData: does not modify non-matching strings", async () => {
+  const vaultService = createTestVaultService();
+
+  const data: Record<string, unknown> = {
+    normal: "just a string",
+    partial: "prefix ${{ vault.get('x', 'y') }} suffix",
+    number: 42,
+    flag: true,
+    nothing: null,
+  };
+
+  await resolveVaultRefsInData(data, vaultService);
+  assertEquals(data.normal, "just a string");
+  // Partial match should NOT resolve (regex requires full-string match)
+  assertEquals(data.partial, "prefix ${{ vault.get('x', 'y') }} suffix");
+  assertEquals(data.number, 42);
+  assertEquals(data.flag, true);
+  assertEquals(data.nothing, null);
+});
+
+Deno.test("resolveVaultRefsInData: registers resolved secrets with redactor", async () => {
+  const { SecretRedactor } = await import("../secrets/mod.ts");
+  const vaultService = createTestVaultService();
+  await vaultService.put("test-vault", "redact-key", "super-secret");
+
+  const redactor = new SecretRedactor();
+  const data: Record<string, unknown> = {
+    secret: "${{ vault.get('test-vault', 'redact-key') }}",
+  };
+
+  await resolveVaultRefsInData(data, vaultService, redactor);
+  assertEquals(data.secret, "super-secret");
+  assertEquals(redactor.hasSecrets, true);
+  assertEquals(
+    redactor.redact("the value is super-secret here"),
+    "the value is *** here",
   );
 });
 
