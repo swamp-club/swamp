@@ -93,9 +93,10 @@ export const modelCreateCommand = new Command()
 
     // Parse --global-arg options
     const globalArgEntries: string[] = options.globalArg ?? [];
-    const globalArguments = globalArgEntries.length > 0
-      ? await parseKeyValueInputs(globalArgEntries)
-      : undefined;
+    let globalArguments: Record<string, unknown> | undefined =
+      globalArgEntries.length > 0
+        ? await parseKeyValueInputs(globalArgEntries)
+        : undefined;
 
     // Validate global arguments against model type schema if present
     if (globalArguments && modelDef?.globalArguments) {
@@ -108,6 +109,7 @@ export const modelCreateCommand = new Command()
           `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
         );
       }
+      globalArguments = result.data as Record<string, unknown>;
     }
 
     const definition = Definition.create({
