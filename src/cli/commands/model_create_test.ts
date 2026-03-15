@@ -17,8 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { parseKeyValueInputs } from "../input_parser.ts";
+import { UserError } from "../../domain/errors.ts";
+import { z } from "zod";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -43,4 +46,74 @@ Deno.test("modelValidateCommand is registered as subcommand", async () => {
   const commands = modelCommand.getCommands();
   const validateCmd = commands.find((c) => c.getName() === "validate");
   assertEquals(validateCmd !== undefined, true);
+});
+
+Deno.test("modelCreateCommand has --global-arg option", async () => {
+  const { modelCreateCommand } = await import("./model_create.ts");
+  const options = modelCreateCommand.getOptions();
+  const globalArgOpt = options.find((o) => o.name === "global-arg");
+  assertEquals(globalArgOpt !== undefined, true);
+});
+
+// Tests for --global-arg parsing (uses parseKeyValueInputs from input_parser)
+
+Deno.test("--global-arg key=value populates globalArguments", async () => {
+  const result = await parseKeyValueInputs(["message=hello"]);
+  assertEquals(result, { message: "hello" });
+});
+
+Deno.test("multiple --global-arg flags accumulate correctly", async () => {
+  const result = await parseKeyValueInputs([
+    "region=us-east-1",
+    "timeout=30",
+  ]);
+  assertEquals(result, { region: "us-east-1", timeout: "30" });
+});
+
+Deno.test("--global-arg splits on first = only", async () => {
+  const result = await parseKeyValueInputs(["foo=bar=baz"]);
+  assertEquals(result, { foo: "bar=baz" });
+});
+
+Deno.test("--global-arg supports dot notation for nested objects", async () => {
+  const result = await parseKeyValueInputs([
+    "config.region=us-east-1",
+    "config.timeout=30",
+  ]);
+  assertEquals(result, { config: { region: "us-east-1", timeout: "30" } });
+});
+
+Deno.test("--global-arg missing = produces clear error", async () => {
+  await assertRejects(
+    () => parseKeyValueInputs(["noequals"]),
+    UserError,
+    'Invalid input format: "noequals"',
+  );
+});
+
+Deno.test("--global-arg empty key produces clear error", async () => {
+  await assertRejects(
+    () => parseKeyValueInputs(["=value"]),
+    UserError,
+    "empty key",
+  );
+});
+
+// Tests for globalArguments schema validation (mirrors model_create.ts logic)
+
+Deno.test("global arguments validated against model type schema - pass", () => {
+  const schema = z.object({
+    region: z.string(),
+  });
+  const result = schema.safeParse({ region: "us-east-1" });
+  assertEquals(result.success, true);
+});
+
+Deno.test("global arguments validated against model type schema - fail", () => {
+  const schema = z.object({
+    region: z.string(),
+    count: z.number(),
+  });
+  const result = schema.safeParse({ region: "us-east-1" });
+  assertEquals(result.success, false);
 });
