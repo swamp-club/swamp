@@ -165,11 +165,14 @@ Delete and update methods need to read back previously stored resource data
 (e.g., to get a resource ID for cleanup). Use `context.readResource()`:
 
 ```typescript
-const data = await context.readResource!("<instanceName>");
+// Define a type alias from your resource schema for type-safe access:
+type VpcData = z.infer<typeof VpcSchema>;
+const data = await context.readResource!("vpc") as VpcData | null;
 if (!data) {
   throw new Error("No data found - nothing to delete");
 }
-// data is Record<string, unknown> — the parsed JSON object
+// data is now typed — access properties without `as any`
+data.VpcId; // ← type-safe
 ```
 
 **Signature:**
@@ -182,7 +185,10 @@ readResource(
 ```
 
 - Returns the parsed JSON object, or `null` if no data exists
-- Vault reference expressions are returned as-is (not resolved)
+- Vault reference expressions are automatically resolved when a vault service is
+  available
+- Cast the result using `z.infer<typeof YourSchema>` to get type-safe access
+  (the data was already validated against the schema on write)
 
 **Low-level alternative for binary data:**
 

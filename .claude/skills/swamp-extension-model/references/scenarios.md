@@ -58,6 +58,8 @@ const CustomerSchema = z.object({
   created: z.number(),
 }).passthrough();
 
+type CustomerData = z.infer<typeof CustomerSchema>;
+
 export const model = {
   type: "@user/stripe-customer",
   version: "2026.02.10.1",
@@ -108,7 +110,7 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored customer ID
-        const stored = await context.readResource!("primary");
+        const stored = await context.readResource!("primary") as CustomerData | null;
 
         if (!stored) {
           throw new Error("No customer found - run create first");
@@ -227,6 +229,8 @@ const BucketSchema = z.object({
   CreationDate: z.string(),
 }).passthrough();
 
+type BucketData = z.infer<typeof BucketSchema>;
+
 export const model = {
   type: "@user/s3-bucket",
   version: "2026.02.10.1",
@@ -294,7 +298,7 @@ export const model = {
         const { bucketName, versioning } = context.globalArgs;
 
         // Read existing data
-        const existingData = await context.readResource!("main");
+        const existingData = await context.readResource!("main") as BucketData | null;
 
         if (!existingData) {
           throw new Error("No bucket found - run create first");
@@ -336,7 +340,7 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored data to get bucket name
-        const bucketData = await context.readResource!("main");
+        const bucketData = await context.readResource!("main") as BucketData | null;
 
         if (!bucketData) {
           context.logger.info("No bucket found - nothing to delete");
@@ -372,7 +376,7 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored data to get bucket name
-        const bucketData = await context.readResource!("main");
+        const bucketData = await context.readResource!("main") as BucketData | null;
 
         if (!bucketData) {
           throw new Error("No bucket found - run create first");
