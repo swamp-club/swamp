@@ -528,6 +528,68 @@ Deno.test("workflowRun with lastEvaluated skips validation but still coerces", a
   assertEquals(captured.options?.inputs, { count: 7 });
 });
 
+Deno.test("workflowRun forwards model_resolved, method_executing, and method_output events", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const deps = createTestDeps(workflow, [
+    {
+      step: "started",
+      runId: run.id,
+      workflowName: "test-workflow",
+      logPath: "/tmp/log",
+    },
+    { step: "job_started", jobId: "job1" },
+    { step: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      step: "model_resolved",
+      jobId: "job1",
+      stepId: "step1",
+      modelName: "my-model",
+      modelType: "command/shell",
+      methodName: "run",
+    },
+    {
+      step: "method_executing",
+      jobId: "job1",
+      stepId: "step1",
+      modelName: "my-model",
+      methodName: "run",
+    },
+    {
+      step: "method_output",
+      jobId: "job1",
+      stepId: "step1",
+      modelName: "my-model",
+      methodName: "run",
+      stream: "stdout" as const,
+      line: "hello",
+    },
+    { step: "step_completed", jobId: "job1", stepId: "step1" },
+    { step: "job_completed", jobId: "job1", status: "succeeded" },
+    { step: "completed", run },
+  ]);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  const steps = events.map((e) => e.step);
+  assertEquals(steps.includes("model_resolved"), true);
+  assertEquals(steps.includes("method_executing"), true);
+  assertEquals(steps.includes("method_output"), true);
+
+  const modelResolved = events.find((e) => e.step === "model_resolved");
+  if (modelResolved?.step === "model_resolved") {
+    assertEquals(modelResolved.modelName, "my-model");
+    assertEquals(modelResolved.modelType, "command/shell");
+    assertEquals(modelResolved.methodName, "run");
+  }
+});
+
 Deno.test("inputValidationFailed returns correct error structure", () => {
   const error = inputValidationFailed([
     { path: "name", message: "name is required" },

@@ -138,6 +138,32 @@ This separation ensures that log levels are a presentation concern, not a domain
 concern. The same event can be an `error` log line in log mode and silently
 accumulated in JSON mode.
 
+### Step execution output: events, not logs
+
+During `workflow run`, step execution output (model discovery, method execution,
+process stdout/stderr) flows through the event stream via `model_resolved`,
+`method_executing`, and `method_output` events. The domain layer
+(`DefaultStepExecutor`) pushes these events through a callback on
+`StepExecutionContext`, and `runStep()` uses an `AsyncQueue` bridge to yield
+them into the parent event stream.
+
+The `LogWorkflowRunRenderer` uses `getRunLogger(modelName, methodName)` to
+present these events — preserving the existing `model·method·run·<name>·<method>`
+log category. The `JsonWorkflowRunRenderer` ignores them (no-ops), keeping
+stdout clean for machine consumption.
+
+Internal phase transitions (expression evaluation, definition caching, data
+persistence) are logged at `debug` level for log file capture only — they are
+implementation details, not domain signals.
+
+### Infrastructure warnings
+
+Some infrastructure-level warnings remain as direct logger calls rather than
+events: vault deprecation warnings (setup-time diagnostics), schema mismatch
+warnings in `DataWriter` (data quality). These are system-health diagnostics,
+not command output. The `emitEvent` callback pattern established for step
+execution is available for deeper layers to adopt as needed.
+
 ## Example: `auth whoami`
 
 A simple operation with no streaming progress — it loads credentials, contacts
@@ -250,6 +276,9 @@ type WorkflowRunEvent =
   | { step: "step_completed"; jobId: string; stepId: string }
   | { step: "step_skipped"; jobId: string; stepId: string }
   | { step: "step_failed"; jobId: string; stepId: string; error: string; allowedFailure?: boolean }
+  | { step: "model_resolved"; jobId: string; stepId: string; modelName: string; modelType: string; methodName: string }
+  | { step: "method_executing"; jobId: string; stepId: string; modelName: string; methodName: string }
+  | { step: "method_output"; jobId: string; stepId: string; modelName: string; methodName: string; stream: "stdout" | "stderr"; line: string }
   | { step: "completed"; run: WorkflowRunData }
   | { step: "error"; error: SwampError };
 ```
@@ -305,6 +334,26 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           "Step failed: {error}",
           { error: e.error },
         );
+      },
+      model_resolved: (e) => {
+        getRunLogger(e.modelName, e.methodName).info(
+          "Found model {name} ({type})",
+          { name: e.modelName, type: e.modelType },
+        );
+      },
+      method_executing: (e) => {
+        getRunLogger(e.modelName, e.methodName).info(
+          "Executing method {method}",
+          { method: e.methodName },
+        );
+      },
+      method_output: (e) => {
+        const logger = getRunLogger(e.modelName, e.methodName);
+        if (e.stream === "stderr") {
+          logger.warn(e.line);
+        } else {
+          logger.info(e.line);
+        }
       },
       completed: (e) => {
         const wfLogger = getWorkflowRunLogger(this.workflowName);
@@ -382,6 +431,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_completed: () => {},
       step_skipped: () => {},
       step_failed: () => {},
+      model_resolved: () => {},
+      method_executing: () => {},
+      method_output: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
@@ -425,7 +477,6 @@ try {
       lastEvaluated,
       inputs,
       runtimeTags,
-      enableStepLogging: ctx.outputMode !== "json",
       verbose: ctx.verbosity === "verbose",
     }),
     renderer.handlers(),

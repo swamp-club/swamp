@@ -103,6 +103,7 @@ async function executeCommand(
       timeoutMs: args.timeout,
       logger: context.logger,
       redactor: context.redactor,
+      onOutput: context.onOutput,
     });
 
     stdout = redact(result.stdout);

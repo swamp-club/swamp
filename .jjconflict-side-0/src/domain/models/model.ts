@@ -228,6 +228,12 @@ export interface MethodContext {
   redactor?: SecretRedactor;
 
   /**
+   * Optional callback for streaming process output lines to the event stream.
+   * Called with each line and the stream it came from (stdout or stderr).
+   */
+  onOutput?: (line: string, stream: "stdout" | "stderr") => void;
+
+  /**
    * Tags merged into every writer created during execution.
    * Used by workflow steps to inject workflow-specific tags.
    */

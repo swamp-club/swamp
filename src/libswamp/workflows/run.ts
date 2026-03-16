@@ -65,6 +65,30 @@ export type WorkflowRunEvent =
     error: string;
     allowedFailure?: boolean;
   }
+  | {
+    step: "model_resolved";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    modelType: string;
+    methodName: string;
+  }
+  | {
+    step: "method_executing";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+  }
+  | {
+    step: "method_output";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+    stream: "stdout" | "stderr";
+    line: string;
+  }
   | { step: "completed"; run: WorkflowRunView }
   | { step: "error"; error: SwampError };
 
@@ -94,7 +118,6 @@ export interface WorkflowRunInput {
   lastEvaluated?: boolean;
   inputs?: Record<string, unknown>;
   runtimeTags?: Record<string, string>;
-  enableStepLogging?: boolean;
   verbose?: boolean;
 }
 
@@ -231,6 +254,9 @@ function mapEvent(
     case "step_completed":
     case "step_skipped":
     case "step_failed":
+    case "model_resolved":
+    case "method_executing":
+    case "method_output":
       return event;
     default:
       return null;
@@ -301,7 +327,6 @@ export async function* workflowRun(
   try {
     for await (
       const event of service.run(resolvedInput.workflowIdOrName, {
-        enableStepLogging: resolvedInput.enableStepLogging,
         lastEvaluated: resolvedInput.lastEvaluated,
         inputs: resolvedInput.inputs,
         runtimeTags: resolvedInput.runtimeTags,

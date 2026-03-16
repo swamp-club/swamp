@@ -80,6 +80,30 @@ function fullEventStream(
     { step: "started", runId: "run-1", workflowName: "test-workflow" },
     { step: "job_started", jobId: "job-1" },
     { step: "step_started", jobId: "job-1", stepId: "step-1" },
+    {
+      step: "model_resolved",
+      jobId: "job-1",
+      stepId: "step-1",
+      modelName: "my-model",
+      modelType: "command/shell",
+      methodName: "run",
+    },
+    {
+      step: "method_executing",
+      jobId: "job-1",
+      stepId: "step-1",
+      modelName: "my-model",
+      methodName: "run",
+    },
+    {
+      step: "method_output",
+      jobId: "job-1",
+      stepId: "step-1",
+      modelName: "my-model",
+      methodName: "run",
+      stream: "stdout",
+      line: "hello world",
+    },
     { step: "step_completed", jobId: "job-1", stepId: "step-1" },
     { step: "job_completed", jobId: "job-1", status: "succeeded" },
     { step: "completed", run: runData },
@@ -286,4 +310,137 @@ Deno.test("createWorkflowRunRenderer - factory returns correct type per mode", (
   assertEquals(typeof logRenderer.workflowFailed, "function");
   assertEquals(typeof jsonRenderer.handlers, "function");
   assertEquals(typeof jsonRenderer.workflowFailed, "function");
+});
+
+Deno.test("LogWorkflowRunRenderer - handles model_resolved event without error", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-workflow",
+  });
+  const events: WorkflowRunEvent[] = [
+    { step: "validating_inputs" },
+    { step: "evaluating_workflow" },
+    { step: "started", runId: "run-1", workflowName: "test-workflow" },
+    { step: "job_started", jobId: "job-1" },
+    { step: "step_started", jobId: "job-1", stepId: "step-1" },
+    {
+      step: "model_resolved",
+      jobId: "job-1",
+      stepId: "step-1",
+      modelName: "my-model",
+      modelType: "command/shell",
+      methodName: "run",
+    },
+    { step: "step_completed", jobId: "job-1", stepId: "step-1" },
+    { step: "job_completed", jobId: "job-1", status: "succeeded" },
+    { step: "completed", run: makeRunData("succeeded") },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+  assertEquals(renderer.workflowFailed(), false);
+});
+
+Deno.test("LogWorkflowRunRenderer - handles method_executing event without error", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-workflow",
+  });
+  const events: WorkflowRunEvent[] = [
+    { step: "validating_inputs" },
+    { step: "evaluating_workflow" },
+    { step: "started", runId: "run-1", workflowName: "test-workflow" },
+    { step: "job_started", jobId: "job-1" },
+    { step: "step_started", jobId: "job-1", stepId: "step-1" },
+    {
+      step: "method_executing",
+      jobId: "job-1",
+      stepId: "step-1",
+      modelName: "my-model",
+      methodName: "run",
+    },
+    { step: "step_completed", jobId: "job-1", stepId: "step-1" },
+    { step: "job_completed", jobId: "job-1", status: "succeeded" },
+    { step: "completed", run: makeRunData("succeeded") },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+  assertEquals(renderer.workflowFailed(), false);
+});
+
+Deno.test("LogWorkflowRunRenderer - handles method_output events without error", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-workflow",
+  });
+  const events: WorkflowRunEvent[] = [
+    { step: "validating_inputs" },
+    { step: "evaluating_workflow" },
+    { step: "started", runId: "run-1", workflowName: "test-workflow" },
+    { step: "job_started", jobId: "job-1" },
+    { step: "step_started", jobId: "job-1", stepId: "step-1" },
+    {
+      step: "method_output",
+      jobId: "job-1",
+      stepId: "step-1",
+      modelName: "my-model",
+      methodName: "run",
+      stream: "stdout",
+      line: "hello world",
+    },
+    {
+      step: "method_output",
+      jobId: "job-1",
+      stepId: "step-1",
+      modelName: "my-model",
+      methodName: "run",
+      stream: "stderr",
+      line: "warning message",
+    },
+    { step: "step_completed", jobId: "job-1", stepId: "step-1" },
+    { step: "job_completed", jobId: "job-1", status: "succeeded" },
+    { step: "completed", run: makeRunData("succeeded") },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+  assertEquals(renderer.workflowFailed(), false);
+});
+
+Deno.test("JsonWorkflowRunRenderer - new step execution events produce no output", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-workflow",
+    });
+    const events: WorkflowRunEvent[] = [
+      {
+        step: "model_resolved",
+        jobId: "job-1",
+        stepId: "step-1",
+        modelName: "my-model",
+        modelType: "command/shell",
+        methodName: "run",
+      },
+      {
+        step: "method_executing",
+        jobId: "job-1",
+        stepId: "step-1",
+        modelName: "my-model",
+        methodName: "run",
+      },
+      {
+        step: "method_output",
+        jobId: "job-1",
+        stepId: "step-1",
+        modelName: "my-model",
+        methodName: "run",
+        stream: "stdout",
+        line: "hello",
+      },
+    ];
+    for (const event of events) {
+      const handler = renderer.handlers()[event.step];
+      // deno-lint-ignore no-explicit-any
+      handler(event as any);
+    }
+    assertEquals(logs.length, 0);
+  } finally {
+    console.log = originalLog;
+  }
 });

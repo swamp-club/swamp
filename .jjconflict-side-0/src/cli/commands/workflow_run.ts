@@ -105,7 +105,6 @@ export const workflowRunCommand = new Command()
           lastEvaluated,
           inputs,
           runtimeTags,
-          enableStepLogging: ctx.outputMode !== "json",
           verbose: ctx.verbosity === "verbose",
         }),
         renderer.handlers(),

@@ -179,6 +179,9 @@ type WorkflowRunEvent =
   | { step: "step_completed"; jobId: string; stepId: string }
   | { step: "step_skipped"; jobId: string; stepId: string }
   | { step: "step_failed"; jobId: string; stepId: string; error: string; allowedFailure?: boolean }
+  | { step: "model_resolved"; jobId: string; stepId: string; modelName: string; modelType: string; methodName: string }
+  | { step: "method_executing"; jobId: string; stepId: string; modelName: string; methodName: string }
+  | { step: "method_output"; jobId: string; stepId: string; modelName: string; methodName: string; stream: "stdout" | "stderr"; line: string }
   | { step: "completed"; run: WorkflowRunView }
   | { step: "error"; error: SwampError };
 ```

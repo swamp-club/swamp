@@ -24,7 +24,10 @@ import type {
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { getWorkflowRunLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  getRunLogger,
+  getWorkflowRunLogger,
+} from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
 export interface WorkflowRunRenderOpts {
@@ -80,6 +83,26 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           "Step failed: {error}",
           { error: e.error },
         );
+      },
+      model_resolved: (e) => {
+        getRunLogger(e.modelName, e.methodName).info(
+          "Found model {name} ({type})",
+          { name: e.modelName, type: e.modelType },
+        );
+      },
+      method_executing: (e) => {
+        getRunLogger(e.modelName, e.methodName).info(
+          "Executing method {method}",
+          { method: e.methodName },
+        );
+      },
+      method_output: (e) => {
+        const logger = getRunLogger(e.modelName, e.methodName);
+        if (e.stream === "stderr") {
+          logger.warn(e.line);
+        } else {
+          logger.info(e.line);
+        }
       },
       completed: (e) => {
         const wfLogger = getWorkflowRunLogger(this.workflowName);
@@ -150,6 +173,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_completed: () => {},
       step_skipped: () => {},
       step_failed: () => {},
+      model_resolved: () => {},
+      method_executing: () => {},
+      method_output: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
