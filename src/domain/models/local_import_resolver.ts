@@ -28,7 +28,8 @@ export interface ImportResolverResult {
 }
 
 /** Pattern matching import/export from relative paths. */
-const IMPORT_PATTERN = /(?:import|export)\s+.*?from\s+["'](\.\.?\/[^"']+)["']/g;
+const IMPORT_PATTERN =
+  /(?:import|export)\s+[\s\S]*?from\s+["'](\.\.?\/[^"']+)["']/g;
 
 /**
  * Scans .ts entry points for relative import/export statements and
