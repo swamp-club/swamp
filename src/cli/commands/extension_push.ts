@@ -114,47 +114,55 @@ export const extensionPushCommand = new Command()
       additionalFilePaths,
     } = resolved;
 
-    // 3. Load auth credentials
-    const authRepo = new AuthRepository();
-    const credentials = await authRepo.load();
-    if (!credentials) {
-      throw new UserError(
-        "Not authenticated. Run 'swamp auth login' first.",
-      );
-    }
+    // 3. Load auth credentials (skip in dry-run — no registry interaction needed)
+    let credentials:
+      | { serverUrl: string; apiKey: string; username: string }
+      | undefined;
+    if (!options.dryRun) {
+      const authRepo = new AuthRepository();
+      credentials = await authRepo.load() ?? undefined;
+      if (!credentials) {
+        throw new UserError(
+          "Not authenticated. Run 'swamp auth login' first.",
+        );
+      }
 
-    // 4. Validate collective matches user's collectives (with username fallback)
-    const collectivePart = manifest.name.slice(1, manifest.name.indexOf("/"));
-    const isReserved = ModelType.isReservedCollective(manifest.name);
-    let collectives: string[] | undefined;
-    try {
-      const swampClubClient = new SwampClubClient(credentials.serverUrl);
-      const whoami = await swampClubClient.whoami(credentials.apiKey);
-      collectives = getCollectives(whoami);
-    } catch {
-      ctx.logger
-        .debug`Could not fetch collectives from server, falling back to username check`;
-    }
-
-    // For reserved collectives, we MUST verify membership via the server
-    if (isReserved && !collectives) {
-      throw new UserError(
-        `Extension uses reserved collective "@${collectivePart}". ` +
-          `Could not verify membership — please check your network connection and try again.`,
+      // 4. Validate collective matches user's collectives (with username fallback)
+      const collectivePart = manifest.name.slice(
+        1,
+        manifest.name.indexOf("/"),
       );
-    }
+      const isReserved = ModelType.isReservedCollective(manifest.name);
+      let collectives: string[] | undefined;
+      try {
+        const swampClubClient = new SwampClubClient(credentials.serverUrl);
+        const whoami = await swampClubClient.whoami(credentials.apiKey);
+        collectives = getCollectives(whoami);
+      } catch {
+        ctx.logger
+          .debug`Could not fetch collectives from server, falling back to username check`;
+      }
 
-    const isAllowed = collectives
-      ? collectives.includes(collectivePart)
-      : collectivePart === credentials.username;
-    if (!isAllowed) {
-      const collectivesList = collectives
-        ? collectives.map((c) => `@${c}`).join(", ")
-        : `@${credentials.username}`;
-      throw new UserError(
-        `Extension collective "@${collectivePart}" is not one of your collectives (${collectivesList}). ` +
-          `Use one of: ${collectivesList}`,
-      );
+      // For reserved collectives, we MUST verify membership via the server
+      if (isReserved && !collectives) {
+        throw new UserError(
+          `Extension uses reserved collective "@${collectivePart}". ` +
+            `Could not verify membership — please check your network connection and try again.`,
+        );
+      }
+
+      const isAllowed = collectives
+        ? collectives.includes(collectivePart)
+        : collectivePart === credentials.username;
+      if (!isAllowed) {
+        const collectivesList = collectives
+          ? collectives.map((c) => `@${c}`).join(", ")
+          : `@${credentials.username}`;
+        throw new UserError(
+          `Extension collective "@${collectivePart}" is not one of your collectives (${collectivesList}). ` +
+            `Use one of: ${collectivesList}`,
+        );
+      }
     }
 
     // 9b. Extract content metadata early (for display and later registry push)
@@ -332,10 +340,10 @@ export const extensionPushCommand = new Command()
 
     // 13. Pre-flight version check (skip in dry-run)
     if (!options.dryRun) {
-      const extensionClient = new ExtensionApiClient(credentials.serverUrl);
+      const extensionClient = new ExtensionApiClient(credentials!.serverUrl);
       const latest = await extensionClient.getLatestVersion(
         manifest.name,
-        credentials.apiKey,
+        credentials!.apiKey,
       );
 
       if (latest) {
@@ -488,7 +496,7 @@ export const extensionPushCommand = new Command()
       }
 
       // 17. Three-phase push
-      const extensionClient = new ExtensionApiClient(credentials.serverUrl);
+      const extensionClient = new ExtensionApiClient(credentials!.serverUrl);
       const releaseNotes = options.releaseNotes ?? manifest.releaseNotes;
       const pushMetadata = {
         name: manifest.name,
@@ -505,7 +513,7 @@ export const extensionPushCommand = new Command()
       ctx.logger.debug("Initiating push...");
       const initResult = await extensionClient.initiatePush(
         pushMetadata,
-        credentials.apiKey,
+        credentials!.apiKey,
       );
 
       // Phase 2: Upload archive to S3
@@ -519,7 +527,7 @@ export const extensionPushCommand = new Command()
       ctx.logger.debug("Confirming push...");
       const confirmResult = await extensionClient.confirmPush(
         { ...pushMetadata, contentMetadata },
-        credentials.apiKey,
+        credentials!.apiKey,
       );
 
       // 18. Render success
