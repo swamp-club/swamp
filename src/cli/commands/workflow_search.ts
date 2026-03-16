@@ -245,7 +245,6 @@ async function executeWorkflowFromSearch(
   );
 
   const run = await executionService.execute(workflow.name, {
-    enableStepLogging: true,
     inputs,
   });
 
