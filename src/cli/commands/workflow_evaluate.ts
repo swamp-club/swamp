@@ -230,16 +230,19 @@ export const workflowEvaluateCommand = new Command()
       });
       const celEvaluator = new CelEvaluator();
 
-      const item = await evaluateWorkflow(
-        workflow,
-        inputs,
-        modelResolver,
-        celEvaluator,
-        evaluatedWorkflowRepo,
-      );
-
-      // Release per-model locks
-      if (flushModelLocks) await flushModelLocks();
+      let item: WorkflowEvaluateItemData;
+      try {
+        item = await evaluateWorkflow(
+          workflow,
+          inputs,
+          modelResolver,
+          celEvaluator,
+          evaluatedWorkflowRepo,
+        );
+      } finally {
+        // Release per-model locks
+        if (flushModelLocks) await flushModelLocks();
+      }
 
       renderWorkflowEvaluateSingle(item, ctx.outputMode);
       ctx.logger.debug`Evaluation completed`;

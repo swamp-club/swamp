@@ -437,11 +437,20 @@ export async function acquireModelLocks(
       "Global lock held by {holder} — waiting for structural command to finish",
       { holder: globalInfo.holder },
     );
-    // Poll until the global lock is released
+    // Poll until the global lock is released or expires (stale lock)
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       const info = await globalLock.inspect();
       if (!info) break;
+      // Check if the lock has exceeded its TTL (stale/crashed process)
+      const acquiredAt = new Date(info.acquiredAt).getTime();
+      if (Date.now() - acquiredAt > info.ttlMs) {
+        logger.warn(
+          "Global lock held by {holder} appears stale (exceeded TTL of {ttl}ms) — proceeding",
+          { holder: info.holder, ttl: info.ttlMs },
+        );
+        break;
+      }
     }
     logger.info`Global lock released, proceeding with per-model locks`;
   }

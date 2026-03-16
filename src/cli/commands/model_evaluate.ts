@@ -130,19 +130,24 @@ export const modelEvaluateCommand = new Command()
         repoDir,
         { dataRepo },
       );
-
-      // Evaluate the definition
-      const result = await evaluationService.evaluateDefinition(
-        definition,
-        type,
-      );
-
-      // Persist evaluated definition for --last-evaluated
       const evaluatedDefRepo = repoContext.evaluatedDefinitionRepo;
-      await evaluatedDefRepo.save(type, result.definition);
 
-      // Release per-model lock (and push to S3 for S3 datastores)
-      await flushModelLocks();
+      let result: Awaited<
+        ReturnType<typeof evaluationService.evaluateDefinition>
+      >;
+      try {
+        // Evaluate the definition
+        result = await evaluationService.evaluateDefinition(
+          definition,
+          type,
+        );
+
+        // Persist evaluated definition for --last-evaluated
+        await evaluatedDefRepo.save(type, result.definition);
+      } finally {
+        // Release per-model lock (and push to S3 for S3 datastores)
+        await flushModelLocks();
+      }
 
       const item: ModelEvaluateItemData = {
         id: result.definition.id,

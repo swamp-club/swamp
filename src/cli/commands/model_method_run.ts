@@ -329,110 +329,124 @@ export const modelMethodRunCommand = new Command()
       // Track artifacts for output
       const dataArtifacts: ArtifactInfo[] = [];
 
+      let methodError: UserError | undefined;
+
       try {
-        // Execute the method (use workflow execution to handle follow-up actions)
-        // Use evaluatedDefinition which has vault expressions resolved
-        const execResult = await executionService.executeWorkflow(
-          evaluatedDefinition,
-          modelDef,
-          methodName,
-          {
-            repoDir,
-            modelType,
-            modelId: evaluatedDefinition.id,
-            globalArgs: evaluatedDefinition.globalArguments,
-            definition: {
-              id: evaluatedDefinition.id,
-              name: evaluatedDefinition.name,
-              version: evaluatedDefinition.version,
-              tags: evaluatedDefinition.tags,
-            },
+        try {
+          // Execute the method (use workflow execution to handle follow-up actions)
+          // Use evaluatedDefinition which has vault expressions resolved
+          const execResult = await executionService.executeWorkflow(
+            evaluatedDefinition,
+            modelDef,
             methodName,
-            logger: runLogger,
-            dataRepository: unifiedDataRepo,
-            definitionRepository: definitionRepo,
-            runtimeTags,
-            vaultService,
-            redactor,
-            skipCheckNames: options.skipCheck as string[] | undefined,
-            skipCheckLabels: options.skipCheckLabel as string[] | undefined,
-            skipAllChecks: options.skipChecks as boolean | undefined,
-            driver: (options.driver as string | undefined) ??
-              evaluatedDefinition.driver,
-            driverConfig: evaluatedDefinition.driverConfig,
-          },
-        );
-
-        runLogger.info("Method executed");
-
-        // Data is already persisted by DataWriter — extract artifact info from handles
-        if (execResult.dataHandles && execResult.dataHandles.length > 0) {
-          for (const handle of execResult.dataHandles) {
-            const dataPath = unifiedDataRepo.getPath(
+            {
+              repoDir,
               modelType,
-              definition.id,
-              handle.name,
-              handle.version,
-            );
+              modelId: evaluatedDefinition.id,
+              globalArgs: evaluatedDefinition.globalArguments,
+              definition: {
+                id: evaluatedDefinition.id,
+                name: evaluatedDefinition.name,
+                version: evaluatedDefinition.version,
+                tags: evaluatedDefinition.tags,
+              },
+              methodName,
+              logger: runLogger,
+              dataRepository: unifiedDataRepo,
+              definitionRepository: definitionRepo,
+              runtimeTags,
+              vaultService,
+              redactor,
+              skipCheckNames: options.skipCheck as string[] | undefined,
+              skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+              skipAllChecks: options.skipChecks as boolean | undefined,
+              driver: (options.driver as string | undefined) ??
+                evaluatedDefinition.driver,
+              driverConfig: evaluatedDefinition.driverConfig,
+            },
+          );
 
-            runLogger.info("Data saved to {path}", {
-              path: dataPath,
-              name: handle.name,
-            });
+          runLogger.info("Method executed");
 
-            // Track artifact in output
-            output.addDataArtifact({
-              dataId: handle.dataId,
-              name: handle.name,
-              version: handle.version,
-              tags: handle.tags,
-            });
+          // Data is already persisted by DataWriter — extract artifact info from handles
+          if (execResult.dataHandles && execResult.dataHandles.length > 0) {
+            for (const handle of execResult.dataHandles) {
+              const dataPath = unifiedDataRepo.getPath(
+                modelType,
+                definition.id,
+                handle.name,
+                handle.version,
+              );
 
-            // Parse content if JSON for display purposes
-            let attributes: Record<string, unknown> | undefined;
-            if (handle.metadata.contentType === "application/json") {
-              try {
-                const content = await unifiedDataRepo.getContent(
-                  modelType,
-                  evaluatedDefinition.id,
-                  handle.name,
-                  handle.version,
-                );
-                if (content) {
-                  const text = new TextDecoder().decode(content);
-                  attributes = JSON.parse(text) as Record<string, unknown>;
+              runLogger.info("Data saved to {path}", {
+                path: dataPath,
+                name: handle.name,
+              });
+
+              // Track artifact in output
+              output.addDataArtifact({
+                dataId: handle.dataId,
+                name: handle.name,
+                version: handle.version,
+                tags: handle.tags,
+              });
+
+              // Parse content if JSON for display purposes
+              let attributes: Record<string, unknown> | undefined;
+              if (handle.metadata.contentType === "application/json") {
+                try {
+                  const content = await unifiedDataRepo.getContent(
+                    modelType,
+                    evaluatedDefinition.id,
+                    handle.name,
+                    handle.version,
+                  );
+                  if (content) {
+                    const text = new TextDecoder().decode(content);
+                    attributes = JSON.parse(text) as Record<string, unknown>;
+                  }
+                } catch {
+                  // Not valid JSON, skip attributes
                 }
-              } catch {
-                // Not valid JSON, skip attributes
               }
+
+              dataArtifacts.push({
+                id: handle.dataId,
+                path: dataPath,
+                attributes,
+              });
             }
-
-            dataArtifacts.push({
-              id: handle.dataId,
-              path: dataPath,
-              attributes,
-            });
           }
+
+          // Mark output as succeeded and save
+          output.markSucceeded();
+          await outputRepo.save(modelType, methodName, output);
+        } catch (error) {
+          // Mark output as failed and save
+          const errorMessage = error instanceof Error
+            ? error.message
+            : String(error);
+          const errorStack = error instanceof Error ? error.stack : undefined;
+          output.markFailed({ message: errorMessage, stack: errorStack });
+          await outputRepo.save(modelType, methodName, output);
+
+          runLogger.error("Method {method} failed: {error}", {
+            method: methodName,
+            model: definition.name,
+            error: errorMessage,
+          });
+          methodError = new UserError(errorMessage);
         }
+      } finally {
+        // Unregister run file sink target
+        runFileSink.unregister(runLogCategory);
 
-        // Mark output as succeeded and save
-        output.markSucceeded();
-        await outputRepo.save(modelType, methodName, output);
-      } catch (error) {
-        // Mark output as failed and save
-        const errorMessage = error instanceof Error
-          ? error.message
-          : String(error);
-        const errorStack = error instanceof Error ? error.stack : undefined;
-        output.markFailed({ message: errorMessage, stack: errorStack });
-        await outputRepo.save(modelType, methodName, output);
+        // Release per-model lock (and push to S3 for S3 datastores)
+        await flushModelLocks();
+      }
 
-        runLogger.error("Method {method} failed: {error}", {
-          method: methodName,
-          model: definition.name,
-          error: errorMessage,
-        });
-        throw new UserError(errorMessage);
+      if (methodError) {
+        throw methodError;
       }
 
       // JSON mode: use existing render function
@@ -458,12 +472,6 @@ export const modelMethodRunCommand = new Command()
           },
         );
       }
-
-      // Unregister run file sink target
-      runFileSink.unregister(runLogCategory);
-
-      // Release per-model lock (and push to S3 for S3 datastores)
-      await flushModelLocks();
 
       ctx.logger.debug("Method run command completed");
     },
