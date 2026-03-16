@@ -504,7 +504,7 @@ Deno.test("run() yields lifecycle events during execution", async () => {
 
     const events: string[] = [];
     for await (const event of service.run(workflow.name)) {
-      events.push(event.step);
+      events.push(event.kind);
     }
 
     assertEquals(events.includes("started"), true);
@@ -695,11 +695,11 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
     const events: string[] = [];
     let run: WorkflowRun | undefined;
     for await (const event of service.run(workflow.name)) {
-      if (event.step === "job_started") {
+      if (event.kind === "job_started") {
         events.push(`start:${event.jobId}`);
-      } else if (event.step === "job_completed") {
+      } else if (event.kind === "job_completed") {
         events.push(`complete:${event.jobId}`);
-      } else if (event.step === "completed") {
+      } else if (event.kind === "completed") {
         run = event.run;
       }
     }
@@ -1144,7 +1144,7 @@ Deno.test("run() event stream includes all expected event types", async () => {
 
     const eventTypes: string[] = [];
     for await (const event of service.run(workflow.name)) {
-      eventTypes.push(event.step);
+      eventTypes.push(event.kind);
     }
 
     // Must include these event types in order
@@ -1187,14 +1187,14 @@ Deno.test("workflow step fails when nesting depth exceeded", async () => {
       tempDir,
     );
 
-    const events: { step: string; error?: string }[] = [];
+    const events: { kind: string; error?: string }[] = [];
     for await (
       const event of service.run(workflow.name, {
         workflowNestingDepth: 10,
       })
     ) {
-      if (event.step === "step_failed") {
-        events.push({ step: event.step, error: event.error });
+      if (event.kind === "step_failed") {
+        events.push({ kind: event.kind, error: event.error });
       }
     }
 
@@ -1234,14 +1234,14 @@ Deno.test("workflow step fails on direct cycle detection", async () => {
       tempDir,
     );
 
-    const events: { step: string; error?: string }[] = [];
+    const events: { kind: string; error?: string }[] = [];
     for await (
       const event of service.run(workflow.name, {
         ancestorWorkflowIds: new Set(["self-calling"]),
       })
     ) {
-      if (event.step === "step_failed") {
-        events.push({ step: event.step, error: event.error });
+      if (event.kind === "step_failed") {
+        events.push({ kind: event.kind, error: event.error });
       }
     }
 
@@ -1268,6 +1268,7 @@ Deno.test("DefaultStepExecutor rejects workflow task type", async () => {
     jobName: "job1",
     stepName: "nested-step",
     repoDir: "/tmp",
+    signal: new AbortController().signal,
   };
 
   await assertRejects(

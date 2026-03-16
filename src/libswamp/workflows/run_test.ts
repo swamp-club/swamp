@@ -190,12 +190,12 @@ Deno.test("workflowRun yields validating_inputs and evaluating_workflow prefix e
 
   const deps = createTestDeps(workflow, [
     {
-      step: "started",
+      kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
     },
-    { step: "completed", run },
+    { kind: "completed", run },
   ]);
 
   const ctx = createLibSwampContext();
@@ -203,9 +203,9 @@ Deno.test("workflowRun yields validating_inputs and evaluating_workflow prefix e
     workflowIdOrName: "test-workflow",
   }));
 
-  assertEquals(events[0].step, "validating_inputs");
-  assertEquals(events[1].step, "evaluating_workflow");
-  assertEquals(events[2].step, "started");
+  assertEquals(events[0].kind, "validating_inputs");
+  assertEquals(events[1].kind, "evaluating_workflow");
+  assertEquals(events[2].kind, "started");
 });
 
 Deno.test("workflowRun yields error for missing workflow", async () => {
@@ -216,8 +216,8 @@ Deno.test("workflowRun yields error for missing workflow", async () => {
   }));
 
   const last = events[events.length - 1];
-  assertEquals(last.step, "error");
-  if (last.step === "error") {
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
     assertEquals(last.error.code, "workflow_not_found");
   }
 });
@@ -230,16 +230,16 @@ Deno.test("workflowRun forwards job and step events", async () => {
 
   const deps = createTestDeps(workflow, [
     {
-      step: "started",
+      kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
     },
-    { step: "job_started", jobId: "job1" },
-    { step: "step_started", jobId: "job1", stepId: "step1" },
-    { step: "step_completed", jobId: "job1", stepId: "step1" },
-    { step: "job_completed", jobId: "job1", status: "succeeded" },
-    { step: "completed", run },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    { kind: "job_completed", jobId: "job1", status: "succeeded" },
+    { kind: "completed", run },
   ]);
 
   const ctx = createLibSwampContext();
@@ -247,7 +247,7 @@ Deno.test("workflowRun forwards job and step events", async () => {
     workflowIdOrName: "test-workflow",
   }));
 
-  const steps = events.map((e) => e.step);
+  const steps = events.map((e) => e.kind);
   assertEquals(steps.includes("job_started"), true);
   assertEquals(steps.includes("step_started"), true);
   assertEquals(steps.includes("step_completed"), true);
@@ -263,12 +263,12 @@ Deno.test("workflowRun completed event contains WorkflowRunData", async () => {
 
   const deps = createTestDeps(workflow, [
     {
-      step: "started",
+      kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
     },
-    { step: "completed", run },
+    { kind: "completed", run },
   ]);
 
   const ctx = createLibSwampContext();
@@ -276,9 +276,9 @@ Deno.test("workflowRun completed event contains WorkflowRunData", async () => {
     workflowIdOrName: "test-workflow",
   }));
 
-  const completed = events.find((e) => e.step === "completed");
-  assertEquals(completed?.step, "completed");
-  if (completed?.step === "completed") {
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
     assertEquals(completed.run.workflowName, "test-workflow");
     assertEquals(typeof completed.run.id, "string");
   }
@@ -385,12 +385,12 @@ Deno.test("workflowRun coerces string inputs to match schema types", async () =>
   const captured: { options?: Record<string, unknown> } = {};
   const deps = createTestDepsWithCapture(workflow, [
     {
-      step: "started",
+      kind: "started",
       runId: run.id,
       workflowName: "coerce-wf",
       logPath: "/tmp/log",
     },
-    { step: "completed", run },
+    { kind: "completed", run },
   ], captured);
 
   const ctx = createLibSwampContext();
@@ -428,12 +428,12 @@ Deno.test("workflowRun yields error for missing required input", async () => {
     inputs: {},
   }));
 
-  const steps = events.map((e) => e.step);
+  const steps = events.map((e) => e.kind);
   assertEquals(steps.includes("evaluating_workflow"), false);
 
   const last = events[events.length - 1];
-  assertEquals(last.step, "error");
-  if (last.step === "error") {
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
     assertEquals(last.error.code, "input_validation_failed");
   }
 });
@@ -462,12 +462,12 @@ Deno.test("workflowRun applies default values from schema", async () => {
   const captured: { options?: Record<string, unknown> } = {};
   const deps = createTestDepsWithCapture(workflow, [
     {
-      step: "started",
+      kind: "started",
       runId: run.id,
       workflowName: "defaults-wf",
       logPath: "/tmp/log",
     },
-    { step: "completed", run },
+    { kind: "completed", run },
   ], captured);
 
   const ctx = createLibSwampContext();
@@ -505,12 +505,12 @@ Deno.test("workflowRun with lastEvaluated skips validation but still coerces", a
   // Empty inputs would fail validation, but lastEvaluated skips it
   const deps = createTestDepsWithCapture(workflow, [
     {
-      step: "started",
+      kind: "started",
       runId: run.id,
       workflowName: "last-eval-wf",
       logPath: "/tmp/log",
     },
-    { step: "completed", run },
+    { kind: "completed", run },
   ], captured);
 
   const ctx = createLibSwampContext();
@@ -521,7 +521,7 @@ Deno.test("workflowRun with lastEvaluated skips validation but still coerces", a
   }));
 
   // Should not error — validation was skipped
-  const steps = events.map((e) => e.step);
+  const steps = events.map((e) => e.kind);
   assertEquals(steps.includes("error"), false);
   assertEquals(steps.includes("evaluating_workflow"), true);
   // But coercion should still apply
@@ -536,15 +536,15 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
 
   const deps = createTestDeps(workflow, [
     {
-      step: "started",
+      kind: "started",
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
     },
-    { step: "job_started", jobId: "job1" },
-    { step: "step_started", jobId: "job1", stepId: "step1" },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "step1" },
     {
-      step: "model_resolved",
+      kind: "model_resolved",
       jobId: "job1",
       stepId: "step1",
       modelName: "my-model",
@@ -552,14 +552,14 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
       methodName: "run",
     },
     {
-      step: "method_executing",
+      kind: "method_executing",
       jobId: "job1",
       stepId: "step1",
       modelName: "my-model",
       methodName: "run",
     },
     {
-      step: "method_output",
+      kind: "method_output",
       jobId: "job1",
       stepId: "step1",
       modelName: "my-model",
@@ -567,9 +567,9 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
       stream: "stdout" as const,
       line: "hello",
     },
-    { step: "step_completed", jobId: "job1", stepId: "step1" },
-    { step: "job_completed", jobId: "job1", status: "succeeded" },
-    { step: "completed", run },
+    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    { kind: "job_completed", jobId: "job1", status: "succeeded" },
+    { kind: "completed", run },
   ]);
 
   const ctx = createLibSwampContext();
@@ -577,16 +577,68 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
     workflowIdOrName: "test-workflow",
   }));
 
-  const steps = events.map((e) => e.step);
+  const steps = events.map((e) => e.kind);
   assertEquals(steps.includes("model_resolved"), true);
   assertEquals(steps.includes("method_executing"), true);
   assertEquals(steps.includes("method_output"), true);
 
-  const modelResolved = events.find((e) => e.step === "model_resolved");
-  if (modelResolved?.step === "model_resolved") {
+  const modelResolved = events.find((e) => e.kind === "model_resolved");
+  if (modelResolved?.kind === "model_resolved") {
     assertEquals(modelResolved.modelName, "my-model");
     assertEquals(modelResolved.modelType, "command/shell");
     assertEquals(modelResolved.methodName, "run");
+  }
+});
+
+Deno.test("workflowRun forwards method_event events", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const deps = createTestDeps(workflow, [
+    {
+      kind: "started",
+      runId: run.id,
+      workflowName: "test-workflow",
+      logPath: "/tmp/log",
+    },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "method_event",
+      jobId: "job1",
+      stepId: "step1",
+      modelName: "my-model",
+      methodName: "create",
+      event: {
+        type: "vault_secret_stored" as const,
+        fieldPath: "password",
+        vaultName: "default",
+        vaultKey: "my-key",
+      },
+    },
+    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    { kind: "job_completed", jobId: "job1", status: "succeeded" },
+    { kind: "completed", run },
+  ]);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  const steps = events.map((e) => e.kind);
+  assertEquals(steps.includes("method_event"), true);
+
+  const methodEvent = events.find((e) => e.kind === "method_event");
+  if (methodEvent?.kind === "method_event") {
+    assertEquals(methodEvent.modelName, "my-model");
+    assertEquals(methodEvent.event.type, "vault_secret_stored");
+    if (methodEvent.event.type === "vault_secret_stored") {
+      assertEquals(methodEvent.event.fieldPath, "password");
+      assertEquals(methodEvent.event.vaultName, "default");
+    }
   }
 });
 
@@ -596,4 +648,72 @@ Deno.test("inputValidationFailed returns correct error structure", () => {
   ]);
   assertEquals(error.code, "input_validation_failed");
   assertEquals(error.message, "Input validation failed:\n  name is required");
+});
+
+// --- Cancellation tests ---
+
+Deno.test("workflowRun yields cancelled error when abort signal fires during execution", async () => {
+  const workflow = createTestWorkflow();
+  const controller = new AbortController();
+
+  // Create a service that aborts mid-stream
+  const deps: WorkflowRunDeps = {
+    ...createTestDeps(workflow, []),
+    createExecutionService: () =>
+      ({
+        // deno-lint-ignore require-yield
+        async *run() {
+          controller.abort();
+          throw new DOMException("The operation was aborted.", "AbortError");
+        },
+        execute(): Promise<WorkflowRun> {
+          throw new Error("not implemented");
+        },
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+  };
+
+  const ctx = createLibSwampContext({ signal: controller.signal });
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "cancelled");
+  }
+});
+
+Deno.test("workflowRun yields cancelled error when signal is pre-aborted", async () => {
+  const workflow = createTestWorkflow();
+  const controller = new AbortController();
+  controller.abort();
+
+  // Service throws AbortError immediately
+  const deps: WorkflowRunDeps = {
+    ...createTestDeps(workflow, []),
+    createExecutionService: () =>
+      ({
+        // deno-lint-ignore require-yield
+        async *run() {
+          throw new DOMException("The operation was aborted.", "AbortError");
+        },
+        execute(): Promise<WorkflowRun> {
+          throw new Error("not implemented");
+        },
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+  };
+
+  const ctx = createLibSwampContext({ signal: controller.signal });
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "cancelled");
+  }
 });

@@ -104,6 +104,30 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           logger.info(e.line);
         }
       },
+      method_event: (e) => {
+        const logger = getRunLogger(e.modelName, e.methodName);
+        switch (e.event.type) {
+          case "vault_secret_stored":
+            logger.info(
+              "Stored sensitive field '{fieldPath}' in vault '{vaultName}'",
+              {
+                fieldPath: e.event.fieldPath,
+                vaultName: e.event.vaultName,
+              },
+            );
+            break;
+          case "schema_validation_warning":
+            logger.warn(
+              "Resource '{specName}' (instance '{instanceName}') data does not match schema: {error}",
+              {
+                specName: e.event.specName,
+                instanceName: e.event.instanceName,
+                error: e.event.error,
+              },
+            );
+            break;
+        }
+      },
       completed: (e) => {
         const wfLogger = getWorkflowRunLogger(this.workflowName);
         if (e.run.status === "failed") {
@@ -176,6 +200,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       model_resolved: () => {},
       method_executing: () => {},
       method_output: () => {},
+      method_event: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));

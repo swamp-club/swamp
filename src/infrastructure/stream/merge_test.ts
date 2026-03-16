@@ -86,3 +86,13 @@ Deno.test("merge handles stream that yields nothing", async () => {
   ]));
   assertEquals(items, [1, 2]);
 });
+
+Deno.test("merge with pre-aborted signal yields nothing", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const items = await collect(merge([
+    fromArray([1, 2]),
+    fromArray([3, 4]),
+  ], controller.signal));
+  assertEquals(items, []);
+});
