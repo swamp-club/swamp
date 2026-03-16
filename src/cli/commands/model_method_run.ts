@@ -312,6 +312,7 @@ export const modelMethodRunCommand = new Command()
           modelDef,
           methodName,
           {
+            signal: new AbortController().signal,
             repoDir,
             modelType,
             modelId: evaluatedDefinition.id,

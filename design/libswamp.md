@@ -138,7 +138,7 @@ When a context's signal is aborted:
    signal is **immediately interrupted** — the `await` rejects with
    `AbortError`.
 2. The generator catches the abort and yields
-   `{ step: "error", error: { code: "cancelled", message: "..." } }`.
+   `{ kind: "error", error: { code: "cancelled", message: "..." } }`.
 3. The consumer receives the cancellation through the normal `error` handler —
    no special `try/catch` needed.
 4. Generators use `try/finally` for resource cleanup (killing subprocesses,
@@ -146,15 +146,15 @@ When a context's signal is aborted:
 
 ### Event Streams
 
-Every operation defines its own event union with a `step` discriminant:
+Every operation defines its own event union with a `kind` discriminant:
 
 ```typescript
 // libswamp/auth/whoami.ts
 type AuthWhoamiEvent =
-  | { step: "loading_credentials" }
-  | { step: "contacting_server"; serverUrl: string }
-  | { step: "completed"; identity: WhoamiIdentity }
-  | { step: "error"; error: SwampError };
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "completed"; identity: WhoamiIdentity }
+  | { kind: "error"; error: SwampError };
 
 interface WhoamiIdentity {
   serverUrl: string;
@@ -169,21 +169,22 @@ interface WhoamiIdentity {
 ```typescript
 // libswamp/workflows/run.ts
 type WorkflowRunEvent =
-  | { step: "validating_inputs" }
-  | { step: "evaluating_workflow" }
-  | { step: "started"; runId: string; workflowName: string }
-  | { step: "job_started"; jobId: string }
-  | { step: "job_completed"; jobId: string; status: string }
-  | { step: "job_skipped"; jobId: string }
-  | { step: "step_started"; jobId: string; stepId: string }
-  | { step: "step_completed"; jobId: string; stepId: string }
-  | { step: "step_skipped"; jobId: string; stepId: string }
-  | { step: "step_failed"; jobId: string; stepId: string; error: string; allowedFailure?: boolean }
-  | { step: "model_resolved"; jobId: string; stepId: string; modelName: string; modelType: string; methodName: string }
-  | { step: "method_executing"; jobId: string; stepId: string; modelName: string; methodName: string }
-  | { step: "method_output"; jobId: string; stepId: string; modelName: string; methodName: string; stream: "stdout" | "stderr"; line: string }
-  | { step: "completed"; run: WorkflowRunView }
-  | { step: "error"; error: SwampError };
+  | { kind: "validating_inputs" }
+  | { kind: "evaluating_workflow" }
+  | { kind: "started"; runId: string; workflowName: string }
+  | { kind: "job_started"; jobId: string }
+  | { kind: "job_completed"; jobId: string; status: string }
+  | { kind: "job_skipped"; jobId: string }
+  | { kind: "step_started"; jobId: string; stepId: string }
+  | { kind: "step_completed"; jobId: string; stepId: string }
+  | { kind: "step_skipped"; jobId: string; stepId: string }
+  | { kind: "step_failed"; jobId: string; stepId: string; error: string; allowedFailure?: boolean }
+  | { kind: "model_resolved"; jobId: string; stepId: string; modelName: string; modelType: string; methodName: string }
+  | { kind: "method_executing"; jobId: string; stepId: string; modelName: string; methodName: string }
+  | { kind: "method_output"; jobId: string; stepId: string; modelName: string; methodName: string; stream: "stdout" | "stderr"; line: string }
+  | { kind: "method_event"; jobId: string; stepId: string; modelName: string; methodName: string; event: MethodExecutionEvent }
+  | { kind: "completed"; run: WorkflowRunView }
+  | { kind: "error"; error: SwampError };
 ```
 
 Events from parallel jobs interleave on the single stream. Each event carries
@@ -192,16 +193,20 @@ Events from parallel jobs interleave on the single stream. Each event carries
 
 ### Convention: every event union includes `completed` and `error`
 
-All event unions must include a `{ step: "completed"; ... }` variant and a
-`{ step: "error"; error: SwampError }` variant. This is enforced by a type
+All event unions must include a `{ kind: "completed"; ... }` variant and a
+`{ kind: "error"; error: SwampError }` variant. This is enforced by a type
 constraint:
 
 ```typescript
-type StreamEvent = { step: string };
+type StreamEvent = { kind: string };
+
+// `kind` is used (rather than `step` or `type`) to avoid collision with:
+// - `step`, which refers to workflow Steps (a domain concept)
+// - `type`, which is the discriminant used by domain events like MethodExecutionEvent
 
 type HasTerminals<E extends StreamEvent> =
-  Extract<E, { step: "completed" }> extends never ? never
-    : Extract<E, { step: "error" }> extends never ? never
+  Extract<E, { kind: "completed" }> extends never ? never
+    : Extract<E, { kind: "error" }> extends never ? never
     : E;
 
 // This constraint is applied to the consumeStream and result helpers,
@@ -218,7 +223,7 @@ every event kind is a required key.
 
 ```typescript
 type EventHandlers<E extends StreamEvent> = {
-  [K in E["step"]]: (event: Extract<E, { step: K }>) => void | Promise<void>;
+  [K in E["kind"]]: (event: Extract<E, { kind: K }>) => void | Promise<void>;
 };
 ```
 
@@ -226,10 +231,10 @@ Given `AuthWhoamiEvent`, this expands to:
 
 ```typescript
 {
-  loading_credentials: (event: { step: "loading_credentials" }) => void;
-  contacting_server: (event: { step: "contacting_server"; serverUrl: string }) => void;
-  completed: (event: { step: "completed"; identity: WhoamiIdentity }) => void;
-  error: (event: { step: "error"; error: SwampError }) => void;
+  loading_credentials: (event: { kind: "loading_credentials" }) => void;
+  contacting_server: (event: { kind: "contacting_server"; serverUrl: string }) => void;
+  completed: (event: { kind: "completed"; identity: WhoamiIdentity }) => void;
+  error: (event: { kind: "error"; error: SwampError }) => void;
 }
 ```
 
@@ -246,7 +251,7 @@ async function consumeStream<E extends StreamEvent>(
   handlers: EventHandlers<E>,
 ): Promise<void> {
   for await (const event of stream) {
-    const handler = handlers[event.step as E["step"]];
+    const handler = handlers[event.kind as E["kind"]];
     await handler(event as Parameters<typeof handler>[0]);
   }
 }
@@ -291,13 +296,13 @@ integrations), the `result` helper fast-forwards through the stream:
 ```typescript
 async function result<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
-): Promise<Extract<E, { step: "completed" }>> {
+): Promise<Extract<E, { kind: "completed" }>> {
   for await (const event of stream) {
-    if (event.step === "completed") {
-      return event as Extract<E, { step: "completed" }>;
+    if (event.kind === "completed") {
+      return event as Extract<E, { kind: "completed" }>;
     }
-    if (event.step === "error") {
-      throw (event as Extract<E, { step: "error" }>).error;
+    if (event.kind === "error") {
+      throw (event as Extract<E, { kind: "error" }>).error;
     }
   }
   throw new Error("Stream ended without a completed or error event");
@@ -429,14 +434,14 @@ This is a single utility, tested once, reused everywhere.
 A workflow with two parallel jobs (`build` and `test`) produces events like:
 
 ```
-{ step: "started", runId: "run-1", workflowName: "ci" }
-{ step: "job_started", jobId: "build" }
-{ step: "job_started", jobId: "test" }
-{ step: "step_completed", jobId: "build", stepId: "compile" }
-{ step: "step_completed", jobId: "test", stepId: "unit" }
-{ step: "job_completed", jobId: "build", status: "succeeded" }
-{ step: "job_completed", jobId: "test", status: "succeeded" }
-{ step: "completed", run: { ... } }
+{ kind: "started", runId: "run-1", workflowName: "ci" }
+{ kind: "job_started", jobId: "build" }
+{ kind: "job_started", jobId: "test" }
+{ kind: "step_completed", jobId: "build", stepId: "compile" }
+{ kind: "step_completed", jobId: "test", stepId: "unit" }
+{ kind: "job_completed", jobId: "build", status: "succeeded" }
+{ kind: "job_completed", jobId: "test", status: "succeeded" }
+{ kind: "completed", run: { ... } }
 ```
 
 Events from `build` and `test` interleave in arrival order. The exact ordering
@@ -563,10 +568,10 @@ from `libswamp/mod.ts` — never from internal module paths.
 ```typescript
 // libswamp/auth/whoami.ts
 type AuthWhoamiEvent =
-  | { step: "loading_credentials" }
-  | { step: "contacting_server"; serverUrl: string }
-  | { step: "completed"; identity: WhoamiIdentity }
-  | { step: "error"; error: SwampError };
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "completed"; identity: WhoamiIdentity }
+  | { kind: "error"; error: SwampError };
 
 interface AuthDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
@@ -587,28 +592,28 @@ function createAuthDeps(options?: { serverUrlOverride?: string }): AuthDeps {
 }
 
 async function* whoami(ctx: LibSwampContext, deps: AuthDeps): AsyncIterable<AuthWhoamiEvent> {
-  yield { step: "loading_credentials" };
+  yield { kind: "loading_credentials" };
 
   const credentials = await deps.loadCredentials();
   if (!credentials) {
-    yield { step: "error", error: notAuthenticated() };
+    yield { kind: "error", error: notAuthenticated() };
     return;
   }
 
   const serverUrl = deps.serverUrlOverride ?? credentials.serverUrl;
-  yield { step: "contacting_server", serverUrl };
+  yield { kind: "contacting_server", serverUrl };
 
   try {
     const response = await deps.fetchWhoami(serverUrl, credentials.apiKey, ctx.signal);
 
     if (!response.authenticated) {
-      yield { step: "error", error: invalidApiKey() };
+      yield { kind: "error", error: invalidApiKey() };
       return;
     }
 
     const collectives = getCollectives(response);
     yield {
-      step: "completed",
+      kind: "completed",
       identity: {
         serverUrl,
         id: response.id!,
@@ -620,7 +625,7 @@ async function* whoami(ctx: LibSwampContext, deps: AuthDeps): AsyncIterable<Auth
     };
   } catch (error: unknown) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      yield { step: "error", error: cancelled(error) };
+      yield { kind: "error", error: cancelled(error) };
       return;
     }
     throw error;
@@ -696,10 +701,10 @@ Deno.test("whoami yields identity on success", async () => {
   const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
 
   assertEquals(events, [
-    { step: "loading_credentials" },
-    { step: "contacting_server", serverUrl: "https://swamp.club" },
+    { kind: "loading_credentials" },
+    { kind: "contacting_server", serverUrl: "https://swamp.club" },
     {
-      step: "completed",
+      kind: "completed",
       identity: {
         serverUrl: "https://swamp.club",
         id: "user-1",
@@ -718,9 +723,9 @@ Deno.test("whoami yields not_authenticated error when no credentials", async () 
   const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
 
   assertEquals(events.length, 2);
-  assertEquals(events[0], { step: "loading_credentials" });
-  const last = events[1] as Extract<AuthWhoamiEvent, { step: "error" }>;
-  assertEquals(last.step, "error");
+  assertEquals(events[0], { kind: "loading_credentials" });
+  const last = events[1] as Extract<AuthWhoamiEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_authenticated");
 });
 
@@ -738,8 +743,8 @@ Deno.test("whoami yields cancelled error when signal is already aborted", async 
   };
 
   const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
-  const last = events[events.length - 1] as Extract<AuthWhoamiEvent, { step: "error" }>;
-  assertEquals(last.step, "error");
+  const last = events[events.length - 1] as Extract<AuthWhoamiEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
   assertEquals(last.error.code, "cancelled");
 });
 ```
@@ -764,7 +769,7 @@ interface SwampError {
 ```
 
 Errors that originate within the generator (domain logic) are **yielded** as
-`{ step: "error", error: SwampError }` events. This keeps the stream protocol
+`{ kind: "error", error: SwampError }` events. This keeps the stream protocol
 uniform — consumers never need `try/catch` around `for await` to handle
 expected errors. Cancellation is also an error event with
 `code: "cancelled"`, not a special case.
@@ -787,7 +792,7 @@ error: (e) => { ws.send(JSON.stringify({ id, event: e })); },
 // Test: assert on error events
 const events = await collect(stream);
 assertEquals(events[events.length - 1], {
-  step: "error",
+  kind: "error",
   error: { code: "not_authenticated", message: "..." },
 });
 ```
@@ -813,8 +818,8 @@ async function collect<E extends StreamEvent>(
 /** Asserts that a stream ends with a `completed` event matching the expected value. */
 async function assertCompletes<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
-  expected: Extract<E, { step: "completed" }>,
-): Promise<Extract<E, { step: "completed" }>>;
+  expected: Extract<E, { kind: "completed" }>,
+): Promise<Extract<E, { kind: "completed" }>>;
 
 /** Asserts that a stream ends with an `error` event with the given code. */
 async function assertErrors<E extends StreamEvent>(
