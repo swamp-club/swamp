@@ -44,9 +44,9 @@ async function* toStream(
 Deno.test("LogAuthWhoamiRenderer - completed event runs without error", async () => {
   const renderer = createAuthWhoamiRenderer("log");
   const events: AuthWhoamiEvent[] = [
-    { step: "loading_credentials" },
-    { step: "contacting_server", serverUrl: "https://club.example.com" },
-    { step: "completed", identity: makeIdentity() },
+    { kind: "loading_credentials" },
+    { kind: "contacting_server", serverUrl: "https://club.example.com" },
+    { kind: "completed", identity: makeIdentity() },
   ];
   await consumeStream(toStream(events), renderer.handlers());
 });
@@ -54,10 +54,10 @@ Deno.test("LogAuthWhoamiRenderer - completed event runs without error", async ()
 Deno.test("LogAuthWhoamiRenderer - collectives handled without error", async () => {
   const renderer = createAuthWhoamiRenderer("log");
   const events: AuthWhoamiEvent[] = [
-    { step: "loading_credentials" },
-    { step: "contacting_server", serverUrl: "https://club.example.com" },
+    { kind: "loading_credentials" },
+    { kind: "contacting_server", serverUrl: "https://club.example.com" },
     {
-      step: "completed",
+      kind: "completed",
       identity: makeIdentity({ collectives: ["org-a", "org-b"] }),
     },
   ];
@@ -70,7 +70,7 @@ Deno.test("LogAuthWhoamiRenderer - error event throws UserError", () => {
   assertThrows(
     () =>
       handlers.error({
-        step: "error",
+        kind: "error",
         error: { code: "not_authenticated", message: "Not authenticated" },
       }),
     UserError,
@@ -86,9 +86,9 @@ Deno.test("JsonAuthWhoamiRenderer - completed serializes correct JSON", async ()
   try {
     const renderer = createAuthWhoamiRenderer("json");
     const events: AuthWhoamiEvent[] = [
-      { step: "loading_credentials" },
-      { step: "contacting_server", serverUrl: "https://club.example.com" },
-      { step: "completed", identity: makeIdentity() },
+      { kind: "loading_credentials" },
+      { kind: "contacting_server", serverUrl: "https://club.example.com" },
+      { kind: "completed", identity: makeIdentity() },
     ];
     await consumeStream(toStream(events), renderer.handlers());
     assertEquals(logs.length, 1);
@@ -113,9 +113,9 @@ Deno.test("JsonAuthWhoamiRenderer - collectives included when present", async ()
   try {
     const renderer = createAuthWhoamiRenderer("json");
     const events: AuthWhoamiEvent[] = [
-      { step: "loading_credentials" },
+      { kind: "loading_credentials" },
       {
-        step: "completed",
+        kind: "completed",
         identity: makeIdentity({ collectives: ["org-a"] }),
       },
     ];
@@ -135,9 +135,9 @@ Deno.test("JsonAuthWhoamiRenderer - intermediate events produce no output", () =
   try {
     const renderer = createAuthWhoamiRenderer("json");
     const handlers = renderer.handlers();
-    handlers.loading_credentials({ step: "loading_credentials" });
+    handlers.loading_credentials({ kind: "loading_credentials" });
     handlers.contacting_server({
-      step: "contacting_server",
+      kind: "contacting_server",
       serverUrl: "https://club.example.com",
     });
     assertEquals(logs.length, 0);
@@ -152,7 +152,7 @@ Deno.test("JsonAuthWhoamiRenderer - error event throws UserError", () => {
   assertThrows(
     () =>
       handlers.error({
-        step: "error",
+        kind: "error",
         error: { code: "not_authenticated", message: "Not authenticated" },
       }),
     UserError,

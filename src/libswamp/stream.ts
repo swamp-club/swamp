@@ -19,8 +19,8 @@
 
 import type { SwampError } from "./errors.ts";
 
-/** Base constraint for all stream events — must have a `step` discriminant. */
-export type StreamEvent = { step: string };
+/** Base constraint for all stream events — must have a `kind` discriminant. */
+export type StreamEvent = { kind: string };
 
 /**
  * Compile-time check that an event union includes both `completed` and `error`
@@ -28,9 +28,9 @@ export type StreamEvent = { step: string };
  */
 export type HasTerminals<E extends StreamEvent> = Extract<
   E,
-  { step: "completed" }
+  { kind: "completed" }
 > extends never ? never
-  : Extract<E, { step: "error" }> extends never ? never
+  : Extract<E, { kind: "error" }> extends never ? never
   : E;
 
 /**
@@ -38,8 +38,8 @@ export type HasTerminals<E extends StreamEvent> = Extract<
  * Every step in the event union becomes a required key.
  */
 export type EventHandlers<E extends StreamEvent> = {
-  [K in E["step"]]: (
-    event: Extract<E, { step: K }>,
+  [K in E["kind"]]: (
+    event: Extract<E, { kind: K }>,
   ) => void | Promise<void>;
 };
 
@@ -52,7 +52,7 @@ export async function consumeStream<E extends StreamEvent>(
   handlers: EventHandlers<E>,
 ): Promise<void> {
   for await (const event of stream) {
-    const handler = handlers[event.step as E["step"]];
+    const handler = handlers[event.kind as E["kind"]];
     // deno-lint-ignore no-explicit-any
     await handler(event as any);
   }
@@ -65,12 +65,12 @@ export async function consumeStream<E extends StreamEvent>(
  */
 export async function result<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
-): Promise<Extract<E, { step: "completed" }>> {
+): Promise<Extract<E, { kind: "completed" }>> {
   for await (const event of stream) {
-    if (event.step === "completed") {
-      return event as unknown as Extract<E, { step: "completed" }>;
+    if (event.kind === "completed") {
+      return event as unknown as Extract<E, { kind: "completed" }>;
     }
-    if (event.step === "error") {
+    if (event.kind === "error") {
       throw (event as unknown as { error: SwampError }).error;
     }
   }

@@ -132,6 +132,7 @@ Deno.test("Data output specs - shell model execution produces valid resource han
         definitionRepository: definitionRepo,
         writeResource,
         createFileWriter,
+        signal: new AbortController().signal,
       },
     );
 
@@ -217,6 +218,7 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
           dataRepository: dataRepo,
           definitionRepository: definitionRepo,
           writeResource,
+          signal: new AbortController().signal,
         },
       );
     } catch (error) {
@@ -287,6 +289,7 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
           dataRepository: dataRepo,
           definitionRepository: definitionRepo,
           createFileWriter,
+          signal: new AbortController().signal,
         },
       );
     } catch (error) {

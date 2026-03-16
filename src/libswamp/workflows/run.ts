@@ -17,12 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { SwampError } from "../errors.ts";
+import { cancelled, type SwampError } from "../errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import type {
   WorkflowExecutionEvent,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
+import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { StepRun } from "../../domain/workflows/workflow_run.ts";
@@ -49,24 +50,24 @@ import {
  * Events emitted by the libswamp workflow run generator.
  */
 export type WorkflowRunEvent =
-  | { step: "validating_inputs" }
-  | { step: "evaluating_workflow" }
-  | { step: "started"; runId: string; workflowName: string }
-  | { step: "job_started"; jobId: string }
-  | { step: "job_completed"; jobId: string; status: string }
-  | { step: "job_skipped"; jobId: string }
-  | { step: "step_started"; jobId: string; stepId: string }
-  | { step: "step_completed"; jobId: string; stepId: string }
-  | { step: "step_skipped"; jobId: string; stepId: string }
+  | { kind: "validating_inputs" }
+  | { kind: "evaluating_workflow" }
+  | { kind: "started"; runId: string; workflowName: string }
+  | { kind: "job_started"; jobId: string }
+  | { kind: "job_completed"; jobId: string; status: string }
+  | { kind: "job_skipped"; jobId: string }
+  | { kind: "step_started"; jobId: string; stepId: string }
+  | { kind: "step_completed"; jobId: string; stepId: string }
+  | { kind: "step_skipped"; jobId: string; stepId: string }
   | {
-    step: "step_failed";
+    kind: "step_failed";
     jobId: string;
     stepId: string;
     error: string;
     allowedFailure?: boolean;
   }
   | {
-    step: "model_resolved";
+    kind: "model_resolved";
     jobId: string;
     stepId: string;
     modelName: string;
@@ -74,14 +75,14 @@ export type WorkflowRunEvent =
     methodName: string;
   }
   | {
-    step: "method_executing";
+    kind: "method_executing";
     jobId: string;
     stepId: string;
     modelName: string;
     methodName: string;
   }
   | {
-    step: "method_output";
+    kind: "method_output";
     jobId: string;
     stepId: string;
     modelName: string;
@@ -89,8 +90,16 @@ export type WorkflowRunEvent =
     stream: "stdout" | "stderr";
     line: string;
   }
-  | { step: "completed"; run: WorkflowRunView }
-  | { step: "error"; error: SwampError };
+  | {
+    kind: "method_event";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+    event: MethodExecutionEvent;
+  }
+  | { kind: "completed"; run: WorkflowRunView }
+  | { kind: "error"; error: SwampError };
 
 /**
  * Dependencies injected into the workflow run generator.
@@ -231,11 +240,11 @@ function mapEvent(
   event: WorkflowExecutionEvent,
   deps: WorkflowRunDeps,
   input: WorkflowRunInput,
-): WorkflowRunEvent | null {
-  switch (event.step) {
+): WorkflowRunEvent {
+  switch (event.kind) {
     case "started":
       return {
-        step: "started",
+        kind: "started",
         runId: event.runId,
         workflowName: event.workflowName,
       };
@@ -245,7 +254,7 @@ function mapEvent(
         createWorkflowRunId(event.run.id),
       );
       const data = toRunData(event.run, path, input.verbose);
-      return { step: "completed", run: data };
+      return { kind: "completed", run: data };
     }
     case "job_started":
     case "job_completed":
@@ -257,9 +266,12 @@ function mapEvent(
     case "model_resolved":
     case "method_executing":
     case "method_output":
+    case "method_event":
       return event;
-    default:
-      return null;
+    default: {
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
   }
 }
 
@@ -267,13 +279,13 @@ function mapEvent(
  * Executes a workflow, yielding progress events as a libswamp stream.
  */
 export async function* workflowRun(
-  _ctx: LibSwampContext,
+  ctx: LibSwampContext,
   deps: WorkflowRunDeps,
   input: WorkflowRunInput,
 ): AsyncGenerator<WorkflowRunEvent> {
   let resolvedInput = input;
 
-  yield { step: "validating_inputs" };
+  yield { kind: "validating_inputs" };
 
   // Look up workflow
   const workflow = await deps.lookupWorkflow(
@@ -282,7 +294,7 @@ export async function* workflowRun(
   );
   if (!workflow) {
     yield {
-      step: "error",
+      kind: "error",
       error: workflowNotFound(input.workflowIdOrName),
     };
     return;
@@ -304,7 +316,7 @@ export async function* workflowRun(
       workflow.inputs,
     );
     if (!result.valid) {
-      yield { step: "error", error: inputValidationFailed(result.errors) };
+      yield { kind: "error", error: inputValidationFailed(result.errors) };
       return;
     }
     resolvedInput = { ...input, inputs: inputsWithDefaults };
@@ -316,7 +328,7 @@ export async function* workflowRun(
     };
   }
 
-  yield { step: "evaluating_workflow" };
+  yield { kind: "evaluating_workflow" };
 
   const service = deps.createExecutionService(
     deps.workflowRepo,
@@ -330,16 +342,20 @@ export async function* workflowRun(
         lastEvaluated: resolvedInput.lastEvaluated,
         inputs: resolvedInput.inputs,
         runtimeTags: resolvedInput.runtimeTags,
+        signal: ctx.signal,
       })
     ) {
-      const mapped = mapEvent(event, deps, resolvedInput);
-      if (mapped) {
-        yield mapped;
-      }
+      yield mapEvent(event, deps, resolvedInput);
     }
   } catch (error) {
+    if (
+      error instanceof DOMException && error.name === "AbortError"
+    ) {
+      yield { kind: "error", error: cancelled(error) };
+      return;
+    }
     yield {
-      step: "error",
+      kind: "error",
       error: workflowExecutionFailed(error),
     };
   }

@@ -23,6 +23,7 @@ import { Data } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { ModelType } from "./model_type.ts";
+import type { MethodExecutionEvent } from "./method_events.ts";
 import type {
   DataHandle,
   DataWriter,
@@ -319,6 +320,7 @@ export async function processSensitiveResourceData(
   modelType: ModelType,
   modelId: string,
   methodName: string,
+  callbacks?: DataWriterCallbacks,
 ): Promise<void> {
   const sensitiveFields = extractSensitiveFields(spec.schema);
 
@@ -376,6 +378,12 @@ export async function processSensitiveResourceData(
       "Stored sensitive field '{fieldPath}' in vault '{vaultName}' with key '{vaultKey}'",
       { fieldPath: field.path, vaultName: targetVault, vaultKey },
     );
+    callbacks?.onEvent?.({
+      type: "vault_secret_stored",
+      fieldPath: field.path,
+      vaultName: targetVault,
+      vaultKey,
+    });
 
     const vaultRef = `\${{ vault.get('${targetVault}', '${vaultKey}') }}`;
 
@@ -423,6 +431,7 @@ export function createResourceWriter(
   definitionName?: string,
   vaultService?: VaultService,
   methodName?: string,
+  onEvent?: (event: MethodExecutionEvent) => void,
 ): {
   writeResource: (
     specName: string,
@@ -462,10 +471,16 @@ export function createResourceWriter(
           `${i.message} at "${i.path.join(".")}"`
         ).join("; ")
         : String(validationResult.error);
-      writerLogger.warn(
+      writerLogger.debug(
         "Resource '{specName}' (instance '{name}') data does not match schema: {error}",
         { specName, name, error: formattedError },
       );
+      onEvent?.({
+        type: "schema_validation_warning",
+        specName,
+        instanceName: name,
+        error: formattedError,
+      });
     }
 
     // Validate name is non-empty
@@ -539,6 +554,7 @@ export function createResourceWriter(
         modelType,
         modelId,
         methodName,
+        { onEvent },
       );
     }
 
