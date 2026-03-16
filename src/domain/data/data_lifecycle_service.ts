@@ -42,11 +42,11 @@ export interface ExpiredDataInfo {
  * Result of garbage collection operation.
  */
 export interface LifecycleGCResult {
-  /** Number of data entries marked as expired (symlink removed) */
+  /** Number of expired data entries hard-deleted */
   dataEntriesExpired: number;
-  /** Number of old versions hard deleted by version GC */
+  /** Number of versions hard-deleted (expired + GC) */
   versionsDeleted: number;
-  /** Bytes reclaimed from version GC (not from soft delete) */
+  /** Bytes reclaimed from hard-deleting expired data and version GC */
   bytesReclaimed: number;
   /** Whether this was a dry run */
   dryRun: boolean;
@@ -234,8 +234,24 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       );
 
       if (!dryRun) {
-        // Soft delete: remove latest symlink
-        await this.dataRepo.removeLatestMarker(type, modelId, dataName);
+        // Calculate bytes to reclaim before deleting
+        for (const version of versions) {
+          const contentPath = this.dataRepo.getContentPath(
+            type,
+            modelId,
+            dataName,
+            version,
+          );
+          try {
+            const stat = await Deno.stat(contentPath);
+            bytesReclaimed += stat.size;
+          } catch {
+            // Ignore stat errors for missing files
+          }
+        }
+        versionsDeleted += versions.length;
+        // Hard-delete all versions
+        await this.dataRepo.delete(type, modelId, dataName);
       }
 
       expiredEntries.push({
