@@ -18,9 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import { getLogger } from "@logtape/logtape";
-import { bundleExtension } from "../models/bundle.ts";
+import {
+  bundleExtension,
+  installZodGlobal,
+  rewriteZodImports,
+} from "../models/bundle.ts";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { ExecutionDriver } from "./execution_driver.ts";
@@ -98,6 +102,9 @@ export class UserDriverLoader {
    */
   async loadDrivers(driversDir: string): Promise<DriverLoadResult> {
     const result: DriverLoadResult = { loaded: [], failed: [] };
+
+    // Ensure swamp's Zod is available on globalThis before importing bundles.
+    installZodGlobal();
 
     // Check if directory exists
     try {
@@ -232,6 +239,8 @@ export class UserDriverLoader {
     js: string,
     relativePath: string,
   ): Promise<Record<string, unknown>> {
+    const rewritten = rewriteZodImports(js);
+
     if (this.repoDir) {
       const bundlePath = join(
         this.repoDir,
@@ -242,8 +251,14 @@ export class UserDriverLoader {
 
       try {
         await Deno.stat(bundlePath);
-        // Import from file URL — avoids base64 encoding overhead
-        return await import(toFileUrl(bundlePath).href);
+        const cachedJs = await Deno.readTextFile(bundlePath);
+        const rewrittenCached = rewriteZodImports(cachedJs);
+        const encoded = btoa(
+          String.fromCharCode(...new TextEncoder().encode(rewrittenCached)),
+        );
+        return await import(
+          `data:application/javascript;base64,${encoded}`
+        );
       } catch {
         // Fall through to data URL import
       }
@@ -251,7 +266,7 @@ export class UserDriverLoader {
 
     // Fallback: import via base64 data URL
     const encoded = btoa(
-      String.fromCharCode(...new TextEncoder().encode(js)),
+      String.fromCharCode(...new TextEncoder().encode(rewritten)),
     );
     return await import(
       `data:application/javascript;base64,${encoded}`

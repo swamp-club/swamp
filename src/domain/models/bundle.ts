@@ -18,8 +18,68 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import * as zodModule from "zod";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
+
+declare global {
+  var __swamp_zod: typeof zodModule | undefined;
+}
+
+/**
+ * Installs swamp's Zod module on globalThis so that extension bundles
+ * with externalized `import { z } from "npm:zod@4"` (rewritten to
+ * `const { z } = globalThis.__swamp_zod`) share the same Zod instance.
+ *
+ * This prevents dual-instance problems in the compiled binary where
+ * `deno compile` resolves dynamic imports to a separate module instance.
+ */
+export function installZodGlobal(): void {
+  if (!globalThis.__swamp_zod) {
+    globalThis.__swamp_zod = zodModule;
+    logger.debug`Installed Zod global (globalThis.__swamp_zod)`;
+  }
+}
+
+/**
+ * Rewrites externalized Zod imports in a bundle to reference `globalThis.__swamp_zod`.
+ *
+ * Handles:
+ * - Named imports: `import { z } from "npm:zod@4"` → `const { z } = globalThis.__swamp_zod;`
+ * - Aliased imports: `import { z as z2 } from "npm:zod"` → `const { z: z2 } = globalThis.__swamp_zod;`
+ * - Star imports: `import * as zod from "npm:zod@4"` → `const zod = globalThis.__swamp_zod;`
+ * - Already-rewritten lines are left untouched (idempotent).
+ */
+export function rewriteZodImports(js: string): string {
+  // Match: import { ... } from "npm:zod..." or 'npm:zod...'
+  // Captures the named import clause and handles aliased imports
+  const namedImportPattern =
+    /import\s*\{([^}]+)\}\s*from\s*["']npm:zod(?:@[^"']*)?["']\s*;?/g;
+  js = js.replace(namedImportPattern, (_match, imports: string) => {
+    // Convert `z as z2` to `z: z2` for destructuring syntax
+    const destructured = imports
+      .split(",")
+      .map((s: string) => {
+        const parts = s.trim().split(/\s+as\s+/);
+        if (parts.length === 2) {
+          return `${parts[0].trim()}: ${parts[1].trim()}`;
+        }
+        return parts[0].trim();
+      })
+      .filter((s: string) => s.length > 0)
+      .join(", ");
+    return `const { ${destructured} } = globalThis.__swamp_zod;`;
+  });
+
+  // Match: import * as <name> from "npm:zod..."
+  const starImportPattern =
+    /import\s*\*\s*as\s+(\w+)\s+from\s*["']npm:zod(?:@[^"']*)?["']\s*;?/g;
+  js = js.replace(starImportPattern, (_match, name: string) => {
+    return `const ${name} = globalThis.__swamp_zod;`;
+  });
+
+  return js;
+}
 
 /** Options for controlling bundle output. */
 export interface BundleOptions {
@@ -89,12 +149,18 @@ export async function bundleExtension(
       );
     }
 
-    const js = await Deno.readTextFile(tempFile);
+    let js = await Deno.readTextFile(tempFile);
 
     if (!js) {
       throw new Error(
         `deno bundle produced empty output for: ${absolutePath}`,
       );
+    }
+
+    // Rewrite externalized zod imports to use globalThis.__swamp_zod
+    // so extensions share swamp's Zod instance in the compiled binary.
+    if (!options?.selfContained) {
+      js = rewriteZodImports(js);
     }
 
     logger.debug`Bundled ${absolutePath} (${js.length} bytes)`;

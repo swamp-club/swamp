@@ -18,9 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import { getLogger } from "@logtape/logtape";
-import { bundleExtension } from "./bundle.ts";
+import {
+  bundleExtension,
+  installZodGlobal,
+  rewriteZodImports,
+} from "./bundle.ts";
 import { resolveLocalImports } from "./local_import_resolver.ts";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
@@ -268,6 +272,10 @@ export class UserModelLoader {
   async loadModels(modelsDir: string): Promise<LoadResult> {
     const result: LoadResult = { loaded: [], extended: [], failed: [] };
 
+    // Ensure swamp's Zod is available on globalThis before importing bundles.
+    // This prevents dual-instance issues in the compiled binary.
+    installZodGlobal();
+
     // Check if directory exists
     try {
       await Deno.stat(modelsDir);
@@ -444,6 +452,11 @@ export class UserModelLoader {
     js: string,
     relativePath: string,
   ): Promise<Record<string, unknown>> {
+    // Rewrite zod imports at import-time as well — catches old cached
+    // bundles that still have raw `import ... from "npm:zod..."` lines.
+    // The rewrite is idempotent so already-rewritten bundles are unaffected.
+    const rewritten = rewriteZodImports(js);
+
     if (this.repoDir) {
       const bundlePath = join(
         this.repoDir,
@@ -454,8 +467,15 @@ export class UserModelLoader {
 
       try {
         await Deno.stat(bundlePath);
-        // Import from file URL — avoids base64 encoding overhead
-        return await import(toFileUrl(bundlePath).href);
+        // Read the file and rewrite at import-time for cached bundles
+        const cachedJs = await Deno.readTextFile(bundlePath);
+        const rewrittenCached = rewriteZodImports(cachedJs);
+        const encoded = btoa(
+          String.fromCharCode(...new TextEncoder().encode(rewrittenCached)),
+        );
+        return await import(
+          `data:application/javascript;base64,${encoded}`
+        );
       } catch {
         // Fall through to data URL import
       }
@@ -463,7 +483,7 @@ export class UserModelLoader {
 
     // Fallback: import via base64 data URL
     const encoded = btoa(
-      String.fromCharCode(...new TextEncoder().encode(js)),
+      String.fromCharCode(...new TextEncoder().encode(rewritten)),
     );
     return await import(
       `data:application/javascript;base64,${encoded}`

@@ -20,7 +20,11 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
-import { bundleExtension } from "./bundle.ts";
+import {
+  bundleExtension,
+  installZodGlobal,
+  rewriteZodImports,
+} from "./bundle.ts";
 
 const DENO_PATH = Deno.execPath();
 
@@ -41,7 +45,11 @@ async function withTempFile(
 async function importBundled(
   js: string,
 ): Promise<Record<string, unknown>> {
-  const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(js)));
+  installZodGlobal();
+  const rewritten = rewriteZodImports(js);
+  const encoded = btoa(
+    String.fromCharCode(...new TextEncoder().encode(rewritten)),
+  );
   return await import(`data:application/javascript;base64,${encoded}`);
 }
 
@@ -170,4 +178,84 @@ export const schema = z.object({ message: z.string() });
     });
     assertEquals(parsed, { message: "hello" });
   });
+});
+
+Deno.test("bundleExtension produces module where z.toJSONSchema works", async () => {
+  const tsCode = `
+import { z } from "npm:zod@4";
+
+export const schema = z.object({ id: z.string(), data: z.unknown() });
+`;
+
+  await withTempFile(tsCode, async (path) => {
+    const js = await bundleExtension(path, DENO_PATH);
+    const mod = await importBundled(js);
+
+    // Should be a ZodType from swamp's Zod instance
+    assertEquals(mod.schema instanceof z.ZodType, true);
+
+    // z.toJSONSchema should work without _zod errors
+    const jsonSchema = z.toJSONSchema(mod.schema as z.ZodTypeAny);
+    assertEquals(jsonSchema.type, "object");
+  });
+});
+
+// --- rewriteZodImports unit tests ---
+
+Deno.test("rewriteZodImports rewrites named imports", () => {
+  const input = `import { z } from "npm:zod@4";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, `const { z } = globalThis.__swamp_zod;`);
+});
+
+Deno.test("rewriteZodImports rewrites aliased imports", () => {
+  const input = `import { z as z2 } from "npm:zod@4";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, `const { z: z2 } = globalThis.__swamp_zod;`);
+});
+
+Deno.test("rewriteZodImports rewrites star imports", () => {
+  const input = `import * as zod from "npm:zod@4";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, `const zod = globalThis.__swamp_zod;`);
+});
+
+Deno.test("rewriteZodImports rewrites unversioned npm:zod", () => {
+  const input = `import { z } from "npm:zod";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, `const { z } = globalThis.__swamp_zod;`);
+});
+
+Deno.test("rewriteZodImports rewrites multiple zod imports", () => {
+  const input = [
+    `import { z as z2 } from "npm:zod@4";`,
+    `import { z } from "npm:zod@4";`,
+    `console.log(z, z2);`,
+  ].join("\n");
+  const result = rewriteZodImports(input);
+  const expected = [
+    `const { z: z2 } = globalThis.__swamp_zod;`,
+    `const { z } = globalThis.__swamp_zod;`,
+    `console.log(z, z2);`,
+  ].join("\n");
+  assertEquals(result, expected);
+});
+
+Deno.test("rewriteZodImports leaves non-zod imports untouched", () => {
+  const input = `import { parse } from "npm:yaml@2";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, input);
+});
+
+Deno.test("rewriteZodImports is idempotent", () => {
+  const input = `import { z } from "npm:zod@4";`;
+  const first = rewriteZodImports(input);
+  const second = rewriteZodImports(first);
+  assertEquals(first, second);
+});
+
+Deno.test("rewriteZodImports handles single-quoted specifiers", () => {
+  const input = `import { z } from 'npm:zod@4';`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, `const { z } = globalThis.__swamp_zod;`);
 });
