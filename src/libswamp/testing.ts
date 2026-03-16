@@ -38,12 +38,12 @@ export async function collect<E extends StreamEvent>(
  */
 export async function assertCompletes<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
-  expected: Extract<E, { step: "completed" }>,
-): Promise<Extract<E, { step: "completed" }>> {
+  expected: Extract<E, { kind: "completed" }>,
+): Promise<Extract<E, { kind: "completed" }>> {
   const events = await collect(stream);
   const last = events[events.length - 1];
   assertEquals(last, expected as unknown as E);
-  return last as unknown as Extract<E, { step: "completed" }>;
+  return last as unknown as Extract<E, { kind: "completed" }>;
 }
 
 /**
@@ -56,10 +56,10 @@ export async function assertErrors<E extends StreamEvent>(
 ): Promise<SwampError> {
   const events = await collect(stream);
   const last = events[events.length - 1] as {
-    step: string;
+    kind: string;
     error?: SwampError;
   };
-  assertEquals(last.step, "error");
+  assertEquals(last.kind, "error");
   const error = last.error!;
   assertEquals(error.code, expectedCode);
   return error;

@@ -23,6 +23,7 @@ import type { Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
+import type { MethodExecutionEvent } from "./method_events.ts";
 import { CalVer } from "./calver.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import {
@@ -139,6 +140,12 @@ export interface FileWriterOverrides {
  */
 export interface MethodContext {
   /**
+   * Cancellation signal. Always present — simply never-aborted if the
+   * caller doesn't need cancellation.
+   */
+  signal: AbortSignal;
+
+  /**
    * The base directory for the repository (where data is stored).
    */
   repoDir: string;
@@ -228,10 +235,11 @@ export interface MethodContext {
   redactor?: SecretRedactor;
 
   /**
-   * Optional callback for streaming process output lines to the event stream.
-   * Called with each line and the stream it came from (stdout or stderr).
+   * Optional callback for emitting domain events during method execution.
+   * Used for process output streaming, vault storage, schema warnings, etc.
+   * Output lines are emitted as `{ type: "output", line, stream }` events.
    */
-  onOutput?: (line: string, stream: "stdout" | "stderr") => void;
+  onEvent?: (event: MethodExecutionEvent) => void;
 
   /**
    * Tags merged into every writer created during execution.
@@ -332,6 +340,8 @@ export interface DataWriter {
 export interface DataWriterCallbacks {
   /** Called for each line written by writeLine or writeStream. */
   onLine?: (dataName: string, line: string) => void;
+  /** Called for domain events during data operations (vault storage, schema warnings). */
+  onEvent?: (event: MethodExecutionEvent) => void;
 }
 
 /**

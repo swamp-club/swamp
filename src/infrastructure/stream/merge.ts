@@ -23,9 +23,14 @@ import { AsyncQueue } from "./async_queue.ts";
  * Merges multiple async iterables into a single stream.
  * Items are yielded in arrival order (interleaved).
  * The merged stream completes when all source streams have completed.
+ *
+ * When an optional `signal` is provided and aborted, the queue is closed
+ * early and `for await` exits. Child generators receive signals independently
+ * through their own contexts.
  */
 export async function* merge<T>(
   streams: AsyncIterable<T>[],
+  signal?: AbortSignal,
 ): AsyncGenerator<T> {
   if (streams.length === 0) return;
   if (streams.length === 1) {
@@ -36,11 +41,23 @@ export async function* merge<T>(
   const queue = new AsyncQueue<T>();
   let remaining = streams.length;
 
+  // Close queue early when signal aborts
+  let abortHandler: (() => void) | undefined;
+  if (signal) {
+    if (signal.aborted) {
+      return;
+    }
+    abortHandler = () => queue.abort(signal.reason);
+    signal.addEventListener("abort", abortHandler, { once: true });
+  }
+
   const drainStream = async (stream: AsyncIterable<T>) => {
     try {
       for await (const item of stream) {
         queue.push(item);
       }
+    } catch {
+      // Silently handle errors from closed queue (abort scenario)
     } finally {
       remaining--;
       if (remaining === 0) {
@@ -56,6 +73,9 @@ export async function* merge<T>(
   try {
     yield* queue;
   } finally {
+    if (abortHandler && signal) {
+      signal.removeEventListener("abort", abortHandler);
+    }
     // Ensure all drain tasks complete (they may throw)
     await Promise.allSettled(tasks);
   }

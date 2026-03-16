@@ -27,9 +27,9 @@ import {
 } from "./stream.ts";
 
 type TestEvent =
-  | { step: "started"; name: string }
-  | { step: "completed"; value: number }
-  | { step: "error"; error: SwampError };
+  | { kind: "started"; name: string }
+  | { kind: "completed"; value: number }
+  | { kind: "error"; error: SwampError };
 
 async function* makeStream(
   events: TestEvent[],
@@ -43,8 +43,8 @@ Deno.test("consumeStream dispatches to correct handler per event", async () => {
   const received: string[] = [];
   await consumeStream<TestEvent>(
     makeStream([
-      { step: "started", name: "test" },
-      { step: "completed", value: 42 },
+      { kind: "started", name: "test" },
+      { kind: "completed", value: 42 },
     ]),
     {
       started: (e) => {
@@ -65,8 +65,8 @@ Deno.test("consumeStream awaits async handlers", async () => {
   const order: number[] = [];
   await consumeStream<TestEvent>(
     makeStream([
-      { step: "started", name: "a" },
-      { step: "completed", value: 1 },
+      { kind: "started", name: "a" },
+      { kind: "completed", value: 1 },
     ]),
     {
       started: async () => {
@@ -85,11 +85,11 @@ Deno.test("consumeStream awaits async handlers", async () => {
 Deno.test("result returns completed event payload", async () => {
   const completed = await result<TestEvent>(
     makeStream([
-      { step: "started", name: "x" },
-      { step: "completed", value: 99 },
+      { kind: "started", name: "x" },
+      { kind: "completed", value: 99 },
     ]),
   );
-  assertEquals(completed, { step: "completed", value: 99 });
+  assertEquals(completed, { kind: "completed", value: 99 });
 });
 
 Deno.test("result throws SwampError on error event", async () => {
@@ -97,8 +97,8 @@ Deno.test("result throws SwampError on error event", async () => {
   try {
     await result<TestEvent>(
       makeStream([
-        { step: "started", name: "x" },
-        { step: "error", error: err },
+        { kind: "started", name: "x" },
+        { kind: "error", error: err },
       ]),
     );
     unreachable();
@@ -112,7 +112,7 @@ Deno.test("result throws SwampError on error event", async () => {
 Deno.test("result throws if stream ends without terminal", async () => {
   await assertRejects(
     async () => {
-      await result<TestEvent>(makeStream([{ step: "started", name: "x" }]));
+      await result<TestEvent>(makeStream([{ kind: "started", name: "x" }]));
     },
     Error,
     "Stream ended without a completed or error event",
@@ -128,8 +128,8 @@ Deno.test("withDefaults fills missing handlers with no-ops", async () => {
   });
   await consumeStream<TestEvent>(
     makeStream([
-      { step: "started", name: "ignored" },
-      { step: "completed", value: 7 },
+      { kind: "started", name: "ignored" },
+      { kind: "completed", value: 7 },
     ]),
     handlers,
   );
@@ -145,13 +145,13 @@ Deno.test("withDefaults with fallback calls fallback for unhandled events", asyn
       },
     },
     (event) => {
-      received.push(`fallback:${event.step}`);
+      received.push(`fallback:${event.kind}`);
     },
   );
   await consumeStream<TestEvent>(
     makeStream([
-      { step: "started", name: "x" },
-      { step: "completed", value: 5 },
+      { kind: "started", name: "x" },
+      { kind: "completed", value: 5 },
     ]),
     handlers,
   );
