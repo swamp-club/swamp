@@ -38,6 +38,8 @@ export interface ProcessExecutorOptions {
   logger?: Logger;
   /** Secret redactor for stripping vault secrets from streamed output. */
   redactor?: SecretRedactor;
+  /** Optional callback for streaming output lines to an event stream. */
+  onOutput?: (line: string, stream: "stdout" | "stderr") => void;
 }
 
 /**
@@ -152,9 +154,26 @@ export async function executeProcess(
       const logger = options.logger;
       const redact = (line: string) =>
         options.redactor?.hasSecrets ? options.redactor.redact(line) : line;
+      const onOutput = options.onOutput;
       const [stdoutResult, stderrResult, status] = await Promise.all([
-        streamLines(process.stdout, (line) => logger.info(redact(line))),
-        streamLines(process.stderr, (line) => logger.warn(redact(line))),
+        streamLines(process.stdout, (line) => {
+          const redacted = redact(line);
+          if (onOutput) {
+            onOutput(redacted, "stdout");
+            logger.debug(redacted);
+          } else {
+            logger.info(redacted);
+          }
+        }),
+        streamLines(process.stderr, (line) => {
+          const redacted = redact(line);
+          if (onOutput) {
+            onOutput(redacted, "stderr");
+            logger.debug(redacted);
+          } else {
+            logger.warn(redacted);
+          }
+        }),
         process.status,
       ]);
 
