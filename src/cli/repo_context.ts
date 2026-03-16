@@ -558,6 +558,40 @@ export async function acquireModelLocks(
     await registerDatastoreSyncNamed(key, { lock });
     lockKeys.push(key);
 
+    // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
+    // If a structural command acquired the global lock between our initial check
+    // and this per-model acquisition, release everything and wait.
+    const postAcquireGlobalInfo = await globalLock.inspect();
+    if (postAcquireGlobalInfo) {
+      logger.info(
+        "Global lock acquired by {holder} during per-model lock acquisition — releasing and retrying",
+        { holder: postAcquireGlobalInfo.holder },
+      );
+      // Release all per-model locks acquired so far
+      for (const acquiredKey of lockKeys) {
+        await flushDatastoreSyncNamed(acquiredKey);
+      }
+      lockKeys.length = 0;
+
+      // Wait for global lock to be released
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const info = await globalLock.inspect();
+        if (!info) break;
+        const acquiredAt = new Date(info.acquiredAt).getTime();
+        if (Date.now() - acquiredAt > info.ttlMs) {
+          logger.warn(
+            "Global lock held by {holder} appears stale (exceeded TTL of {ttl}ms) — proceeding",
+            { holder: info.holder, ttl: info.ttlMs },
+          );
+          break;
+        }
+      }
+
+      // Restart the entire per-model lock acquisition from scratch
+      return acquireModelLocks(config, models);
+    }
+
     // For S3: pull model-scoped files after acquiring the per-model lock
     if (s3SyncService) {
       try {
@@ -585,14 +619,9 @@ export async function acquireModelLocks(
   }
 
   return async () => {
-    // Release per-model locks first
-    for (const key of lockKeys) {
-      await flushDatastoreSyncNamed(key);
-    }
-
-    // For S3 datastores: acquire a brief global lock to push changed files
-    // and update the index. This is held for seconds (uploading files),
-    // not minutes (like method execution).
+    // For S3 datastores: push changes BEFORE releasing per-model locks.
+    // This prevents another process from acquiring the same per-model lock,
+    // pulling stale data from S3, and overwriting our local changes.
     if (s3SyncService && config.type === "s3") {
       const pushLock = createDatastoreLock(config);
       try {
@@ -617,6 +646,11 @@ export async function acquireModelLocks(
           // Best-effort release
         }
       }
+    }
+
+    // Release per-model locks AFTER push completes
+    for (const key of lockKeys) {
+      await flushDatastoreSyncNamed(key);
     }
   };
 }
