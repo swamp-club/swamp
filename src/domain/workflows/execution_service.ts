@@ -42,6 +42,7 @@ import { DefaultMethodExecutionService } from "../models/method_execution_servic
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
+import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
 import {
   extractExpressions,
@@ -78,7 +79,7 @@ import { join } from "@std/path";
 import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { merge } from "../../infrastructure/stream/merge.ts";
-import { AsyncQueue } from "../../infrastructure/stream/async_queue.ts";
+import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 /**
  * Context for step execution.
  */
@@ -89,6 +90,8 @@ export interface StepExecutionContext {
   jobName: string;
   stepName: string;
   repoDir: string;
+  /** Cancellation signal threaded from the libswamp entry point. */
+  signal: AbortSignal;
   /** Expression context for evaluating ${{ }} expressions */
   expressionContext?: ExpressionContext;
   /** Current workflow run (for log file references in model outputs) */
@@ -193,7 +196,7 @@ export class DefaultStepExecutor implements StepExecutor {
       type: modelType.normalized,
     });
     ctx.emitEvent?.({
-      step: "model_resolved",
+      kind: "model_resolved",
       jobId: ctx.jobName,
       stepId: ctx.stepName,
       modelName: originalDefinition.name,
@@ -360,7 +363,7 @@ export class DefaultStepExecutor implements StepExecutor {
         method: task.methodName,
       });
       ctx.emitEvent?.({
-        step: "method_executing",
+        kind: "method_executing",
         jobId: ctx.jobName,
         stepId: ctx.stepName,
         modelName: originalDefinition.name,
@@ -412,6 +415,7 @@ export class DefaultStepExecutor implements StepExecutor {
         modelDef,
         task.methodName,
         {
+          signal: ctx.signal,
           repoDir: ctx.repoDir,
           modelType,
           modelId: evaluatedDefinition.id,
@@ -431,17 +435,28 @@ export class DefaultStepExecutor implements StepExecutor {
           dataOutputOverrides: stepDataOutputOverrides,
           vaultService,
           redactor: ctx.secretRedactor,
-          onOutput: ctx.emitEvent
-            ? (line: string, stream: "stdout" | "stderr") => {
-              ctx.emitEvent!({
-                step: "method_output",
-                jobId: ctx.jobName,
-                stepId: ctx.stepName,
-                modelName: originalDefinition.name,
-                methodName: task.methodName,
-                stream,
-                line,
-              });
+          onEvent: ctx.emitEvent
+            ? (event: MethodExecutionEvent) => {
+              if (event.type === "output") {
+                ctx.emitEvent!({
+                  kind: "method_output",
+                  jobId: ctx.jobName,
+                  stepId: ctx.stepName,
+                  modelName: originalDefinition.name,
+                  methodName: task.methodName,
+                  stream: event.stream,
+                  line: event.line,
+                });
+              } else {
+                ctx.emitEvent!({
+                  kind: "method_event",
+                  jobId: ctx.jobName,
+                  stepId: ctx.stepName,
+                  modelName: originalDefinition.name,
+                  methodName: task.methodName,
+                  event,
+                });
+              }
             }
             : undefined,
         },
@@ -647,49 +662,9 @@ export class DefaultStepExecutor implements StepExecutor {
   }
 }
 
-/**
- * Events emitted by the workflow execution generator.
- */
-export type WorkflowExecutionEvent =
-  | { step: "started"; runId: string; workflowName: string; logPath: string }
-  | { step: "job_started"; jobId: string }
-  | { step: "job_completed"; jobId: string; status: string }
-  | { step: "job_skipped"; jobId: string }
-  | { step: "step_started"; jobId: string; stepId: string }
-  | { step: "step_completed"; jobId: string; stepId: string }
-  | { step: "step_skipped"; jobId: string; stepId: string }
-  | {
-    step: "step_failed";
-    jobId: string;
-    stepId: string;
-    error: string;
-    allowedFailure?: boolean;
-  }
-  | {
-    step: "model_resolved";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    modelType: string;
-    methodName: string;
-  }
-  | {
-    step: "method_executing";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    methodName: string;
-  }
-  | {
-    step: "method_output";
-    jobId: string;
-    stepId: string;
-    modelName: string;
-    methodName: string;
-    stream: "stdout" | "stderr";
-    line: string;
-  }
-  | { step: "completed"; run: WorkflowRun };
+// Re-export from dedicated file for backward compatibility
+export type { WorkflowExecutionEvent } from "./execution_events.ts";
+import type { WorkflowExecutionEvent } from "./execution_events.ts";
 
 /**
  * Internal options bundle passed through runJob/runStep to reduce parameter count.
@@ -701,6 +676,7 @@ interface StepOptions {
   workflowTags?: Record<string, string>;
   runtimeTags?: Record<string, string>;
   secretRedactor?: SecretRedactor;
+  signal?: AbortSignal;
 }
 
 /**
@@ -739,6 +715,7 @@ export class WorkflowExecutionService {
       runtimeTags?: Record<string, string>;
       workflowNestingDepth?: number;
       ancestorWorkflowIds?: Set<string>;
+      signal?: AbortSignal;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     // Look up workflow
@@ -825,7 +802,7 @@ export class WorkflowExecutionService {
     // Start execution
     run.start();
     yield {
-      step: "started",
+      kind: "started",
       runId: run.id,
       workflowName: workflow.name,
       logPath: workflowLogPath,
@@ -840,6 +817,7 @@ export class WorkflowExecutionService {
       workflowTags: workflow.tags,
       runtimeTags: options?.runtimeTags,
       secretRedactor,
+      signal: options?.signal,
     };
 
     // Sort jobs topologically
@@ -863,7 +841,7 @@ export class WorkflowExecutionService {
           stepOpts,
         )
       );
-      for await (const event of merge(jobStreams)) {
+      for await (const event of merge(jobStreams, options?.signal)) {
         yield event;
       }
       await this.saveRun(workflow.id, run);
@@ -871,7 +849,7 @@ export class WorkflowExecutionService {
 
     // Complete workflow
     run.complete();
-    yield { step: "completed", run };
+    yield { kind: "completed", run };
     await this.saveRun(workflow.id, run);
 
     // Unregister workflow log file sink
@@ -895,7 +873,7 @@ export class WorkflowExecutionService {
   ): Promise<WorkflowRun> {
     let result: WorkflowRun | undefined;
     for await (const event of this.run(idOrName, options)) {
-      if (event.step === "completed") result = event.run;
+      if (event.kind === "completed") result = event.run;
     }
     if (!result) throw new Error("Workflow run did not complete");
     return result;
@@ -922,13 +900,13 @@ export class WorkflowExecutionService {
     const shouldRun = this.shouldJobRun(job, run);
     if (!shouldRun) {
       jobRun.skip();
-      yield { step: "job_skipped", jobId: jobName };
+      yield { kind: "job_skipped", jobId: jobName };
       return;
     }
 
     // Start job
     jobRun.start();
-    yield { step: "job_started", jobId: jobName };
+    yield { kind: "job_started", jobId: jobName };
 
     // Expand forEach steps if we have expression context
     let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
@@ -1010,9 +988,9 @@ export class WorkflowExecutionService {
         );
       });
 
-      for await (const event of merge(stepStreams)) {
+      for await (const event of merge(stepStreams, options.signal)) {
         yield event;
-        if (event.step === "step_failed" && !event.allowedFailure) {
+        if (event.kind === "step_failed" && !event.allowedFailure) {
           jobFailed = true;
         }
       }
@@ -1024,7 +1002,7 @@ export class WorkflowExecutionService {
     } else {
       jobRun.succeed();
     }
-    yield { step: "job_completed", jobId: jobName, status: jobRun.status };
+    yield { kind: "job_completed", jobId: jobName, status: jobRun.status };
   }
 
   /**
@@ -1198,14 +1176,14 @@ export class WorkflowExecutionService {
       const shouldRun = this.shouldStepRun(step, jobRun);
       if (!shouldRun) {
         stepRun.skip();
-        yield { step: "step_skipped", jobId: job.name, stepId: stepName };
+        yield { kind: "step_skipped", jobId: job.name, stepId: stepName };
         return;
       }
     }
 
     // Start step
     stepRun.start();
-    yield { step: "step_started", jobId: job.name, stepId: stepName };
+    yield { kind: "step_started", jobId: job.name, stepId: stepName };
 
     try {
       // Build the expression context with forEach variable
@@ -1243,46 +1221,33 @@ export class WorkflowExecutionService {
         return;
       }
 
-      // Model method tasks delegate to the step executor
-      // Use AsyncQueue as a bridge so the executor can push events
-      // while we yield them into the parent stream
-      const eventQueue = new AsyncQueue<WorkflowExecutionEvent>();
-
-      const ctx: StepExecutionContext = {
-        workflowId: workflow.id,
-        workflowRunId: run.id,
-        workflowName: workflow.name,
-        jobName: job.name,
-        stepName,
-        repoDir: this.repoDir,
-        expressionContext: stepExprContext,
-        workflowRun: run,
-        step,
-        useLastEvaluated: options.lastEvaluated,
-        forEachVariable: forEachVar,
-        workflowTags: options.workflowTags,
-        runtimeTags: options.runtimeTags,
-        secretRedactor: options.secretRedactor,
-        emitEvent: (event: WorkflowExecutionEvent) => eventQueue.push(event),
-      };
-
-      // Start execution — it pushes events to the queue and closes it on completion
-      let output: unknown;
-      const executionPromise = this.executor.execute(step, ctx)
-        .then((result) => {
-          output = result;
-        })
-        .finally(() => {
-          eventQueue.close();
-        });
-
-      // Yield events as they arrive during execution
-      for await (const event of eventQueue) {
-        yield event;
-      }
-
-      // Await the execution result (may throw)
-      await executionPromise;
+      // Model method tasks delegate to the step executor.
+      // withEventBridge lets the executor push events via callback
+      // while we yield them into the parent stream.
+      const output = yield* withEventBridge<
+        WorkflowExecutionEvent,
+        unknown
+      >((push) => {
+        const ctx: StepExecutionContext = {
+          workflowId: workflow.id,
+          workflowRunId: run.id,
+          workflowName: workflow.name,
+          jobName: job.name,
+          stepName,
+          repoDir: this.repoDir,
+          signal: options.signal ?? new AbortController().signal,
+          expressionContext: stepExprContext,
+          workflowRun: run,
+          step,
+          useLastEvaluated: options.lastEvaluated,
+          forEachVariable: forEachVar,
+          workflowTags: options.workflowTags,
+          runtimeTags: options.runtimeTags,
+          secretRedactor: options.secretRedactor,
+          emitEvent: push,
+        };
+        return this.executor.execute(step, ctx);
+      });
 
       // Track data artifacts and update expression context if this was a model method
       if (step.task.isModelMethod() && output && typeof output === "object") {
@@ -1351,7 +1316,7 @@ export class WorkflowExecutionService {
       }
 
       stepRun.succeed(output);
-      yield { step: "step_completed", jobId: job.name, stepId: stepName };
+      yield { kind: "step_completed", jobId: job.name, stepId: stepName };
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message
@@ -1362,7 +1327,7 @@ export class WorkflowExecutionService {
         stepRun.markAllowedFailure();
       }
       yield {
-        step: "step_failed",
+        kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
@@ -1396,7 +1361,7 @@ export class WorkflowExecutionService {
         }.`;
       stepRun.fail(errorMessage);
       yield {
-        step: "step_failed",
+        kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
@@ -1412,7 +1377,7 @@ export class WorkflowExecutionService {
         `A workflow cannot invoke itself directly or indirectly.`;
       stepRun.fail(errorMessage);
       yield {
-        step: "step_failed",
+        kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
@@ -1452,7 +1417,7 @@ export class WorkflowExecutionService {
           ancestorWorkflowIds: childAncestors,
         })
       ) {
-        if (event.step === "completed") {
+        if (event.kind === "completed") {
           childRun = event.run;
         } else {
           yield event; // Forward child events to parent stream
@@ -1464,7 +1429,7 @@ export class WorkflowExecutionService {
         : String(error);
       stepRun.fail(errorMessage);
       yield {
-        step: "step_failed",
+        kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
@@ -1476,7 +1441,7 @@ export class WorkflowExecutionService {
       const errorMessage = `Nested workflow "${task.workflowIdOrName}" failed.`;
       stepRun.fail(errorMessage);
       yield {
-        step: "step_failed",
+        kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
@@ -1490,7 +1455,7 @@ export class WorkflowExecutionService {
       runId: childRun.id,
       status: childRun.status,
     });
-    yield { step: "step_completed", jobId: job.name, stepId: stepName };
+    yield { kind: "step_completed", jobId: job.name, stepId: stepName };
   }
 
   private shouldJobRun(job: Job, run: WorkflowRun): boolean {

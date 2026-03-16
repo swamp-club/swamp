@@ -42,10 +42,10 @@ export interface WhoamiIdentity {
 }
 
 export type AuthWhoamiEvent =
-  | { step: "loading_credentials" }
-  | { step: "contacting_server"; serverUrl: string }
-  | { step: "completed"; identity: WhoamiIdentity }
-  | { step: "error"; error: SwampError };
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "completed"; identity: WhoamiIdentity }
+  | { kind: "error"; error: SwampError };
 
 /** Dependencies for the whoami operation, injected for testability. */
 export interface AuthDeps {
@@ -78,16 +78,16 @@ export async function* whoami(
   ctx: LibSwampContext,
   deps: AuthDeps,
 ): AsyncIterable<AuthWhoamiEvent> {
-  yield { step: "loading_credentials" };
+  yield { kind: "loading_credentials" };
 
   const credentials = await deps.loadCredentials();
   if (!credentials) {
-    yield { step: "error", error: notAuthenticated() };
+    yield { kind: "error", error: notAuthenticated() };
     return;
   }
 
   const serverUrl = deps.serverUrlOverride ?? credentials.serverUrl;
-  yield { step: "contacting_server", serverUrl };
+  yield { kind: "contacting_server", serverUrl };
 
   try {
     const response = await deps.fetchWhoami(
@@ -97,13 +97,13 @@ export async function* whoami(
     );
 
     if (!response.authenticated) {
-      yield { step: "error", error: invalidApiKey() };
+      yield { kind: "error", error: invalidApiKey() };
       return;
     }
 
     const collectives = getCollectives(response);
     yield {
-      step: "completed",
+      kind: "completed",
       identity: {
         serverUrl,
         id: response.id!,
@@ -117,7 +117,7 @@ export async function* whoami(
     if (
       error instanceof DOMException && error.name === "AbortError"
     ) {
-      yield { step: "error", error: cancelled(error) };
+      yield { kind: "error", error: cancelled(error) };
       return;
     }
     throw error;

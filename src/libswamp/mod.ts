@@ -57,6 +57,7 @@ export {
   type WorkflowRunEvent,
   type WorkflowRunInput,
 } from "./workflows/run.ts";
+export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
 export {
   type DataArtifactRefData,
   type JobRunView,

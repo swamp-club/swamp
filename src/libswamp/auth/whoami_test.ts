@@ -71,10 +71,10 @@ Deno.test("whoami yields loading_credentials -> contacting_server -> completed o
   const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
 
   assertEquals(events, [
-    { step: "loading_credentials" },
-    { step: "contacting_server", serverUrl: "https://swamp.club" },
+    { kind: "loading_credentials" },
+    { kind: "contacting_server", serverUrl: "https://swamp.club" },
     {
-      step: "completed",
+      kind: "completed",
       identity: {
         serverUrl: "https://swamp.club",
         id: "user-1",
@@ -94,9 +94,9 @@ Deno.test("whoami yields not_authenticated error when no credentials", async () 
   const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
 
   assertEquals(events.length, 2);
-  assertEquals(events[0], { step: "loading_credentials" });
-  const last = events[1] as Extract<AuthWhoamiEvent, { step: "error" }>;
-  assertEquals(last.step, "error");
+  assertEquals(events[0], { kind: "loading_credentials" });
+  const last = events[1] as Extract<AuthWhoamiEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_authenticated");
 });
 
@@ -110,13 +110,13 @@ Deno.test("whoami yields invalid_api_key error when server says not authenticate
   const events = await collect<AuthWhoamiEvent>(whoami(ctx, deps));
 
   assertEquals(events.length, 3);
-  assertEquals(events[0], { step: "loading_credentials" });
+  assertEquals(events[0], { kind: "loading_credentials" });
   assertEquals(events[1], {
-    step: "contacting_server",
+    kind: "contacting_server",
     serverUrl: "https://swamp.club",
   });
-  const last = events[2] as Extract<AuthWhoamiEvent, { step: "error" }>;
-  assertEquals(last.step, "error");
+  const last = events[2] as Extract<AuthWhoamiEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
   assertEquals(last.error.code, "invalid_api_key");
 });
 
@@ -136,7 +136,7 @@ Deno.test("whoami uses serverUrlOverride when provided", async () => {
 
   assertEquals(fetchedUrls, ["https://custom.server"]);
   assertEquals(events[1], {
-    step: "contacting_server",
+    kind: "contacting_server",
     serverUrl: "https://custom.server",
   });
 });
@@ -158,9 +158,9 @@ Deno.test("whoami excludes collectives when response has no organizations", asyn
 
   const completed = events[2] as Extract<
     AuthWhoamiEvent,
-    { step: "completed" }
+    { kind: "completed" }
   >;
-  assertEquals(completed.step, "completed");
+  assertEquals(completed.kind, "completed");
   assertEquals(completed.identity.collectives, undefined);
 });
 
@@ -181,8 +181,8 @@ Deno.test("whoami yields cancelled error when signal is already aborted", async 
 
   const last = events[events.length - 1] as Extract<
     AuthWhoamiEvent,
-    { step: "error" }
+    { kind: "error" }
   >;
-  assertEquals(last.step, "error");
+  assertEquals(last.kind, "error");
   assertEquals(last.error.code, "cancelled");
 });

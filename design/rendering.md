@@ -144,8 +144,35 @@ During `workflow run`, step execution output (model discovery, method execution,
 process stdout/stderr) flows through the event stream via `model_resolved`,
 `method_executing`, and `method_output` events. The domain layer
 (`DefaultStepExecutor`) pushes these events through a callback on
-`StepExecutionContext`, and `runStep()` uses an `AsyncQueue` bridge to yield
+`StepExecutionContext`, and `runStep()` uses `withEventBridge()` to yield
 them into the parent event stream.
+
+`withEventBridge()` (in `infrastructure/stream/event_bridge.ts`) is a reusable
+utility that bridges Promise-returning code into an AsyncGenerator. It creates
+an `AsyncQueue`, passes a `push` callback to the function, and yields events as
+they arrive. When the promise settles, the generator completes.
+
+### Domain events from deep layers: `MethodExecutionEvent`
+
+Code deeper in the domain (data writers, vault storage) can't emit workflow
+events directly — it has no knowledge of job/step topology. Instead, these
+layers emit topology-agnostic `MethodExecutionEvent` values via an `onEvent`
+callback on `MethodContext`.
+
+```typescript
+// domain/models/method_events.ts
+type MethodExecutionEvent =
+  | { type: "vault_secret_stored"; fieldPath: string; vaultName: string; vaultKey: string }
+  | { type: "schema_validation_warning"; specName: string; instanceName: string; error: string };
+```
+
+The workflow execution layer wraps these into `method_event` workflow events
+by adding the topology context (jobId, stepId, modelName, methodName). The
+callback chain is:
+
+```
+StepExecutionContext.emitEvent → MethodContext.onEvent → DataWriter/VaultStorage
+```
 
 The `LogWorkflowRunRenderer` uses `getRunLogger(modelName, methodName)` to
 present these events — preserving the existing `model·method·run·<name>·<method>`
@@ -158,11 +185,8 @@ implementation details, not domain signals.
 
 ### Infrastructure warnings
 
-Some infrastructure-level warnings remain as direct logger calls rather than
-events: vault deprecation warnings (setup-time diagnostics), schema mismatch
-warnings in `DataWriter` (data quality). These are system-health diagnostics,
-not command output. The `emitEvent` callback pattern established for step
-execution is available for deeper layers to adopt as needed.
+Vault deprecation warnings (setup-time diagnostics) remain as direct logger
+calls — these are system-health diagnostics outside the step execution context.
 
 ## Example: `auth whoami`
 
@@ -173,10 +197,10 @@ the server, and returns an identity.
 
 ```typescript
 type AuthWhoamiEvent =
-  | { step: "loading_credentials" }
-  | { step: "contacting_server"; serverUrl: string }
-  | { step: "completed"; identity: WhoamiIdentity }
-  | { step: "error"; error: SwampError };
+  | { kind: "loading_credentials" }
+  | { kind: "contacting_server"; serverUrl: string }
+  | { kind: "completed"; identity: WhoamiIdentity }
+  | { kind: "error"; error: SwampError };
 ```
 
 ### Log-mode renderer
@@ -266,21 +290,22 @@ A long-running operation with streaming progress from parallel jobs and steps.
 
 ```typescript
 type WorkflowRunEvent =
-  | { step: "validating_inputs" }
-  | { step: "evaluating_workflow" }
-  | { step: "started"; runId: string; workflowName: string }
-  | { step: "job_started"; jobId: string }
-  | { step: "job_completed"; jobId: string; status: string }
-  | { step: "job_skipped"; jobId: string }
-  | { step: "step_started"; jobId: string; stepId: string }
-  | { step: "step_completed"; jobId: string; stepId: string }
-  | { step: "step_skipped"; jobId: string; stepId: string }
-  | { step: "step_failed"; jobId: string; stepId: string; error: string; allowedFailure?: boolean }
-  | { step: "model_resolved"; jobId: string; stepId: string; modelName: string; modelType: string; methodName: string }
-  | { step: "method_executing"; jobId: string; stepId: string; modelName: string; methodName: string }
-  | { step: "method_output"; jobId: string; stepId: string; modelName: string; methodName: string; stream: "stdout" | "stderr"; line: string }
-  | { step: "completed"; run: WorkflowRunData }
-  | { step: "error"; error: SwampError };
+  | { kind: "validating_inputs" }
+  | { kind: "evaluating_workflow" }
+  | { kind: "started"; runId: string; workflowName: string }
+  | { kind: "job_started"; jobId: string }
+  | { kind: "job_completed"; jobId: string; status: string }
+  | { kind: "job_skipped"; jobId: string }
+  | { kind: "step_started"; jobId: string; stepId: string }
+  | { kind: "step_completed"; jobId: string; stepId: string }
+  | { kind: "step_skipped"; jobId: string; stepId: string }
+  | { kind: "step_failed"; jobId: string; stepId: string; error: string; allowedFailure?: boolean }
+  | { kind: "model_resolved"; jobId: string; stepId: string; modelName: string; modelType: string; methodName: string }
+  | { kind: "method_executing"; jobId: string; stepId: string; modelName: string; methodName: string }
+  | { kind: "method_output"; jobId: string; stepId: string; modelName: string; methodName: string; stream: "stdout" | "stderr"; line: string }
+  | { kind: "method_event"; jobId: string; stepId: string; modelName: string; methodName: string; event: MethodExecutionEvent }
+  | { kind: "completed"; run: WorkflowRunView }
+  | { kind: "error"; error: SwampError };
 ```
 
 ### Log-mode renderer
@@ -353,6 +378,19 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           logger.warn(e.line);
         } else {
           logger.info(e.line);
+        }
+      },
+      method_event: (e) => {
+        const logger = getRunLogger(e.modelName, e.methodName);
+        switch (e.event.type) {
+          case "vault_secret_stored":
+            logger.info("Stored sensitive field '{fieldPath}' in vault '{vaultName}'",
+              { fieldPath: e.event.fieldPath, vaultName: e.event.vaultName });
+            break;
+          case "schema_validation_warning":
+            logger.warn("Resource '{specName}' data does not match schema: {error}",
+              { specName: e.event.specName, error: e.event.error });
+            break;
         }
       },
       completed: (e) => {
@@ -434,6 +472,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       model_resolved: () => {},
       method_executing: () => {},
       method_output: () => {},
+      method_event: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
