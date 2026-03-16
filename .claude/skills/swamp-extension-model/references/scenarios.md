@@ -110,7 +110,9 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored customer ID
-        const stored = await context.readResource!("primary") as CustomerData | null;
+        const stored = await context.readResource!("primary") as
+          | CustomerData
+          | null;
 
         if (!stored) {
           throw new Error("No customer found - run create first");
@@ -298,7 +300,9 @@ export const model = {
         const { bucketName, versioning } = context.globalArgs;
 
         // Read existing data
-        const existingData = await context.readResource!("main") as BucketData | null;
+        const existingData = await context.readResource!("main") as
+          | BucketData
+          | null;
 
         if (!existingData) {
           throw new Error("No bucket found - run create first");
@@ -340,7 +344,9 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored data to get bucket name
-        const bucketData = await context.readResource!("main") as BucketData | null;
+        const bucketData = await context.readResource!("main") as
+          | BucketData
+          | null;
 
         if (!bucketData) {
           context.logger.info("No bucket found - nothing to delete");
@@ -376,7 +382,9 @@ export const model = {
       arguments: z.object({}),
       execute: async (_args, context) => {
         // Read stored data to get bucket name
-        const bucketData = await context.readResource!("main") as BucketData | null;
+        const bucketData = await context.readResource!("main") as
+          | BucketData
+          | null;
 
         if (!bucketData) {
           throw new Error("No bucket found - run create first");
