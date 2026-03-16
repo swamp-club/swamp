@@ -619,38 +619,40 @@ export async function acquireModelLocks(
   }
 
   return async () => {
-    // For S3 datastores: push changes BEFORE releasing per-model locks.
-    // This prevents another process from acquiring the same per-model lock,
-    // pulling stale data from S3, and overwriting our local changes.
-    if (s3SyncService && config.type === "s3") {
-      const pushLock = createDatastoreLock(config);
-      try {
-        await pushLock.acquire();
-        logger.info`Pushing changes to S3...`;
-        const pushed = await s3SyncService.pushChanged();
-        if (pushed > 0) {
-          logger.info`Pushed ${pushed} file(s) to S3`;
-        }
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        logger.error("Failed to push changes to S3: {error}", {
-          error: msg,
-        });
-        throw new Error(
-          `S3 sync failed: could not push changes: ${msg}`,
-        );
-      } finally {
+    try {
+      // For S3 datastores: push changes BEFORE releasing per-model locks.
+      // This prevents another process from acquiring the same per-model lock,
+      // pulling stale data from S3, and overwriting our local changes.
+      if (s3SyncService && config.type === "s3") {
+        const pushLock = createDatastoreLock(config);
         try {
-          await pushLock.release();
-        } catch {
-          // Best-effort release
+          await pushLock.acquire();
+          logger.info`Pushing changes to S3...`;
+          const pushed = await s3SyncService.pushChanged();
+          if (pushed > 0) {
+            logger.info`Pushed ${pushed} file(s) to S3`;
+          }
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.error("Failed to push changes to S3: {error}", {
+            error: msg,
+          });
+          throw new Error(
+            `S3 sync failed: could not push changes: ${msg}`,
+          );
+        } finally {
+          try {
+            await pushLock.release();
+          } catch {
+            // Best-effort release
+          }
         }
       }
-    }
-
-    // Release per-model locks AFTER push completes
-    for (const key of lockKeys) {
-      await flushDatastoreSyncNamed(key);
+    } finally {
+      // Always release per-model locks, even if S3 push fails
+      for (const key of lockKeys) {
+        await flushDatastoreSyncNamed(key);
+      }
     }
   };
 }
