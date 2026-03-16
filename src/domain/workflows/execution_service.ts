@@ -78,6 +78,7 @@ import { join } from "@std/path";
 import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { merge } from "../../infrastructure/stream/merge.ts";
+import { AsyncQueue } from "../../infrastructure/stream/async_queue.ts";
 /**
  * Context for step execution.
  */
@@ -94,8 +95,8 @@ export interface StepExecutionContext {
   workflowRun?: WorkflowRun;
   /** The step being executed (for accessing data output overrides) */
   step?: Step;
-  /** Whether step executors should log execution details via LogTape */
-  enableStepLogging?: boolean;
+  /** Callback to emit events into the parent event stream */
+  emitEvent?: (event: WorkflowExecutionEvent) => void;
   /** When true, load previously-evaluated definitions instead of evaluating CEL */
   useLastEvaluated?: boolean;
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
@@ -187,9 +188,17 @@ export class DefaultStepExecutor implements StepExecutor {
     // Log via model method run logger (same categories as standalone)
     const runLogger = getRunLogger(originalDefinition.name, task.methodName);
 
-    runLogger.info("Found model {name} ({type})", {
+    runLogger.debug("Found model {name} ({type})", {
       name: originalDefinition.name,
       type: modelType.normalized,
+    });
+    ctx.emitEvent?.({
+      step: "model_resolved",
+      jobId: ctx.jobName,
+      stepId: ctx.stepName,
+      modelName: originalDefinition.name,
+      modelType: modelType.normalized,
+      methodName: task.methodName,
     });
 
     // Get the model definition from registry
@@ -219,7 +228,7 @@ export class DefaultStepExecutor implements StepExecutor {
     let stepInputs: Record<string, unknown> = {};
     if (ctx.useLastEvaluated) {
       // Load previously-evaluated definition from cache
-      runLogger?.info("Loading last evaluated definition");
+      runLogger?.debug("Loading last evaluated definition");
       const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(
         ctx.repoDir,
       );
@@ -240,7 +249,7 @@ export class DefaultStepExecutor implements StepExecutor {
         stepInputs = task.inputs;
       }
     } else if (ctx.expressionContext) {
-      runLogger.info("Evaluating expressions");
+      runLogger.debug("Evaluating expressions");
       // Set self context for this specific model before evaluating
       // Preserve any forEach variables that were set by the workflow engine
       const forEachVars: Record<string, unknown> = {};
@@ -347,8 +356,15 @@ export class DefaultStepExecutor implements StepExecutor {
     const files: Record<string, Record<string, FileDataRecord>> = {};
 
     try {
-      runLogger.info("Executing method {method}", {
+      runLogger.debug("Executing method {method}", {
         method: task.methodName,
+      });
+      ctx.emitEvent?.({
+        step: "method_executing",
+        jobId: ctx.jobName,
+        stepId: ctx.stepName,
+        modelName: originalDefinition.name,
+        methodName: task.methodName,
       });
 
       // Build workflow-specific tag overrides
@@ -415,6 +431,19 @@ export class DefaultStepExecutor implements StepExecutor {
           dataOutputOverrides: stepDataOutputOverrides,
           vaultService,
           redactor: ctx.secretRedactor,
+          onOutput: ctx.emitEvent
+            ? (line: string, stream: "stdout" | "stderr") => {
+              ctx.emitEvent!({
+                step: "method_output",
+                jobId: ctx.jobName,
+                stepId: ctx.stepName,
+                modelName: originalDefinition.name,
+                methodName: task.methodName,
+                stream,
+                line,
+              });
+            }
+            : undefined,
         },
       );
 
@@ -442,7 +471,7 @@ export class DefaultStepExecutor implements StepExecutor {
             handle.name,
             handle.version,
           );
-          runLogger.info("Data saved to {path}", { path: dataPath });
+          runLogger.debug("Data saved to {path}", { path: dataPath });
 
           // Build context data from handles (nested under specName → instanceName)
           if (handle.kind === "resource") {
@@ -503,7 +532,7 @@ export class DefaultStepExecutor implements StepExecutor {
       output.markSucceeded();
       await outputRepo.save(modelType, task.methodName, output);
 
-      runLogger.with({ summary: true }).info(
+      runLogger.with({ summary: true }).debug(
         "Method {method} completed on {model}",
         { method: task.methodName, model: originalDefinition.name },
       );
@@ -525,7 +554,7 @@ export class DefaultStepExecutor implements StepExecutor {
       output.markFailed({ message: errorMessage, stack: errorStack });
       await outputRepo.save(modelType, task.methodName, output);
 
-      runLogger.error("Method {method} failed: {error}", {
+      runLogger.debug("Method {method} failed: {error}", {
         method: task.methodName,
         model: originalDefinition.name,
         error: errorMessage,
@@ -636,13 +665,36 @@ export type WorkflowExecutionEvent =
     error: string;
     allowedFailure?: boolean;
   }
+  | {
+    step: "model_resolved";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    modelType: string;
+    methodName: string;
+  }
+  | {
+    step: "method_executing";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+  }
+  | {
+    step: "method_output";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    methodName: string;
+    stream: "stdout" | "stderr";
+    line: string;
+  }
   | { step: "completed"; run: WorkflowRun };
 
 /**
  * Internal options bundle passed through runJob/runStep to reduce parameter count.
  */
 interface StepOptions {
-  enableStepLogging?: boolean;
   lastEvaluated?: boolean;
   workflowNestingDepth?: number;
   ancestorWorkflowIds?: Set<string>;
@@ -682,7 +734,6 @@ export class WorkflowExecutionService {
   async *run(
     idOrName: string,
     options?: {
-      enableStepLogging?: boolean;
       lastEvaluated?: boolean;
       inputs?: Record<string, unknown>;
       runtimeTags?: Record<string, string>;
@@ -783,7 +834,6 @@ export class WorkflowExecutionService {
     await this.saveRun(workflow.id, run);
 
     const stepOpts: StepOptions = {
-      enableStepLogging: options?.enableStepLogging,
       lastEvaluated: options?.lastEvaluated,
       workflowNestingDepth: options?.workflowNestingDepth,
       ancestorWorkflowIds: options?.ancestorWorkflowIds,
@@ -836,7 +886,6 @@ export class WorkflowExecutionService {
   async execute(
     idOrName: string,
     options?: {
-      enableStepLogging?: boolean;
       lastEvaluated?: boolean;
       inputs?: Record<string, unknown>;
       runtimeTags?: Record<string, string>;
@@ -1195,6 +1244,10 @@ export class WorkflowExecutionService {
       }
 
       // Model method tasks delegate to the step executor
+      // Use AsyncQueue as a bridge so the executor can push events
+      // while we yield them into the parent stream
+      const eventQueue = new AsyncQueue<WorkflowExecutionEvent>();
+
       const ctx: StepExecutionContext = {
         workflowId: workflow.id,
         workflowRunId: run.id,
@@ -1205,15 +1258,31 @@ export class WorkflowExecutionService {
         expressionContext: stepExprContext,
         workflowRun: run,
         step,
-        enableStepLogging: options.enableStepLogging,
         useLastEvaluated: options.lastEvaluated,
         forEachVariable: forEachVar,
         workflowTags: options.workflowTags,
         runtimeTags: options.runtimeTags,
         secretRedactor: options.secretRedactor,
+        emitEvent: (event: WorkflowExecutionEvent) => eventQueue.push(event),
       };
 
-      const output = await this.executor.execute(step, ctx);
+      // Start execution — it pushes events to the queue and closes it on completion
+      let output: unknown;
+      const executionPromise = this.executor.execute(step, ctx)
+        .then((result) => {
+          output = result;
+        })
+        .finally(() => {
+          eventQueue.close();
+        });
+
+      // Yield events as they arrive during execution
+      for await (const event of eventQueue) {
+        yield event;
+      }
+
+      // Await the execution result (may throw)
+      await executionPromise;
 
       // Track data artifacts and update expression context if this was a model method
       if (step.task.isModelMethod() && output && typeof output === "object") {
@@ -1378,7 +1447,6 @@ export class WorkflowExecutionService {
     try {
       for await (
         const event of childService.run(task.workflowIdOrName, {
-          enableStepLogging: options.enableStepLogging,
           inputs: evaluatedInputs,
           workflowNestingDepth: depth + 1,
           ancestorWorkflowIds: childAncestors,
