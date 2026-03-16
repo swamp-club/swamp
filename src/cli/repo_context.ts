@@ -25,7 +25,7 @@
  * - Throwing clear errors when not initialized
  */
 
-import { isAbsolute, join, resolve } from "@std/path";
+import { isAbsolute, join, relative, resolve } from "@std/path";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   createRepositoryContext,
@@ -44,7 +44,7 @@ import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
-import { ensureDir } from "@std/fs";
+import { ensureDir, walk } from "@std/fs";
 import { S3CacheSyncService } from "../infrastructure/persistence/s3_cache_sync.ts";
 import {
   flushDatastoreSyncNamed,
@@ -259,6 +259,10 @@ export async function requireInitializedRepo(
       }
     }
 
+    // Wait for any held per-model locks to be released before acquiring global lock.
+    // This prevents the global lock from racing with in-progress per-model operations.
+    await waitForPerModelLocks(datastoreConfig.path);
+
     // Wire file-based lock for filesystem datastores
     const lock = new FileLock(datastoreConfig.path);
     await registerDatastoreSync({ lock });
@@ -408,6 +412,69 @@ export function createModelLock(
 }
 
 /**
+ * Waits for any held per-model locks to be released.
+ *
+ * Called before acquiring the global lock so that structural commands
+ * (data gc, model create/delete) don't race with in-progress per-model
+ * operations. Only works for filesystem datastores — S3 datastores use
+ * distributed locks that cannot be scanned locally.
+ */
+async function waitForPerModelLocks(datastorePath: string): Promise<void> {
+  const logger = getSwampLogger(["datastore", "lock"]);
+
+  const findModelLocks = async (): Promise<number> => {
+    let count = 0;
+    try {
+      for await (
+        const entry of walk(datastorePath, {
+          includeDirs: false,
+          match: [/\.lock$/],
+        })
+      ) {
+        const rel = relative(datastorePath, entry.path);
+        const parts = rel.split("/");
+        // Match pattern: data/{modelType}/{modelId}/.lock
+        if (
+          parts.length === 4 && parts[0] === "data" && parts[3] === ".lock"
+        ) {
+          try {
+            const content = await Deno.readTextFile(entry.path);
+            const info = JSON.parse(content) as {
+              acquiredAt: string;
+              ttlMs: number;
+            };
+            // Only count non-stale locks
+            const acquiredAt = new Date(info.acquiredAt).getTime();
+            if (Date.now() - acquiredAt <= info.ttlMs) {
+              count++;
+            }
+          } catch {
+            // Skip unreadable lock files
+          }
+        }
+      }
+    } catch {
+      // Datastore directory may not exist yet
+    }
+    return count;
+  };
+
+  const held = await findModelLocks();
+  if (held > 0) {
+    logger.info(
+      "Waiting for {count} per-model lock(s) to be released before acquiring global lock",
+      { count: held },
+    );
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      const remaining = await findModelLocks();
+      if (remaining === 0) break;
+    }
+    logger.info`Per-model locks released, proceeding with global lock`;
+  }
+}
+
+/**
  * Acquires per-model locks in sorted order (deadlock prevention).
  *
  * Checks for the global `.datastore.lock` before acquiring per-model locks.
@@ -506,9 +573,13 @@ export async function acquireModelLocks(
           logger.info`Synced ${pulled} file(s) from S3 for model`;
         }
       } catch (error) {
-        logger.warn("Failed to pull model data from S3: {error}", {
-          error: error instanceof Error ? error.message : String(error),
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error("Failed to pull model data from S3: {error}", {
+          error: msg,
         });
+        throw new Error(
+          `S3 sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,
+        );
       }
     }
   }
@@ -532,9 +603,13 @@ export async function acquireModelLocks(
           logger.info`Pushed ${pushed} file(s) to S3`;
         }
       } catch (error) {
-        logger.warn("Failed to push changes to S3: {error}", {
-          error: error instanceof Error ? error.message : String(error),
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error("Failed to push changes to S3: {error}", {
+          error: msg,
         });
+        throw new Error(
+          `S3 sync failed: could not push changes: ${msg}`,
+        );
       } finally {
         try {
           await pushLock.release();

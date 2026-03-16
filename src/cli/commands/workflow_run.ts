@@ -372,8 +372,17 @@ export const workflowRunCommand = new Command()
         }
       }
     } catch (error) {
-      // Release per-model locks on error
-      if (flushModelLocks) await flushModelLocks();
+      // Release per-model locks on error (best-effort — don't lose original error)
+      try {
+        if (flushModelLocks) await flushModelLocks();
+      } catch (releaseError) {
+        const logger = getSwampLogger(["workflow", "run"]);
+        logger.warn("Failed to release locks during error cleanup: {error}", {
+          error: releaseError instanceof Error
+            ? releaseError.message
+            : String(releaseError),
+        });
+      }
 
       if (error instanceof UserError) {
         throw error;

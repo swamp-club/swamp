@@ -442,7 +442,18 @@ export const modelMethodRunCommand = new Command()
         runFileSink.unregister(runLogCategory);
 
         // Release per-model lock (and push to S3 for S3 datastores)
-        await flushModelLocks();
+        // Best-effort — don't replace the original error if flush fails
+        try {
+          await flushModelLocks();
+        } catch (releaseError) {
+          const releaseMsg = releaseError instanceof Error
+            ? releaseError.message
+            : String(releaseError);
+          runLogger.warn(
+            "Failed to release locks during cleanup: {error}",
+            { error: releaseMsg },
+          );
+        }
       }
 
       if (methodError) {
