@@ -136,9 +136,11 @@ export async function registerDatastoreSyncNamed(
         logger.info`S3 sync complete, already up to date`;
       }
     } catch (error) {
-      logger.warn("Failed to pull changes from S3: {error}", {
-        error: error instanceof Error ? error.message : String(error),
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error("Failed to pull changes from S3: {error}", {
+        error: msg,
       });
+      throw new Error(`S3 sync failed: could not pull changes: ${msg}`);
     }
   }
 }

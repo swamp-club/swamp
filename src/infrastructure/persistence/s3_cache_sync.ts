@@ -183,6 +183,7 @@ export class S3CacheSyncService {
 
     // Download concurrently in batches
     let pulled = 0;
+    const failedFiles: string[] = [];
     for (let i = 0; i < toPull.length; i += MAX_CONCURRENCY) {
       const batch = toPull.slice(i, i + MAX_CONCURRENCY);
       const results = await Promise.allSettled(
@@ -200,7 +201,21 @@ export class S3CacheSyncService {
           }
         }),
       );
-      pulled += results.filter((r) => r.status === "fulfilled").length;
+      for (let j = 0; j < results.length; j++) {
+        if (results[j].status === "fulfilled") {
+          pulled++;
+        } else {
+          failedFiles.push(batch[j]);
+        }
+      }
+    }
+
+    if (failedFiles.length > 0) {
+      throw new Error(
+        `Failed to pull ${failedFiles.length} file(s) from S3: ${
+          failedFiles.join(", ")
+        }`,
+      );
     }
 
     return pulled;
@@ -242,6 +257,7 @@ export class S3CacheSyncService {
 
     // Download concurrently in batches
     let pulled = 0;
+    const failedFiles: string[] = [];
     for (let i = 0; i < toPull.length; i += MAX_CONCURRENCY) {
       const batch = toPull.slice(i, i + MAX_CONCURRENCY);
       const results = await Promise.allSettled(
@@ -259,7 +275,21 @@ export class S3CacheSyncService {
           }
         }),
       );
-      pulled += results.filter((r) => r.status === "fulfilled").length;
+      for (let j = 0; j < results.length; j++) {
+        if (results[j].status === "fulfilled") {
+          pulled++;
+        } else {
+          failedFiles.push(batch[j]);
+        }
+      }
+    }
+
+    if (failedFiles.length > 0) {
+      throw new Error(
+        `Failed to pull ${failedFiles.length} file(s) from S3 for model ${modelType}/${modelId}: ${
+          failedFiles.join(", ")
+        }`,
+      );
     }
 
     return pulled;
@@ -407,12 +437,27 @@ export class S3CacheSyncService {
 
     // Upload concurrently in batches
     let pushed = 0;
+    const failedFiles: string[] = [];
     for (let i = 0; i < toPush.length; i += MAX_CONCURRENCY) {
       const batch = toPush.slice(i, i + MAX_CONCURRENCY);
       const results = await Promise.allSettled(
         batch.map((rel) => this.pushFile(rel)),
       );
-      pushed += results.filter((r) => r.status === "fulfilled").length;
+      for (let j = 0; j < results.length; j++) {
+        if (results[j].status === "fulfilled") {
+          pushed++;
+        } else {
+          failedFiles.push(batch[j]);
+        }
+      }
+    }
+
+    if (failedFiles.length > 0) {
+      throw new Error(
+        `Failed to push ${failedFiles.length} file(s) to S3: ${
+          failedFiles.join(", ")
+        }`,
+      );
     }
 
     // Push updated index if anything changed.
