@@ -217,7 +217,41 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     dryRun?: boolean;
   }): Promise<LifecycleGCResult> {
     const dryRun = options?.dryRun ?? false;
-    const expiredData = await this.findExpiredData();
+
+    // Single findAllGlobal() scan — reused for both expired-data detection
+    // and version GC's unique-model iteration
+    const allData = await this.dataRepo.findAllGlobal();
+
+    // Phase 1: Detect expired data (inline logic from findExpiredData)
+    const expiredData: ExpiredDataInfo[] = [];
+    for (const { data, modelType, modelId } of allData) {
+      if (data.isDeleted) continue;
+      try {
+        const isExpired = await this.isExpired(data);
+        if (isExpired) {
+          let reason: ExpiredDataInfo["reason"];
+          if (data.lifetime === "workflow" || data.lifetime === "job") {
+            reason = data.lifetime === "workflow"
+              ? "workflow-deleted"
+              : "job-deleted";
+          } else {
+            reason = "duration-expired";
+          }
+          expiredData.push({
+            type: modelType,
+            modelId,
+            dataName: data.name,
+            data,
+            reason,
+          });
+        }
+      } catch (error) {
+        console.error(
+          `Error checking data ${modelType.toDirectoryPath()}/${modelId}/${data.name}:`,
+          error,
+        );
+      }
+    }
 
     let versionsDeleted = 0;
     let bytesReclaimed = 0;
@@ -263,10 +297,9 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       });
     }
 
-    // Now run version-based garbage collection on all models
-    // This hard-deletes old versions based on garbageCollection policy
+    // Phase 2: Version-based garbage collection on all unique models
+    // Reuses the allData result from the single findAllGlobal() call
     if (!dryRun) {
-      const allData = await this.dataRepo.findAllGlobal();
       const seen = new Set<string>();
       for (const { modelType, modelId } of allData) {
         const key = `${modelType.toDirectoryPath()}/${modelId}`;
