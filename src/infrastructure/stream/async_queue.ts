@@ -52,6 +52,14 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     }
   }
 
+  /**
+   * Abort the queue with a reason. Closes the queue and resolves any
+   * waiting consumer with `done: true`, causing `for await` to exit.
+   */
+  abort(_reason?: unknown): void {
+    this.close();
+  }
+
   async *[Symbol.asyncIterator](): AsyncIterator<T> {
     while (true) {
       if (this.buffer.length > 0) {

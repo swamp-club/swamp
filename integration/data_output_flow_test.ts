@@ -135,7 +135,11 @@ Deno.test("Integration: full flow - create definition, run method, verify output
     const runOutput = JSON.parse(runResult.stdout);
     assertEquals(runOutput.modelName, "e2e-echo-model");
     assertEquals(runOutput.methodName, "execute");
-    assertEquals(runOutput.data !== undefined, true, "Should have data output");
+    assertEquals(
+      runOutput.dataArtifacts.length > 0,
+      true,
+      "Should have data output",
+    );
 
     // 3. List outputs and verify our execution appears
     const outputSearchResult = await runCliCommand(

@@ -22,9 +22,9 @@ import type { SwampError } from "./errors.ts";
 import { assertCompletes, assertErrors, collect } from "./testing.ts";
 
 type SimpleEvent =
-  | { step: "progress"; pct: number }
-  | { step: "completed"; result: string }
-  | { step: "error"; error: SwampError };
+  | { kind: "progress"; pct: number }
+  | { kind: "completed"; result: string }
+  | { kind: "error"; error: SwampError };
 
 async function* makeStream(
   events: SimpleEvent[],
@@ -37,13 +37,13 @@ async function* makeStream(
 Deno.test("collect accumulates all events", async () => {
   const events = await collect(
     makeStream([
-      { step: "progress", pct: 50 },
-      { step: "completed", result: "done" },
+      { kind: "progress", pct: 50 },
+      { kind: "completed", result: "done" },
     ]),
   );
   assertEquals(events, [
-    { step: "progress", pct: 50 },
-    { step: "completed", result: "done" },
+    { kind: "progress", pct: 50 },
+    { kind: "completed", result: "done" },
   ]);
 });
 
@@ -55,18 +55,18 @@ Deno.test("collect returns empty array for empty stream", async () => {
 Deno.test("assertCompletes succeeds when stream ends with expected completed event", async () => {
   const completed = await assertCompletes<SimpleEvent>(
     makeStream([
-      { step: "progress", pct: 100 },
-      { step: "completed", result: "ok" },
+      { kind: "progress", pct: 100 },
+      { kind: "completed", result: "ok" },
     ]),
-    { step: "completed", result: "ok" },
+    { kind: "completed", result: "ok" },
   );
-  assertEquals(completed, { step: "completed", result: "ok" });
+  assertEquals(completed, { kind: "completed", result: "ok" });
 });
 
 Deno.test("assertErrors succeeds when stream ends with expected error code", async () => {
   const error = await assertErrors<SimpleEvent>(
     makeStream([
-      { step: "error", error: { code: "test_error", message: "oops" } },
+      { kind: "error", error: { code: "test_error", message: "oops" } },
     ]),
     "test_error",
   );

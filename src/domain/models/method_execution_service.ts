@@ -345,6 +345,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       currentDefinition.name,
       context.vaultService,
       methodName,
+      context.onEvent,
     );
 
     const {
