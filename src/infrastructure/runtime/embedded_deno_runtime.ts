@@ -37,6 +37,7 @@ const DENO_BINARY_NAME = Deno.build.os === "windows" ? "deno.exe" : "deno";
  */
 export class EmbeddedDenoRuntime implements DenoRuntime {
   private cachedPath: string | null = null;
+  private extractionPromise: Promise<string> | null = null;
 
   async ensureDeno(): Promise<string> {
     if (this.cachedPath) {
@@ -51,8 +52,13 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
       return this.cachedPath;
     }
 
-    // Standalone mode: extract embedded binary
-    this.cachedPath = await this.extractEmbeddedDeno();
+    // Standalone mode: extract embedded binary.
+    // Share a single extraction promise so concurrent callers (e.g. parallel
+    // extension loaders) don't each spawn their own redundant extraction.
+    if (!this.extractionPromise) {
+      this.extractionPromise = this.extractEmbeddedDeno();
+    }
+    this.cachedPath = await this.extractionPromise;
     return this.cachedPath;
   }
 
