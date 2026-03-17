@@ -379,6 +379,36 @@ async function listFiles(dir: string): Promise<string[]> {
 }
 
 /**
+ * Recursively validates that no symlink under `path` resolves to a target
+ * outside `resolvedTmpDir`. Throws a UserError if a symlink escapes.
+ */
+/**
+ * Recursively validates that no symlink under `path` resolves to a target
+ * outside `resolvedTmpDir`. Throws a UserError if a symlink escapes.
+ */
+async function validateNoSymlinkEscape(
+  path: string,
+  resolvedTmpDir: string,
+): Promise<void> {
+  const stat = await Deno.lstat(path);
+  if (stat.isSymlink) {
+    // Resolve the symlink target relative to its parent directory so relative
+    // links like "../../etc/passwd" are caught even if the target doesn't exist.
+    const linkTarget = await Deno.readLink(path);
+    const resolvedTarget = resolve(join(path, "..", linkTarget));
+    if (!resolvedTarget.startsWith(resolvedTmpDir + "/")) {
+      throw new UserError(
+        `Archive contains a symlink that escapes the temp directory: ${path}`,
+      );
+    }
+  } else if (stat.isDirectory) {
+    for await (const entry of Deno.readDir(path)) {
+      await validateNoSymlinkEscape(join(path, entry.name), resolvedTmpDir);
+    }
+  }
+}
+
+/**
  * Detects files that already exist at target paths.
  */
 export async function detectConflicts(
@@ -633,6 +663,16 @@ export async function installExtension(
     // Log extracted files for debugging
     for (const entry of archiveEntries) {
       logger.debug`Archive contains: ${entry}`;
+    }
+
+    // Guard against symlink path traversal: scan extracted directory for any
+    // symlinks whose resolved target escapes tmpDir.
+    const resolvedTmpDir = resolve(tmpDir);
+    for await (const entry of Deno.readDir(extractDir)) {
+      await validateNoSymlinkEscape(
+        join(extractDir, entry.name),
+        resolvedTmpDir,
+      );
     }
 
     // Parse manifest
