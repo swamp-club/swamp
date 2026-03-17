@@ -352,16 +352,20 @@ export class UserModelLoader {
 
         // Defer self-contained bundling to first out-of-process execution (e.g. Docker).
         // Memoized so multiple executions in one process only bundle once.
-        let cachedBundle: string | undefined;
-        modelDef.bundleSourceFactory = async () => {
-          if (!cachedBundle) {
-            cachedBundle = await bundleExtension(
-              absolutePath,
-              denoPath,
-              { selfContained: true },
-            );
-          }
-          return cachedBundle;
+        // Uses promise-based memoization to avoid duplicate work under concurrent calls.
+        let bundlePromise: Promise<string> | undefined;
+        modelDef.bundleSourceFactory = () => {
+          bundlePromise ??= bundleExtension(
+            absolutePath,
+            denoPath,
+            { selfContained: true },
+          ).catch((error) => {
+            bundlePromise = undefined;
+            logger
+              .warn`Failed to create self-contained bundle for ${file}: ${error}`;
+            throw error;
+          });
+          return bundlePromise;
         };
 
         if (!modelRegistry.has(modelDef.type)) {
