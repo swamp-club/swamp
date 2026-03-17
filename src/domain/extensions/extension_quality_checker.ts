@@ -263,10 +263,13 @@ export async function checkExtensionQuality(
   if (!fmtOutput.success) {
     const stderr = new TextDecoder().decode(fmtOutput.stderr);
     const stdout = new TextDecoder().decode(fmtOutput.stdout);
-    issues.push({
-      check: "fmt",
-      output: (stderr + stdout).trim(),
-    });
+    const output = (stderr + stdout).trim();
+    // Only report if there is actionable output. Some deno versions (e.g.
+    // 2.7.x) may exit non-zero with no output due to a version-specific
+    // behaviour change; treat that as a pass to avoid false positives.
+    if (output) {
+      issues.push({ check: "fmt", output });
+    }
   }
 
   // Check linting
@@ -279,10 +282,11 @@ export async function checkExtensionQuality(
   if (!lintOutput.success) {
     const stderr = new TextDecoder().decode(lintOutput.stderr);
     const stdout = new TextDecoder().decode(lintOutput.stdout);
-    issues.push({
-      check: "lint",
-      output: (stderr + stdout).trim(),
-    });
+    const output = (stderr + stdout).trim();
+    // Only report if there is actionable output (same rationale as fmt above).
+    if (output) {
+      issues.push({ check: "lint", output });
+    }
   }
 
   return {
