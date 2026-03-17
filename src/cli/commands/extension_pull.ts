@@ -590,6 +590,30 @@ export async function installExtension(
     const archivePath = join(tmpDir, "extension.tar.gz");
     await Deno.writeFile(archivePath, archiveBytes);
 
+    // Guard against path traversal BEFORE extraction: list archive entries and
+    // reject any that contain ".." or start with "/" which could escape tmpDir.
+    const listCommand = new Deno.Command("tar", {
+      args: ["-tzf", archivePath],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const listOutput = await listCommand.output();
+    if (!listOutput.success) {
+      const stderr = new TextDecoder().decode(listOutput.stderr);
+      throw new UserError(`Failed to list archive contents: ${stderr}`);
+    }
+    const archiveEntries = new TextDecoder()
+      .decode(listOutput.stdout)
+      .split("\n")
+      .filter((e) => e.length > 0);
+    for (const entry of archiveEntries) {
+      if (entry.includes("..") || entry.startsWith("/")) {
+        throw new UserError(
+          `Archive contains unsafe path: ${entry}`,
+        );
+      }
+    }
+
     // Extract using tar
     // COPYFILE_DISABLE prevents macOS tar from creating ._ resource fork files
     const tarCommand = new Deno.Command("tar", {
@@ -607,19 +631,8 @@ export async function installExtension(
     const extractDir = join(tmpDir, "extension");
 
     // Log extracted files for debugging
-    const allExtractedFiles = await listFiles(extractDir);
-    for (const f of allExtractedFiles) {
-      logger.debug`Archive contains: ${relative(extractDir, f)}`;
-    }
-
-    // Guard against path traversal: every extracted file must be inside tmpDir
-    const resolvedTmpDir = resolve(tmpDir);
-    for (const f of allExtractedFiles) {
-      if (!resolve(f).startsWith(resolvedTmpDir + "/")) {
-        throw new UserError(
-          `Archive contains a path traversal entry: ${relative(tmpDir, f)}`,
-        );
-      }
+    for (const entry of archiveEntries) {
+      logger.debug`Archive contains: ${entry}`;
     }
 
     // Parse manifest
