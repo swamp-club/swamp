@@ -193,9 +193,15 @@ export class UserDatastoreLoader {
         relativePath.replace(/\.ts$/, ".js"),
       );
 
-      // Check mtime-based cache against all local dependencies
+      // Check mtime-based cache against all local dependencies.
+      // If the bundle exists but freshness cannot be determined (e.g. a
+      // dependency file is missing because the extension was pushed with an
+      // older swamp that had a single-line import regex), fall back to the
+      // cached bundle rather than attempting a re-bundle that will also fail.
+      let bundleExists = false;
       try {
         const bundleStat = await Deno.stat(bundlePath);
+        bundleExists = true;
         if (bundleStat.mtime) {
           const { resolvedFiles } = await resolveLocalImports(
             [absolutePath],
@@ -218,7 +224,11 @@ export class UserDatastoreLoader {
           }
         }
       } catch {
-        // Bundle doesn't exist, stat failed, or import resolution failed — rebundle
+        if (bundleExists) {
+          logger
+            .debug`Using cached datastore bundle for ${relativePath} (freshness check failed — missing dependency)`;
+          return await Deno.readTextFile(bundlePath);
+        }
       }
 
       // Bundle and write to cache
