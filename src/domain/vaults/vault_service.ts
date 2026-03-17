@@ -302,7 +302,7 @@ function assertVaultProvider(
 /**
  * Known renamed vault types and their current names.
  */
-const RENAMED_VAULT_TYPES: Record<string, string> = {
+export const RENAMED_VAULT_TYPES: Record<string, string> = {
   "aws": "@swamp/aws-sm",
   "aws-sm": "@swamp/aws-sm",
   "azure": "@swamp/azure-kv",

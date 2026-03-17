@@ -32,6 +32,7 @@ import {
   createVaultConfigId,
   VaultConfig,
 } from "../../domain/vaults/vault_config.ts";
+import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_service.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -125,6 +126,12 @@ export const vaultCreateCommand = new Command()
       // Validate the vault type using the registry
       const typeInfo = vaultTypeRegistry.get(vaultType);
       if (!typeInfo) {
+        const renamed = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
+        if (renamed) {
+          throw new UserError(
+            `The type '${vaultType}' has been renamed to '${renamed}'. Use: swamp vault create ${renamed} ${vaultName}`,
+          );
+        }
         const availableTypes = vaultTypeRegistry.getAll().map((v) => v.type)
           .join(", ");
         throw new UserError(
@@ -152,22 +159,20 @@ export const vaultCreateCommand = new Command()
       let providerConfig: Record<string, unknown>;
 
       if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
-        // Extension vault type: parse --config JSON
-        if (!options.config) {
-          throw new UserError(
-            `Vault type '${vaultType}' requires --config <json> with provider configuration.`,
-          );
-        }
-
-        try {
-          providerConfig = JSON.parse(options.config) as Record<
-            string,
-            unknown
-          >;
-        } catch {
-          throw new UserError(
-            `Invalid JSON in --config: ${options.config}`,
-          );
+        // Extension vault type: parse --config JSON, defaulting to {} if not provided
+        if (options.config) {
+          try {
+            providerConfig = JSON.parse(options.config) as Record<
+              string,
+              unknown
+            >;
+          } catch {
+            throw new UserError(
+              `Invalid JSON in --config: ${options.config}`,
+            );
+          }
+        } else {
+          providerConfig = {};
         }
 
         // Validate against configSchema if provided
