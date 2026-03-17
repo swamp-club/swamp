@@ -21,39 +21,43 @@ import { Command } from "@cliffy/command";
 import {
   consumeStream,
   createLibSwampContext,
-  createWorkflowGetDeps,
-  workflowGet,
+  createVaultDescribeDeps,
+  vaultDescribe,
 } from "../../libswamp/mod.ts";
-import { createWorkflowGetRenderer } from "../../presentation/renderers/workflow_get.ts";
+import { createVaultDescribeRenderer } from "../../presentation/renderers/vault_describe.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowGetCommand = new Command()
-  .name("get")
-  .description("Show details of a workflow")
-  .arguments("<workflow_id_or_name:workflow_name>")
+export const vaultDescribeCommand = new Command()
+  .name("describe")
+  .description("Describe a vault configuration")
+  .arguments("<vault_name_or_id:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, workflowIdOrName: string) {
-    const cliCtx = createContext(options as GlobalOptions, ["workflow", "get"]);
-    cliCtx.logger.debug`Getting workflow: ${workflowIdOrName}`;
+  .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
+  .action(async function (options: AnyOptions, vaultNameOrId: string) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "vault",
+      "describe",
+    ]);
+    cliCtx.logger.debug`Describing vault: ${vaultNameOrId}`;
 
     const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
+    const vaultType = options.type as string | undefined;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowGetDeps(repoDir);
+    const deps = createVaultDescribeDeps(repoDir);
 
-    const renderer = createWorkflowGetRenderer(cliCtx.outputMode);
+    const renderer = createVaultDescribeRenderer(cliCtx.outputMode);
     await consumeStream(
-      workflowGet(ctx, deps, workflowIdOrName),
+      vaultDescribe(ctx, deps, vaultNameOrId, vaultType),
       renderer.handlers(),
     );
 
-    cliCtx.logger.debug("Workflow get command completed");
+    cliCtx.logger.debug("Vault describe command completed");
   });
