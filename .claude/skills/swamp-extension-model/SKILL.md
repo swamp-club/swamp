@@ -21,6 +21,10 @@ extensions:
 3. If a community extension exists, install it instead of building from scratch
 4. Only create a custom model if nothing exists locally or in the community
 
+Note: Extensions from trusted collectives (`@swamp/*`, `@si/*`) auto-resolve on
+first use — no manual `extension pull` needed. Just reference the type and swamp
+installs the extension automatically.
+
 Extension models let you:
 
 - Integrate with any API or service (AWS S3, Stripe, custom APIs, etc.)
@@ -30,10 +34,12 @@ Extension models let you:
 **Example decision flow:**
 
 ```
-User wants to work with S3 buckets
-swamp model type search S3 → no local results
-swamp extension search S3 → no community extension
-No existing model → Create extensions/models/s3_bucket.ts
+User wants to work with DigitalOcean droplets
+swamp model type search droplet → no local results
+swamp model create @swamp/digitalocean/droplet my-droplet
+  → auto-resolves @swamp/digitalocean from registry
+  → installs and hot-loads 32 models
+  → creates my-droplet definition
 ```
 
 **Important:** Do not default to generic CLI types (like `command/shell`) for

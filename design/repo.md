@@ -43,6 +43,8 @@ attributes to control the behaviour of the swamp operations.
 - `vaults`: The swamp vault key specifies stores where sensitive data can be
   sent to and retrieved from when evaluating and running workflow steps.
   Multitple vaults can be specified for a each swamp repository.
+- `trustedCollectives`: List of collectives whose extensions auto-resolve on
+  first use. Default: `["swamp", "si"]`. Set to `[]` to disable.
 
 ## RepoIndexService
 

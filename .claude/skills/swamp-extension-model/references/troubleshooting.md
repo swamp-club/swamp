@@ -225,6 +225,18 @@ Models directory priority:
 | 2        | `.swamp.yaml` config | `modelsDir: "lib/models"`        |
 | 3        | Default              | `extensions/models`              |
 
+## Auto-Resolution Failures
+
+Extensions from trusted collectives auto-resolve on first use. If
+auto-resolution fails:
+
+| Symptom                       | Cause                                      | Fix                                                      |
+| ----------------------------- | ------------------------------------------ | -------------------------------------------------------- |
+| "no matching extension found" | Extension doesn't exist in registry        | `swamp extension search <query>` to find correct name    |
+| Network/timeout error         | Can't reach swamp.club                     | Check connectivity; manual: `swamp extension pull @name` |
+| Type not auto-resolving       | Collective not trusted                     | Add to `trustedCollectives` in `.swamp.yaml`             |
+| Silent "Unknown model type"   | Type uses non-`@` prefix or single segment | Use `@collective/name` format                            |
+
 ## Verification Commands
 
 ```bash
