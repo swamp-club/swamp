@@ -693,6 +693,7 @@ export async function installExtension(
     const extractedFiles: string[] = [];
 
     // Models → modelsDir
+    await Deno.mkdir(absoluteModelsDir, { recursive: true });
     const modelsExtracted = await copyDir(
       join(extractDir, "models"),
       absoluteModelsDir,
