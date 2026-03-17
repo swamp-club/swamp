@@ -41,3 +41,20 @@ export {
 } from "./datastore_health.ts";
 
 export { type DatastorePathResolver } from "./datastore_path_resolver.ts";
+
+export { type DatastoreSyncService } from "./datastore_sync_service.ts";
+
+export { type DatastoreProvider } from "./datastore_provider.ts";
+
+export {
+  type DatastoreTypeInfo,
+  DatastoreTypeRegistry,
+  datastoreTypeRegistry,
+} from "./datastore_type_registry.ts";
+
+export { getDatastoreType, getDatastoreTypes } from "./datastore_types.ts";
+
+export {
+  type DatastoreLoadResult,
+  UserDatastoreLoader,
+} from "./user_datastore_loader.ts";

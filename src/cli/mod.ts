@@ -53,9 +53,12 @@ import {
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
+import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
 
 // Import driver types barrel to trigger built-in driver registration
 import "../domain/drivers/driver_types.ts";
+// Import datastore types barrel to trigger built-in datastore registration
+import "../domain/datastore/datastore_types.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   type RepoMarkerData,
@@ -100,6 +103,8 @@ import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 export { resolveVaultsDir };
 import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 export { resolveDriversDir };
+import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
+export { resolveDatastoresDir };
 
 /**
  * Resolves the log level.
@@ -265,6 +270,43 @@ async function loadUserDrivers(repoDir: string): Promise<void> {
     // Not in a swamp repo or other error - log at debug level for troubleshooting
     if (Deno.env.get("SWAMP_DEBUG")) {
       console.debug(`Skipping user drivers: ${error}`);
+    }
+  }
+}
+
+async function loadUserDatastores(repoDir: string): Promise<void> {
+  const markerRepo = new RepoMarkerRepository();
+
+  try {
+    const repoPath = RepoPath.create(repoDir);
+    const marker = await markerRepo.read(repoPath);
+
+    const datastoresDir = resolveDatastoresDir(marker);
+    const absoluteDatastoresDir = isAbsolute(datastoresDir)
+      ? datastoresDir
+      : resolve(repoDir, datastoresDir);
+
+    const denoRuntime = new EmbeddedDenoRuntime();
+    const loader = new UserDatastoreLoader(denoRuntime, repoDir);
+    const result = await loader.loadDatastores(absoluteDatastoresDir);
+
+    // Log successes at debug level
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      for (const file of result.loaded) {
+        console.debug(`Loaded user datastore type from ${file}`);
+      }
+    }
+
+    // Log failures as warnings (don't block CLI startup)
+    for (const failure of result.failed) {
+      console.error(
+        `Warning: Failed to load user datastore ${failure.file}: ${failure.error}`,
+      );
+    }
+  } catch (error) {
+    // Not in a swamp repo or other error - log at debug level for troubleshooting
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      console.debug(`Skipping user datastores: ${error}`);
     }
   }
 }
@@ -439,6 +481,7 @@ export async function runCli(args: string[]): Promise<void> {
   await loadUserModels(repoDir);
   await loadUserVaults(repoDir);
   await loadUserDrivers(repoDir);
+  await loadUserDatastores(repoDir);
 
   // Read marker for resolveLogLevel (used in globalAction closure)
   let marker: RepoMarkerData | null = null;

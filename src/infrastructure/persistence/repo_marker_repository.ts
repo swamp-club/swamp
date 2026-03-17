@@ -40,6 +40,7 @@ export interface RepoMarkerData {
   workflowsDir?: string;
   vaultsDir?: string;
   driversDir?: string;
+  datastoresDir?: string;
   repoId?: string;
   telemetryEndpoint?: string;
   telemetryDisabled?: boolean;

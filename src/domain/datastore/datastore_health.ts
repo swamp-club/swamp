@@ -35,7 +35,7 @@ export interface DatastoreHealthResult {
   /** Latency of the health check in milliseconds */
   readonly latencyMs: number;
   /** Datastore type that was checked */
-  readonly datastoreType: "filesystem" | "s3";
+  readonly datastoreType: string;
   /** Additional details (e.g., path, bucket name) */
   readonly details?: Record<string, string>;
 }
