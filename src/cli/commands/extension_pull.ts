@@ -612,6 +612,16 @@ export async function installExtension(
       logger.debug`Archive contains: ${relative(extractDir, f)}`;
     }
 
+    // Guard against path traversal: every extracted file must be inside tmpDir
+    const resolvedTmpDir = resolve(tmpDir);
+    for (const f of allExtractedFiles) {
+      if (!resolve(f).startsWith(resolvedTmpDir + "/")) {
+        throw new UserError(
+          `Archive contains a path traversal entry: ${relative(tmpDir, f)}`,
+        );
+      }
+    }
+
     // Parse manifest
     let manifestContent: string;
     try {

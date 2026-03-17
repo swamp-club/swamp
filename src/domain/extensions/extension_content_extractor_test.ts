@@ -864,3 +864,318 @@ Deno.test("extractContentMetadata skips vault without type", async () => {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("extractContentMetadata extracts driver type, name, and description", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const driversDir = join(tmpDir, "drivers");
+    await Deno.mkdir(driversDir, { recursive: true });
+
+    const driverFile = join(driversDir, "s3.ts");
+    await Deno.writeTextFile(
+      driverFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const driver = {",
+        '  type: "@aws/s3",',
+        '  name: "AWS S3",',
+        '  description: "S3 object storage driver.",',
+        "  createDriver(name: string, config: Record<string, unknown>) {",
+        "    return { read: async () => new Uint8Array(), write: async () => {}, getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [driverFile],
+      driversDir,
+    );
+    assertEquals(result.drivers.length, 1);
+    assertEquals(result.drivers[0].type, "@aws/s3");
+    assertEquals(result.drivers[0].name, "AWS S3");
+    assertEquals(result.drivers[0].description, "S3 object storage driver.");
+    assertEquals(result.drivers[0].hasConfigSchema, false);
+    assertEquals(result.drivers[0].configFields, []);
+    assertEquals(result.drivers[0].fileName, "s3.ts");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts driver configSchema fields", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const driversDir = join(tmpDir, "drivers");
+    await Deno.mkdir(driversDir, { recursive: true });
+
+    const driverFile = join(driversDir, "custom.ts");
+    await Deno.writeTextFile(
+      driverFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const driver = {",
+        '  type: "@myorg/custom-driver",',
+        '  name: "Custom Driver",',
+        '  description: "A custom storage driver.",',
+        "  configSchema: z.object({",
+        '    bucket: z.string().describe("Bucket name"),',
+        '    region: z.string().optional().describe("AWS region"),',
+        "  }),",
+        "  createDriver(name: string, config: Record<string, unknown>) {",
+        "    return { read: async () => new Uint8Array(), write: async () => {}, getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [driverFile],
+      driversDir,
+    );
+    assertEquals(result.drivers[0].hasConfigSchema, true);
+    assertEquals(result.drivers[0].configFields.length, 2);
+    assertEquals(result.drivers[0].configFields[0].name, "bucket");
+    assertEquals(result.drivers[0].configFields[0].type, "string");
+    assertEquals(result.drivers[0].configFields[0].required, true);
+    assertEquals(result.drivers[0].configFields[1].name, "region");
+    assertEquals(result.drivers[0].configFields[1].required, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata skips driver file without driver export", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const driversDir = join(tmpDir, "drivers");
+    await Deno.mkdir(driversDir, { recursive: true });
+
+    const driverFile = join(driversDir, "helper.ts");
+    await Deno.writeTextFile(
+      driverFile,
+      "export const helper = () => 42;\n",
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [driverFile],
+      driversDir,
+    );
+    assertEquals(result.drivers.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata skips driver without type", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const driversDir = join(tmpDir, "drivers");
+    await Deno.mkdir(driversDir, { recursive: true });
+
+    const driverFile = join(driversDir, "bad.ts");
+    await Deno.writeTextFile(
+      driverFile,
+      [
+        "export const driver = {",
+        '  name: "Bad Driver",',
+        '  description: "Missing type field.",',
+        "  createDriver(name: string) {",
+        "    return { read: async () => new Uint8Array(), write: async () => {}, getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [driverFile],
+      driversDir,
+    );
+    assertEquals(result.drivers.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts datastore type, name, and description", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const datastoresDir = join(tmpDir, "datastores");
+    await Deno.mkdir(datastoresDir, { recursive: true });
+
+    const datastoreFile = join(datastoresDir, "postgres.ts");
+    await Deno.writeTextFile(
+      datastoreFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const datastore = {",
+        '  type: "@myorg/postgres",',
+        '  name: "PostgreSQL",',
+        '  description: "PostgreSQL datastore provider.",',
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { query: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [],
+      "",
+      [datastoreFile],
+      datastoresDir,
+    );
+    assertEquals(result.datastores.length, 1);
+    assertEquals(result.datastores[0].type, "@myorg/postgres");
+    assertEquals(result.datastores[0].name, "PostgreSQL");
+    assertEquals(
+      result.datastores[0].description,
+      "PostgreSQL datastore provider.",
+    );
+    assertEquals(result.datastores[0].hasConfigSchema, false);
+    assertEquals(result.datastores[0].configFields, []);
+    assertEquals(result.datastores[0].fileName, "postgres.ts");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts datastore configSchema fields", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const datastoresDir = join(tmpDir, "datastores");
+    await Deno.mkdir(datastoresDir, { recursive: true });
+
+    const datastoreFile = join(datastoresDir, "custom.ts");
+    await Deno.writeTextFile(
+      datastoreFile,
+      [
+        'import { z } from "npm:zod";',
+        "export const datastore = {",
+        '  type: "@myorg/custom-store",',
+        '  name: "Custom Store",',
+        '  description: "A custom datastore provider.",',
+        "  configSchema: z.object({",
+        '    host: z.string().describe("Database host"),',
+        '    port: z.number().optional().describe("Database port"),',
+        "  }),",
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { query: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [],
+      "",
+      [datastoreFile],
+      datastoresDir,
+    );
+    assertEquals(result.datastores[0].hasConfigSchema, true);
+    assertEquals(result.datastores[0].configFields.length, 2);
+    assertEquals(result.datastores[0].configFields[0].name, "host");
+    assertEquals(result.datastores[0].configFields[0].type, "string");
+    assertEquals(result.datastores[0].configFields[0].required, true);
+    assertEquals(result.datastores[0].configFields[1].name, "port");
+    assertEquals(result.datastores[0].configFields[1].required, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata skips datastore file without datastore export", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const datastoresDir = join(tmpDir, "datastores");
+    await Deno.mkdir(datastoresDir, { recursive: true });
+
+    const datastoreFile = join(datastoresDir, "helper.ts");
+    await Deno.writeTextFile(
+      datastoreFile,
+      "export const helper = () => 42;\n",
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [],
+      "",
+      [datastoreFile],
+      datastoresDir,
+    );
+    assertEquals(result.datastores.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata skips datastore without type", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const datastoresDir = join(tmpDir, "datastores");
+    await Deno.mkdir(datastoresDir, { recursive: true });
+
+    const datastoreFile = join(datastoresDir, "bad.ts");
+    await Deno.writeTextFile(
+      datastoreFile,
+      [
+        "export const datastore = {",
+        '  name: "Bad Store",',
+        '  description: "Missing type field.",',
+        "  createProvider(name: string) {",
+        "    return { query: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [],
+      "",
+      [datastoreFile],
+      datastoresDir,
+    );
+    assertEquals(result.datastores.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
