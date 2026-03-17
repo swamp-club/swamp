@@ -26,7 +26,7 @@ import {
 } from "../../presentation/output/vault_search_output.tsx";
 import {
   renderVaultDescribe,
-} from "../../presentation/output/vault_describe_output.ts";
+} from "../../presentation/renderers/vault_describe.ts";
 import {
   createContext,
   type GlobalOptions,

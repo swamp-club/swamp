@@ -19,10 +19,13 @@
 
 export { createLibSwampContext, type LibSwampContext } from "./context.ts";
 export {
+  alreadyExists,
   cancelled,
   invalidApiKey,
   notAuthenticated,
+  notFound,
   type SwampError,
+  validationFailed,
 } from "./errors.ts";
 export {
   consumeStream,
@@ -83,3 +86,87 @@ export {
   type DataArtifactView,
   type ModelMethodRunView,
 } from "./models/model_method_run_view.ts";
+export {
+  createModelGetDeps,
+  modelGet,
+  type ModelGetData,
+  type ModelGetDeps,
+  type ModelGetEvent,
+} from "./models/get.ts";
+export {
+  type ArtifactsData,
+  createModelOutputGetDeps,
+  type ErrorData,
+  type GlobalOutputInfo,
+  modelOutputGet,
+  type ModelOutputGetData,
+  type ModelOutputGetDeps,
+  type ModelOutputGetEvent,
+  type OutputInfo,
+  type ProvenanceData,
+} from "./models/output_get.ts";
+export {
+  createModelMethodDescribeDeps,
+  modelMethodDescribe,
+  type ModelMethodDescribeData,
+  type ModelMethodDescribeDeps,
+  type ModelMethodDescribeEvent,
+} from "./models/method_describe.ts";
+
+// Workflow get operations
+export {
+  createWorkflowGetDeps,
+  isUuid,
+  workflowGet,
+  type WorkflowGetData,
+  type WorkflowGetDeps,
+  type WorkflowGetEvent,
+} from "./workflows/get.ts";
+export {
+  createWorkflowHistoryGetDeps,
+  workflowHistoryGet,
+  type WorkflowHistoryGetDeps,
+  type WorkflowHistoryGetEvent,
+} from "./workflows/history_get.ts";
+
+// Vault operations
+export {
+  createVaultGetDeps,
+  type VaultConfigInfo,
+  vaultGet,
+  type VaultGetData,
+  type VaultGetDeps,
+  type VaultGetEvent,
+} from "./vaults/get.ts";
+export {
+  createVaultDescribeDeps,
+  vaultDescribe,
+  type VaultDescribeData,
+  type VaultDescribeDeps,
+  type VaultDescribeEvent,
+} from "./vaults/describe.ts";
+
+// Data operations
+export {
+  createDataGetDeps,
+  dataGet,
+  type DataGetData,
+  type DataGetDeps,
+  type DataGetEvent,
+  type DataGetInput,
+} from "./data/get.ts";
+
+// Type operations
+export {
+  createTypeDescribeDeps,
+  typeDescribe,
+  type TypeDescribeData,
+  type TypeDescribeDeps,
+  type TypeDescribeEvent,
+} from "./types/describe.ts";
+export {
+  type DataOutputSpecDescribeData,
+  type MethodDescribeData,
+  toMethodDescribeData,
+  zodToJsonSchema,
+} from "./types/schema_helpers.ts";

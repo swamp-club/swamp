@@ -51,3 +51,30 @@ export function cancelled(cause?: Error): SwampError {
     cause,
   };
 }
+
+export function notFound(entityType: string, idOrName: string): SwampError {
+  return {
+    code: "not_found",
+    message: `${entityType} not found: ${idOrName}`,
+    details: { entityType, idOrName },
+  };
+}
+
+export function alreadyExists(entityType: string, name: string): SwampError {
+  return {
+    code: "already_exists",
+    message: `${entityType} already exists: ${name}`,
+    details: { entityType, name },
+  };
+}
+
+export function validationFailed(
+  message: string,
+  details?: unknown,
+): SwampError {
+  return {
+    code: "validation_failed",
+    message,
+    details,
+  };
+}

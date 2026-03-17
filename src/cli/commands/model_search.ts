@@ -23,10 +23,8 @@ import {
   type ModelSearchItem,
   renderModelSearch,
 } from "../../presentation/output/model_search_output.tsx";
-import {
-  type ModelGetData,
-  renderModelGet,
-} from "../../presentation/output/model_get_output.ts";
+import type { ModelGetData } from "../../libswamp/models/get.ts";
+import { renderModelGet } from "../../presentation/renderers/model_get.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import {
   createContext,
