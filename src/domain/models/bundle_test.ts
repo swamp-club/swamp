@@ -24,6 +24,7 @@ import {
   bundleExtension,
   installZodGlobal,
   rewriteZodImports,
+  uint8ArrayToBase64,
 } from "./bundle.ts";
 
 const DENO_PATH = Deno.execPath();
@@ -47,9 +48,7 @@ async function importBundled(
 ): Promise<Record<string, unknown>> {
   installZodGlobal();
   const rewritten = rewriteZodImports(js);
-  const encoded = btoa(
-    String.fromCharCode(...new TextEncoder().encode(rewritten)),
-  );
+  const encoded = uint8ArrayToBase64(new TextEncoder().encode(rewritten));
   return await import(`data:application/javascript;base64,${encoded}`);
 }
 
@@ -258,4 +257,30 @@ Deno.test("rewriteZodImports handles single-quoted specifiers", () => {
   const input = `import { z } from 'npm:zod@4';`;
   const result = rewriteZodImports(input);
   assertEquals(result, `const { z } = globalThis.__swamp_zod;`);
+});
+
+// --- uint8ArrayToBase64 unit tests ---
+
+Deno.test("uint8ArrayToBase64 matches btoa for small input", () => {
+  const text = "hello world";
+  const bytes = new TextEncoder().encode(text);
+  const expected = btoa(text);
+  assertEquals(uint8ArrayToBase64(bytes), expected);
+});
+
+Deno.test("uint8ArrayToBase64 handles empty input", () => {
+  assertEquals(uint8ArrayToBase64(new Uint8Array(0)), btoa(""));
+});
+
+Deno.test("uint8ArrayToBase64 handles large input without stack overflow", () => {
+  // 1MB of data — would blow the stack with String.fromCharCode(...bytes)
+  const size = 1_000_000;
+  const bytes = new Uint8Array(size);
+  for (let i = 0; i < size; i++) {
+    bytes[i] = i % 256;
+  }
+  // Should not throw RangeError: Maximum call stack size exceeded
+  const result = uint8ArrayToBase64(bytes);
+  assertEquals(typeof result, "string");
+  assertEquals(result.length > 0, true);
 });

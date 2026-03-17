@@ -18,12 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import { dirname, join, resolve } from "@std/path";
+import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
   installZodGlobal,
   rewriteZodImports,
+  uint8ArrayToBase64,
 } from "../models/bundle.ts";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
@@ -253,20 +254,18 @@ export class UserDriverLoader {
         await Deno.stat(bundlePath);
         const cachedJs = await Deno.readTextFile(bundlePath);
         const rewrittenCached = rewriteZodImports(cachedJs);
-        const encoded = btoa(
-          String.fromCharCode(...new TextEncoder().encode(rewrittenCached)),
-        );
-        return await import(
-          `data:application/javascript;base64,${encoded}`
-        );
+        if (rewrittenCached !== cachedJs) {
+          await Deno.writeTextFile(bundlePath, rewrittenCached);
+        }
+        return await import(toFileUrl(bundlePath).href);
       } catch {
         // Fall through to data URL import
       }
     }
 
-    // Fallback: import via base64 data URL
-    const encoded = btoa(
-      String.fromCharCode(...new TextEncoder().encode(rewritten)),
+    // Fallback: import via base64 data URL (no file on disk)
+    const encoded = uint8ArrayToBase64(
+      new TextEncoder().encode(rewritten),
     );
     return await import(
       `data:application/javascript;base64,${encoded}`

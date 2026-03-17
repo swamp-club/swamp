@@ -50,6 +50,27 @@ export function installZodGlobal(): void {
  * - Star imports: `import * as zod from "npm:zod@4"` → `const zod = globalThis.__swamp_zod;`
  * - Already-rewritten lines are left untouched (idempotent).
  */
+/**
+ * Converts a Uint8Array to a base64 string without blowing the call stack.
+ *
+ * The naive `btoa(String.fromCharCode(...bytes))` spreads every byte onto
+ * the call stack as a function argument, which causes `RangeError: Maximum
+ * call stack size exceeded` for large bundles (e.g., extensions with inlined
+ * npm packages like @octokit/rest or @slack/web-api).
+ *
+ * This function processes bytes in fixed-size chunks to stay well within
+ * V8's call-stack limits regardless of bundle size.
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  const CHUNK_SIZE = 8192;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const chunk = bytes.subarray(i, i + CHUNK_SIZE);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
 export function rewriteZodImports(js: string): string {
   // Match: import { ... } from "npm:zod..." or 'npm:zod...'
   // Captures the named import clause and handles aliased imports
