@@ -599,11 +599,11 @@ export interface ModelDefinition<
   upgrades?: VersionUpgrade[];
 
   /**
-   * Pre-compiled self-contained bundle source (JS) for out-of-process execution.
-   * Set by UserModelLoader at load time. Includes all dependencies inlined
-   * (including zod) so it can run without network access inside containers.
+   * Lazily builds the self-contained bundle for out-of-process execution (e.g. Docker).
+   * Called by the execution service when a non-raw driver is used. Memoizes its
+   * result so multiple executions of the same model in one process only bundle once.
    */
-  bundleSource?: string;
+  bundleSourceFactory?: () => Promise<string>;
 }
 
 /**

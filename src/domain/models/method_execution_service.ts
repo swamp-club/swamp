@@ -545,8 +545,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             ]),
           )
           : undefined,
-        bundle: modelDef.bundleSource
-          ? new TextEncoder().encode(modelDef.bundleSource)
+        bundle: modelDef.bundleSourceFactory
+          ? new TextEncoder().encode(await modelDef.bundleSourceFactory())
           : undefined,
       };
 
