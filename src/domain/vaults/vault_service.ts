@@ -21,6 +21,8 @@ import { getLogger } from "@logtape/logtape";
 import type { VaultConfiguration, VaultProvider } from "./vault_provider.ts";
 import { getVaultTypes } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
+import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { AwsVaultProvider } from "./aws_vault_provider.ts";
 import {
   type AzureKvVaultConfig,
@@ -76,6 +78,13 @@ export class VaultService {
           getLogger("vaults")
             .warn`Vault '${vaultConfig.name}' uses deprecated type '${vaultType}'. Automatically remapping to '${renamedTo}'. Update your vault config to use type: ${renamedTo}`;
           vaultType = renamedTo;
+        }
+
+        // Auto-resolve missing vault types from trusted collectives
+        if (
+          !vaultTypeRegistry.has(vaultType) && vaultType.startsWith("@")
+        ) {
+          await resolveVaultType(vaultType, getAutoResolver());
         }
 
         // For local_encryption vaults, inject base_dir from repoDir if not already set

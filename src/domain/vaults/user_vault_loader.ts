@@ -100,7 +100,10 @@ export class UserVaultLoader {
    * @param vaultsDir - The directory containing user vault files
    * @returns Result containing lists of loaded and failed files
    */
-  async loadVaults(vaultsDir: string): Promise<VaultLoadResult> {
+  async loadVaults(
+    vaultsDir: string,
+    options?: { skipAlreadyRegistered?: boolean },
+  ): Promise<VaultLoadResult> {
     const result: VaultLoadResult = { loaded: [], failed: [] };
 
     // Ensure swamp's Zod is available on globalThis before importing bundles.
@@ -147,6 +150,10 @@ export class UserVaultLoader {
 
         // Register with the vault type registry
         if (vaultTypeRegistry.has(userVault.type)) {
+          if (options?.skipAlreadyRegistered) {
+            // Silently skip — used during hot-load after auto-resolution
+            continue;
+          }
           result.failed.push({
             file,
             error: `Vault type '${userVault.type}' is already registered`,

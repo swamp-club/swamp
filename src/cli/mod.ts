@@ -62,6 +62,13 @@ import {
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
+import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
+import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
+import { setAutoResolver } from "./auto_resolver_context.ts";
+import {
+  createAutoResolveInstallerAdapter,
+  createAutoResolveOutputAdapter,
+} from "./auto_resolver_adapters.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
 import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
@@ -415,6 +422,33 @@ export async function runCli(args: string[]): Promise<void> {
     marker = await markerRepo.read(repoPath);
   } catch {
     // Not in a swamp repo - marker stays null
+  }
+
+  // Create auto-resolver for trusted collectives
+  const trustedCollectives = marker?.trustedCollectives ?? ["swamp", "si"];
+  if (trustedCollectives.length > 0 && marker) {
+    const outputMode = getOutputModeFromArgs(args);
+    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
+    const extensionClient = new ExtensionApiClient(serverUrl);
+    const modelsDir = resolveModelsDir(marker);
+    const workflowsDir = resolveWorkflowsDir(marker);
+    const vaultsDir = resolveVaultsDir(marker);
+    const denoRuntime = new EmbeddedDenoRuntime();
+    setAutoResolver(
+      new ExtensionAutoResolver({
+        allowedCollectives: trustedCollectives,
+        extensionLookup: extensionClient,
+        extensionInstaller: createAutoResolveInstallerAdapter({
+          extensionClient,
+          modelsDir,
+          workflowsDir,
+          vaultsDir,
+          repoDir,
+          denoRuntime,
+        }),
+        output: createAutoResolveOutputAdapter(outputMode),
+      }),
+    );
   }
 
   const cli = new Command()

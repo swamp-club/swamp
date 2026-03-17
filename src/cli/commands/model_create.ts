@@ -28,6 +28,8 @@ import { UserError } from "../../domain/errors.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../auto_resolver_context.ts";
 import { toMethodDescribeData, zodToJsonSchema } from "./type_describe.ts";
 import { parseKeyValueInputs } from "../input_parser.ts";
 import { modelValidateCommand } from "./model_validate.ts";
@@ -62,8 +64,9 @@ export const modelCreateCommand = new Command()
     const modelType = ModelType.create(typeArg);
     ctx.logger.debug`Normalized type: ${modelType.normalized}`;
 
-    // Check if model type is registered
-    if (!modelRegistry.has(modelType)) {
+    // Check if model type is registered (auto-resolve if needed)
+    const resolvedDef = await resolveModelType(modelType, getAutoResolver());
+    if (!resolvedDef) {
       const availableTypes = modelRegistry.types().map((t) => t.normalized)
         .join(", ");
       throw new UserError(

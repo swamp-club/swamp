@@ -38,6 +38,8 @@ import { UserError } from "../../domain/errors.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../auto_resolver_context.ts";
 import { toMethodDescribeData, zodToJsonSchema } from "./type_describe.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -98,7 +100,7 @@ async function displayModelGet(
     throw new UserError(`Model not found: ${item.id}`);
   }
 
-  const modelDef = modelRegistry.get(modelType);
+  const modelDef = await resolveModelType(modelType, getAutoResolver());
 
   const data: ModelGetData = {
     id: definition.id,

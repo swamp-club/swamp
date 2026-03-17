@@ -30,7 +30,8 @@ import {
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../auto_resolver_context.ts";
 import {
   type CheckValidationContext,
   DefaultModelValidationService,
@@ -114,7 +115,7 @@ export const modelValidateCommand = new Command()
 
         const results: ModelValidateData[] = [];
         for (const { definition, type } of allDefinitions) {
-          const modelDef = modelRegistry.get(type);
+          const modelDef = await resolveModelType(type, getAutoResolver());
           if (!modelDef) {
             continue;
           }
@@ -166,8 +167,8 @@ export const modelValidateCommand = new Command()
       ctx.logger
         .debug`Found model: id=${definition.id}, type=${modelType.normalized}`;
 
-      // Get the model definition
-      const modelDef = modelRegistry.get(modelType);
+      // Get the model definition (auto-resolve if needed)
+      const modelDef = await resolveModelType(modelType, getAutoResolver());
       if (!modelDef) {
         throw new UserError(`Unknown model type: ${modelType.normalized}`);
       }

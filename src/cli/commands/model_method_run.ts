@@ -31,7 +31,8 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
@@ -222,8 +223,8 @@ export const modelMethodRunCommand = new Command()
         type: modelType.normalized,
       });
 
-      // Get the model definition from registry
-      const modelDef = modelRegistry.get(modelType);
+      // Get the model definition from registry (auto-resolve if needed)
+      const modelDef = await resolveModelType(modelType, getAutoResolver());
       if (!modelDef) {
         throw new UserError(`Unknown model type: ${modelType.normalized}`);
       }

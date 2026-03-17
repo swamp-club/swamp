@@ -48,6 +48,7 @@ export interface RepoMarkerData {
   logLevel?: string;
   gitignoreManaged?: boolean;
   datastore?: DatastoreConfigData;
+  trustedCollectives?: string[];
 }
 
 /**

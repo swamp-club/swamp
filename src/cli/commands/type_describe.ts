@@ -32,6 +32,8 @@ import {
   modelRegistry,
   type ResourceOutputSpec,
 } from "../../domain/models/model.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../auto_resolver_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -96,7 +98,10 @@ export function toMethodDescribeData(
  * Core action for describing a model type.
  * Shared between 'describe' and 'get' commands.
  */
-function typeDescribeAction(options: AnyOptions, typeArg: string): void {
+async function typeDescribeAction(
+  options: AnyOptions,
+  typeArg: string,
+): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["type", "describe"]);
   ctx.logger.debug`Describing type: ${typeArg}`;
 
@@ -104,8 +109,8 @@ function typeDescribeAction(options: AnyOptions, typeArg: string): void {
   const modelType = ModelType.create(typeArg);
   ctx.logger.debug`Normalized type: ${modelType.normalized}`;
 
-  // Look up the model definition
-  const definition = modelRegistry.get(modelType);
+  // Look up the model definition (auto-resolve if needed)
+  const definition = await resolveModelType(modelType, getAutoResolver());
   if (!definition) {
     const availableTypes = modelRegistry.types().map((t) => t.normalized)
       .join(", ");

@@ -26,7 +26,8 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../auto_resolver_context.ts";
 import { toMethodDescribeData } from "./type_describe.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
@@ -75,8 +76,8 @@ export const modelMethodDescribeCommand = new Command()
       }
       const { definition, type: modelType } = result;
 
-      // Get the model definition from registry
-      const modelDef = modelRegistry.get(modelType);
+      // Get the model definition from registry (auto-resolve if needed)
+      const modelDef = await resolveModelType(modelType, getAutoResolver());
       if (!modelDef) {
         throw new UserError(`Unknown model type: ${modelType.normalized}`);
       }

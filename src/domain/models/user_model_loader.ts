@@ -269,7 +269,10 @@ export class UserModelLoader {
    * @param modelsDir - The directory containing user model/extension files
    * @returns Result containing lists of loaded, extended, and failed files
    */
-  async loadModels(modelsDir: string): Promise<LoadResult> {
+  async loadModels(
+    modelsDir: string,
+    options?: { skipAlreadyRegistered?: boolean },
+  ): Promise<LoadResult> {
     const result: LoadResult = { loaded: [], extended: [], failed: [] };
 
     // Ensure swamp's Zod is available on globalThis before importing bundles.
@@ -361,6 +364,9 @@ export class UserModelLoader {
         if (!modelRegistry.has(modelDef.type)) {
           modelRegistry.register(modelDef);
           result.loaded.push(file);
+        } else if (options?.skipAlreadyRegistered) {
+          // Silently skip — used during hot-load after auto-resolution
+          continue;
         } else {
           result.failed.push({
             file,

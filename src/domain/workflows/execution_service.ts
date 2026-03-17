@@ -37,7 +37,8 @@ import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persiste
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
-import { modelRegistry } from "../models/model.ts";
+import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import type { Definition } from "../definitions/definition.ts";
@@ -295,8 +296,8 @@ export class DefaultStepExecutor implements StepExecutor {
       type: modelType.normalized,
     });
 
-    // Get the model definition from registry
-    const modelDef = modelRegistry.get(modelType);
+    // Get the model definition from registry (auto-resolve if needed)
+    const modelDef = await resolveModelType(modelType, getAutoResolver());
     if (!modelDef) {
       throw new Error(`Unknown model type: ${modelType.normalized}`);
     }
