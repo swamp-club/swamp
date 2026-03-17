@@ -157,22 +157,46 @@ export function isUpdateCheckDisabledByEnv(): boolean {
 }
 
 /**
+ * Commands that never need user extensions loaded.
+ * An empty string represents no command (i.e. show help).
+ */
+const SKIP_EXTENSION_COMMANDS = new Set([
+  "", // no command = show help
+  "help",
+  "version",
+  "completions",
+  "init",
+  "update",
+  "auth",
+  "telemetry",
+  "issue",
+]);
+
+/**
+ * Checks whether the pre-parsed command needs user extensions loaded.
+ *
+ * @internal Exported for testing
+ */
+export function commandNeedsExtensions(args: string[]): boolean {
+  const commandInfo = extractCommandInfo(args);
+  return !SKIP_EXTENSION_COMMANDS.has(commandInfo.command);
+}
+
+/**
  * Load user models from configured directory.
  */
-async function loadUserModels(repoDir: string): Promise<void> {
-  const markerRepo = new RepoMarkerRepository();
-
+async function loadUserModels(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
   try {
-    const repoPath = RepoPath.create(repoDir);
-    const marker = await markerRepo.read(repoPath);
-
     const modelsDir = resolveModelsDir(marker);
     // Handle both absolute and relative paths (cross-platform)
     const absoluteModelsDir = isAbsolute(modelsDir)
       ? modelsDir
       : resolve(repoDir, modelsDir);
 
-    const denoRuntime = new EmbeddedDenoRuntime();
     const loader = new UserModelLoader(denoRuntime, repoDir);
     const result = await loader.loadModels(absoluteModelsDir);
 
@@ -200,19 +224,17 @@ async function loadUserModels(repoDir: string): Promise<void> {
 /**
  * Load user vault implementations from configured directory.
  */
-async function loadUserVaults(repoDir: string): Promise<void> {
-  const markerRepo = new RepoMarkerRepository();
-
+async function loadUserVaults(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
   try {
-    const repoPath = RepoPath.create(repoDir);
-    const marker = await markerRepo.read(repoPath);
-
     const vaultsDir = resolveVaultsDir(marker);
     const absoluteVaultsDir = isAbsolute(vaultsDir)
       ? vaultsDir
       : resolve(repoDir, vaultsDir);
 
-    const denoRuntime = new EmbeddedDenoRuntime();
     const loader = new UserVaultLoader(denoRuntime, repoDir);
     const result = await loader.loadVaults(absoluteVaultsDir);
 
@@ -237,19 +259,17 @@ async function loadUserVaults(repoDir: string): Promise<void> {
   }
 }
 
-async function loadUserDrivers(repoDir: string): Promise<void> {
-  const markerRepo = new RepoMarkerRepository();
-
+async function loadUserDrivers(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
   try {
-    const repoPath = RepoPath.create(repoDir);
-    const marker = await markerRepo.read(repoPath);
-
     const driversDir = resolveDriversDir(marker);
     const absoluteDriversDir = isAbsolute(driversDir)
       ? driversDir
       : resolve(repoDir, driversDir);
 
-    const denoRuntime = new EmbeddedDenoRuntime();
     const loader = new UserDriverLoader(denoRuntime, repoDir);
     const result = await loader.loadDrivers(absoluteDriversDir);
 
@@ -274,19 +294,17 @@ async function loadUserDrivers(repoDir: string): Promise<void> {
   }
 }
 
-async function loadUserDatastores(repoDir: string): Promise<void> {
-  const markerRepo = new RepoMarkerRepository();
-
+async function loadUserDatastores(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
   try {
-    const repoPath = RepoPath.create(repoDir);
-    const marker = await markerRepo.read(repoPath);
-
     const datastoresDir = resolveDatastoresDir(marker);
     const absoluteDatastoresDir = isAbsolute(datastoresDir)
       ? datastoresDir
       : resolve(repoDir, datastoresDir);
 
-    const denoRuntime = new EmbeddedDenoRuntime();
     const loader = new UserDatastoreLoader(denoRuntime, repoDir);
     const result = await loader.loadDatastores(absoluteDatastoresDir);
 
@@ -477,13 +495,7 @@ export async function runCli(args: string[]): Promise<void> {
     telemetryCtx = await initTelemetryService(repoDir);
   }
 
-  // Load user models, vaults, and drivers before setting up CLI
-  await loadUserModels(repoDir);
-  await loadUserVaults(repoDir);
-  await loadUserDrivers(repoDir);
-  await loadUserDatastores(repoDir);
-
-  // Read marker for resolveLogLevel (used in globalAction closure)
+  // Read marker once for log level, extension loading, and auto-resolver
   let marker: RepoMarkerData | null = null;
   try {
     const markerRepo = new RepoMarkerRepository();
@@ -491,6 +503,17 @@ export async function runCli(args: string[]): Promise<void> {
     marker = await markerRepo.read(repoPath);
   } catch {
     // Not in a swamp repo - marker stays null
+  }
+
+  // Load user extensions in parallel (skip for commands that don't need them)
+  if (commandNeedsExtensions(args)) {
+    const denoRuntime = new EmbeddedDenoRuntime();
+    await Promise.all([
+      loadUserModels(repoDir, marker, denoRuntime),
+      loadUserVaults(repoDir, marker, denoRuntime),
+      loadUserDrivers(repoDir, marker, denoRuntime),
+      loadUserDatastores(repoDir, marker, denoRuntime),
+    ]);
   }
 
   // Load cached auth collectives for membership-based trust
