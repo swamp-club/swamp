@@ -57,6 +57,12 @@ export const authWhoamiCommand = new Command()
 
     const collectives = getCollectives(whoami);
 
+    // Refresh cached collectives in auth.json so they stay current
+    await repo.save({
+      ...credentials,
+      collectives: collectives ?? [],
+    });
+
     if (ctx.outputMode === "json") {
       console.log(JSON.stringify(
         {

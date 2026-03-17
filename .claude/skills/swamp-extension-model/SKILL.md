@@ -21,9 +21,9 @@ extensions:
 3. If a community extension exists, install it instead of building from scratch
 4. Only create a custom model if nothing exists locally or in the community
 
-Note: Extensions from trusted collectives (`@swamp/*`, `@si/*`) auto-resolve on
-first use — no manual `extension pull` needed. Just reference the type and swamp
-installs the extension automatically.
+Note: Extensions from trusted collectives (`@swamp/*`, `@si/*`, and your
+membership collectives) auto-resolve on first use — no manual `extension pull`
+needed. Just reference the type and swamp installs the extension automatically.
 
 Extension models let you:
 

@@ -121,10 +121,15 @@ vaultsDir: "extensions/vaults" # optional, default shown
 trustedCollectives: # optional, default: ["swamp", "si"]
   - swamp
   - si
+trustMemberCollectives: true # optional, default: true
 ```
 
 `trustedCollectives` controls which extension collectives auto-resolve on first
-use. The `swamp` collective is trusted by default.
+use. The `swamp` and `si` collectives are trusted by default.
+
+Additionally, collectives the user belongs to (cached during `auth login` /
+`auth whoami`) are automatically trusted. Set `trustMemberCollectives: false` to
+disable this and only trust the explicit list.
 
 ### CLAUDE.md
 

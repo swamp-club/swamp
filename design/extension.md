@@ -170,10 +170,15 @@ it, and continues.
 
 ### Trusted Collectives
 
-The `swamp` collective is trusted by default. Extensions from `@swamp/*`
-auto-resolve with no configuration required.
+The `swamp` and `si` collectives are trusted by default. Extensions from
+`@swamp/*` and `@si/*` auto-resolve with no configuration required.
 
 Default trusted collectives: `["swamp", "si"]`.
+
+Additionally, collectives the user belongs to are automatically trusted. Membership
+collectives are cached in `auth.json` during `auth login` and `auth whoami`, and
+merged with the explicit list at CLI startup. This means if a user is a member of
+`@myorg`, extensions from `@myorg/*` auto-resolve without any configuration.
 
 Configurable via `trustedCollectives` in `.swamp.yaml`:
 
@@ -184,7 +189,9 @@ trustedCollectives:
   - myorg
 ```
 
-Set to `[]` to disable automatic resolution entirely.
+Set `trustMemberCollectives: false` to disable membership-based trust and only
+use the explicit `trustedCollectives` list. Set `trustedCollectives` to `[]` and
+`trustMemberCollectives: false` to disable automatic resolution entirely.
 
 ### Resolution Algorithm
 
