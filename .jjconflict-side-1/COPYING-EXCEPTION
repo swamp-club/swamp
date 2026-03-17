@@ -1,0 +1,39 @@
+Version 2.0
+
+Swamp Extension and Definition Exception
+
+The terms of this exception are "additional permissions"
+under the GNU Affero General Public License Version 3 grant
+for Swamp.
+
+The copyright holders of Swamp grant you permission to
+develop and distribute software extensions and workflow,
+model, and other definitions for Swamp, and to license those
+extensions and definitions under terms of your choice,
+free-open or proprietary.  However, this permission only
+applies to extensions and definitions that:
+
+1. add functionality to or configure Swamp,
+
+2. interoperate with unmodified official versions of Swamp
+   released by System Initiative,
+
+3. interoperate with Swamp only through the extension API or
+   configuration definition schemas that Swamp exposes, as
+   described in documentation published by System
+   Initiative, and
+
+4. do not include copies of any Swamp source code, modified
+   or unmodified.
+
+This permission does _not_ apply to any extension that
+exposes so much of Swamp's functionality to users or other
+software that it becomes a practical substitute for Swamp
+for any substantial portion of Swamp's use cases.  For
+example, you may not develop an extension to re-expose large
+parts of Swamp's extension API via a new API, license that
+extension under your own license terms, and then develop
+broader programs or systems using that extension to insulate
+them from the terms and conditions of the AGPLv3 grant for
+Swamp.  Such extensions are not covered by this exception
+and must comply with the AGPLv3 grant for Swamp.
