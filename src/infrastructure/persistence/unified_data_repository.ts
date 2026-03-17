@@ -1406,15 +1406,19 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       }
 
-      // Single latest marker update after all removals
+      // Re-scan actual versions after parallel deletions to avoid stale marker
       if (versionsToRemove.length > 0) {
-        const remaining = versions.filter((v) => !versionsToRemove.includes(v));
-        if (remaining.length > 0) {
+        const currentVersions = await this.listVersions(
+          type,
+          modelId,
+          data.name,
+        );
+        if (currentVersions.length > 0) {
           await this.updateLatestMarker(
             type,
             modelId,
             data.name,
-            Math.max(...remaining),
+            Math.max(...currentVersions),
           );
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
