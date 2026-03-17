@@ -24,7 +24,13 @@ import { extractContentMetadata } from "./extension_content_extractor.ts";
 
 Deno.test("extractContentMetadata returns empty for no inputs", async () => {
   const result = await extractContentMetadata([], "/tmp/models", []);
-  assertEquals(result, { models: [], workflows: [], vaults: [] });
+  assertEquals(result, {
+    models: [],
+    workflows: [],
+    vaults: [],
+    drivers: [],
+    datastores: [],
+  });
 });
 
 Deno.test("extractContentMetadata extracts model type from ModelType.create", async () => {

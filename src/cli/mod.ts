@@ -545,6 +545,8 @@ export async function runCli(args: string[]): Promise<void> {
           modelsDir,
           workflowsDir,
           vaultsDir,
+          driversDir: resolveDriversDir(marker),
+          datastoresDir: resolveDatastoresDir(marker),
           repoDir,
           denoRuntime,
         }),

@@ -52,19 +52,26 @@ export const extensionFmtCommand = new Command()
     });
 
     // 2. Resolve extension files (manifest, models, workflows, additional files)
-    const { allModelFiles, allVaultFiles, additionalFilePaths } =
-      await resolveExtensionFiles({
-        repoDir,
-        manifestPath,
-        repoContext,
-        logger: ctx.logger,
-      });
+    const {
+      allModelFiles,
+      allVaultFiles,
+      allDriverFiles,
+      allDatastoreFiles,
+      additionalFilePaths,
+    } = await resolveExtensionFiles({
+      repoDir,
+      manifestPath,
+      repoContext,
+      logger: ctx.logger,
+    });
 
     // 3. Combine all files and filter to .ts
     //    (fmt only operates on TypeScript files)
     const allFiles = [
       ...allModelFiles,
       ...allVaultFiles,
+      ...allDriverFiles,
+      ...allDatastoreFiles,
       ...additionalFilePaths,
     ];
     const tsFiles = allFiles.filter((f) => f.endsWith(".ts"));

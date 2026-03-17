@@ -44,6 +44,8 @@ interface InstallerAdapterConfig {
   modelsDir: string;
   workflowsDir: string;
   vaultsDir: string;
+  driversDir: string;
+  datastoresDir: string;
   repoDir: string;
   denoRuntime: DenoRuntime;
 }
@@ -60,6 +62,8 @@ export function createAutoResolveInstallerAdapter(
     modelsDir,
     workflowsDir,
     vaultsDir,
+    driversDir,
+    datastoresDir,
     repoDir,
     denoRuntime,
   } = config;
@@ -74,6 +78,8 @@ export function createAutoResolveInstallerAdapter(
           modelsDir,
           workflowsDir,
           vaultsDir,
+          driversDir,
+          datastoresDir,
           repoDir,
           force: true,
           alreadyPulled: new Set(),

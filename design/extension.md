@@ -1,8 +1,9 @@
 # Extensions
 
-An extension in swamp is a distributable package of models and workflows that
-can be shared through a registry. Extensions allow the community to share
-reusable automation models and workflows that others can pull into their repositories.
+An extension in swamp is a distributable package of models, workflows, vaults,
+drivers, and datastores that can be shared through a registry. Extensions allow
+the community to share reusable automation components that others can pull into
+their repositories.
 
 ## Name
 
@@ -39,7 +40,8 @@ what the extension contains and how it should be packaged.
 - `manifestVersion`: Must be `1` (the only supported version).
 - `name`: Scoped name (`@collective/name`).
 - `version`: CalVer version string.
-- At least one of `models` or `workflows` must be present.
+- At least one of `models`, `workflows`, `vaults`, `drivers`, or `datastores`
+  must be present.
 
 ### Optional Fields
 
@@ -47,6 +49,9 @@ what the extension contains and how it should be packaged.
 - `models`: Array of relative paths to TypeScript model files (e.g.,
   `["aws/ec2/instance.ts"]`).
 - `workflows`: Array of relative paths to YAML workflow files.
+- `vaults`: Array of relative paths to TypeScript vault files.
+- `drivers`: Array of relative paths to TypeScript driver files.
+- `datastores`: Array of relative paths to TypeScript datastore files.
 - `additionalFiles`: Array of paths to non-model files to include (README,
   config, etc.).
 - `platforms`: Array of platform identifiers the extension supports (e.g.,
@@ -88,19 +93,22 @@ following structure:
 extension.tar.gz
 └── extension/
     ├── manifest.yaml
-    ├── models/           # Source TypeScript files
+    ├── models/              # Source TypeScript model files
     │   └── ssh/
     │       ├── connection.ts
     │       └── helpers.ts
-    ├── bundles/           # Compiled JavaScript bundles
+    ├── bundles/              # Compiled model JavaScript bundles
     │   └── ssh/
-    │       ├── connection.js
-    │       └── helpers.js
-    ├── workflows/         # YAML workflow files
+    │       └── connection.js
+    ├── workflows/            # YAML workflow files
     │   └── ssh-check.yaml
-    └── files/             # Additional files
-        └── ssh/
-            └── known_hosts_template.txt
+    ├── vaults/               # Source TypeScript vault files
+    ├── vault-bundles/        # Compiled vault JavaScript bundles
+    ├── drivers/              # Source TypeScript driver files
+    ├── driver-bundles/       # Compiled driver JavaScript bundles
+    ├── datastores/           # Source TypeScript datastore files
+    ├── datastore-bundles/    # Compiled datastore JavaScript bundles
+    └── files/                # Additional files
 ```
 
 ### Models
@@ -133,11 +141,11 @@ preserving their relative paths.
 ## Import Resolution
 
 When packaging an extension, the CLI resolves all local TypeScript imports
-starting from each model entry point. The resolver follows relative
-`import`/`export` statements (e.g., `./helpers.ts`, `../shared.ts`) and
-includes all transitively imported files. Only files within the models directory
-boundary are included. Non-local imports (npm packages) are skipped as they are
-resolved at runtime.
+starting from each entry point (model, vault, driver, or datastore). The
+resolver follows relative `import`/`export` statements (e.g., `./helpers.ts`,
+`../shared.ts`) and includes all transitively imported files. Only files within
+the respective directory boundary are included. Non-local imports (npm packages)
+are skipped as they are resolved at runtime.
 
 ## Dependencies
 
@@ -316,12 +324,18 @@ and atomic file writes to prevent corruption from concurrent operations.
 
 When pulled, extension files are extracted to their destinations:
 
-| Archive directory | Destination                                                            |
-| ----------------- | ---------------------------------------------------------------------- |
-| `models/`         | `{modelsDir}` (from `.swamp.yaml`, default `extensions/models/`)       |
-| `workflows/`      | `{workflowsDir}` (from `.swamp.yaml`, default `extensions/workflows/`) |
-| `bundles/`        | Datastore `bundles/` (default `.swamp/bundles/`)                       |
-| `files/`          | `{modelsDir}`                                                          |
+| Archive directory    | Destination                                                            |
+| -------------------- | ---------------------------------------------------------------------- |
+| `models/`            | `{modelsDir}` (from `.swamp.yaml`, default `extensions/models/`)       |
+| `bundles/`           | `.swamp/bundles/`                                                      |
+| `workflows/`         | `{workflowsDir}` (from `.swamp.yaml`, default `extensions/workflows/`) |
+| `vaults/`            | `{vaultsDir}` (from `.swamp.yaml`, default `extensions/vaults/`)       |
+| `vault-bundles/`     | `.swamp/vault-bundles/`                                                |
+| `drivers/`           | `{driversDir}` (from `.swamp.yaml`, default `extensions/drivers/`)     |
+| `driver-bundles/`    | `.swamp/driver-bundles/`                                               |
+| `datastores/`        | `{datastoresDir}` (from `.swamp.yaml`, default `extensions/datastores/`) |
+| `datastore-bundles/` | `.swamp/datastore-bundles/`                                            |
+| `files/`             | `{modelsDir}`                                                          |
 
 If files already exist at the destination and `--force` is not set, the user is
 prompted to confirm overwriting.

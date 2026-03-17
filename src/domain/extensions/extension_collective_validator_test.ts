@@ -28,6 +28,8 @@ function makeMetadata(
     models: [],
     workflows: [],
     vaults: [],
+    drivers: [],
+    datastores: [],
     ...overrides,
   };
 }

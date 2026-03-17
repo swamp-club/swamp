@@ -42,6 +42,24 @@ export interface ResolvedVaultEntry {
   configFields?: ExtractedArgument[];
 }
 
+/** A driver entry enriched with extracted metadata for the resolved display. */
+export interface ResolvedDriverEntry {
+  type: string;
+  fileName: string;
+  name?: string;
+  hasConfigSchema?: boolean;
+  configFields?: ExtractedArgument[];
+}
+
+/** A datastore entry enriched with extracted metadata for the resolved display. */
+export interface ResolvedDatastoreEntry {
+  type: string;
+  fileName: string;
+  name?: string;
+  hasConfigSchema?: boolean;
+  configFields?: ExtractedArgument[];
+}
+
 /** Data for showing resolved extension contents before push. */
 export interface ExtensionPushResolvedData {
   name: string;
@@ -52,6 +70,8 @@ export interface ExtensionPushResolvedData {
   models: ResolvedModelEntry[];
   workflowFiles: string[];
   vaults: ResolvedVaultEntry[];
+  drivers: ResolvedDriverEntry[];
+  datastores: ResolvedDatastoreEntry[];
   additionalFiles: string[];
   platforms: string[];
   labels: string[];
@@ -68,6 +88,8 @@ export interface ExtensionPushSuccessData {
   workflowCount: number;
   bundleCount: number;
   vaultCount: number;
+  driverCount: number;
+  datastoreCount: number;
 }
 
 /** Data for compilation error output. */
@@ -123,6 +145,34 @@ export function renderExtensionPushResolved(
         if (v.configFields && v.configFields.length > 0) {
           logger.info`    Config Fields:`;
           for (const field of v.configFields) {
+            const opt = field.required ? "" : " (optional)";
+            logger.info`      ${field.name}: ${field.type}${opt}`;
+          }
+        }
+      }
+    }
+    if (data.drivers.length > 0) {
+      logger.info`Drivers (${data.drivers.length}):`;
+      for (const d of data.drivers) {
+        const nameLabel = d.name ? ` - ${d.name}` : "";
+        logger.info`  ${d.type}${nameLabel} (${d.fileName})`;
+        if (d.configFields && d.configFields.length > 0) {
+          logger.info`    Config Fields:`;
+          for (const field of d.configFields) {
+            const opt = field.required ? "" : " (optional)";
+            logger.info`      ${field.name}: ${field.type}${opt}`;
+          }
+        }
+      }
+    }
+    if (data.datastores.length > 0) {
+      logger.info`Datastores (${data.datastores.length}):`;
+      for (const d of data.datastores) {
+        const nameLabel = d.name ? ` - ${d.name}` : "";
+        logger.info`  ${d.type}${nameLabel} (${d.fileName})`;
+        if (d.configFields && d.configFields.length > 0) {
+          logger.info`    Config Fields:`;
+          for (const field of d.configFields) {
             const opt = field.required ? "" : " (optional)";
             logger.info`      ${field.name}: ${field.type}${opt}`;
           }
@@ -219,8 +269,17 @@ export function renderExtensionPush(
     logger.info`Pushed ${data.name}@${data.version}`;
     logger.info`Extension ID: ${data.extensionId}`;
     logger.info`Archive size: ${formatBytes(data.archiveSize)}`;
-    logger
-      .info`Models: ${data.modelCount}, Workflows: ${data.workflowCount}, Vaults: ${data.vaultCount}, Bundles: ${data.bundleCount}`;
+    const parts = [
+      `Models: ${data.modelCount}`,
+      `Workflows: ${data.workflowCount}`,
+      `Vaults: ${data.vaultCount}`,
+    ];
+    if (data.driverCount > 0) parts.push(`Drivers: ${data.driverCount}`);
+    if (data.datastoreCount > 0) {
+      parts.push(`Datastores: ${data.datastoreCount}`);
+    }
+    parts.push(`Bundles: ${data.bundleCount}`);
+    logger.info`${parts.join(", ")}`;
   }
 }
 

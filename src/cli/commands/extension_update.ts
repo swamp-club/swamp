@@ -23,6 +23,8 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
+import { resolveDriversDir } from "../resolve_drivers_dir.ts";
+import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 import {
   RepoMarkerRepository,
@@ -87,6 +89,8 @@ export const extensionUpdateCommand = new Command()
     const modelsDir = resolveModelsDir(marker);
     const workflowsDir = resolveWorkflowsDir(marker);
     const vaultsDir = resolveVaultsDir(marker);
+    const driversDir = resolveDriversDir(marker);
+    const datastoresDir = resolveDatastoresDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
 
     // 3. Read installed extensions
@@ -166,6 +170,8 @@ export const extensionUpdateCommand = new Command()
           modelsDir,
           workflowsDir,
           vaultsDir,
+          driversDir,
+          datastoresDir,
           repoDir,
           force: true,
           alreadyPulled: new Set(),

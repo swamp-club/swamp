@@ -110,6 +110,12 @@ export const extensionPushCommand = new Command()
       vaultsDir,
       vaultEntryPoints,
       allVaultFiles,
+      driversDir,
+      driverEntryPoints,
+      allDriverFiles,
+      datastoresDir,
+      datastoreEntryPoints,
+      allDatastoreFiles,
       workflowFiles,
       additionalFilePaths,
     } = resolved;
@@ -174,9 +180,13 @@ export const extensionPushCommand = new Command()
         workflowFiles,
         allVaultFiles,
         vaultsDir,
+        allDriverFiles,
+        driversDir,
+        allDatastoreFiles,
+        datastoresDir,
       );
       ctx.logger
-        .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults`;
+        .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.drivers.length} drivers, ${contentMetadata.datastores.length} datastores`;
     } catch {
       ctx.logger.debug`Content metadata extraction failed, skipping`;
     }
@@ -233,6 +243,38 @@ export const extensionPushCommand = new Command()
       };
     });
 
+    const extractedDriversByFile = new Map(
+      (contentMetadata?.drivers ?? []).map((d) => [d.fileName, d]),
+    );
+    const extractedDatastoresByFile = new Map(
+      (contentMetadata?.datastores ?? []).map((d) => [d.fileName, d]),
+    );
+
+    const resolvedDrivers = allDriverFiles.map((f) => {
+      const relPath = relative(repoDir, f);
+      const extracted = extractedDriversByFile.get(relative(driversDir, f));
+      return {
+        type: extracted?.type ?? relPath,
+        fileName: relPath,
+        name: extracted?.name,
+        hasConfigSchema: extracted?.hasConfigSchema,
+        configFields: extracted?.configFields,
+      };
+    });
+    const resolvedDatastores = allDatastoreFiles.map((f) => {
+      const relPath = relative(repoDir, f);
+      const extracted = extractedDatastoresByFile.get(
+        relative(datastoresDir, f),
+      );
+      return {
+        type: extracted?.type ?? relPath,
+        fileName: relPath,
+        name: extracted?.name,
+        hasConfigSchema: extracted?.hasConfigSchema,
+        configFields: extracted?.configFields,
+      };
+    });
+
     const resolvedReleaseNotes = options.releaseNotes ?? manifest.releaseNotes;
     renderExtensionPushResolved(
       {
@@ -246,6 +288,8 @@ export const extensionPushCommand = new Command()
           relative(repoDir, wf.sourcePath)
         ),
         vaults: resolvedVaults,
+        drivers: resolvedDrivers,
+        datastores: resolvedDatastores,
         additionalFiles: additionalFilePaths.map((f) => relative(repoDir, f)),
         platforms: manifest.platforms,
         labels: manifest.labels,
@@ -258,6 +302,8 @@ export const extensionPushCommand = new Command()
     const allFiles = [
       ...allModelFiles,
       ...allVaultFiles,
+      ...allDriverFiles,
+      ...allDatastoreFiles,
       ...workflowFiles.map((wf) => wf.sourcePath),
       ...additionalFilePaths,
     ];
@@ -328,6 +374,38 @@ export const extensionPushCommand = new Command()
       }
     }
 
+    // Bundle driver entry points
+    const driverBundles = new Map<string, string>();
+    for (const entryPoint of driverEntryPoints) {
+      const entryName = relative(driversDir, entryPoint).replace(/\.ts$/, "");
+      try {
+        const js = await bundleExtension(entryPoint, denoPath);
+        driverBundles.set(entryName, js);
+        ctx.logger.debug`Bundled driver ${entryName} (${js.length} bytes)`;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        compilationErrors.push({ file: entryPoint, error: msg });
+      }
+    }
+
+    // Bundle datastore entry points
+    const datastoreBundles = new Map<string, string>();
+    for (const entryPoint of datastoreEntryPoints) {
+      const entryName = relative(datastoresDir, entryPoint).replace(
+        /\.ts$/,
+        "",
+      );
+      try {
+        const js = await bundleExtension(entryPoint, denoPath);
+        datastoreBundles.set(entryName, js);
+        ctx.logger
+          .debug`Bundled datastore ${entryName} (${js.length} bytes)`;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        compilationErrors.push({ file: entryPoint, error: msg });
+      }
+    }
+
     if (compilationErrors.length > 0) {
       renderExtensionPushCompilationErrors(
         compilationErrors,
@@ -381,6 +459,10 @@ export const extensionPushCommand = new Command()
       await Deno.mkdir(join(extDir, "workflows"), { recursive: true });
       await Deno.mkdir(join(extDir, "vaults"), { recursive: true });
       await Deno.mkdir(join(extDir, "vault-bundles"), { recursive: true });
+      await Deno.mkdir(join(extDir, "drivers"), { recursive: true });
+      await Deno.mkdir(join(extDir, "driver-bundles"), { recursive: true });
+      await Deno.mkdir(join(extDir, "datastores"), { recursive: true });
+      await Deno.mkdir(join(extDir, "datastore-bundles"), { recursive: true });
       await Deno.mkdir(join(extDir, "files"), { recursive: true });
 
       // Write normalized manifest
@@ -395,6 +477,8 @@ export const extensionPushCommand = new Command()
           models: manifest.models,
           workflows: manifest.workflows,
           vaults: manifest.vaults,
+          drivers: manifest.drivers,
+          datastores: manifest.datastores,
           additionalFiles: manifest.additionalFiles,
           ...(manifest.platforms.length > 0
             ? { platforms: manifest.platforms }
@@ -436,6 +520,40 @@ export const extensionPushCommand = new Command()
       // Write compiled vault bundles
       for (const [entryName, js] of vaultBundles) {
         const destPath = join(extDir, "vault-bundles", `${entryName}.js`);
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.writeTextFile(destPath, js);
+      }
+
+      // Copy driver source files (preserving relative paths from driversDir)
+      for (const driverFile of allDriverFiles) {
+        const relPath = relative(driversDir, driverFile);
+        const destPath = join(extDir, "drivers", relPath);
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.copyFile(driverFile, destPath);
+      }
+
+      // Write compiled driver bundles
+      for (const [entryName, js] of driverBundles) {
+        const destPath = join(extDir, "driver-bundles", `${entryName}.js`);
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.writeTextFile(destPath, js);
+      }
+
+      // Copy datastore source files (preserving relative paths from datastoresDir)
+      for (const datastoreFile of allDatastoreFiles) {
+        const relPath = relative(datastoresDir, datastoreFile);
+        const destPath = join(extDir, "datastores", relPath);
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.copyFile(datastoreFile, destPath);
+      }
+
+      // Write compiled datastore bundles
+      for (const [entryName, js] of datastoreBundles) {
+        const destPath = join(
+          extDir,
+          "datastore-bundles",
+          `${entryName}.js`,
+        );
         await Deno.mkdir(dirname(destPath), { recursive: true });
         await Deno.writeTextFile(destPath, js);
       }
@@ -541,6 +659,8 @@ export const extensionPushCommand = new Command()
           workflowCount: workflowFiles.length,
           bundleCount: bundles.size,
           vaultCount: allVaultFiles.length,
+          driverCount: allDriverFiles.length,
+          datastoreCount: allDatastoreFiles.length,
         },
         ctx.outputMode,
       );

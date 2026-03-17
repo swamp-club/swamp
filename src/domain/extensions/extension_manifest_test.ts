@@ -191,7 +191,7 @@ vaults:
   assertEquals(manifest.workflows, []);
 });
 
-Deno.test("parseExtensionManifest rejects no models, workflows, or vaults", () => {
+Deno.test("parseExtensionManifest rejects no models, workflows, vaults, drivers, or datastores", () => {
   const yaml = `
 manifestVersion: 1
 name: "@myuser/myext"
@@ -200,7 +200,7 @@ version: "2026.02.26.1"
   const error = assertThrows(() => parseExtensionManifest(yaml));
   assertStringIncludes(
     (error as Error).message,
-    "at least one model, workflow, or vault",
+    "at least one model, workflow, vault, driver, or datastore",
   );
 });
 

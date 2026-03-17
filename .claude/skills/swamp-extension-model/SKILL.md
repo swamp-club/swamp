@@ -399,7 +399,8 @@ Files are classified by export name: `export const model` defines new types,
 ## Publishing Extensions
 
 Extensions are published to the swamp registry via a `manifest.yaml` and the
-`swamp extension push` command.
+`swamp extension push` command. Extensions can contain models, workflows,
+vaults, drivers, and datastores.
 
 **Minimal manifest:**
 
@@ -419,16 +420,10 @@ swamp extension push manifest.yaml --dry-run --json # Validate without pushing
 swamp extension push manifest.yaml -y --json        # Skip confirmation prompts
 ```
 
-The manifest `name` collective must match your authenticated username. Model
-paths are relative to `extensions/models/`; local imports are auto-resolved.
-
-**Optional metadata fields:**
-
-- `platforms` — OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`).
-  Use when your extension contains platform-specific code.
-- `labels` — Categorization labels (e.g. `aws`, `kubernetes`, `security`).
-
-Both are omitted from the archive when not specified.
+The manifest `name` collective must match your authenticated username. Content
+paths are relative to their respective directories (`extensions/models/`,
+`extensions/vaults/`, `extensions/drivers/`, `extensions/datastores/`). Local
+imports are auto-resolved.
 
 For the full manifest schema, safety rules, CalVer versioning, and
 troubleshooting, see [references/publishing.md](references/publishing.md).

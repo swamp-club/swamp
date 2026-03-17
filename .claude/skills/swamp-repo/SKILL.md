@@ -32,8 +32,11 @@ my-swamp-repo/
 ├── models/                  # Model definitions (YAML)
 ├── workflows/               # Workflow definitions (YAML)
 ├── vaults/                  # Vault configurations (YAML)
-├── extensions/              # Custom model extensions
-│   └── models/              # TypeScript model definitions
+├── extensions/              # Custom extensions
+│   ├── models/              # TypeScript model definitions
+│   ├── vaults/              # TypeScript vault implementations
+│   ├── drivers/             # TypeScript driver implementations
+│   └── datastores/          # TypeScript datastore implementations
 ├── .swamp/                  # Runtime data (datastore)
 │   ├── data/                # Versioned model data
 │   ├── outputs/             # Method execution outputs

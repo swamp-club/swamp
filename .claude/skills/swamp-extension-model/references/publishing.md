@@ -1,7 +1,7 @@
 # Publishing Extensions
 
-Publish extension models and workflows to the swamp registry so others can
-install and use them.
+Publish extension models, workflows, vaults, drivers, and datastores to the
+swamp registry so others can install and use them.
 
 ## Manifest Schema (v1)
 
@@ -39,12 +39,16 @@ dependencies:
 | `description`     | No       | Human-readable description                                                                       |
 | `models`          | No*      | Model file paths relative to `extensions/models/`                                                |
 | `workflows`       | No*      | Workflow file paths relative to `workflows/`                                                     |
+| `vaults`          | No*      | Vault file paths relative to `extensions/vaults/`                                                |
+| `drivers`         | No*      | Driver file paths relative to `extensions/drivers/`                                              |
+| `datastores`      | No*      | Datastore file paths relative to `extensions/datastores/`                                        |
 | `additionalFiles` | No       | Extra files relative to the manifest location                                                    |
 | `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                    |
 | `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                     |
 | `dependencies`    | No       | Other extensions this one depends on                                                             |
 
-*At least one of `models` or `workflows` must be present with entries.
+*At least one of `models`, `workflows`, `vaults`, `drivers`, or `datastores`
+must be present with entries.
 
 ### Name Rules
 
@@ -54,11 +58,13 @@ dependencies:
 - Reserved collectives (`@swamp`, `@si`) cannot be used
 - Allowed characters: lowercase letters, numbers, hyphens, underscores
 
-### How Models Map to Manifest
+### How Content Maps to Manifest
 
-- Paths in `models` are resolved relative to `extensions/models/`
-- Only list entry-point files — local imports (files imported by your model) are
-  auto-resolved and included automatically
+- `models` paths resolve relative to `extensions/models/`
+- `vaults` paths resolve relative to `extensions/vaults/`
+- `drivers` paths resolve relative to `extensions/drivers/`
+- `datastores` paths resolve relative to `extensions/datastores/`
+- Only list entry-point files — local imports are auto-resolved and included
 - Each entry-point is bundled into a standalone JS file for the registry
 
 ## Examples
@@ -133,9 +139,10 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 3. **Resolve files** — collects model entry points, auto-resolves local imports,
    resolves workflow dependencies
 4. **Safety analysis** — scans all files for disallowed patterns and limits
-5. **Bundle models** — compiles each model entry point to standalone JS
+5. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
+   datastores) to standalone JS
 6. **Version check** — verifies version doesn't already exist (offers to bump)
-7. **Build archive** — creates tar.gz with models, bundles, workflows, and files
+7. **Build archive** — creates tar.gz with all content types and their bundles
 8. **Upload** — three-phase push: initiate, upload archive, confirm
 
 ## Extension Formatting
@@ -216,15 +223,15 @@ the CLI will offer to bump the `MICRO` component automatically.
 
 ## Common Errors and Fixes
 
-| Error                            | Fix                                              |
-| -------------------------------- | ------------------------------------------------ |
-| "Not authenticated"              | Run `swamp auth login` first                     |
-| "collective does not match"      | Manifest `name` must use `@your-username/...`    |
-| "CalVer format" error            | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)    |
-| "at least one model or workflow" | Add a `models` or `workflows` array with entries |
-| "Model file not found"           | Check path is relative to `extensions/models/`   |
-| "Workflow file not found"        | Check path is relative to `workflows/`           |
-| "eval() or new Function()"       | Remove dynamic code execution from your models   |
-| "Version already exists"         | Bump the MICRO component or let CLI auto-bump    |
-| "Missing manifestVersion"        | Add `manifestVersion: 1` to your manifest        |
-| "Bundle compilation failed"      | Fix TypeScript errors in your model files        |
+| Error                           | Fix                                                                     |
+| ------------------------------- | ----------------------------------------------------------------------- |
+| "Not authenticated"             | Run `swamp auth login` first                                            |
+| "collective does not match"     | Manifest `name` must use `@your-username/...`                           |
+| "CalVer format" error           | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                           |
+| "at least one model, workflow…" | Add a `models`, `workflows`, `vaults`, `drivers`, or `datastores` array |
+| "Model file not found"          | Check path is relative to `extensions/models/`                          |
+| "Workflow file not found"       | Check path is relative to `workflows/`                                  |
+| "eval() or new Function()"      | Remove dynamic code execution from your models                          |
+| "Version already exists"        | Bump the MICRO component or let CLI auto-bump                           |
+| "Missing manifestVersion"       | Add `manifestVersion: 1` to your manifest                               |
+| "Bundle compilation failed"     | Fix TypeScript errors in your model files                               |

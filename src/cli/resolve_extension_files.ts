@@ -34,6 +34,8 @@ import { resolveWorkflowDependencies } from "../domain/extensions/extension_depe
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
+import { resolveDriversDir } from "./resolve_drivers_dir.ts";
+import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 
 export interface ResolveExtensionFilesContext {
   repoDir: string;
@@ -51,6 +53,12 @@ export interface ResolvedExtensionFiles {
   vaultsDir: string;
   vaultEntryPoints: string[];
   allVaultFiles: string[];
+  driversDir: string;
+  driverEntryPoints: string[];
+  allDriverFiles: string[];
+  datastoresDir: string;
+  datastoreEntryPoints: string[];
+  allDatastoreFiles: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
   additionalFilePaths: string[];
 }
@@ -85,6 +93,8 @@ export async function resolveExtensionFiles(
   const marker = await markerRepo.read(repoPath);
   const modelsDir = resolve(repoDir, resolveModelsDir(marker));
   const vaultsDir = resolve(repoDir, resolveVaultsDir(marker));
+  const driversDir = resolve(repoDir, resolveDriversDir(marker));
+  const datastoresDir = resolve(repoDir, resolveDatastoresDir(marker));
 
   // 3. Collect model files from manifest
   const modelEntryPoints: string[] = [];
@@ -218,7 +228,55 @@ export async function resolveExtensionFiles(
     allVaultFiles.push(...vaultImportResult.resolvedFiles);
   }
 
-  // 8. Validate additional files
+  // 8. Collect driver files from manifest
+  const driverEntryPoints: string[] = [];
+  for (const driverRef of manifest.drivers) {
+    const driverPath = resolve(driversDir, driverRef);
+    try {
+      await Deno.stat(driverPath);
+    } catch {
+      throw new UserError(
+        `Driver file not found: ${driverRef} (expected at ${driverPath})`,
+      );
+    }
+    driverEntryPoints.push(driverPath);
+  }
+
+  // 9. Resolve local imports for driver entry points
+  const allDriverFiles: string[] = [];
+  if (driverEntryPoints.length > 0) {
+    const driverImportResult = await resolveLocalImports(
+      driverEntryPoints,
+      driversDir,
+    );
+    allDriverFiles.push(...driverImportResult.resolvedFiles);
+  }
+
+  // 10. Collect datastore files from manifest
+  const datastoreEntryPoints: string[] = [];
+  for (const datastoreRef of manifest.datastores) {
+    const datastorePath = resolve(datastoresDir, datastoreRef);
+    try {
+      await Deno.stat(datastorePath);
+    } catch {
+      throw new UserError(
+        `Datastore file not found: ${datastoreRef} (expected at ${datastorePath})`,
+      );
+    }
+    datastoreEntryPoints.push(datastorePath);
+  }
+
+  // 11. Resolve local imports for datastore entry points
+  const allDatastoreFiles: string[] = [];
+  if (datastoreEntryPoints.length > 0) {
+    const datastoreImportResult = await resolveLocalImports(
+      datastoreEntryPoints,
+      datastoresDir,
+    );
+    allDatastoreFiles.push(...datastoreImportResult.resolvedFiles);
+  }
+
+  // 12. Validate additional files
   const additionalFilePaths: string[] = [];
   for (const af of manifest.additionalFiles) {
     const afPath = resolve(dirname(absoluteManifestPath), af);
@@ -241,6 +299,12 @@ export async function resolveExtensionFiles(
     vaultsDir,
     vaultEntryPoints,
     allVaultFiles,
+    driversDir,
+    driverEntryPoints,
+    allDriverFiles,
+    datastoresDir,
+    datastoreEntryPoints,
+    allDatastoreFiles,
     workflowFiles,
     additionalFilePaths,
   };
