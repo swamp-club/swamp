@@ -1399,6 +1399,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           if (result.status === "fulfilled") {
             bytesReclaimed += result.value;
             versionsRemoved++;
+          } else {
+            logger
+              .error`GC failed to remove version directory: ${result.reason}`;
           }
         }
       }
