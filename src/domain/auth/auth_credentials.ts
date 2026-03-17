@@ -27,4 +27,6 @@ export interface AuthCredentials {
   apiKeyId: string;
   /** The authenticated username */
   username: string;
+  /** Cached collective memberships (slugs) from the last login/whoami */
+  collectives?: string[];
 }

@@ -214,12 +214,14 @@ to use that field.
    ```
 
 4. **Extension not auto-resolved** — types from trusted collectives (`@swamp/*`,
-   `@si/*`) auto-resolve on first use. If resolution failed:
+   `@si/*`, and your membership collectives) auto-resolve on first use. If
+   resolution failed:
    - Check network connectivity (registry at swamp.club)
    - Check if extension exists: `swamp extension search <query>`
    - Manual fallback: `swamp extension pull @collective/name`
-   - If using a non-default collective, add it to `trustedCollectives` in
-     `.swamp.yaml`
+   - Run `swamp auth whoami` to refresh cached membership collectives
+   - If using a collective you're not a member of, add it to
+     `trustedCollectives` in `.swamp.yaml`
 
 ## Expression Debugging
 

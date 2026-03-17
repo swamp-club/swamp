@@ -49,6 +49,7 @@ export interface RepoMarkerData {
   gitignoreManaged?: boolean;
   datastore?: DatastoreConfigData;
   trustedCollectives?: string[];
+  trustMemberCollectives?: boolean;
 }
 
 /**

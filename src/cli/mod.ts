@@ -308,6 +308,32 @@ export function resolveTelemetryEndpoint(
   return DEFAULT_TELEMETRY_ENDPOINT;
 }
 
+/**
+ * Resolves the full list of trusted collectives by merging explicit
+ * trustedCollectives from .swamp.yaml with the user's membership collectives
+ * from cached auth credentials.
+ *
+ * @internal Exported for testing
+ */
+export function resolveTrustedCollectives(
+  marker: RepoMarkerData | null,
+  authCollectives?: string[],
+): string[] {
+  const explicit = marker?.trustedCollectives ?? ["swamp", "si"];
+
+  // If opt-out is set, only use explicit list
+  if (marker?.trustMemberCollectives === false) {
+    return explicit;
+  }
+
+  // Merge membership collectives (deduplicated)
+  if (authCollectives && authCollectives.length > 0) {
+    return [...new Set([...explicit, ...authCollectives])];
+  }
+
+  return explicit;
+}
+
 interface TelemetryContext {
   service: TelemetryService;
   userId: string | null;
@@ -424,8 +450,18 @@ export async function runCli(args: string[]): Promise<void> {
     // Not in a swamp repo - marker stays null
   }
 
-  // Create auto-resolver for trusted collectives
-  const trustedCollectives = marker?.trustedCollectives ?? ["swamp", "si"];
+  // Load cached auth collectives for membership-based trust
+  let authCollectives: string[] | undefined;
+  try {
+    const authRepo = new AuthRepository();
+    const creds = await authRepo.load();
+    authCollectives = creds?.collectives;
+  } catch {
+    // Auth file unreadable — continue without membership collectives
+  }
+
+  // Create auto-resolver for trusted collectives (merging membership collectives)
+  const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
   if (trustedCollectives.length > 0 && marker) {
     const outputMode = getOutputModeFromArgs(args);
     const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
