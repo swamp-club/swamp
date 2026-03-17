@@ -17,30 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
-import { getSwampLogger } from "../logging.ts";
-
-const logger = getSwampLogger(["vault", "edit"]);
-
-/**
- * Data structure for vault edit output.
- */
-export interface VaultEditData {
-  path: string;
-  editor: string;
-  status: "opened";
-  name: string;
-  type: string;
-}
-
-/**
- * Renders vault edit output in either log or JSON mode.
- */
-export function renderVaultEdit(data: VaultEditData, mode: OutputMode): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    logger
-      .info`Opening vault config in ${data.editor}: ${data.name} (${data.type}) at ${data.path}`;
-  }
-}
+// Re-export logging utilities for use within the presentation layer.
+// The actual implementations live in infrastructure, but presentation
+// code should import from here to respect layer boundaries.
+export {
+  getRunLogger,
+  getSwampLogger,
+  getWorkflowRunLogger,
+  writeOutput,
+} from "../infrastructure/logging/logger.ts";

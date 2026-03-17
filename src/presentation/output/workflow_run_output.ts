@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { OutputMode } from "./output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { getSwampLogger } from "../logging.ts";
 
 // Re-export view-model types from libswamp with backward-compatible aliases.
 // The canonical definitions now live in libswamp/workflows/workflow_run_view.ts.
