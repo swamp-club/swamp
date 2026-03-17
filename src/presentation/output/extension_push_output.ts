@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { OutputMode } from "./output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { getSwampLogger } from "../logging.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
 import type { ExtractedArgument } from "../../domain/extensions/extension_content.ts";

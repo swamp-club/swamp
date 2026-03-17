@@ -20,7 +20,7 @@
 import type { EventHandlers, ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { getRunLogger } from "../../infrastructure/logging/logger.ts";
+import { getRunLogger } from "../logging.ts";
 import { UserError } from "../../domain/errors.ts";
 
 export interface ModelMethodRunRenderOpts {

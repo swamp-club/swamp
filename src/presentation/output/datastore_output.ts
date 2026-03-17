@@ -19,7 +19,7 @@
 
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "./output.ts";
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../logging.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 
 export interface DatastoreStatusData {

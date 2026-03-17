@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { getSwampLogger } from "../logging.ts";
 import type { OutputMode } from "./output.ts";
 
 /**

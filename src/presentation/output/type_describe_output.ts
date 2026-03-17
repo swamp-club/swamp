@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim } from "@std/fmt/colors";
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../logging.ts";
 import type { OutputMode } from "./output.ts";
 
 /**
