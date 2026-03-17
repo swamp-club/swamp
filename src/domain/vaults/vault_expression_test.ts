@@ -50,10 +50,9 @@ Deno.test("Direct Vault Service Error Messages", async (t) => {
         error.message,
         "Available vault types:",
       );
-      assertStringIncludes(error.message, "1password");
       assertStringIncludes(
         error.message,
-        "Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
+        "swamp extension pull",
       );
     },
   );

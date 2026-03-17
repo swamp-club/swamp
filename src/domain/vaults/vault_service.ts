@@ -23,20 +23,11 @@ import { getVaultTypes } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
-import { AwsVaultProvider } from "./aws_vault_provider.ts";
-import {
-  type AzureKvVaultConfig,
-  AzureKvVaultProvider,
-} from "./azure_kv_vault_provider.ts";
 import { MockVaultProvider } from "./mock_vault_provider.ts";
 import {
   type LocalEncryptionConfig,
   LocalEncryptionVaultProvider,
 } from "./local_encryption_vault_provider.ts";
-import {
-  type OnePasswordVaultConfig,
-  OnePasswordVaultProvider,
-} from "./onepassword_vault_provider.ts";
 import { join } from "@std/path";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
@@ -143,28 +134,10 @@ export class VaultService {
 
     // Built-in types
     switch (config.type.toLowerCase()) {
-      case "aws-sm":
-        provider = new AwsVaultProvider(
-          config.name,
-          config.config as { region: string },
-        );
-        break;
-      case "azure-kv":
-        provider = new AzureKvVaultProvider(
-          config.name,
-          config.config as unknown as AzureKvVaultConfig,
-        );
-        break;
       case "mock":
         provider = new MockVaultProvider(
           config.name,
           config.config as Record<string, string>,
-        );
-        break;
-      case "1password":
-        provider = new OnePasswordVaultProvider(
-          config.name,
-          config.config as unknown as OnePasswordVaultConfig,
         );
         break;
       case "local_encryption":
@@ -200,7 +173,7 @@ export class VaultService {
             `Available vault types: ${
               getVaultTypes().map((v) => v.type).join(", ")
             }\n` +
-            `Or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for automatic AWS vault.`,
+            `For cloud vaults, install an extension first (e.g., swamp extension pull @swamp/aws-sm).`,
         );
       } else {
         throw new Error(
@@ -286,27 +259,14 @@ export class VaultService {
   }
 
   /**
-   * Creates default vaults if no vaults are configured and AWS credentials are available.
-   * This allows automatic vault setup when credentials exist, but requires explicit
-   * configuration when they don't.
+   * Hook for future default vault setup.
+   * Previously auto-created an AWS vault when credentials were present,
+   * but AWS is now an extension (@swamp/aws-sm). Install it with:
+   *   swamp extension pull @swamp/aws-sm
    */
   ensureDefaultVaults(): void {
-    if (this.providers.size === 0) {
-      // Only auto-register if AWS credentials are explicitly available
-      const hasAwsCredentials = Deno.env.get("AWS_ACCESS_KEY_ID") &&
-        Deno.env.get("AWS_SECRET_ACCESS_KEY");
-
-      const awsRegion = Deno.env.get("AWS_REGION");
-      if (hasAwsCredentials && awsRegion) {
-        // Register default AWS vault only when credentials and region are explicitly set
-        this.registerVault({
-          name: "aws-sm",
-          type: "aws-sm",
-          config: { region: awsRegion },
-        });
-      }
-      // If no credentials, leave providers empty to trigger helpful error messages
-    }
+    // No-op — all external vault providers are now extensions.
+    // Left in place to avoid breaking the fromRepository() call site.
   }
 }
 
@@ -343,8 +303,11 @@ function assertVaultProvider(
  * Known renamed vault types and their current names.
  */
 const RENAMED_VAULT_TYPES: Record<string, string> = {
-  aws: "aws-sm",
-  azure: "azure-kv",
+  "aws": "@swamp/aws-sm",
+  "aws-sm": "@swamp/aws-sm",
+  "azure": "@swamp/azure-kv",
+  "azure-kv": "@swamp/azure-kv",
+  "1password": "@swamp/1password",
 };
 
 /**

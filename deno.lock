@@ -20,9 +20,6 @@
     "jsr:@std/yaml@^1.0.11": "1.0.11",
     "npm:@aws-sdk/client-cloudcontrol@^3.1002.0": "3.1002.0",
     "npm:@aws-sdk/client-s3@^3.1002.0": "3.1005.0",
-    "npm:@aws-sdk/client-secrets-manager@^3.1002.0": "3.1002.0",
-    "npm:@azure/identity@^4.13.0": "4.13.0",
-    "npm:@azure/keyvault-secrets@^4.10.0": "4.10.0_@azure+core-rest-pipeline@1.22.2",
     "npm:@kubernetes/client-node@*": "1.4.0_ws@8.19.0",
     "npm:@logtape/pretty@*": "2.0.4_@logtape+logtape@2.0.4",
     "npm:@marcbachmann/cel-js@7.5.1": "7.5.1",
@@ -290,50 +287,6 @@
         "@smithy/util-stream",
         "@smithy/util-utf8@4.2.2",
         "@smithy/util-waiter",
-        "tslib"
-      ]
-    },
-    "@aws-sdk/client-secrets-manager@3.1002.0": {
-      "integrity": "sha512-7UjWXrGpUxcVfLa/avPosc8KBGCjqixLeqCqXxZMoo/AZLNYDxYGW8wk/eoxkaoW+yZbVPqPSLeJ5/6dPztZrQ==",
-      "dependencies": [
-        "@aws-crypto/sha256-browser",
-        "@aws-crypto/sha256-js",
-        "@aws-sdk/core",
-        "@aws-sdk/credential-provider-node",
-        "@aws-sdk/middleware-host-header",
-        "@aws-sdk/middleware-logger",
-        "@aws-sdk/middleware-recursion-detection",
-        "@aws-sdk/middleware-user-agent",
-        "@aws-sdk/region-config-resolver",
-        "@aws-sdk/types",
-        "@aws-sdk/util-endpoints",
-        "@aws-sdk/util-user-agent-browser",
-        "@aws-sdk/util-user-agent-node",
-        "@smithy/config-resolver",
-        "@smithy/core",
-        "@smithy/fetch-http-handler",
-        "@smithy/hash-node",
-        "@smithy/invalid-dependency",
-        "@smithy/middleware-content-length",
-        "@smithy/middleware-endpoint",
-        "@smithy/middleware-retry",
-        "@smithy/middleware-serde",
-        "@smithy/middleware-stack",
-        "@smithy/node-config-provider",
-        "@smithy/node-http-handler",
-        "@smithy/protocol-http",
-        "@smithy/smithy-client",
-        "@smithy/types",
-        "@smithy/url-parser",
-        "@smithy/util-base64",
-        "@smithy/util-body-length-browser",
-        "@smithy/util-body-length-node",
-        "@smithy/util-defaults-mode-browser",
-        "@smithy/util-defaults-mode-node",
-        "@smithy/util-endpoints",
-        "@smithy/util-middleware",
-        "@smithy/util-retry",
-        "@smithy/util-utf8@4.2.2",
         "tslib"
       ]
     },
@@ -721,162 +674,6 @@
     },
     "@aws/lambda-invoke-store@0.2.3": {
       "integrity": "sha512-oLvsaPMTBejkkmHhjf09xTgk71mOqyr/409NKhRIL08If7AhVfUsJhVsx386uJaqNd42v9kWamQ9lFbkoC2dYw=="
-    },
-    "@azure-rest/core-client@2.5.1": {
-      "integrity": "sha512-EHaOXW0RYDKS5CFffnixdyRPak5ytiCtU7uXDcP/uiY+A6jFRwNGzzJBiznkCzvi5EYpY+YWinieqHb0oY916A==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@azure/core-auth",
-        "@azure/core-rest-pipeline",
-        "@azure/core-tracing",
-        "@typespec/ts-http-runtime",
-        "tslib"
-      ]
-    },
-    "@azure/abort-controller@2.1.2": {
-      "integrity": "sha512-nBrLsEWm4J2u5LpAPjxADTlq3trDgVZZXHNKabeXZtpq3d3AbN/KGO82R87rdDz5/lYB024rtEf10/q0urNgsA==",
-      "dependencies": [
-        "tslib"
-      ]
-    },
-    "@azure/core-auth@1.10.1": {
-      "integrity": "sha512-ykRMW8PjVAn+RS6ww5cmK9U2CyH9p4Q88YJwvUslfuMmN98w/2rdGRLPqJYObapBCdzBVeDgYWdJnFPFb7qzpg==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@azure/core-util",
-        "tslib"
-      ]
-    },
-    "@azure/core-client@1.10.1": {
-      "integrity": "sha512-Nh5PhEOeY6PrnxNPsEHRr9eimxLwgLlpmguQaHKBinFYA/RU9+kOYVOQqOrTsCL+KSxrLLl1gD8Dk5BFW/7l/w==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@azure/core-auth",
-        "@azure/core-rest-pipeline",
-        "@azure/core-tracing",
-        "@azure/core-util",
-        "@azure/logger",
-        "tslib"
-      ]
-    },
-    "@azure/core-http-compat@2.3.2_@azure+core-client@1.10.1_@azure+core-rest-pipeline@1.22.2": {
-      "integrity": "sha512-Tf6ltdKzOJEgxZeWLCjMxrxbodB/ZeCbzzA1A2qHbhzAjzjHoBVSUeSl/baT/oHAxhc4qdqVaDKnc2+iE932gw==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@azure/core-client",
-        "@azure/core-rest-pipeline"
-      ]
-    },
-    "@azure/core-lro@2.7.2": {
-      "integrity": "sha512-0YIpccoX8m/k00O7mDDMdJpbr6mf1yWo2dfmxt5A8XVZVVMz2SSKaEbMCeJRvgQ0IaSlqhjT47p4hVIRRy90xw==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@azure/core-util",
-        "@azure/logger",
-        "tslib"
-      ]
-    },
-    "@azure/core-paging@1.6.2": {
-      "integrity": "sha512-YKWi9YuCU04B55h25cnOYZHxXYtEvQEbKST5vqRga7hWY9ydd3FZHdeQF8pyh+acWZvppw13M/LMGx0LABUVMA==",
-      "dependencies": [
-        "tslib"
-      ]
-    },
-    "@azure/core-rest-pipeline@1.22.2": {
-      "integrity": "sha512-MzHym+wOi8CLUlKCQu12de0nwcq9k9Kuv43j4Wa++CsCpJwps2eeBQwD2Bu8snkxTtDKDx4GwjuR9E8yC8LNrg==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@azure/core-auth",
-        "@azure/core-tracing",
-        "@azure/core-util",
-        "@azure/logger",
-        "@typespec/ts-http-runtime",
-        "tslib"
-      ]
-    },
-    "@azure/core-tracing@1.3.1": {
-      "integrity": "sha512-9MWKevR7Hz8kNzzPLfX4EAtGM2b8mr50HPDBvio96bURP/9C+HjdH3sBlLSNNrvRAr5/k/svoH457gB5IKpmwQ==",
-      "dependencies": [
-        "tslib"
-      ]
-    },
-    "@azure/core-util@1.13.1": {
-      "integrity": "sha512-XPArKLzsvl0Hf0CaGyKHUyVgF7oDnhKoP85Xv6M4StF/1AhfORhZudHtOyf2s+FcbuQ9dPRAjB8J2KvRRMUK2A==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@typespec/ts-http-runtime",
-        "tslib"
-      ]
-    },
-    "@azure/identity@4.13.0": {
-      "integrity": "sha512-uWC0fssc+hs1TGGVkkghiaFkkS7NkTxfnCH+Hdg+yTehTpMcehpok4PgUKKdyCH+9ldu6FhiHRv84Ntqj1vVcw==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@azure/core-auth",
-        "@azure/core-client",
-        "@azure/core-rest-pipeline",
-        "@azure/core-tracing",
-        "@azure/core-util",
-        "@azure/logger",
-        "@azure/msal-browser",
-        "@azure/msal-node",
-        "open",
-        "tslib"
-      ]
-    },
-    "@azure/keyvault-common@2.0.0": {
-      "integrity": "sha512-wRLVaroQtOqfg60cxkzUkGKrKMsCP6uYXAOomOIysSMyt1/YM0eUn9LqieAWM8DLcU4+07Fio2YGpPeqUbpP9w==",
-      "dependencies": [
-        "@azure/abort-controller",
-        "@azure/core-auth",
-        "@azure/core-client",
-        "@azure/core-rest-pipeline",
-        "@azure/core-tracing",
-        "@azure/core-util",
-        "@azure/logger",
-        "tslib"
-      ]
-    },
-    "@azure/keyvault-secrets@4.10.0_@azure+core-rest-pipeline@1.22.2": {
-      "integrity": "sha512-WvXc3h2hqHL1pMzUU7ANE2RBKoxjK3JQc0YNn6GUFvOWQtf2ZR+sH4/5cZu8zAg62v9qLCduBN7065nHKl+AOA==",
-      "dependencies": [
-        "@azure-rest/core-client",
-        "@azure/abort-controller",
-        "@azure/core-auth",
-        "@azure/core-http-compat",
-        "@azure/core-lro",
-        "@azure/core-paging",
-        "@azure/core-rest-pipeline",
-        "@azure/core-tracing",
-        "@azure/core-util",
-        "@azure/keyvault-common",
-        "@azure/logger",
-        "tslib"
-      ]
-    },
-    "@azure/logger@1.3.0": {
-      "integrity": "sha512-fCqPIfOcLE+CGqGPd66c8bZpwAji98tZ4JI9i/mlTNTlsIWslCfpg48s/ypyLxZTump5sypjrKn2/kY7q8oAbA==",
-      "dependencies": [
-        "@typespec/ts-http-runtime",
-        "tslib"
-      ]
-    },
-    "@azure/msal-browser@4.29.0": {
-      "integrity": "sha512-/f3eHkSNUTl6DLQHm+bKecjBKcRQxbd/XLx8lvSYp8Nl/HRyPuIPOijt9Dt0sH50/SxOwQ62RnFCmFlGK+bR/w==",
-      "dependencies": [
-        "@azure/msal-common"
-      ]
-    },
-    "@azure/msal-common@15.15.0": {
-      "integrity": "sha512-/n+bN0AKlVa+AOcETkJSKj38+bvFs78BaP4rNtv3MJCmPH0YrHiskMRe74OhyZ5DZjGISlFyxqvf9/4QVEi2tw=="
-    },
-    "@azure/msal-node@3.8.8": {
-      "integrity": "sha512-+f1VrJH1iI517t4zgmuhqORja0bL6LDQXfBqkjuMmfTYXTQQnh1EvwwxO3UbKLT05N0obF72SRHFrC1RBDv5Gg==",
-      "dependencies": [
-        "@azure/msal-common",
-        "jsonwebtoken",
-        "uuid"
-      ]
     },
     "@jsep-plugin/assignment@1.3.0_jsep@1.4.0": {
       "integrity": "sha512-VVgV+CXrhbMI3aSusQyclHkenWSAm95WaiKrMxRFam3JSUiIaQjoMIw2sEs/OX4XifnqeQUN4DYbJjlA8EfktQ==",
@@ -1402,14 +1199,6 @@
         "@types/node"
       ]
     },
-    "@typespec/ts-http-runtime@0.3.3": {
-      "integrity": "sha512-91fp6CAAJSRtH5ja95T1FHSKa8aPW9/Zw6cta81jlZTUw/+Vq8jM/AfF/14h2b71wwR84JUTW/3Y8QPhDAawFA==",
-      "dependencies": [
-        "http-proxy-agent",
-        "https-proxy-agent",
-        "tslib"
-      ]
-    },
     "agent-base@7.1.4": {
       "integrity": "sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ=="
     },
@@ -1479,15 +1268,6 @@
     "bowser@2.14.1": {
       "integrity": "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg=="
     },
-    "buffer-equal-constant-time@1.0.1": {
-      "integrity": "sha512-zRpUiDwd/xk6ADqPMATG8vc9VPrkck7T07OIx0gnjmJAnHnTVXNQG3vfvWNuiZIkwu9KrKdA1iJKfsfTVxE6NA=="
-    },
-    "bundle-name@4.1.0": {
-      "integrity": "sha512-tjwM5exMg6BGRI+kNmTntNsvdZS1X8BFYS6tnJ2hdH0kVxM6/eVZ2xy+FqStSWvYmtfFMDLIxurorHwDKfDz5Q==",
-      "dependencies": [
-        "run-applescript"
-      ]
-    },
     "call-bind-apply-helpers@1.0.2": {
       "integrity": "sha512-Sp1ablJ0ivDkSzjcaJdxEunN5/XvksFJ2sMBFfq6x0ryhQV/2b/KwFe21cMpmHtPOSij8K99/wSfoEuTObmuMQ==",
       "dependencies": [
@@ -1538,19 +1318,6 @@
         "ms"
       ]
     },
-    "default-browser-id@5.0.1": {
-      "integrity": "sha512-x1VCxdX4t+8wVfd1so/9w+vQ4vx7lKd2Qp5tDRutErwmR85OgmfX7RlLRMWafRMY7hbEiXIbudNrjOAPa/hL8Q=="
-    },
-    "default-browser@5.5.0": {
-      "integrity": "sha512-H9LMLr5zwIbSxrmvikGuI/5KGhZ8E2zH3stkMgM5LpOWDutGM2JZaj460Udnf1a+946zc7YBgrqEWwbk7zHvGw==",
-      "dependencies": [
-        "bundle-name",
-        "default-browser-id"
-      ]
-    },
-    "define-lazy-prop@3.0.0": {
-      "integrity": "sha512-N+MeXYoqr3pOgn8xfyRPREN7gHakLYjhsHhWGT3fWAiL4IkAt0iDw14QiiEm2bE30c5XX5q0FtAA3CK5f9/BUg=="
-    },
     "delayed-stream@1.0.0": {
       "integrity": "sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ=="
     },
@@ -1560,12 +1327,6 @@
         "call-bind-apply-helpers",
         "es-errors",
         "gopd"
-      ]
-    },
-    "ecdsa-sig-formatter@1.0.11": {
-      "integrity": "sha512-nagl3RYrbNv6kQkeJIpt6NJZy8twLB/2vtz6yN9Z4vRKHN4/QZJIEbqohALSgwKdnksuY3k5Addp5lg8sVoVcQ==",
-      "dependencies": [
-        "safe-buffer"
       ]
     },
     "emoji-regex@10.6.0": {
@@ -1698,20 +1459,6 @@
     "hpagent@1.2.0": {
       "integrity": "sha512-A91dYTeIB6NoXG+PxTQpCCDDnfHsW9kc06Lvpu1TEe9gnd6ZFeiBoRO9JvzEv6xK7EX97/dUE8g/vBMTqTS3CA=="
     },
-    "http-proxy-agent@7.0.2": {
-      "integrity": "sha512-T1gkAiYYDWYx3V5Bmyu7HcfcvL7mUrTWiM6yOfa3PIphViJ/gFPbvidQ+veqSOHci/PxBcDabeUNCzpOODJZig==",
-      "dependencies": [
-        "agent-base",
-        "debug"
-      ]
-    },
-    "https-proxy-agent@7.0.6": {
-      "integrity": "sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw==",
-      "dependencies": [
-        "agent-base",
-        "debug"
-      ]
-    },
     "indent-string@5.0.0": {
       "integrity": "sha512-m6FAo/spmsW2Ab2fU35JTYwtOKa2yAwXSwgjSv1TJzh4Mh7mC3lzAOVLBprb72XsTrgkEIsl7YrFNAiDiRhIGg=="
     },
@@ -1761,10 +1508,6 @@
     "ip-address@10.1.0": {
       "integrity": "sha512-XXADHxXmvT9+CRxhXg56LJovE+bmWnEWB78LB83VZTprKTmaC5QfruXocxzTZ2Kl0DNwKuBdlIhjL8LeY8Sf8Q=="
     },
-    "is-docker@3.0.0": {
-      "integrity": "sha512-eljcgEDlEns/7AXFosB5K/2nCM4P7FQPkGc/DWLy5rmFEWvZayGrik1d9/QIY5nJ4f9YsVvBkA6kJpHn9rISdQ==",
-      "bin": true
-    },
     "is-fullwidth-code-point@4.0.0": {
       "integrity": "sha512-O4L094N2/dZ7xqVdrXhh9r1KODPJpFms8B5sGdJLPy664AgvXsreZUyCQQNItZRDlYug4xStLjNp/sz3HvBowQ=="
     },
@@ -1777,19 +1520,6 @@
     "is-in-ci@1.0.0": {
       "integrity": "sha512-eUuAjybVTHMYWm/U+vBO1sY/JOCgoPCXRxzdju0K+K0BiGW0SChEL1MLC0PoCIR1OlPo5YAp8HuQoUlsWEICwg==",
       "bin": true
-    },
-    "is-inside-container@1.0.0": {
-      "integrity": "sha512-KIYLCCJghfHZxqjYBE7rEy0OBuTd5xCHS7tHVgvCLkx7StIoaxwNW3hCALgEUjFfeRk+MG/Qxmp/vtETEF3tRA==",
-      "dependencies": [
-        "is-docker"
-      ],
-      "bin": true
-    },
-    "is-wsl@3.1.1": {
-      "integrity": "sha512-e6rvdUCiQCAuumZslxRJWR/Doq4VpPR82kqclvcS0efgt430SlGIk05vdCN58+VrzgtIcfNODjozVielycD4Sw==",
-      "dependencies": [
-        "is-inside-container"
-      ]
     },
     "isomorphic-ws@5.0.0_ws@8.19.0": {
       "integrity": "sha512-muId7Zzn9ywDsyXgTIafTry2sV3nySZeUDe6YedVd1Hvuuep5AsIlqK+XefWpYTyJG5e503F2xIuT2lcU6rCSw==",
@@ -1822,59 +1552,8 @@
       ],
       "bin": true
     },
-    "jsonwebtoken@9.0.3": {
-      "integrity": "sha512-MT/xP0CrubFRNLNKvxJ2BYfy53Zkm++5bX9dtuPbqAeQpTVe0MQTFhao8+Cp//EmJp244xt6Drw/GVEGCUj40g==",
-      "dependencies": [
-        "jws",
-        "lodash.includes",
-        "lodash.isboolean",
-        "lodash.isinteger",
-        "lodash.isnumber",
-        "lodash.isplainobject",
-        "lodash.isstring",
-        "lodash.once",
-        "ms",
-        "semver"
-      ]
-    },
-    "jwa@2.0.1": {
-      "integrity": "sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==",
-      "dependencies": [
-        "buffer-equal-constant-time",
-        "ecdsa-sig-formatter",
-        "safe-buffer"
-      ]
-    },
-    "jws@4.0.1": {
-      "integrity": "sha512-EKI/M/yqPncGUUh44xz0PxSidXFr/+r0pA70+gIYhjv+et7yxM+s29Y+VGDkovRofQem0fs7Uvf4+YmAdyRduA==",
-      "dependencies": [
-        "jwa",
-        "safe-buffer"
-      ]
-    },
     "lodash-es@4.17.23": {
       "integrity": "sha512-kVI48u3PZr38HdYz98UmfPnXl2DXrpdctLrFLCd3kOx1xUkOmpFPx7gCWWM5MPkL/fD8zb+Ph0QzjGFs4+hHWg=="
-    },
-    "lodash.includes@4.3.0": {
-      "integrity": "sha512-W3Bx6mdkRTGtlJISOvVD/lbqjTlPPUDTMnlXZFnVwi9NKJ6tiAk6LVdlhZMm17VZisqhKcgzpO5Wz91PCt5b0w=="
-    },
-    "lodash.isboolean@3.0.3": {
-      "integrity": "sha512-Bz5mupy2SVbPHURB98VAcw+aHh4vRV5IPNhILUCsOzRmsTmSQ17jIuqopAentWoehktxGd9e/hbIXq980/1QJg=="
-    },
-    "lodash.isinteger@4.0.4": {
-      "integrity": "sha512-DBwtEWN2caHQ9/imiNeEA5ys1JoRtRfY3d7V9wkqtbycnAmTvRRmbHKDV4a0EYc678/dia0jrte4tjYwVBaZUA=="
-    },
-    "lodash.isnumber@3.0.3": {
-      "integrity": "sha512-QYqzpfwO3/CWf3XP+Z+tkQsfaLL/EnUlXWVkIk5FUPc4sBdTehEqZONuyRt2P67PXAk+NXmTBcc97zw9t1FQrw=="
-    },
-    "lodash.isplainobject@4.0.6": {
-      "integrity": "sha512-oSXzaWypCMHkPC3NvBEaPHf0KsA5mvPrOPgQWDsbg8n7orZ290M0BmC/jgRZ4vcJ6DTAhjrsSYgdsW/F+MFOBA=="
-    },
-    "lodash.isstring@4.0.1": {
-      "integrity": "sha512-0wJxfxH1wgO3GrbuP+dTTk7op+6L41QCXbGINEmD+ny/G/eCqGzxyCsh7159S+mgDDcoarnBw6PC1PS5+wUGgw=="
-    },
-    "lodash.once@4.1.1": {
-      "integrity": "sha512-Sb487aTOCr9drQVL8pIxOzVhafOjZN9UU54hiN8PU3uAiSV7lx1yYNpbNmex2PK6dSJoNTSJUUswT651yww3Mg=="
     },
     "loose-envify@1.4.0": {
       "integrity": "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==",
@@ -1922,15 +1601,6 @@
         "mimic-fn"
       ]
     },
-    "open@10.2.0": {
-      "integrity": "sha512-YgBpdJHPyQ2UE5x+hlSXcnejzAvD0b22U2OuAP+8OnlJT+PjWPxtgmGqKKc+RgTM63U9gN0YzrYc71R2WT/hTA==",
-      "dependencies": [
-        "default-browser",
-        "define-lazy-prop",
-        "is-inside-container",
-        "wsl-utils"
-      ]
-    },
     "openid-client@6.8.2": {
       "integrity": "sha512-uOvTCndr4udZsKihJ68H9bUICrriHdUVJ6Az+4Ns6cW55rwM5h0bjVIzDz2SxgOI84LKjFyjOFvERLzdTUROGA==",
       "dependencies": [
@@ -1975,21 +1645,11 @@
     "rfc4648@1.5.4": {
       "integrity": "sha512-rRg/6Lb+IGfJqO05HZkN50UtY7K/JhxJag1kP23+zyMfrvoB0B7RWv06MbOzoc79RgCdNTiUaNsTT1AJZ7Z+cg=="
     },
-    "run-applescript@7.1.0": {
-      "integrity": "sha512-DPe5pVFaAsinSaV6QjQ6gdiedWDcRCbUuiQfQa2wmWV7+xC9bGulGI8+TdRmoFkAPaBXk8CrAbnlY2ISniJ47Q=="
-    },
-    "safe-buffer@5.2.1": {
-      "integrity": "sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ=="
-    },
     "scheduler@0.23.2": {
       "integrity": "sha512-UOShsPwz7NrMUqhR6t0hWjFduvOzbtv7toDH1/hIrfRNIDBnnBWd0CwJTGvTpngVlmwGCdP9/Zl/tVrDqcuYzQ==",
       "dependencies": [
         "loose-envify"
       ]
-    },
-    "semver@7.7.4": {
-      "integrity": "sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==",
-      "bin": true
     },
     "signal-exit@3.0.7": {
       "integrity": "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ=="
@@ -2103,10 +1763,6 @@
     "undici-types@7.8.0": {
       "integrity": "sha512-9UJ2xGDvQ43tYyVMpuHlsgApydB8ZKfVYTsLDhXkFL/6gfkp+U8xTGdh8pMJv1SpZna0zxG1DwsKZsreLbXBxw=="
     },
-    "uuid@8.3.2": {
-      "integrity": "sha512-+NYs2QeMWy+GWFOEm9xnn6HCDp0l7QBD7ml8zLUmJ+93Q5NF0NocErnwkTkXVFNiX3/fpC6afS8Dhb/gz7R7eg==",
-      "bin": true
-    },
     "webidl-conversions@3.0.1": {
       "integrity": "sha512-2JAn3z8AR6rjK8Sm8orRC0h/bcl/DqL7tRPdGZ4I1CjdF+EaMLmYxBHyXuKL849eucPFhvBoxMsflfOb8kxaeQ=="
     },
@@ -2137,12 +1793,6 @@
     "ws@8.19.0": {
       "integrity": "sha512-blAT2mjOEIi0ZzruJfIhb3nps74PRWTCz1IjglWEEpQl5XS/UNama6u2/rjFkDDouqr4L67ry+1aGIALViWjDg=="
     },
-    "wsl-utils@0.1.0": {
-      "integrity": "sha512-h3Fbisa2nKGPxCpm89Hk33lBLsnaGBvctQopaBSOW/uIs6FTe1ATyAnKFJrzVs9vpGdsTe73WF3V4lIsk4Gacw==",
-      "dependencies": [
-        "is-wsl"
-      ]
-    },
     "yoga-layout@3.2.1": {
       "integrity": "sha512-0LPOt3AxKqMdFBZA3HBAt/t/8vIKq7VaQYbuA8WxCgung+p9TVyKRYdpvCb80HcdTN2NkbIKbhNwKUfm3tQywQ=="
     },
@@ -2163,9 +1813,6 @@
       "jsr:@std/yaml@^1.0.11",
       "npm:@aws-sdk/client-cloudcontrol@^3.1002.0",
       "npm:@aws-sdk/client-s3@^3.1002.0",
-      "npm:@aws-sdk/client-secrets-manager@^3.1002.0",
-      "npm:@azure/identity@^4.13.0",
-      "npm:@azure/keyvault-secrets@^4.10.0",
       "npm:@marcbachmann/cel-js@7.5.1",
       "npm:@types/react@^18.3.28",
       "npm:fast-check@^3.22.0",
