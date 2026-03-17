@@ -50,6 +50,7 @@ export type AuthWhoamiEvent =
 /** Dependencies for the whoami operation, injected for testability. */
 export interface AuthDeps {
   loadCredentials: () => Promise<AuthCredentials | null>;
+  saveCredentials: (credentials: AuthCredentials) => Promise<void>;
   fetchWhoami: (
     serverUrl: string,
     apiKey: string,
@@ -65,6 +66,7 @@ export function createAuthDeps(
   const repo = new AuthRepository();
   return {
     loadCredentials: () => repo.load(),
+    saveCredentials: (credentials) => repo.save(credentials),
     fetchWhoami: (serverUrl, apiKey, signal) => {
       const client = new SwampClubClient(serverUrl);
       return client.whoami(apiKey, signal);
@@ -102,6 +104,13 @@ export async function* whoami(
     }
 
     const collectives = getCollectives(response);
+
+    // Refresh cached collectives in auth.json so they stay current
+    await deps.saveCredentials({
+      ...credentials,
+      collectives: collectives ?? [],
+    });
+
     yield {
       kind: "completed",
       identity: {

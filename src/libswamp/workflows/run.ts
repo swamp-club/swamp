@@ -128,6 +128,7 @@ export interface WorkflowRunInput {
   inputs?: Record<string, unknown>;
   runtimeTags?: Record<string, string>;
   verbose?: boolean;
+  driver?: string;
 }
 
 /**
@@ -343,6 +344,7 @@ export async function* workflowRun(
         inputs: resolvedInput.inputs,
         runtimeTags: resolvedInput.runtimeTags,
         signal: ctx.signal,
+        driver: resolvedInput.driver,
       })
     ) {
       yield mapEvent(event, deps, resolvedInput);

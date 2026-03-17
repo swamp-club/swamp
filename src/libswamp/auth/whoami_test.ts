@@ -31,6 +31,7 @@ function makeDeps(overrides: {
 }): AuthDeps {
   return {
     loadCredentials: () => Promise.resolve(overrides.credentials ?? null),
+    saveCredentials: () => Promise.resolve(),
     fetchWhoami: (
       _serverUrl: string,
       _apiKey: string,
@@ -125,6 +126,7 @@ Deno.test("whoami uses serverUrlOverride when provided", async () => {
   const fetchedUrls: string[] = [];
   const deps: AuthDeps = {
     loadCredentials: () => Promise.resolve(testCredentials),
+    saveCredentials: () => Promise.resolve(),
     fetchWhoami: (serverUrl, _apiKey, _signal) => {
       fetchedUrls.push(serverUrl);
       return Promise.resolve(testWhoamiResponse);
@@ -170,6 +172,7 @@ Deno.test("whoami yields cancelled error when signal is already aborted", async 
   const ctx = createLibSwampContext({ signal: controller.signal });
   const deps: AuthDeps = {
     loadCredentials: () => Promise.resolve(testCredentials),
+    saveCredentials: () => Promise.resolve(),
     fetchWhoami: (_serverUrl, _apiKey, signal) => {
       signal.throwIfAborted();
       return Promise.resolve(testWhoamiResponse);

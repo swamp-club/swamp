@@ -94,7 +94,9 @@ export interface ModelMethodRunDeps {
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  getModelDef: (type: ModelType) => ModelDefinition | undefined;
+  getModelDef: (
+    type: ModelType,
+  ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
   createEvaluationService: () => ExpressionEvaluationService;
   loadEvaluatedDefinition: (
     type: ModelType,
@@ -125,6 +127,10 @@ export interface ModelMethodRunInput {
   inputs: Record<string, unknown>;
   lastEvaluated: boolean;
   runtimeTags?: Record<string, string>;
+  skipCheckNames?: string[];
+  skipCheckLabels?: string[];
+  skipAllChecks?: boolean;
+  driver?: string;
 }
 
 /**
@@ -148,8 +154,8 @@ export async function* modelMethodRun(
   }
   const { definition, type: modelType } = lookupResult;
 
-  // Get model definition from registry
-  const modelDef = deps.getModelDef(modelType);
+  // Get model definition from registry (may auto-resolve if async)
+  const modelDef = await Promise.resolve(deps.getModelDef(modelType));
   if (!modelDef) {
     yield { kind: "error", error: unknownModelType(modelType.normalized) };
     return;
@@ -339,6 +345,10 @@ export async function* modelMethodRun(
               runtimeTags: input.runtimeTags,
               vaultService,
               redactor,
+              skipCheckNames: input.skipCheckNames,
+              skipCheckLabels: input.skipCheckLabels,
+              skipAllChecks: input.skipAllChecks,
+              driver: input.driver,
               onEvent: (event: MethodExecutionEvent) => {
                 if (event.type === "output") {
                   push({
