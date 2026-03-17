@@ -19,40 +19,46 @@
 
 import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/mod.ts";
-import { modelGet } from "../../libswamp/models/get.ts";
-import type { ModelGetDeps } from "../../libswamp/models/get.ts";
-import { createModelGetRenderer } from "../../presentation/renderers/model_get.ts";
+import { vaultDescribe } from "../../libswamp/vaults/describe.ts";
+import type { VaultDescribeDeps } from "../../libswamp/vaults/describe.ts";
+import { createVaultDescribeRenderer } from "../../presentation/renderers/vault_describe.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelGetCommand = new Command()
-  .name("get")
-  .description("Show details of a model definition")
-  .arguments("<model_id_or_name:model_name>")
+export const vaultDescribeCommand = new Command()
+  .name("describe")
+  .description("Describe a vault configuration")
+  .arguments("<vault_name_or_id:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, modelIdOrName: string) {
-    const cliCtx = createContext(options as GlobalOptions, ["model", "get"]);
-    cliCtx.logger.debug`Getting model: ${modelIdOrName}`;
+  .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
+  .action(async function (options: AnyOptions, vaultNameOrId: string) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "vault",
+      "describe",
+    ]);
+    cliCtx.logger.debug`Describing vault: ${vaultNameOrId}`;
 
     const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
+    const repo = repoContext.vaultConfigRepo;
+    const vaultType = options.type as string | undefined;
 
-    const deps: ModelGetDeps = {
-      lookupDefinition: (idOrName) =>
-        findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
-      getModelDef: (type) => modelRegistry.get(type),
+    const deps: VaultDescribeDeps = {
+      findByName: (name) => repo.findByName(name),
+      findById: (type, id) => repo.findById(type, id),
+      findAll: () => repo.findAll(),
     };
 
-    const renderer = createModelGetRenderer(cliCtx.outputMode);
-    await consumeStream(modelGet(deps, modelIdOrName), renderer.handlers());
+    const renderer = createVaultDescribeRenderer(cliCtx.outputMode);
+    await consumeStream(
+      vaultDescribe(deps, vaultNameOrId, vaultType),
+      renderer.handlers(),
+    );
 
-    cliCtx.logger.debug("Model get command completed");
+    cliCtx.logger.debug("Vault describe command completed");
   });

@@ -23,7 +23,7 @@ import {
   type TypeSearchData,
   type TypeSearchItem,
 } from "../../presentation/output/type_search_output.tsx";
-import { renderTypeDescribe } from "../../presentation/output/type_describe_output.ts";
+import { renderTypeDescribe } from "../../presentation/renderers/type_describe.ts";
 import {
   createContext,
   type GlobalOptions,

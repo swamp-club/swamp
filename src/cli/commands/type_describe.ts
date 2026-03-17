@@ -18,144 +18,49 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { z } from "zod";
-import {
-  type MethodDescribeData,
-  renderTypeDescribe,
-  type TypeDescribeData,
-} from "../../presentation/output/type_describe_output.ts";
+import { consumeStream } from "../../libswamp/mod.ts";
+import { typeDescribe } from "../../libswamp/types/describe.ts";
+import type { TypeDescribeDeps } from "../../libswamp/types/describe.ts";
+import { createTypeDescribeRenderer } from "../../presentation/renderers/type_describe.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import {
-  type FileOutputSpec,
-  type MethodDefinition,
-  modelRegistry,
-  type ResourceOutputSpec,
-} from "../../domain/models/model.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
-import { UserError } from "../../domain/errors.ts";
+
+// Re-export from libswamp for backward compatibility with existing importers
+export {
+  toMethodDescribeData,
+  zodToJsonSchema,
+} from "../../libswamp/types/schema_helpers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Converts a Zod schema to JSON Schema format.
- */
-export function zodToJsonSchema(schema: z.ZodTypeAny): object {
-  return z.toJSONSchema(schema);
-}
-
-/**
- * Converts a MethodDefinition to MethodDescribeData for presentation.
- */
-export function toMethodDescribeData(
-  name: string,
-  method: MethodDefinition,
-  resources?: Record<string, ResourceOutputSpec>,
-  files?: Record<string, FileOutputSpec>,
-): MethodDescribeData {
-  const resourceSpecs = resources
-    ? Object.entries(resources).map(
-      ([specName, spec]) => ({
-        specName,
-        kind: "resource" as const,
-        description: spec.description,
-        schema: zodToJsonSchema(spec.schema),
-        lifetime: spec.lifetime,
-        garbageCollection: spec.garbageCollection,
-        tags: spec.tags,
-      }),
-    )
-    : [];
-
-  const fileSpecs = files
-    ? Object.entries(files).map(
-      ([specName, spec]) => ({
-        specName,
-        kind: "file" as const,
-        description: spec.description,
-        contentType: spec.contentType,
-        lifetime: spec.lifetime,
-        garbageCollection: spec.garbageCollection,
-        streaming: spec.streaming,
-        tags: spec.tags,
-      }),
-    )
-    : [];
-
-  const dataOutputSpecs = [...resourceSpecs, ...fileSpecs];
-
-  return {
-    name,
-    description: method.description,
-    arguments: zodToJsonSchema(method.arguments),
-    dataOutputSpecs: dataOutputSpecs.length > 0 ? dataOutputSpecs : undefined,
-  };
-}
-
-/**
- * Core action for describing a model type.
- * Shared between 'describe' and 'get' commands.
- */
-async function typeDescribeAction(
-  options: AnyOptions,
-  typeArg: string,
-): Promise<void> {
-  const ctx = createContext(options as GlobalOptions, ["type", "describe"]);
-  ctx.logger.debug`Describing type: ${typeArg}`;
-
-  // Parse and validate the model type
-  const modelType = ModelType.create(typeArg);
-  ctx.logger.debug`Normalized type: ${modelType.normalized}`;
-
-  // Look up the model definition (auto-resolve if needed)
-  const definition = await resolveModelType(modelType, getAutoResolver());
-  if (!definition) {
-    const availableTypes = modelRegistry.types().map((t) => t.normalized)
-      .join(", ");
-    throw new UserError(
-      `Unknown model type: ${typeArg}. Available types: ${
-        availableTypes || "none"
-      }`,
-    );
-  }
-
-  // Convert Zod schemas to JSON Schema
-  const globalArguments = definition.globalArguments
-    ? zodToJsonSchema(definition.globalArguments)
-    : undefined;
-
-  // Build method descriptions
-  const methods: MethodDescribeData[] = Object.entries(definition.methods)
-    .map(
-      ([name, method]) =>
-        toMethodDescribeData(
-          name,
-          method,
-          definition.resources,
-          definition.files,
-        ),
-    );
-
-  // Build the output data
-  const data: TypeDescribeData = {
-    type: {
-      raw: modelType.raw,
-      normalized: modelType.normalized,
-    },
-    version: definition.version,
-    globalArguments,
-    methods,
-  };
-
-  renderTypeDescribe(data, ctx.outputMode);
-  ctx.logger.debug("Type describe command completed");
-}
 
 export const typeDescribeCommand = new Command()
   .description("Describe a model type with schema details")
   .alias("get")
   .arguments("<type:model_type>")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(typeDescribeAction);
+  .action(async function (options: AnyOptions, typeArg: string) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "type",
+      "describe",
+    ]);
+    cliCtx.logger.debug`Describing type: ${typeArg}`;
+
+    const modelType = ModelType.create(typeArg);
+
+    const deps: TypeDescribeDeps = {
+      resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
+      getAvailableTypes: () => modelRegistry.types().map((t) => t.normalized),
+    };
+
+    const renderer = createTypeDescribeRenderer(cliCtx.outputMode);
+    await consumeStream(
+      typeDescribe(deps, modelType),
+      renderer.handlers(),
+    );
+
+    cliCtx.logger.debug("Type describe command completed");
+  });
