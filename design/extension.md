@@ -161,6 +161,63 @@ parses workflow YAML to find `model_method` and `workflow` step tasks, then
 looks up the corresponding model source files. Only user-collective models
 (types starting with `@`) are bundled — built-in models are skipped.
 
+## Automatic Resolution
+
+Extensions from trusted collectives auto-resolve on first use — no manual
+`extension pull` needed. When swamp encounters an unknown model type from a
+trusted collective, it searches the registry, installs the extension, hot-loads
+it, and continues.
+
+### Trusted Collectives
+
+The `swamp` collective is trusted by default. Extensions from `@swamp/*`
+auto-resolve with no configuration required.
+
+Default trusted collectives: `["swamp", "si"]`.
+
+Configurable via `trustedCollectives` in `.swamp.yaml`:
+
+```yaml
+trustedCollectives:
+  - swamp
+  - si
+  - myorg
+```
+
+Set to `[]` to disable automatic resolution entirely.
+
+### Resolution Algorithm
+
+1. **Local registry** — check if the type is already registered locally.
+2. **Direct lookup** — strip trailing path segments from the type to derive the
+   extension name (e.g., `@swamp/aws/ec2/instance` → `@swamp/aws/ec2` →
+   `@swamp/aws`) and look up each candidate directly in the registry.
+3. **Search fallback** — if direct lookup fails, search the registry for
+   matching extensions.
+
+### Hot-Loading
+
+After installation, swamp re-runs model and vault discovery with
+`skipAlreadyRegistered` to load only the newly installed types. This avoids
+re-registering types that were already loaded at startup.
+
+### Re-Entrancy Guard
+
+A guard prevents infinite loops — if auto-resolution is already in progress for
+a type, subsequent resolution attempts for that type are skipped.
+
+### Architecture
+
+`ExtensionAutoResolver` is a domain service with port interfaces. Adapters in
+the CLI layer provide the concrete implementations for registry access, extension
+installation, and model/vault discovery.
+
+### Output
+
+Auto-resolution always shows status messages to the user: searching for the
+extension, installing it, and confirming installation with the number of models
+loaded.
+
 ## Safety
 
 All TypeScript files in an extension are analyzed for safety before push and

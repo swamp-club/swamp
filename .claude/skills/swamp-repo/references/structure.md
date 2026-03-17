@@ -115,7 +115,16 @@ Repository marker and metadata:
 swampVersion: "0.1.0"
 initializedAt: "2025-01-15T10:30:00Z"
 upgradedAt: "2025-01-20T14:00:00Z"
+modelsDir: "extensions/models" # optional, default shown
+workflowsDir: "extensions/workflows" # optional, default shown
+vaultsDir: "extensions/vaults" # optional, default shown
+trustedCollectives: # optional, default: ["swamp", "si"]
+  - swamp
+  - si
 ```
+
+`trustedCollectives` controls which extension collectives auto-resolve on first
+use. The `swamp` collective is trusted by default.
 
 ### CLAUDE.md
 
