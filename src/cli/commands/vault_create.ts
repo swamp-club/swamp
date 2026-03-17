@@ -25,6 +25,8 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createVaultConfigId,
@@ -114,6 +116,11 @@ export const vaultCreateCommand = new Command()
 
       ctx.logger
         .debug`Creating vault: type=${vaultType}, name=${vaultName}`;
+
+      // Auto-resolve extension vault types if not already installed
+      if (!vaultTypeRegistry.has(vaultType) && vaultType.startsWith("@")) {
+        await resolveVaultType(vaultType, getAutoResolver());
+      }
 
       // Validate the vault type using the registry
       const typeInfo = vaultTypeRegistry.get(vaultType);
