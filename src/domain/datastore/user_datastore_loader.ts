@@ -22,8 +22,10 @@ import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
+  fixCjsEsmInterop,
   installZodGlobal,
   rewriteZodImports,
+  sanitizeDataUrlError,
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
@@ -241,7 +243,7 @@ export class UserDatastoreLoader {
     js: string,
     relativePath: string,
   ): Promise<Record<string, unknown>> {
-    const rewritten = rewriteZodImports(js);
+    const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
     if (this.repoDir) {
       const bundlePath = join(
@@ -253,24 +255,31 @@ export class UserDatastoreLoader {
 
       try {
         await Deno.stat(bundlePath);
-        const cachedJs = await Deno.readTextFile(bundlePath);
-        const rewrittenCached = rewriteZodImports(cachedJs);
-        if (rewrittenCached !== cachedJs) {
-          await Deno.writeTextFile(bundlePath, rewrittenCached);
+        let cachedJs = await Deno.readTextFile(bundlePath);
+        const fixed = fixCjsEsmInterop(rewriteZodImports(cachedJs));
+        if (fixed !== cachedJs) {
+          cachedJs = fixed;
+          await Deno.writeTextFile(bundlePath, cachedJs);
         }
         return await import(toFileUrl(bundlePath).href);
-      } catch {
-        // Fall through to data URL import
+      } catch (error) {
+        logger.debug`File URL import failed for ${relativePath}: ${
+          String(error).substring(0, 200)
+        }`;
       }
     }
 
     // Fallback: import via base64 data URL (no file on disk)
-    const encoded = uint8ArrayToBase64(
-      new TextEncoder().encode(rewritten),
-    );
-    return await import(
-      `data:application/javascript;base64,${encoded}`
-    );
+    try {
+      const encoded = uint8ArrayToBase64(
+        new TextEncoder().encode(rewritten),
+      );
+      return await import(
+        `data:application/javascript;base64,${encoded}`
+      );
+    } catch (error) {
+      throw new Error(sanitizeDataUrlError(error));
+    }
   }
 
   /**

@@ -22,8 +22,10 @@ import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
+  fixCjsEsmInterop,
   installZodGlobal,
   rewriteZodImports,
+  sanitizeDataUrlError,
   uint8ArrayToBase64,
 } from "./bundle.ts";
 import { resolveLocalImports } from "./local_import_resolver.ts";
@@ -459,10 +461,9 @@ export class UserModelLoader {
     js: string,
     relativePath: string,
   ): Promise<Record<string, unknown>> {
-    // Rewrite zod imports at import-time as well — catches old cached
-    // bundles that still have raw `import ... from "npm:zod..."` lines.
-    // The rewrite is idempotent so already-rewritten bundles are unaffected.
-    const rewritten = rewriteZodImports(js);
+    // Rewrite zod imports and fix CJS/ESM interop at import-time — catches
+    // old cached bundles. Both rewrites are idempotent.
+    const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
     if (this.repoDir) {
       const bundlePath = join(
@@ -474,26 +475,33 @@ export class UserModelLoader {
 
       try {
         await Deno.stat(bundlePath);
-        // Rewrite zod imports in the cached file on disk so old cached
-        // bundles get fixed permanently, then import via file URL.
-        const cachedJs = await Deno.readTextFile(bundlePath);
-        const rewrittenCached = rewriteZodImports(cachedJs);
-        if (rewrittenCached !== cachedJs) {
-          await Deno.writeTextFile(bundlePath, rewrittenCached);
+        // Fix zod imports and CJS/ESM interop in the cached file on disk
+        // so old cached bundles get fixed permanently.
+        let cachedJs = await Deno.readTextFile(bundlePath);
+        const fixed = fixCjsEsmInterop(rewriteZodImports(cachedJs));
+        if (fixed !== cachedJs) {
+          cachedJs = fixed;
+          await Deno.writeTextFile(bundlePath, cachedJs);
         }
         return await import(toFileUrl(bundlePath).href);
-      } catch {
-        // Fall through to data URL import
+      } catch (error) {
+        logger.debug`File URL import failed for ${relativePath}: ${
+          String(error).substring(0, 200)
+        }`;
       }
     }
 
     // Fallback: import via base64 data URL (no file on disk)
-    const encoded = uint8ArrayToBase64(
-      new TextEncoder().encode(rewritten),
-    );
-    return await import(
-      `data:application/javascript;base64,${encoded}`
-    );
+    try {
+      const encoded = uint8ArrayToBase64(
+        new TextEncoder().encode(rewritten),
+      );
+      return await import(
+        `data:application/javascript;base64,${encoded}`
+      );
+    } catch (error) {
+      throw new Error(sanitizeDataUrlError(error));
+    }
   }
 
   /**

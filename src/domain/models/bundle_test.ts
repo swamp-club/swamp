@@ -22,8 +22,10 @@ import { join } from "@std/path";
 import { z } from "zod";
 import {
   bundleExtension,
+  fixCjsEsmInterop,
   installZodGlobal,
   rewriteZodImports,
+  sanitizeDataUrlError,
   uint8ArrayToBase64,
 } from "./bundle.ts";
 
@@ -270,6 +272,57 @@ Deno.test("uint8ArrayToBase64 matches btoa for small input", () => {
 
 Deno.test("uint8ArrayToBase64 handles empty input", () => {
   assertEquals(uint8ArrayToBase64(new Uint8Array(0)), btoa(""));
+});
+
+// --- fixCjsEsmInterop unit tests ---
+
+Deno.test("fixCjsEsmInterop rewrites __toESM to always set default", () => {
+  // Use the exact single-line format esbuild generates
+  const input =
+    `var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(\n  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,\n  mod\n));`;
+  const result = fixCjsEsmInterop(input);
+  // The condition should be removed — always sets .default
+  assertEquals(result.includes("isNodeMode ||"), false);
+  assertEquals(result.includes("__esModule"), false);
+  assertEquals(
+    result.includes(
+      `__defProp(target, "default", { value: mod, enumerable: true })`,
+    ),
+    true,
+  );
+  // Should not contain `: target,` fallback (only `target,` at the end remains from `__copyProps(... , target,` being removed)
+  assertEquals(result.includes(": target,"), false);
+});
+
+Deno.test("fixCjsEsmInterop is idempotent", () => {
+  const input =
+    `var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(\n  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,\n  mod\n));`;
+  const first = fixCjsEsmInterop(input);
+  const second = fixCjsEsmInterop(first);
+  assertEquals(first, second);
+});
+
+Deno.test("fixCjsEsmInterop leaves non-matching code untouched", () => {
+  const input = `const x = 42; console.log("hello");`;
+  assertEquals(fixCjsEsmInterop(input), input);
+});
+
+// --- sanitizeDataUrlError unit tests ---
+
+Deno.test("sanitizeDataUrlError truncates base64 data URLs", () => {
+  const longBase64 = "A".repeat(200);
+  const error =
+    `Error: The argument 'filename' must be a file URL. Received data:application/javascript;base64,${longBase64}`;
+  const result = sanitizeDataUrlError(error);
+  assertEquals(
+    result,
+    `Error: The argument 'filename' must be a file URL. Received data:application/javascript;base64,[truncated]`,
+  );
+});
+
+Deno.test("sanitizeDataUrlError leaves short errors untouched", () => {
+  const error = "Error: something went wrong";
+  assertEquals(sanitizeDataUrlError(error), error);
 });
 
 Deno.test("uint8ArrayToBase64 handles large input without stack overflow", () => {
