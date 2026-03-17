@@ -65,3 +65,20 @@ export {
   type StepRunView,
   type WorkflowRunView,
 } from "./workflows/workflow_run_view.ts";
+
+// Model operations
+export {
+  methodExecutionFailed,
+  modelMethodRun,
+  type ModelMethodRunDeps,
+  type ModelMethodRunEvent,
+  type ModelMethodRunInput,
+  modelNotFound,
+  noEvaluatedDefinition,
+  unknownMethod,
+  unknownModelType,
+} from "./models/run.ts";
+export {
+  type DataArtifactView,
+  type ModelMethodRunView,
+} from "./models/model_method_run_view.ts";
