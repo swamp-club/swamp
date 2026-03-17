@@ -19,7 +19,7 @@
 
 import { bold, cyan, dim, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "./output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { getSwampLogger } from "../logging.ts";
 import type { AuditTimeline } from "../../domain/audit/audit_service.ts";
 import { auditEntryToData } from "../../domain/audit/audit_entry.ts";
 

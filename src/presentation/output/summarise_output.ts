@@ -20,7 +20,7 @@
 import { bold, dim, green, red } from "@std/fmt/colors";
 import type { OutputMode } from "./output.ts";
 import type { Verbosity } from "../../cli/context.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { getSwampLogger } from "../logging.ts";
 import type { ActivitySummary } from "../../domain/summary/summary_types.ts";
 
 const logger = getSwampLogger(["summarise"]);

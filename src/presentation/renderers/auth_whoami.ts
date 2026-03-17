@@ -20,7 +20,7 @@
 import type { AuthWhoamiEvent, EventHandlers } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../logging.ts";
 import { UserError } from "../../domain/errors.ts";
 
 class LogAuthWhoamiRenderer implements Renderer<AuthWhoamiEvent> {

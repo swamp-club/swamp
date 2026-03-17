@@ -24,10 +24,7 @@ import type {
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import {
-  getRunLogger,
-  getWorkflowRunLogger,
-} from "../../infrastructure/logging/logger.ts";
+import { getRunLogger, getWorkflowRunLogger } from "../logging.ts";
 import { UserError } from "../../domain/errors.ts";
 
 export interface WorkflowRunRenderOpts {
