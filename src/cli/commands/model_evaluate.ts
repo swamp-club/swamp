@@ -123,7 +123,7 @@ export const modelEvaluateCommand = new Command()
       // Acquire per-model lock (for S3, also pulls model-scoped files)
       const flushModelLocks = await acquireModelLocks(datastoreConfig, [
         { modelType: type.normalized, modelId: definition.id },
-      ]);
+      ], repoDir);
 
       const evaluationService = new ExpressionEvaluationService(
         definitionRepo,

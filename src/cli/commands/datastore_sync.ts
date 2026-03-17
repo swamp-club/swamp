@@ -20,6 +20,8 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { UserError } from "../../domain/errors.ts";
 import { S3CacheSyncService } from "../../infrastructure/persistence/s3_cache_sync.ts";
 import { S3Client } from "../../infrastructure/persistence/s3_client.ts";
@@ -41,15 +43,70 @@ export const datastoreSyncCommand = new Command()
       "sync",
     ]);
 
-    const { datastoreResolver } = await requireInitializedRepo({
+    const { repoDir, datastoreResolver } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: ctx.outputMode,
     });
 
     const config = datastoreResolver.config();
+
+    // Handle custom datastore sync
+    if (isCustomDatastoreConfig(config)) {
+      const typeInfo = datastoreTypeRegistry.get(config.type);
+      if (!typeInfo?.createProvider) {
+        throw new UserError(
+          `Datastore type "${config.type}" has no provider.`,
+        );
+      }
+      const provider = typeInfo.createProvider(config.config);
+      if (!provider.createSyncService) {
+        throw new UserError(
+          `Datastore type "${config.type}" does not support sync operations. ` +
+            `Only lock-based operations are available.`,
+        );
+      }
+      if (!config.cachePath) {
+        throw new UserError(
+          `Datastore type "${config.type}" has no cache path configured for sync.`,
+        );
+      }
+      const syncService = provider.createSyncService(repoDir, config.cachePath);
+
+      if (options.push) {
+        ctx.logger.info`Pushing changes to datastore...`;
+        await syncService.pushChanged();
+        const data = { mode: "push" };
+        if (ctx.outputMode === "json") {
+          console.log(JSON.stringify(data, null, 2));
+        } else {
+          ctx.logger.info`Push complete`;
+        }
+      } else if (options.pull) {
+        ctx.logger.info`Pulling from datastore...`;
+        await syncService.pullChanged();
+        const data = { mode: "pull" };
+        if (ctx.outputMode === "json") {
+          console.log(JSON.stringify(data, null, 2));
+        } else {
+          ctx.logger.info`Pull complete`;
+        }
+      } else {
+        ctx.logger.info`Syncing with datastore...`;
+        await syncService.pullChanged();
+        await syncService.pushChanged();
+        const data = { mode: "sync" };
+        if (ctx.outputMode === "json") {
+          console.log(JSON.stringify(data, null, 2));
+        } else {
+          ctx.logger.info`Sync complete`;
+        }
+      }
+      return;
+    }
+
     if (config.type !== "s3") {
       throw new UserError(
-        "Datastore sync is only available for S3 datastores. " +
+        "Datastore sync is only available for S3 or sync-capable custom datastores. " +
           `Current datastore type: ${config.type}`,
       );
     }

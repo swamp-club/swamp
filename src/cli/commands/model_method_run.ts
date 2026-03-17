@@ -189,7 +189,7 @@ export const modelMethodRunCommand = new Command()
             modelType: preResult.type.normalized,
             modelId: preResult.definition.id,
           },
-        ]);
+        ], repoDir);
       }
 
       try {

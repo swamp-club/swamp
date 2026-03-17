@@ -33,6 +33,8 @@ import { join } from "@std/path";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
+import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
+import { UserError } from "../domain/errors.ts";
 
 /** S3 bucket naming rules: 3-63 chars, lowercase alphanumeric, hyphens, dots. */
 const S3_BUCKET_NAME_RE = /^[a-z0-9][a-z0-9.\-]{1,61}[a-z0-9]$/;
@@ -51,11 +53,13 @@ function validateBucketName(bucket: string): void {
  *
  * @param envValue - The env var value (e.g., "filesystem:/path" or "s3:bucket/prefix")
  * @param repoId - The repo ID for S3 cache path
+ * @param repoDir - The repository root directory (for custom datastore path resolution)
  * @returns Parsed DatastoreConfig
  */
 export function parseDatastoreEnvVar(
   envValue: string,
   repoId?: string,
+  repoDir?: string,
 ): DatastoreConfig {
   const colonIdx = envValue.indexOf(":");
   if (colonIdx === -1) {
@@ -85,9 +89,54 @@ export function parseDatastoreEnvVar(
     return { type: "s3", bucket, prefix, cachePath };
   }
 
-  throw new Error(
-    `Invalid SWAMP_DATASTORE type: "${type}". Expected "filesystem" or "s3".`,
-  );
+  // Custom datastore type: value is JSON config
+  const typeInfo = datastoreTypeRegistry.get(type);
+  if (!typeInfo) {
+    const available = datastoreTypeRegistry.getAll().map((t) => t.type).join(
+      ", ",
+    );
+    throw new UserError(
+      `Unknown datastore type: "${type}". Available types: ${available}`,
+    );
+  }
+  if (!typeInfo.createProvider) {
+    throw new UserError(
+      `Datastore type "${type}" is a built-in type without a provider. ` +
+        `Use the built-in format (e.g., "filesystem:/path" or "s3:bucket/prefix").`,
+    );
+  }
+
+  let config: Record<string, unknown> = {};
+  if (value) {
+    try {
+      config = JSON.parse(value) as Record<string, unknown>;
+    } catch {
+      throw new UserError(
+        `Invalid JSON config for datastore type "${type}": ${value}`,
+      );
+    }
+  }
+
+  if (typeInfo.configSchema) {
+    const result = typeInfo.configSchema.safeParse(config);
+    if (!result.success) {
+      throw new UserError(
+        `Invalid config for datastore type "${type}": ${result.error.message}`,
+      );
+    }
+  }
+
+  const provider = typeInfo.createProvider(config);
+  const resolvedRepoDir = repoDir ?? ".";
+  const datastorePath = provider.resolveDatastorePath(resolvedRepoDir);
+  const cachePath = provider.resolveCachePath?.(resolvedRepoDir);
+
+  return {
+    type,
+    config,
+    datastorePath,
+    cachePath,
+  };
 }
 
 /**
@@ -114,12 +163,12 @@ export function resolveDatastoreConfig(
   // 1. Environment variable takes highest priority
   const envDatastore = Deno.env.get("SWAMP_DATASTORE");
   if (envDatastore) {
-    return parseDatastoreEnvVar(envDatastore, repoId);
+    return parseDatastoreEnvVar(envDatastore, repoId, repoDir);
   }
 
   // 2. CLI argument
   if (cliArg) {
-    return parseDatastoreEnvVar(cliArg, repoId);
+    return parseDatastoreEnvVar(cliArg, repoId, repoDir);
   }
 
   // 3. .swamp.yaml datastore config
@@ -161,6 +210,46 @@ export function resolveDatastoreConfig(
         exclude: ds.exclude,
       };
     }
+
+    // Custom datastore type from YAML config
+    const typeInfo = datastoreTypeRegistry.get(ds.type);
+    if (!typeInfo) {
+      const available = datastoreTypeRegistry.getAll().map((t) => t.type).join(
+        ", ",
+      );
+      throw new UserError(
+        `Unknown datastore type "${ds.type}" in .swamp.yaml. Available types: ${available}`,
+      );
+    }
+    if (!typeInfo.createProvider) {
+      throw new UserError(
+        `Datastore type "${ds.type}" is registered but has no provider.`,
+      );
+    }
+
+    const customConfig = ds.config ?? {};
+
+    if (typeInfo.configSchema) {
+      const result = typeInfo.configSchema.safeParse(customConfig);
+      if (!result.success) {
+        throw new UserError(
+          `Invalid config for datastore type "${ds.type}": ${result.error.message}`,
+        );
+      }
+    }
+
+    const provider = typeInfo.createProvider(customConfig);
+    const datastorePath = provider.resolveDatastorePath(repoDir ?? ".");
+    const cachePath = provider.resolveCachePath?.(repoDir ?? ".");
+
+    return {
+      type: ds.type,
+      config: customConfig,
+      datastorePath,
+      cachePath,
+      directories: ds.directories,
+      exclude: ds.exclude,
+    };
   }
 
   // 4. Default: filesystem at {repoDir}/.swamp/

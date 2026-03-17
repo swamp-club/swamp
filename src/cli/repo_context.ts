@@ -55,8 +55,29 @@ import { S3Lock } from "../infrastructure/persistence/s3_lock.ts";
 import { S3Client } from "../infrastructure/persistence/s3_client.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import type { DistributedLock } from "../domain/datastore/distributed_lock.ts";
-import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import {
+  type CustomDatastoreConfig,
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../domain/datastore/datastore_config.ts";
+import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
+import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+
+/**
+ * Resolves a DatastoreProvider for a custom datastore config.
+ */
+function resolveCustomProvider(
+  config: CustomDatastoreConfig,
+): DatastoreProvider {
+  const typeInfo = datastoreTypeRegistry.get(config.type);
+  if (!typeInfo?.createProvider) {
+    throw new UserError(
+      `Datastore type "${config.type}" is not registered or has no provider.`,
+    );
+  }
+  return typeInfo.createProvider(config.config);
+}
 
 /**
  * Options for requireInitializedRepo.
@@ -151,7 +172,12 @@ export async function requireInitializedRepoReadOnly(
   );
 
   // Verify datastore is accessible
-  if (datastoreConfig.type === "filesystem") {
+  if (isCustomDatastoreConfig(datastoreConfig)) {
+    // Ensure cache/datastore dir exists — no health check or lock on read-only path
+    if (datastoreConfig.cachePath) {
+      await ensureDir(datastoreConfig.cachePath);
+    }
+  } else if (datastoreConfig.type === "filesystem") {
     try {
       const stat = await Deno.stat(datastoreConfig.path);
       if (!stat.isDirectory) {
@@ -173,8 +199,8 @@ export async function requireInitializedRepoReadOnly(
       }
     }
     // No lock acquisition — read-only path
-  } else if (datastoreConfig.type === "s3") {
-    // Ensure local cache directory exists for S3 datastore
+  } else {
+    // S3: Ensure local cache directory exists
     await ensureDir(datastoreConfig.cachePath);
     // No lock acquisition or sync — read-only path reads from local cache
   }
@@ -237,7 +263,25 @@ export async function requireInitializedRepo(
   );
 
   // Verify datastore is accessible
-  if (datastoreConfig.type === "filesystem") {
+  if (isCustomDatastoreConfig(datastoreConfig)) {
+    const provider = resolveCustomProvider(datastoreConfig);
+    const lock = provider.createLock(datastoreConfig.datastorePath);
+
+    // If the custom provider supports sync, register sync service too
+    const syncService = datastoreConfig.cachePath
+      ? provider.createSyncService?.(repoPath.value, datastoreConfig.cachePath)
+      : undefined;
+
+    if (datastoreConfig.cachePath) {
+      await ensureDir(datastoreConfig.cachePath);
+    }
+
+    await registerDatastoreSync({
+      service: syncService,
+      lock,
+      label: datastoreConfig.type,
+    });
+  } else if (datastoreConfig.type === "filesystem") {
     try {
       const stat = await Deno.stat(datastoreConfig.path);
       if (!stat.isDirectory) {
@@ -266,8 +310,8 @@ export async function requireInitializedRepo(
     // Wire file-based lock for filesystem datastores
     const lock = new FileLock(datastoreConfig.path);
     await registerDatastoreSync({ lock });
-  } else if (datastoreConfig.type === "s3") {
-    // Ensure local cache directory exists for S3 datastore
+  } else {
+    // S3: Ensure local cache directory exists
     await ensureDir(datastoreConfig.cachePath);
 
     // Share a single S3Client for both lock and sync service
@@ -279,7 +323,7 @@ export async function requireInitializedRepo(
 
     const lock = new S3Lock(s3);
     const syncService = new S3CacheSyncService(s3, datastoreConfig.cachePath);
-    await registerDatastoreSync({ service: syncService, lock });
+    await registerDatastoreSync({ service: syncService, lock, label: "S3" });
   }
 
   // Compute top-level directories for definitions, workflows, and vaults
@@ -340,7 +384,11 @@ export async function requireInitializedRepoUnlocked(
   );
 
   // Verify datastore is accessible (same checks as requireInitializedRepo)
-  if (datastoreConfig.type === "filesystem") {
+  if (isCustomDatastoreConfig(datastoreConfig)) {
+    if (datastoreConfig.cachePath) {
+      await ensureDir(datastoreConfig.cachePath);
+    }
+  } else if (datastoreConfig.type === "filesystem") {
     try {
       const stat = await Deno.stat(datastoreConfig.path);
       if (!stat.isDirectory) {
@@ -361,7 +409,8 @@ export async function requireInitializedRepoUnlocked(
         );
       }
     }
-  } else if (datastoreConfig.type === "s3") {
+  } else {
+    // S3
     await ensureDir(datastoreConfig.cachePath);
   }
 
@@ -400,6 +449,10 @@ export function createModelLock(
   modelId: string,
 ): DistributedLock {
   const lockKey = `data/${modelType}/${modelId}/.lock`;
+  if (isCustomDatastoreConfig(config)) {
+    const provider = resolveCustomProvider(config);
+    return provider.createLock(config.datastorePath, { lockKey });
+  }
   if (config.type === "s3") {
     const s3 = new S3Client({
       bucket: config.bucket,
@@ -493,11 +546,30 @@ async function waitForPerModelLocks(datastorePath: string): Promise<void> {
 export async function acquireModelLocks(
   config: DatastoreConfig,
   models: Array<{ modelType: string; modelId: string }>,
+  repoDir?: string,
 ): Promise<() => Promise<void>> {
   const logger = getSwampLogger(["datastore", "lock"]);
 
-  // Wait for global lock to be released (if held by a structural command)
-  const globalLock = createDatastoreLock(config);
+  // For custom datastores, resolve the provider once and reuse it everywhere
+  let customProvider: DatastoreProvider | undefined;
+  let customSyncService:
+    | ReturnType<NonNullable<DatastoreProvider["createSyncService"]>>
+    | undefined;
+  if (isCustomDatastoreConfig(config)) {
+    customProvider = resolveCustomProvider(config);
+    if (config.cachePath) {
+      customSyncService = customProvider.createSyncService?.(
+        repoDir ?? ".",
+        config.cachePath,
+      );
+    }
+  }
+
+  // Wait for global lock to be released (if held by a structural command).
+  // Use the cached provider for custom types so all locks share the same instance.
+  const globalLock = customProvider && isCustomDatastoreConfig(config)
+    ? customProvider.createLock(config.datastorePath)
+    : createDatastoreLock(config);
   const globalInfo = await globalLock.inspect();
   if (globalInfo) {
     logger.info(
@@ -542,7 +614,7 @@ export async function acquireModelLocks(
 
   // For S3 datastores, create a shared sync service for model-scoped pulls
   let s3SyncService: S3CacheSyncService | undefined;
-  if (config.type === "s3") {
+  if (!isCustomDatastoreConfig(config) && config.type === "s3") {
     const s3 = new S3Client({
       bucket: config.bucket,
       prefix: config.prefix,
@@ -552,8 +624,11 @@ export async function acquireModelLocks(
   }
 
   for (const { modelType, modelId } of unique) {
-    const lock = createModelLock(config, modelType, modelId);
     const key = `data/${modelType}/${modelId}/.lock`;
+    // Use cached provider for custom types to avoid repeated registry lookups
+    const lock = customProvider && isCustomDatastoreConfig(config)
+      ? customProvider.createLock(config.datastorePath, { lockKey: key })
+      : createModelLock(config, modelType, modelId);
     // Register lock only (no sync service — we handle S3 pull/push manually)
     await registerDatastoreSyncNamed(key, { lock });
     lockKeys.push(key);
@@ -589,7 +664,7 @@ export async function acquireModelLocks(
       }
 
       // Restart the entire per-model lock acquisition from scratch
-      return acquireModelLocks(config, models);
+      return acquireModelLocks(config, models, repoDir);
     }
 
     // For S3: pull model-scoped files after acquiring the per-model lock
@@ -616,6 +691,25 @@ export async function acquireModelLocks(
         );
       }
     }
+
+    // For custom sync-capable datastores: pull after acquiring per-model lock
+    if (customSyncService) {
+      try {
+        logger.info("Syncing model {type}/{id} from datastore...", {
+          type: modelType,
+          id: modelId,
+        });
+        await customSyncService.pullChanged();
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        logger.error("Failed to pull model data from datastore: {error}", {
+          error: msg,
+        });
+        throw new Error(
+          `Datastore sync failed: could not pull data for ${modelType}/${modelId}: ${msg}`,
+        );
+      }
+    }
   }
 
   return async () => {
@@ -623,7 +717,10 @@ export async function acquireModelLocks(
       // For S3 datastores: push changes BEFORE releasing per-model locks.
       // This prevents another process from acquiring the same per-model lock,
       // pulling stale data from S3, and overwriting our local changes.
-      if (s3SyncService && config.type === "s3") {
+      if (
+        s3SyncService && !isCustomDatastoreConfig(config) &&
+        config.type === "s3"
+      ) {
         const pushLock = createDatastoreLock(config);
         try {
           await pushLock.acquire();
@@ -639,6 +736,32 @@ export async function acquireModelLocks(
           });
           throw new Error(
             `S3 sync failed: could not push changes: ${msg}`,
+          );
+        } finally {
+          try {
+            await pushLock.release();
+          } catch {
+            // Best-effort release
+          }
+        }
+      }
+
+      // For custom sync-capable datastores: push under global lock
+      if (
+        customSyncService && customProvider && isCustomDatastoreConfig(config)
+      ) {
+        const pushLock = customProvider.createLock(config.datastorePath);
+        try {
+          await pushLock.acquire();
+          logger.info`Pushing changes to datastore...`;
+          await customSyncService.pushChanged();
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.error("Failed to push changes to datastore: {error}", {
+            error: msg,
+          });
+          throw new Error(
+            `Datastore sync failed: could not push changes: ${msg}`,
           );
         } finally {
           try {
@@ -664,6 +787,10 @@ export async function acquireModelLocks(
  * going through the full sync coordinator lifecycle.
  */
 export function createDatastoreLock(config: DatastoreConfig): DistributedLock {
+  if (isCustomDatastoreConfig(config)) {
+    const provider = resolveCustomProvider(config);
+    return provider.createLock(config.datastorePath);
+  }
   if (config.type === "s3") {
     const s3 = new S3Client({
       bucket: config.bucket,

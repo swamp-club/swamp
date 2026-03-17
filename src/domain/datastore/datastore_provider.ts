@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { DistributedLock } from "./distributed_lock.ts";
+import type { DistributedLock, LockOptions } from "./distributed_lock.ts";
 import type { DatastoreVerifier } from "./datastore_health.ts";
 import type { DatastoreSyncService } from "./datastore_sync_service.ts";
 
@@ -29,7 +29,7 @@ import type { DatastoreSyncService } from "./datastore_sync_service.ts";
  */
 export interface DatastoreProvider {
   /** Create a distributed lock for the datastore. */
-  createLock(datastorePath: string): DistributedLock;
+  createLock(datastorePath: string, options?: LockOptions): DistributedLock;
   /** Create a health verifier for the datastore. */
   createVerifier(): DatastoreVerifier;
   /** Optionally create a sync service for remote datastores. */

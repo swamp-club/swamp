@@ -131,6 +131,7 @@ export const workflowRunCommand = new Command()
             flushModelLocks = await acquireModelLocks(
               unlocked.datastoreConfig,
               resolvedModels,
+              unlocked.repoDir,
             );
           }
 

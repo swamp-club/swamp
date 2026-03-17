@@ -32,22 +32,33 @@
  * command completes.
  */
 
-import type { S3CacheSyncService } from "./s3_cache_sync.ts";
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
+/**
+ * Common interface for sync services compatible with the coordinator.
+ * Both S3CacheSyncService and DatastoreSyncService satisfy this.
+ */
+export interface SyncableService {
+  pullChanged(): Promise<number | void>;
+  pushChanged(): Promise<number | void>;
+}
+
 /** Options for registering a datastore sync lifecycle. */
 export interface RegisterDatastoreSyncOptions {
-  /** S3 sync service for pull/push operations. */
-  service?: S3CacheSyncService;
+  /** Sync service for pull/push operations. */
+  service?: SyncableService;
   /** Distributed lock for concurrency control. */
   lock?: DistributedLock;
+  /** Label for log messages (e.g. "S3", "custom"). Defaults to "datastore". */
+  label?: string;
 }
 
 /** Internal entry tracking a single lock/sync pair. */
 interface SyncEntry {
-  service?: S3CacheSyncService;
+  service?: SyncableService;
   lock?: DistributedLock;
+  label: string;
 }
 
 /** Key used by the global (structural) lock. */
@@ -115,7 +126,8 @@ export async function registerDatastoreSyncNamed(
   options: RegisterDatastoreSyncOptions,
 ): Promise<void> {
   const { service, lock } = options;
-  const entry: SyncEntry = { service, lock };
+  const label = options.label ?? "datastore";
+  const entry: SyncEntry = { service, lock, label };
   entries.set(key, entry);
 
   // Acquire distributed lock if provided
@@ -128,19 +140,25 @@ export async function registerDatastoreSyncNamed(
   if (service) {
     const logger = getSwampLogger(["datastore", "sync"]);
     try {
-      logger.info`Syncing from S3...`;
+      logger.info("Syncing from {label}...", { label });
       const pulled = await service.pullChanged();
-      if (pulled > 0) {
-        logger.info`Synced ${pulled} file(s) from S3`;
+      if (pulled && pulled > 0) {
+        logger.info("Synced {count} file(s) from {label}", {
+          count: pulled,
+          label,
+        });
       } else {
-        logger.info`S3 sync complete, already up to date`;
+        logger.info("{label} sync complete, already up to date", { label });
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      logger.error("Failed to pull changes from S3: {error}", {
+      logger.error("Failed to pull changes from {label}: {error}", {
+        label,
         error: msg,
       });
-      throw new Error(`S3 sync failed: could not pull changes: ${msg}`);
+      throw new Error(
+        `${label} sync failed: could not pull changes: ${msg}`,
+      );
     }
   }
 }
@@ -174,16 +192,21 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
 
   if (entry.service) {
     const logger = getSwampLogger(["datastore", "sync"]);
+    const label = entry.label;
     try {
-      logger.info`Pushing changes to S3...`;
+      logger.info("Pushing changes to {label}...", { label });
       const pushed = await entry.service.pushChanged();
-      if (pushed > 0) {
-        logger.info`Pushed ${pushed} file(s) to S3`;
+      if (pushed && pushed > 0) {
+        logger.info("Pushed {count} file(s) to {label}", {
+          count: pushed,
+          label,
+        });
       } else {
-        logger.info`S3 push complete, no changes`;
+        logger.info("{label} push complete, no changes", { label });
       }
     } catch (error) {
-      logger.warn("Failed to push changes to S3: {error}", {
+      logger.warn("Failed to push changes to {label}: {error}", {
+        label,
         error: error instanceof Error ? error.message : String(error),
       });
     }

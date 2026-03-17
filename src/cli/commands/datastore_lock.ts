@@ -24,6 +24,7 @@ import {
   createModelLock,
   resolveDatastoreForRepo,
 } from "../repo_context.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   type DatastoreLockReleaseData,
@@ -125,7 +126,7 @@ const datastoreLockStatusCommand = new Command()
     renderDatastoreLockStatus(data, ctx.outputMode);
 
     // Scan for per-model locks (filesystem only)
-    if (config.type === "filesystem") {
+    if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
       const modelLocks = await scanModelLocks(config.path);
       if (modelLocks.length > 0) {
         for (const ml of modelLocks) {

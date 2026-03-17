@@ -430,7 +430,7 @@ Deno.test("acquireModelLocks - acquires and releases per-model locks", async () 
     const flush = await acquireModelLocks(datastoreConfig, [
       { modelType: "aws-ec2", modelId: "server-1" },
       { modelType: "aws-ec2", modelId: "server-2" },
-    ]);
+    ], dir);
 
     // Locks should be held — verify by inspecting
     const lock1 = createModelLock(datastoreConfig, "aws-ec2", "server-1");
@@ -460,7 +460,7 @@ Deno.test("acquireModelLocks - deduplicates same model", async () => {
     const flush = await acquireModelLocks(datastoreConfig, [
       { modelType: "aws-ec2", modelId: "server-1" },
       { modelType: "aws-ec2", modelId: "server-1" },
-    ]);
+    ], dir);
 
     await flush();
   });

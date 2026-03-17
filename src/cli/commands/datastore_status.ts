@@ -20,7 +20,11 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { getDatastoreDirectories } from "../../domain/datastore/datastore_config.ts";
+import {
+  getDatastoreDirectories,
+  isCustomDatastoreConfig,
+} from "../../domain/datastore/datastore_config.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { S3DatastoreVerifier } from "../../infrastructure/persistence/s3_datastore_verifier.ts";
 import {
@@ -56,13 +60,23 @@ export const datastoreStatusCommand = new Command()
     let message = "Unknown";
     let latencyMs = 0;
 
-    if (config.type === "filesystem") {
+    if (isCustomDatastoreConfig(config)) {
+      const typeInfo = datastoreTypeRegistry.get(config.type);
+      if (typeInfo?.createProvider) {
+        const provider = typeInfo.createProvider(config.config);
+        const verifier = provider.createVerifier();
+        const result = await verifier.verify();
+        healthy = result.healthy;
+        message = result.message;
+        latencyMs = result.latencyMs;
+      }
+    } else if (config.type === "filesystem") {
       const verifier = new FilesystemDatastoreVerifier(config.path);
       const result = await verifier.verify();
       healthy = result.healthy;
       message = result.message;
       latencyMs = result.latencyMs;
-    } else if (config.type === "s3") {
+    } else {
       const verifier = new S3DatastoreVerifier(
         config.bucket,
         config.prefix,
@@ -76,10 +90,18 @@ export const datastoreStatusCommand = new Command()
 
     const data: DatastoreStatusData = {
       type: config.type,
-      path: config.type === "filesystem" ? config.path : undefined,
-      bucket: config.type === "s3" ? config.bucket : undefined,
-      prefix: config.type === "s3" ? config.prefix : undefined,
-      region: config.type === "s3" ? config.region : undefined,
+      path: !isCustomDatastoreConfig(config) && config.type === "filesystem"
+        ? config.path
+        : undefined,
+      bucket: !isCustomDatastoreConfig(config) && config.type === "s3"
+        ? config.bucket
+        : undefined,
+      prefix: !isCustomDatastoreConfig(config) && config.type === "s3"
+        ? config.prefix
+        : undefined,
+      region: !isCustomDatastoreConfig(config) && config.type === "s3"
+        ? config.region
+        : undefined,
       healthy,
       message,
       latencyMs,

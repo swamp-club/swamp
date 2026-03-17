@@ -89,19 +89,45 @@ export interface S3DatastoreConfig {
 }
 
 /**
+ * Custom datastore configuration for user-defined datastore types.
+ * Resolved eagerly during config resolution via the DatastoreProvider.
+ */
+export interface CustomDatastoreConfig {
+  readonly type: string; // anything other than "filesystem" | "s3"
+  readonly config: Record<string, unknown>;
+  readonly datastorePath: string;
+  readonly cachePath?: string;
+  readonly directories?: string[];
+  readonly exclude?: string[];
+}
+
+/**
  * Discriminated union of all datastore configurations.
  */
-export type DatastoreConfig = FilesystemDatastoreConfig | S3DatastoreConfig;
+export type DatastoreConfig =
+  | FilesystemDatastoreConfig
+  | S3DatastoreConfig
+  | CustomDatastoreConfig;
+
+/**
+ * Type guard for CustomDatastoreConfig.
+ */
+export function isCustomDatastoreConfig(
+  config: DatastoreConfig,
+): config is CustomDatastoreConfig {
+  return config.type !== "filesystem" && config.type !== "s3";
+}
 
 /**
  * Serializable datastore configuration for .swamp.yaml storage.
  */
 export interface DatastoreConfigData {
-  type: "filesystem" | "s3";
+  type: string;
   path?: string;
   bucket?: string;
   prefix?: string;
   region?: string;
+  config?: Record<string, unknown>;
   directories?: string[];
   exclude?: string[];
 }

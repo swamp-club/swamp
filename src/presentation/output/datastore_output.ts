@@ -23,7 +23,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 
 export interface DatastoreStatusData {
-  type: "filesystem" | "s3";
+  type: string;
   path?: string;
   bucket?: string;
   prefix?: string;
@@ -78,7 +78,7 @@ export function renderDatastoreStatus(
 }
 
 export interface DatastoreSetupData {
-  type: "filesystem" | "s3";
+  type: string;
   path?: string;
   bucket?: string;
   prefix?: string;
@@ -132,7 +132,7 @@ function formatBytes(bytes: number): string {
 export interface DatastoreLockStatusData {
   held: boolean;
   info?: LockInfo;
-  datastoreType: "filesystem" | "s3";
+  datastoreType: string;
   /** If set, identifies this as a per-model lock (e.g. "aws-ec2/my-server"). */
   lockScope?: string;
 }

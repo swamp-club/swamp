@@ -19,12 +19,14 @@
 
 export {
   ALWAYS_LOCAL_SUBDIRS,
+  type CustomDatastoreConfig,
   type DatastoreConfig,
   type DatastoreConfigData,
   DEFAULT_DATASTORE_SUBDIRS,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
   isAlwaysLocal,
+  isCustomDatastoreConfig,
   type S3DatastoreConfig,
 } from "./datastore_config.ts";
 
