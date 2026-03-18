@@ -417,7 +417,7 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
     let chain = "";
     let pos = parenEnd + 1;
     while (pos < schemaBody.length) {
-      const chainMatch = schemaBody.slice(pos).match(/^\.\w+\(/);
+      const chainMatch = schemaBody.slice(pos).match(/^\s*\.\w+\(/);
       if (!chainMatch) break;
       const chainCallStart = pos + chainMatch[0].length;
       const chainCallEnd = findBalancedParen(schemaBody, chainCallStart);

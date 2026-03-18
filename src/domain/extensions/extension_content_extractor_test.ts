@@ -807,6 +807,71 @@ Deno.test("extractContentMetadata extracts vault configSchema fields", async () 
   }
 });
 
+Deno.test("extractContentMetadata extracts vault configSchema descriptions with chained validators", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+
+    const vaultFile = join(vaultsDir, "onepassword.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      [
+        'import { z } from "npm:zod@4.3.6";',
+        "export const vault = {",
+        '  type: "@swampadmin/1password",',
+        '  name: "1Password",',
+        "  description:",
+        '    "1Password vault provider. Uses the 1Password CLI (op) for secret operations.",',
+        "  configSchema: z.object({",
+        "    op_vault: z.string()",
+        '      .min(1, "Vault name is required")',
+        "      .describe(\"The 1Password vault to use, e.g. 'Private' or 'Shared'\"),",
+        "    op_account: z.string()",
+        "      .optional()",
+        '      .describe("Account shorthand, UUID, or sign-in address"),',
+        "  }),",
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { get: async () => '', put: async () => {}, list: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(result.vaults.length, 1);
+    assertEquals(result.vaults[0].configFields.length, 2);
+
+    const opVault = result.vaults[0].configFields.find(
+      (f) => f.name === "op_vault",
+    )!;
+    assertEquals(opVault.type, "string");
+    assertEquals(opVault.required, true);
+    assertEquals(
+      opVault.description,
+      "The 1Password vault to use, e.g. 'Private' or 'Shared'",
+    );
+
+    const opAccount = result.vaults[0].configFields.find(
+      (f) => f.name === "op_account",
+    )!;
+    assertEquals(opAccount.type, "string");
+    assertEquals(opAccount.required, false);
+    assertEquals(
+      opAccount.description,
+      "Account shorthand, UUID, or sign-in address",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("extractContentMetadata skips vault file without vault export", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
