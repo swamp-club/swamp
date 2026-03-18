@@ -23,10 +23,8 @@ import {
   type WorkflowSearchData,
   type WorkflowSearchItem,
 } from "../../presentation/output/workflow_search_output.tsx";
-import {
-  renderWorkflowGet,
-  type WorkflowGetData,
-} from "../../presentation/output/workflow_get_output.ts";
+import type { WorkflowGetData } from "../../libswamp/workflows/get.ts";
+import { renderWorkflowGet } from "../../presentation/renderers/workflow_get.ts";
 import { renderWorkflowActionSelect } from "../../presentation/output/workflow_action_select_output.tsx";
 import { renderInputFileSelect } from "../../presentation/output/input_file_select_output.tsx";
 import {
