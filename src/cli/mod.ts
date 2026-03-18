@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { setColorEnabled } from "@std/fmt/colors";
+import { setColorEnabled, stripAnsiCode } from "@std/fmt/colors";
 import { isAbsolute, resolve } from "@std/path";
 import { parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -210,7 +210,9 @@ async function loadUserModels(
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
       console.error(
-        `Warning: Failed to load user model ${failure.file}: ${failure.error}`,
+        `Warning: Failed to load user model ${failure.file}: ${
+          stripAnsiCode(failure.error)
+        }`,
       );
     }
   } catch (error) {
@@ -248,7 +250,9 @@ async function loadUserVaults(
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
       console.error(
-        `Warning: Failed to load user vault ${failure.file}: ${failure.error}`,
+        `Warning: Failed to load user vault ${failure.file}: ${
+          stripAnsiCode(failure.error)
+        }`,
       );
     }
   } catch (error) {
@@ -283,7 +287,9 @@ async function loadUserDrivers(
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
       console.error(
-        `Warning: Failed to load user driver ${failure.file}: ${failure.error}`,
+        `Warning: Failed to load user driver ${failure.file}: ${
+          stripAnsiCode(failure.error)
+        }`,
       );
     }
   } catch (error) {
@@ -318,7 +324,9 @@ async function loadUserDatastores(
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
       console.error(
-        `Warning: Failed to load user datastore ${failure.file}: ${failure.error}`,
+        `Warning: Failed to load user datastore ${failure.file}: ${
+          stripAnsiCode(failure.error)
+        }`,
       );
     }
   } catch (error) {

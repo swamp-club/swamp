@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { stripAnsiCode } from "@std/fmt/colors";
 import * as zodModule from "zod";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
@@ -200,8 +201,9 @@ export async function bundleExtension(
     if (!output.success) {
       const stderr = new TextDecoder().decode(output.stderr);
       const stdout = new TextDecoder().decode(output.stdout);
-      const details = (stderr + stdout).trim() ||
+      const rawDetails = (stderr + stdout).trim() ||
         "(no output — try running deno 2.7.x or later)";
+      const details = stripAnsiCode(rawDetails);
       throw new Error(
         `deno bundle failed for ${absolutePath}: ${details}`,
       );

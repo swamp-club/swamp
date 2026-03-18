@@ -46,11 +46,13 @@ import {
   renderExtensionPullConflicts,
   renderExtensionPullDependencyPull,
   renderExtensionPullIntegrity,
+  renderExtensionPullMissingSources,
   renderExtensionPullPlatforms,
   renderExtensionPullRepository,
   renderExtensionPullResolved,
   renderExtensionPullSafetyWarnings,
 } from "../../presentation/output/extension_pull_output.ts";
+import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
 
 /** Returns true if the filename is a macOS resource fork (AppleDouble) file. */
 function isMacOsResourceFork(name: string): boolean {
@@ -83,6 +85,7 @@ export interface InstallResult {
   platforms: string[];
   safetyWarnings: SafetyIssue[];
   conflicts: string[];
+  missingSourceFiles: string[];
   dependencyResults: InstallResult[];
 }
 
@@ -556,6 +559,64 @@ export interface PullContext {
 }
 
 /**
+ * Validates that all source files referenced by imports are present.
+ * Returns paths of missing files (relative to the base directory).
+ */
+async function validateSourceCompleteness(
+  ...dirs: string[]
+): Promise<string[]> {
+  const entryPoints: string[] = [];
+  for (const dir of dirs) {
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (entry.isFile && entry.name.endsWith(".ts")) {
+          entryPoints.push(join(dir, entry.name));
+        } else if (entry.isDirectory && !entry.name.startsWith("_")) {
+          // Recurse into non-underscore subdirectories for entry points
+          const subEntries = await collectTsFiles(join(dir, entry.name));
+          entryPoints.push(...subEntries);
+        }
+      }
+    } catch {
+      // Directory may not exist
+    }
+  }
+
+  if (entryPoints.length === 0) return [];
+
+  // Use the first dir as the boundary for resolving imports
+  const boundaryDir = dirs[0];
+  const result = await resolveLocalImports(entryPoints, boundaryDir);
+
+  const missing: string[] = [];
+  for (const resolved of result.resolvedFiles) {
+    try {
+      await Deno.stat(resolved);
+    } catch {
+      missing.push(relative(boundaryDir, resolved));
+    }
+  }
+  return missing;
+}
+
+/** Recursively collects .ts files from a directory, skipping _-prefixed dirs. */
+async function collectTsFiles(dir: string): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.isFile && entry.name.endsWith(".ts")) {
+        files.push(join(dir, entry.name));
+      } else if (entry.isDirectory && !entry.name.startsWith("_")) {
+        files.push(...await collectTsFiles(join(dir, entry.name)));
+      }
+    }
+  } catch {
+    // Directory may not exist
+  }
+  return files;
+}
+
+/**
  * Core install logic: download, verify, extract, copy, track.
  * No rendering — returns structured data for callers to present.
  * Throws ConflictError when !force and conflicts exist.
@@ -844,6 +905,14 @@ export async function installExtension(
     );
     extractedFiles.push(...filesExtracted);
 
+    // Validate source completeness — warn if imported files are missing
+    const missingSourceFiles = await validateSourceCompleteness(
+      absoluteModelsDir,
+      absoluteVaultsDir,
+      absoluteDriversDir,
+      absoluteDatastoresDir,
+    );
+
     // Update upstream_extensions.json
     await updateUpstreamExtensions(
       absoluteModelsDir,
@@ -902,6 +971,7 @@ export async function installExtension(
       platforms: manifest.platforms,
       safetyWarnings,
       conflicts,
+      missingSourceFiles,
       dependencyResults,
     };
   } finally {
@@ -948,6 +1018,10 @@ function renderInstallResult(
 
   if (result.safetyWarnings.length > 0) {
     renderExtensionPullSafetyWarnings(result.safetyWarnings, outputMode);
+  }
+
+  if (result.missingSourceFiles.length > 0) {
+    renderExtensionPullMissingSources(result.missingSourceFiles, outputMode);
   }
 
   renderExtensionPull(
