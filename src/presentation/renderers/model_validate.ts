@@ -18,35 +18,26 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, green, red } from "@std/fmt/colors";
+import {
+  type EventHandlers,
+  isModelValidateAllData,
+  type ModelValidateAllData,
+  type ModelValidateData,
+  type ModelValidateEvent,
+  type ModelValidationItemData,
+} from "../../libswamp/mod.ts";
+import type { Renderer } from "../renderer.ts";
+import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type { OutputMode } from "./output.ts";
-
-export interface ValidationItemData {
-  name: string;
-  passed: boolean;
-  error?: string;
-}
-
-export interface ModelValidateData {
-  modelId: string;
-  modelName: string;
-  type: string;
-  validations: ValidationItemData[];
-  passed: boolean;
-}
-
-export interface ModelValidateAllData {
-  models: ModelValidateData[];
-  totalPassed: number;
-  totalFailed: number;
-  passed: boolean;
-}
+import { UserError } from "../../domain/errors.ts";
 
 const checkmark = "\u2713";
 const cross = "\u2717";
 const arrow = "\u2192";
 
-function formatValidationLines(validations: ValidationItemData[]): string[] {
+function formatValidationLines(
+  validations: ModelValidationItemData[],
+): string[] {
   const lines: string[] = [];
   for (const v of validations) {
     if (v.passed) {
@@ -67,13 +58,35 @@ function formatResult(passed: boolean, label: string): string {
     : `${bold(cyan(`${label}:`))} ${red("FAILED")}`;
 }
 
-export function renderModelValidate(
-  data: ModelValidateData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
+export interface ModelValidateRenderer extends Renderer<ModelValidateEvent> {
+  passed(): boolean;
+}
+
+class LogModelValidateRenderer implements ModelValidateRenderer {
+  private _passed = true;
+
+  passed(): boolean {
+    return this._passed;
+  }
+
+  handlers(): EventHandlers<ModelValidateEvent> {
+    return {
+      resolving: () => {},
+      completed: (e) => {
+        if (isModelValidateAllData(e.data)) {
+          this.renderAll(e.data);
+        } else {
+          this.renderSingle(e.data);
+        }
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+
+  private renderSingle(data: ModelValidateData): void {
+    this._passed = data.passed;
     const lines: string[] = [];
     lines.push(
       `${bold(cyan("Validating:"))} ${bold(data.modelName)} ${
@@ -92,30 +105,13 @@ export function renderModelValidate(
     lines.push(formatResult(data.passed, "Result"));
     writeOutput(lines.join("\n"));
   }
-}
 
-export function renderModelValidateAll(
-  models: ModelValidateData[],
-  mode: OutputMode,
-): void {
-  const totalPassed = models.filter((m) => m.passed).length;
-  const totalFailed = models.length - totalPassed;
-  const passed = totalFailed === 0;
-
-  const data: ModelValidateAllData = {
-    models,
-    totalPassed,
-    totalFailed,
-    passed,
-  };
-
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
+  private renderAll(data: ModelValidateAllData): void {
+    this._passed = data.passed;
     const lines: string[] = [];
     lines.push(bold(cyan("Validating all models...")));
 
-    for (const model of models) {
+    for (const model of data.models) {
       lines.push("");
       lines.push(
         `${bold(cyan(model.modelName))} ${dim(`(${model.type})`)}`,
@@ -126,9 +122,47 @@ export function renderModelValidateAll(
 
     lines.push("");
     lines.push(
-      `${bold(cyan("Summary:"))} ${totalPassed}/${models.length} models passed`,
+      `${
+        bold(cyan("Summary:"))
+      } ${data.totalPassed}/${data.models.length} models passed`,
     );
-    lines.push(formatResult(passed, "Overall"));
+    lines.push(formatResult(data.passed, "Overall"));
     writeOutput(lines.join("\n"));
+  }
+}
+
+class JsonModelValidateRenderer implements ModelValidateRenderer {
+  private _passed = true;
+
+  passed(): boolean {
+    return this._passed;
+  }
+
+  handlers(): EventHandlers<ModelValidateEvent> {
+    return {
+      resolving: () => {},
+      completed: (e) => {
+        if (isModelValidateAllData(e.data)) {
+          this._passed = e.data.passed;
+        } else {
+          this._passed = e.data.passed;
+        }
+        console.log(JSON.stringify(e.data, null, 2));
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createModelValidateRenderer(
+  mode: OutputMode,
+): ModelValidateRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonModelValidateRenderer();
+    case "log":
+      return new LogModelValidateRenderer();
   }
 }

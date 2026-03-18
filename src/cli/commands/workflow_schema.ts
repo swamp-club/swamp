@@ -27,7 +27,12 @@ import {
 } from "../../domain/workflows/step.ts";
 import { StepTaskSchema } from "../../domain/workflows/step_task.ts";
 import { TriggerConditionSchema } from "../../domain/workflows/trigger_condition.ts";
-import { renderWorkflowSchema } from "../../presentation/output/workflow_schema_output.ts";
+import {
+  consumeStream,
+  createLibSwampContext,
+  workflowSchema,
+} from "../../libswamp/mod.ts";
+import { createWorkflowSchemaRenderer } from "../../presentation/renderers/workflow_schema.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -42,24 +47,29 @@ function zodToJsonSchema(schema: z.ZodTypeAny): object {
 
 export const workflowSchemaGetCommand = new Command()
   .description("Get the schema for workflow files")
-  .action(function (options: AnyOptions) {
+  .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
       "workflow",
       "schema",
       "get",
     ]);
 
-    const data = {
-      workflow: zodToJsonSchema(WorkflowSchema),
-      job: zodToJsonSchema(JobSchema),
-      jobDependency: zodToJsonSchema(JobDependencySchema),
-      step: zodToJsonSchema(StepSchema),
-      stepDependency: zodToJsonSchema(StepDependencySchema),
-      stepTask: zodToJsonSchema(StepTaskSchema),
-      triggerCondition: zodToJsonSchema(TriggerConditionSchema),
+    const deps = {
+      getSchemas: () => ({
+        workflow: zodToJsonSchema(WorkflowSchema),
+        job: zodToJsonSchema(JobSchema),
+        jobDependency: zodToJsonSchema(JobDependencySchema),
+        step: zodToJsonSchema(StepSchema),
+        stepDependency: zodToJsonSchema(StepDependencySchema),
+        stepTask: zodToJsonSchema(StepTaskSchema),
+        triggerCondition: zodToJsonSchema(TriggerConditionSchema),
+      }),
     };
 
-    renderWorkflowSchema(data, ctx.outputMode);
+    const lctx = createLibSwampContext({ logger: ctx.logger });
+    const renderer = createWorkflowSchemaRenderer(ctx.outputMode);
+    await consumeStream(workflowSchema(lctx, deps), renderer.handlers());
+
     ctx.logger.debug("Workflow schema get command completed");
   });
 

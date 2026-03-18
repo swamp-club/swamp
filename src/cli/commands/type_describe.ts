@@ -29,10 +29,7 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 
 // Re-export from libswamp for backward compatibility with existing importers
-export {
-  toMethodDescribeData,
-  zodToJsonSchema,
-} from "../../libswamp/types/schema_helpers.ts";
+export { toMethodDescribeData, zodToJsonSchema } from "../../libswamp/mod.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

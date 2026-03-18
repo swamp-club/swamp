@@ -19,9 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
+import type { WorkflowGetEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowGetRenderer } from "./workflow_get.ts";
-import type { WorkflowGetEvent } from "../../libswamp/workflows/get.ts";
 
 const testData = {
   id: "wf-1",

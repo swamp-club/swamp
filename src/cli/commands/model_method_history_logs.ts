@@ -20,19 +20,22 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { UserError } from "../../domain/errors.ts";
+import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import {
   findDefinitionByIdOrName,
   isPartialId,
   matchByPartialId,
 } from "../../domain/models/model_lookup.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
-import type { ModelOutput } from "../../domain/models/model_output.ts";
-import {
-  readLogFile,
-  renderLogFile,
-} from "../../presentation/output/log_file_reader.ts";
+import type { ModelType } from "../../domain/models/model_type.ts";
+import { readLogFile } from "../../presentation/output/log_file_reader.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
+import {
+  consumeStream,
+  createLibSwampContext,
+  modelMethodHistoryLogs,
+} from "../../libswamp/mod.ts";
+import { createModelMethodHistoryLogsRenderer } from "../../presentation/renderers/model_method_history_logs.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -44,132 +47,76 @@ export const modelMethodHistoryLogsCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--tail <lines:number>", "Show only the last N lines")
   .action(async function (options: AnyOptions, outputIdOrModelName: string) {
-    const ctx = createContext(options as GlobalOptions, [
+    const cliCtx = createContext(options as GlobalOptions, [
       "model",
       "method",
       "history",
       "logs",
     ]);
-    ctx.logger.debug`Getting logs for method run: ${outputIdOrModelName}`;
+    cliCtx.logger.debug`Getting logs for method run: ${outputIdOrModelName}`;
 
     const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
     const definitionRepo = repoContext.definitionRepo;
     const outputRepo = repoContext.outputRepo;
 
-    let output: ModelOutput | undefined;
-
-    if (isPartialId(outputIdOrModelName)) {
-      // Try to find by output ID (partial or full)
-      const allOutputs = await outputRepo.findAllGlobal();
-      const matchResult = matchByPartialId(
-        allOutputs.map((o) => ({ id: o.output.id, item: o })),
-        outputIdOrModelName,
-      );
-
-      if (matchResult.status === "found") {
-        output = matchResult.match.output;
-      } else if (matchResult.status === "ambiguous") {
-        throw new UserError(
-          `Ambiguous ID prefix "${outputIdOrModelName}" matches:\n` +
-            matchResult.matches.map((m) => `  ${m.id}`).join("\n"),
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = {
+      isPartialId,
+      matchOutputByPartialId: async (idPrefix: string) => {
+        const allOutputs = await outputRepo.findAllGlobal();
+        const result = matchByPartialId(
+          allOutputs.map((o) => ({ id: o.output.id, item: o.output })),
+          idPrefix,
         );
-      }
-      // not_found: fall through to model name lookup
-    }
-
-    if (!output) {
-      // Try as model name and get latest output
-      const definitionResult = await findDefinitionByIdOrName(
-        definitionRepo,
-        outputIdOrModelName,
-      );
-
-      if (!definitionResult) {
-        throw new UserError(
-          `No method run or model found: ${outputIdOrModelName}`,
-        );
-      }
-
-      const latestOutput = await outputRepo.findLatestByDefinition(
-        definitionResult.type,
-        definitionResult.definition.id,
-      );
-      if (!latestOutput) {
-        throw new UserError(
-          `No runs found for model: ${definitionResult.definition.name}`,
-        );
-      }
-
-      output = latestOutput;
-      ctx.logger
-        .debug`Using latest run for model ${definitionResult.definition.name}: ${output.id}`;
-    }
-
-    // Read log file
-    if (!output.logFile) {
-      // Try to get model name for display
-      let modelName = outputIdOrModelName;
-      for (const modelType of modelRegistry.types()) {
-        const definition = await definitionRepo.findById(
-          modelType,
-          output.definitionId,
-        );
-        if (definition) {
-          modelName = definition.name;
-          break;
+        if (result.status === "found") {
+          return { status: "found" as const, match: result.match };
         }
-      }
+        if (result.status === "ambiguous") {
+          return {
+            status: "ambiguous" as const,
+            matches: result.matches.map((m) => ({ id: m.id })),
+          };
+        }
+        return { status: "not_found" as const };
+      },
+      findDefinition: (idOrName: string) =>
+        findDefinitionByIdOrName(definitionRepo, idOrName),
+      findLatestOutput: (
+        type: ModelType,
+        definitionId: string,
+      ) =>
+        outputRepo.findLatestByDefinition(
+          type,
+          definitionId as DefinitionId,
+        ),
+      getModelName: async (definitionId: string) => {
+        for (const modelType of modelRegistry.types()) {
+          const definition = await definitionRepo.findById(
+            modelType,
+            definitionId as DefinitionId,
+          );
+          if (definition) {
+            return definition.name;
+          }
+        }
+        return outputIdOrModelName;
+      },
+      readLogFile,
+      toRelativePath,
+    };
 
-      if (ctx.outputMode === "json") {
-        console.log(JSON.stringify(
-          {
-            outputId: output.id,
-            modelName,
-            methodName: output.methodName,
-            error: "No log file recorded for this run (pre-logFile run)",
-          },
-          null,
-          2,
-        ));
-      } else {
-        console.log(
-          `No log file recorded for run ${output.id.slice(0, 8)}. ` +
-            `This run predates log file tracking.`,
-        );
-      }
-      return;
-    }
+    const renderer = createModelMethodHistoryLogsRenderer(cliCtx.outputMode);
+    await consumeStream(
+      modelMethodHistoryLogs(ctx, deps, {
+        outputIdOrModelName,
+        tail: options.tail as number | undefined,
+        repoDir,
+      }),
+      renderer.handlers(),
+    );
 
-    const tail = options.tail as number | undefined;
-    const logData = await readLogFile(output.logFile, { tail });
-
-    // Use relative path for display
-    const displayPath = toRelativePath(repoDir, output.logFile);
-    const logDataWithRelativePath = { ...logData, path: displayPath };
-
-    if (logData.lines.length === 0) {
-      if (ctx.outputMode === "json") {
-        console.log(JSON.stringify(
-          {
-            outputId: output.id,
-            methodName: output.methodName,
-            path: displayPath,
-            lines: [],
-            lineCount: 0,
-          },
-          null,
-          2,
-        ));
-      } else {
-        console.log(`Log file not found or empty: ${displayPath}`);
-      }
-      return;
-    }
-
-    renderLogFile(logDataWithRelativePath, ctx.outputMode);
-
-    ctx.logger.debug("Model method history logs command completed");
+    cliCtx.logger.debug("Model method history logs command completed");
   });

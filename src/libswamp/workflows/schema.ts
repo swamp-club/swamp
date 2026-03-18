@@ -17,11 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
+import type { LibSwampContext } from "../context.ts";
+import type { SwampError } from "../errors.ts";
 
-/**
- * Data structure for the workflow schema output.
- */
+/** Schema data for all workflow-related Zod schemas. */
 export interface WorkflowSchemaData {
   workflow: object;
   job: object;
@@ -32,16 +31,19 @@ export interface WorkflowSchemaData {
   triggerCondition: object;
 }
 
-/**
- * Renders the workflow schema in either log or JSON mode.
- */
-export function renderWorkflowSchema(
-  data: WorkflowSchemaData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    console.log(JSON.stringify(data, null, 2));
-  }
+export type WorkflowSchemaEvent =
+  | { kind: "completed"; data: WorkflowSchemaData }
+  | { kind: "error"; error: SwampError };
+
+/** Dependencies for the workflow schema operation. */
+export interface WorkflowSchemaDeps {
+  getSchemas: () => WorkflowSchemaData;
+}
+
+/** Yields the JSON Schema representation of all workflow schemas. */
+export async function* workflowSchema(
+  _ctx: LibSwampContext,
+  deps: WorkflowSchemaDeps,
+): AsyncIterable<WorkflowSchemaEvent> {
+  yield { kind: "completed", data: deps.getSchemas() };
 }
