@@ -34,6 +34,12 @@ const DENO_BINARY_NAME = Deno.build.os === "windows" ? "deno.exe" : "deno";
  * - **Standalone mode** (compiled binary): reads the embedded binary from
  *   `resources/deno/`, extracts it to `~/.swamp/deno/`, and returns that path.
  *   Skips extraction when `~/.swamp/deno/.version` already matches.
+ *
+ * After extraction (and on each startup when the version is already current),
+ * a health check runs `deno --version` to verify the binary executes cleanly.
+ * On macOS, extended attributes are cleared after writing to prevent
+ * provenance-based SIGKILL from the OS security layer. If the health check
+ * still fails after extraction, swamp falls back to a system `deno` in PATH.
  */
 export class EmbeddedDenoRuntime implements DenoRuntime {
   private cachedPath: string | null = null;
@@ -74,11 +80,14 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
     try {
       const existingVersion = (await Deno.readTextFile(versionMarker)).trim();
       if (existingVersion === embeddedVersion.value) {
-        // Also verify the binary exists
         await Deno.stat(targetBinary);
         logger
           .debug`Deno ${embeddedVersion} already extracted at ${targetBinary}`;
-        return targetBinary;
+        if (await this.healthCheck(targetBinary)) {
+          return targetBinary;
+        }
+        logger
+          .warn`Extracted deno at ${targetBinary} failed health check — re-extracting`;
       }
     } catch {
       // Version marker missing or binary missing — need to extract
@@ -100,12 +109,97 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
       await Deno.chmod(targetBinary, 0o755);
     }
 
+    // On macOS, clear extended attributes after writing so the OS doesn't
+    // apply provenance-based security restrictions (SIGKILL) to the binary.
+    await this.clearMacOSExtendedAttributes(targetBinary);
+
     // Write version marker
     await Deno.writeTextFile(versionMarker, embeddedVersion.value);
 
     logger
       .info`Extracted deno ${embeddedVersion} (${embeddedBinary.length} bytes)`;
-    return targetBinary;
+
+    if (await this.healthCheck(targetBinary)) {
+      return targetBinary;
+    }
+
+    // Extracted binary still unhealthy — fall back to system deno in PATH.
+    logger
+      .warn`Embedded deno at ${targetBinary} failed health check after extraction — falling back to system deno`;
+    const systemDeno = await this.findSystemDeno();
+    if (systemDeno) {
+      logger.warn`Using system deno at ${systemDeno}`;
+      return systemDeno;
+    }
+
+    throw new Error(
+      `Embedded deno at ${targetBinary} failed health check and no system deno found in PATH. ` +
+        `Try: xattr -c ${targetBinary}`,
+    );
+  }
+
+  /**
+   * Returns true if the binary at the given path executes cleanly.
+   */
+  private async healthCheck(binaryPath: string): Promise<boolean> {
+    try {
+      const result = await new Deno.Command(binaryPath, {
+        args: ["--version"],
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      return result.success;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Clears all extended attributes on a file on macOS.
+   *
+   * When swamp writes the embedded deno binary via Deno.writeFile, macOS
+   * records the writing process's provenance in com.apple.provenance. This
+   * can cause the OS security layer to SIGKILL the binary when it is later
+   * spawned as a subprocess. Clearing attributes after writing prevents this.
+   */
+  private async clearMacOSExtendedAttributes(
+    binaryPath: string,
+  ): Promise<void> {
+    if (Deno.build.os !== "darwin") return;
+    try {
+      await new Deno.Command("xattr", {
+        args: ["-c", binaryPath],
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      logger.debug`Cleared macOS extended attributes on ${binaryPath}`;
+    } catch {
+      // xattr not available — best effort, health check will catch failures
+    }
+  }
+
+  /**
+   * Searches PATH for a system-installed deno binary.
+   * Used as a fallback when the embedded binary fails its health check.
+   */
+  private async findSystemDeno(): Promise<string | null> {
+    const which = Deno.build.os === "windows" ? "where" : "which";
+    try {
+      const result = await new Deno.Command(which, {
+        args: ["deno"],
+        stdout: "piped",
+        stderr: "null",
+      }).output();
+      if (result.success) {
+        const path = new TextDecoder().decode(result.stdout).trim().split(
+          "\n",
+        )[0].trim();
+        if (path) return path;
+      }
+    } catch {
+      // which/where not available
+    }
+    return null;
   }
 
   private async readEmbeddedVersion(): Promise<DenoVersion> {

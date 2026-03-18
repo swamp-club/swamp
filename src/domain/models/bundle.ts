@@ -178,10 +178,7 @@ export async function bundleExtension(
   });
 
   try {
-    // --unstable-bundle is required for deno 2.7.x+; without it the
-    // subprocess exits non-zero with no output (silent failure).
-    // It is accepted (though not required) by deno 2.6.x as well.
-    const args = ["bundle", "--unstable-bundle", "--no-lock"];
+    const args = ["bundle", "--no-lock"];
 
     // Externalize zod by default so in-process extensions share the
     // host's zod instance (required for `instanceof` schema checks).
