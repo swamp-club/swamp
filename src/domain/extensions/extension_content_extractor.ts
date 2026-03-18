@@ -262,7 +262,7 @@ function extractVaultFromSource(
   );
 
   // Check for configSchema presence
-  const hasConfigSchema = /configSchema\s*:/.test(vaultBody);
+  const hasConfigSchema = /configSchema\s*[:,}]/.test(vaultBody);
 
   // Extract config fields if configSchema uses z.object
   let configFields: ExtractedArgument[] = [];
@@ -274,10 +274,15 @@ function extractVaultFromSource(
       configFields = parseZodObjectFields(schemaBody);
     }
   } else if (hasConfigSchema) {
-    // Check for named schema reference
+    // Check for named schema reference: configSchema: SomeName
     const configRef = vaultBody.match(/configSchema:\s*(\w+)/);
-    if (configRef && configRef[1] !== "z") {
-      const schemaName = configRef[1];
+    // Also check shorthand property: configSchema,
+    const shorthandRef = !configRef
+      ? vaultBody.match(/configSchema\s*[,\n}]/)
+      : null;
+    const schemaName = configRef?.[1] ??
+      (shorthandRef ? "configSchema" : null);
+    if (schemaName && schemaName !== "z") {
       const namedPattern = new RegExp(
         `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
       );
@@ -644,7 +649,7 @@ function extractDriverFromSource(
   const descMatch = driverBody.match(
     /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
   );
-  const hasConfigSchema = /configSchema\s*:/.test(driverBody);
+  const hasConfigSchema = /configSchema\s*[:,}]/.test(driverBody);
 
   let configFields: ExtractedArgument[] = [];
   const configInline = driverBody.match(/configSchema:\s*z\.object\(\s*\{/);
@@ -655,9 +660,15 @@ function extractDriverFromSource(
       configFields = parseZodObjectFields(schemaBody);
     }
   } else if (hasConfigSchema) {
+    // Check for named schema reference: configSchema: SomeName
     const configRef = driverBody.match(/configSchema:\s*(\w+)/);
-    if (configRef && configRef[1] !== "z") {
-      const schemaName = configRef[1];
+    // Also check shorthand property: configSchema,
+    const shorthandRef = !configRef
+      ? driverBody.match(/configSchema\s*[,\n}]/)
+      : null;
+    const schemaName = configRef?.[1] ??
+      (shorthandRef ? "configSchema" : null);
+    if (schemaName && schemaName !== "z") {
       const namedPattern = new RegExp(
         `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
       );
@@ -713,7 +724,7 @@ function extractDatastoreFromSource(
   const descMatch = datastoreBody.match(
     /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
   );
-  const hasConfigSchema = /configSchema\s*:/.test(datastoreBody);
+  const hasConfigSchema = /configSchema\s*[:,}]/.test(datastoreBody);
 
   let configFields: ExtractedArgument[] = [];
   const configInline = datastoreBody.match(
@@ -726,9 +737,15 @@ function extractDatastoreFromSource(
       configFields = parseZodObjectFields(schemaBody);
     }
   } else if (hasConfigSchema) {
+    // Check for named schema reference: configSchema: SomeName
     const configRef = datastoreBody.match(/configSchema:\s*(\w+)/);
-    if (configRef && configRef[1] !== "z") {
-      const schemaName = configRef[1];
+    // Also check shorthand property: configSchema,
+    const shorthandRef = !configRef
+      ? datastoreBody.match(/configSchema\s*[,\n}]/)
+      : null;
+    const schemaName = configRef?.[1] ??
+      (shorthandRef ? "configSchema" : null);
+    if (schemaName && schemaName !== "z") {
       const namedPattern = new RegExp(
         `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
       );
