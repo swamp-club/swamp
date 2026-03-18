@@ -19,9 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
+import type { ModelOutputGetEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createModelOutputGetRenderer } from "./model_output_get.ts";
-import type { ModelOutputGetEvent } from "../../libswamp/models/output_get.ts";
 
 const testData = {
   id: "out-1",

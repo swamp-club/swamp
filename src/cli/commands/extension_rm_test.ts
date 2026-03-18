@@ -20,11 +20,13 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
-  readUpstreamExtensions,
   removeUpstreamExtension,
   updateUpstreamExtensions,
 } from "./extension_pull.ts";
-import type { UpstreamExtensionEntry } from "./extension_pull.ts";
+import {
+  readUpstreamExtensions,
+  type UpstreamExtensionEntry,
+} from "../../infrastructure/persistence/upstream_extensions.ts";
 
 Deno.test("removeUpstreamExtension removes entry and preserves others", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });

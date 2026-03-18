@@ -20,18 +20,13 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import { UserError } from "../../domain/errors.ts";
 import {
-  isPartialId,
-  matchByPartialId,
-} from "../../domain/models/model_lookup.ts";
-import {
-  readLogFile,
-  renderLogFile,
-} from "../../presentation/output/log_file_reader.ts";
-import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
+  consumeStream,
+  createLibSwampContext,
+  createWorkflowHistoryLogsDeps,
+  workflowHistoryLogs,
+} from "../../libswamp/mod.ts";
+import { createWorkflowHistoryLogsRenderer } from "../../presentation/renderers/workflow_history_logs.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -46,111 +41,29 @@ export const workflowHistoryLogsCommand = new Command()
     options: AnyOptions,
     runIdOrWorkflow: string,
   ) {
-    const ctx = createContext(
+    const cliCtx = createContext(
       options as GlobalOptions,
       ["workflow", "history", "logs"],
     );
-    ctx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
+    cliCtx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
+    const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
-    const runRepo = repoContext.workflowRunRepo;
-    const workflowRepo = repoContext.workflowRepo;
 
-    let run: WorkflowRun | undefined;
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createWorkflowHistoryLogsDeps(repoDir);
 
-    // Try partial ID matching first if input looks like an ID
-    if (isPartialId(runIdOrWorkflow)) {
-      const allRuns = await runRepo.findAllGlobal();
-      const result = matchByPartialId(
-        allRuns.map((r) => ({ id: r.run.id, item: r })),
+    const renderer = createWorkflowHistoryLogsRenderer(cliCtx.outputMode);
+    await consumeStream(
+      workflowHistoryLogs(ctx, deps, {
         runIdOrWorkflow,
-      );
+        tail: options.tail as number | undefined,
+        repoDir,
+      }),
+      renderer.handlers(),
+    );
 
-      if (result.status === "found") {
-        run = result.match.run;
-      } else if (result.status === "ambiguous") {
-        throw new UserError(
-          `Ambiguous ID prefix "${runIdOrWorkflow}" matches:\n` +
-            result.matches.map((m) => `  ${m.id}`).join("\n"),
-        );
-      }
-      // not_found: fall through to workflow name lookup
-    }
-
-    // If not found as run ID, try as workflow name and get latest run
-    if (!run) {
-      const workflow = await workflowRepo.findByName(runIdOrWorkflow) ??
-        await workflowRepo.findById(createWorkflowId(runIdOrWorkflow));
-
-      if (!workflow) {
-        throw new UserError(
-          `No workflow run or workflow found: ${runIdOrWorkflow}`,
-        );
-      }
-
-      const latestRun = await runRepo.findLatestByWorkflowId(workflow.id);
-      if (!latestRun) {
-        throw new UserError(
-          `No runs found for workflow: ${workflow.name}`,
-        );
-      }
-
-      run = latestRun;
-      ctx.logger
-        .debug`Using latest run for workflow ${workflow.name}: ${run.id}`;
-    }
-
-    // Read log file
-    if (!run.logFile) {
-      if (ctx.outputMode === "json") {
-        console.log(JSON.stringify(
-          {
-            runId: run.id,
-            workflowName: run.workflowName,
-            error: "No log file recorded for this run (pre-logFile run)",
-          },
-          null,
-          2,
-        ));
-      } else {
-        console.log(
-          `No log file recorded for run ${run.id.slice(0, 8)}. ` +
-            `This run predates log file tracking.`,
-        );
-      }
-      return;
-    }
-
-    const tail = options.tail as number | undefined;
-    const logData = await readLogFile(run.logFile, { tail });
-
-    // Use relative path for display
-    const displayPath = toRelativePath(repoDir, run.logFile);
-    const logDataWithRelativePath = { ...logData, path: displayPath };
-
-    if (logData.lines.length === 0) {
-      if (ctx.outputMode === "json") {
-        console.log(JSON.stringify(
-          {
-            runId: run.id,
-            workflowName: run.workflowName,
-            path: displayPath,
-            lines: [],
-            lineCount: 0,
-          },
-          null,
-          2,
-        ));
-      } else {
-        console.log(`Log file not found or empty: ${displayPath}`);
-      }
-      return;
-    }
-
-    renderLogFile(logDataWithRelativePath, ctx.outputMode);
-
-    ctx.logger.debug("Workflow history logs command completed");
+    cliCtx.logger.debug("Workflow history logs command completed");
   });

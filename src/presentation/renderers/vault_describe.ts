@@ -18,11 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type {
+  EventHandlers,
   VaultDescribeData,
   VaultDescribeEvent,
-} from "../../libswamp/vaults/describe.ts";
+} from "../../libswamp/mod.ts";
 import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
-import type { EventHandlers } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

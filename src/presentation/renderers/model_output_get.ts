@@ -18,10 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type {
+  EventHandlers,
   ModelOutputGetData,
   ModelOutputGetEvent,
-} from "../../libswamp/models/output_get.ts";
-import type { EventHandlers } from "../../libswamp/mod.ts";
+} from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";

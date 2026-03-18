@@ -135,6 +135,10 @@ After completing work, run these checks:
 - Uses LogTape for logging and non-interactive output (`"log"` mode)
 - Uses JSON for structured output (`"json"` mode via `--json`)
 - Every command _must_ support both `"log"` and `"json"` output modes
+- CLI commands and presentation renderers must import libswamp types and
+  functions from `src/libswamp/mod.ts` — never from internal module paths like
+  `src/libswamp/data/get.ts`. Only libswamp-internal code (other generators,
+  tests in `src/libswamp/`) may import from internal paths.
 - You can read the files in `design/*.md` to understand elements of the design
 
 ## Testing
