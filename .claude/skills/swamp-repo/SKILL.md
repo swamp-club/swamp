@@ -211,6 +211,42 @@ swamp datastore lock release --force --json  # Force-release stuck lock
 
 Returns `null` if no lock is held.
 
+### Custom Datastores
+
+Install a community datastore or create your own in `extensions/datastores/`:
+
+```bash
+swamp extension search datastore --json    # Find community datastores
+```
+
+Configure in `.swamp.yaml` with `type:` and `config:` fields:
+
+```yaml
+datastore:
+  type: "@myorg/my-store"
+  config:
+    endpoint: "https://storage.example.com"
+    bucket: "my-data"
+```
+
+Or via environment variable (JSON config after the type):
+
+```bash
+export SWAMP_DATASTORE='@myorg/my-store:{"endpoint":"https://storage.example.com","bucket":"my-data"}'
+```
+
+For creating custom datastore implementations, see the
+`swamp-extension-datastore` skill.
+
+### Custom Drivers
+
+Custom execution drivers control where and how model methods run (SSH, Lambda,
+Kubernetes, etc.). Drivers are configured per-definition, per-workflow, or
+per-step via the `driver:` and `driverConfig:` YAML fields.
+
+For creating custom driver implementations, see the `swamp-extension-driver`
+skill.
+
 ### Environment Variable Override
 
 For CI/CD, override the datastore without modifying `.swamp.yaml`:
@@ -218,17 +254,20 @@ For CI/CD, override the datastore without modifying `.swamp.yaml`:
 ```bash
 export SWAMP_DATASTORE=s3:my-bucket/my-prefix
 export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
+export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 ```
 
 ## When to Use Other Skills
 
-| Need                            | Use Skill               |
-| ------------------------------- | ----------------------- |
-| Create/run models               | `swamp-model`           |
-| Create/run workflows            | `swamp-workflow`        |
-| Manage secrets                  | `swamp-vault`           |
-| Manage model data               | `swamp-data`            |
-| Create custom TypeScript models | `swamp-extension-model` |
+| Need                            | Use Skill                   |
+| ------------------------------- | --------------------------- |
+| Create/run models               | `swamp-model`               |
+| Create/run workflows            | `swamp-workflow`            |
+| Manage secrets                  | `swamp-vault`               |
+| Manage model data               | `swamp-data`                |
+| Create custom TypeScript models | `swamp-extension-model`     |
+| Create custom datastores        | `swamp-extension-datastore` |
+| Create custom drivers           | `swamp-extension-driver`    |
 
 ## References
 
