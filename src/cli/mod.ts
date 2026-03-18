@@ -368,31 +368,7 @@ export function resolveTelemetryEndpoint(
   return DEFAULT_TELEMETRY_ENDPOINT;
 }
 
-/**
- * Resolves the full list of trusted collectives by merging explicit
- * trustedCollectives from .swamp.yaml with the user's membership collectives
- * from cached auth credentials.
- *
- * @internal Exported for testing
- */
-export function resolveTrustedCollectives(
-  marker: RepoMarkerData | null,
-  authCollectives?: string[],
-): string[] {
-  const explicit = marker?.trustedCollectives ?? ["swamp", "si"];
-
-  // If opt-out is set, only use explicit list
-  if (marker?.trustMemberCollectives === false) {
-    return explicit;
-  }
-
-  // Merge membership collectives (deduplicated)
-  if (authCollectives && authCollectives.length > 0) {
-    return [...new Set([...explicit, ...authCollectives])];
-  }
-
-  return explicit;
-}
+import { resolveTrustedCollectives } from "../libswamp/extensions/trust.ts";
 
 interface TelemetryContext {
   service: TelemetryService;

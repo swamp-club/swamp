@@ -44,10 +44,12 @@ attributes to control the behaviour of the swamp operations.
   sent to and retrieved from when evaluating and running workflow steps.
   Multitple vaults can be specified for a each swamp repository.
 - `trustedCollectives`: List of collectives whose extensions auto-resolve on
-  first use. Default: `["swamp", "si"]`. Set to `[]` to disable.
+  first use. Default: `["swamp", "si"]`. Set to `[]` to disable. Manageable via
+  `swamp extension trust list/add/rm`.
 - `trustMemberCollectives`: Whether to auto-trust collectives the user belongs
   to (cached from `auth login`/`auth whoami`). Default: `true`. Set to `false`
-  to only trust the explicit `trustedCollectives` list.
+  to only trust the explicit `trustedCollectives` list. Toggleable via
+  `swamp extension trust auto-trust <on|off>`.
 
 ## RepoIndexService
 

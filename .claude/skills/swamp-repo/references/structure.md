@@ -136,6 +136,15 @@ Additionally, collectives the user belongs to (cached during `auth login` /
 `auth whoami`) are automatically trusted. Set `trustMemberCollectives: false` to
 disable this and only trust the explicit list.
 
+Manage trusted collectives via the CLI:
+
+```bash
+swamp extension trust list                # Show trusted collectives
+swamp extension trust add <collective>    # Add a collective
+swamp extension trust rm <collective>     # Remove a collective
+swamp extension trust auto-trust <on|off> # Toggle membership auto-trust
+```
+
 ### CLAUDE.md
 
 Agent instructions generated on init. Contains:

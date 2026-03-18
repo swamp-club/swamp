@@ -27,7 +27,6 @@ import {
   resolveLogLevel,
   resolveModelsDir,
   resolveTelemetryEndpoint,
-  resolveTrustedCollectives,
   resolveWorkflowsDir,
 } from "./mod.ts";
 
@@ -549,75 +548,6 @@ Deno.test("isUpdateCheckDisabledByEnv returns false when env var is ''", () => {
       Deno.env.delete("SWAMP_NO_UPDATE_CHECK");
     }
   }
-});
-
-// --- resolveTrustedCollectives tests ---
-
-Deno.test("resolveTrustedCollectives returns defaults when no marker", () => {
-  const result = resolveTrustedCollectives(null);
-  assertEquals(result, ["swamp", "si"]);
-});
-
-Deno.test("resolveTrustedCollectives returns explicit collectives from marker", () => {
-  const marker = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01T00:00:00Z",
-    trustedCollectives: ["myorg"],
-  };
-  const result = resolveTrustedCollectives(marker);
-  assertEquals(result, ["myorg"]);
-});
-
-Deno.test("resolveTrustedCollectives merges auth collectives with defaults", () => {
-  const result = resolveTrustedCollectives(null, ["myorg", "other"]);
-  assertEquals(result, ["swamp", "si", "myorg", "other"]);
-});
-
-Deno.test("resolveTrustedCollectives deduplicates merged collectives", () => {
-  const marker = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01T00:00:00Z",
-    trustedCollectives: ["swamp", "si", "myorg"],
-  };
-  const result = resolveTrustedCollectives(marker, ["myorg", "neworg"]);
-  assertEquals(result, ["swamp", "si", "myorg", "neworg"]);
-});
-
-Deno.test("resolveTrustedCollectives respects trustMemberCollectives false", () => {
-  const marker = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01T00:00:00Z",
-    trustedCollectives: ["swamp"],
-    trustMemberCollectives: false,
-  };
-  const result = resolveTrustedCollectives(marker, ["myorg", "other"]);
-  assertEquals(result, ["swamp"]);
-});
-
-Deno.test("resolveTrustedCollectives merges when trustMemberCollectives is true", () => {
-  const marker = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01T00:00:00Z",
-    trustedCollectives: ["swamp"],
-    trustMemberCollectives: true,
-  };
-  const result = resolveTrustedCollectives(marker, ["myorg"]);
-  assertEquals(result, ["swamp", "myorg"]);
-});
-
-Deno.test("resolveTrustedCollectives handles undefined auth collectives", () => {
-  const marker = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01T00:00:00Z",
-    trustedCollectives: ["swamp", "si"],
-  };
-  const result = resolveTrustedCollectives(marker, undefined);
-  assertEquals(result, ["swamp", "si"]);
-});
-
-Deno.test("resolveTrustedCollectives handles empty auth collectives", () => {
-  const result = resolveTrustedCollectives(null, []);
-  assertEquals(result, ["swamp", "si"]);
 });
 
 Deno.test("commandNeedsExtensions returns false for empty args (bare swamp)", () => {

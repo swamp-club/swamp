@@ -27,7 +27,8 @@ Before creating a custom driver:
 4. Only create a custom driver if nothing fits
 
 Extensions from trusted collectives (`@swamp/*`, `@si/*`, and your membership
-collectives) auto-resolve on first use.
+collectives) auto-resolve on first use. Use `swamp extension trust list` to see
+which collectives are trusted.
 
 ## Quick Reference
 

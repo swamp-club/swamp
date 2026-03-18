@@ -225,6 +225,17 @@ Set `trustMemberCollectives: false` to disable membership-based trust and only
 use the explicit `trustedCollectives` list. Set `trustedCollectives` to `[]` and
 `trustMemberCollectives: false` to disable automatic resolution entirely.
 
+#### CLI Management
+
+Trusted collectives can be managed via the `swamp extension trust` commands:
+
+```bash
+swamp extension trust list                # Show explicit, membership, and resolved collectives
+swamp extension trust add <collective>    # Add a collective to the trusted list
+swamp extension trust rm <collective>     # Remove a collective from the trusted list
+swamp extension trust auto-trust <on|off> # Enable/disable membership auto-trust
+```
+
 ### Resolution Algorithm
 
 1. **Local registry** — check if the type is already registered locally.

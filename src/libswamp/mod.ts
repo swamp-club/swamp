@@ -175,6 +175,38 @@ export {
   type WorkflowDataListItem,
 } from "./data/list.ts";
 
+// Extension trust operations
+export {
+  DEFAULT_TRUSTED,
+  resolveTrustedCollectives,
+  type TrustModifyData,
+  type TrustModifyEvent,
+} from "./extensions/trust.ts";
+export {
+  createTrustListDeps,
+  trustList,
+  type TrustListData,
+  type TrustListDeps,
+  type TrustListEvent,
+} from "./extensions/trust_list.ts";
+export {
+  createTrustAddDeps,
+  trustAdd,
+  type TrustAddDeps,
+} from "./extensions/trust_add.ts";
+export {
+  createTrustRmDeps,
+  trustRm,
+  type TrustRmDeps,
+} from "./extensions/trust_rm.ts";
+export {
+  createTrustAutoTrustDeps,
+  trustAutoTrust,
+  type TrustAutoTrustData,
+  type TrustAutoTrustDeps,
+  type TrustAutoTrustEvent,
+} from "./extensions/trust_auto_trust.ts";
+
 // Type operations
 export {
   createTypeDescribeDeps,

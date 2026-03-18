@@ -231,13 +231,13 @@ Extensions from trusted collectives (explicit `trustedCollectives` in
 `.swamp.yaml` plus your membership collectives) auto-resolve on first use. If
 auto-resolution fails:
 
-| Symptom                       | Cause                                      | Fix                                                                |
-| ----------------------------- | ------------------------------------------ | ------------------------------------------------------------------ |
-| "no matching extension found" | Extension doesn't exist in registry        | `swamp extension search <query>` to find correct name              |
-| Network/timeout error         | Can't reach swamp.club                     | Check connectivity; manual: `swamp extension pull @name`           |
-| Type not auto-resolving       | Collective not trusted                     | Run `swamp auth whoami` to refresh, or add to `trustedCollectives` |
-| Silent "Unknown model type"   | Type uses non-`@` prefix or single segment | Use `@collective/name` format                                      |
-| Stale membership              | Collectives changed since last login       | Run `swamp auth whoami` to refresh cached collectives              |
+| Symptom                       | Cause                                      | Fix                                                                              |
+| ----------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------- |
+| "no matching extension found" | Extension doesn't exist in registry        | `swamp extension search <query>` to find correct name                            |
+| Network/timeout error         | Can't reach swamp.club                     | Check connectivity; manual: `swamp extension pull @name`                         |
+| Type not auto-resolving       | Collective not trusted                     | `swamp extension trust list` to check, `swamp extension trust add <name>` to add |
+| Silent "Unknown model type"   | Type uses non-`@` prefix or single segment | Use `@collective/name` format                                                    |
+| Stale membership              | Collectives changed since last login       | Run `swamp auth whoami` to refresh cached collectives                            |
 
 ## Verification Commands
 

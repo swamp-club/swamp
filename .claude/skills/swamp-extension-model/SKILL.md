@@ -24,6 +24,8 @@ extensions:
 Note: Extensions from trusted collectives (`@swamp/*`, `@si/*`, and your
 membership collectives) auto-resolve on first use — no manual `extension pull`
 needed. Just reference the type and swamp installs the extension automatically.
+Use `swamp extension trust list` to see which collectives are trusted, and
+`swamp extension trust add <name>` to trust additional collectives.
 
 Extension models let you:
 

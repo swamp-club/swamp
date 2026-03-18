@@ -21,7 +21,8 @@ Before creating a custom datastore, check what's available:
 4. Only create a custom datastore if nothing fits
 
 Extensions from trusted collectives (`@swamp/*`, `@si/*`, and your membership
-collectives) auto-resolve on first use — no manual `extension pull` needed.
+collectives) auto-resolve on first use — no manual `extension pull` needed. Use
+`swamp extension trust list` to see which collectives are trusted.
 
 Custom datastores let you:
 
