@@ -17,41 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
-import {
-  workflowSchema,
-  type WorkflowSchemaData,
-  type WorkflowSchemaDeps,
-  type WorkflowSchemaEvent,
-} from "./schema.ts";
-
-function makeSchemaData(): WorkflowSchemaData {
-  return {
-    workflow: { type: "object" },
-    job: { type: "object" },
-    jobDependency: { type: "object" },
-    step: { type: "object" },
-    stepDependency: { type: "object" },
-    stepTask: { type: "object" },
-    triggerCondition: { type: "object" },
-  };
-}
-
-function makeDeps(
-  overrides?: Partial<WorkflowSchemaDeps>,
-): WorkflowSchemaDeps {
-  return {
-    getSchemas: () => makeSchemaData(),
-    ...overrides,
-  };
-}
+import { workflowSchema, type WorkflowSchemaEvent } from "./schema.ts";
 
 Deno.test("workflowSchema yields completed with schema data", async () => {
   const ctx = createLibSwampContext();
-  const deps = makeDeps();
-  const events = await collect<WorkflowSchemaEvent>(workflowSchema(ctx, deps));
+  const events = await collect<WorkflowSchemaEvent>(workflowSchema(ctx));
 
   assertEquals(events.length, 1);
   assertEquals(events[0].kind, "completed");
@@ -59,6 +32,10 @@ Deno.test("workflowSchema yields completed with schema data", async () => {
     WorkflowSchemaEvent,
     { kind: "completed" }
   >;
-  assertEquals(completed.data.workflow, { type: "object" });
-  assertEquals(completed.data.job, { type: "object" });
+  // The generator now produces real JSON schemas from Zod, not stubs
+  assert(typeof completed.data.workflow === "object");
+  assert(typeof completed.data.job === "object");
+  assert(typeof completed.data.step === "object");
+  assert(typeof completed.data.stepTask === "object");
+  assert(typeof completed.data.triggerCondition === "object");
 });

@@ -23,18 +23,10 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
-import type { Definition } from "../../domain/definitions/definition.ts";
-import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
-import { getAutoResolver } from "../auto_resolver_context.ts";
-import {
-  type CheckValidationContext,
-  DefaultModelValidationService,
-} from "../../domain/models/validation_service.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
   createLibSwampContext,
+  createModelValidateDeps,
   modelValidate,
 } from "../../libswamp/mod.ts";
 import { createModelValidateRenderer } from "../../presentation/renderers/model_validate.ts";
@@ -67,7 +59,7 @@ export const modelValidateCommand = new Command()
       const method = options.method as string | undefined;
       const hasCheckOptions = (labels && labels.length > 0) || method;
 
-      const { repoDir, repoContext } = hasCheckOptions
+      const { repoDir } = hasCheckOptions
         ? await requireInitializedRepo({
           repoDir: options.repoDir ?? ".",
           outputMode: cliCtx.outputMode,
@@ -76,39 +68,9 @@ export const modelValidateCommand = new Command()
           repoDir: options.repoDir ?? ".",
           outputMode: cliCtx.outputMode,
         });
-      const definitionRepo = repoContext.definitionRepo;
-      const validationService = new DefaultModelValidationService();
-
-      const buildCheckContext = (): CheckValidationContext | undefined => {
-        return {
-          repoDir,
-          dataRepository: repoContext.unifiedDataRepo,
-          definitionRepository: definitionRepo,
-          labels,
-          method,
-        };
-      };
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = {
-        lookupDefinition: (idOrName: string) =>
-          findDefinitionByIdOrName(definitionRepo, idOrName),
-        findAllDefinitions: () => definitionRepo.findAllGlobal(),
-        resolveModelType: (type: ModelType) =>
-          resolveModelType(type, getAutoResolver()),
-        validateModel: (
-          definition: Definition,
-          modelDef: unknown,
-          _type: ModelType,
-        ) =>
-          validationService.validateModel(
-            definition,
-            // deno-lint-ignore no-explicit-any
-            modelDef as any,
-            definitionRepo,
-            buildCheckContext(),
-          ),
-      };
+      const deps = createModelValidateDeps(repoDir, { labels, method });
 
       const renderer = createModelValidateRenderer(cliCtx.outputMode);
       await consumeStream(

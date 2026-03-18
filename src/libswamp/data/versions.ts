@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Definition } from "../../domain/definitions/definition.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 
@@ -75,6 +78,20 @@ export interface DataVersionsDeps {
     dataName: string,
     version: number,
   ) => Promise<DataEntry | null>;
+}
+
+/** Wires real infrastructure into DataVersionsDeps. */
+export function createDataVersionsDeps(repoDir: string): DataVersionsDeps {
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+  return {
+    lookupDefinition: (idOrName) =>
+      findDefinitionByIdOrName(definitionRepo, idOrName),
+    listVersions: (type, definitionId, name) =>
+      dataRepo.listVersions(type, definitionId, name),
+    findByName: (type, definitionId, name, version) =>
+      dataRepo.findByName(type, definitionId, name, version),
+  };
 }
 
 /** Yields all versions of a specific data entry for a model. */

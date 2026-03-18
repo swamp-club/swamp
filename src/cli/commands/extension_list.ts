@@ -18,17 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
-import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { readUpstreamExtensions } from "./extension_pull.ts";
 import {
   consumeStream,
+  createExtensionListDeps,
   createLibSwampContext,
   extensionList,
 } from "../../libswamp/mod.ts";
@@ -55,16 +49,8 @@ export const extensionListCommand = new Command()
       outputMode: cliCtx.outputMode,
     });
 
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = {
-      readUpstreamExtensions: () => readUpstreamExtensions(absoluteModelsDir),
-    };
+    const deps = await createExtensionListDeps(repoDir);
 
     const verbose = cliCtx.verbosity === "verbose";
     const renderer = createExtensionListRenderer(cliCtx.outputMode, verbose);

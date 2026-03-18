@@ -17,8 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { WorkflowSchema } from "../../domain/workflows/workflow.ts";
+import { JobDependencySchema, JobSchema } from "../../domain/workflows/job.ts";
+import {
+  StepDependencySchema,
+  StepSchema,
+} from "../../domain/workflows/step.ts";
+import { StepTaskSchema } from "../../domain/workflows/step_task.ts";
+import { TriggerConditionSchema } from "../../domain/workflows/trigger_condition.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
+import { zodToJsonSchema } from "../types/schema_helpers.ts";
 
 /** Schema data for all workflow-related Zod schemas. */
 export interface WorkflowSchemaData {
@@ -35,15 +44,20 @@ export type WorkflowSchemaEvent =
   | { kind: "completed"; data: WorkflowSchemaData }
   | { kind: "error"; error: SwampError };
 
-/** Dependencies for the workflow schema operation. */
-export interface WorkflowSchemaDeps {
-  getSchemas: () => WorkflowSchemaData;
-}
-
 /** Yields the JSON Schema representation of all workflow schemas. */
 export async function* workflowSchema(
   _ctx: LibSwampContext,
-  deps: WorkflowSchemaDeps,
 ): AsyncIterable<WorkflowSchemaEvent> {
-  yield { kind: "completed", data: deps.getSchemas() };
+  yield {
+    kind: "completed",
+    data: {
+      workflow: zodToJsonSchema(WorkflowSchema),
+      job: zodToJsonSchema(JobSchema),
+      jobDependency: zodToJsonSchema(JobDependencySchema),
+      step: zodToJsonSchema(StepSchema),
+      stepDependency: zodToJsonSchema(StepDependencySchema),
+      stepTask: zodToJsonSchema(StepTaskSchema),
+      triggerCondition: zodToJsonSchema(TriggerConditionSchema),
+    },
+  };
 }

@@ -17,9 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { Definition } from "../../domain/definitions/definition.ts";
+import type {
+  Definition,
+  DefinitionId,
+} from "../../domain/definitions/definition.ts";
 import type { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import {
+  findDefinitionByIdOrName,
+  isPartialId,
+  matchByPartialId,
+} from "../../domain/models/model_lookup.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { readLogFile } from "../../presentation/output/log_file_reader.ts";
+import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -87,6 +100,52 @@ export interface ModelMethodHistoryLogsDeps {
     options?: { tail?: number },
   ) => Promise<LogData>;
   toRelativePath: (repoDir: string, path: string) => string;
+}
+
+/** Wires real infrastructure into ModelMethodHistoryLogsDeps. */
+export function createModelMethodHistoryLogsDeps(
+  repoDir: string,
+): ModelMethodHistoryLogsDeps {
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const outputRepo = new YamlOutputRepository(repoDir);
+  return {
+    isPartialId,
+    matchOutputByPartialId: async (idPrefix: string) => {
+      const allOutputs = await outputRepo.findAllGlobal();
+      const result = matchByPartialId(
+        allOutputs.map((o) => ({ id: o.output.id, item: o.output })),
+        idPrefix,
+      );
+      if (result.status === "found") {
+        return { status: "found" as const, match: result.match };
+      }
+      if (result.status === "ambiguous") {
+        return {
+          status: "ambiguous" as const,
+          matches: result.matches.map((m) => ({ id: m.id })),
+        };
+      }
+      return { status: "not_found" as const };
+    },
+    findDefinition: (idOrName: string) =>
+      findDefinitionByIdOrName(definitionRepo, idOrName),
+    findLatestOutput: (type, definitionId) =>
+      outputRepo.findLatestByDefinition(type, definitionId as DefinitionId),
+    getModelName: async (definitionId: string) => {
+      for (const modelType of modelRegistry.types()) {
+        const definition = await definitionRepo.findById(
+          modelType,
+          definitionId as DefinitionId,
+        );
+        if (definition) {
+          return definition.name;
+        }
+      }
+      return definitionId;
+    },
+    readLogFile,
+    toRelativePath,
+  };
 }
 
 /** Yields log content for a model method run. */
