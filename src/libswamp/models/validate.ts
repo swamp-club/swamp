@@ -18,6 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Definition } from "../../domain/definitions/definition.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
+import {
+  type CheckValidationContext,
+  DefaultModelValidationService,
+} from "../../domain/models/validation_service.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
@@ -78,6 +87,39 @@ export interface ModelValidateDeps {
     modelDef: unknown,
     type: ModelType,
   ) => Promise<ValidationResult[]>;
+}
+
+/** Wires real infrastructure into ModelValidateDeps. */
+export function createModelValidateDeps(
+  repoDir: string,
+  options?: { labels?: string[]; method?: string },
+): ModelValidateDeps {
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+  const validationService = new DefaultModelValidationService();
+
+  const checkContext: CheckValidationContext = {
+    repoDir,
+    dataRepository: dataRepo,
+    definitionRepository: definitionRepo,
+    labels: options?.labels,
+    method: options?.method,
+  };
+
+  return {
+    lookupDefinition: (idOrName) =>
+      findDefinitionByIdOrName(definitionRepo, idOrName),
+    findAllDefinitions: () => definitionRepo.findAllGlobal(),
+    resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
+    validateModel: (definition, modelDef, _type) =>
+      validationService.validateModel(
+        definition,
+        // deno-lint-ignore no-explicit-any
+        modelDef as any,
+        definitionRepo,
+        checkContext,
+      ),
+  };
 }
 
 /** Converts raw validation results to the presentation format. */

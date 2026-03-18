@@ -17,6 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { resolve } from "@std/path";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import {
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -48,6 +54,21 @@ interface UpstreamEntry {
 /** Dependencies for the extension list operation. */
 export interface ExtensionListDeps {
   readUpstreamExtensions: () => Promise<Record<string, UpstreamEntry>>;
+}
+
+/** Wires real infrastructure into ExtensionListDeps. */
+export async function createExtensionListDeps(
+  repoDir: string,
+): Promise<ExtensionListDeps> {
+  const repoPath = RepoPath.create(repoDir);
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(repoPath);
+  const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
+  const modelsDir = envModelsDir ?? marker?.modelsDir ?? "extensions/models";
+  const absoluteModelsDir = resolve(repoDir, modelsDir);
+  return {
+    readUpstreamExtensions: () => readUpstreamExtensions(absoluteModelsDir),
+  };
 }
 
 /** Yields the list of installed upstream extensions. */

@@ -20,10 +20,10 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { VaultService } from "../../domain/vaults/vault_service.ts";
 import {
   consumeStream,
   createLibSwampContext,
+  createVaultListKeysDeps,
   vaultListKeys,
 } from "../../libswamp/mod.ts";
 import { createVaultListKeysRenderer } from "../../presentation/renderers/vault_list_keys.ts";
@@ -43,20 +43,13 @@ export const vaultListKeysCommand = new Command()
     ]);
     cliCtx.logger.debug`Listing secret keys in vault: ${vaultName}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
+    const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
 
-    const repo = repoContext.vaultConfigRepo;
-    const vaultService = await VaultService.fromRepository(repoDir);
-
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = {
-      findVaultByName: (name: string) => repo.findByName(name),
-      findAllVaults: () => repo.findAll(),
-      listKeys: (name: string) => vaultService.list(name),
-    };
+    const deps = await createVaultListKeysDeps(repoDir);
 
     const renderer = createVaultListKeysRenderer(cliCtx.outputMode);
     await consumeStream(

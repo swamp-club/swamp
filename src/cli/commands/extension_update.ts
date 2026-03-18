@@ -36,8 +36,8 @@ import {
   type InstallContext,
   installExtension,
   parseExtensionRef,
-  readUpstreamExtensions,
 } from "./extension_pull.ts";
+import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 import {
   buildUpdateResult,
   checkExtensionVersion,

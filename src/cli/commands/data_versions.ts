@@ -20,10 +20,9 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
 import {
   consumeStream,
+  createDataVersionsDeps,
   createLibSwampContext,
   dataVersions,
 } from "../../libswamp/mod.ts";
@@ -51,29 +50,13 @@ export const dataVersionsCommand = new Command()
       cliCtx.logger
         .debug`Listing versions: model=${modelIdOrName}, name=${dataName}`;
 
-      const { repoContext } = await requireInitializedRepoReadOnly({
+      const { repoDir } = await requireInitializedRepoReadOnly({
         repoDir: options.repoDir ?? ".",
         outputMode: cliCtx.outputMode,
       });
-      const definitionRepo = repoContext.definitionRepo;
-      const dataRepo = repoContext.unifiedDataRepo;
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = {
-        lookupDefinition: (idOrName: string) =>
-          findDefinitionByIdOrName(definitionRepo, idOrName),
-        listVersions: (
-          type: ModelType,
-          definitionId: string,
-          name: string,
-        ) => dataRepo.listVersions(type, definitionId, name),
-        findByName: (
-          type: ModelType,
-          definitionId: string,
-          name: string,
-          version: number,
-        ) => dataRepo.findByName(type, definitionId, name, version),
-      };
+      const deps = createDataVersionsDeps(repoDir);
 
       const renderer = createDataVersionsRenderer(cliCtx.outputMode);
       await consumeStream(

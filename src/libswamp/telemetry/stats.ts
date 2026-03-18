@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { TelemetryStats } from "../../domain/telemetry/telemetry_service.ts";
+import {
+  TelemetryService,
+  type TelemetryStats,
+} from "../../domain/telemetry/telemetry_service.ts";
+import { JsonTelemetryRepository } from "../../infrastructure/persistence/json_telemetry_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -36,6 +40,18 @@ export interface TelemetryStatsDeps {
 
 export interface TelemetryStatsInput {
   days: number;
+}
+
+/** Wires real infrastructure into TelemetryStatsDeps. */
+export function createTelemetryStatsDeps(
+  repoDir: string,
+  version: string,
+): TelemetryStatsDeps {
+  const repository = new JsonTelemetryRepository(repoDir);
+  const service = new TelemetryService(repository, version);
+  return {
+    getStats: (days: number) => service.getStats(days),
+  };
 }
 
 /** Yields telemetry usage statistics. */
