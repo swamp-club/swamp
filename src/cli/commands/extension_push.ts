@@ -207,7 +207,7 @@ export const extensionPushCommand = new Command()
         );
         throw new UserError(
           "Extension content uses collectives that don't match the extension package. " +
-            "All model types, vault types, and workflow names must use the same collective as the extension.",
+            "All model types, vault types, workflow names, driver types, and datastore types must use the same collective as the extension.",
         );
       }
     }

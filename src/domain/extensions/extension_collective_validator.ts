@@ -33,11 +33,11 @@ export interface CollectiveValidationResult {
 }
 
 /**
- * Validates that all content items (models, vaults, workflows) in an extension
+ * Validates that all content items (models, vaults, workflows, drivers, datastores) in an extension
  * use the same collective as the extension package itself.
  *
  * For example, if the extension is `@stack72/my-extension`, all model types,
- * vault types, and workflow names must start with `@stack72/`.
+ * vault types, workflow names, driver types, and datastore types must start with `@stack72/`.
  */
 export function validateContentCollectives(
   extensionName: string,
