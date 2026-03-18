@@ -199,8 +199,11 @@ export async function bundleExtension(
 
     if (!output.success) {
       const stderr = new TextDecoder().decode(output.stderr);
+      const stdout = new TextDecoder().decode(output.stdout);
+      const details = (stderr + stdout).trim() ||
+        "(no output — try running deno 2.7.x or later)";
       throw new Error(
-        `deno bundle failed for ${absolutePath}: ${stderr}`,
+        `deno bundle failed for ${absolutePath}: ${details}`,
       );
     }
 
