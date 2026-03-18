@@ -156,6 +156,7 @@ export {
   type DataGetInput,
 } from "./data/get.ts";
 export {
+  createDataVersionsDeps,
   type DataVersionInfo,
   dataVersions,
   type DataVersionsData,
@@ -164,6 +165,7 @@ export {
   type DataVersionsInput,
 } from "./data/versions.ts";
 export {
+  createDataListDeps,
   type DataGroupedByType,
   dataList,
   type DataListData,
@@ -226,12 +228,12 @@ export {
 export {
   workflowSchema,
   type WorkflowSchemaData,
-  type WorkflowSchemaDeps,
   type WorkflowSchemaEvent,
 } from "./workflows/schema.ts";
 
 // Workflow validate operations
 export {
+  createWorkflowValidateDeps,
   isWorkflowValidateAllData,
   type ValidationItemData as WorkflowValidationItemData,
   workflowValidate,
@@ -244,6 +246,7 @@ export {
 
 // Workflow history logs operations
 export {
+  createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
   type WorkflowHistoryLogsDeps,
   type WorkflowHistoryLogsEvent,
@@ -252,6 +255,7 @@ export {
 
 // Model validate operations
 export {
+  createModelValidateDeps,
   isModelValidateAllData,
   modelValidate,
   type ModelValidateAllData,
@@ -264,6 +268,7 @@ export {
 
 // Model method history logs operations
 export {
+  createModelMethodHistoryLogsDeps,
   modelMethodHistoryLogs,
   type ModelMethodHistoryLogsDeps,
   type ModelMethodHistoryLogsEvent,
@@ -272,6 +277,7 @@ export {
 
 // Model output logs operations
 export {
+  createModelOutputLogsDeps,
   modelOutputLogs,
   type ModelOutputLogsDeps,
   type ModelOutputLogsEvent,
@@ -280,6 +286,7 @@ export {
 
 // Model output data operations
 export {
+  createModelOutputDataDeps,
   modelOutputData,
   type ModelOutputDataDeps,
   type ModelOutputDataEvent,
@@ -288,6 +295,7 @@ export {
 
 // Vault list-keys operations
 export {
+  createVaultListKeysDeps,
   vaultListKeys,
   type VaultListKeysData,
   type VaultListKeysDeps,
@@ -297,6 +305,7 @@ export {
 
 // Extension operations
 export {
+  createExtensionListDeps,
   extensionList,
   type ExtensionListData,
   type ExtensionListDeps,
@@ -306,6 +315,7 @@ export {
 
 // Telemetry operations
 export {
+  createTelemetryStatsDeps,
   telemetryStats,
   type TelemetryStatsData,
   type TelemetryStatsDeps,

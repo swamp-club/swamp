@@ -20,16 +20,10 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import {
-  isPartialId,
-  matchByPartialId,
-} from "../../domain/models/model_lookup.ts";
-import { readLogFile } from "../../presentation/output/log_file_reader.ts";
-import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 import {
   consumeStream,
   createLibSwampContext,
+  createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
 } from "../../libswamp/mod.ts";
 import { createWorkflowHistoryLogsRenderer } from "../../presentation/renderers/workflow_history_logs.ts";
@@ -53,43 +47,13 @@ export const workflowHistoryLogsCommand = new Command()
     );
     cliCtx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
+    const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
-    const runRepo = repoContext.workflowRunRepo;
-    const workflowRepo = repoContext.workflowRepo;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = {
-      isPartialId,
-      matchRunByPartialId: async (idPrefix: string) => {
-        const allRuns = await runRepo.findAllGlobal();
-        const result = matchByPartialId(
-          allRuns.map((r) => ({ id: r.run.id, item: r.run })),
-          idPrefix,
-        );
-        if (result.status === "found") {
-          return { status: "found" as const, match: result.match };
-        }
-        if (result.status === "ambiguous") {
-          return {
-            status: "ambiguous" as const,
-            matches: result.matches.map((m) => ({ id: m.id })),
-          };
-        }
-        return { status: "not_found" as const };
-      },
-      findWorkflow: async (nameOrId: string) =>
-        await workflowRepo.findByName(nameOrId) ??
-          await workflowRepo.findById(createWorkflowId(nameOrId)),
-      findLatestRun: (workflowId: string) =>
-        runRepo.findLatestByWorkflowId(
-          createWorkflowId(workflowId),
-        ),
-      readLogFile,
-      toRelativePath,
-    };
+    const deps = createWorkflowHistoryLogsDeps(repoDir);
 
     const renderer = createWorkflowHistoryLogsRenderer(cliCtx.outputMode);
     await consumeStream(

@@ -29,9 +29,9 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   parseExtensionRef,
-  readUpstreamExtensions,
   removeUpstreamExtension,
 } from "./extension_pull.ts";
+import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import {
   renderExtensionRm,

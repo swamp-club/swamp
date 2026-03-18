@@ -36,6 +36,7 @@ import { parseExtensionManifest } from "../../domain/extensions/extension_manife
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
+import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
@@ -114,15 +115,11 @@ export class ConflictError extends UserError {
   }
 }
 
-/** Entry in upstream_extensions.json. */
-export interface UpstreamExtensionEntry {
-  version: string;
-  pulledAt: string;
-  files?: string[];
-}
-
-/** Shape of upstream_extensions.json. */
-type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
+export {
+  readUpstreamExtensions,
+  type UpstreamExtensionEntry,
+  type UpstreamExtensionsMap,
+} from "../../infrastructure/persistence/upstream_extensions.ts";
 
 /**
  * Parses an extension reference string into name and optional version.
@@ -286,24 +283,6 @@ export async function removeUpstreamExtension(
     } catch {
       // Best-effort cleanup
     }
-  }
-}
-
-/**
- * Reads upstream_extensions.json and returns the parsed map.
- */
-export async function readUpstreamExtensions(
-  modelsDir: string,
-): Promise<UpstreamExtensionsMap> {
-  const jsonPath = join(modelsDir, "upstream_extensions.json");
-  try {
-    const content = await Deno.readTextFile(jsonPath);
-    return JSON.parse(content) as UpstreamExtensionsMap;
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      return {};
-    }
-    throw error;
   }
 }
 
