@@ -2265,3 +2265,65 @@ export const model = {
     assertEquals(modelDef!.methods.run.kind, undefined);
   });
 });
+
+Deno.test("UserModelLoader skips _-prefixed directories in discoverFiles", async () => {
+  const ts = Date.now();
+  const validModel = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "@user/skip-underscore-${ts}",
+  version: "2026.03.18.1",
+  globalArguments: z.object({}),
+  resources: {
+    "data": {
+      description: "Data output",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const helperCode = `
+export function helper() { return "helper"; }
+`;
+
+  await withTempModels(
+    {
+      "entry.ts": validModel,
+      "_lib/helper.ts": helperCode,
+    },
+    async (dir) => {
+      const loader = createTestLoader();
+      const result = await loader.loadModels(dir);
+
+      // The entry model should load successfully
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded[0], "entry.ts");
+
+      // _lib/helper.ts should NOT appear in failed or loaded
+      for (const failure of result.failed) {
+        assertEquals(
+          failure.file.includes("_lib"),
+          false,
+          `_lib file should not appear in failed: ${failure.file}`,
+        );
+      }
+      for (const loaded of result.loaded) {
+        assertEquals(
+          loaded.includes("_lib"),
+          false,
+          `_lib file should not appear in loaded: ${loaded}`,
+        );
+      }
+    },
+  );
+});

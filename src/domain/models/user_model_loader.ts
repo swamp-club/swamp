@@ -719,6 +719,10 @@ export class UserModelLoader {
     for await (const entry of Deno.readDir(dir)) {
       const relativePath = prefix ? join(prefix, entry.name) : entry.name;
       if (entry.isDirectory) {
+        // Skip _-prefixed directories (e.g. _lib/) — helper modules, not entry points
+        if (entry.name.startsWith("_")) {
+          continue;
+        }
         const nested = await this.discoverFiles(
           join(dir, entry.name),
           relativePath,
