@@ -18,19 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { readUpstreamExtensions } from "./extension_pull.ts";
-import {
-  type ExtensionListEntry,
-  renderExtensionList,
-} from "../../presentation/output/extension_list_output.ts";
+  consumeStream,
+  createExtensionListDeps,
+  createLibSwampContext,
+  extensionList,
+} from "../../libswamp/mod.ts";
+import { createExtensionListRenderer } from "../../presentation/renderers/extension_list.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -41,35 +37,24 @@ export const extensionListCommand = new Command()
   .description("List upstream installed extensions")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["extension", "list"]);
-    ctx.logger.debug`Starting extension list`;
+    const cliCtx = createContext(options as GlobalOptions, [
+      "extension",
+      "list",
+    ]);
+    cliCtx.logger.debug`Starting extension list`;
 
     const repoDir = options.repoDir ?? ".";
     await requireInitializedRepoReadOnly({
       repoDir,
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
 
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = await createExtensionListDeps(repoDir);
 
-    const upstreamData = await readUpstreamExtensions(absoluteModelsDir);
+    const verbose = cliCtx.verbosity === "verbose";
+    const renderer = createExtensionListRenderer(cliCtx.outputMode, verbose);
+    await consumeStream(extensionList(ctx, deps), renderer.handlers());
 
-    const entries: ExtensionListEntry[] = Object.entries(upstreamData)
-      .map(([name, entry]) => ({
-        name,
-        version: entry.version,
-        pulledAt: entry.pulledAt ?? "",
-        files: entry.files ?? [],
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    const verbose = ctx.verbosity === "verbose";
-
-    renderExtensionList({ extensions: entries }, ctx.outputMode, verbose);
-
-    ctx.logger.debug("Extension list command completed");
+    cliCtx.logger.debug("Extension list command completed");
   });

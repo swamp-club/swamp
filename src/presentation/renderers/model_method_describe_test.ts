@@ -19,9 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
+import type { ModelMethodDescribeEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createModelMethodDescribeRenderer } from "./model_method_describe.ts";
-import type { ModelMethodDescribeEvent } from "../../libswamp/models/method_describe.ts";
 
 const testData = {
   modelName: "my-model",

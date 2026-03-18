@@ -19,9 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
+import type { VaultDescribeEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createVaultDescribeRenderer } from "./vault_describe.ts";
-import type { VaultDescribeEvent } from "../../libswamp/vaults/describe.ts";
 
 const testData = {
   id: "vault-1",

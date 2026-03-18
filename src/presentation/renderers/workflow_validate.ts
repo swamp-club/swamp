@@ -18,34 +18,26 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, green, red } from "@std/fmt/colors";
+import {
+  type EventHandlers,
+  isWorkflowValidateAllData,
+  type WorkflowValidateAllData,
+  type WorkflowValidateData,
+  type WorkflowValidateEvent,
+  type WorkflowValidationItemData,
+} from "../../libswamp/mod.ts";
+import type { Renderer } from "../renderer.ts";
+import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type { OutputMode } from "./output.ts";
-
-export interface ValidationItemData {
-  name: string;
-  passed: boolean;
-  error?: string;
-}
-
-export interface WorkflowValidateData {
-  workflowId: string;
-  workflowName: string;
-  validations: ValidationItemData[];
-  passed: boolean;
-}
-
-export interface WorkflowValidateAllData {
-  workflows: WorkflowValidateData[];
-  totalPassed: number;
-  totalFailed: number;
-  passed: boolean;
-}
+import { UserError } from "../../domain/errors.ts";
 
 const checkmark = "\u2713";
 const cross = "\u2717";
 const arrow = "\u2192";
 
-function formatValidationLines(validations: ValidationItemData[]): string[] {
+function formatValidationLines(
+  validations: WorkflowValidationItemData[],
+): string[] {
   const lines: string[] = [];
   for (const v of validations) {
     if (v.passed) {
@@ -66,13 +58,36 @@ function formatResult(passed: boolean, label: string): string {
     : `${bold(cyan(`${label}:`))} ${red("FAILED")}`;
 }
 
-export function renderWorkflowValidate(
-  data: WorkflowValidateData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
+export interface WorkflowValidateRenderer
+  extends Renderer<WorkflowValidateEvent> {
+  passed(): boolean;
+}
+
+class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
+  private _passed = true;
+
+  passed(): boolean {
+    return this._passed;
+  }
+
+  handlers(): EventHandlers<WorkflowValidateEvent> {
+    return {
+      resolving: () => {},
+      completed: (e) => {
+        if (isWorkflowValidateAllData(e.data)) {
+          this.renderAll(e.data);
+        } else {
+          this.renderSingle(e.data);
+        }
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+
+  private renderSingle(data: WorkflowValidateData): void {
+    this._passed = data.passed;
     const lines: string[] = [];
     lines.push(
       `${bold(cyan("Validating:"))} ${bold(data.workflowName)}`,
@@ -89,26 +104,9 @@ export function renderWorkflowValidate(
     lines.push(formatResult(data.passed, "Result"));
     writeOutput(lines.join("\n"));
   }
-}
 
-export function renderWorkflowValidateAll(
-  workflows: WorkflowValidateData[],
-  mode: OutputMode,
-): void {
-  const totalPassed = workflows.filter((w) => w.passed).length;
-  const totalFailed = workflows.length - totalPassed;
-  const passed = totalFailed === 0;
-
-  const data: WorkflowValidateAllData = {
-    workflows,
-    totalPassed,
-    totalFailed,
-    passed,
-  };
-
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
+  private renderAll(data: WorkflowValidateAllData): void {
+    this._passed = data.passed;
     const lines: string[] = [];
     lines.push(bold(cyan("Validating all workflows...")));
 
@@ -123,9 +121,45 @@ export function renderWorkflowValidateAll(
     lines.push(
       `${
         bold(cyan("Summary:"))
-      } ${totalPassed}/${data.workflows.length} workflows passed`,
+      } ${data.totalPassed}/${data.workflows.length} workflows passed`,
     );
-    lines.push(formatResult(passed, "Overall"));
+    lines.push(formatResult(data.passed, "Overall"));
     writeOutput(lines.join("\n"));
+  }
+}
+
+class JsonWorkflowValidateRenderer implements WorkflowValidateRenderer {
+  private _passed = true;
+
+  passed(): boolean {
+    return this._passed;
+  }
+
+  handlers(): EventHandlers<WorkflowValidateEvent> {
+    return {
+      resolving: () => {},
+      completed: (e) => {
+        if (isWorkflowValidateAllData(e.data)) {
+          this._passed = e.data.passed;
+        } else {
+          this._passed = e.data.passed;
+        }
+        console.log(JSON.stringify(e.data, null, 2));
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createWorkflowValidateRenderer(
+  mode: OutputMode,
+): WorkflowValidateRenderer {
+  switch (mode) {
+    case "json":
+      return new JsonWorkflowValidateRenderer();
+    case "log":
+      return new LogWorkflowValidateRenderer();
   }
 }

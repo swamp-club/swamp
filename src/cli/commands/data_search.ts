@@ -23,7 +23,7 @@ import {
   type DataSearchItem,
   renderDataSearch,
 } from "../../presentation/output/data_search_output.tsx";
-import type { DataGetData } from "../../libswamp/data/get.ts";
+import type { DataGetData } from "../../libswamp/mod.ts";
 import { renderDataGet } from "../../presentation/renderers/data_get.ts";
 import {
   createContext,

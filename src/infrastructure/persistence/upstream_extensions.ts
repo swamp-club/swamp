@@ -17,41 +17,32 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
+import { join } from "@std/path";
 
-/**
- * Version information for data.
- */
-export interface DataVersionInfo {
-  version: number;
-  createdAt: string;
-  size?: number;
-  checksum?: string;
-  isLatest: boolean;
+/** Entry in upstream_extensions.json. */
+export interface UpstreamExtensionEntry {
+  version: string;
+  pulledAt: string;
+  files?: string[];
 }
 
-/**
- * Data structure for the data versions output.
- */
-export interface DataVersionsData {
-  dataName: string;
-  modelId: string;
-  modelName: string;
-  modelType: string;
-  versions: DataVersionInfo[];
-  total: number;
-}
+/** Shape of upstream_extensions.json. */
+export type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
 
 /**
- * Renders the data versions output in either log or JSON mode.
+ * Reads upstream_extensions.json and returns the parsed map.
  */
-export function renderDataVersions(
-  data: DataVersionsData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    console.log(JSON.stringify(data, null, 2));
+export async function readUpstreamExtensions(
+  modelsDir: string,
+): Promise<UpstreamExtensionsMap> {
+  const jsonPath = join(modelsDir, "upstream_extensions.json");
+  try {
+    const content = await Deno.readTextFile(jsonPath);
+    return JSON.parse(content) as UpstreamExtensionsMap;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return {};
+    }
+    throw error;
   }
 }

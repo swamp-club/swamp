@@ -22,7 +22,7 @@ import {
   type ModelOutputSearchData,
   renderModelOutputSearch,
 } from "../../presentation/output/model_output_search_output.tsx";
-import type { ModelOutputGetData } from "../../libswamp/models/output_get.ts";
+import type { ModelOutputGetData } from "../../libswamp/mod.ts";
 import { renderModelOutputGet } from "../../presentation/renderers/model_output_get.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import {

@@ -19,9 +19,9 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
+import type { TypeDescribeEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createTypeDescribeRenderer } from "./type_describe.ts";
-import type { TypeDescribeEvent } from "../../libswamp/types/describe.ts";
 
 const testData = {
   type: { raw: "command/shell", normalized: "command/shell" },
