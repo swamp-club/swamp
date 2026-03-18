@@ -34,6 +34,7 @@ export interface ExtensionSearchResultItem {
   latestVersion: string;
   platforms: string[];
   labels: string[];
+  contentTypes: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -78,11 +79,12 @@ export async function renderExtensionSearch(
     const output = {
       ...data,
       extensions: data.extensions.map((ext) => {
-        const { platforms, labels, ...rest } = ext;
+        const { platforms, labels, contentTypes, ...rest } = ext;
         return {
           ...rest,
           ...(platforms.length > 0 ? { platforms } : {}),
           ...(labels.length > 0 ? { labels } : {}),
+          ...(contentTypes.length > 0 ? { contentTypes } : {}),
         };
       }),
     };
@@ -362,6 +364,14 @@ function ExtensionDetailView(
         <Box marginTop={1}>
           <Text bold>
             {`Labels: ${extension.labels.join(", ")}`}
+          </Text>
+        </Box>
+      )}
+
+      {extension.contentTypes.length > 0 && (
+        <Box marginTop={1}>
+          <Text bold>
+            {`Content Types: ${extension.contentTypes.join(", ")}`}
           </Text>
         </Box>
       )}

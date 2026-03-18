@@ -64,6 +64,11 @@ export const extensionSearchCommand = new Command()
   })
   .option("--label <label:string>", "Filter by label", { collect: true })
   .option(
+    "--content-type <contentType:string>",
+    "Filter by content type (models, workflows, vaults, datastores, drivers)",
+    { collect: true },
+  )
+  .option(
     "--sort <sort:string>",
     "Sort order: relevance, new, updated, name",
   )
@@ -80,6 +85,10 @@ export const extensionSearchCommand = new Command()
     "swamp extension search --platform aws --label networking",
   )
   .example(
+    "Filter by content type",
+    "swamp extension search --content-type models",
+  )
+  .example(
     "Sort by newest",
     "swamp extension search --sort new",
   )
@@ -94,6 +103,24 @@ export const extensionSearchCommand = new Command()
       throw new UserError(
         'Sort by "relevance" requires a search query.',
       );
+    }
+
+    // Validate content type values
+    const validContentTypes = [
+      "models",
+      "workflows",
+      "vaults",
+      "datastores",
+      "drivers",
+    ];
+    for (const ct of options.contentType ?? []) {
+      if (!validContentTypes.includes(ct)) {
+        throw new UserError(
+          `Invalid content type: "${ct}". Must be one of: ${
+            validContentTypes.join(", ")
+          }`,
+        );
+      }
     }
 
     // Validate sort option value
@@ -114,6 +141,7 @@ export const extensionSearchCommand = new Command()
       collective: options.collective,
       platform: options.platform,
       label: options.label,
+      contentType: options.contentType,
       sort: options.sort,
       perPage: options.perPage,
       page: options.page,
@@ -134,6 +162,7 @@ export const extensionSearchCommand = new Command()
           latestVersion: ext.latestVersion,
           platforms: ext.platforms,
           labels: ext.labels,
+          contentTypes: ext.contentTypes ?? [],
           createdAt: ext.createdAt,
           updatedAt: ext.updatedAt,
         })),

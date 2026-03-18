@@ -207,6 +207,31 @@ Deno.test("ExtensionApiClient.searchExtensions repeats platform and label params
   await server.shutdown();
 });
 
+Deno.test("ExtensionApiClient.searchExtensions repeats contentType params", async () => {
+  let capturedUrl = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    capturedUrl = req.url;
+    return new Response(
+      JSON.stringify({
+        extensions: [],
+        meta: { total: 0, page: 1, perPage: 20 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  await client.searchExtensions({
+    contentType: ["models", "workflows"],
+  });
+  const url = new URL(capturedUrl);
+  assertEquals(url.searchParams.getAll("contentType"), [
+    "models",
+    "workflows",
+  ]);
+  await server.shutdown();
+});
+
 Deno.test("ExtensionApiClient.searchExtensions sends no params when empty", async () => {
   let capturedUrl = "";
   const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
