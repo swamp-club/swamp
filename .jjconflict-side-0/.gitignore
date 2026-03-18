@@ -1,0 +1,30 @@
+swamp
+.envrc
+
+# Local swamp repo data
+.swamp.yaml
+/workflows/
+workflows-evaluated/
+resources/
+
+# Generated/runtime data (ignored)
+.swamp/data/
+.swamp/outputs/
+.swamp/workflow-runs/
+.swamp/inputs-evaluated/
+.swamp/definitions-evaluated/
+.swamp/workflows-evaluated/
+.swamp/logs/
+.swamp/files/
+.swamp/secrets/
+.swamp/telemetry/
+.swamp/bundles/
+.swamp/vault-bundles/
+
+test-repo/
+.vault-*/
+.claude/settings.local.json
+CLAUDE.local.md
+.envrc
+resources/deno/
+/scripts/dist
