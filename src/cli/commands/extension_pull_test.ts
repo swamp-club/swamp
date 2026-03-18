@@ -24,7 +24,7 @@ import {
   parseExtensionRef,
   updateUpstreamExtensions,
 } from "./extension_pull.ts";
-import type { UpstreamExtensionEntry } from "./extension_pull.ts";
+import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { UserError } from "../../domain/errors.ts";
 import { join } from "@std/path";
 

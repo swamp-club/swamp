@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { VaultService } from "../../domain/vaults/vault_service.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -48,6 +50,19 @@ export interface VaultListKeysDeps {
   findVaultByName: (name: string) => Promise<VaultConfig | null>;
   findAllVaults: () => Promise<VaultConfig[]>;
   listKeys: (vaultName: string) => Promise<string[]>;
+}
+
+/** Wires real infrastructure into VaultListKeysDeps. */
+export async function createVaultListKeysDeps(
+  repoDir: string,
+): Promise<VaultListKeysDeps> {
+  const repo = new YamlVaultConfigRepository(repoDir);
+  const vaultService = await VaultService.fromRepository(repoDir);
+  return {
+    findVaultByName: (name) => repo.findByName(name),
+    findAllVaults: () => repo.findAll(),
+    listKeys: (name) => vaultService.list(name),
+  };
 }
 
 /** Yields all secret key names in a vault. */

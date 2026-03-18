@@ -19,6 +19,12 @@
 
 import type { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import {
+  isPartialId,
+  matchByPartialId,
+} from "../../domain/models/model_lookup.ts";
+import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -65,6 +71,41 @@ export interface ModelOutputLogsDeps {
     definitionId: string,
     name: string,
   ) => Promise<Uint8Array | null>;
+}
+
+/** Wires real infrastructure into ModelOutputLogsDeps. */
+export function createModelOutputLogsDeps(
+  repoDir: string,
+): ModelOutputLogsDeps {
+  const outputRepo = new YamlOutputRepository(repoDir);
+  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+  return {
+    isPartialId,
+    matchOutputByPartialId: async (idPrefix: string) => {
+      const allOutputs = await outputRepo.findAllGlobal();
+      const result = matchByPartialId(
+        allOutputs.map((o) => ({ id: o.output.id, item: o })),
+        idPrefix,
+      );
+      if (result.status === "found") {
+        return {
+          status: "found" as const,
+          match: { output: result.match.output, type: result.match.type },
+        };
+      }
+      if (result.status === "ambiguous") {
+        return {
+          status: "ambiguous" as const,
+          matches: result.matches.map((m) => ({ id: m.id })),
+        };
+      }
+      return { status: "not_found" as const };
+    },
+    findDataByName: (type, definitionId, name) =>
+      dataRepo.findByName(type, definitionId, name),
+    getContent: (type, definitionId, name) =>
+      dataRepo.getContent(type, definitionId, name),
+  };
 }
 
 /** Yields log artifact content for a model output. */

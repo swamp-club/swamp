@@ -20,14 +20,10 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import type { Workflow } from "../../domain/workflows/workflow.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import {
-  DefaultWorkflowValidationService,
-} from "../../domain/workflows/validation_service.ts";
 import {
   consumeStream,
   createLibSwampContext,
+  createWorkflowValidateDeps,
   workflowValidate,
 } from "../../libswamp/mod.ts";
 import { createWorkflowValidateRenderer } from "../../presentation/renderers/workflow_validate.ts";
@@ -45,20 +41,13 @@ export const workflowValidateCommand = new Command()
       "workflow",
       "validate",
     ]);
-    const { repoContext } = await requireInitializedRepoReadOnly({
+    const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
-    const repo = repoContext.workflowRepo;
-    const validationService = new DefaultWorkflowValidationService();
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = {
-      findWorkflowById: (id: string) => repo.findById(createWorkflowId(id)),
-      findWorkflowByName: (name: string) => repo.findByName(name),
-      findAllWorkflows: () => repo.findAll(),
-      validate: (workflow: Workflow) => validationService.validate(workflow),
-    };
+    const deps = createWorkflowValidateDeps(repoDir);
 
     const renderer = createWorkflowValidateRenderer(cliCtx.outputMode);
     await consumeStream(

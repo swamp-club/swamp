@@ -20,11 +20,10 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { TelemetryService } from "../../domain/telemetry/telemetry_service.ts";
-import { JsonTelemetryRepository } from "../../infrastructure/persistence/json_telemetry_repository.ts";
 import {
   consumeStream,
   createLibSwampContext,
+  createTelemetryStatsDeps,
   telemetryStats,
 } from "../../libswamp/mod.ts";
 import { createTelemetryStatsRenderer } from "../../presentation/renderers/telemetry_stats.ts";
@@ -47,11 +46,8 @@ export const telemetryStatsCommand = new Command()
       outputMode: cliCtx.outputMode,
     });
 
-    const repository = new JsonTelemetryRepository(repoDir);
-    const service = new TelemetryService(repository, VERSION);
-
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = { getStats: (days: number) => service.getStats(days) };
+    const deps = createTelemetryStatsDeps(repoDir, VERSION);
     const renderer = createTelemetryStatsRenderer(cliCtx.outputMode);
 
     await consumeStream(

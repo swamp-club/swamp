@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Definition } from "../../domain/definitions/definition.ts";
+import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -140,6 +147,50 @@ export interface DataListDeps {
     workflowId: string,
     runId: string,
   ) => Promise<WorkflowDataEntry[]>;
+}
+
+/** Wires real infrastructure into DataListDeps. */
+export function createDataListDeps(repoDir: string): DataListDeps {
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+  const workflowRepo = new YamlWorkflowRepository(repoDir);
+  const runRepo = new YamlWorkflowRunRepository(repoDir);
+  const workflowDataService = new WorkflowDataService(
+    definitionRepo,
+    dataRepo,
+  );
+  return {
+    lookupDefinition: (idOrName) =>
+      findDefinitionByIdOrName(definitionRepo, idOrName),
+    findAllForModel: (type, definitionId) =>
+      dataRepo.findAllForModel(type, definitionId),
+    findWorkflow: async (nameOrId) => {
+      const wf = await workflowRepo.findByName(nameOrId) ??
+        await workflowRepo.findById(createWorkflowId(nameOrId));
+      return wf ? { id: wf.id, name: wf.name } : null;
+    },
+    findWorkflowRun: async (workflowId, runId) => {
+      const run = await runRepo.findById(
+        createWorkflowId(workflowId),
+        runId as ReturnType<typeof runRepo.nextId>,
+      );
+      return run ? { id: run.id, status: run.status } : null;
+    },
+    findLatestRun: async (workflowId) => {
+      const run = await runRepo.findLatestByWorkflowId(
+        createWorkflowId(workflowId),
+      );
+      return run ? { id: run.id, status: run.status } : null;
+    },
+    findAllForWorkflowRun: async (workflowId, runId) => {
+      const fullRun = await runRepo.findById(
+        createWorkflowId(workflowId),
+        runId as ReturnType<typeof runRepo.nextId>,
+      );
+      if (!fullRun) return [];
+      return workflowDataService.findAllForWorkflowRun(fullRun);
+    },
+  };
 }
 
 /** Standard type ordering for grouping. */

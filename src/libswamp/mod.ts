@@ -156,6 +156,7 @@ export {
   type DataGetInput,
 } from "./data/get.ts";
 export {
+  createDataVersionsDeps,
   type DataVersionInfo,
   dataVersions,
   type DataVersionsData,
@@ -164,6 +165,7 @@ export {
   type DataVersionsInput,
 } from "./data/versions.ts";
 export {
+  createDataListDeps,
   type DataGroupedByType,
   dataList,
   type DataListData,
@@ -174,38 +176,6 @@ export {
   type WorkflowDataListData,
   type WorkflowDataListItem,
 } from "./data/list.ts";
-
-// Extension trust operations
-export {
-  DEFAULT_TRUSTED,
-  resolveTrustedCollectives,
-  type TrustModifyData,
-  type TrustModifyEvent,
-} from "./extensions/trust.ts";
-export {
-  createTrustListDeps,
-  trustList,
-  type TrustListData,
-  type TrustListDeps,
-  type TrustListEvent,
-} from "./extensions/trust_list.ts";
-export {
-  createTrustAddDeps,
-  trustAdd,
-  type TrustAddDeps,
-} from "./extensions/trust_add.ts";
-export {
-  createTrustRmDeps,
-  trustRm,
-  type TrustRmDeps,
-} from "./extensions/trust_rm.ts";
-export {
-  createTrustAutoTrustDeps,
-  trustAutoTrust,
-  type TrustAutoTrustData,
-  type TrustAutoTrustDeps,
-  type TrustAutoTrustEvent,
-} from "./extensions/trust_auto_trust.ts";
 
 // Type operations
 export {
@@ -226,12 +196,12 @@ export {
 export {
   workflowSchema,
   type WorkflowSchemaData,
-  type WorkflowSchemaDeps,
   type WorkflowSchemaEvent,
 } from "./workflows/schema.ts";
 
 // Workflow validate operations
 export {
+  createWorkflowValidateDeps,
   isWorkflowValidateAllData,
   type ValidationItemData as WorkflowValidationItemData,
   workflowValidate,
@@ -244,6 +214,7 @@ export {
 
 // Workflow history logs operations
 export {
+  createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
   type WorkflowHistoryLogsDeps,
   type WorkflowHistoryLogsEvent,
@@ -252,6 +223,7 @@ export {
 
 // Model validate operations
 export {
+  createModelValidateDeps,
   isModelValidateAllData,
   modelValidate,
   type ModelValidateAllData,
@@ -264,6 +236,7 @@ export {
 
 // Model method history logs operations
 export {
+  createModelMethodHistoryLogsDeps,
   modelMethodHistoryLogs,
   type ModelMethodHistoryLogsDeps,
   type ModelMethodHistoryLogsEvent,
@@ -272,6 +245,7 @@ export {
 
 // Model output logs operations
 export {
+  createModelOutputLogsDeps,
   modelOutputLogs,
   type ModelOutputLogsDeps,
   type ModelOutputLogsEvent,
@@ -280,6 +254,7 @@ export {
 
 // Model output data operations
 export {
+  createModelOutputDataDeps,
   modelOutputData,
   type ModelOutputDataDeps,
   type ModelOutputDataEvent,
@@ -288,6 +263,7 @@ export {
 
 // Vault list-keys operations
 export {
+  createVaultListKeysDeps,
   vaultListKeys,
   type VaultListKeysData,
   type VaultListKeysDeps,
@@ -297,6 +273,7 @@ export {
 
 // Extension operations
 export {
+  createExtensionListDeps,
   extensionList,
   type ExtensionListData,
   type ExtensionListDeps,
@@ -306,6 +283,7 @@ export {
 
 // Telemetry operations
 export {
+  createTelemetryStatsDeps,
   telemetryStats,
   type TelemetryStatsData,
   type TelemetryStatsDeps,

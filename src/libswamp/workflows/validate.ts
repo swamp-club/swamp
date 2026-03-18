@@ -19,6 +19,11 @@
 
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowValidationResult } from "../../domain/workflows/validation_service.ts";
+import {
+  DefaultWorkflowValidationService,
+} from "../../domain/workflows/validation_service.ts";
+import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -72,6 +77,20 @@ export interface WorkflowValidateDeps {
   findWorkflowByName: (name: string) => Promise<Workflow | null>;
   findAllWorkflows: () => Promise<Workflow[]>;
   validate: (workflow: Workflow) => WorkflowValidationResult[];
+}
+
+/** Wires real infrastructure into WorkflowValidateDeps. */
+export function createWorkflowValidateDeps(
+  repoDir: string,
+): WorkflowValidateDeps {
+  const repo = new YamlWorkflowRepository(repoDir);
+  const validationService = new DefaultWorkflowValidationService();
+  return {
+    findWorkflowById: (id) => repo.findById(createWorkflowId(id)),
+    findWorkflowByName: (name) => repo.findByName(name),
+    findAllWorkflows: () => repo.findAll(),
+    validate: (workflow) => validationService.validate(workflow),
+  };
 }
 
 /** Converts raw results to presentation format. */

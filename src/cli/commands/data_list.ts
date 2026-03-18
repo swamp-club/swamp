@@ -20,12 +20,9 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
-import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
   consumeStream,
+  createDataListDeps,
   createLibSwampContext,
   dataList,
 } from "../../libswamp/mod.ts";
@@ -55,55 +52,13 @@ export const dataListCommand = new Command()
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["data", "list"]);
 
-    const { repoContext } = await requireInitializedRepoReadOnly({
+    const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
-    const definitionRepo = repoContext.definitionRepo;
-    const dataRepo = repoContext.unifiedDataRepo;
-    const workflowRepo = repoContext.workflowRepo;
-    const runRepo = repoContext.workflowRunRepo;
-
-    const workflowDataService = new WorkflowDataService(
-      definitionRepo,
-      dataRepo,
-    );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = {
-      lookupDefinition: (idOrName: string) =>
-        findDefinitionByIdOrName(definitionRepo, idOrName),
-      findAllForModel: (
-        type: ModelType,
-        definitionId: string,
-      ) => dataRepo.findAllForModel(type, definitionId),
-      findWorkflow: async (nameOrId: string) => {
-        const wf = await workflowRepo.findByName(nameOrId) ??
-          await workflowRepo.findById(createWorkflowId(nameOrId));
-        return wf ? { id: wf.id, name: wf.name } : null;
-      },
-      findWorkflowRun: async (workflowId: string, runId: string) => {
-        const run = await runRepo.findById(
-          createWorkflowId(workflowId),
-          runId as ReturnType<typeof runRepo.nextId>,
-        );
-        return run ? { id: run.id, status: run.status } : null;
-      },
-      findLatestRun: async (workflowId: string) => {
-        const run = await runRepo.findLatestByWorkflowId(
-          createWorkflowId(workflowId),
-        );
-        return run ? { id: run.id, status: run.status } : null;
-      },
-      findAllForWorkflowRun: async (workflowId: string, runId: string) => {
-        const fullRun = await runRepo.findById(
-          createWorkflowId(workflowId),
-          runId as ReturnType<typeof runRepo.nextId>,
-        );
-        if (!fullRun) return [];
-        return workflowDataService.findAllForWorkflowRun(fullRun);
-      },
-    };
+    const deps = createDataListDeps(repoDir);
 
     const renderer = createDataListRenderer(cliCtx.outputMode);
     await consumeStream(
