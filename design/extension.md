@@ -128,6 +128,30 @@ schema `instanceof` checks). Dynamic `import()` calls are not supported — all
 imports must be static top-level imports. Bundles are JavaScript files stored
 alongside their source counterparts under `bundles/`.
 
+### Vaults, Drivers, and Datastores
+
+Vault, driver, and datastore entry points are bundled with the same strategy as
+models — deno bundle with zod externalized. Each entry point gets a compiled
+`.js` file in its corresponding `-bundles/` directory (`vault-bundles/`,
+`driver-bundles/`, `datastore-bundles/`). Local imports are resolved recursively
+within the directory boundary.
+
+The export from each bundle is validated against a Zod schema:
+
+- **Vaults**: `export const vault` — must have `type`, `name`, `description`,
+  optional `configSchema`, and `createProvider`
+- **Drivers**: `export const driver` — must have `type`, `name`, `description`,
+  optional `configSchema`, and `createDriver`
+- **Datastores**: `export const datastore` — must have `type`, `name`,
+  `description`, optional `configSchema`, and `createProvider`
+
+### Collective Validation
+
+All content types — model types, vault types, workflow names, driver types,
+datastore types — must use the same collective as the extension name. This is
+enforced during push to prevent an extension from registering types under a
+different collective.
+
 ### Workflows
 
 Workflow YAML files are included with unique archive names derived from their

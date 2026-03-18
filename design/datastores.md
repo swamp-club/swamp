@@ -46,6 +46,72 @@ datastore:
 The local cache is fully disposable. Deleting it or cloning the repo on a new
 machine repopulates the cache from S3 on the next command.
 
+## Custom Backends
+
+Extensions can register custom datastore backends via `extensions/datastores/`.
+These are TypeScript files that export a `datastore` object conforming to the
+`DatastoreProvider` interface, enabling storage on any backend swamp doesn't
+ship with.
+
+### Type Registry
+
+The `DatastoreTypeRegistry` is a Map-backed singleton
+(`datastoreTypeRegistry`). Built-in types (filesystem, s3) are registered at
+startup. User-defined types are loaded from `extensions/datastores/` via
+`UserDatastoreLoader`. Types must follow the `@collective/name` or
+`collective/name` pattern (e.g., `@myorg/redis-store`). Duplicate type
+registrations are rejected with an error.
+
+### DatastoreProvider Interface
+
+A custom datastore implements five methods:
+
+- **`createLock`** — returns a `DistributedLock` for concurrency control
+- **`createVerifier`** — returns a `DatastoreVerifier` for health checks
+- **`createSyncService?`** — optional; returns a `DatastoreSyncService` for
+  remote sync (pull/push)
+- **`resolveDatastorePath`** — resolves the datastore path relative to the repo
+- **`resolveCachePath?`** — optional; resolves a local cache path (for remote
+  backends)
+
+See `src/domain/datastore/datastore_provider.ts` for the full interface.
+
+### Loading & Bundling
+
+`UserDatastoreLoader` discovers `.ts` files recursively in the datastores
+directory (excluding `_test.ts` files), bundles each via Deno with zod
+externalized, and validates the export against `UserDatastoreSchema` — a Zod
+schema requiring `type`, `name`, `description`, an optional `configSchema`, and
+a `createProvider` factory function. Files without a `datastore` export are
+silently skipped. Bundles are cached in `.swamp/datastore-bundles/` with
+mtime-based invalidation to avoid redundant compilation.
+
+### Custom Type Configuration
+
+Custom types use the same resolution priority as built-in types. In
+`.swamp.yaml`, custom types use the `type:` and `config:` fields:
+
+```yaml
+datastore:
+  type: "@myorg/redis-store"
+  config:
+    host: localhost
+    port: 6379
+```
+
+In environment variable format: `SWAMP_DATASTORE=@org/name:{"key":"val"}`. The
+config object is validated against the optional `configSchema` Zod schema
+defined by the extension.
+
+### Custom Backend Implementation Files
+
+| File | Purpose |
+|------|---------|
+| `src/domain/datastore/datastore_provider.ts` | `DatastoreProvider` interface |
+| `src/domain/datastore/datastore_type_registry.ts` | Type registry singleton |
+| `src/domain/datastore/user_datastore_loader.ts` | Loader, validator, bundler |
+| `src/domain/datastore/datastore_sync_service.ts` | `DatastoreSyncService` interface |
+
 ## Configuration
 
 ### Resolution Priority
