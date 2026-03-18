@@ -155,6 +155,25 @@ export {
   type DataGetEvent,
   type DataGetInput,
 } from "./data/get.ts";
+export {
+  type DataVersionInfo,
+  dataVersions,
+  type DataVersionsData,
+  type DataVersionsDeps,
+  type DataVersionsEvent,
+  type DataVersionsInput,
+} from "./data/versions.ts";
+export {
+  type DataGroupedByType,
+  dataList,
+  type DataListData,
+  type DataListDeps,
+  type DataListEvent,
+  type DataListInput,
+  type DataListItem,
+  type WorkflowDataListData,
+  type WorkflowDataListItem,
+} from "./data/list.ts";
 
 // Type operations
 export {
@@ -170,3 +189,94 @@ export {
   toMethodDescribeData,
   zodToJsonSchema,
 } from "./types/schema_helpers.ts";
+
+// Workflow schema operations
+export {
+  workflowSchema,
+  type WorkflowSchemaData,
+  type WorkflowSchemaDeps,
+  type WorkflowSchemaEvent,
+} from "./workflows/schema.ts";
+
+// Workflow validate operations
+export {
+  isWorkflowValidateAllData,
+  type ValidationItemData as WorkflowValidationItemData,
+  workflowValidate,
+  type WorkflowValidateAllData,
+  type WorkflowValidateData,
+  type WorkflowValidateDeps,
+  type WorkflowValidateEvent,
+  type WorkflowValidateInput,
+} from "./workflows/validate.ts";
+
+// Workflow history logs operations
+export {
+  workflowHistoryLogs,
+  type WorkflowHistoryLogsDeps,
+  type WorkflowHistoryLogsEvent,
+  type WorkflowHistoryLogsInput,
+} from "./workflows/history_logs.ts";
+
+// Model validate operations
+export {
+  isModelValidateAllData,
+  modelValidate,
+  type ModelValidateAllData,
+  type ModelValidateData,
+  type ModelValidateDeps,
+  type ModelValidateEvent,
+  type ModelValidateInput,
+  type ValidationItemData as ModelValidationItemData,
+} from "./models/validate.ts";
+
+// Model method history logs operations
+export {
+  modelMethodHistoryLogs,
+  type ModelMethodHistoryLogsDeps,
+  type ModelMethodHistoryLogsEvent,
+  type ModelMethodHistoryLogsInput,
+} from "./models/method_history_logs.ts";
+
+// Model output logs operations
+export {
+  modelOutputLogs,
+  type ModelOutputLogsDeps,
+  type ModelOutputLogsEvent,
+  type ModelOutputLogsInput,
+} from "./models/output_logs.ts";
+
+// Model output data operations
+export {
+  modelOutputData,
+  type ModelOutputDataDeps,
+  type ModelOutputDataEvent,
+  type ModelOutputDataInput,
+} from "./models/output_data.ts";
+
+// Vault list-keys operations
+export {
+  vaultListKeys,
+  type VaultListKeysData,
+  type VaultListKeysDeps,
+  type VaultListKeysEvent,
+  type VaultListKeysInput,
+} from "./vaults/list_keys.ts";
+
+// Extension operations
+export {
+  extensionList,
+  type ExtensionListData,
+  type ExtensionListDeps,
+  type ExtensionListEntry,
+  type ExtensionListEvent,
+} from "./extensions/list.ts";
+
+// Telemetry operations
+export {
+  telemetryStats,
+  type TelemetryStatsData,
+  type TelemetryStatsDeps,
+  type TelemetryStatsEvent,
+  type TelemetryStatsInput,
+} from "./telemetry/stats.ts";

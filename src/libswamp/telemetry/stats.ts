@@ -17,40 +17,41 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { TelemetryStats } from "../../domain/telemetry/telemetry_service.ts";
+import type { LibSwampContext } from "../context.ts";
+import type { SwampError } from "../errors.ts";
 
-const logger = getSwampLogger(["telemetry", "stats"]);
-
-/**
- * Data for telemetry stats output.
- */
+/** Data payload for the completed event. */
 export interface TelemetryStatsData extends TelemetryStats {}
 
-/**
- * Renders telemetry statistics.
- */
-export function renderTelemetryStats(
-  data: TelemetryStatsData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    console.log(JSON.stringify(data, null, 2));
-  }
+export type TelemetryStatsEvent =
+  | { kind: "resolving" }
+  | { kind: "completed"; data: TelemetryStatsData | null }
+  | { kind: "error"; error: SwampError };
+
+/** Dependencies for the telemetry stats operation. */
+export interface TelemetryStatsDeps {
+  getStats: (days: number) => Promise<TelemetryStats>;
 }
 
-/**
- * Renders empty telemetry message.
- */
-export function renderNoTelemetry(mode: OutputMode): void {
-  if (mode === "json") {
-    console.log(
-      JSON.stringify({ message: "No telemetry data found" }, null, 2),
-    );
-  } else {
-    logger.info("No telemetry data found.");
+export interface TelemetryStatsInput {
+  days: number;
+}
+
+/** Yields telemetry usage statistics. */
+export async function* telemetryStats(
+  _ctx: LibSwampContext,
+  deps: TelemetryStatsDeps,
+  input: TelemetryStatsInput,
+): AsyncIterable<TelemetryStatsEvent> {
+  yield { kind: "resolving" };
+
+  const stats = await deps.getStats(input.days);
+
+  if (stats.totalInvocations === 0) {
+    yield { kind: "completed", data: null };
+    return;
   }
+
+  yield { kind: "completed", data: stats };
 }
