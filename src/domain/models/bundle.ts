@@ -178,7 +178,10 @@ export async function bundleExtension(
   });
 
   try {
-    const args = ["bundle", "--no-lock"];
+    // --unstable-bundle is required for deno 2.7.x+; without it the
+    // subprocess exits non-zero with no output (silent failure).
+    // It is accepted (though not required) by deno 2.6.x as well.
+    const args = ["bundle", "--unstable-bundle", "--no-lock"];
 
     // Externalize zod by default so in-process extensions share the
     // host's zod instance (required for `instanceof` schema checks).
@@ -199,8 +202,11 @@ export async function bundleExtension(
 
     if (!output.success) {
       const stderr = new TextDecoder().decode(output.stderr);
+      const stdout = new TextDecoder().decode(output.stdout);
+      const details = (stderr + stdout).trim() ||
+        "(no output — try running deno 2.7.x or later)";
       throw new Error(
-        `deno bundle failed for ${absolutePath}: ${stderr}`,
+        `deno bundle failed for ${absolutePath}: ${details}`,
       );
     }
 
