@@ -872,6 +872,52 @@ Deno.test("extractContentMetadata extracts vault configSchema descriptions with 
   }
 });
 
+Deno.test("extractContentMetadata extracts vault configSchema from shorthand syntax", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const vaultsDir = join(tmpDir, "vaults");
+    await Deno.mkdir(vaultsDir, { recursive: true });
+
+    const vaultFile = join(vaultsDir, "shorthand.ts");
+    await Deno.writeTextFile(
+      vaultFile,
+      [
+        'import { z } from "npm:zod";',
+        "const configSchema = z.object({",
+        '  address: z.string().describe("Server address"),',
+        '  token: z.string().optional().describe("Auth token"),',
+        "});",
+        "export const vault = {",
+        '  type: "@myorg/shorthand",',
+        '  name: "Shorthand Vault",',
+        '  description: "Uses shorthand configSchema.",',
+        "  configSchema,",
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { get: async () => '', put: async () => {}, list: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [vaultFile],
+      vaultsDir,
+    );
+    assertEquals(result.vaults[0].hasConfigSchema, true);
+    assertEquals(result.vaults[0].configFields.length, 2);
+    assertEquals(result.vaults[0].configFields[0].name, "address");
+    assertEquals(result.vaults[0].configFields[0].type, "string");
+    assertEquals(result.vaults[0].configFields[0].required, true);
+    assertEquals(result.vaults[0].configFields[1].name, "token");
+    assertEquals(result.vaults[0].configFields[1].required, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("extractContentMetadata skips vault file without vault export", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -1014,6 +1060,54 @@ Deno.test("extractContentMetadata extracts driver configSchema fields", async ()
     assertEquals(result.drivers[0].configFields[0].type, "string");
     assertEquals(result.drivers[0].configFields[0].required, true);
     assertEquals(result.drivers[0].configFields[1].name, "region");
+    assertEquals(result.drivers[0].configFields[1].required, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts driver configSchema from shorthand syntax", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const driversDir = join(tmpDir, "drivers");
+    await Deno.mkdir(driversDir, { recursive: true });
+
+    const driverFile = join(driversDir, "shorthand.ts");
+    await Deno.writeTextFile(
+      driverFile,
+      [
+        'import { z } from "npm:zod";',
+        "const configSchema = z.object({",
+        '  endpoint: z.string().describe("API endpoint"),',
+        '  timeout: z.number().optional().describe("Timeout in ms"),',
+        "});",
+        "export const driver = {",
+        '  type: "@myorg/shorthand-driver",',
+        '  name: "Shorthand Driver",',
+        '  description: "Uses shorthand configSchema.",',
+        "  configSchema,",
+        "  createDriver(name: string, config: Record<string, unknown>) {",
+        "    return { read: async () => new Uint8Array(), write: async () => {}, getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [driverFile],
+      driversDir,
+    );
+    assertEquals(result.drivers[0].hasConfigSchema, true);
+    assertEquals(result.drivers[0].configFields.length, 2);
+    assertEquals(result.drivers[0].configFields[0].name, "endpoint");
+    assertEquals(result.drivers[0].configFields[0].type, "string");
+    assertEquals(result.drivers[0].configFields[0].required, true);
+    assertEquals(result.drivers[0].configFields[1].name, "timeout");
     assertEquals(result.drivers[0].configFields[1].required, false);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
@@ -1173,6 +1267,56 @@ Deno.test("extractContentMetadata extracts datastore configSchema fields", async
     assertEquals(result.datastores[0].configFields[0].type, "string");
     assertEquals(result.datastores[0].configFields[0].required, true);
     assertEquals(result.datastores[0].configFields[1].name, "port");
+    assertEquals(result.datastores[0].configFields[1].required, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata extracts datastore configSchema from shorthand syntax", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const datastoresDir = join(tmpDir, "datastores");
+    await Deno.mkdir(datastoresDir, { recursive: true });
+
+    const datastoreFile = join(datastoresDir, "shorthand.ts");
+    await Deno.writeTextFile(
+      datastoreFile,
+      [
+        'import { z } from "npm:zod";',
+        "const configSchema = z.object({",
+        '  connectionString: z.string().describe("Connection string"),',
+        '  poolSize: z.number().optional().describe("Connection pool size"),',
+        "});",
+        "export const datastore = {",
+        '  type: "@myorg/shorthand-store",',
+        '  name: "Shorthand Store",',
+        '  description: "Uses shorthand configSchema.",',
+        "  configSchema,",
+        "  createProvider(name: string, config: Record<string, unknown>) {",
+        "    return { query: async () => [], getName: () => name };",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata(
+      [],
+      tmpDir,
+      [],
+      [],
+      "",
+      [],
+      "",
+      [datastoreFile],
+      datastoresDir,
+    );
+    assertEquals(result.datastores[0].hasConfigSchema, true);
+    assertEquals(result.datastores[0].configFields.length, 2);
+    assertEquals(result.datastores[0].configFields[0].name, "connectionString");
+    assertEquals(result.datastores[0].configFields[0].type, "string");
+    assertEquals(result.datastores[0].configFields[0].required, true);
+    assertEquals(result.datastores[0].configFields[1].name, "poolSize");
     assertEquals(result.datastores[0].configFields[1].required, false);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
