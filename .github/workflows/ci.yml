@@ -32,7 +32,10 @@ jobs:
         run: deno fmt --check
 
       - name: Run deno test
-        run: deno test --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys
+        run: deno test --unstable-bundle --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys
+
+      - name: Compile binary
+        run: deno run compile
 
   deps-audit:
     name: Dependency Audit
@@ -109,16 +112,18 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            First, read CLAUDE.md to understand the project's code style and requirements.
+            First, read CLAUDE.md to understand the project's code style, conventions, and requirements.
             Then use the `ddd` skill to review code for domain-driven design principles.
 
             Review this PR for:
-            1. Code quality and adherence to the project's TypeScript strict mode requirements
-            2. Compliance with the code style guidelines in CLAUDE.md (named exports, no any types, etc.)
-            3. Domain-driven design principles (use the ddd skill)
-            4. Test coverage (unit tests should live next to source files)
-            5. Security vulnerabilities and best practices
-            6. Any potential bugs or edge cases
+            1. Adherence to all conventions and requirements defined in CLAUDE.md
+            2. Domain-driven design principles (use the ddd skill)
+            3. Test coverage (unit tests should live next to source files)
+            4. Security vulnerabilities and best practices
+            5. Any potential bugs or edge cases
+
+            Pay special attention to the libswamp import boundary: CLI commands and presentation
+            renderers must import from src/libswamp/mod.ts — never from internal module paths.
 
             IMPORTANT: Categorize your findings into two types:
             - **Blocking Issues**: Problems that MUST be fixed before merge (bugs, security issues, type errors, missing tests for new code, violations of CLAUDE.md requirements)
@@ -139,7 +144,7 @@ jobs:
             Your review body should clearly list any blocking issues at the top, followed by suggestions.
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
-            --model claude-opus-4-5-20251101
+            --model claude-opus-4-6
             --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
 
   claude-adversarial-review:
@@ -229,7 +234,7 @@ jobs:
             - Every finding must include: the file and line, what's wrong, a concrete example of how it breaks,
               and a suggested fix.
             - Do NOT flag style issues, naming preferences, or documentation gaps. Those are not your job.
-            - Do NOT repeat findings from the standard Claude Code Review. Focus on what a normal review misses.
+            - Focus on what a normal review would miss — logic errors, edge cases, and failure modes.
             - If the code is genuinely solid, say so. Do not invent problems to justify your existence.
 
             ## Severity Classification
@@ -270,7 +275,7 @@ jobs:
             [PASS / FAIL with one-line summary]
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
-            --model claude-opus-4-5-20251101
+            --model claude-opus-4-6
             --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
 
   auto-merge:

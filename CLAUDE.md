@@ -1,79 +1,6 @@
-<!-- BEGIN swamp managed section - DO NOT EDIT -->
-
-# Project
-
-This repository is managed with [swamp](https://github.com/systeminit/swamp).
-
-## Rules
-
-1. **Search before you build.** When automating AWS, APIs, or any external
-   service: (a) search local types with `swamp model type search <query>`, (b)
-   search community extensions with `swamp extension search <query>`, (c) if a
-   community extension exists, install it with `swamp extension pull <package>`
-   instead of building from scratch, (d) only create a custom extension model in
-   `extensions/models/` if nothing exists. Use the `swamp-extension-model` skill
-   for guidance. The `command/shell` model is ONLY for ad-hoc one-off shell
-   commands, NEVER for wrapping CLI tools or building integrations.
-2. **Extend, don't be clever.** Don't work around a missing capability with
-   shell scripts or multi-step hacks. Add a method to the extension model. One
-   method, one purpose.
-3. **Use the data model.** Once data exists in a model (via `lookup`, `start`,
-   `sync`, etc.), reference it with CEL expressions. Don't re-fetch data that's
-   already available.
-4. **CEL expressions everywhere.** Wire models together with CEL expressions.
-   Always prefer `data.latest("<name>", "<dataName>").attributes.<field>` over
-   the deprecated `model.<name>.resource.<spec>.<instance>.attributes.<field>`
-   pattern.
-5. **Verify before destructive operations.** Always
-   `swamp model get <name> --json` and verify resource IDs before running
-   delete/stop/destroy methods.
-
-## Skills
-
-**IMPORTANT:** Always load swamp skills, even when in plan mode. The skills
-provide essential context for working with this repository.
-
-- `swamp-model` - Work with swamp models (creating, editing, validating)
-- `swamp-workflow` - Work with workflows (creating, editing, running)
-- `swamp-vault` - Manage secrets and credentials
-- `swamp-data` - Manage model data lifecycle
-- `swamp-repo` - Repository management
-- `swamp-extension-model` - Create custom TypeScript models
-- `swamp-extension-driver` - Create custom execution drivers
-- `swamp-extension-datastore` - Create custom datastore backends
-- `swamp-extension-vault` - Create custom vault providers
-- `swamp-issue` - Submit bug reports and feature requests
-- `swamp-troubleshooting` - Debug and diagnose swamp issues
-
-## Getting Started
-
-Always start by using the `swamp-model` skill to work with swamp models.
-
-## Commands
-
-Use `swamp --help` to see available commands.
-
-<!-- END swamp managed section -->
-
 # Project: swamp
 
 Deno based CLI for doing AI Native Automation.
-
-## Building Automation with Swamp
-
-When users ask you to build automation for specific services (AWS, APIs, etc.):
-
-1. **Always create extension models** in `extensions/models/` - do NOT use
-   `command/shell` to wrap CLI commands
-2. Search for existing model types first: `swamp model type search <query>`
-3. Search community extensions: `swamp extension search <query>` — if a matching
-   extension exists, install it instead of building from scratch
-4. If no type exists locally or in the community, create a dedicated extension
-   model for that service
-5. Use the `swamp-extension-model` skill for guidance on creating models
-
-The `command/shell` model is only for ad-hoc shell commands, NOT for building
-service integrations.
 
 ## Planning
 
@@ -96,6 +23,12 @@ When creating or updating `swamp-*` skills in `.claude/skills/`, follow the
 - All `.ts` and `.tsx` files must include the AGPLv3 copyright header from
   `FILE-LICENSE-TEMPLATE.md` at the top of the file (as `//` comments). Run
   `deno run license-headers` to add headers to any new files.
+
+Changes should only touch what's necessary — don't refactor adjacent code that
+isn't part of the task. Keep the blast radius small.
+
+Post-edit hooks in `.claude/hooks/` automatically enforce license headers,
+`deno fmt`, `deno lint`, and `deno check` on each changed file.
 
 ## Commands
 
@@ -124,13 +57,11 @@ Use `deno run` to get a complete list of custom tasks.
 
 ## Verification
 
-After completing work, run these checks:
-
-1. `deno check` - Type checking
-2. `deno lint` - Linting
-3. `deno fmt` - Formatting
-4. `deno run test` - Tests
-5. `deno run compile` - Recompile the binary
+Post-edit hooks in `.claude/hooks/` automatically enforce license headers,
+`deno fmt`, `deno lint`, and `deno check` on each changed file. A Stop hook in
+`.claude/hooks/stop-verify.sh` runs project-wide `deno check`, `deno lint`, and
+`deno run test` before completion — blocking until all pass. After completing
+all work, run `deno run compile` to recompile the binary.
 
 ## Architecture
 
@@ -141,22 +72,46 @@ After completing work, run these checks:
 - Uses LogTape for logging and non-interactive output (`"log"` mode)
 - Uses JSON for structured output (`"json"` mode via `--json`)
 - Every command _must_ support both `"log"` and `"json"` output modes
-- CLI commands and presentation renderers must import libswamp types and
-  functions from `src/libswamp/mod.ts` — never from internal module paths like
-  `src/libswamp/data/get.ts`. Only libswamp-internal code (other generators,
-  tests in `src/libswamp/`) may import from internal paths.
 - You can read the files in `design/*.md` to understand elements of the design
+
+IMPORTANT: CLI commands and presentation renderers must import libswamp types
+and functions from `src/libswamp/mod.ts` — never from internal module paths like
+`src/libswamp/data/get.ts`. Only libswamp-internal code (other generators, tests
+in `src/libswamp/`) may import from internal paths.
 
 ## Testing
 
 - Unit tests live next to source files: `foo.ts` → `foo_test.ts`
 - Integration tests live in `integration/` directory (sibling to `src/`)
 - Use `@std/assert` for assertions (`assertEquals`, `assertStringIncludes`,
-  etc.)
+  `assertThrows`, etc.)
 - Use `ink-testing-library` for testing Ink components
 - Test private functions indirectly through public APIs
-- Run all tests with `deno task test`
-- Run a single test file: `deno task test src/cli/repo_context_test.ts` (do not
+- Name tests as `Deno.test("functionName: describes behavior", ...)` — see
+  `src/domain/data/composite_name_test.ts` for a canonical example
+- Run all tests with `deno run test`
+- Run a single test file: `deno run test src/cli/repo_context_test.ts` (do not
   use `--` before the file path)
 - Refactorings that change shared constants, paths, or cross-component contracts
   must include integration tests to verify components still work together
+
+IMPORTANT: CLI command tests require logging initialization and model barrel
+imports before they can run. See `src/cli/commands/data_get_test.ts` for the
+pattern (`await initializeLogging({})` and
+`import "../../domain/models/models.ts"`).
+
+## Output Conventions
+
+- When asked to produce a plan, design, or analysis, persist it to
+  `plans/<descriptive-name>.md` — the file is the source of truth.
+- When asked for a plan or design only, produce only that artifact. Do not write
+  production code or make implementation changes unless explicitly asked.
+- When exploring a codebase, produce a first draft of output within 3-4 tool
+  calls. Refine iteratively rather than front-loading all exploration.
+
+## Session Learnings
+
+If you hit a non-obvious problem during a session — something that wasted time,
+caused a wrong approach, or revealed a convention not documented here — propose
+an update to CLAUDE.md or the relevant skill before finishing. Only capture
+things that would trip up future sessions, not one-off issues.
