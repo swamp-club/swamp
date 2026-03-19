@@ -26,6 +26,40 @@ JavaScript file at startup — no install step required.
 The bundler resolves and inlines all dependencies except `zod`, which is shared
 with swamp to preserve schema `instanceof` checks.
 
+### Import styles
+
+There are two ways to declare dependencies:
+
+**Inline imports** (no `deno.json` required):
+
+```typescript
+import { z } from "npm:zod@4.3.6";
+import { countBy } from "npm:lodash-es@4.17.21";
+```
+
+**Import map** (requires `deno.json` alongside `manifest.yaml`):
+
+```jsonc
+// deno.json
+{
+  "imports": {
+    "zod": "npm:zod@4.3.6",
+    "lodash-es": "npm:lodash-es@4.17.21"
+  }
+}
+```
+
+```typescript
+import { z } from "zod";
+import { countBy } from "lodash-es";
+```
+
+The import map approach is preferred for extensions that want to use standard
+Deno tooling (testing, linting, formatting) with their own project
+configuration. Both styles produce identical bundles.
+
+### Example
+
 ```typescript
 // extensions/models/text_analyzer.ts
 import { z } from "npm:zod@4";

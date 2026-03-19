@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { basename, dirname, join, relative } from "@std/path";
+import { basename, dirname, join, relative, resolve } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
@@ -73,6 +73,40 @@ async function promptConfirmation(message: string): Promise<boolean> {
   return response === "y" || response === "yes";
 }
 
+/**
+ * Walks up from `startDir` looking for a `deno.json` file, stopping at
+ * `boundaryDir` (inclusive). Returns the absolute path if found, or
+ * undefined if no `deno.json` exists between `startDir` and the boundary.
+ */
+async function findDenoConfig(
+  startDir: string,
+  boundaryDir: string,
+): Promise<string | undefined> {
+  let current = resolve(startDir);
+  const boundary = resolve(boundaryDir);
+
+  while (true) {
+    const candidate = join(current, "deno.json");
+    try {
+      await Deno.stat(candidate);
+      return candidate;
+    } catch {
+      // Not found at this level
+    }
+
+    // Stop if we've reached the boundary
+    if (current === boundary) break;
+
+    // Walk up
+    const parent = dirname(current);
+    // Safety: stop if we can't go higher (filesystem root)
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return undefined;
+}
+
 export const extensionPushCommand = new Command()
   .name("push")
   .description("Push an extension to the swamp registry")
@@ -119,6 +153,15 @@ export const extensionPushCommand = new Command()
       workflowFiles,
       additionalFilePaths,
     } = resolved;
+
+    // 2b. Detect deno.json for project-aware bundling and quality checks.
+    // Walk up from the manifest directory to the repo root.
+    const absoluteManifestPath = resolve(repoDir, manifestPath);
+    const manifestDir = dirname(absoluteManifestPath);
+    const denoConfigPath = await findDenoConfig(manifestDir, resolve(repoDir));
+    if (denoConfigPath) {
+      ctx.logger.debug`Found deno.json at ${denoConfigPath}`;
+    }
 
     // 3. Load auth credentials (skip in dry-run — no registry interaction needed)
     let credentials:
@@ -334,7 +377,11 @@ export const extensionPushCommand = new Command()
     const denoPath = await denoRuntime.ensureDeno();
 
     // 11c. Quality checks (formatting + lint)
-    const qualityResult = await checkExtensionQuality(allFiles, denoPath);
+    const qualityResult = await checkExtensionQuality(
+      allFiles,
+      denoPath,
+      denoConfigPath,
+    );
     if (!qualityResult.passed) {
       renderExtensionPushQualityErrors(qualityResult.issues, ctx.outputMode);
       throw new UserError(
@@ -346,12 +393,14 @@ export const extensionPushCommand = new Command()
     const bundles = new Map<string, string>(); // relative path (no ext) -> JS
     const compilationErrors: CompilationError[] = [];
 
+    const bundleOptions = denoConfigPath ? { denoConfigPath } : undefined;
+
     for (const entryPoint of modelEntryPoints) {
       // Use relative path from modelsDir to avoid collisions with nested
       // paths (e.g. aws/ec2/instance.ts and aws/ecs/instance.ts).
       const entryName = relative(modelsDir, entryPoint).replace(/\.ts$/, "");
       try {
-        const js = await bundleExtension(entryPoint, denoPath);
+        const js = await bundleExtension(entryPoint, denoPath, bundleOptions);
         bundles.set(entryName, js);
         ctx.logger.debug`Bundled ${entryName} (${js.length} bytes)`;
       } catch (error) {
@@ -365,7 +414,7 @@ export const extensionPushCommand = new Command()
     for (const entryPoint of vaultEntryPoints) {
       const entryName = relative(vaultsDir, entryPoint).replace(/\.ts$/, "");
       try {
-        const js = await bundleExtension(entryPoint, denoPath);
+        const js = await bundleExtension(entryPoint, denoPath, bundleOptions);
         vaultBundles.set(entryName, js);
         ctx.logger.debug`Bundled vault ${entryName} (${js.length} bytes)`;
       } catch (error) {
@@ -379,7 +428,7 @@ export const extensionPushCommand = new Command()
     for (const entryPoint of driverEntryPoints) {
       const entryName = relative(driversDir, entryPoint).replace(/\.ts$/, "");
       try {
-        const js = await bundleExtension(entryPoint, denoPath);
+        const js = await bundleExtension(entryPoint, denoPath, bundleOptions);
         driverBundles.set(entryName, js);
         ctx.logger.debug`Bundled driver ${entryName} (${js.length} bytes)`;
       } catch (error) {
@@ -396,7 +445,7 @@ export const extensionPushCommand = new Command()
         "",
       );
       try {
-        const js = await bundleExtension(entryPoint, denoPath);
+        const js = await bundleExtension(entryPoint, denoPath, bundleOptions);
         datastoreBundles.set(entryName, js);
         ctx.logger
           .debug`Bundled datastore ${entryName} (${js.length} bytes)`;

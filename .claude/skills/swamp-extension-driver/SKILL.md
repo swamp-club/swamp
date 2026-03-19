@@ -227,8 +227,8 @@ swamp model method run my-instance run --json
    alphanumeric, hyphens, underscores)
 5. **Static imports only**: All npm imports must be static top-level imports —
    dynamic `import()` is not supported
-6. **Pin npm versions**: Always pin versions (e.g., `npm:pkg@1.2.3`) except
-   `npm:zod@4`
+6. **Pin npm versions**: Always pin versions — either inline (`npm:pkg@1.2.3`)
+   or via a `deno.json` import map
 7. **Output types**: Drivers return `"pending"` outputs (data to be persisted by
    swamp) or `"persisted"` outputs (already written by in-process drivers)
 

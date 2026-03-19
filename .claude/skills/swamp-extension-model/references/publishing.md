@@ -138,12 +138,18 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 2. **Validate collective** — confirms manifest name matches your username
 3. **Resolve files** — collects model entry points, auto-resolves local imports,
    resolves workflow dependencies
-4. **Safety analysis** — scans all files for disallowed patterns and limits
-5. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
-   datastores) to standalone JS
-6. **Version check** — verifies version doesn't already exist (offers to bump)
-7. **Build archive** — creates tar.gz with all content types and their bundles
-8. **Upload** — three-phase push: initiate, upload archive, confirm
+4. **Detect project config** — walks up from manifest directory to repo root
+   looking for `deno.json`. If found, it is used for bundling and quality
+   checks.
+5. **Safety analysis** — scans all files for disallowed patterns and limits
+6. **Quality checks** — runs `deno fmt --check` and `deno lint` (using the
+   project's `deno.json` config if present, otherwise default rules)
+7. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
+   datastores) to standalone JS. If a `deno.json` is present, the import map
+   governs dependency resolution.
+8. **Version check** — verifies version doesn't already exist (offers to bump)
+9. **Build archive** — creates tar.gz with all content types and their bundles
+10. **Upload** — three-phase push: initiate, upload archive, confirm
 
 ## Extension Formatting
 

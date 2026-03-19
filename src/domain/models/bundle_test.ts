@@ -26,6 +26,7 @@ import {
   installZodGlobal,
   rewriteZodImports,
   sanitizeDataUrlError,
+  sourceHasBareSpecifiers,
   uint8ArrayToBase64,
 } from "./bundle.ts";
 
@@ -242,6 +243,24 @@ Deno.test("rewriteZodImports rewrites multiple zod imports", () => {
   assertEquals(result, expected);
 });
 
+Deno.test("rewriteZodImports rewrites bare zod specifier", () => {
+  const input = `import { z } from "zod";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, `const { z } = globalThis.__swamp_zod;`);
+});
+
+Deno.test("rewriteZodImports rewrites bare zod star import", () => {
+  const input = `import * as zod from "zod";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, `const zod = globalThis.__swamp_zod;`);
+});
+
+Deno.test("rewriteZodImports rewrites bare aliased zod specifier", () => {
+  const input = `import { z as z2 } from "zod";`;
+  const result = rewriteZodImports(input);
+  assertEquals(result, `const { z: z2 } = globalThis.__swamp_zod;`);
+});
+
 Deno.test("rewriteZodImports leaves non-zod imports untouched", () => {
   const input = `import { parse } from "npm:yaml@2";`;
   const result = rewriteZodImports(input);
@@ -323,6 +342,93 @@ Deno.test("sanitizeDataUrlError truncates base64 data URLs", () => {
 Deno.test("sanitizeDataUrlError leaves short errors untouched", () => {
   const error = "Error: something went wrong";
   assertEquals(sanitizeDataUrlError(error), error);
+});
+
+Deno.test("bundleExtension uses deno.json config when denoConfigPath provided", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
+  const tsPath = join(dir, "test_ext.ts");
+  const denoJsonPath = join(dir, "deno.json");
+
+  // Write a minimal deno.json with an import map for zod
+  await Deno.writeTextFile(
+    denoJsonPath,
+    JSON.stringify({
+      imports: {
+        "zod": "npm:zod@4",
+      },
+    }),
+  );
+
+  // Use bare "zod" specifier (resolved via import map, not npm: prefix)
+  await Deno.writeTextFile(
+    tsPath,
+    'import { z } from "zod";\n\nexport const schema = z.object({ name: z.string() });\n',
+  );
+
+  try {
+    const js = await bundleExtension(tsPath, DENO_PATH, {
+      denoConfigPath: denoJsonPath,
+    });
+    assertEquals(js.length > 0, true);
+
+    // Should be importable and working
+    const mod = await importBundled(js);
+    assertEquals(mod.schema instanceof z.ZodType, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- sourceHasBareSpecifiers unit tests ---
+
+Deno.test("sourceHasBareSpecifiers returns true for bare zod import", () => {
+  assertEquals(sourceHasBareSpecifiers('import { z } from "zod";'), true);
+});
+
+Deno.test("sourceHasBareSpecifiers returns true for bare scoped import", () => {
+  assertEquals(
+    sourceHasBareSpecifiers(
+      'import { Client } from "@aws-sdk/client-secrets-manager";',
+    ),
+    true,
+  );
+});
+
+Deno.test("sourceHasBareSpecifiers returns false for npm: prefixed import", () => {
+  assertEquals(
+    sourceHasBareSpecifiers('import { z } from "npm:zod@4";'),
+    false,
+  );
+});
+
+Deno.test("sourceHasBareSpecifiers returns false for relative import", () => {
+  assertEquals(
+    sourceHasBareSpecifiers('import { helper } from "./helpers.ts";'),
+    false,
+  );
+});
+
+Deno.test("sourceHasBareSpecifiers returns false for jsr: import", () => {
+  assertEquals(
+    sourceHasBareSpecifiers('import { assert } from "jsr:@std/assert";'),
+    false,
+  );
+});
+
+Deno.test("sourceHasBareSpecifiers returns false for node: import", () => {
+  assertEquals(
+    sourceHasBareSpecifiers('import { readFile } from "node:fs";'),
+    false,
+  );
+});
+
+Deno.test("sourceHasBareSpecifiers returns false when only relative and npm imports", () => {
+  const source = `
+import { z } from "npm:zod@4";
+import { helper } from "./helpers.ts";
+export { foo } from "../shared.ts";
+`;
+  assertEquals(sourceHasBareSpecifiers(source), false);
 });
 
 Deno.test("uint8ArrayToBase64 handles large input without stack overflow", () => {

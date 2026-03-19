@@ -214,17 +214,21 @@ function skipTemplateBody(
 /**
  * Checks extension TypeScript files for formatting and lint issues.
  *
- * Runs `deno fmt --check --no-config` and `deno lint --no-config` on all
- * `.ts` files. Both checks run even if the first fails, so all issues
- * are reported in a single pass.
+ * Runs `deno fmt --check` and `deno lint` on all `.ts` files. When a
+ * `denoConfigPath` is provided, uses `--config <path>` so the project's
+ * own lint/fmt rules apply; otherwise uses `--no-config` for default rules.
+ * Both checks run even if the first fails, so all issues are reported in
+ * a single pass.
  *
  * @param files - All extension files (non-.ts files are filtered out)
  * @param denoPath - Path to the deno binary
+ * @param denoConfigPath - Optional absolute path to a deno.json project config
  * @returns Quality check result with pass/fail and any issues
  */
 export async function checkExtensionQuality(
   files: string[],
   denoPath: string,
+  denoConfigPath?: string,
 ): Promise<QualityCheckResult> {
   const tsFiles = files.filter((f) => f.endsWith(".ts"));
   if (tsFiles.length === 0) {
@@ -255,7 +259,9 @@ export async function checkExtensionQuality(
 
   // Check formatting
   const fmtCommand = new Deno.Command(denoPath, {
-    args: ["fmt", "--check", "--no-config", ...tsFiles],
+    args: denoConfigPath
+      ? ["fmt", "--check", "--config", denoConfigPath, ...tsFiles]
+      : ["fmt", "--check", "--no-config", ...tsFiles],
     stdout: "piped",
     stderr: "piped",
   });
@@ -269,7 +275,9 @@ export async function checkExtensionQuality(
 
   // Check linting
   const lintCommand = new Deno.Command(denoPath, {
-    args: ["lint", "--no-config", ...tsFiles],
+    args: denoConfigPath
+      ? ["lint", "--config", denoConfigPath, ...tsFiles]
+      : ["lint", "--no-config", ...tsFiles],
     stdout: "piped",
     stderr: "piped",
   });

@@ -26,6 +26,7 @@ import {
   installZodGlobal,
   rewriteZodImports,
   sanitizeDataUrlError,
+  sourceHasBareSpecifiers,
   uint8ArrayToBase64,
 } from "./bundle.ts";
 import { resolveLocalImports } from "./local_import_resolver.ts";
@@ -449,6 +450,19 @@ export class UserModelLoader {
         if (bundleExists) {
           logger
             .debug`Using cached bundle for ${relativePath} (freshness check failed — missing dependency)`;
+          return await Deno.readTextFile(bundlePath);
+        }
+      }
+
+      // If the source uses bare specifiers (e.g., from "zod" instead of
+      // from "npm:zod@4") and a cached bundle exists, use it — re-bundling
+      // would fail without a deno.json import map to resolve the specifiers.
+      // This handles pulled extensions that were built with a deno.json project.
+      if (bundleExists) {
+        const source = await Deno.readTextFile(absolutePath);
+        if (sourceHasBareSpecifiers(source)) {
+          logger
+            .debug`Using cached bundle for ${relativePath} (source has bare specifiers)`;
           return await Deno.readTextFile(bundlePath);
         }
       }

@@ -436,17 +436,15 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    `export const extension = { ... }` for extending existing types
 2. **Import**: `import { z } from "npm:zod@4";` is always required. Any
    Deno-compatible import (`npm:`, `jsr:`, `https://`) can also be used — swamp
-   bundles all dependencies automatically (see
-   [references/examples.md](references/examples.md#using-external-dependencies))
-3. **Static imports only**: All npm imports must be static top-level imports
-   (e.g., `import { x } from "npm:pkg@1"`). Dynamic `import()` calls are not
-   supported — the bundler cannot correctly handle CJS/ESM interop for
-   dynamically imported packages. The quality checker rejects dynamic imports
+   bundles all dependencies automatically. Extensions with a `deno.json` import
+   map can use bare specifiers instead (e.g., `from "zod"`). See
+   [references/examples.md](references/examples.md#using-external-dependencies)
+3. **Static imports only**: All imports must be static top-level imports.
+   Dynamic `import()` calls are not supported — the quality checker rejects them
    during `extension push`.
-4. **Pin npm versions**: Always pin explicit versions for npm imports (e.g.,
-   `npm:lodash-es@4.17.21`, not `npm:lodash-es`). Swamp does not use a lockfile
-   during bundling, so unpinned versions may resolve differently across runs.
-   `npm:zod@4` is the one exception — it is externalized and provided by swamp.
+4. **Pin npm versions**: Always pin versions — either inline
+   (`npm:lodash-es@4.17.21`) or via a `deno.json` import map. See
+   [references/examples.md](references/examples.md#import-styles) for details.
 5. **Type naming**: Use `@<collective>/<name>` or `<collective>/<name>` format
    (e.g., `@user/my-model` or `myorg/my-model`)
 6. **No type annotations**: Avoid TypeScript types in execute parameters

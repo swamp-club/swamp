@@ -107,10 +107,13 @@ export function sanitizeDataUrlError(error: unknown): string {
 }
 
 export function rewriteZodImports(js: string): string {
-  // Match: import { ... } from "npm:zod..." or 'npm:zod...'
-  // Captures the named import clause and handles aliased imports
+  // Match: import { ... } from "npm:zod...", "zod", or 'zod'
+  // Handles both npm: prefixed specifiers (existing extensions) and
+  // bare "zod" specifiers (when externalized via deno.json import map).
+  // Only matches zod 4.x or unversioned — zod 3.x must NOT be rewritten
+  // since globalThis.__swamp_zod provides zod 4.
   const namedImportPattern =
-    /import\s*\{([^}]+)\}\s*from\s*["']npm:zod(?:@[^"']*)?["']\s*;?/g;
+    /import\s*\{([^}]+)\}\s*from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
   js = js.replace(namedImportPattern, (_match, imports: string) => {
     // Convert `z as z2` to `z: z2` for destructuring syntax
     const destructured = imports
@@ -127,9 +130,10 @@ export function rewriteZodImports(js: string): string {
     return `const { ${destructured} } = globalThis.__swamp_zod;`;
   });
 
-  // Match: import * as <name> from "npm:zod..."
+  // Match: import * as <name> from "npm:zod..." or "zod"
+  // Only matches zod 4.x or unversioned.
   const starImportPattern =
-    /import\s*\*\s*as\s+(\w+)\s+from\s*["']npm:zod(?:@[^"']*)?["']\s*;?/g;
+    /import\s*\*\s*as\s+(\w+)\s+from\s*["'](?:npm:)?zod(?:@4[^"']*)?["']\s*;?/g;
   js = js.replace(starImportPattern, (_match, name: string) => {
     return `const ${name} = globalThis.__swamp_zod;`;
   });
@@ -145,6 +149,67 @@ export interface BundleOptions {
    * Used for out-of-process execution (e.g., Docker containers).
    */
   selfContained?: boolean;
+
+  /**
+   * Absolute path to a deno.json project config. When provided, the bundler
+   * uses `--config <path>` instead of `--no-lock`, so the project's import
+   * map and lockfile govern dependency resolution.
+   */
+  denoConfigPath?: string;
+}
+
+/**
+ * Checks whether a TypeScript source file contains bare specifier imports
+ * (e.g., `from "zod"`, `from "@aws-sdk/..."`) that require a deno.json
+ * import map to resolve. Returns true if any non-relative, non-npm: import
+ * is found.
+ *
+ * Used by runtime loaders to determine whether a cached bundle should be
+ * preferred over re-bundling when no deno.json is available.
+ */
+export function sourceHasBareSpecifiers(source: string): boolean {
+  // Match import/export from statements with non-relative, non-npm: specifiers
+  const importPattern = /(?:import|export)\s+[\s\S]*?from\s+["']([^"']+)["']/g;
+  for (const match of source.matchAll(importPattern)) {
+    const specifier = match[1];
+    // Skip relative imports (./foo, ../bar)
+    if (specifier.startsWith(".")) continue;
+    // Skip npm: prefixed imports (these resolve without an import map)
+    if (specifier.startsWith("npm:")) continue;
+    // Skip jsr: prefixed imports
+    if (specifier.startsWith("jsr:")) continue;
+    // Skip node: built-ins
+    if (specifier.startsWith("node:")) continue;
+    // Anything else is a bare specifier that needs an import map
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Reads a deno.json import map and determines how "zod" is mapped.
+ * If it maps to a zod 4.x npm specifier, returns the resolved specifier
+ * (e.g., "npm:zod@4.3.6") so it can be externalized alongside the
+ * standard patterns. Returns undefined if there's no zod mapping or
+ * if it maps to a non-4.x version (which should be inlined, not
+ * externalized, since globalThis.__swamp_zod provides zod 4).
+ */
+async function resolveZodFromConfig(
+  denoConfigPath: string,
+): Promise<string | undefined> {
+  try {
+    const raw = await Deno.readTextFile(denoConfigPath);
+    const config = JSON.parse(raw);
+    const imports = config.imports as Record<string, string> | undefined;
+    if (!imports || !imports["zod"]) return undefined;
+
+    const target = imports["zod"];
+    // Match npm:zod@4 or npm:zod@4.x.y — must start with major version 4
+    if (/^npm:zod@4(?:\.|$)/.test(target)) return target;
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -179,13 +244,38 @@ export async function bundleExtension(
   });
 
   try {
-    const args = ["bundle", "--no-lock"];
+    const args = options?.denoConfigPath
+      ? ["bundle", "--config", options.denoConfigPath]
+      : ["bundle", "--no-lock"];
 
     // Externalize zod by default so in-process extensions share the
     // host's zod instance (required for `instanceof` schema checks).
     // Self-contained bundles inline everything for out-of-process use.
     if (!options?.selfContained) {
       args.push("--external", "npm:zod@4", "--external", "npm:zod");
+
+      // Scan the source file for the exact zod specifier (e.g., npm:zod@4.3.6)
+      // and externalize it too. The --external npm:zod@4 pattern only matches
+      // exact "npm:zod@4", not fully-pinned versions like "npm:zod@4.3.6".
+      const source = await Deno.readTextFile(absolutePath);
+      const zodSpecMatch = source.match(
+        /from\s*["'](npm:zod@4\.[^"']+)["']/,
+      );
+      if (zodSpecMatch) {
+        args.push("--external", zodSpecMatch[1]);
+      }
+
+      // When using a deno.json import map, bare specifier "zod" is resolved
+      // to the fully-qualified npm specifier (e.g., "npm:zod@4.3.6") before
+      // esbuild sees it. Also externalize the resolved specifier and the
+      // bare "zod" specifier. Only do this for zod 4.x — externalizing
+      // zod 3.x would silently break since globalThis.__swamp_zod provides zod 4.
+      if (options?.denoConfigPath) {
+        const resolvedZod = await resolveZodFromConfig(options.denoConfigPath);
+        if (resolvedZod) {
+          args.push("--external", resolvedZod, "--external", "zod");
+        }
+      }
     }
 
     args.push("--platform", "deno", "-o", tempFile, absolutePath);

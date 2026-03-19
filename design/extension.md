@@ -119,14 +119,50 @@ if `connection.ts` imports `./helpers.ts`, both files are included.
 
 ### Bundles
 
-Each model entry point is compiled using `deno bundle` with only `zod`
-externalized (`--external npm:zod@4 --external npm:zod`). All other npm
-packages are inlined into the bundle, which ensures they work in the compiled
-binary where only swamp's own embedded dependency graph is available. Zod is
-externalized so extensions share the same zod instance as swamp (required for
-schema `instanceof` checks). Dynamic `import()` calls are not supported — all
-imports must be static top-level imports. Bundles are JavaScript files stored
-alongside their source counterparts under `bundles/`.
+Each model entry point is compiled using `deno bundle` with zod externalized.
+All other npm packages are inlined into the bundle, which ensures they work in
+the compiled binary where only swamp's own embedded dependency graph is
+available. Zod is externalized so extensions share the same zod instance as
+swamp (required for schema `instanceof` checks). Dynamic `import()` calls are
+not supported — all imports must be static top-level imports. Bundles are
+JavaScript files stored alongside their source counterparts under `bundles/`.
+
+#### Project-aware bundling
+
+Extensions can optionally include a `deno.json` file with an import map. When
+`swamp extension push` is run, it walks up from the manifest directory to the
+repo root looking for `deno.json`. If found:
+
+- **Bundling** uses `--config <deno.json>` instead of `--no-lock`, so the
+  project's import map and lockfile govern dependency resolution.
+- **Quality checks** (`deno fmt`, `deno lint`) use `--config <deno.json>`
+  instead of `--no-config`, so the project's lint/fmt rules apply.
+
+This allows extensions to use bare specifiers (e.g., `import { z } from "zod"`)
+resolved via the import map, instead of inline `npm:` prefixed imports. Both
+styles are supported — extensions without a `deno.json` continue to work with
+the existing `npm:` prefix pattern.
+
+#### Zod externalization
+
+Zod is externalized using `--external` flags that match the specifier as
+written in source. The bundler handles:
+
+- `npm:zod@4` and `npm:zod` (base patterns, always applied)
+- Fully-pinned versions like `npm:zod@4.3.6` (detected by scanning the source)
+- Bare `"zod"` specifier (when a `deno.json` import map maps it to zod 4.x)
+
+After bundling, `rewriteZodImports` rewrites any externalized zod import to
+`globalThis.__swamp_zod`, which is set at runtime by `installZodGlobal()`.
+
+#### Runtime bundle caching
+
+At runtime, loaders check `.swamp/bundles/` (or the corresponding `-bundles/`
+directory) for cached bundles. If the source file contains bare specifiers that
+require an import map to resolve, and a cached bundle exists, the loader uses
+the cached bundle rather than attempting a re-bundle that would fail without the
+import map. This supports pulled extensions that were built with a `deno.json`
+project — the archive includes pre-built bundles but not the `deno.json`.
 
 ### Vaults, Drivers, and Datastores
 
