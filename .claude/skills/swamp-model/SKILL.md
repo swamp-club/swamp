@@ -477,13 +477,17 @@ swamp model output data d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
 ## Workflow Example
 
 1. **Search** for the right type: `swamp model type search "shell" --json`
-2. **Describe** to understand the schema:
+2. **Search community** if no local type:
+   `swamp extension search <query> --json` — if a matching extension exists,
+   install it with `swamp extension pull <package>` instead of building from
+   scratch
+3. **Describe** to understand the schema:
    `swamp model type describe command/shell --json`
-3. **Create** an input file: `swamp model create command/shell my-shell --json`
-4. **Edit** the YAML file to set `methods.execute.arguments.run`
-5. **Validate** the model: `swamp model validate my-shell --json`
-6. **Run** the method: `swamp model method run my-shell execute --json`
-7. **View** the output: `swamp model output get my-shell --json`
+4. **Create** an input file: `swamp model create command/shell my-shell --json`
+5. **Edit** the YAML file to set `methods.execute.arguments.run`
+6. **Validate** the model: `swamp model validate my-shell --json`
+7. **Run** the method: `swamp model method run my-shell execute --json`
+8. **View** the output: `swamp model output get my-shell --json`
 
 ## Data Ownership
 

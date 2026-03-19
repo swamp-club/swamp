@@ -8,6 +8,7 @@ End-to-end scenarios showing how to build custom extension models.
 - [Scenario 2: Cloud Resource CRUD](#scenario-2-cloud-resource-crud)
 - [Scenario 3: Factory Model for Discovery](#scenario-3-factory-model-for-discovery)
 - [Scenario 4: Extending Built-in Models](#scenario-4-extending-built-in-models)
+- [Scenario 5: Community Extension Found](#scenario-5-community-extension-found)
 
 ---
 
@@ -765,3 +766,65 @@ swamp model method run my-script dryRun --json
 | Only add new methods         | No overriding existing methods             |
 | Use `export const extension` | Distinguishes from new model definitions   |
 | Methods array format         | Allows multiple methods per extension file |
+
+---
+
+## Scenario 5: Community Extension Found
+
+### User Request
+
+> "I need to manage DigitalOcean droplets."
+
+### What You'll Build
+
+Nothing — a community extension already exists.
+
+### Decision Tree
+
+```
+swamp model type search DigitalOcean → no local results
+swamp extension search DigitalOcean → found @swamp/digitalocean
+Community extension exists → Install and use it
+swamp extension pull @swamp/digitalocean → installs the extension
+```
+
+### Step-by-Step
+
+**1. Search local types**
+
+```bash
+swamp model type search DigitalOcean --json
+# No results
+```
+
+**2. Search community extensions**
+
+```bash
+swamp extension search DigitalOcean --json
+# Found: @swamp/digitalocean
+```
+
+**3. Install the community extension**
+
+```bash
+swamp extension pull @swamp/digitalocean
+```
+
+**4. Use the installed model type**
+
+```bash
+swamp model type search DigitalOcean --json
+# Now shows @swamp/digitalocean types
+
+swamp model type describe @swamp/digitalocean-droplet --json
+# Review available methods and schema
+
+swamp model create @swamp/digitalocean-droplet my-droplet --json
+```
+
+### Expected Agent Behavior
+
+- The agent does NOT offer to create a custom extension model
+- The agent installs the community extension and uses it directly
+- The agent only creates a custom model if the community extension is missing or
+  does not cover the needed functionality

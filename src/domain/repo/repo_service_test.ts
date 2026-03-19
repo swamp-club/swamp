@@ -423,6 +423,22 @@ Deno.test("RepoService.init generates CLAUDE.md with skills section", async () =
   });
 });
 
+Deno.test("RepoService.init generates CLAUDE.md with extension search guidance", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const content = await Deno.readTextFile(claudeMdPath);
+
+    assertStringIncludes(content, "extension search");
+    assertStringIncludes(content, "Search before you build");
+    assertStringIncludes(content, "swamp model type search");
+  });
+});
+
 Deno.test("RepoService.init always creates .gitignore with managed section", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
