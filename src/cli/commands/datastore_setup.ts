@@ -43,6 +43,7 @@ import {
   getSwampDataDir,
   SWAMP_DATA_DIR,
 } from "../../infrastructure/persistence/paths.ts";
+import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { S3CacheSyncService } from "../../infrastructure/persistence/s3_cache_sync.ts";
 import { S3Client } from "../../infrastructure/persistence/s3_client.ts";
 import { S3DatastoreVerifier } from "../../infrastructure/persistence/s3_datastore_verifier.ts";
@@ -203,7 +204,7 @@ const datastoreSetupFilesystemCommand = new Command()
     if (marker) {
       marker.datastore = {
         type: "filesystem",
-        path: datastorePath,
+        path: collapseEnvVars(datastorePath),
         directories: options.directories ?? [...DEFAULT_DATASTORE_SUBDIRS],
       };
       await markerRepo.write(repoPath, marker);

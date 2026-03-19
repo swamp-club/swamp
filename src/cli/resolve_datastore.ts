@@ -33,6 +33,7 @@ import { join } from "@std/path";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
+import { expandEnvVars } from "../infrastructure/persistence/env_path.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { UserError } from "../domain/errors.ts";
 
@@ -73,7 +74,7 @@ export function parseDatastoreEnvVar(
   const value = envValue.slice(colonIdx + 1);
 
   if (type === "filesystem") {
-    return { type: "filesystem", path: value };
+    return { type: "filesystem", path: expandEnvVars(value) };
   }
 
   if (type === "s3") {
@@ -205,7 +206,7 @@ export function resolveDatastoreConfig(
       }
       return {
         type: "filesystem",
-        path: ds.path,
+        path: expandEnvVars(ds.path),
         directories: ds.directories,
         exclude: ds.exclude,
       };
