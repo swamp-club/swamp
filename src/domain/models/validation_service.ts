@@ -27,6 +27,7 @@ import {
   extractExpressions,
   stripExpressionFields,
 } from "../expressions/expression_parser.ts";
+import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
 import {
   extractEnvReferences,
   extractPathReferences,
@@ -118,6 +119,57 @@ function findMalformedExpressionsRecursive(
 }
 
 /**
+ * Value object representing a validation warning.
+ *
+ * Warnings do not cause validation to fail — they surface information
+ * that may affect runtime behavior (e.g., env var usage).
+ *
+ * Immutable with equality based on value.
+ */
+export class ValidationWarning {
+  private constructor(
+    readonly name: string,
+    readonly message: string,
+    readonly details?: EnvVarUsageDetail[],
+  ) {}
+
+  /**
+   * Creates a warning about environment variable usage in a model definition.
+   */
+  static envVarUsage(
+    envVars: EnvVarUsageDetail[],
+  ): ValidationWarning {
+    const message =
+      "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.";
+    return new ValidationWarning(
+      "Environment variables detected",
+      message,
+      envVars,
+    );
+  }
+
+  /**
+   * Value equality comparison.
+   */
+  equals(other: ValidationWarning): boolean {
+    return (
+      this.name === other.name &&
+      this.message === other.message
+    );
+  }
+}
+
+/**
+ * Describes where an env var is referenced in a model definition.
+ */
+export interface EnvVarUsageDetail {
+  /** The definition path where the env var is used (e.g., "globalArguments.shell") */
+  path: string;
+  /** The env var name (e.g., "JENKINS_BASE_URL") */
+  envVar: string;
+}
+
+/**
  * Value object representing the result of a single validation.
  *
  * Immutable with equality based on value (name + passed + error).
@@ -184,6 +236,14 @@ export interface CheckValidationContext {
 }
 
 /**
+ * Return type for model validation: results (pass/fail) plus warnings.
+ */
+export interface ModelValidationOutcome {
+  results: ValidationResult[];
+  warnings: ValidationWarning[];
+}
+
+/**
  * Domain service interface for model validation.
  */
 export interface ModelValidationService {
@@ -196,14 +256,14 @@ export interface ModelValidationService {
    * @param modelDef - The model definition containing schemas
    * @param definitionRepo - Optional definition repository for resolving model references in expressions
    * @param checkContext - Optional context for running pre-flight checks
-   * @returns Array of validation results
+   * @returns Validation results and warnings
    */
   validateModel(
     definition: Definition,
     modelDef: ModelDefinition,
     definitionRepo?: DefinitionRepository,
     checkContext?: CheckValidationContext,
-  ): Promise<ValidationResult[]>;
+  ): Promise<ModelValidationOutcome>;
 }
 
 /**
@@ -229,7 +289,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     modelDef: ModelDefinition,
     definitionRepo?: DefinitionRepository,
     checkContext?: CheckValidationContext,
-  ): Promise<ValidationResult[]> {
+  ): Promise<ModelValidationOutcome> {
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
       this.validateGlobalArguments(definition, modelDef),
@@ -260,7 +320,21 @@ export class DefaultModelValidationService implements ModelValidationService {
       results.push(...checkResults);
     }
 
-    return results;
+    // Detect env var usage and generate warnings
+    const warnings = this.detectEnvVarUsage(definition);
+
+    return { results, warnings };
+  }
+
+  /**
+   * Scans a definition for env var references and returns warnings if found.
+   */
+  private detectEnvVarUsage(definition: Definition): ValidationWarning[] {
+    const usages = detectEnvVarUsageInDefinition(definition);
+    if (usages.length === 0) {
+      return [];
+    }
+    return [ValidationWarning.envVarUsage(usages)];
   }
 
   private async runCheckValidations(

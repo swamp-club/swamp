@@ -71,6 +71,7 @@ export {
 
 // Model operations
 export {
+  type EnvVarUsage,
   methodExecutionFailed,
   modelMethodRun,
   type ModelMethodRunDeps,
@@ -264,6 +265,7 @@ export {
   type ModelValidateEvent,
   type ModelValidateInput,
   type ValidationItemData as ModelValidationItemData,
+  type ValidationWarningData as ModelValidationWarningData,
 } from "./models/validate.ts";
 
 // Model method history logs operations

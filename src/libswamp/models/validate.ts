@@ -24,6 +24,7 @@ import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.t
 import {
   type CheckValidationContext,
   DefaultModelValidationService,
+  type EnvVarUsageDetail,
 } from "../../domain/models/validation_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -38,12 +39,20 @@ export interface ValidationItemData {
   error?: string;
 }
 
+/** A warning surfaced during validation (does not cause failure). */
+export interface ValidationWarningData {
+  name: string;
+  message: string;
+  envVars?: EnvVarUsageDetail[];
+}
+
 /** Validation result for a single model. */
 export interface ModelValidateData {
   modelId: string;
   modelName: string;
   type: string;
   validations: ValidationItemData[];
+  warnings: ValidationWarningData[];
   passed: boolean;
 }
 
@@ -52,6 +61,7 @@ export interface ModelValidateAllData {
   models: ModelValidateData[];
   totalPassed: number;
   totalFailed: number;
+  totalWarnings: number;
   passed: boolean;
 }
 
@@ -71,6 +81,13 @@ interface ValidationResult {
   error?: string;
 }
 
+/** Raw warning from the domain service. */
+interface ValidationWarningResult {
+  name: string;
+  message: string;
+  envVars?: EnvVarUsageDetail[];
+}
+
 /** Dependencies for the model validate operation. */
 export interface ModelValidateDeps {
   lookupDefinition: (
@@ -86,7 +103,10 @@ export interface ModelValidateDeps {
     definition: Definition,
     modelDef: unknown,
     type: ModelType,
-  ) => Promise<ValidationResult[]>;
+  ) => Promise<{
+    results: ValidationResult[];
+    warnings: ValidationWarningResult[];
+  }>;
 }
 
 /** Wires real infrastructure into ModelValidateDeps. */
@@ -111,14 +131,23 @@ export function createModelValidateDeps(
       findDefinitionByIdOrName(definitionRepo, idOrName),
     findAllDefinitions: () => definitionRepo.findAllGlobal(),
     resolveModelType: (type) => resolveModelType(type, getAutoResolver()),
-    validateModel: (definition, modelDef, _type) =>
-      validationService.validateModel(
+    validateModel: async (definition, modelDef, _type) => {
+      const outcome = await validationService.validateModel(
         definition,
         // deno-lint-ignore no-explicit-any
         modelDef as any,
         definitionRepo,
         checkContext,
-      ),
+      );
+      return {
+        results: outcome.results,
+        warnings: outcome.warnings.map((w) => ({
+          name: w.name,
+          message: w.message,
+          envVars: w.details,
+        })),
+      };
+    },
   };
 }
 
@@ -130,6 +159,17 @@ function toValidationItemData(
     name: r.name,
     passed: r.passed,
     error: r.error,
+  }));
+}
+
+/** Converts raw validation warnings to the presentation format. */
+function toValidationWarningData(
+  warnings: ValidationWarningResult[],
+): ValidationWarningData[] {
+  return warnings.map((w) => ({
+    name: w.name,
+    message: w.message,
+    envVars: w.envVars,
   }));
 }
 
@@ -161,26 +201,32 @@ async function* validateAll(
       continue;
     }
 
-    const validationResults = await deps.validateModel(
+    const outcome = await deps.validateModel(
       definition,
       modelDef,
       type,
     );
 
-    const validations = toValidationItemData(validationResults);
-    const allPassed = validationResults.every((r) => r.passed);
+    const validations = toValidationItemData(outcome.results);
+    const warnings = toValidationWarningData(outcome.warnings);
+    const allPassed = outcome.results.every((r) => r.passed);
 
     results.push({
       modelId: definition.id,
       modelName: definition.name,
       type: type.normalized,
       validations,
+      warnings,
       passed: allPassed,
     });
   }
 
   const totalPassed = results.filter((m) => m.passed).length;
   const totalFailed = results.length - totalPassed;
+  const totalWarnings = results.reduce(
+    (sum, m) => sum + m.warnings.length,
+    0,
+  );
 
   yield {
     kind: "completed",
@@ -188,6 +234,7 @@ async function* validateAll(
       models: results,
       totalPassed,
       totalFailed,
+      totalWarnings,
       passed: totalFailed === 0,
     },
   };
@@ -214,9 +261,10 @@ async function* validateSingle(
     return;
   }
 
-  const results = await deps.validateModel(definition, modelDef, modelType);
-  const validations = toValidationItemData(results);
-  const allPassed = results.every((r) => r.passed);
+  const outcome = await deps.validateModel(definition, modelDef, modelType);
+  const validations = toValidationItemData(outcome.results);
+  const warnings = toValidationWarningData(outcome.warnings);
+  const allPassed = outcome.results.every((r) => r.passed);
 
   yield {
     kind: "completed",
@@ -225,6 +273,7 @@ async function* validateSingle(
       modelName: definition.name,
       type: modelType.normalized,
       validations,
+      warnings,
       passed: allPassed,
     },
   };

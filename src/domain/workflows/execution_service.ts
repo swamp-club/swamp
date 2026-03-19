@@ -223,7 +223,7 @@ export class DefaultStepExecutor implements StepExecutor {
     );
 
     // Fail fast if validation fails
-    const failures = validationResults.filter((r) => !r.passed);
+    const failures = validationResults.results.filter((r) => !r.passed);
     if (failures.length > 0) {
       const errors = failures.map((f) => `  ${f.name}: ${f.error}`).join("\n");
       throw new Error(

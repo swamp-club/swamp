@@ -152,7 +152,7 @@ Deno.test("validateModel with valid definition returns 3 passing results", async
     methods: { write: { arguments: { message: "hello" } } },
   });
 
-  const results = await service.validateModel(definition, testExprModel);
+  const { results } = await service.validateModel(definition, testExprModel);
 
   assertEquals(results.length, 4);
   assertEquals(results[0].name, "Definition schema");
@@ -173,7 +173,7 @@ Deno.test("validateModel with invalid method arguments returns failing result", 
     methods: { write: { arguments: { wrongAttribute: "hello" } } }, // Missing required 'message'
   });
 
-  const results = await service.validateModel(definition, testExprModel);
+  const { results } = await service.validateModel(definition, testExprModel);
 
   assertEquals(results.length, 4);
   assertEquals(results[0].name, "Definition schema");
@@ -191,7 +191,7 @@ Deno.test("validateModel with empty message passes when schema allows it", async
     methods: { write: { arguments: { message: "" } } }, // Empty message is allowed by z.string()
   });
 
-  const results = await service.validateModel(definition, testExprModel);
+  const { results } = await service.validateModel(definition, testExprModel);
 
   assertEquals(results.length, 4);
   assertEquals(results[0].passed, true);
@@ -216,9 +216,9 @@ Deno.test("validateModel runs validations in parallel", async () => {
 
   const allResults = await Promise.all(promises);
 
-  for (const results of allResults) {
-    assertEquals(results.length, 4);
-    assertEquals(results.every((r) => r.passed), true);
+  for (const outcome of allResults) {
+    assertEquals(outcome.results.length, 4);
+    assertEquals(outcome.results.every((r) => r.passed), true);
   }
 });
 
@@ -246,7 +246,7 @@ Deno.test("validateModel with expression paths passes for valid path", async () 
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -278,7 +278,7 @@ Deno.test("validateModel with expression paths fails for invalid attribute", asy
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -303,7 +303,7 @@ Deno.test("validateModel with expression paths fails for non-existent model", as
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -326,7 +326,7 @@ Deno.test("validateModel with expression paths validates self references", async
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -347,7 +347,7 @@ Deno.test("validateModel with expression paths fails for invalid self attribute"
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -369,7 +369,7 @@ Deno.test("validateModel with expression paths fails for invalid self segment", 
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -403,7 +403,7 @@ Deno.test("validateModel with expression paths provides typo suggestion", async 
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -424,7 +424,7 @@ Deno.test("validateModel without definitionRepo skips expression validation", as
   });
 
   // No definitionRepo provided - expression validation should be skipped
-  const results = await service.validateModel(definition, testExprModel);
+  const { results } = await service.validateModel(definition, testExprModel);
 
   // Should only have definition schema, global arguments, method arguments, and check selection
   assertEquals(results.length, 4);
@@ -442,7 +442,7 @@ Deno.test("validateModel with no expressions passes validation", async () => {
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -468,7 +468,7 @@ Deno.test("validateModel detects malformed expression with missing $ prefix", as
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -494,7 +494,7 @@ Deno.test("validateModel detects malformed expression with single braces", async
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -522,7 +522,7 @@ Deno.test("validateModel detects malformed expression in nested attributes", asy
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -547,7 +547,7 @@ Deno.test("validateModel detects incomplete model reference like my-vpc.VpcId", 
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -573,7 +573,7 @@ Deno.test("validateModel detects simple identifier expression", async () => {
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -609,7 +609,7 @@ Deno.test("validateModel with resource path passes for valid DataRecord field", 
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -644,7 +644,7 @@ Deno.test("validateModel fails for missing .attributes segment", async () => {
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -680,7 +680,7 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -714,7 +714,7 @@ Deno.test("validateModel with resource path passes for nested attributes in Data
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -746,7 +746,7 @@ Deno.test("validateModel with resource path passes for scalar DataRecord field",
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -778,7 +778,7 @@ Deno.test("validateModel fails for invalid field in resource DataRecord access",
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -815,7 +815,7 @@ Deno.test("validateModel validates multiple model references in same expression"
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -845,7 +845,7 @@ Deno.test("validateModel fails when one of multiple model references is invalid"
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -880,7 +880,7 @@ Deno.test("validateModel validates mixed model and self references", async () =>
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -906,7 +906,7 @@ Deno.test("validateModel passes for CEL literal expressions", async () => {
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -929,7 +929,7 @@ Deno.test("validateModel passes for CEL numeric expressions", async () => {
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -954,7 +954,7 @@ Deno.test("validateModel passes for file.contents expression", async () => {
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -977,7 +977,7 @@ Deno.test("validateModel passes for data.latest expression", async () => {
     { name: "test-definition", type: "test/expr-validation", definition },
   ]);
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     mockRepo,
@@ -1055,7 +1055,7 @@ Deno.test("validateModel with no checks returns existing validations only", asyn
     globalArguments: { message: "hello" },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
     undefined,
@@ -1110,7 +1110,7 @@ Deno.test("validateModel with passing check adds pass result", async () => {
     },
   };
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     model,
     undefined,
@@ -1139,7 +1139,7 @@ Deno.test("validateModel with failing check adds fail result", async () => {
     },
   };
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     model,
     undefined,
@@ -1159,7 +1159,7 @@ Deno.test("validateModel check label filtering", async () => {
     globalArguments: { message: "hello" },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
     undefined,
@@ -1181,7 +1181,7 @@ Deno.test("validateModel check method filtering", async () => {
   });
 
   // always-fail has appliesTo: ["create"], so filtering by "delete" should skip it
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
     undefined,
@@ -1203,7 +1203,7 @@ Deno.test("validateModel no checkContext provided skips checks", async () => {
   });
 
   // No checkContext — checks should not run
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
   );
@@ -1221,7 +1221,7 @@ Deno.test("validateModel check selection passes when no selection set", async ()
     globalArguments: { message: "hello" },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
   );
@@ -1238,7 +1238,7 @@ Deno.test("validateModel check selection passes for valid require list", async (
     checks: { require: ["always-pass"] },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
   );
@@ -1255,7 +1255,7 @@ Deno.test("validateModel check selection fails for nonexistent required check", 
     checks: { require: ["nonexistent-check"] },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
   );
@@ -1274,7 +1274,7 @@ Deno.test("validateModel check selection fails for nonexistent skipped check", a
     checks: { skip: ["nonexistent-check"] },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
   );
@@ -1293,7 +1293,7 @@ Deno.test("validateModel check selection warns on require+skip overlap", async (
     checks: { require: ["always-pass"], skip: ["always-pass"] },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
   );
@@ -1311,7 +1311,7 @@ Deno.test("validateModel check selection passes for valid skip list", async () =
     checks: { skip: ["always-fail"] },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
   );
@@ -1328,7 +1328,7 @@ Deno.test("validateModel definition-level skip excludes check from validate run"
     checks: { skip: ["always-fail"] },
   });
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
     undefined,
@@ -1352,7 +1352,7 @@ Deno.test("validateModel check selection on model without checks", async () => {
   });
 
   // testExprModel has no checks defined
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testExprModel,
   );
@@ -1370,7 +1370,7 @@ Deno.test("validateModel skips checks with appliesTo when no method specified", 
   });
 
   // always-fail has appliesTo: ["create"], so without --method it should be skipped
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     testModelWithChecks,
     undefined,
@@ -1402,7 +1402,7 @@ Deno.test("validateModel handles check returning invalid result", async () => {
     },
   };
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     model,
     undefined,
@@ -1432,7 +1432,7 @@ Deno.test("validateModel warns when appliesTo references nonexistent method", as
     },
   };
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     model,
   );
@@ -1461,7 +1461,7 @@ Deno.test("validateModel warns when appliesTo is empty array", async () => {
     },
   };
 
-  const results = await service.validateModel(
+  const { results } = await service.validateModel(
     definition,
     model,
   );

@@ -42,6 +42,7 @@ import {
   InputValidationService,
 } from "../../domain/inputs/mod.ts";
 import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
+import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detector.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
@@ -49,6 +50,12 @@ import { getRunLogger } from "../../infrastructure/logging/logger.ts";
 /**
  * Events emitted by the libswamp model method run generator.
  */
+/** Describes a single env var usage in a definition. */
+export interface EnvVarUsage {
+  path: string;
+  envVar: string;
+}
+
 export type ModelMethodRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "resolving_model"; modelIdOrName: string }
@@ -57,6 +64,12 @@ export type ModelMethodRunEvent =
     modelName: string;
     modelType: string;
     methodName: string;
+  }
+  | {
+    kind: "env_var_warning";
+    modelName: string;
+    envVars: EnvVarUsage[];
+    message: string;
   }
   | { kind: "evaluating_expressions"; lastEvaluated: boolean }
   | { kind: "executing"; modelName: string; methodName: string }
@@ -221,6 +234,18 @@ export async function* modelMethodRun(
     modelType: modelType.normalized,
     methodName: input.methodName,
   };
+
+  // --- Check for env var usage and warn ---
+  const envVarUsages = detectEnvVarUsageInDefinition(definition);
+  if (envVarUsages.length > 0) {
+    yield {
+      kind: "env_var_warning",
+      modelName: definition.name,
+      envVars: envVarUsages,
+      message:
+        "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+    };
+  }
 
   // --- Set up logging ---
   const runLog = await deps.createRunLog(

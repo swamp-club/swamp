@@ -54,6 +54,19 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
           { name: e.modelName, type: e.modelType },
         );
       },
+      env_var_warning: (e) => {
+        const logger = getRunLogger(e.modelName, this.methodName);
+        logger.warn(
+          "Environment variables detected in model definition",
+        );
+        for (const detail of e.envVars) {
+          logger.warn("  {path} uses {envVar}", {
+            path: detail.path,
+            envVar: detail.envVar,
+          });
+        }
+        logger.warn("{message}", { message: e.message });
+      },
       evaluating_expressions: (e) => {
         const logger = getRunLogger(this.modelName, this.methodName);
         if (e.lastEvaluated) {
@@ -138,6 +151,18 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       validating_inputs: () => {},
       resolving_model: () => {},
       model_resolved: () => {},
+      env_var_warning: (e) => {
+        console.log(JSON.stringify(
+          {
+            warning: "env_var_usage",
+            modelName: e.modelName,
+            envVars: e.envVars,
+            message: e.message,
+          },
+          null,
+          2,
+        ));
+      },
       evaluating_expressions: () => {},
       executing: () => {},
       method_output: () => {},

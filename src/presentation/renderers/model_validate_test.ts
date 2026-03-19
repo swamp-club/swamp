@@ -48,6 +48,7 @@ Deno.test("JsonModelValidateRenderer - single model outputs JSON", async () => {
             modelName: "my-model",
             type: "aws/ec2",
             validations: [{ name: "schema", passed: true }],
+            warnings: [],
             passed: true,
           },
         },
@@ -82,6 +83,7 @@ Deno.test("ModelValidateRenderer - tracks failed state", async () => {
             validations: [
               { name: "schema", passed: false, error: "invalid" },
             ],
+            warnings: [],
             passed: false,
           },
         },

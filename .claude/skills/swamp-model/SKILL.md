@@ -285,9 +285,18 @@ swamp model validate my-shell --method create --json # Validate for a specific m
   "modelName": "my-shell",
   "type": "command/shell",
   "validations": [
-    { "name": "Definition schema validation", "passed": true },
-    { "name": "Method arguments validation", "passed": true },
-    { "name": "Expression syntax valid", "passed": true }
+    { "name": "Definition schema", "passed": true },
+    { "name": "Global arguments", "passed": true },
+    { "name": "Expression paths", "passed": true }
+  ],
+  "warnings": [
+    {
+      "name": "Environment variables detected",
+      "message": "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+      "envVars": [
+        { "path": "globalArguments.baseUrl", "envVar": "JENKINS_BASE_URL" }
+      ]
+    }
   ],
   "passed": true
 }
@@ -298,13 +307,29 @@ swamp model validate my-shell --method create --json # Validate for a specific m
 ```json
 {
   "models": [
-    { "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "modelName": "my-shell", "validations": [...], "passed": true }
+    { "modelId": "...", "modelName": "my-shell", "validations": [...], "warnings": [...], "passed": true }
   ],
   "totalPassed": 5,
   "totalFailed": 1,
+  "totalWarnings": 1,
   "passed": false
 }
 ```
+
+### IMPORTANT: Handling Validation Warnings
+
+**When `warnings` is non-empty, STOP and ask the user before proceeding.** The
+most common warning is "Environment variables detected" — this means the model's
+behavior depends on env vars that may differ between machines or environments.
+
+- If `warnings` contains env var usage, **tell the user** which fields use which
+  env vars and ask if this is intentional.
+- **Suggest alternatives:** separate models per environment (e.g.,
+  `prod-jenkins` and `dev-jenkins` with hardcoded values), or `vault.get()` for
+  sensitive values.
+- **Never silently run a method** on a model with env var warnings without user
+  confirmation — the data artifacts will be stored under the model name and may
+  contain results from an unintended environment.
 
 ## Expression Language
 
@@ -355,6 +380,12 @@ swamp model method run my-deploy create --skip-check-label live --json
 Pre-flight checks run automatically before mutating methods (`create`, `update`,
 `delete`, `action`). Read-only methods (`sync`, `get`, etc.) do not trigger
 checks.
+
+**Environment variable warnings** are emitted before execution if the model
+definition uses `${{ env.* }}` expressions. When you see these warnings in the
+output, **pause and confirm with the user** that the current environment
+variables are correct for the intended target. See
+[Handling Validation Warnings](#important-handling-validation-warnings) above.
 
 **Options:**
 
@@ -489,8 +520,11 @@ swamp model output data d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
 4. **Create** an input file: `swamp model create command/shell my-shell --json`
 5. **Edit** the YAML file to set `methods.execute.arguments.run`
 6. **Validate** the model: `swamp model validate my-shell --json`
-7. **Run** the method: `swamp model method run my-shell execute --json`
-8. **View** the output: `swamp model output get my-shell --json`
+7. **Check warnings** — if the validation output has non-empty `warnings`, stop
+   and ask the user before proceeding (see
+   [Handling Validation Warnings](#important-handling-validation-warnings))
+8. **Run** the method: `swamp model method run my-shell execute --json`
+9. **View** the output: `swamp model output get my-shell --json`
 
 ## Data Ownership
 

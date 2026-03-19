@@ -45,10 +45,13 @@ function makeDeps(
       Promise.resolve([{ definition, type: modelType }]),
     resolveModelType: () => Promise.resolve({}),
     validateModel: () =>
-      Promise.resolve([
-        { name: "schema", passed: true },
-        { name: "refs", passed: true },
-      ]),
+      Promise.resolve({
+        results: [
+          { name: "schema", passed: true },
+          { name: "refs", passed: true },
+        ],
+        warnings: [],
+      }),
     ...overrides,
   };
 }
@@ -76,9 +79,12 @@ Deno.test("modelValidate single model yields completed with passed=true", async 
 Deno.test("modelValidate single model yields completed with passed=false", async () => {
   const deps = makeDeps({
     validateModel: () =>
-      Promise.resolve([
-        { name: "schema", passed: false, error: "invalid field" },
-      ]),
+      Promise.resolve({
+        results: [
+          { name: "schema", passed: false, error: "invalid field" },
+        ],
+        warnings: [],
+      }),
   });
   const events = await collect<ModelValidateEvent>(
     modelValidate(createLibSwampContext(), deps, {
@@ -130,4 +136,38 @@ Deno.test("modelValidate all yields error when no models exist", async () => {
   );
 
   assertEquals(events[1].kind, "error");
+});
+
+Deno.test("modelValidate single model propagates warnings", async () => {
+  const deps = makeDeps({
+    validateModel: () =>
+      Promise.resolve({
+        results: [{ name: "schema", passed: true }],
+        warnings: [
+          {
+            name: "Environment variables detected",
+            message: "Data stored under this model will vary",
+            envVars: [
+              { path: "globalArguments.baseUrl", envVar: "BASE_URL" },
+            ],
+          },
+        ],
+      }),
+  });
+  const events = await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    ModelValidateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as ModelValidateData;
+  assertEquals(data.passed, true);
+  assertEquals(data.warnings.length, 1);
+  assertEquals(data.warnings[0].name, "Environment variables detected");
+  assertEquals(data.warnings[0].envVars?.length, 1);
+  assertEquals(data.warnings[0].envVars?.[0].envVar, "BASE_URL");
 });
