@@ -92,9 +92,31 @@ export interface ExtractedVault {
   configFields: ExtractedArgument[];
 }
 
-/** Content metadata extracted from all models, workflows, and vaults in an extension. */
+/** Metadata extracted from a single driver TypeScript file. */
+export interface ExtractedDriver {
+  fileName: string;
+  type: string;
+  name: string;
+  description: string;
+  hasConfigSchema: boolean;
+  configFields: ExtractedArgument[];
+}
+
+/** Metadata extracted from a single datastore TypeScript file. */
+export interface ExtractedDatastore {
+  fileName: string;
+  type: string;
+  name: string;
+  description: string;
+  hasConfigSchema: boolean;
+  configFields: ExtractedArgument[];
+}
+
+/** Content metadata extracted from all models, workflows, vaults, drivers, and datastores in an extension. */
 export interface ExtensionContentMetadata {
   models: ExtractedModel[];
   workflows: ExtractedWorkflow[];
   vaults: ExtractedVault[];
+  drivers: ExtractedDriver[];
+  datastores: ExtractedDatastore[];
 }

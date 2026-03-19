@@ -23,6 +23,7 @@ import type { Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
+import type { MethodExecutionEvent } from "./method_events.ts";
 import { CalVer } from "./calver.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import {
@@ -139,6 +140,12 @@ export interface FileWriterOverrides {
  */
 export interface MethodContext {
   /**
+   * Cancellation signal. Always present — simply never-aborted if the
+   * caller doesn't need cancellation.
+   */
+  signal: AbortSignal;
+
+  /**
    * The base directory for the repository (where data is stored).
    */
   repoDir: string;
@@ -249,6 +256,13 @@ export interface MethodContext {
   driverConfig?: Record<string, unknown>;
 
   /**
+   * Optional callback for emitting domain events during method execution.
+   * Used for process output streaming, vault storage, schema warnings, etc.
+   * Output lines are emitted as `{ type: "output", line, stream }` events.
+   */
+  onEvent?: (event: MethodExecutionEvent) => void;
+
+  /**
    * Tags merged into every writer created during execution.
    * Used by workflow steps to inject workflow-specific tags.
    */
@@ -354,6 +368,8 @@ export interface DataWriter {
 export interface DataWriterCallbacks {
   /** Called for each line written by writeLine or writeStream. */
   onLine?: (dataName: string, line: string) => void;
+  /** Called for domain events during data operations (vault storage, schema warnings). */
+  onEvent?: (event: MethodExecutionEvent) => void;
 }
 
 /**
@@ -583,11 +599,11 @@ export interface ModelDefinition<
   upgrades?: VersionUpgrade[];
 
   /**
-   * Pre-compiled self-contained bundle source (JS) for out-of-process execution.
-   * Set by UserModelLoader at load time. Includes all dependencies inlined
-   * (including zod) so it can run without network access inside containers.
+   * Lazily builds the self-contained bundle for out-of-process execution (e.g. Docker).
+   * Called by the execution service when a non-raw driver is used. Memoizes its
+   * result so multiple executions of the same model in one process only bundle once.
    */
-  bundleSource?: string;
+  bundleSourceFactory?: () => Promise<string>;
 }
 
 /**

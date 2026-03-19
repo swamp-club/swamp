@@ -42,6 +42,8 @@ const ExtensionManifestSchemaV1 = z.object({
   workflows: z.array(z.string()).optional(),
   models: z.array(z.string()).optional(),
   vaults: z.array(z.string()).optional(),
+  drivers: z.array(z.string()).optional(),
+  datastores: z.array(z.string()).optional(),
   additionalFiles: z.array(z.string()).optional(),
   platforms: z.array(z.string().min(1)).optional(),
   labels: z.array(z.string().min(1)).optional(),
@@ -55,9 +57,12 @@ const ExtensionManifestSchemaV1 = z.object({
   (data) =>
     (data.models && data.models.length > 0) ||
     (data.workflows && data.workflows.length > 0) ||
-    (data.vaults && data.vaults.length > 0),
+    (data.vaults && data.vaults.length > 0) ||
+    (data.drivers && data.drivers.length > 0) ||
+    (data.datastores && data.datastores.length > 0),
   {
-    message: "Extension must include at least one model, workflow, or vault",
+    message:
+      "Extension must include at least one model, workflow, vault, driver, or datastore",
   },
 );
 
@@ -71,6 +76,8 @@ export interface ExtensionManifest {
   workflows: string[];
   models: string[];
   vaults: string[];
+  drivers: string[];
+  datastores: string[];
   additionalFiles: string[];
   platforms: string[];
   labels: string[];
@@ -126,6 +133,8 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     workflows: result.data.workflows ?? [],
     models: result.data.models ?? [],
     vaults: result.data.vaults ?? [],
+    drivers: result.data.drivers ?? [],
+    datastores: result.data.datastores ?? [],
     additionalFiles: result.data.additionalFiles ?? [],
     platforms: result.data.platforms ?? [],
     labels: result.data.labels ?? [],

@@ -24,28 +24,84 @@
  * - **Full sync** (S3 datastores): lock + pull → execute → push + unlock
  * - **Lock-only** (filesystem datastores): lock → execute → unlock
  *
+ * Supports both global locking (structural commands) and per-model
+ * locking (model method run). Uses a Map of named entries so multiple
+ * independent locks can be held concurrently.
+ *
  * Registered in requireInitializedRepo, flushed from runCli() after the
  * command completes.
  */
 
-import type { S3CacheSyncService } from "./s3_cache_sync.ts";
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
-/** Options for registering a datastore sync lifecycle. */
-export interface RegisterDatastoreSyncOptions {
-  /** S3 sync service for pull/push operations. */
-  service?: S3CacheSyncService;
-  /** Distributed lock for concurrency control. */
-  lock?: DistributedLock;
+/**
+ * Common interface for sync services compatible with the coordinator.
+ * Both S3CacheSyncService and DatastoreSyncService satisfy this.
+ */
+export interface SyncableService {
+  pullChanged(): Promise<number | void>;
+  pushChanged(): Promise<number | void>;
 }
 
-let registeredService: S3CacheSyncService | null = null;
-let registeredLock: DistributedLock | null = null;
+/** Options for registering a datastore sync lifecycle. */
+export interface RegisterDatastoreSyncOptions {
+  /** Sync service for pull/push operations. */
+  service?: SyncableService;
+  /** Distributed lock for concurrency control. */
+  lock?: DistributedLock;
+  /** Label for log messages (e.g. "S3", "custom"). Defaults to "datastore". */
+  label?: string;
+}
+
+/** Internal entry tracking a single lock/sync pair. */
+interface SyncEntry {
+  service?: SyncableService;
+  lock?: DistributedLock;
+  label: string;
+}
+
+/** Key used by the global (structural) lock. */
+export const GLOBAL_LOCK_KEY = "__global__";
+
+/** Map of all registered lock entries, keyed by lock name. */
+const entries: Map<string, SyncEntry> = new Map();
 let signalHandler: (() => void) | null = null;
 
 /**
- * Registers the datastore sync lifecycle.
+ * Installs or updates the SIGINT handler to release all held locks.
+ */
+function installSignalHandler(): void {
+  if (signalHandler) return;
+
+  signalHandler = () => {
+    const forceExit = setTimeout(() => Deno.exit(130), 5_000);
+    const releases = [...entries.values()]
+      .filter((e) => e.lock)
+      .map((e) => e.lock!.release().catch(() => {}));
+    Promise.all(releases).finally(() => {
+      clearTimeout(forceExit);
+      Deno.exit(130);
+    });
+  };
+  Deno.addSignalListener("SIGINT", signalHandler);
+}
+
+/**
+ * Removes the SIGINT handler if no entries remain.
+ */
+function maybeRemoveSignalHandler(): void {
+  if (entries.size > 0 || !signalHandler) return;
+  try {
+    Deno.removeSignalListener("SIGINT", signalHandler);
+  } catch {
+    // May already be removed
+  }
+  signalHandler = null;
+}
+
+/**
+ * Registers the datastore sync lifecycle (global lock).
  *
  * - If `lock` is provided, acquires it and installs a SIGINT handler
  *   for best-effort release on Ctrl-C.
@@ -56,94 +112,110 @@ let signalHandler: (() => void) | null = null;
 export async function registerDatastoreSync(
   options: RegisterDatastoreSyncOptions,
 ): Promise<void> {
-  const { service, lock } = options;
+  await registerDatastoreSyncNamed(GLOBAL_LOCK_KEY, options);
+}
 
-  if (service) {
-    registeredService = service;
-  }
+/**
+ * Registers a named datastore sync lifecycle.
+ *
+ * Acquires the lock (if provided), pulls from S3 (if service provided),
+ * and registers for cleanup on flush/SIGINT.
+ */
+export async function registerDatastoreSyncNamed(
+  key: string,
+  options: RegisterDatastoreSyncOptions,
+): Promise<void> {
+  const { service, lock } = options;
+  const label = options.label ?? "datastore";
+  const entry: SyncEntry = { service, lock, label };
+  entries.set(key, entry);
 
   // Acquire distributed lock if provided
   if (lock) {
-    registeredLock = lock;
     await lock.acquire();
-
-    // Install SIGINT handler for best-effort lock release on Ctrl-C.
-    // Await release with a 5-second timeout to avoid hanging if S3 is unreachable.
-    signalHandler = () => {
-      const forceExit = setTimeout(() => Deno.exit(130), 5_000);
-      lock.release().catch(() => {}).finally(() => {
-        clearTimeout(forceExit);
-        Deno.exit(130); // 128 + SIGINT(2)
-      });
-    };
-    Deno.addSignalListener("SIGINT", signalHandler);
+    installSignalHandler();
   }
 
   // Pull changed files if a sync service is registered
   if (service) {
     const logger = getSwampLogger(["datastore", "sync"]);
     try {
-      logger.info`Syncing from S3...`;
+      logger.info("Syncing from {label}...", { label });
       const pulled = await service.pullChanged();
-      if (pulled > 0) {
-        logger.info`Synced ${pulled} file(s) from S3`;
+      if (pulled && pulled > 0) {
+        logger.info("Synced {count} file(s) from {label}", {
+          count: pulled,
+          label,
+        });
       } else {
-        logger.info`S3 sync complete, already up to date`;
+        logger.info("{label} sync complete, already up to date", { label });
       }
     } catch (error) {
-      logger.warn("Failed to pull changes from S3: {error}", {
-        error: error instanceof Error ? error.message : String(error),
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error("Failed to pull changes from {label}: {error}", {
+        label,
+        error: msg,
       });
+      throw new Error(
+        `${label} sync failed: could not pull changes: ${msg}`,
+      );
     }
   }
 }
 
 /**
- * Flushes the datastore sync lifecycle.
+ * Flushes the datastore sync lifecycle (global lock).
  *
  * - If a sync service is registered, pushes changed files to S3.
  * - Releases the distributed lock if held.
  * - Clears all references after flushing.
  */
 export async function flushDatastoreSync(): Promise<void> {
-  const service = registeredService;
-  const lock = registeredLock;
-  const handler = signalHandler;
+  // Flush all entries (global + any per-model entries)
+  const keys = [...entries.keys()];
+  for (const key of keys) {
+    await flushDatastoreSyncNamed(key);
+  }
+  maybeRemoveSignalHandler();
+}
 
-  registeredService = null;
-  registeredLock = null;
-  signalHandler = null;
+/**
+ * Flushes a single named sync entry.
+ *
+ * Pushes to S3 if a service is registered, then releases the lock.
+ */
+export async function flushDatastoreSyncNamed(key: string): Promise<void> {
+  const entry = entries.get(key);
+  if (!entry) return;
 
-  if (service) {
+  entries.delete(key);
+
+  if (entry.service) {
     const logger = getSwampLogger(["datastore", "sync"]);
+    const label = entry.label;
     try {
-      logger.info`Pushing changes to S3...`;
-      const pushed = await service.pushChanged();
-      if (pushed > 0) {
-        logger.info`Pushed ${pushed} file(s) to S3`;
+      logger.info("Pushing changes to {label}...", { label });
+      const pushed = await entry.service.pushChanged();
+      if (pushed && pushed > 0) {
+        logger.info("Pushed {count} file(s) to {label}", {
+          count: pushed,
+          label,
+        });
       } else {
-        logger.info`S3 push complete, no changes`;
+        logger.info("{label} push complete, no changes", { label });
       }
     } catch (error) {
-      logger.warn("Failed to push changes to S3: {error}", {
+      logger.warn("Failed to push changes to {label}: {error}", {
+        label,
         error: error instanceof Error ? error.message : String(error),
       });
     }
   }
 
-  // Remove SIGINT handler before releasing lock
-  if (handler) {
-    try {
-      Deno.removeSignalListener("SIGINT", handler);
-    } catch {
-      // May already be removed
-    }
-  }
-
   // Release distributed lock
-  if (lock) {
+  if (entry.lock) {
     try {
-      await lock.release();
+      await entry.lock.release();
     } catch (error) {
       const logger = getSwampLogger(["datastore", "sync"]);
       logger.warn("Failed to release sync lock: {error}", {
@@ -151,4 +223,13 @@ export async function flushDatastoreSync(): Promise<void> {
       });
     }
   }
+
+  maybeRemoveSignalHandler();
+}
+
+/**
+ * Returns all currently registered lock keys.
+ */
+export function getRegisteredLockKeys(): string[] {
+  return [...entries.keys()];
 }

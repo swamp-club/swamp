@@ -23,6 +23,7 @@ import {
   type DatastoreConfig,
   getDatastoreDirectories,
   isAlwaysLocal,
+  isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import {
   compilePatterns,
@@ -50,7 +51,10 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
     this.compiledExclude = compilePatterns(datastoreConfig.exclude ?? []);
 
     // Determine the base path for the datastore
-    if (datastoreConfig.type === "filesystem") {
+    if (isCustomDatastoreConfig(datastoreConfig)) {
+      // Custom: path was eagerly resolved during config resolution
+      this.datastoreBasePath = datastoreConfig.datastorePath;
+    } else if (datastoreConfig.type === "filesystem") {
       this.datastoreBasePath = datastoreConfig.path;
     } else {
       // S3: use local cache path

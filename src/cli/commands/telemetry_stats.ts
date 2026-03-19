@@ -20,12 +20,13 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { TelemetryService } from "../../domain/telemetry/telemetry_service.ts";
-import { JsonTelemetryRepository } from "../../infrastructure/persistence/json_telemetry_repository.ts";
 import {
-  renderNoTelemetry,
-  renderTelemetryStats,
-} from "../../presentation/output/telemetry_stats_output.ts";
+  consumeStream,
+  createLibSwampContext,
+  createTelemetryStatsDeps,
+  telemetryStats,
+} from "../../libswamp/mod.ts";
+import { createTelemetryStatsRenderer } from "../../presentation/renderers/telemetry_stats.ts";
 import { VERSION } from "./version.ts";
 
 export const telemetryStatsCommand = new Command()
@@ -34,26 +35,27 @@ export const telemetryStatsCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--days <days:number>", "Number of days to analyze", { default: 2 })
   .action(async function (options) {
-    const ctx = createContext(options as GlobalOptions, ["telemetry", "stats"]);
-    ctx.logger.debug`Fetching telemetry stats`;
+    const cliCtx = createContext(options as GlobalOptions, [
+      "telemetry",
+      "stats",
+    ]);
+    cliCtx.logger.debug`Fetching telemetry stats`;
 
     const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
 
-    const repository = new JsonTelemetryRepository(repoDir);
-    const service = new TelemetryService(repository, VERSION);
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createTelemetryStatsDeps(repoDir, VERSION);
+    const renderer = createTelemetryStatsRenderer(cliCtx.outputMode);
 
-    const stats = await service.getStats(options.days);
+    await consumeStream(
+      telemetryStats(ctx, deps, { days: options.days }),
+      renderer.handlers(),
+    );
 
-    if (stats.totalInvocations === 0) {
-      renderNoTelemetry(ctx.outputMode);
-      return;
-    }
-
-    renderTelemetryStats(stats, ctx.outputMode);
-    ctx.logger.debug("Telemetry stats command completed");
+    cliCtx.logger.debug("Telemetry stats command completed");
   });
 
 export const telemetryCommand = new Command()

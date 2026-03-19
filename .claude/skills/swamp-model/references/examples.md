@@ -189,7 +189,16 @@ methods:
 **Step 2: Run with inputs**
 
 ```bash
-# JSON input
+# Key-value inputs (preferred for simple values)
+swamp model method run my-deploy deploy --input environment=production --json
+
+# Multiple inputs
+swamp model method run my-deploy deploy --input environment=production --input dryRun=true --json
+
+# Dot notation for nested values
+swamp model method run my-deploy deploy --input config.timeout=30 --json
+
+# JSON input (useful for complex structures)
 swamp model method run my-deploy deploy --input '{"environment": "production"}' --json
 
 # YAML file input

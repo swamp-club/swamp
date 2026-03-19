@@ -23,6 +23,7 @@ import {
   renderExtensionPullCancelled,
   renderExtensionPullConflicts,
   renderExtensionPullDependencyPull,
+  renderExtensionPullMissingSources,
   renderExtensionPullPlatforms,
   renderExtensionPullRepository,
   renderExtensionPullResolved,
@@ -150,4 +151,16 @@ Deno.test("renderExtensionPullSafetyWarnings outputs JSON in json mode", () => {
   });
   const parsed = JSON.parse(output);
   assertStringIncludes(parsed.warnings[0].file, "model.ts");
+});
+
+Deno.test("renderExtensionPullMissingSources outputs JSON in json mode", () => {
+  const output = captureConsoleLog(() => {
+    renderExtensionPullMissingSources(
+      ["_lib/acme.ts", "_lib/dns.ts"],
+      "json",
+    );
+  });
+  const parsed = JSON.parse(output);
+  assertStringIncludes(parsed.missingSourceFiles[0], "_lib/acme.ts");
+  assertStringIncludes(parsed.missingSourceFiles[1], "_lib/dns.ts");
 });

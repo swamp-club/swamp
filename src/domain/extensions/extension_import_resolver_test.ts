@@ -141,6 +141,31 @@ Deno.test("resolveLocalImports handles subdirectories", async () => {
   }
 });
 
+Deno.test("resolveLocalImports resolves multi-line imports", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    const libDir = join(modelsDir, "_lib");
+    await Deno.mkdir(libDir, { recursive: true });
+    const libFile = join(libDir, "aws.ts");
+    await Deno.writeTextFile(
+      libFile,
+      "export function createResource() {}\nexport function deleteResource() {}\n",
+    );
+    const entryFile = join(modelsDir, "entry.ts");
+    await Deno.writeTextFile(
+      entryFile,
+      `import {\n  createResource,\n  deleteResource,\n} from "./_lib/aws.ts";\nexport const x = createResource;\n`,
+    );
+
+    const result = await resolveLocalImports([entryFile], modelsDir);
+    assertEquals(result.resolvedFiles.sort(), [entryFile, libFile].sort());
+    assertEquals(result.skippedImports, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("resolveLocalImports handles export from statements", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

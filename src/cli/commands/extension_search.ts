@@ -26,6 +26,8 @@ import {
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
+import { resolveDriversDir } from "../resolve_drivers_dir.ts";
+import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 import {
   RepoMarkerRepository,
@@ -62,6 +64,11 @@ export const extensionSearchCommand = new Command()
   })
   .option("--label <label:string>", "Filter by label", { collect: true })
   .option(
+    "--content-type <contentType:string>",
+    "Filter by content type (models, workflows, vaults, datastores, drivers)",
+    { collect: true },
+  )
+  .option(
     "--sort <sort:string>",
     "Sort order: relevance, new, updated, name",
   )
@@ -78,6 +85,10 @@ export const extensionSearchCommand = new Command()
     "swamp extension search --platform aws --label networking",
   )
   .example(
+    "Filter by content type",
+    "swamp extension search --content-type models",
+  )
+  .example(
     "Sort by newest",
     "swamp extension search --sort new",
   )
@@ -92,6 +103,24 @@ export const extensionSearchCommand = new Command()
       throw new UserError(
         'Sort by "relevance" requires a search query.',
       );
+    }
+
+    // Validate content type values
+    const validContentTypes = [
+      "models",
+      "workflows",
+      "vaults",
+      "datastores",
+      "drivers",
+    ];
+    for (const ct of options.contentType ?? []) {
+      if (!validContentTypes.includes(ct)) {
+        throw new UserError(
+          `Invalid content type: "${ct}". Must be one of: ${
+            validContentTypes.join(", ")
+          }`,
+        );
+      }
     }
 
     // Validate sort option value
@@ -112,6 +141,7 @@ export const extensionSearchCommand = new Command()
       collective: options.collective,
       platform: options.platform,
       label: options.label,
+      contentType: options.contentType,
       sort: options.sort,
       perPage: options.perPage,
       page: options.page,
@@ -132,6 +162,7 @@ export const extensionSearchCommand = new Command()
           latestVersion: ext.latestVersion,
           platforms: ext.platforms,
           labels: ext.labels,
+          contentTypes: ext.contentTypes ?? [],
           createdAt: ext.createdAt,
           updatedAt: ext.updatedAt,
         })),
@@ -154,6 +185,8 @@ export const extensionSearchCommand = new Command()
       const modelsDir = resolveModelsDir(marker);
       const workflowsDir = resolveWorkflowsDir(marker);
       const vaultsDir = resolveVaultsDir(marker);
+      const driversDir = resolveDriversDir(marker);
+      const datastoresDir = resolveDatastoresDir(marker);
 
       const pullCtx: PullContext = {
         extensionClient: client,
@@ -161,6 +194,8 @@ export const extensionSearchCommand = new Command()
         modelsDir,
         workflowsDir,
         vaultsDir,
+        driversDir,
+        datastoresDir,
         repoDir,
         force: false,
         outputMode: ctx.outputMode,

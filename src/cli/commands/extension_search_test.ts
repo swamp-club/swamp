@@ -44,6 +44,54 @@ Deno.test("extension search: --sort relevance with query does not throw", () => 
   }
 });
 
+Deno.test("extension search: invalid content type throws UserError", () => {
+  const validContentTypes = [
+    "models",
+    "workflows",
+    "vaults",
+    "datastores",
+    "drivers",
+  ];
+  const contentType = ["invalid"];
+  const error = assertThrows(
+    () => {
+      for (const ct of contentType) {
+        if (!validContentTypes.includes(ct)) {
+          throw new UserError(
+            `Invalid content type: "${ct}". Must be one of: ${
+              validContentTypes.join(", ")
+            }`,
+          );
+        }
+      }
+    },
+    UserError,
+  );
+  assertStringIncludes(error.message, "invalid");
+  assertStringIncludes(error.message, "Must be one of");
+});
+
+Deno.test("extension search: valid content type values are accepted", () => {
+  const validContentTypes = [
+    "models",
+    "workflows",
+    "vaults",
+    "datastores",
+    "drivers",
+  ];
+  const contentType = ["models", "workflows"];
+  // Should not throw
+  for (const ct of contentType) {
+    if (!validContentTypes.includes(ct)) {
+      throw new UserError(
+        `Invalid content type: "${ct}". Must be one of: ${
+          validContentTypes.join(", ")
+        }`,
+      );
+    }
+  }
+});
+
 Deno.test("extension search: invalid sort option throws UserError", () => {
   const validSorts = ["relevance", "new", "updated", "name"];
   const sort = "invalid";

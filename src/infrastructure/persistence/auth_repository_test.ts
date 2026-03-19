@@ -101,6 +101,48 @@ Deno.test("AuthRepository - delete is idempotent (no error when missing)", async
   }
 });
 
+Deno.test("AuthRepository - save and load round trip with collectives", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  try {
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
+    const repo = new AuthRepository();
+
+    const credsWithCollectives: AuthCredentials = {
+      ...TEST_CREDENTIALS,
+      collectives: ["myorg", "swamp"],
+    };
+    await repo.save(credsWithCollectives);
+    const loaded = await repo.load();
+
+    assertExists(loaded);
+    assertEquals(loaded.collectives, ["myorg", "swamp"]);
+  } finally {
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - load without collectives returns undefined for field", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  try {
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
+    const repo = new AuthRepository();
+
+    await repo.save(TEST_CREDENTIALS);
+    const loaded = await repo.load();
+
+    assertExists(loaded);
+    assertEquals(loaded.collectives, undefined);
+  } finally {
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("AuthRepository - save sets restrictive file permissions", async () => {
   if (Deno.build.os === "windows") return; // mode not enforced on Windows
   const tmpDir = await Deno.makeTempDir();

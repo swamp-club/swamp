@@ -545,9 +545,6 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             ]),
           )
           : undefined,
-        bundle: modelDef.bundleSource
-          ? new TextEncoder().encode(modelDef.bundleSource)
-          : undefined,
       };
 
     let currentHandles: DataHandle[];
@@ -581,6 +578,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Use the driver's context with writers for follow-up actions
       executionContext = driver.contextWithWriters ?? context;
     } else {
+      // Populate bundle only for out-of-process drivers (raw driver doesn't use it)
+      if (modelDef.bundleSourceFactory) {
+        executionRequest.bundle = new TextEncoder().encode(
+          await modelDef.bundleSourceFactory(),
+        );
+      }
+
       // Look up a registered driver type
       const driverInfo = driverTypeRegistry.get(driverType);
       if (!driverInfo) {

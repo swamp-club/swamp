@@ -1,3 +1,60 @@
+<!-- BEGIN swamp managed section - DO NOT EDIT -->
+
+# Project
+
+This repository is managed with [swamp](https://github.com/systeminit/swamp).
+
+## Rules
+
+1. **Search before you build.** When automating AWS, APIs, or any external
+   service: (a) search local types with `swamp model type search <query>`, (b)
+   search community extensions with `swamp extension search <query>`, (c) if a
+   community extension exists, install it with `swamp extension pull <package>`
+   instead of building from scratch, (d) only create a custom extension model in
+   `extensions/models/` if nothing exists. Use the `swamp-extension-model` skill
+   for guidance. The `command/shell` model is ONLY for ad-hoc one-off shell
+   commands, NEVER for wrapping CLI tools or building integrations.
+2. **Extend, don't be clever.** Don't work around a missing capability with
+   shell scripts or multi-step hacks. Add a method to the extension model. One
+   method, one purpose.
+3. **Use the data model.** Once data exists in a model (via `lookup`, `start`,
+   `sync`, etc.), reference it with CEL expressions. Don't re-fetch data that's
+   already available.
+4. **CEL expressions everywhere.** Wire models together with CEL expressions.
+   Always prefer `data.latest("<name>", "<dataName>").attributes.<field>` over
+   the deprecated `model.<name>.resource.<spec>.<instance>.attributes.<field>`
+   pattern.
+5. **Verify before destructive operations.** Always
+   `swamp model get <name> --json` and verify resource IDs before running
+   delete/stop/destroy methods.
+
+## Skills
+
+**IMPORTANT:** Always load swamp skills, even when in plan mode. The skills
+provide essential context for working with this repository.
+
+- `swamp-model` - Work with swamp models (creating, editing, validating)
+- `swamp-workflow` - Work with workflows (creating, editing, running)
+- `swamp-vault` - Manage secrets and credentials
+- `swamp-data` - Manage model data lifecycle
+- `swamp-repo` - Repository management
+- `swamp-extension-model` - Create custom TypeScript models
+- `swamp-extension-driver` - Create custom execution drivers
+- `swamp-extension-datastore` - Create custom datastore backends
+- `swamp-extension-vault` - Create custom vault providers
+- `swamp-issue` - Submit bug reports and feature requests
+- `swamp-troubleshooting` - Debug and diagnose swamp issues
+
+## Getting Started
+
+Always start by using the `swamp-model` skill to work with swamp models.
+
+## Commands
+
+Use `swamp --help` to see available commands.
+
+<!-- END swamp managed section -->
+
 # Project: swamp
 
 Deno based CLI for doing AI Native Automation.
@@ -84,6 +141,10 @@ After completing work, run these checks:
 - Uses LogTape for logging and non-interactive output (`"log"` mode)
 - Uses JSON for structured output (`"json"` mode via `--json`)
 - Every command _must_ support both `"log"` and `"json"` output modes
+- CLI commands and presentation renderers must import libswamp types and
+  functions from `src/libswamp/mod.ts` — never from internal module paths like
+  `src/libswamp/data/get.ts`. Only libswamp-internal code (other generators,
+  tests in `src/libswamp/`) may import from internal paths.
 - You can read the files in `design/*.md` to understand elements of the design
 
 ## Testing

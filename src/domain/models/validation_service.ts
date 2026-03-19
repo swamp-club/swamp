@@ -302,6 +302,7 @@ export class DefaultModelValidationService implements ModelValidationService {
 
       try {
         const context: MethodContext = {
+          signal: new AbortController().signal,
           repoDir: checkContext.repoDir,
           modelType: modelDef.type,
           modelId: definition.id,

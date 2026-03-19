@@ -175,6 +175,71 @@ Deno.test("extension pull persists files in upstream_extensions.json", async () 
   }
 });
 
+Deno.test("extension pull and load works for @stack72/letsencrypt-certificate", async () => {
+  const tmpDir = await initTempRepo();
+  try {
+    // Pull the extension
+    const { code, stderr } = await runCliWithNet([
+      "extension",
+      "pull",
+      "@stack72/letsencrypt-certificate@2026.03.04.1",
+      "--force",
+      "--repo-dir",
+      tmpDir,
+      "--no-color",
+    ]);
+    assertEquals(code, 0, `Pull failed: ${stderr}`);
+
+    // Verify the bundle was extracted
+    const bundleStat = await Deno.stat(
+      `${tmpDir}/.swamp/bundles/letsencrypt_certificate.js`,
+    );
+    assertEquals(bundleStat.isFile, true, "Bundle should be extracted");
+
+    // Verify the model loads at runtime by searching for it.
+    // model type search uses cwd to find the repo, so run from tmpDir.
+    const searchCmd = new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "--unstable-bundle",
+        "--allow-read",
+        "--allow-write",
+        "--allow-env",
+        "--allow-run",
+        "--allow-net",
+        "--allow-sys",
+        `${PROJECT_ROOT}/main.ts`,
+        "model",
+        "type",
+        "search",
+        "letsencrypt",
+        "--json",
+      ],
+      stdout: "piped",
+      stderr: "piped",
+      cwd: tmpDir,
+      env: {
+        ...Deno.env.toObject(),
+        SWAMP_NO_TELEMETRY: "1",
+      },
+    });
+    const searchOutput = await searchCmd.output();
+    const searchStdout = new TextDecoder().decode(searchOutput.stdout);
+    const searchStderr = new TextDecoder().decode(searchOutput.stderr);
+    assertEquals(
+      searchOutput.code,
+      0,
+      `Search failed: ${searchStderr}`,
+    );
+    assertStringIncludes(
+      searchStdout,
+      "@stack72/letsencrypt-certificate",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("extension pull does not require authentication", async () => {
   const tmpDir = await initTempRepo();
   try {

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import type { Data } from "./data.ts";
 import type { Lifetime } from "./data_metadata.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -26,6 +27,8 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../workflows/workflow_id.ts";
+
+const logger = getLogger(["swamp", "domain", "data", "lifecycle"]);
 
 /**
  * Information about data that has expired.
@@ -42,11 +45,11 @@ export interface ExpiredDataInfo {
  * Result of garbage collection operation.
  */
 export interface LifecycleGCResult {
-  /** Number of data entries marked as expired (symlink removed) */
+  /** Number of expired data entries hard-deleted */
   dataEntriesExpired: number;
-  /** Number of old versions hard deleted by version GC */
+  /** Number of versions hard-deleted (expired + GC) */
   versionsDeleted: number;
-  /** Bytes reclaimed from version GC (not from soft delete) */
+  /** Bytes reclaimed from hard-deleting expired data and version GC */
   bytesReclaimed: number;
   /** Whether this was a dry run */
   dryRun: boolean;
@@ -113,7 +116,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
 
     if (lifetime === "ephemeral") {
       // Not implemented yet - requires tracking execution context
-      console.warn("Ephemeral lifetime is not yet implemented");
+      logger.warn("Ephemeral lifetime is not yet implemented");
       return null;
     }
 
@@ -127,7 +130,10 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       const durationMs = this.parseDuration(lifetime);
       return new Date(createdAt.getTime() + durationMs);
     } catch (error) {
-      console.error(`Failed to parse lifetime duration: ${lifetime}`, error);
+      logger.error("Failed to parse lifetime duration: {lifetime}", {
+        lifetime,
+        error,
+      });
       return null;
     }
   }
@@ -144,8 +150,9 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       const workflowRunId = data.ownerDefinition.workflowRunId;
 
       if (!workflowId || !workflowRunId) {
-        console.warn(
-          `Data "${data.name}" has ${data.lifetime} lifetime but missing workflowId or workflowRunId`,
+        logger.warn(
+          "Data '{dataName}' has {lifetime} lifetime but missing workflowId or workflowRunId",
+          { dataName: data.name, lifetime: data.lifetime },
         );
         return false;
       }
@@ -157,9 +164,9 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
         );
         return workflowRun === null; // Expired if workflow run is deleted
       } catch (error) {
-        console.error(
-          `Error checking workflow run ${workflowId}/${workflowRunId}:`,
-          error,
+        logger.error(
+          "Error checking workflow run {workflowId}/{workflowRunId}",
+          { workflowId, workflowRunId, error },
         );
         return false; // Don't delete on error
       }
@@ -202,9 +209,12 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
           });
         }
       } catch (error) {
-        console.error(
-          `Error checking data ${modelType.toDirectoryPath()}/${modelId}/${data.name}:`,
-          error,
+        logger.error(
+          "Error checking data {path}",
+          {
+            path: `${modelType.toDirectoryPath()}/${modelId}/${data.name}`,
+            error,
+          },
         );
         // Continue with other data
       }
@@ -217,7 +227,41 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     dryRun?: boolean;
   }): Promise<LifecycleGCResult> {
     const dryRun = options?.dryRun ?? false;
-    const expiredData = await this.findExpiredData();
+
+    // Single findAllGlobal() scan — reused for both expired-data detection
+    // and version GC's unique-model iteration
+    const allData = await this.dataRepo.findAllGlobal();
+
+    // Phase 1: Detect expired data (inline logic from findExpiredData)
+    const expiredData: ExpiredDataInfo[] = [];
+    for (const { data, modelType, modelId } of allData) {
+      if (data.isDeleted) continue;
+      try {
+        const isExpired = await this.isExpired(data);
+        if (isExpired) {
+          let reason: ExpiredDataInfo["reason"];
+          if (data.lifetime === "workflow" || data.lifetime === "job") {
+            reason = data.lifetime === "workflow"
+              ? "workflow-deleted"
+              : "job-deleted";
+          } else {
+            reason = "duration-expired";
+          }
+          expiredData.push({
+            type: modelType,
+            modelId,
+            dataName: data.name,
+            data,
+            reason,
+          });
+        }
+      } catch (error) {
+        console.error(
+          `Error checking data ${modelType.toDirectoryPath()}/${modelId}/${data.name}:`,
+          error,
+        );
+      }
+    }
 
     let versionsDeleted = 0;
     let bytesReclaimed = 0;
@@ -234,8 +278,24 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       );
 
       if (!dryRun) {
-        // Soft delete: remove latest symlink
-        await this.dataRepo.removeLatestMarker(type, modelId, dataName);
+        // Calculate bytes to reclaim before deleting
+        for (const version of versions) {
+          const contentPath = this.dataRepo.getContentPath(
+            type,
+            modelId,
+            dataName,
+            version,
+          );
+          try {
+            const stat = await Deno.stat(contentPath);
+            bytesReclaimed += stat.size;
+          } catch {
+            // Ignore stat errors for missing files
+          }
+        }
+        versionsDeleted += versions.length;
+        // Hard-delete all versions
+        await this.dataRepo.delete(type, modelId, dataName);
       }
 
       expiredEntries.push({
@@ -247,10 +307,9 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       });
     }
 
-    // Now run version-based garbage collection on all models
-    // This hard-deletes old versions based on garbageCollection policy
+    // Phase 2: Version-based garbage collection on all unique models
+    // Reuses the allData result from the single findAllGlobal() call
     if (!dryRun) {
-      const allData = await this.dataRepo.findAllGlobal();
       const seen = new Set<string>();
       for (const { modelType, modelId } of allData) {
         const key = `${modelType.toDirectoryPath()}/${modelId}`;
@@ -265,9 +324,9 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
           versionsDeleted += result.versionsRemoved;
           bytesReclaimed += result.bytesReclaimed;
         } catch (error) {
-          console.error(
-            `Error running GC on ${modelType.toDirectoryPath()}/${modelId}:`,
-            error,
+          logger.error(
+            "Error running GC on {path}",
+            { path: `${modelType.toDirectoryPath()}/${modelId}`, error },
           );
         }
       }

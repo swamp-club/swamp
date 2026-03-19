@@ -23,10 +23,8 @@ import {
   type WorkflowSearchData,
   type WorkflowSearchItem,
 } from "../../presentation/output/workflow_search_output.tsx";
-import {
-  renderWorkflowGet,
-  type WorkflowGetData,
-} from "../../presentation/output/workflow_get_output.ts";
+import type { WorkflowGetData } from "../../libswamp/mod.ts";
+import { renderWorkflowGet } from "../../presentation/renderers/workflow_get.ts";
 import { renderWorkflowActionSelect } from "../../presentation/output/workflow_action_select_output.tsx";
 import { renderInputFileSelect } from "../../presentation/output/input_file_select_output.tsx";
 import {
@@ -43,7 +41,6 @@ import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
-import { createLogProgressCallback } from "../../presentation/output/log_progress_callback.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
@@ -248,9 +245,7 @@ async function executeWorkflowFromSearch(
     repoDir,
   );
 
-  const progress = createLogProgressCallback(workflow.name);
-  const run = await executionService.execute(workflow.name, progress, {
-    enableStepLogging: true,
+  const run = await executionService.execute(workflow.name, {
     inputs,
   });
 

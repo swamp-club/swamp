@@ -23,7 +23,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 
 export interface DatastoreStatusData {
-  type: "filesystem" | "s3";
+  type: string;
   path?: string;
   bucket?: string;
   prefix?: string;
@@ -78,7 +78,7 @@ export function renderDatastoreStatus(
 }
 
 export interface DatastoreSetupData {
-  type: "filesystem" | "s3";
+  type: string;
   path?: string;
   bucket?: string;
   prefix?: string;
@@ -132,7 +132,9 @@ function formatBytes(bytes: number): string {
 export interface DatastoreLockStatusData {
   held: boolean;
   info?: LockInfo;
-  datastoreType: "filesystem" | "s3";
+  datastoreType: string;
+  /** If set, identifies this as a per-model lock (e.g. "aws-ec2/my-server"). */
+  lockScope?: string;
 }
 
 export function renderDatastoreLockStatus(
@@ -144,8 +146,12 @@ export function renderDatastoreLockStatus(
     return;
   }
 
+  const scopeLabel = data.lockScope ? ` [${data.lockScope}]` : "";
+
   if (!data.held || !data.info) {
-    writeOutput(`${bold("Lock Status:")} ${green("no lock held")}`);
+    writeOutput(
+      `${bold("Lock Status:")} ${green("no lock held")}${scopeLabel}`,
+    );
     return;
   }
 
@@ -154,7 +160,7 @@ export function renderDatastoreLockStatus(
   const ageSec = Math.round(ageMs / 1000);
 
   const lines = [
-    `${bold("Lock Status:")} ${red("locked")}`,
+    `${bold("Lock Status:")} ${red("locked")}${scopeLabel}`,
     `  Holder:   ${info.holder}`,
     `  PID:      ${info.pid}`,
     `  Hostname: ${info.hostname}`,
@@ -162,6 +168,9 @@ export function renderDatastoreLockStatus(
     `  TTL:      ${info.ttlMs}ms`,
     `  Backend:  ${data.datastoreType}`,
   ];
+  if (data.lockScope) {
+    lines.push(`  Scope:    ${data.lockScope}`);
+  }
 
   writeOutput(lines.join("\n"));
 }

@@ -25,7 +25,14 @@ import {
   type WorkflowEvaluateItemData,
 } from "../../presentation/output/workflow_evaluate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  acquireModelLocks,
+  requireInitializedRepo,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -64,13 +71,6 @@ export const workflowEvaluateCommand = new Command()
         "workflow",
         "evaluate",
       ]);
-      const { repoDir, repoContext } = await requireInitializedRepo({
-        repoDir: options.repoDir ?? ".",
-        outputMode: ctx.outputMode,
-      });
-      const workflowRepo = repoContext.workflowRepo;
-      const definitionRepo = repoContext.definitionRepo;
-      const dataRepo = repoContext.unifiedDataRepo;
 
       // Parse input values
       const { inputs } = await parseInputs({
@@ -78,17 +78,25 @@ export const workflowEvaluateCommand = new Command()
         inputFile: options.inputFile as string | undefined,
       });
 
-      const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-        repoDir,
-      );
-      const modelResolver = new ModelResolver(definitionRepo, {
-        repoDir,
-        dataRepo,
-      });
-      const celEvaluator = new CelEvaluator();
-
-      // If --all flag or no argument, evaluate all workflows
+      // If --all flag or no argument, evaluate all workflows (global lock)
       if (options.all || !workflowIdOrName) {
+        const { repoDir, repoContext } = await requireInitializedRepo({
+          repoDir: options.repoDir ?? ".",
+          outputMode: ctx.outputMode,
+        });
+        const workflowRepo = repoContext.workflowRepo;
+        const definitionRepo = repoContext.definitionRepo;
+        const dataRepo = repoContext.unifiedDataRepo;
+
+        const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+          repoDir,
+        );
+        const modelResolver = new ModelResolver(definitionRepo, {
+          repoDir,
+          dataRepo,
+        });
+        const celEvaluator = new CelEvaluator();
+
         ctx.logger.debug`Evaluating all workflow definitions`;
 
         const allWorkflows = await workflowRepo.findAll();
@@ -116,7 +124,13 @@ export const workflowEvaluateCommand = new Command()
         return;
       }
 
-      // Single workflow evaluation
+      // Single workflow evaluation — use per-model lock
+      const unlocked = await requireInitializedRepoUnlocked({
+        repoDir: options.repoDir ?? ".",
+        outputMode: ctx.outputMode,
+      });
+      const workflowRepo = unlocked.repoContext.workflowRepo;
+
       ctx.logger.debug`Evaluating workflow: ${workflowIdOrName}`;
 
       // Look up the workflow
@@ -149,13 +163,87 @@ export const workflowEvaluateCommand = new Command()
         Object.assign(inputs, inputsWithDefaults);
       }
 
-      const item = await evaluateWorkflow(
+      // Extract model references for per-model locking
+      const modelRefs = await extractModelReferencesFromWorkflow(
         workflow,
-        inputs,
-        modelResolver,
-        celEvaluator,
-        evaluatedWorkflowRepo,
+        workflowRepo,
       );
+
+      let flushModelLocks: (() => Promise<void>) | null = null;
+      let repoDir: string;
+      let repoContext: typeof unlocked.repoContext;
+
+      if (modelRefs !== null && modelRefs.length > 0) {
+        // Resolve model references to { modelType, modelId }
+        const definitionRepo = unlocked.repoContext.definitionRepo;
+        const resolvedModels: Array<{ modelType: string; modelId: string }> =
+          [];
+
+        for (const ref of modelRefs) {
+          const lookupResult = await findDefinitionByIdOrName(
+            definitionRepo,
+            ref,
+          );
+          if (lookupResult) {
+            resolvedModels.push({
+              modelType: lookupResult.type.normalized,
+              modelId: lookupResult.definition.id,
+            });
+          }
+        }
+
+        if (resolvedModels.length > 0) {
+          flushModelLocks = await acquireModelLocks(
+            unlocked.datastoreConfig,
+            resolvedModels,
+            unlocked.repoDir,
+          );
+        }
+
+        repoDir = unlocked.repoDir;
+        repoContext = unlocked.repoContext;
+      } else if (modelRefs === null) {
+        // Dynamic references — fall back to global lock
+        const logger = getSwampLogger(["workflow", "evaluate"]);
+        logger
+          .info`Workflow contains dynamic model references — using global lock`;
+        const globalResult = await requireInitializedRepo({
+          repoDir: options.repoDir ?? ".",
+          outputMode: ctx.outputMode,
+        });
+        repoDir = globalResult.repoDir;
+        repoContext = globalResult.repoContext;
+      } else {
+        // No model references
+        repoDir = unlocked.repoDir;
+        repoContext = unlocked.repoContext;
+      }
+
+      const definitionRepo = repoContext.definitionRepo;
+      const dataRepo = repoContext.unifiedDataRepo;
+
+      const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+        repoDir,
+      );
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+      });
+      const celEvaluator = new CelEvaluator();
+
+      let item: WorkflowEvaluateItemData;
+      try {
+        item = await evaluateWorkflow(
+          workflow,
+          inputs,
+          modelResolver,
+          celEvaluator,
+          evaluatedWorkflowRepo,
+        );
+      } finally {
+        // Release per-model locks
+        if (flushModelLocks) await flushModelLocks();
+      }
 
       renderWorkflowEvaluateSingle(item, ctx.outputMode);
       ctx.logger.debug`Evaluation completed`;

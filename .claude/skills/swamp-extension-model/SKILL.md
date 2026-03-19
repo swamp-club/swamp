@@ -21,6 +21,12 @@ extensions:
 3. If a community extension exists, install it instead of building from scratch
 4. Only create a custom model if nothing exists locally or in the community
 
+Note: Extensions from trusted collectives (`@swamp/*`, `@si/*`, and your
+membership collectives) auto-resolve on first use — no manual `extension pull`
+needed. Just reference the type and swamp installs the extension automatically.
+Use `swamp extension trust list` to see which collectives are trusted, and
+`swamp extension trust add <name>` to trust additional collectives.
+
 Extension models let you:
 
 - Integrate with any API or service (AWS S3, Stripe, custom APIs, etc.)
@@ -30,10 +36,12 @@ Extension models let you:
 **Example decision flow:**
 
 ```
-User wants to work with S3 buckets
-swamp model type search S3 → no local results
-swamp extension search S3 → no community extension
-No existing model → Create extensions/models/s3_bucket.ts
+User wants to work with DigitalOcean droplets
+swamp model type search droplet → no local results
+swamp model create @swamp/digitalocean/droplet my-droplet
+  → auto-resolves @swamp/digitalocean from registry
+  → installs and hot-loads 32 models
+  → creates my-droplet definition
 ```
 
 **Important:** Do not default to generic CLI types (like `command/shell`) for
@@ -393,7 +401,8 @@ Files are classified by export name: `export const model` defines new types,
 ## Publishing Extensions
 
 Extensions are published to the swamp registry via a `manifest.yaml` and the
-`swamp extension push` command.
+`swamp extension push` command. Extensions can contain models, workflows,
+vaults, drivers, and datastores.
 
 **Minimal manifest:**
 
@@ -413,16 +422,10 @@ swamp extension push manifest.yaml --dry-run --json # Validate without pushing
 swamp extension push manifest.yaml -y --json        # Skip confirmation prompts
 ```
 
-The manifest `name` collective must match your authenticated username. Model
-paths are relative to `extensions/models/`; local imports are auto-resolved.
-
-**Optional metadata fields:**
-
-- `platforms` — OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`).
-  Use when your extension contains platform-specific code.
-- `labels` — Categorization labels (e.g. `aws`, `kubernetes`, `security`).
-
-Both are omitted from the archive when not specified.
+The manifest `name` collective must match your authenticated username. Content
+paths are relative to their respective directories (`extensions/models/`,
+`extensions/vaults/`, `extensions/drivers/`, `extensions/datastores/`). Local
+imports are auto-resolved.
 
 For the full manifest schema, safety rules, CalVer versioning, and
 troubleshooting, see [references/publishing.md](references/publishing.md).
@@ -433,17 +436,16 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    `export const extension = { ... }` for extending existing types
 2. **Import**: `import { z } from "npm:zod@4";` is always required. Any
    Deno-compatible import (`npm:`, `jsr:`, `https://`) can also be used — swamp
-   bundles all dependencies automatically (see
-   [references/examples.md](references/examples.md#using-external-dependencies))
-3. **Static imports only**: All npm imports must be static top-level imports
-   (e.g., `import { x } from "npm:pkg@1"`). Dynamic `import()` calls are not
-   supported — the bundler cannot correctly handle CJS/ESM interop for
-   dynamically imported packages. The quality checker rejects dynamic imports
+   bundles all dependencies automatically. Extensions with a `deno.json` or
+   `package.json` can use bare specifiers instead (e.g., `from "zod"`). See
+   [references/examples.md](references/examples.md#using-external-dependencies)
+3. **Static imports only**: All imports must be static top-level imports.
+   Dynamic `import()` calls are not supported — the quality checker rejects them
    during `extension push`.
-4. **Pin npm versions**: Always pin explicit versions for npm imports (e.g.,
-   `npm:lodash-es@4.17.21`, not `npm:lodash-es`). Swamp does not use a lockfile
-   during bundling, so unpinned versions may resolve differently across runs.
-   `npm:zod@4` is the one exception — it is externalized and provided by swamp.
+4. **Pin npm versions**: Always pin versions — either inline
+   (`npm:lodash-es@4.17.21`), via a `deno.json` import map, or in `package.json`
+   dependencies. See
+   [references/examples.md](references/examples.md#import-styles) for details.
 5. **Type naming**: Use `@<collective>/<name>` or `<collective>/<name>` format
    (e.g., `@user/my-model` or `myorg/my-model`)
 6. **No type annotations**: Avoid TypeScript types in execute parameters

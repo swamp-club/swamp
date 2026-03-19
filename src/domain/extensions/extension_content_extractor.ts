@@ -22,6 +22,8 @@ import { parse as parseYaml } from "@std/yaml";
 import type {
   ExtensionContentMetadata,
   ExtractedArgument,
+  ExtractedDatastore,
+  ExtractedDriver,
   ExtractedFile,
   ExtractedMethod,
   ExtractedModel,
@@ -47,10 +49,16 @@ export async function extractContentMetadata(
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>,
   vaultFiles: string[] = [],
   vaultsDir = "",
+  driverFiles: string[] = [],
+  driversDir = "",
+  datastoreFiles: string[] = [],
+  datastoresDir = "",
 ): Promise<ExtensionContentMetadata> {
   const models: ExtractedModel[] = [];
   const workflows: ExtractedWorkflow[] = [];
   const vaults: ExtractedVault[] = [];
+  const drivers: ExtractedDriver[] = [];
+  const datastores: ExtractedDatastore[] = [];
 
   for (const filePath of modelFiles) {
     try {
@@ -88,7 +96,35 @@ export async function extractContentMetadata(
     }
   }
 
-  return { models, workflows, vaults };
+  for (const filePath of driverFiles) {
+    try {
+      const content = await Deno.readTextFile(filePath);
+      const driver = extractDriverFromSource(content, filePath, driversDir);
+      if (driver) {
+        drivers.push(driver);
+      }
+    } catch {
+      // Non-fatal: skip files that can't be read or parsed
+    }
+  }
+
+  for (const filePath of datastoreFiles) {
+    try {
+      const content = await Deno.readTextFile(filePath);
+      const ds = extractDatastoreFromSource(
+        content,
+        filePath,
+        datastoresDir,
+      );
+      if (ds) {
+        datastores.push(ds);
+      }
+    } catch {
+      // Non-fatal: skip files that can't be read or parsed
+    }
+  }
+
+  return { models, workflows, vaults, drivers, datastores };
 }
 
 /**
@@ -226,7 +262,7 @@ function extractVaultFromSource(
   );
 
   // Check for configSchema presence
-  const hasConfigSchema = /configSchema\s*:/.test(vaultBody);
+  const hasConfigSchema = /configSchema\s*[:,}]/.test(vaultBody);
 
   // Extract config fields if configSchema uses z.object
   let configFields: ExtractedArgument[] = [];
@@ -238,10 +274,15 @@ function extractVaultFromSource(
       configFields = parseZodObjectFields(schemaBody);
     }
   } else if (hasConfigSchema) {
-    // Check for named schema reference
+    // Check for named schema reference: configSchema: SomeName
     const configRef = vaultBody.match(/configSchema:\s*(\w+)/);
-    if (configRef && configRef[1] !== "z") {
-      const schemaName = configRef[1];
+    // Also check shorthand property: configSchema,
+    const shorthandRef = !configRef
+      ? vaultBody.match(/configSchema\s*[,\n}]/)
+      : null;
+    const schemaName = configRef?.[1] ??
+      (shorthandRef ? "configSchema" : null);
+    if (schemaName && schemaName !== "z") {
       const namedPattern = new RegExp(
         `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
       );
@@ -381,7 +422,7 @@ function parseZodObjectFields(schemaBody: string): ExtractedArgument[] {
     let chain = "";
     let pos = parenEnd + 1;
     while (pos < schemaBody.length) {
-      const chainMatch = schemaBody.slice(pos).match(/^\.\w+\(/);
+      const chainMatch = schemaBody.slice(pos).match(/^\s*\.\w+\(/);
       if (!chainMatch) break;
       const chainCallStart = pos + chainMatch[0].length;
       const chainCallEnd = findBalancedParen(schemaBody, chainCallStart);
@@ -580,6 +621,153 @@ function extractWorkflowFromYaml(
   }
 
   return { fileName, id, name, description, jobs };
+}
+
+/**
+ * Extracts driver metadata from a TypeScript source file.
+ * Returns null if the file doesn't contain a recognizable driver definition.
+ * Uses `createDriver` as the discriminator.
+ */
+function extractDriverFromSource(
+  content: string,
+  filePath: string,
+  driversDir: string,
+): ExtractedDriver | null {
+  if (!/createDriver/.test(content)) return null;
+
+  const driverMatch = content.match(/export\s+const\s+driver\s*=\s*\{/);
+  if (!driverMatch || driverMatch.index === undefined) return null;
+
+  const driverStart = driverMatch.index + driverMatch[0].length;
+  const driverBody = extractBalancedBraces(content, driverStart);
+  if (!driverBody) return null;
+
+  const typeMatch = driverBody.match(/type:\s*["']([^"']+)["']/);
+  if (!typeMatch) return null;
+
+  const nameMatch = driverBody.match(/(?<![.\w])name:\s*["']([^"']+)["']/);
+  const descMatch = driverBody.match(
+    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
+  );
+  const hasConfigSchema = /configSchema\s*[:,}]/.test(driverBody);
+
+  let configFields: ExtractedArgument[] = [];
+  const configInline = driverBody.match(/configSchema:\s*z\.object\(\s*\{/);
+  if (configInline && configInline.index !== undefined) {
+    const start = configInline.index + configInline[0].length;
+    const schemaBody = extractBalancedBraces(driverBody, start);
+    if (schemaBody) {
+      configFields = parseZodObjectFields(schemaBody);
+    }
+  } else if (hasConfigSchema) {
+    // Check for named schema reference: configSchema: SomeName
+    const configRef = driverBody.match(/configSchema:\s*(\w+)/);
+    // Also check shorthand property: configSchema,
+    const shorthandRef = !configRef
+      ? driverBody.match(/configSchema\s*[,\n}]/)
+      : null;
+    const schemaName = configRef?.[1] ??
+      (shorthandRef ? "configSchema" : null);
+    if (schemaName && schemaName !== "z") {
+      const namedPattern = new RegExp(
+        `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
+      );
+      const namedMatch = content.match(namedPattern);
+      if (namedMatch && namedMatch.index !== undefined) {
+        const start = namedMatch.index + namedMatch[0].length;
+        const schemaBody = extractBalancedBraces(content, start);
+        if (schemaBody) {
+          configFields = parseZodObjectFields(schemaBody);
+        }
+      }
+    }
+  }
+
+  return {
+    fileName: relative(driversDir, filePath),
+    type: typeMatch[1],
+    name: nameMatch ? nameMatch[1] : "",
+    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
+    hasConfigSchema,
+    configFields,
+  };
+}
+
+/**
+ * Extracts datastore metadata from a TypeScript source file.
+ * Returns null if the file doesn't contain a recognizable datastore definition.
+ * Uses `createProvider` as the discriminator combined with `export const datastore`.
+ */
+function extractDatastoreFromSource(
+  content: string,
+  filePath: string,
+  datastoresDir: string,
+): ExtractedDatastore | null {
+  const datastoreMatch = content.match(
+    /export\s+const\s+datastore\s*=\s*\{/,
+  );
+  if (!datastoreMatch || datastoreMatch.index === undefined) return null;
+
+  // Must contain createProvider to be a datastore file
+  if (!/createProvider/.test(content)) return null;
+
+  const datastoreStart = datastoreMatch.index + datastoreMatch[0].length;
+  const datastoreBody = extractBalancedBraces(content, datastoreStart);
+  if (!datastoreBody) return null;
+
+  const typeMatch = datastoreBody.match(/type:\s*["']([^"']+)["']/);
+  if (!typeMatch) return null;
+
+  const nameMatch = datastoreBody.match(
+    /(?<![.\w])name:\s*["']([^"']+)["']/,
+  );
+  const descMatch = datastoreBody.match(
+    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
+  );
+  const hasConfigSchema = /configSchema\s*[:,}]/.test(datastoreBody);
+
+  let configFields: ExtractedArgument[] = [];
+  const configInline = datastoreBody.match(
+    /configSchema:\s*z\.object\(\s*\{/,
+  );
+  if (configInline && configInline.index !== undefined) {
+    const start = configInline.index + configInline[0].length;
+    const schemaBody = extractBalancedBraces(datastoreBody, start);
+    if (schemaBody) {
+      configFields = parseZodObjectFields(schemaBody);
+    }
+  } else if (hasConfigSchema) {
+    // Check for named schema reference: configSchema: SomeName
+    const configRef = datastoreBody.match(/configSchema:\s*(\w+)/);
+    // Also check shorthand property: configSchema,
+    const shorthandRef = !configRef
+      ? datastoreBody.match(/configSchema\s*[,\n}]/)
+      : null;
+    const schemaName = configRef?.[1] ??
+      (shorthandRef ? "configSchema" : null);
+    if (schemaName && schemaName !== "z") {
+      const namedPattern = new RegExp(
+        `(?:const|let)\\s+${schemaName}\\s*=\\s*z\\.object\\(\\s*\\{`,
+      );
+      const namedMatch = content.match(namedPattern);
+      if (namedMatch && namedMatch.index !== undefined) {
+        const start = namedMatch.index + namedMatch[0].length;
+        const schemaBody = extractBalancedBraces(content, start);
+        if (schemaBody) {
+          configFields = parseZodObjectFields(schemaBody);
+        }
+      }
+    }
+  }
+
+  return {
+    fileName: relative(datastoresDir, filePath),
+    type: typeMatch[1],
+    name: nameMatch ? nameMatch[1] : "",
+    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
+    hasConfigSchema,
+    configFields,
+  };
 }
 
 /**

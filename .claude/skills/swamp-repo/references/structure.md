@@ -85,10 +85,13 @@ my-swamp-repo/
 │       └── secrets/ → ../.swamp/secrets/{type}/{vault-name}/ (local only)
 │
 ├── extensions/                  # Custom user extensions
-│   └── models/                  # TypeScript model definitions
-│       ├── my_model.ts
-│       └── aws/
-│           └── s3_bucket.ts     # Nested organization supported
+│   ├── models/                  # TypeScript model definitions
+│   │   ├── my_model.ts
+│   │   └── aws/
+│   │       └── s3_bucket.ts     # Nested organization supported
+│   ├── vaults/                  # TypeScript vault implementations
+│   ├── drivers/                 # TypeScript driver implementations
+│   └── datastores/              # TypeScript datastore implementations
 │
 ├── .claude/                     # Claude Code configuration
 │   ├── skills/                  # Skill definitions
@@ -115,6 +118,31 @@ Repository marker and metadata:
 swampVersion: "0.1.0"
 initializedAt: "2025-01-15T10:30:00Z"
 upgradedAt: "2025-01-20T14:00:00Z"
+modelsDir: "extensions/models" # optional, default shown
+workflowsDir: "extensions/workflows" # optional, default shown
+vaultsDir: "extensions/vaults" # optional, default shown
+driversDir: "extensions/drivers" # optional, default shown
+datastoresDir: "extensions/datastores" # optional, default shown
+trustedCollectives: # optional, default: ["swamp", "si"]
+  - swamp
+  - si
+trustMemberCollectives: true # optional, default: true
+```
+
+`trustedCollectives` controls which extension collectives auto-resolve on first
+use. The `swamp` and `si` collectives are trusted by default.
+
+Additionally, collectives the user belongs to (cached during `auth login` /
+`auth whoami`) are automatically trusted. Set `trustMemberCollectives: false` to
+disable this and only trust the explicit list.
+
+Manage trusted collectives via the CLI:
+
+```bash
+swamp extension trust list                # Show trusted collectives
+swamp extension trust add <collective>    # Add a collective
+swamp extension trust rm <collective>     # Remove a collective
+swamp extension trust auto-trust <on|off> # Toggle membership auto-trust
 ```
 
 ### CLAUDE.md

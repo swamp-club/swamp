@@ -26,6 +26,61 @@ JavaScript file at startup — no install step required.
 The bundler resolves and inlines all dependencies except `zod`, which is shared
 with swamp to preserve schema `instanceof` checks.
 
+### Import styles
+
+There are two ways to declare dependencies:
+
+**Inline imports** (no `deno.json` required):
+
+```typescript
+import { z } from "npm:zod@4.3.6";
+import { countBy } from "npm:lodash-es@4.17.21";
+```
+
+**Import map** (requires `deno.json` alongside `manifest.yaml`):
+
+```jsonc
+// deno.json
+{
+  "imports": {
+    "zod": "npm:zod@4.3.6",
+    "lodash-es": "npm:lodash-es@4.17.21"
+  }
+}
+```
+
+```typescript
+import { z } from "zod";
+import { countBy } from "lodash-es";
+```
+
+**package.json** (for extensions inside existing Node/TypeScript projects):
+
+```json
+{
+  "dependencies": {
+    "zod": "4.3.6",
+    "lodash-es": "4.17.21"
+  }
+}
+```
+
+```typescript
+import { z } from "zod";
+import { countBy } from "lodash-es";
+```
+
+Requires `node_modules/` to exist — run `npm install` or `deno install` before
+pushing. Swamp only uses the `package.json` when the extension source has bare
+specifiers; extensions with `npm:` prefixed imports are unaffected by an
+unrelated `package.json` in the project tree.
+
+The import map and package.json approaches are preferred for extensions that
+want to use standard tooling (testing, linting, formatting) with their own
+project configuration. All three styles produce identical bundles.
+
+### Example
+
 ```typescript
 // extensions/models/text_analyzer.ts
 import { z } from "npm:zod@4";
@@ -136,6 +191,8 @@ const VpcSchema = z.object({
   VpcId: z.string(),
 }).passthrough();
 
+type VpcData = z.infer<typeof VpcSchema>;
+
 export const model = {
   type: "@user/vpc",
   version: "2026.02.10.1",
@@ -183,7 +240,9 @@ export const model = {
         const region = context.globalArgs.region;
 
         // 1. Read stored data to get the resource ID
-        const existingData = await context.readResource!("vpc");
+        const existingData = await context.readResource!("vpc") as
+          | VpcData
+          | null;
 
         if (!existingData) {
           throw new Error("No VPC data found - run create first");
@@ -240,7 +299,7 @@ export const model = {
         const region = context.globalArgs.region;
 
         // Read back stored data to get the VPC ID
-        const vpcData = await context.readResource!("vpc");
+        const vpcData = await context.readResource!("vpc") as VpcData | null;
 
         if (!vpcData) {
           throw new Error("No VPC data found - nothing to delete");
@@ -273,7 +332,9 @@ export const model = {
         const region = context.globalArgs.region;
 
         // 1. Read stored data to get the VPC ID
-        const existingData = await context.readResource!("vpc");
+        const existingData = await context.readResource!("vpc") as
+          | VpcData
+          | null;
 
         if (!existingData) {
           throw new Error("No VPC data found - run create first");
@@ -607,6 +668,8 @@ const DropletSchema = z.object({
   status: z.string(),
 }).passthrough();
 
+type DropletData = z.infer<typeof DropletSchema>;
+
 async function apiCall(
   method: string,
   path: string,
@@ -651,7 +714,9 @@ export const model = {
         const instanceName = "main";
 
         // 1. Check if we already have state for this instance
-        const existing = await context.readResource!(instanceName);
+        const existing = await context.readResource!(instanceName) as
+          | DropletData
+          | null;
 
         if (existing) {
           const id = existing.id;
@@ -710,7 +775,8 @@ export const model = {
 **Key points:**
 
 - `context.readResource()` reads stored JSON data by instance name — returns
-  parsed object or `null` if no data exists
+  parsed object or `null` if no data exists. Cast with `as YourType | null`
+  using `z.infer<typeof YourSchema>` for type safety
 - The idempotency check verifies the resource **still exists at the provider**,
   not just that local data exists — this prevents stale data from blocking
   creation after a resource is externally deleted

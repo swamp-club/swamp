@@ -70,6 +70,8 @@ export const SWAMP_SUBDIRS = {
   vaultBundles: "vault-bundles",
   /** Cached driver extension bundles */
   driverBundles: "driver-bundles",
+  /** Cached datastore extension bundles */
+  datastoreBundles: "datastore-bundles",
   /** Audit command logs */
   audit: "audit",
   /** Legacy: resource definitions */

@@ -73,6 +73,10 @@ vaults follow the `@collective/name` type format (e.g., `@hashicorp/vault`,
 See [references/user-defined-vaults.md](references/user-defined-vaults.md) for
 the full implementation guide, export contract, and examples.
 
+Vault types from trusted collectives (e.g., `@swamp/aws-sm`) auto-resolve when
+referenced in vault configurations — no manual `extension pull` needed. Use
+`swamp extension trust list` to see which collectives are trusted.
+
 ## Create a Vault
 
 ```bash

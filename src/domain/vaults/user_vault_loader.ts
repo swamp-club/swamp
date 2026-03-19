@@ -20,7 +20,15 @@
 import { z } from "zod";
 import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
-import { bundleExtension } from "../models/bundle.ts";
+import {
+  bundleExtension,
+  fixCjsEsmInterop,
+  installZodGlobal,
+  rewriteZodImports,
+  sanitizeDataUrlError,
+  sourceHasBareSpecifiers,
+  uint8ArrayToBase64,
+} from "../models/bundle.ts";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { VaultProvider } from "./vault_provider.ts";
@@ -96,8 +104,14 @@ export class UserVaultLoader {
    * @param vaultsDir - The directory containing user vault files
    * @returns Result containing lists of loaded and failed files
    */
-  async loadVaults(vaultsDir: string): Promise<VaultLoadResult> {
+  async loadVaults(
+    vaultsDir: string,
+    options?: { skipAlreadyRegistered?: boolean },
+  ): Promise<VaultLoadResult> {
     const result: VaultLoadResult = { loaded: [], failed: [] };
+
+    // Ensure swamp's Zod is available on globalThis before importing bundles.
+    installZodGlobal();
 
     // Check if directory exists
     try {
@@ -140,6 +154,10 @@ export class UserVaultLoader {
 
         // Register with the vault type registry
         if (vaultTypeRegistry.has(userVault.type)) {
+          if (options?.skipAlreadyRegistered) {
+            // Silently skip — used during hot-load after auto-resolution
+            continue;
+          }
           result.failed.push({
             file,
             error: `Vault type '${userVault.type}' is already registered`,
@@ -182,9 +200,15 @@ export class UserVaultLoader {
         relativePath.replace(/\.ts$/, ".js"),
       );
 
-      // Check mtime-based cache against all local dependencies
+      // Check mtime-based cache against all local dependencies.
+      // If the bundle exists but freshness cannot be determined (e.g. a
+      // dependency file is missing because the extension was pushed with an
+      // older swamp that had a single-line import regex), fall back to the
+      // cached bundle rather than attempting a re-bundle that will also fail.
+      let bundleExists = false;
       try {
         const bundleStat = await Deno.stat(bundlePath);
+        bundleExists = true;
         if (bundleStat.mtime) {
           const { resolvedFiles } = await resolveLocalImports(
             [absolutePath],
@@ -207,7 +231,23 @@ export class UserVaultLoader {
           }
         }
       } catch {
-        // Bundle doesn't exist, stat failed, or import resolution failed — rebundle
+        if (bundleExists) {
+          logger
+            .debug`Using cached vault bundle for ${relativePath} (freshness check failed — missing dependency)`;
+          return await Deno.readTextFile(bundlePath);
+        }
+      }
+
+      // If the source uses bare specifiers (e.g., from "zod" instead of
+      // from "npm:zod@4") and a cached bundle exists, use it — re-bundling
+      // would fail without a deno.json import map to resolve the specifiers.
+      if (bundleExists) {
+        const source = await Deno.readTextFile(absolutePath);
+        if (sourceHasBareSpecifiers(source)) {
+          logger
+            .debug`Using cached vault bundle for ${relativePath} (source has bare specifiers)`;
+          return await Deno.readTextFile(bundlePath);
+        }
       }
 
       // Bundle and write to cache
@@ -232,6 +272,8 @@ export class UserVaultLoader {
     js: string,
     relativePath: string,
   ): Promise<Record<string, unknown>> {
+    const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
+
     if (this.repoDir) {
       const bundlePath = join(
         this.repoDir,
@@ -242,20 +284,31 @@ export class UserVaultLoader {
 
       try {
         await Deno.stat(bundlePath);
-        // Import from file URL — avoids base64 encoding overhead
+        let cachedJs = await Deno.readTextFile(bundlePath);
+        const fixed = fixCjsEsmInterop(rewriteZodImports(cachedJs));
+        if (fixed !== cachedJs) {
+          cachedJs = fixed;
+          await Deno.writeTextFile(bundlePath, cachedJs);
+        }
         return await import(toFileUrl(bundlePath).href);
-      } catch {
-        // Fall through to data URL import
+      } catch (error) {
+        logger.debug`File URL import failed for ${relativePath}: ${
+          String(error).substring(0, 200)
+        }`;
       }
     }
 
-    // Fallback: import via base64 data URL
-    const encoded = btoa(
-      String.fromCharCode(...new TextEncoder().encode(js)),
-    );
-    return await import(
-      `data:application/javascript;base64,${encoded}`
-    );
+    // Fallback: import via base64 data URL (no file on disk)
+    try {
+      const encoded = uint8ArrayToBase64(
+        new TextEncoder().encode(rewritten),
+      );
+      return await import(
+        `data:application/javascript;base64,${encoded}`
+      );
+    } catch (error) {
+      throw new Error(sanitizeDataUrlError(error));
+    }
   }
 
   /**
@@ -282,6 +335,10 @@ export class UserVaultLoader {
     for await (const entry of Deno.readDir(dir)) {
       const relativePath = prefix ? join(prefix, entry.name) : entry.name;
       if (entry.isDirectory) {
+        // Skip _-prefixed directories (e.g. _lib/) — helper modules, not entry points
+        if (entry.name.startsWith("_")) {
+          continue;
+        }
         const nested = await this.discoverFiles(
           join(dir, entry.name),
           relativePath,

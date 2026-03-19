@@ -307,6 +307,26 @@ Deno.test("checkExtensionQuality ignores import() in multi-line template literal
   );
 });
 
+Deno.test("checkExtensionQuality uses deno.json config when denoConfigPath provided", async () => {
+  await withTempFiles(
+    {
+      "model.ts": 'export const x = 1;\nexport const y = "hello";\n',
+      "deno.json": "{}",
+    },
+    async (dir, paths) => {
+      const tsPaths = paths.filter((p) => p.endsWith(".ts"));
+      const denoConfigPath = join(dir, "deno.json");
+      const result = await checkExtensionQuality(
+        tsPaths,
+        DENO_PATH,
+        denoConfigPath,
+      );
+      assertEquals(result.passed, true);
+      assertEquals(result.issues, []);
+    },
+  );
+});
+
 Deno.test("stripCommentsAndStrings removes single-line comments", () => {
   const result = stripCommentsAndStrings('code(); // import("pkg")');
   assertEquals(result.includes("import"), false);

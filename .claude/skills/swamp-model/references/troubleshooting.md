@@ -213,6 +213,16 @@ to use that field.
    models/my_model.ts             # Wrong
    ```
 
+4. **Extension not auto-resolved** — types from trusted collectives (`@swamp/*`,
+   `@si/*`, and your membership collectives) auto-resolve on first use. If
+   resolution failed:
+   - Check which collectives are trusted: `swamp extension trust list`
+   - Check network connectivity (registry at swamp.club)
+   - Check if extension exists: `swamp extension search <query>`
+   - Manual fallback: `swamp extension pull @collective/name`
+   - Run `swamp auth whoami` to refresh cached membership collectives
+   - Trust a new collective: `swamp extension trust add <name>`
+
 ## Expression Debugging
 
 ### Step-by-Step Debug Process

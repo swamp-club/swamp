@@ -157,6 +157,62 @@ Has methodArgs.run?  ──yes──▶  Command mode
 4. Parse JSON output from stdout: `{ resources, files }`
 5. Clean up temp directory
 
+## Custom Drivers
+
+Extensions can register custom execution drivers via `extensions/drivers/`.
+These are TypeScript files that export a `driver` object with a `createDriver`
+factory that returns an `ExecutionDriver`. Custom drivers enable execution in
+environments swamp doesn't ship with — remote servers, cloud functions, custom
+sandboxes, etc.
+
+### Type Registry
+
+The `DriverTypeRegistry` is a Map-backed singleton (`driverTypeRegistry`), using
+the same pattern as the datastore registry. Built-in types (raw, docker) are
+registered at startup. User-defined types are loaded from `extensions/drivers/`
+via `UserDriverLoader`. Types must follow the `@collective/name` or
+`collective/name` pattern. Duplicate type registrations are rejected with an
+error.
+
+### ExecutionDriver Interface
+
+A custom driver implements a minimal interface:
+
+- **`type`** (readonly) — the driver type identifier
+- **`execute`** (required) — receives an `ExecutionRequest` (method name, args,
+  definition metadata, optional bundle) and returns an `ExecutionResult` with
+  status, outputs, logs, and duration. Outputs use `kind: "persisted"` when the
+  driver writes data in-process, or `kind: "pending"` when the host must persist
+  the data after execution.
+- **`initialize?`** — optional setup hook
+- **`shutdown?`** — optional cleanup hook
+
+See `src/domain/drivers/execution_driver.ts` for the full interface.
+
+### Loading & Bundling
+
+`UserDriverLoader` follows the same pattern as `UserDatastoreLoader`: discovers
+`.ts` files recursively (excluding `_test.ts`), bundles via Deno with zod
+externalized, and validates the export against `UserDriverSchema` — requiring
+`type`, `name`, `description`, an optional `configSchema`, and a `createDriver`
+factory function. Files without a `driver` export are silently skipped. Bundles
+are cached in `.swamp/driver-bundles/` with mtime-based invalidation.
+
+### Resolution with Custom Drivers
+
+Custom driver types follow the same resolution priority as built-in types
+(CLI > step > job > workflow > definition > raw). The first non-undefined
+`driver` value wins. Custom types are referenced by their full scoped name
+(e.g., `driver: "@myorg/lambda"`).
+
+### Custom Driver Implementation Files
+
+| File | Purpose |
+|------|---------|
+| `src/domain/drivers/execution_driver.ts` | `ExecutionDriver` interface |
+| `src/domain/drivers/driver_type_registry.ts` | Type registry singleton |
+| `src/domain/drivers/user_driver_loader.ts` | Loader, validator, bundler |
+
 ## Self-contained Bundling
 
 Extension models are bundled into JavaScript at load time. By default, zod is

@@ -1368,22 +1368,62 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       }
 
-      for (const version of versionsToRemove) {
-        const contentPath = this.getContentPath(
+      // Build removal tasks upfront
+      const removalTasks = versionsToRemove.map((version) => ({
+        contentPath: this.getContentPath(type, modelId, data.name, version),
+        versionDir: this.getPath(type, modelId, data.name, version),
+      }));
+
+      // Execute in parallel batches
+      const GC_BATCH_CONCURRENCY = 20;
+      for (let i = 0; i < removalTasks.length; i += GC_BATCH_CONCURRENCY) {
+        const batch = removalTasks.slice(i, i + GC_BATCH_CONCURRENCY);
+        const results = await Promise.allSettled(
+          batch.map(async ({ contentPath, versionDir }) => {
+            let bytes = 0;
+            try {
+              const stat = await Deno.stat(contentPath);
+              bytes = stat.size;
+            } catch {
+              // Ignore stat errors
+            }
+            try {
+              await Deno.remove(versionDir, { recursive: true });
+            } catch (error) {
+              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            }
+            return bytes;
+          }),
+        );
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            bytesReclaimed += result.value;
+            versionsRemoved++;
+          } else {
+            logger
+              .error`GC failed to remove version directory: ${result.reason}`;
+          }
+        }
+      }
+
+      // Re-scan actual versions after parallel deletions to avoid stale marker
+      if (versionsToRemove.length > 0) {
+        const currentVersions = await this.listVersions(
           type,
           modelId,
           data.name,
-          version,
         );
-        try {
-          const stat = await Deno.stat(contentPath);
-          bytesReclaimed += stat.size;
-        } catch {
-          // Ignore stat errors
+        if (currentVersions.length > 0) {
+          await this.updateLatestMarker(
+            type,
+            modelId,
+            data.name,
+            Math.max(...currentVersions),
+          );
+        } else {
+          const dataNameDir = this.getDataNameDir(type, modelId, data.name);
+          await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
         }
-
-        await this.delete(type, modelId, data.name, version);
-        versionsRemoved++;
       }
     }
 

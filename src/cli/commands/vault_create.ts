@@ -25,84 +25,26 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   createVaultConfigId,
   VaultConfig,
 } from "../../domain/vaults/vault_config.ts";
+import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_service.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-interface VaultCreateOptions {
-  region?: string;
-  vaultUrl?: string;
-  opVault?: string;
-  opAccount?: string;
-}
-
 /**
- * Resolves provider-specific configuration for each vault type.
- * Provider options (e.g., region, vault URL) are resolved at creation time
- * from flags or environment variables and persisted in the config file.
+ * Resolves provider-specific configuration for built-in vault types.
  */
 function resolveProviderConfig(
   vaultType: string,
   repoDir: string,
-  options: VaultCreateOptions,
-  logger: {
-    info: (template: TemplateStringsArray, ...args: unknown[]) => void;
-  },
 ): Record<string, unknown> {
   switch (vaultType) {
-    case "aws-sm": {
-      const region = options.region || Deno.env.get("AWS_REGION");
-      if (!region) {
-        throw new UserError(
-          "AWS region is required. Provide --region or set AWS_REGION environment variable.",
-        );
-      }
-      if (!options.region) {
-        logger
-          .info`Using region from AWS_REGION environment variable: ${region}`;
-      }
-      return { region };
-    }
-    case "azure-kv": {
-      const vaultUrl = options.vaultUrl || Deno.env.get("AZURE_KEYVAULT_URL");
-      if (!vaultUrl) {
-        throw new UserError(
-          "Azure Key Vault URL is required. Provide --vault-url or set AZURE_KEYVAULT_URL environment variable.",
-        );
-      }
-      if (!options.vaultUrl) {
-        logger
-          .info`Using vault URL from AZURE_KEYVAULT_URL environment variable: ${vaultUrl}`;
-      }
-      return { vault_url: vaultUrl };
-    }
-    case "1password": {
-      const opVault = options.opVault || Deno.env.get("OP_VAULT");
-      if (!opVault) {
-        throw new UserError(
-          "1Password vault name is required. Provide --op-vault or set OP_VAULT environment variable.",
-        );
-      }
-      if (!options.opVault) {
-        logger
-          .info`Using vault name from OP_VAULT environment variable: ${opVault}`;
-      }
-      const opAccount = options.opAccount || Deno.env.get("OP_ACCOUNT");
-      if (opAccount && !options.opAccount) {
-        logger
-          .info`Using account from OP_ACCOUNT environment variable: ${opAccount}`;
-      }
-      const config: Record<string, unknown> = { op_vault: opVault };
-      if (opAccount) {
-        config.op_account = opAccount;
-      }
-      return config;
-    }
     case "local_encryption":
       return {
         auto_generate: true,
@@ -144,24 +86,8 @@ export const vaultCreateCommand = new Command()
   .arguments("<type:string> [name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(
-    "--region <region:string>",
-    "AWS region (for aws-sm type). Falls back to AWS_REGION env var.",
-  )
-  .option(
-    "--vault-url <url:string>",
-    "Azure Key Vault URL (for azure-kv type). Falls back to AZURE_KEYVAULT_URL env var.",
-  )
-  .option(
-    "--op-vault <vault:string>",
-    "1Password vault name (for 1password type). Falls back to OP_VAULT env var.",
-  )
-  .option(
-    "--op-account <account:string>",
-    "1Password account shorthand (for 1password type). Falls back to OP_ACCOUNT env var.",
-  )
-  .option(
     "--config <json:string>",
-    "Provider configuration as JSON (for user-defined vault types)",
+    "Provider configuration as JSON",
   )
   .action(
     async function (
@@ -192,9 +118,20 @@ export const vaultCreateCommand = new Command()
       ctx.logger
         .debug`Creating vault: type=${vaultType}, name=${vaultName}`;
 
+      // Auto-resolve extension vault types if not already installed
+      if (!vaultTypeRegistry.has(vaultType) && vaultType.startsWith("@")) {
+        await resolveVaultType(vaultType, getAutoResolver());
+      }
+
       // Validate the vault type using the registry
       const typeInfo = vaultTypeRegistry.get(vaultType);
       if (!typeInfo) {
+        const renamed = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
+        if (renamed) {
+          throw new UserError(
+            `The type '${vaultType}' has been renamed to '${renamed}'. Use: swamp vault create ${renamed} ${vaultName}`,
+          );
+        }
         const availableTypes = vaultTypeRegistry.getAll().map((v) => v.type)
           .join(", ");
         throw new UserError(
@@ -222,22 +159,20 @@ export const vaultCreateCommand = new Command()
       let providerConfig: Record<string, unknown>;
 
       if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
-        // User-defined vault type: parse --config JSON
-        if (!options.config) {
-          throw new UserError(
-            `User-defined vault type '${vaultType}' requires --config <json> with provider configuration.`,
-          );
-        }
-
-        try {
-          providerConfig = JSON.parse(options.config) as Record<
-            string,
-            unknown
-          >;
-        } catch {
-          throw new UserError(
-            `Invalid JSON in --config: ${options.config}`,
-          );
+        // Extension vault type: parse --config JSON, defaulting to {} if not provided
+        if (options.config) {
+          try {
+            providerConfig = JSON.parse(options.config) as Record<
+              string,
+              unknown
+            >;
+          } catch {
+            throw new UserError(
+              `Invalid JSON in --config: ${options.config}`,
+            );
+          }
+        } else {
+          providerConfig = {};
         }
 
         // Validate against configSchema if provided
@@ -249,18 +184,23 @@ export const vaultCreateCommand = new Command()
             );
           }
         }
+      } else if (options.config) {
+        // Built-in type with explicit --config JSON
+        try {
+          providerConfig = JSON.parse(options.config) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          throw new UserError(
+            `Invalid JSON in --config: ${options.config}`,
+          );
+        }
       } else {
-        // Built-in vault type: resolve from flags/env vars
+        // Built-in vault type: resolve defaults
         providerConfig = resolveProviderConfig(
           vaultType,
           repoDir,
-          {
-            region: options.region,
-            vaultUrl: options.vaultUrl,
-            opVault: options.opVault,
-            opAccount: options.opAccount,
-          },
-          ctx.logger,
         );
       }
 

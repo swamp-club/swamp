@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { setColorEnabled } from "@std/fmt/colors";
+import { setColorEnabled, stripAnsiCode } from "@std/fmt/colors";
 import { isAbsolute, resolve } from "@std/path";
 import { parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -53,15 +53,25 @@ import {
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
+import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
 
 // Import driver types barrel to trigger built-in driver registration
 import "../domain/drivers/driver_types.ts";
+// Import datastore types barrel to trigger built-in datastore registration
+import "../domain/datastore/datastore_types.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
+import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
+import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
+import { setAutoResolver } from "./auto_resolver_context.ts";
+import {
+  createAutoResolveInstallerAdapter,
+  createAutoResolveOutputAdapter,
+} from "./auto_resolver_adapters.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
 import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
@@ -93,6 +103,8 @@ import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 export { resolveVaultsDir };
 import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 export { resolveDriversDir };
+import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
+export { resolveDatastoresDir };
 
 /**
  * Resolves the log level.
@@ -145,22 +157,46 @@ export function isUpdateCheckDisabledByEnv(): boolean {
 }
 
 /**
+ * Commands that never need user extensions loaded.
+ * An empty string represents no command (i.e. show help).
+ */
+const SKIP_EXTENSION_COMMANDS = new Set([
+  "", // no command = show help
+  "help",
+  "version",
+  "completions",
+  "init",
+  "update",
+  "auth",
+  "telemetry",
+  "issue",
+]);
+
+/**
+ * Checks whether the pre-parsed command needs user extensions loaded.
+ *
+ * @internal Exported for testing
+ */
+export function commandNeedsExtensions(args: string[]): boolean {
+  const commandInfo = extractCommandInfo(args);
+  return !SKIP_EXTENSION_COMMANDS.has(commandInfo.command);
+}
+
+/**
  * Load user models from configured directory.
  */
-async function loadUserModels(repoDir: string): Promise<void> {
-  const markerRepo = new RepoMarkerRepository();
-
+async function loadUserModels(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
   try {
-    const repoPath = RepoPath.create(repoDir);
-    const marker = await markerRepo.read(repoPath);
-
     const modelsDir = resolveModelsDir(marker);
     // Handle both absolute and relative paths (cross-platform)
     const absoluteModelsDir = isAbsolute(modelsDir)
       ? modelsDir
       : resolve(repoDir, modelsDir);
 
-    const denoRuntime = new EmbeddedDenoRuntime();
     const loader = new UserModelLoader(denoRuntime, repoDir);
     const result = await loader.loadModels(absoluteModelsDir);
 
@@ -174,7 +210,9 @@ async function loadUserModels(repoDir: string): Promise<void> {
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
       console.error(
-        `Warning: Failed to load user model ${failure.file}: ${failure.error}`,
+        `Warning: Failed to load user model ${failure.file}: ${
+          stripAnsiCode(failure.error)
+        }`,
       );
     }
   } catch (error) {
@@ -188,19 +226,17 @@ async function loadUserModels(repoDir: string): Promise<void> {
 /**
  * Load user vault implementations from configured directory.
  */
-async function loadUserVaults(repoDir: string): Promise<void> {
-  const markerRepo = new RepoMarkerRepository();
-
+async function loadUserVaults(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
   try {
-    const repoPath = RepoPath.create(repoDir);
-    const marker = await markerRepo.read(repoPath);
-
     const vaultsDir = resolveVaultsDir(marker);
     const absoluteVaultsDir = isAbsolute(vaultsDir)
       ? vaultsDir
       : resolve(repoDir, vaultsDir);
 
-    const denoRuntime = new EmbeddedDenoRuntime();
     const loader = new UserVaultLoader(denoRuntime, repoDir);
     const result = await loader.loadVaults(absoluteVaultsDir);
 
@@ -214,7 +250,9 @@ async function loadUserVaults(repoDir: string): Promise<void> {
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
       console.error(
-        `Warning: Failed to load user vault ${failure.file}: ${failure.error}`,
+        `Warning: Failed to load user vault ${failure.file}: ${
+          stripAnsiCode(failure.error)
+        }`,
       );
     }
   } catch (error) {
@@ -225,19 +263,17 @@ async function loadUserVaults(repoDir: string): Promise<void> {
   }
 }
 
-async function loadUserDrivers(repoDir: string): Promise<void> {
-  const markerRepo = new RepoMarkerRepository();
-
+async function loadUserDrivers(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
   try {
-    const repoPath = RepoPath.create(repoDir);
-    const marker = await markerRepo.read(repoPath);
-
     const driversDir = resolveDriversDir(marker);
     const absoluteDriversDir = isAbsolute(driversDir)
       ? driversDir
       : resolve(repoDir, driversDir);
 
-    const denoRuntime = new EmbeddedDenoRuntime();
     const loader = new UserDriverLoader(denoRuntime, repoDir);
     const result = await loader.loadDrivers(absoluteDriversDir);
 
@@ -251,13 +287,52 @@ async function loadUserDrivers(repoDir: string): Promise<void> {
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
       console.error(
-        `Warning: Failed to load user driver ${failure.file}: ${failure.error}`,
+        `Warning: Failed to load user driver ${failure.file}: ${
+          stripAnsiCode(failure.error)
+        }`,
       );
     }
   } catch (error) {
     // Not in a swamp repo or other error - log at debug level for troubleshooting
     if (Deno.env.get("SWAMP_DEBUG")) {
       console.debug(`Skipping user drivers: ${error}`);
+    }
+  }
+}
+
+async function loadUserDatastores(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
+  try {
+    const datastoresDir = resolveDatastoresDir(marker);
+    const absoluteDatastoresDir = isAbsolute(datastoresDir)
+      ? datastoresDir
+      : resolve(repoDir, datastoresDir);
+
+    const loader = new UserDatastoreLoader(denoRuntime, repoDir);
+    const result = await loader.loadDatastores(absoluteDatastoresDir);
+
+    // Log successes at debug level
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      for (const file of result.loaded) {
+        console.debug(`Loaded user datastore type from ${file}`);
+      }
+    }
+
+    // Log failures as warnings (don't block CLI startup)
+    for (const failure of result.failed) {
+      console.error(
+        `Warning: Failed to load user datastore ${failure.file}: ${
+          stripAnsiCode(failure.error)
+        }`,
+      );
+    }
+  } catch (error) {
+    // Not in a swamp repo or other error - log at debug level for troubleshooting
+    if (Deno.env.get("SWAMP_DEBUG")) {
+      console.debug(`Skipping user datastores: ${error}`);
     }
   }
 }
@@ -300,6 +375,8 @@ export function resolveTelemetryEndpoint(
   }
   return DEFAULT_TELEMETRY_ENDPOINT;
 }
+
+import { resolveTrustedCollectives } from "../libswamp/extensions/trust.ts";
 
 interface TelemetryContext {
   service: TelemetryService;
@@ -402,12 +479,7 @@ export async function runCli(args: string[]): Promise<void> {
     telemetryCtx = await initTelemetryService(repoDir);
   }
 
-  // Load user models, vaults, and drivers before setting up CLI
-  await loadUserModels(repoDir);
-  await loadUserVaults(repoDir);
-  await loadUserDrivers(repoDir);
-
-  // Read marker for resolveLogLevel (used in globalAction closure)
+  // Read marker once for log level, extension loading, and auto-resolver
   let marker: RepoMarkerData | null = null;
   try {
     const markerRepo = new RepoMarkerRepository();
@@ -415,6 +487,56 @@ export async function runCli(args: string[]): Promise<void> {
     marker = await markerRepo.read(repoPath);
   } catch {
     // Not in a swamp repo - marker stays null
+  }
+
+  // Load user extensions in parallel (skip for commands that don't need them)
+  if (commandNeedsExtensions(args)) {
+    const denoRuntime = new EmbeddedDenoRuntime();
+    await Promise.all([
+      loadUserModels(repoDir, marker, denoRuntime),
+      loadUserVaults(repoDir, marker, denoRuntime),
+      loadUserDrivers(repoDir, marker, denoRuntime),
+      loadUserDatastores(repoDir, marker, denoRuntime),
+    ]);
+  }
+
+  // Load cached auth collectives for membership-based trust
+  let authCollectives: string[] | undefined;
+  try {
+    const authRepo = new AuthRepository();
+    const creds = await authRepo.load();
+    authCollectives = creds?.collectives;
+  } catch {
+    // Auth file unreadable — continue without membership collectives
+  }
+
+  // Create auto-resolver for trusted collectives (merging membership collectives)
+  const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
+  if (trustedCollectives.length > 0 && marker) {
+    const outputMode = getOutputModeFromArgs(args);
+    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
+    const extensionClient = new ExtensionApiClient(serverUrl);
+    const modelsDir = resolveModelsDir(marker);
+    const workflowsDir = resolveWorkflowsDir(marker);
+    const vaultsDir = resolveVaultsDir(marker);
+    const denoRuntime = new EmbeddedDenoRuntime();
+    setAutoResolver(
+      new ExtensionAutoResolver({
+        allowedCollectives: trustedCollectives,
+        extensionLookup: extensionClient,
+        extensionInstaller: createAutoResolveInstallerAdapter({
+          extensionClient,
+          modelsDir,
+          workflowsDir,
+          vaultsDir,
+          driversDir: resolveDriversDir(marker),
+          datastoresDir: resolveDatastoresDir(marker),
+          repoDir,
+          denoRuntime,
+        }),
+        output: createAutoResolveOutputAdapter(outputMode),
+      }),
+    );
   }
 
   const cli = new Command()

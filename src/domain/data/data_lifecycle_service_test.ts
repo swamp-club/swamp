@@ -28,10 +28,31 @@ class MockDataRepository {
   findAllGlobal: () => Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   > = () => Promise.resolve([]);
-  listVersions = () => Promise.resolve([]);
+  listVersions = (): Promise<number[]> => Promise.resolve([]);
   removeLatestMarker = () => Promise.resolve();
   collectGarbage = () =>
     Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 });
+  deleteCalls: Array<{
+    type: ModelType;
+    modelId: string;
+    dataName: string;
+    version?: number;
+  }> = [];
+  delete = (
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version?: number,
+  ) => {
+    this.deleteCalls.push({ type, modelId, dataName, version });
+    return Promise.resolve();
+  };
+  getContentPath = (
+    _type: ModelType,
+    _modelId: string,
+    _dataName: string,
+    _version: number,
+  ): string => "/tmp/fake-content-path";
 }
 
 class MockWorkflowRunRepository {
@@ -431,4 +452,63 @@ Deno.test("findExpiredData - includes expired active data alongside deleted mark
   // Only the active expired data should be returned, not the deletion marker
   assertEquals(expired.length, 1);
   assertEquals(expired[0].dataName, "active-expired");
+});
+
+Deno.test("deleteExpiredData - hard-deletes expired data via delete()", async () => {
+  const mockRepo = new MockDataRepository();
+  const expiredData = createMockData({ name: "old-data" });
+  const modelType = ModelType.create("test/model");
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      { data: expiredData, modelType, modelId: "m1" },
+    ]);
+  mockRepo.listVersions = () => Promise.resolve([1, 2, 3]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const result = await service.deleteExpiredData();
+
+  // Should call delete() with no version (hard-delete all versions)
+  assertEquals(mockRepo.deleteCalls.length, 1);
+  assertEquals(mockRepo.deleteCalls[0].modelId, "m1");
+  assertEquals(mockRepo.deleteCalls[0].dataName, "old-data");
+  assertEquals(mockRepo.deleteCalls[0].version, undefined);
+
+  // Should report the expired entry
+  assertEquals(result.dataEntriesExpired, 1);
+  assertEquals(result.expiredEntries[0].dataName, "old-data");
+  assertEquals(result.expiredEntries[0].versionCount, 3);
+  // versionsDeleted includes the 3 versions from the expired entry
+  assertEquals(result.versionsDeleted, 3);
+});
+
+Deno.test("deleteExpiredData - dry run does not call delete()", async () => {
+  const mockRepo = new MockDataRepository();
+  const expiredData = createMockData({ name: "old-data" });
+  const modelType = ModelType.create("test/model");
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      { data: expiredData, modelType, modelId: "m1" },
+    ]);
+  mockRepo.listVersions = () => Promise.resolve([1, 2]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const result = await service.deleteExpiredData({ dryRun: true });
+
+  // Should NOT call delete in dry run
+  assertEquals(mockRepo.deleteCalls.length, 0);
+  assertEquals(result.dryRun, true);
+  assertEquals(result.dataEntriesExpired, 1);
+  // No versions deleted or bytes reclaimed in dry run
+  assertEquals(result.versionsDeleted, 0);
+  assertEquals(result.bytesReclaimed, 0);
 });

@@ -43,6 +43,10 @@ import {
   getSwampDataDir,
   SWAMP_DATA_DIR,
 } from "../../infrastructure/persistence/paths.ts";
+import {
+  collapseEnvVars,
+  expandEnvVars,
+} from "../../infrastructure/persistence/env_path.ts";
 import { S3CacheSyncService } from "../../infrastructure/persistence/s3_cache_sync.ts";
 import { S3Client } from "../../infrastructure/persistence/s3_client.ts";
 import { S3DatastoreVerifier } from "../../infrastructure/persistence/s3_datastore_verifier.ts";
@@ -127,10 +131,11 @@ const datastoreSetupFilesystemCommand = new Command()
 
     await requireUpgradedRepo(repoDir);
 
-    // Resolve path
-    const datastorePath = isAbsolute(options.path)
-      ? options.path
-      : resolve(repoDir, options.path);
+    // Expand env vars (e.g. ~/data or $HOME/data) then resolve path
+    const expandedPath = expandEnvVars(options.path);
+    const datastorePath = isAbsolute(expandedPath)
+      ? expandedPath
+      : resolve(repoDir, expandedPath);
 
     // Validate target is accessible
     await ensureDir(datastorePath);
@@ -203,7 +208,7 @@ const datastoreSetupFilesystemCommand = new Command()
     if (marker) {
       marker.datastore = {
         type: "filesystem",
-        path: datastorePath,
+        path: collapseEnvVars(datastorePath),
         directories: options.directories ?? [...DEFAULT_DATASTORE_SUBDIRS],
       };
       await markerRepo.write(repoPath, marker);

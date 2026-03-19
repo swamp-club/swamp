@@ -19,19 +19,15 @@
 
 import { Command } from "@cliffy/command";
 import {
-  type ModelMethodDescribeData,
-  renderModelMethodDescribe,
-} from "../../presentation/output/model_method_describe_output.ts";
+  consumeStream,
+  createLibSwampContext,
+  createModelMethodDescribeDeps,
+  modelMethodDescribe,
+} from "../../libswamp/mod.ts";
+import { createModelMethodDescribeRenderer } from "../../presentation/renderers/model_method_describe.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { UserError } from "../../domain/errors.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
-import { toMethodDescribeData } from "./type_describe.ts";
 
-// Cliffy's custom type system returns `unknown` for custom types like `model_name`,
-// but we need to pass `options` to functions expecting specific types. Using `any`
-// here is the pragmatic workaround for Cliffy's type inference limitations.
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
@@ -51,63 +47,26 @@ export const modelMethodDescribeCommand = new Command()
       modelIdOrName: string,
       methodName: string,
     ) {
-      const ctx = createContext(options as GlobalOptions, [
+      const cliCtx = createContext(options as GlobalOptions, [
         "model",
         "method",
         "describe",
       ]);
-      const { repoContext } = await requireInitializedRepoReadOnly({
+
+      const { repoDir } = await requireInitializedRepoReadOnly({
         repoDir: options.repoDir ?? ".",
-        outputMode: ctx.outputMode,
+        outputMode: cliCtx.outputMode,
       });
-      const definitionRepo = repoContext.definitionRepo;
 
-      ctx.logger
-        .debug`Describing method '${methodName}' on model: ${modelIdOrName}`;
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createModelMethodDescribeDeps(repoDir);
 
-      // Look up the model definition
-      const result = await findDefinitionByIdOrName(
-        definitionRepo,
-        modelIdOrName,
-      );
-      if (!result) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
-      }
-      const { definition, type: modelType } = result;
-
-      // Get the model definition from registry
-      const modelDef = modelRegistry.get(modelType);
-      if (!modelDef) {
-        throw new UserError(`Unknown model type: ${modelType.normalized}`);
-      }
-
-      // Validate method exists on the model
-      const method = modelDef.methods[methodName];
-      if (!method) {
-        const availableMethods = Object.keys(modelDef.methods).join(", ");
-        throw new UserError(
-          `Unknown method '${methodName}' for type '${modelType.normalized}'. Available methods: ${
-            availableMethods || "none"
-          }`,
-        );
-      }
-
-      // Build the output data
-      const methodData = toMethodDescribeData(
-        methodName,
-        method,
-        modelDef.resources,
-        modelDef.files,
+      const renderer = createModelMethodDescribeRenderer(cliCtx.outputMode);
+      await consumeStream(
+        modelMethodDescribe(ctx, deps, modelIdOrName, methodName),
+        renderer.handlers(),
       );
 
-      const data: ModelMethodDescribeData = {
-        modelName: definition.name,
-        modelType: modelType.normalized,
-        version: modelDef.version,
-        method: methodData,
-      };
-
-      renderModelMethodDescribe(data, ctx.outputMode);
-      ctx.logger.debug("Method describe command completed");
+      cliCtx.logger.debug("Method describe command completed");
     },
   );

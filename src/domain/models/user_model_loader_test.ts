@@ -223,6 +223,7 @@ function createTestContext(
 ): { context: MethodContext; getResults: () => MockWriterResult[] } {
   const { writeResource, createFileWriter, getResults } = createMockWriters();
   const context: MethodContext = {
+    signal: new AbortController().signal,
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),
@@ -2066,6 +2067,49 @@ export class ProxmoxClient {
   });
 });
 
+Deno.test("UserModelLoader silently skips type-only .ts files in subdirectories", async () => {
+  const validModelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@test/type-only-skip-${Date.now()}",
+  version: "2026.02.11.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const typeOnlyCode = `
+// Type-only file — all declarations erased at compile time.
+export interface ServerConfig {
+  host: string;
+  port: number;
+}
+
+export type Status = "running" | "stopped" | "error";
+`;
+
+  await withTempModels({
+    "models/my_model/mod.ts": validModelCode,
+    "models/my_model/types.ts": typeOnlyCode,
+  }, async (dir) => {
+    const loader = createTestLoader();
+    const result = await loader.loadModels(dir);
+
+    // Should load only the valid model
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.loaded[0], join("models", "my_model", "mod.ts"));
+
+    // Type-only files should be silently skipped (not in failed list)
+    assertEquals(result.failed.length, 0);
+  });
+});
+
 Deno.test("UserModelLoader invalidates bundle cache when dependency changes", async () => {
   const ts = Date.now();
   const helperCode = `export const greeting = "hello";`;
@@ -2263,4 +2307,66 @@ export const model = {
     assertEquals(modelDef!.methods.remove.kind, "delete");
     assertEquals(modelDef!.methods.run.kind, undefined);
   });
+});
+
+Deno.test("UserModelLoader skips _-prefixed directories in discoverFiles", async () => {
+  const ts = Date.now();
+  const validModel = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "@user/skip-underscore-${ts}",
+  version: "2026.03.18.1",
+  globalArguments: z.object({}),
+  resources: {
+    "data": {
+      description: "Data output",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const helperCode = `
+export function helper() { return "helper"; }
+`;
+
+  await withTempModels(
+    {
+      "entry.ts": validModel,
+      "_lib/helper.ts": helperCode,
+    },
+    async (dir) => {
+      const loader = createTestLoader();
+      const result = await loader.loadModels(dir);
+
+      // The entry model should load successfully
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.loaded[0], "entry.ts");
+
+      // _lib/helper.ts should NOT appear in failed or loaded
+      for (const failure of result.failed) {
+        assertEquals(
+          failure.file.includes("_lib"),
+          false,
+          `_lib file should not appear in failed: ${failure.file}`,
+        );
+      }
+      for (const loaded of result.loaded) {
+        assertEquals(
+          loaded.includes("_lib"),
+          false,
+          `_lib file should not appear in loaded: ${loaded}`,
+        );
+      }
+    },
+  );
 });

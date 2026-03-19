@@ -559,16 +559,16 @@ Deno.test("CLI: model method run creates Data with correct metadata", async () =
     const output = JSON.parse(result.stdout);
     assertEquals(output.methodName, "execute");
     assertEquals(output.modelName, "data-test-model");
-    assertEquals(output.type, "command/shell");
+    assertEquals(output.modelType, "command/shell");
 
     // Verify result artifact was created (shell model produces result with exitCode, command, etc.)
-    assertExists(output.data);
-    assertExists(output.data.id);
-    assertExists(output.data.path);
-    assertExists(output.data.attributes);
-    assertEquals(output.data.attributes.exitCode, 0);
-    assertExists(output.data.attributes.command);
-    assertExists(output.data.attributes.executedAt);
+    assertExists(output.dataArtifacts[0]);
+    assertExists(output.dataArtifacts[0].id);
+    assertExists(output.dataArtifacts[0].path);
+    assertExists(output.dataArtifacts[0].attributes);
+    assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
+    assertExists(output.dataArtifacts[0].attributes.command);
+    assertExists(output.dataArtifacts[0].attributes.executedAt);
   });
 });
 
@@ -606,9 +606,12 @@ Deno.test("CLI: model method run creates versioned Data on subsequent calls", as
 
       assertEquals(result.code, 0, `Run ${i + 1} should succeed`);
       const output = JSON.parse(result.stdout);
-      assertExists(output.data, `Run ${i + 1} should have data`);
-      assertExists(output.data.path, `Run ${i + 1} should have data path`);
-      paths.push(output.data.path);
+      assertExists(output.dataArtifacts[0], `Run ${i + 1} should have data`);
+      assertExists(
+        output.dataArtifacts[0].path,
+        `Run ${i + 1} should have data path`,
+      );
+      paths.push(output.dataArtifacts[0].path);
     }
 
     // Verify each run produces unique data

@@ -162,6 +162,38 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-vault",
   },
   {
+    relativePath: "swamp-extension-datastore/SKILL.md",
+    name: "swamp-extension-datastore",
+  },
+  {
+    relativePath: "swamp-extension-datastore/references/api.md",
+    name: "swamp-extension-datastore",
+  },
+  {
+    relativePath: "swamp-extension-datastore/references/examples.md",
+    name: "swamp-extension-datastore",
+  },
+  {
+    relativePath: "swamp-extension-datastore/references/troubleshooting.md",
+    name: "swamp-extension-datastore",
+  },
+  {
+    relativePath: "swamp-extension-driver/SKILL.md",
+    name: "swamp-extension-driver",
+  },
+  {
+    relativePath: "swamp-extension-driver/references/api.md",
+    name: "swamp-extension-driver",
+  },
+  {
+    relativePath: "swamp-extension-driver/references/examples.md",
+    name: "swamp-extension-driver",
+  },
+  {
+    relativePath: "swamp-extension-driver/references/troubleshooting.md",
+    name: "swamp-extension-driver",
+  },
+  {
     relativePath: "swamp-issue/SKILL.md",
     name: "swamp-issue",
   },

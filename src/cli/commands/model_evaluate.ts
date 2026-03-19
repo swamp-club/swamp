@@ -25,7 +25,11 @@ import {
   renderModelEvaluateSingle,
 } from "../../presentation/output/model_evaluate_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  acquireModelLocks,
+  requireInitializedRepo,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -45,20 +49,21 @@ export const modelEvaluateCommand = new Command()
         "model",
         "evaluate",
       ]);
-      const { repoDir, repoContext } = await requireInitializedRepo({
-        repoDir: options.repoDir ?? ".",
-        outputMode: ctx.outputMode,
-      });
-      const definitionRepo = repoContext.definitionRepo;
-      const dataRepo = repoContext.unifiedDataRepo;
-      const evaluationService = new ExpressionEvaluationService(
-        definitionRepo,
-        repoDir,
-        { dataRepo },
-      );
 
-      // If --all flag or no argument, evaluate all definitions
+      // If --all flag or no argument, evaluate all definitions (global lock)
       if (options.all || !modelIdOrName) {
+        const { repoDir, repoContext } = await requireInitializedRepo({
+          repoDir: options.repoDir ?? ".",
+          outputMode: ctx.outputMode,
+        });
+        const definitionRepo = repoContext.definitionRepo;
+        const dataRepo = repoContext.unifiedDataRepo;
+        const evaluationService = new ExpressionEvaluationService(
+          definitionRepo,
+          repoDir,
+          { dataRepo },
+        );
+
         ctx.logger.debug`Evaluating all model definitions`;
 
         const results = await evaluationService.evaluateAllDefinitions();
@@ -90,10 +95,18 @@ export const modelEvaluateCommand = new Command()
         return;
       }
 
-      // Single model evaluation
+      // Single model evaluation — use per-model lock
+      const { repoDir, repoContext, datastoreConfig } =
+        await requireInitializedRepoUnlocked({
+          repoDir: options.repoDir ?? ".",
+          outputMode: ctx.outputMode,
+        });
+      const definitionRepo = repoContext.definitionRepo;
+      const dataRepo = repoContext.unifiedDataRepo;
+
       ctx.logger.debug`Evaluating model: ${modelIdOrName}`;
 
-      // Look up the model definition
+      // Look up the model definition (reads YAML — no lock needed)
       ctx.logger.debug`Looking up model: ${modelIdOrName}`;
       const lookupResult = await findDefinitionByIdOrName(
         definitionRepo,
@@ -107,15 +120,34 @@ export const modelEvaluateCommand = new Command()
       ctx.logger
         .debug`Found model: id=${definition.id}, type=${type.normalized}`;
 
-      // Evaluate the definition
-      const result = await evaluationService.evaluateDefinition(
-        definition,
-        type,
-      );
+      // Acquire per-model lock (for S3, also pulls model-scoped files)
+      const flushModelLocks = await acquireModelLocks(datastoreConfig, [
+        { modelType: type.normalized, modelId: definition.id },
+      ], repoDir);
 
-      // Persist evaluated definition for --last-evaluated
+      const evaluationService = new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+        { dataRepo },
+      );
       const evaluatedDefRepo = repoContext.evaluatedDefinitionRepo;
-      await evaluatedDefRepo.save(type, result.definition);
+
+      let result: Awaited<
+        ReturnType<typeof evaluationService.evaluateDefinition>
+      >;
+      try {
+        // Evaluate the definition
+        result = await evaluationService.evaluateDefinition(
+          definition,
+          type,
+        );
+
+        // Persist evaluated definition for --last-evaluated
+        await evaluatedDefRepo.save(type, result.definition);
+      } finally {
+        // Release per-model lock (and push to S3 for S3 datastores)
+        await flushModelLocks();
+      }
 
       const item: ModelEvaluateItemData = {
         id: result.definition.id,

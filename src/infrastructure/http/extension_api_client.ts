@@ -70,6 +70,7 @@ export interface ExtensionSearchParams {
   collective?: string;
   platform?: string[];
   label?: string[];
+  contentType?: string[];
   sort?: "relevance" | "new" | "updated" | "name";
   perPage?: number;
   page?: number;
@@ -82,6 +83,7 @@ export interface ExtensionSearchEntry {
   description: string;
   platforms: string[];
   labels: string[];
+  contentTypes?: string[];
   latestVersion: string;
   createdAt: string;
   updatedAt: string;
@@ -240,6 +242,7 @@ export class ExtensionApiClient {
     if (params.page !== undefined) qs.set("page", String(params.page));
     for (const p of params.platform ?? []) qs.append("platform", p);
     for (const l of params.label ?? []) qs.append("label", l);
+    for (const ct of params.contentType ?? []) qs.append("contentType", ct);
 
     const query = qs.toString();
     const path = `/api/v1/extensions/search${query ? `?${query}` : ""}`;

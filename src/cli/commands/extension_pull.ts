@@ -25,6 +25,8 @@ import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
+import { resolveDriversDir } from "../resolve_drivers_dir.ts";
+import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -34,6 +36,7 @@ import { parseExtensionManifest } from "../../domain/extensions/extension_manife
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
+import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
@@ -44,11 +47,13 @@ import {
   renderExtensionPullConflicts,
   renderExtensionPullDependencyPull,
   renderExtensionPullIntegrity,
+  renderExtensionPullMissingSources,
   renderExtensionPullPlatforms,
   renderExtensionPullRepository,
   renderExtensionPullResolved,
   renderExtensionPullSafetyWarnings,
 } from "../../presentation/output/extension_pull_output.ts";
+import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
 
 /** Returns true if the filename is a macOS resource fork (AppleDouble) file. */
 function isMacOsResourceFork(name: string): boolean {
@@ -81,6 +86,7 @@ export interface InstallResult {
   platforms: string[];
   safetyWarnings: SafetyIssue[];
   conflicts: string[];
+  missingSourceFiles: string[];
   dependencyResults: InstallResult[];
 }
 
@@ -91,6 +97,8 @@ export interface InstallContext {
   modelsDir: string;
   workflowsDir: string;
   vaultsDir: string;
+  driversDir: string;
+  datastoresDir: string;
   repoDir: string;
   force: boolean;
   alreadyPulled: Set<string>;
@@ -110,15 +118,11 @@ export class ConflictError extends UserError {
   }
 }
 
-/** Entry in upstream_extensions.json. */
-export interface UpstreamExtensionEntry {
-  version: string;
-  pulledAt: string;
-  files?: string[];
-}
-
-/** Shape of upstream_extensions.json. */
-type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
+export {
+  readUpstreamExtensions,
+  type UpstreamExtensionEntry,
+  type UpstreamExtensionsMap,
+} from "../../infrastructure/persistence/upstream_extensions.ts";
 
 /**
  * Parses an extension reference string into name and optional version.
@@ -286,24 +290,6 @@ export async function removeUpstreamExtension(
 }
 
 /**
- * Reads upstream_extensions.json and returns the parsed map.
- */
-export async function readUpstreamExtensions(
-  modelsDir: string,
-): Promise<UpstreamExtensionsMap> {
-  const jsonPath = join(modelsDir, "upstream_extensions.json");
-  try {
-    const content = await Deno.readTextFile(jsonPath);
-    return JSON.parse(content) as UpstreamExtensionsMap;
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      return {};
-    }
-    throw error;
-  }
-}
-
-/**
  * Checks if a file exists at the given path.
  */
 async function fileExists(path: string): Promise<boolean> {
@@ -375,6 +361,36 @@ async function listFiles(dir: string): Promise<string[]> {
 }
 
 /**
+ * Recursively validates that no symlink under `path` resolves to a target
+ * outside `resolvedTmpDir`. Throws a UserError if a symlink escapes.
+ */
+/**
+ * Recursively validates that no symlink under `path` resolves to a target
+ * outside `resolvedTmpDir`. Throws a UserError if a symlink escapes.
+ */
+async function validateNoSymlinkEscape(
+  path: string,
+  resolvedTmpDir: string,
+): Promise<void> {
+  const stat = await Deno.lstat(path);
+  if (stat.isSymlink) {
+    // Resolve the symlink target relative to its parent directory so relative
+    // links like "../../etc/passwd" are caught even if the target doesn't exist.
+    const linkTarget = await Deno.readLink(path);
+    const resolvedTarget = resolve(join(path, "..", linkTarget));
+    if (!resolvedTarget.startsWith(resolvedTmpDir + "/")) {
+      throw new UserError(
+        `Archive contains a symlink that escapes the temp directory: ${path}`,
+      );
+    }
+  } else if (stat.isDirectory) {
+    for await (const entry of Deno.readDir(path)) {
+      await validateNoSymlinkEscape(join(path, entry.name), resolvedTmpDir);
+    }
+  }
+}
+
+/**
  * Detects files that already exist at target paths.
  */
 export async function detectConflicts(
@@ -385,6 +401,10 @@ export async function detectConflicts(
   repoDir: string,
   vaultsDir?: string,
   vaultBundlesDir?: string,
+  driversDir?: string,
+  driverBundlesDir?: string,
+  datastoresDir?: string,
+  datastoreBundlesDir?: string,
 ): Promise<string[]> {
   const conflicts: string[] = [];
 
@@ -441,6 +461,54 @@ export async function detectConflicts(
     }
   }
 
+  // Check drivers
+  if (driversDir) {
+    const driversSrc = join(extractDir, "drivers");
+    for (const file of await listFiles(driversSrc)) {
+      const relPath = relative(driversSrc, file);
+      const destPath = join(driversDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
+  // Check driver bundles
+  if (driverBundlesDir) {
+    const driverBundlesSrc = join(extractDir, "driver-bundles");
+    for (const file of await listFiles(driverBundlesSrc)) {
+      const relPath = relative(driverBundlesSrc, file);
+      const destPath = join(driverBundlesDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
+  // Check datastores
+  if (datastoresDir) {
+    const datastoresSrc = join(extractDir, "datastores");
+    for (const file of await listFiles(datastoresSrc)) {
+      const relPath = relative(datastoresSrc, file);
+      const destPath = join(datastoresDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
+  // Check datastore bundles
+  if (datastoreBundlesDir) {
+    const datastoreBundlesSrc = join(extractDir, "datastore-bundles");
+    for (const file of await listFiles(datastoreBundlesSrc)) {
+      const relPath = relative(datastoreBundlesSrc, file);
+      const destPath = join(datastoreBundlesDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
   // Check additional files
   const filesSrc = join(extractDir, "files");
   for (const file of await listFiles(filesSrc)) {
@@ -460,11 +528,71 @@ export interface PullContext {
   modelsDir: string;
   workflowsDir: string;
   vaultsDir: string;
+  driversDir: string;
+  datastoresDir: string;
   repoDir: string;
   force: boolean;
   outputMode: "log" | "json";
   alreadyPulled: Set<string>;
   depth: number;
+}
+
+/**
+ * Validates that all source files referenced by imports are present.
+ * Returns paths of missing files (relative to the base directory).
+ */
+async function validateSourceCompleteness(
+  ...dirs: string[]
+): Promise<string[]> {
+  const entryPoints: string[] = [];
+  for (const dir of dirs) {
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (entry.isFile && entry.name.endsWith(".ts")) {
+          entryPoints.push(join(dir, entry.name));
+        } else if (entry.isDirectory && !entry.name.startsWith("_")) {
+          // Recurse into non-underscore subdirectories for entry points
+          const subEntries = await collectTsFiles(join(dir, entry.name));
+          entryPoints.push(...subEntries);
+        }
+      }
+    } catch {
+      // Directory may not exist
+    }
+  }
+
+  if (entryPoints.length === 0) return [];
+
+  // Use the first dir as the boundary for resolving imports
+  const boundaryDir = dirs[0];
+  const result = await resolveLocalImports(entryPoints, boundaryDir);
+
+  const missing: string[] = [];
+  for (const resolved of result.resolvedFiles) {
+    try {
+      await Deno.stat(resolved);
+    } catch {
+      missing.push(relative(boundaryDir, resolved));
+    }
+  }
+  return missing;
+}
+
+/** Recursively collects .ts files from a directory, skipping _-prefixed dirs. */
+async function collectTsFiles(dir: string): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.isFile && entry.name.endsWith(".ts")) {
+        files.push(join(dir, entry.name));
+      } else if (entry.isDirectory && !entry.name.startsWith("_")) {
+        files.push(...await collectTsFiles(join(dir, entry.name)));
+      }
+    }
+  } catch {
+    // Directory may not exist
+  }
+  return files;
 }
 
 /**
@@ -532,6 +660,30 @@ export async function installExtension(
     const archivePath = join(tmpDir, "extension.tar.gz");
     await Deno.writeFile(archivePath, archiveBytes);
 
+    // Guard against path traversal BEFORE extraction: list archive entries and
+    // reject any that contain ".." or start with "/" which could escape tmpDir.
+    const listCommand = new Deno.Command("tar", {
+      args: ["-tzf", archivePath],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const listOutput = await listCommand.output();
+    if (!listOutput.success) {
+      const stderr = new TextDecoder().decode(listOutput.stderr);
+      throw new UserError(`Failed to list archive contents: ${stderr}`);
+    }
+    const archiveEntries = new TextDecoder()
+      .decode(listOutput.stdout)
+      .split("\n")
+      .filter((e) => e.length > 0);
+    for (const entry of archiveEntries) {
+      if (entry.includes("..") || entry.startsWith("/")) {
+        throw new UserError(
+          `Archive contains unsafe path: ${entry}`,
+        );
+      }
+    }
+
     // Extract using tar
     // COPYFILE_DISABLE prevents macOS tar from creating ._ resource fork files
     const tarCommand = new Deno.Command("tar", {
@@ -549,9 +701,18 @@ export async function installExtension(
     const extractDir = join(tmpDir, "extension");
 
     // Log extracted files for debugging
-    const allExtractedFiles = await listFiles(extractDir);
-    for (const f of allExtractedFiles) {
-      logger.debug`Archive contains: ${relative(extractDir, f)}`;
+    for (const entry of archiveEntries) {
+      logger.debug`Archive contains: ${entry}`;
+    }
+
+    // Guard against symlink path traversal: scan extracted directory for any
+    // symlinks whose resolved target escapes tmpDir.
+    const resolvedTmpDir = resolve(tmpDir);
+    for await (const entry of Deno.readDir(extractDir)) {
+      await validateNoSymlinkEscape(
+        join(extractDir, entry.name),
+        resolvedTmpDir,
+      );
     }
 
     // Parse manifest
@@ -575,7 +736,17 @@ export async function installExtension(
     const vaultTsFiles = (await listFiles(join(extractDir, "vaults"))).filter(
       (f) => f.endsWith(".ts"),
     );
-    const tsFiles = [...modelTsFiles, ...vaultTsFiles];
+    const driverTsFiles = (await listFiles(join(extractDir, "drivers")))
+      .filter((f) => f.endsWith(".ts"));
+    const datastoreTsFiles = (
+      await listFiles(join(extractDir, "datastores"))
+    ).filter((f) => f.endsWith(".ts"));
+    const tsFiles = [
+      ...modelTsFiles,
+      ...vaultTsFiles,
+      ...driverTsFiles,
+      ...datastoreTsFiles,
+    ];
     if (tsFiles.length > 0) {
       const safetyResult = await analyzeExtensionSafety(tsFiles);
 
@@ -596,8 +767,12 @@ export async function installExtension(
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const absoluteWorkflowsDir = resolve(repoDir, ctx.workflowsDir);
     const absoluteVaultsDir = resolve(repoDir, ctx.vaultsDir);
+    const absoluteDriversDir = resolve(repoDir, ctx.driversDir);
+    const absoluteDatastoresDir = resolve(repoDir, ctx.datastoresDir);
     const bundlesDir = swampPath(repoDir, "bundles");
     const vaultBundlesDir = swampPath(repoDir, "vault-bundles");
+    const driverBundlesDir = swampPath(repoDir, "driver-bundles");
+    const datastoreBundlesDir = swampPath(repoDir, "datastore-bundles");
 
     const conflicts = await detectConflicts(
       extractDir,
@@ -607,6 +782,10 @@ export async function installExtension(
       repoDir,
       absoluteVaultsDir,
       vaultBundlesDir,
+      absoluteDriversDir,
+      driverBundlesDir,
+      absoluteDatastoresDir,
+      datastoreBundlesDir,
     );
 
     if (conflicts.length > 0 && !ctx.force) {
@@ -617,6 +796,7 @@ export async function installExtension(
     const extractedFiles: string[] = [];
 
     // Models → modelsDir
+    await Deno.mkdir(absoluteModelsDir, { recursive: true });
     const modelsExtracted = await copyDir(
       join(extractDir, "models"),
       absoluteModelsDir,
@@ -660,6 +840,42 @@ export async function installExtension(
     );
     extractedFiles.push(...vaultBundlesExtracted);
 
+    // Drivers → driversDir
+    await Deno.mkdir(absoluteDriversDir, { recursive: true });
+    const driversExtracted = await copyDir(
+      join(extractDir, "drivers"),
+      absoluteDriversDir,
+      repoDir,
+    );
+    extractedFiles.push(...driversExtracted);
+
+    // Driver bundles → .swamp/driver-bundles/
+    await Deno.mkdir(driverBundlesDir, { recursive: true });
+    const driverBundlesExtracted = await copyDir(
+      join(extractDir, "driver-bundles"),
+      driverBundlesDir,
+      repoDir,
+    );
+    extractedFiles.push(...driverBundlesExtracted);
+
+    // Datastores → datastoresDir
+    await Deno.mkdir(absoluteDatastoresDir, { recursive: true });
+    const datastoresExtracted = await copyDir(
+      join(extractDir, "datastores"),
+      absoluteDatastoresDir,
+      repoDir,
+    );
+    extractedFiles.push(...datastoresExtracted);
+
+    // Datastore bundles → .swamp/datastore-bundles/
+    await Deno.mkdir(datastoreBundlesDir, { recursive: true });
+    const datastoreBundlesExtracted = await copyDir(
+      join(extractDir, "datastore-bundles"),
+      datastoreBundlesDir,
+      repoDir,
+    );
+    extractedFiles.push(...datastoreBundlesExtracted);
+
     // Additional files → modelsDir
     const filesExtracted = await copyDir(
       join(extractDir, "files"),
@@ -667,6 +883,14 @@ export async function installExtension(
       repoDir,
     );
     extractedFiles.push(...filesExtracted);
+
+    // Validate source completeness — warn if imported files are missing
+    const missingSourceFiles = await validateSourceCompleteness(
+      absoluteModelsDir,
+      absoluteVaultsDir,
+      absoluteDriversDir,
+      absoluteDatastoresDir,
+    );
 
     // Update upstream_extensions.json
     await updateUpstreamExtensions(
@@ -726,6 +950,7 @@ export async function installExtension(
       platforms: manifest.platforms,
       safetyWarnings,
       conflicts,
+      missingSourceFiles,
       dependencyResults,
     };
   } finally {
@@ -774,6 +999,10 @@ function renderInstallResult(
     renderExtensionPullSafetyWarnings(result.safetyWarnings, outputMode);
   }
 
+  if (result.missingSourceFiles.length > 0) {
+    renderExtensionPullMissingSources(result.missingSourceFiles, outputMode);
+  }
+
   renderExtensionPull(
     {
       name: result.name,
@@ -807,6 +1036,8 @@ export async function pullExtension(
     modelsDir: ctx.modelsDir,
     workflowsDir: ctx.workflowsDir,
     vaultsDir: ctx.vaultsDir,
+    driversDir: ctx.driversDir,
+    datastoresDir: ctx.datastoresDir,
     repoDir: ctx.repoDir,
     force: ctx.force,
     alreadyPulled: ctx.alreadyPulled,
@@ -882,6 +1113,8 @@ export const extensionPullCommand = new Command()
     const modelsDir = resolveModelsDir(marker);
     const workflowsDir = resolveWorkflowsDir(marker);
     const vaultsDir = resolveVaultsDir(marker);
+    const driversDir = resolveDriversDir(marker);
+    const datastoresDir = resolveDatastoresDir(marker);
 
     // 5. Resolve server URL (from env or default)
     const serverUrl = resolveServerUrl();
@@ -895,6 +1128,8 @@ export const extensionPullCommand = new Command()
       modelsDir,
       workflowsDir,
       vaultsDir,
+      driversDir,
+      datastoresDir,
       repoDir,
       force: options.force ?? false,
       outputMode: ctx.outputMode,

@@ -26,6 +26,7 @@ import { extensionListCommand } from "./extension_list.ts";
 import { extensionSearchCommand } from "./extension_search.ts";
 import { extensionUpdateCommand } from "./extension_update.ts";
 import { extensionYankCommand } from "./extension_yank.ts";
+import { extensionTrustCommand } from "./extension_trust.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const extensionCommand = new Command()
@@ -42,4 +43,5 @@ export const extensionCommand = new Command()
   .command("list", extensionListCommand)
   .command("search", extensionSearchCommand)
   .command("update", extensionUpdateCommand)
-  .command("yank", extensionYankCommand);
+  .command("yank", extensionYankCommand)
+  .command("trust", extensionTrustCommand);

@@ -20,7 +20,15 @@
 import { z } from "zod";
 import { dirname, join, resolve, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
-import { bundleExtension } from "./bundle.ts";
+import {
+  bundleExtension,
+  fixCjsEsmInterop,
+  installZodGlobal,
+  rewriteZodImports,
+  sanitizeDataUrlError,
+  sourceHasBareSpecifiers,
+  uint8ArrayToBase64,
+} from "./bundle.ts";
 import { resolveLocalImports } from "./local_import_resolver.ts";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
@@ -265,8 +273,15 @@ export class UserModelLoader {
    * @param modelsDir - The directory containing user model/extension files
    * @returns Result containing lists of loaded, extended, and failed files
    */
-  async loadModels(modelsDir: string): Promise<LoadResult> {
+  async loadModels(
+    modelsDir: string,
+    options?: { skipAlreadyRegistered?: boolean },
+  ): Promise<LoadResult> {
     const result: LoadResult = { loaded: [], extended: [], failed: [] };
+
+    // Ensure swamp's Zod is available on globalThis before importing bundles.
+    // This prevents dual-instance issues in the compiled binary.
+    installZodGlobal();
 
     // Check if directory exists
     try {
@@ -336,23 +351,30 @@ export class UserModelLoader {
 
         const modelDef = this.convertToModelDefinition(userModel);
 
-        // Create self-contained bundle for out-of-process drivers (e.g., Docker).
-        // This inlines all deps including zod so the bundle runs without network.
-        try {
-          modelDef.bundleSource = await bundleExtension(
+        // Defer self-contained bundling to first out-of-process execution (e.g. Docker).
+        // Memoized so multiple executions in one process only bundle once.
+        // Uses promise-based memoization to avoid duplicate work under concurrent calls.
+        let bundlePromise: Promise<string> | undefined;
+        modelDef.bundleSourceFactory = () => {
+          bundlePromise ??= bundleExtension(
             absolutePath,
             denoPath,
             { selfContained: true },
-          );
-        } catch (error) {
-          logger
-            .warn`Failed to create self-contained bundle for ${file}: ${error}`;
-          // Non-fatal — model still works with raw driver
-        }
+          ).catch((error) => {
+            bundlePromise = undefined;
+            logger
+              .warn`Failed to create self-contained bundle for ${file}: ${error}`;
+            throw error;
+          });
+          return bundlePromise;
+        };
 
         if (!modelRegistry.has(modelDef.type)) {
           modelRegistry.register(modelDef);
           result.loaded.push(file);
+        } else if (options?.skipAlreadyRegistered) {
+          // Silently skip — used during hot-load after auto-resolution
+          continue;
         } else {
           result.failed.push({
             file,
@@ -394,9 +416,15 @@ export class UserModelLoader {
         relativePath.replace(/\.ts$/, ".js"),
       );
 
-      // Check mtime-based cache against all local dependencies
+      // Check mtime-based cache against all local dependencies.
+      // If the bundle exists but freshness cannot be determined (e.g. a
+      // dependency file is missing because the extension was pushed with an
+      // older swamp that had a single-line import regex), fall back to the
+      // cached bundle rather than attempting a re-bundle that will also fail.
+      let bundleExists = false;
       try {
         const bundleStat = await Deno.stat(bundlePath);
+        bundleExists = true;
         if (bundleStat.mtime) {
           const { resolvedFiles } = await resolveLocalImports(
             [absolutePath],
@@ -419,7 +447,24 @@ export class UserModelLoader {
           }
         }
       } catch {
-        // Bundle doesn't exist, stat failed, or import resolution failed — rebundle
+        if (bundleExists) {
+          logger
+            .debug`Using cached bundle for ${relativePath} (freshness check failed — missing dependency)`;
+          return await Deno.readTextFile(bundlePath);
+        }
+      }
+
+      // If the source uses bare specifiers (e.g., from "zod" instead of
+      // from "npm:zod@4") and a cached bundle exists, use it — re-bundling
+      // would fail without a deno.json import map to resolve the specifiers.
+      // This handles pulled extensions that were built with a deno.json project.
+      if (bundleExists) {
+        const source = await Deno.readTextFile(absolutePath);
+        if (sourceHasBareSpecifiers(source)) {
+          logger
+            .debug`Using cached bundle for ${relativePath} (source has bare specifiers)`;
+          return await Deno.readTextFile(bundlePath);
+        }
       }
 
       // Bundle and write to cache
@@ -444,6 +489,10 @@ export class UserModelLoader {
     js: string,
     relativePath: string,
   ): Promise<Record<string, unknown>> {
+    // Rewrite zod imports and fix CJS/ESM interop at import-time — catches
+    // old cached bundles. Both rewrites are idempotent.
+    const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
+
     if (this.repoDir) {
       const bundlePath = join(
         this.repoDir,
@@ -454,20 +503,33 @@ export class UserModelLoader {
 
       try {
         await Deno.stat(bundlePath);
-        // Import from file URL — avoids base64 encoding overhead
+        // Fix zod imports and CJS/ESM interop in the cached file on disk
+        // so old cached bundles get fixed permanently.
+        let cachedJs = await Deno.readTextFile(bundlePath);
+        const fixed = fixCjsEsmInterop(rewriteZodImports(cachedJs));
+        if (fixed !== cachedJs) {
+          cachedJs = fixed;
+          await Deno.writeTextFile(bundlePath, cachedJs);
+        }
         return await import(toFileUrl(bundlePath).href);
-      } catch {
-        // Fall through to data URL import
+      } catch (error) {
+        logger.debug`File URL import failed for ${relativePath}: ${
+          String(error).substring(0, 200)
+        }`;
       }
     }
 
-    // Fallback: import via base64 data URL
-    const encoded = btoa(
-      String.fromCharCode(...new TextEncoder().encode(js)),
-    );
-    return await import(
-      `data:application/javascript;base64,${encoded}`
-    );
+    // Fallback: import via base64 data URL (no file on disk)
+    try {
+      const encoded = uint8ArrayToBase64(
+        new TextEncoder().encode(rewritten),
+      );
+      return await import(
+        `data:application/javascript;base64,${encoded}`
+      );
+    } catch (error) {
+      throw new Error(sanitizeDataUrlError(error));
+    }
   }
 
   /**
@@ -671,6 +733,10 @@ export class UserModelLoader {
     for await (const entry of Deno.readDir(dir)) {
       const relativePath = prefix ? join(prefix, entry.name) : entry.name;
       if (entry.isDirectory) {
+        // Skip _-prefixed directories (e.g. _lib/) — helper modules, not entry points
+        if (entry.name.startsWith("_")) {
+          continue;
+        }
         const nested = await this.discoverFiles(
           join(dir, entry.name),
           relativePath,

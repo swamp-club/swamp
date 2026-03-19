@@ -37,6 +37,7 @@ const testExtensions: ExtensionSearchResultItem[] = [
     latestVersion: "2026.03.01.1",
     platforms: ["aws"],
     labels: ["networking", "infrastructure"],
+    contentTypes: ["models"],
     createdAt: "2026-02-15T10:00:00Z",
     updatedAt: "2026-03-01T12:00:00Z",
   },
@@ -46,6 +47,7 @@ const testExtensions: ExtensionSearchResultItem[] = [
     latestVersion: "2026.02.28.1",
     platforms: ["docker"],
     labels: ["containers"],
+    contentTypes: ["models", "workflows"],
     createdAt: "2026-02-10T10:00:00Z",
     updatedAt: "2026-02-28T12:00:00Z",
   },
@@ -55,6 +57,7 @@ const testExtensions: ExtensionSearchResultItem[] = [
     latestVersion: "2026.01.15.1",
     platforms: ["kubernetes"],
     labels: ["deploy", "containers"],
+    contentTypes: [],
     createdAt: "2026-01-10T10:00:00Z",
     updatedAt: "2026-01-15T12:00:00Z",
   },
@@ -232,6 +235,7 @@ Deno.test({
         latestVersion: "1.0.0",
         platforms: [],
         labels: [],
+        contentTypes: [],
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
       }),
@@ -286,6 +290,7 @@ Deno.test("renderExtensionSearch with json mode omits empty platforms and labels
       latestVersion: "2026.02.27.1",
       platforms: [],
       labels: [],
+      contentTypes: [],
       createdAt: "2026-02-27T17:06:27.544Z",
       updatedAt: "2026-02-27T17:06:27.544Z",
     }],
@@ -299,6 +304,27 @@ Deno.test("renderExtensionSearch with json mode omits empty platforms and labels
     assertEquals(parsed.extensions[0].name, "@keeb/terraria");
     assertEquals(parsed.extensions[0].platforms, undefined);
     assertEquals(parsed.extensions[0].labels, undefined);
+    assertEquals(parsed.extensions[0].contentTypes, undefined);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("renderExtensionSearch with json mode includes contentTypes when present", () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  const data: ExtensionSearchData = {
+    extensions: [testExtensions[0]],
+    meta: { total: 1, page: 1, perPage: 20 },
+  };
+
+  try {
+    renderExtensionSearch(data, "json");
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.extensions[0].contentTypes, ["models"]);
   } finally {
     console.log = originalLog;
   }

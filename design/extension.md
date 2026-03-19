@@ -1,8 +1,9 @@
 # Extensions
 
-An extension in swamp is a distributable package of models and workflows that
-can be shared through a registry. Extensions allow the community to share
-reusable automation models and workflows that others can pull into their repositories.
+An extension in swamp is a distributable package of models, workflows, vaults,
+drivers, and datastores that can be shared through a registry. Extensions allow
+the community to share reusable automation components that others can pull into
+their repositories.
 
 ## Name
 
@@ -39,7 +40,8 @@ what the extension contains and how it should be packaged.
 - `manifestVersion`: Must be `1` (the only supported version).
 - `name`: Scoped name (`@collective/name`).
 - `version`: CalVer version string.
-- At least one of `models` or `workflows` must be present.
+- At least one of `models`, `workflows`, `vaults`, `drivers`, or `datastores`
+  must be present.
 
 ### Optional Fields
 
@@ -47,6 +49,9 @@ what the extension contains and how it should be packaged.
 - `models`: Array of relative paths to TypeScript model files (e.g.,
   `["aws/ec2/instance.ts"]`).
 - `workflows`: Array of relative paths to YAML workflow files.
+- `vaults`: Array of relative paths to TypeScript vault files.
+- `drivers`: Array of relative paths to TypeScript driver files.
+- `datastores`: Array of relative paths to TypeScript datastore files.
 - `additionalFiles`: Array of paths to non-model files to include (README,
   config, etc.).
 - `platforms`: Array of platform identifiers the extension supports (e.g.,
@@ -88,19 +93,22 @@ following structure:
 extension.tar.gz
 └── extension/
     ├── manifest.yaml
-    ├── models/           # Source TypeScript files
+    ├── models/              # Source TypeScript model files
     │   └── ssh/
     │       ├── connection.ts
     │       └── helpers.ts
-    ├── bundles/           # Compiled JavaScript bundles
+    ├── bundles/              # Compiled model JavaScript bundles
     │   └── ssh/
-    │       ├── connection.js
-    │       └── helpers.js
-    ├── workflows/         # YAML workflow files
+    │       └── connection.js
+    ├── workflows/            # YAML workflow files
     │   └── ssh-check.yaml
-    └── files/             # Additional files
-        └── ssh/
-            └── known_hosts_template.txt
+    ├── vaults/               # Source TypeScript vault files
+    ├── vault-bundles/        # Compiled vault JavaScript bundles
+    ├── drivers/              # Source TypeScript driver files
+    ├── driver-bundles/       # Compiled driver JavaScript bundles
+    ├── datastores/           # Source TypeScript datastore files
+    ├── datastore-bundles/    # Compiled datastore JavaScript bundles
+    └── files/                # Additional files
 ```
 
 ### Models
@@ -111,14 +119,96 @@ if `connection.ts` imports `./helpers.ts`, both files are included.
 
 ### Bundles
 
-Each model entry point is compiled using `deno bundle` with only `zod`
-externalized (`--external npm:zod@4 --external npm:zod`). All other npm
-packages are inlined into the bundle, which ensures they work in the compiled
-binary where only swamp's own embedded dependency graph is available. Zod is
-externalized so extensions share the same zod instance as swamp (required for
-schema `instanceof` checks). Dynamic `import()` calls are not supported — all
-imports must be static top-level imports. Bundles are JavaScript files stored
-alongside their source counterparts under `bundles/`.
+Each model entry point is compiled using `deno bundle` with zod externalized.
+All other npm packages are inlined into the bundle, which ensures they work in
+the compiled binary where only swamp's own embedded dependency graph is
+available. Zod is externalized so extensions share the same zod instance as
+swamp (required for schema `instanceof` checks). Dynamic `import()` calls are
+not supported — all imports must be static top-level imports. Bundles are
+JavaScript files stored alongside their source counterparts under `bundles/`.
+
+#### Project-aware bundling
+
+Extensions can optionally live within a project that has a `deno.json` or
+`package.json`. When `swamp extension push` is run, it walks up from the
+manifest directory to the repo root looking for project config files.
+
+**Detection priority:** `deno.json` is searched first (full walk from manifest
+to repo root). Only if no `deno.json` is found does the push command walk again
+looking for `package.json`. This means `deno.json` always wins regardless of
+directory depth.
+
+**Bare specifier gate:** A `package.json` is only used when the extension source
+actually contains bare specifiers (e.g., `from "zod"` instead of
+`from "npm:zod@4"`). This prevents an unrelated `package.json` (e.g., one
+containing `@anthropic-ai/claude-code` for tooling) from being mistakenly
+treated as the extension's project config.
+
+#### Bundling permutations
+
+| Scenario | `deno bundle` flags | Quality check flags | Notes |
+|----------|-------------------|-------------------|-------|
+| **`deno.json` found** | `--config <deno.json>` | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply |
+| **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config` | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`; `--node-modules-dir=auto` initializes `.deno/` metadata if needed |
+| **`package.json` found, `npm:` imports** | `--no-lock --node-modules-dir=none` | `--no-config` | Package.json is ignored (extension doesn't need it); `--node-modules-dir=none` prevents ambient package.json from poisoning resolution |
+| **No config found** | `--no-lock --node-modules-dir=none` | `--no-config` | Default behavior; `--node-modules-dir=none` prevents any package.json in the directory tree from interfering |
+
+The `--node-modules-dir=none` flag is critical for the last two cases: without
+it, an unrelated `package.json` anywhere in the directory tree causes Deno to
+switch to `node_modules/` resolution mode, breaking `npm:` prefixed imports with
+errors like "Could not find a matching package for 'npm:@octokit/rest@22.0.1'
+in the node_modules directory."
+
+#### Zod externalization
+
+Zod is externalized using `--external` flags that match the specifier as
+written in source. The bundler handles:
+
+- `npm:zod@4` and `npm:zod` (base patterns, always applied)
+- Fully-pinned versions like `npm:zod@4.3.6` (detected by scanning the source)
+- Bare `"zod"` specifier via `deno.json` (when the import map maps it to
+  zod 4.x, both the resolved specifier and bare `"zod"` are externalized)
+- Bare `"zod"` specifier via `package.json` (when `dependencies` or
+  `devDependencies` lists zod 4.x)
+
+After bundling, `rewriteZodImports` rewrites any externalized zod import to
+`globalThis.__swamp_zod`, which is set at runtime by `installZodGlobal()`. The
+rewrite regex matches both `npm:zod@4.x` and bare `"zod"` specifiers, but
+explicitly excludes zod 3.x to prevent silent runtime breakage.
+
+#### Runtime bundle caching
+
+At runtime, loaders check `.swamp/bundles/` (or the corresponding `-bundles/`
+directory) for cached bundles. If the source file contains bare specifiers that
+require a project config to resolve, and a cached bundle exists, the loader uses
+the cached bundle rather than attempting a re-bundle that would fail without the
+config. This supports pulled extensions that were built with a `deno.json` or
+`package.json` project — the archive includes pre-built bundles but not the
+project config.
+
+### Vaults, Drivers, and Datastores
+
+Vault, driver, and datastore entry points are bundled with the same strategy as
+models — deno bundle with zod externalized. Each entry point gets a compiled
+`.js` file in its corresponding `-bundles/` directory (`vault-bundles/`,
+`driver-bundles/`, `datastore-bundles/`). Local imports are resolved recursively
+within the directory boundary.
+
+The export from each bundle is validated against a Zod schema:
+
+- **Vaults**: `export const vault` — must have `type`, `name`, `description`,
+  optional `configSchema`, and `createProvider`
+- **Drivers**: `export const driver` — must have `type`, `name`, `description`,
+  optional `configSchema`, and `createDriver`
+- **Datastores**: `export const datastore` — must have `type`, `name`,
+  `description`, optional `configSchema`, and `createProvider`
+
+### Collective Validation
+
+All content types — model types, vault types, workflow names, driver types,
+datastore types — must use the same collective as the extension name. This is
+enforced during push to prevent an extension from registering types under a
+different collective.
 
 ### Workflows
 
@@ -133,11 +223,11 @@ preserving their relative paths.
 ## Import Resolution
 
 When packaging an extension, the CLI resolves all local TypeScript imports
-starting from each model entry point. The resolver follows relative
-`import`/`export` statements (e.g., `./helpers.ts`, `../shared.ts`) and
-includes all transitively imported files. Only files within the models directory
-boundary are included. Non-local imports (npm packages) are skipped as they are
-resolved at runtime.
+starting from each entry point (model, vault, driver, or datastore). The
+resolver follows relative `import`/`export` statements (e.g., `./helpers.ts`,
+`../shared.ts`) and includes all transitively imported files. Only files within
+the respective directory boundary are included. Non-local imports (npm packages)
+are skipped as they are resolved at runtime.
 
 ## Dependencies
 
@@ -160,6 +250,81 @@ During push, the CLI also resolves which models a workflow references. It
 parses workflow YAML to find `model_method` and `workflow` step tasks, then
 looks up the corresponding model source files. Only user-collective models
 (types starting with `@`) are bundled — built-in models are skipped.
+
+## Automatic Resolution
+
+Extensions from trusted collectives auto-resolve on first use — no manual
+`extension pull` needed. When swamp encounters an unknown model type from a
+trusted collective, it searches the registry, installs the extension, hot-loads
+it, and continues.
+
+### Trusted Collectives
+
+The `swamp` and `si` collectives are trusted by default. Extensions from
+`@swamp/*` and `@si/*` auto-resolve with no configuration required.
+
+Default trusted collectives: `["swamp", "si"]`.
+
+Additionally, collectives the user belongs to are automatically trusted. Membership
+collectives are cached in `auth.json` during `auth login` and `auth whoami`, and
+merged with the explicit list at CLI startup. This means if a user is a member of
+`@myorg`, extensions from `@myorg/*` auto-resolve without any configuration.
+
+Configurable via `trustedCollectives` in `.swamp.yaml`:
+
+```yaml
+trustedCollectives:
+  - swamp
+  - si
+  - myorg
+```
+
+Set `trustMemberCollectives: false` to disable membership-based trust and only
+use the explicit `trustedCollectives` list. Set `trustedCollectives` to `[]` and
+`trustMemberCollectives: false` to disable automatic resolution entirely.
+
+#### CLI Management
+
+Trusted collectives can be managed via the `swamp extension trust` commands:
+
+```bash
+swamp extension trust list                # Show explicit, membership, and resolved collectives
+swamp extension trust add <collective>    # Add a collective to the trusted list
+swamp extension trust rm <collective>     # Remove a collective from the trusted list
+swamp extension trust auto-trust <on|off> # Enable/disable membership auto-trust
+```
+
+### Resolution Algorithm
+
+1. **Local registry** — check if the type is already registered locally.
+2. **Direct lookup** — strip trailing path segments from the type to derive the
+   extension name (e.g., `@swamp/aws/ec2/instance` → `@swamp/aws/ec2` →
+   `@swamp/aws`) and look up each candidate directly in the registry.
+3. **Search fallback** — if direct lookup fails, search the registry for
+   matching extensions.
+
+### Hot-Loading
+
+After installation, swamp re-runs model and vault discovery with
+`skipAlreadyRegistered` to load only the newly installed types. This avoids
+re-registering types that were already loaded at startup.
+
+### Re-Entrancy Guard
+
+A guard prevents infinite loops — if auto-resolution is already in progress for
+a type, subsequent resolution attempts for that type are skipped.
+
+### Architecture
+
+`ExtensionAutoResolver` is a domain service with port interfaces. Adapters in
+the CLI layer provide the concrete implementations for registry access, extension
+installation, and model/vault discovery.
+
+### Output
+
+Auto-resolution always shows status messages to the user: searching for the
+extension, installing it, and confirming installation with the number of models
+loaded.
 
 ## Safety
 
@@ -252,12 +417,18 @@ and atomic file writes to prevent corruption from concurrent operations.
 
 When pulled, extension files are extracted to their destinations:
 
-| Archive directory | Destination                                                            |
-| ----------------- | ---------------------------------------------------------------------- |
-| `models/`         | `{modelsDir}` (from `.swamp.yaml`, default `extensions/models/`)       |
-| `workflows/`      | `{workflowsDir}` (from `.swamp.yaml`, default `extensions/workflows/`) |
-| `bundles/`        | Datastore `bundles/` (default `.swamp/bundles/`)                       |
-| `files/`          | `{modelsDir}`                                                          |
+| Archive directory    | Destination                                                            |
+| -------------------- | ---------------------------------------------------------------------- |
+| `models/`            | `{modelsDir}` (from `.swamp.yaml`, default `extensions/models/`)       |
+| `bundles/`           | `.swamp/bundles/`                                                      |
+| `workflows/`         | `{workflowsDir}` (from `.swamp.yaml`, default `extensions/workflows/`) |
+| `vaults/`            | `{vaultsDir}` (from `.swamp.yaml`, default `extensions/vaults/`)       |
+| `vault-bundles/`     | `.swamp/vault-bundles/`                                                |
+| `drivers/`           | `{driversDir}` (from `.swamp.yaml`, default `extensions/drivers/`)     |
+| `driver-bundles/`    | `.swamp/driver-bundles/`                                               |
+| `datastores/`        | `{datastoresDir}` (from `.swamp.yaml`, default `extensions/datastores/`) |
+| `datastore-bundles/` | `.swamp/datastore-bundles/`                                            |
+| `files/`             | `{modelsDir}`                                                          |
 
 If files already exist at the destination and `--force` is not set, the user is
 prompted to confirm overwriting.

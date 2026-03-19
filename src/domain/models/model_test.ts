@@ -217,6 +217,7 @@ function createTestContext(modelType: ModelType): {
 } {
   const { writeResource, createFileWriter, getResults } = createMockWriters();
   const context: MethodContext = {
+    signal: new AbortController().signal,
     repoDir: "/tmp",
     modelType,
     modelId: crypto.randomUUID(),

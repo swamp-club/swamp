@@ -20,7 +20,10 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
-import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
+import {
+  getCollectives,
+  SwampClubClient,
+} from "../../infrastructure/http/swamp_club_client.ts";
 import { startCallbackServer } from "../../infrastructure/http/callback_server.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -187,13 +190,15 @@ export const authLoginCommand = new Command()
       const whoami = await client.whoami(apiKey.key);
       const username = whoami.username ?? knownUsername ?? "unknown";
 
-      // Store credentials
+      // Store credentials (including cached collectives for auto-trust)
+      const collectives = getCollectives(whoami);
       const repo = new AuthRepository();
       await repo.save({
         serverUrl,
         apiKey: apiKey.key,
         apiKeyId: apiKey.id,
         username,
+        ...(collectives ? { collectives } : {}),
       });
 
       spinner?.stop();

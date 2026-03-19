@@ -22,8 +22,11 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
+  acquireModelLocks,
+  createModelLock,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
+  requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
 } from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -336,5 +339,129 @@ Deno.test("requireInitializedRepo - checks .swamp marker file", async () => {
     );
 
     assertStringIncludes(error.message, "Not a swamp repository");
+  });
+});
+
+// ============================================================================
+// requireInitializedRepoUnlocked Tests
+// ============================================================================
+
+Deno.test("requireInitializedRepoUnlocked - returns context with datastoreConfig", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const result = await requireInitializedRepoUnlocked({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    assertEquals(result.repoDir, dir);
+    assertEquals(result.repoContext !== undefined, true);
+    assertEquals(result.datastoreConfig.type, "filesystem");
+
+    // No flush needed — no lock acquired
+  });
+});
+
+Deno.test("requireInitializedRepoUnlocked - throws UserError for non-initialized repo", async () => {
+  await withTempDir(async (dir) => {
+    const error = await assertRejects(
+      () =>
+        requireInitializedRepoUnlocked({
+          repoDir: dir,
+          outputMode: "json",
+        }),
+      UserError,
+    );
+
+    assertStringIncludes(error.message, "Not a swamp repository");
+  });
+});
+
+Deno.test("requireInitializedRepoUnlocked - does not acquire any lock", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    // Call unlocked — should not acquire any lock
+    const _result = await requireInitializedRepoUnlocked({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    // Now acquire the global lock — should succeed immediately (no contention)
+    const writeResult = await requireInitializedRepo({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    assertEquals(writeResult.repoDir, dir);
+
+    await flushDatastoreSync();
+  });
+});
+
+// ============================================================================
+// createModelLock Tests
+// ============================================================================
+
+Deno.test("createModelLock - creates lock with correct path for filesystem", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const lock = createModelLock(datastoreConfig, "aws-ec2", "my-server");
+
+    // Verify we can inspect (no lock held)
+    const info = await lock.inspect();
+    assertEquals(info, null);
+  });
+});
+
+// ============================================================================
+// acquireModelLocks Tests
+// ============================================================================
+
+Deno.test("acquireModelLocks - acquires and releases per-model locks", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+
+    const flush = await acquireModelLocks(datastoreConfig, [
+      { modelType: "aws-ec2", modelId: "server-1" },
+      { modelType: "aws-ec2", modelId: "server-2" },
+    ], dir);
+
+    // Locks should be held — verify by inspecting
+    const lock1 = createModelLock(datastoreConfig, "aws-ec2", "server-1");
+    const info1 = await lock1.inspect();
+    assertEquals(info1 !== null, true);
+
+    const lock2 = createModelLock(datastoreConfig, "aws-ec2", "server-2");
+    const info2 = await lock2.inspect();
+    assertEquals(info2 !== null, true);
+
+    // Release
+    await flush();
+
+    // Verify released
+    const afterInfo = await lock1.inspect();
+    assertEquals(afterInfo, null);
+  });
+});
+
+Deno.test("acquireModelLocks - deduplicates same model", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+
+    // Pass the same model twice — should only acquire one lock
+    const flush = await acquireModelLocks(datastoreConfig, [
+      { modelType: "aws-ec2", modelId: "server-1" },
+      { modelType: "aws-ec2", modelId: "server-1" },
+    ], dir);
+
+    await flush();
   });
 });

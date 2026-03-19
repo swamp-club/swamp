@@ -30,27 +30,6 @@ export type { VaultTypeInfo } from "./vault_type_registry.ts";
  */
 const BUILT_IN_VAULT_TYPES: VaultTypeInfo[] = [
   {
-    type: "aws-sm",
-    name: "AWS Secrets Manager",
-    description:
-      "Store and retrieve secrets using AWS Secrets Manager. Requires AWS credentials via IAM roles, environment variables, or AWS profiles.",
-    isBuiltIn: true,
-  },
-  {
-    type: "azure-kv",
-    name: "Azure Key Vault",
-    description:
-      "Store and retrieve secrets using Azure Key Vault. Requires vault URL and Azure credentials via environment variables, managed identity, or Azure CLI.",
-    isBuiltIn: true,
-  },
-  {
-    type: "1password",
-    name: "1Password",
-    description:
-      "Store and retrieve secrets using 1Password. Requires the 1Password CLI (op) and authentication via service account token, desktop app, or Connect Server.",
-    isBuiltIn: true,
-  },
-  {
     type: "local_encryption",
     name: "Local Encryption",
     description:

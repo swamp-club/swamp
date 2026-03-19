@@ -205,6 +205,28 @@ export function renderExtensionPullSafetyErrors(
 }
 
 /**
+ * Renders warning about missing source files in a pulled extension.
+ */
+export function renderExtensionPullMissingSources(
+  missingFiles: string[],
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify({ missingSourceFiles: missingFiles }, null, 2));
+  } else {
+    logger
+      .warn`Extension has incomplete source files (${
+      String(missingFiles.length)
+    } missing). The pre-built bundle will be used.`;
+    logger
+      .warn`To fix, ask the extension author to re-publish with swamp 20260316 or later.`;
+    for (const f of missingFiles) {
+      logger.warn`  missing: ${f}`;
+    }
+  }
+}
+
+/**
  * Renders safety warnings.
  */
 export function renderExtensionPullSafetyWarnings(
