@@ -443,8 +443,8 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    Dynamic `import()` calls are not supported — the quality checker rejects them
    during `extension push`.
 4. **Pin npm versions**: Always pin versions — either inline
-   (`npm:lodash-es@4.17.21`), via a `deno.json` import map, or in
-   `package.json` dependencies. See
+   (`npm:lodash-es@4.17.21`), via a `deno.json` import map, or in `package.json`
+   dependencies. See
    [references/examples.md](references/examples.md#import-styles) for details.
 5. **Type naming**: Use `@<collective>/<name>` or `<collective>/<name>` format
    (e.g., `@user/my-model` or `myorg/my-model`)

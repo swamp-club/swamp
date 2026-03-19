@@ -75,9 +75,9 @@ pushing. Swamp only uses the `package.json` when the extension source has bare
 specifiers; extensions with `npm:` prefixed imports are unaffected by an
 unrelated `package.json` in the project tree.
 
-The import map and package.json approaches are preferred for extensions that want
-to use standard tooling (testing, linting, formatting) with their own project
-configuration. All three styles produce identical bundles.
+The import map and package.json approaches are preferred for extensions that
+want to use standard tooling (testing, linting, formatting) with their own
+project configuration. All three styles produce identical bundles.
 
 ### Example
 
