@@ -584,6 +584,8 @@ essential context for working with this repository.
 - \`swamp-data\` - Manage model data lifecycle
 - \`swamp-repo\` - Repository management
 - \`swamp-extension-model\` - Create custom TypeScript models
+- \`swamp-extension-driver\` - Create custom execution drivers
+- \`swamp-extension-datastore\` - Create custom datastore backends
 - \`swamp-issue\` - Submit bug reports and feature requests
 - \`swamp-troubleshooting\` - Debug and diagnose swamp issues
 
