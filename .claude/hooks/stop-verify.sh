@@ -6,6 +6,11 @@ set -euo pipefail
 
 cd "$CLAUDE_PROJECT_DIR"
 
+# Skip verification if no files were changed
+if git diff --quiet HEAD origin/main && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+  exit 0
+fi
+
 ERRORS=""
 
 if ! deno task check 2>&1; then
