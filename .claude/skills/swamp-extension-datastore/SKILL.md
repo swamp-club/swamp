@@ -185,8 +185,8 @@ swamp datastore status --json
    alphanumeric, hyphens, underscores)
 5. **Static imports only**: All npm imports must be static top-level imports —
    dynamic `import()` is not supported
-6. **Pin npm versions**: Always pin versions — either inline (`npm:pkg@1.2.3`)
-   or via a `deno.json` import map
+6. **Pin npm versions**: Always pin versions — either inline
+   (`npm:pkg@1.2.3`), via a `deno.json` import map, or in `package.json`
 7. **Locking is required**: `createLock` must return a working `DistributedLock`
    — swamp acquires locks for all write operations
 

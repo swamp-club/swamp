@@ -28,7 +28,10 @@ import { UserError } from "../../domain/errors.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { checkExtensionQuality } from "../../domain/extensions/extension_quality_checker.ts";
-import { bundleExtension } from "../../domain/models/bundle.ts";
+import {
+  bundleExtension,
+  sourceHasBareSpecifiers,
+} from "../../domain/models/bundle.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
@@ -107,6 +110,59 @@ async function findDenoConfig(
   return undefined;
 }
 
+/**
+ * Walks up from `startDir` looking for a `package.json` file, stopping at
+ * `boundaryDir` (inclusive). Returns the absolute path to the directory
+ * containing package.json if found, or undefined.
+ */
+async function findPackageJson(
+  startDir: string,
+  boundaryDir: string,
+): Promise<string | undefined> {
+  let current = resolve(startDir);
+  const boundary = resolve(boundaryDir);
+
+  while (true) {
+    const candidate = join(current, "package.json");
+    try {
+      await Deno.stat(candidate);
+      return current;
+    } catch {
+      // Not found at this level
+    }
+
+    if (current === boundary) break;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return undefined;
+}
+
+/**
+ * Validates that node_modules/ exists alongside a package.json project.
+ * Throws UserError with clear instructions if missing.
+ */
+async function requireNodeModules(projectDir: string): Promise<void> {
+  const nodeModulesPath = join(projectDir, "node_modules");
+  try {
+    const stat = await Deno.stat(nodeModulesPath);
+    if (!stat.isDirectory) {
+      throw new UserError(
+        `Expected node_modules/ to be a directory at ${nodeModulesPath}. ` +
+          `Run 'npm install' or 'deno install' in ${projectDir} first.`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof UserError) throw error;
+    throw new UserError(
+      `No node_modules/ found at ${projectDir}. ` +
+        `Run 'npm install' or 'deno install' to install dependencies before pushing.`,
+    );
+  }
+}
+
 export const extensionPushCommand = new Command()
   .name("push")
   .description("Push an extension to the swamp registry")
@@ -154,13 +210,48 @@ export const extensionPushCommand = new Command()
       additionalFilePaths,
     } = resolved;
 
-    // 2b. Detect deno.json for project-aware bundling and quality checks.
+    // 2b. Detect project config for project-aware bundling and quality checks.
     // Walk up from the manifest directory to the repo root.
+    // deno.json takes priority — only look for package.json if no deno.json found.
     const absoluteManifestPath = resolve(repoDir, manifestPath);
     const manifestDir = dirname(absoluteManifestPath);
     const denoConfigPath = await findDenoConfig(manifestDir, resolve(repoDir));
+    let packageJsonDir: string | undefined;
     if (denoConfigPath) {
       ctx.logger.debug`Found deno.json at ${denoConfigPath}`;
+    } else {
+      // Only use a package.json if the extension source actually has bare
+      // specifiers that need it. An unrelated package.json (e.g., for
+      // @anthropic-ai/claude-code) in a parent directory would otherwise
+      // poison Deno's module resolution for npm: prefixed imports.
+      const candidateDir = await findPackageJson(
+        manifestDir,
+        resolve(repoDir),
+      );
+      if (candidateDir) {
+        const allEntryPoints = [
+          ...modelEntryPoints,
+          ...vaultEntryPoints,
+          ...driverEntryPoints,
+          ...datastoreEntryPoints,
+        ];
+        let hasBare = false;
+        for (const ep of allEntryPoints) {
+          const src = await Deno.readTextFile(ep);
+          if (sourceHasBareSpecifiers(src)) {
+            hasBare = true;
+            break;
+          }
+        }
+        if (hasBare) {
+          packageJsonDir = candidateDir;
+          ctx.logger.debug`Found package.json project at ${packageJsonDir}`;
+          await requireNodeModules(packageJsonDir);
+        } else {
+          ctx.logger
+            .debug`Ignoring package.json at ${candidateDir} (extension uses npm: prefixed imports)`;
+        }
+      }
     }
 
     // 3. Load auth credentials (skip in dry-run — no registry interaction needed)
@@ -393,7 +484,11 @@ export const extensionPushCommand = new Command()
     const bundles = new Map<string, string>(); // relative path (no ext) -> JS
     const compilationErrors: CompilationError[] = [];
 
-    const bundleOptions = denoConfigPath ? { denoConfigPath } : undefined;
+    const bundleOptions = denoConfigPath
+      ? { denoConfigPath }
+      : packageJsonDir
+      ? { packageJsonDir }
+      : undefined;
 
     for (const entryPoint of modelEntryPoints) {
       // Use relative path from modelsDir to avoid collisions with nested

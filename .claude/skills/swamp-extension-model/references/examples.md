@@ -54,9 +54,30 @@ import { z } from "zod";
 import { countBy } from "lodash-es";
 ```
 
-The import map approach is preferred for extensions that want to use standard
-Deno tooling (testing, linting, formatting) with their own project
-configuration. Both styles produce identical bundles.
+**package.json** (for extensions inside existing Node/TypeScript projects):
+
+```json
+{
+  "dependencies": {
+    "zod": "4.3.6",
+    "lodash-es": "4.17.21"
+  }
+}
+```
+
+```typescript
+import { z } from "zod";
+import { countBy } from "lodash-es";
+```
+
+Requires `node_modules/` to exist — run `npm install` or `deno install` before
+pushing. Swamp only uses the `package.json` when the extension source has bare
+specifiers; extensions with `npm:` prefixed imports are unaffected by an
+unrelated `package.json` in the project tree.
+
+The import map and package.json approaches are preferred for extensions that want
+to use standard tooling (testing, linting, formatting) with their own project
+configuration. All three styles produce identical bundles.
 
 ### Example
 

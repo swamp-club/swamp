@@ -139,8 +139,10 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 3. **Resolve files** — collects model entry points, auto-resolves local imports,
    resolves workflow dependencies
 4. **Detect project config** — walks up from manifest directory to repo root
-   looking for `deno.json`. If found, it is used for bundling and quality
-   checks.
+   looking for `deno.json` (takes priority) then `package.json`. If found and
+   the extension uses bare specifiers, it is used for bundling. `deno.json` is
+   also used for quality checks; `package.json` projects use default lint/fmt
+   rules.
 5. **Safety analysis** — scans all files for disallowed patterns and limits
 6. **Quality checks** — runs `deno fmt --check` and `deno lint` (using the
    project's `deno.json` config if present, otherwise default rules)

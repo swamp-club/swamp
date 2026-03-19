@@ -436,14 +436,15 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    `export const extension = { ... }` for extending existing types
 2. **Import**: `import { z } from "npm:zod@4";` is always required. Any
    Deno-compatible import (`npm:`, `jsr:`, `https://`) can also be used — swamp
-   bundles all dependencies automatically. Extensions with a `deno.json` import
-   map can use bare specifiers instead (e.g., `from "zod"`). See
+   bundles all dependencies automatically. Extensions with a `deno.json` or
+   `package.json` can use bare specifiers instead (e.g., `from "zod"`). See
    [references/examples.md](references/examples.md#using-external-dependencies)
 3. **Static imports only**: All imports must be static top-level imports.
    Dynamic `import()` calls are not supported — the quality checker rejects them
    during `extension push`.
 4. **Pin npm versions**: Always pin versions — either inline
-   (`npm:lodash-es@4.17.21`) or via a `deno.json` import map. See
+   (`npm:lodash-es@4.17.21`), via a `deno.json` import map, or in
+   `package.json` dependencies. See
    [references/examples.md](references/examples.md#import-styles) for details.
 5. **Type naming**: Use `@<collective>/<name>` or `<collective>/<name>` format
    (e.g., `@user/my-model` or `myorg/my-model`)

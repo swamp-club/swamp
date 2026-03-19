@@ -19,6 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
+import { join } from "@std/path";
 import * as zodModule from "zod";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
@@ -156,6 +157,14 @@ export interface BundleOptions {
    * map and lockfile govern dependency resolution.
    */
   denoConfigPath?: string;
+
+  /**
+   * Absolute path to a directory containing a package.json. When provided,
+   * the bundler sets `cwd` on the subprocess so Deno auto-detects the
+   * package.json and resolves bare specifiers from `node_modules/`.
+   * Mutually exclusive with `denoConfigPath`.
+   */
+  packageJsonDir?: string;
 }
 
 /**
@@ -213,6 +222,29 @@ async function resolveZodFromConfig(
 }
 
 /**
+ * Reads a package.json and checks whether zod is listed as a 4.x dependency.
+ * Returns true if zod 4.x is found in dependencies or devDependencies.
+ */
+async function isZod4InPackageJson(
+  packageJsonDir: string,
+): Promise<boolean> {
+  try {
+    const raw = await Deno.readTextFile(join(packageJsonDir, "package.json"));
+    const pkg = JSON.parse(raw);
+    const deps: Record<string, string> = {
+      ...pkg.dependencies,
+      ...pkg.devDependencies,
+    };
+    const zodVersion = deps["zod"];
+    if (!zodVersion) return false;
+    // Match 4, 4.x.y, ^4, ~4, >=4, etc.
+    return /^[\^~>=]*4(?:\.|$)/.test(zodVersion);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Bundles a TypeScript extension file into JavaScript using `deno bundle` subprocess.
  *
  * Transpiles TypeScript syntax (interfaces, type annotations, generics) and
@@ -244,9 +276,16 @@ export async function bundleExtension(
   });
 
   try {
+    // When using deno.json, pass --config so the import map governs resolution.
+    // When using package.json, use --node-modules-dir=auto so Deno auto-detects
+    // package.json via cwd and initializes node_modules/.deno/ if needed (this
+    // makes it work with both `npm install` and `deno install`).
+    // Otherwise, use --no-lock for the default no-project behavior.
     const args = options?.denoConfigPath
       ? ["bundle", "--config", options.denoConfigPath]
-      : ["bundle", "--no-lock"];
+      : options?.packageJsonDir
+      ? ["bundle", "--node-modules-dir=auto"]
+      : ["bundle", "--no-lock", "--node-modules-dir=none"];
 
     // Externalize zod by default so in-process extensions share the
     // host's zod instance (required for `instanceof` schema checks).
@@ -276,6 +315,15 @@ export async function bundleExtension(
           args.push("--external", resolvedZod, "--external", "zod");
         }
       }
+
+      // When using a package.json project, bare specifier "zod" needs to be
+      // externalized. Check that the package.json lists zod 4.x before doing so.
+      if (options?.packageJsonDir) {
+        const isZod4 = await isZod4InPackageJson(options.packageJsonDir);
+        if (isZod4) {
+          args.push("--external", "zod");
+        }
+      }
     }
 
     args.push("--platform", "deno", "-o", tempFile, absolutePath);
@@ -284,6 +332,9 @@ export async function bundleExtension(
       args,
       stdout: "piped",
       stderr: "piped",
+      // For package.json projects, set cwd so Deno auto-detects package.json
+      // and resolves bare specifiers from node_modules/.
+      ...(options?.packageJsonDir ? { cwd: options.packageJsonDir } : {}),
     });
 
     const output = await command.output();

@@ -129,19 +129,35 @@ JavaScript files stored alongside their source counterparts under `bundles/`.
 
 #### Project-aware bundling
 
-Extensions can optionally include a `deno.json` file with an import map. When
-`swamp extension push` is run, it walks up from the manifest directory to the
-repo root looking for `deno.json`. If found:
+Extensions can optionally live within a project that has a `deno.json` or
+`package.json`. When `swamp extension push` is run, it walks up from the
+manifest directory to the repo root looking for project config files.
 
-- **Bundling** uses `--config <deno.json>` instead of `--no-lock`, so the
-  project's import map and lockfile govern dependency resolution.
-- **Quality checks** (`deno fmt`, `deno lint`) use `--config <deno.json>`
-  instead of `--no-config`, so the project's lint/fmt rules apply.
+**Detection priority:** `deno.json` is searched first (full walk from manifest
+to repo root). Only if no `deno.json` is found does the push command walk again
+looking for `package.json`. This means `deno.json` always wins regardless of
+directory depth.
 
-This allows extensions to use bare specifiers (e.g., `import { z } from "zod"`)
-resolved via the import map, instead of inline `npm:` prefixed imports. Both
-styles are supported — extensions without a `deno.json` continue to work with
-the existing `npm:` prefix pattern.
+**Bare specifier gate:** A `package.json` is only used when the extension source
+actually contains bare specifiers (e.g., `from "zod"` instead of
+`from "npm:zod@4"`). This prevents an unrelated `package.json` (e.g., one
+containing `@anthropic-ai/claude-code` for tooling) from being mistakenly
+treated as the extension's project config.
+
+#### Bundling permutations
+
+| Scenario | `deno bundle` flags | Quality check flags | Notes |
+|----------|-------------------|-------------------|-------|
+| **`deno.json` found** | `--config <deno.json>` | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply |
+| **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config` | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`; `--node-modules-dir=auto` initializes `.deno/` metadata if needed |
+| **`package.json` found, `npm:` imports** | `--no-lock --node-modules-dir=none` | `--no-config` | Package.json is ignored (extension doesn't need it); `--node-modules-dir=none` prevents ambient package.json from poisoning resolution |
+| **No config found** | `--no-lock --node-modules-dir=none` | `--no-config` | Default behavior; `--node-modules-dir=none` prevents any package.json in the directory tree from interfering |
+
+The `--node-modules-dir=none` flag is critical for the last two cases: without
+it, an unrelated `package.json` anywhere in the directory tree causes Deno to
+switch to `node_modules/` resolution mode, breaking `npm:` prefixed imports with
+errors like "Could not find a matching package for 'npm:@octokit/rest@22.0.1'
+in the node_modules directory."
 
 #### Zod externalization
 
@@ -150,19 +166,25 @@ written in source. The bundler handles:
 
 - `npm:zod@4` and `npm:zod` (base patterns, always applied)
 - Fully-pinned versions like `npm:zod@4.3.6` (detected by scanning the source)
-- Bare `"zod"` specifier (when a `deno.json` import map maps it to zod 4.x)
+- Bare `"zod"` specifier via `deno.json` (when the import map maps it to
+  zod 4.x, both the resolved specifier and bare `"zod"` are externalized)
+- Bare `"zod"` specifier via `package.json` (when `dependencies` or
+  `devDependencies` lists zod 4.x)
 
 After bundling, `rewriteZodImports` rewrites any externalized zod import to
-`globalThis.__swamp_zod`, which is set at runtime by `installZodGlobal()`.
+`globalThis.__swamp_zod`, which is set at runtime by `installZodGlobal()`. The
+rewrite regex matches both `npm:zod@4.x` and bare `"zod"` specifiers, but
+explicitly excludes zod 3.x to prevent silent runtime breakage.
 
 #### Runtime bundle caching
 
 At runtime, loaders check `.swamp/bundles/` (or the corresponding `-bundles/`
 directory) for cached bundles. If the source file contains bare specifiers that
-require an import map to resolve, and a cached bundle exists, the loader uses
+require a project config to resolve, and a cached bundle exists, the loader uses
 the cached bundle rather than attempting a re-bundle that would fail without the
-import map. This supports pulled extensions that were built with a `deno.json`
-project — the archive includes pre-built bundles but not the `deno.json`.
+config. This supports pulled extensions that were built with a `deno.json` or
+`package.json` project — the archive includes pre-built bundles but not the
+project config.
 
 ### Vaults, Drivers, and Datastores
 
