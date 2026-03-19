@@ -100,15 +100,6 @@ imports before they can run. See `src/cli/commands/data_get_test.ts` for the
 pattern (`await initializeLogging({})` and
 `import "../../domain/models/models.ts"`).
 
-## Output Conventions
-
-- When asked to produce a plan, design, or analysis, persist it to
-  `plans/<descriptive-name>.md` — the file is the source of truth.
-- When asked for a plan or design only, produce only that artifact. Do not write
-  production code or make implementation changes unless explicitly asked.
-- When exploring a codebase, produce a first draft of output within 3-4 tool
-  calls. Refine iteratively rather than front-loading all exploration.
-
 ## Session Learnings
 
 If you hit a non-obvious problem during a session — something that wasted time,
