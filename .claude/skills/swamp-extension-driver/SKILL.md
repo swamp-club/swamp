@@ -8,28 +8,6 @@ description: Create user-defined TypeScript execution drivers for swamp — impl
 Create TypeScript execution drivers in `extensions/drivers/` that swamp loads at
 startup.
 
-## When to Create a Custom Driver
-
-**Create an extension driver when the built-in drivers (raw, docker) don't meet
-your execution needs.**
-
-Drivers control _where and how_ model methods execute, not _what_ they do:
-
-- `raw` — in-process execution (default)
-- `docker` — isolated Docker container execution
-- Custom — SSH, Lambda, Kubernetes, cloud functions, etc.
-
-Before creating a custom driver:
-
-1. Built-in drivers: `raw` (in-process), `docker` (container isolation)
-2. Search community: `swamp extension search driver`
-3. If a community extension exists, install it instead
-4. Only create a custom driver if nothing fits
-
-Extensions from trusted collectives (`@swamp/*`, `@si/*`, and your membership
-collectives) auto-resolve on first use. Use `swamp extension trust list` to see
-which collectives are trusted.
-
 ## Quick Reference
 
 | Task                | Command/Action                                 |
@@ -231,15 +209,6 @@ swamp model method run my-instance run --json
    via a `deno.json` import map, or in `package.json`
 7. **Output types**: Drivers return `"pending"` outputs (data to be persisted by
    swamp) or `"persisted"` outputs (already written by in-process drivers)
-
-## When to Use Other Skills
-
-| Need                              | Use Skill                   |
-| --------------------------------- | --------------------------- |
-| Create custom models              | `swamp-extension-model`     |
-| Create custom datastores          | `swamp-extension-datastore` |
-| Create/run workflows with drivers | `swamp-workflow`            |
-| Repository setup                  | `swamp-repo`                |
 
 ## References
 
