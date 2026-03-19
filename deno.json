@@ -31,8 +31,8 @@
     "react": "npm:react@^18.3.1",
     "react/jsx-runtime": "npm:react@^18.3.1/jsx-runtime",
     "@types/react": "npm:@types/react@^18.3.28",
-    "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@^3.1002.0",
-    "@aws-sdk/client-s3": "npm:@aws-sdk/client-s3@^3.1002.0",
+    "@aws-sdk/client-cloudcontrol": "npm:@aws-sdk/client-cloudcontrol@^3.1013.0",
+    "@aws-sdk/client-s3": "npm:@aws-sdk/client-s3@^3.1013.0",
     "cel-js": "npm:@marcbachmann/cel-js@7.5.1",
     "fast-json-patch": "npm:fast-json-patch@^3.1.1",
     "fast-check": "npm:fast-check@^3.22.0"
