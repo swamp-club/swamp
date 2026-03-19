@@ -269,12 +269,15 @@ swamp model validate my-deploy --json
 
 ```bash
 # Dev environment
-swamp model method run my-deploy deploy --input '{"environment": "dev"}' --json
+swamp model method run my-deploy deploy --input environment=dev --json
 
 # Production with 3 replicas
-swamp model method run my-deploy deploy --input '{"environment": "production", "replicas": 3}' --json
+swamp model method run my-deploy deploy --input environment=production --input replicas=3 --json
 
 # Staging dry run
+swamp model method run my-deploy deploy --input environment=staging --input dryRun=true --json
+
+# JSON syntax also works for complex inputs
 swamp model method run my-deploy deploy --input '{"environment": "staging", "dryRun": true}' --json
 ```
 
@@ -418,10 +421,10 @@ jobs:
 
 ```bash
 # Deploy to dev
-swamp workflow run deploy-api --input '{"environment": "dev"}' --json
+swamp workflow run deploy-api --input environment=dev --json
 
 # Deploy to production
-swamp workflow run deploy-api --input '{"environment": "production"}' --json
+swamp workflow run deploy-api --input environment=production --json
 ```
 
 ### CEL Paths Used

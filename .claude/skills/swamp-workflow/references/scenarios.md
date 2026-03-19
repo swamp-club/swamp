@@ -543,7 +543,7 @@ jobs:
 **3. Run the combined workflow**
 
 ```bash
-swamp workflow run deploy-and-notify --input '{"environment": "production"}' --json
+swamp workflow run deploy-and-notify --input environment=production --json
 ```
 
 ### Nested Workflow Limitations

@@ -35,7 +35,7 @@ run.
 | Validate workflow  | `swamp workflow validate [id_or_name] --json`          |
 | Evaluate workflow  | `swamp workflow evaluate <id_or_name> --json`          |
 | Run a workflow     | `swamp workflow run <id_or_name> --json`               |
-| Run with inputs    | `swamp workflow run <id_or_name> --input '{}' --json`  |
+| Run with inputs    | `swamp workflow run <id_or_name> --input key=value --json` |
 | View run history   | `swamp workflow history search --json`                 |
 | Get latest run     | `swamp workflow history get <workflow> --json`         |
 | View run logs      | `swamp workflow history logs <run_or_workflow> --json` |
@@ -207,7 +207,9 @@ swamp workflow validate --json  # Validate all
 
 ```bash
 swamp workflow run my-workflow --json
-swamp workflow run my-workflow --input '{"environment": "production"}' --json
+swamp workflow run my-workflow --input environment=production --json
+swamp workflow run my-workflow --input environment=production --input replicas=3 --json
+swamp workflow run my-workflow --input '{"environment": "production"}' --json  # JSON also supported
 swamp workflow run my-workflow --input-file inputs.yaml --json
 swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated workflow
 ```
@@ -216,7 +218,7 @@ swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated work
 
 | Flag                | Description                                                        |
 | ------------------- | ------------------------------------------------------------------ |
-| `--input <json>`    | Input values as JSON string                                        |
+| `--input <value>`   | Input values (key=value repeatable, or JSON)                       |
 | `--input-file <f>`  | Input values from YAML file                                        |
 | `--last-evaluated`  | Use previously evaluated workflow (skip eval and input validation) |
 | `--driver <driver>` | Override execution driver for all steps (e.g. `raw`, `docker`)     |
@@ -374,7 +376,7 @@ expressions remain raw for runtime resolution.
 
 ```bash
 swamp workflow evaluate my-workflow --json
-swamp workflow evaluate my-workflow --input '{"environment": "dev"}' --json
+swamp workflow evaluate my-workflow --input environment=dev --json
 swamp workflow evaluate --all --json
 ```
 
