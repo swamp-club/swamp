@@ -2067,6 +2067,49 @@ export class ProxmoxClient {
   });
 });
 
+Deno.test("UserModelLoader silently skips type-only .ts files in subdirectories", async () => {
+  const validModelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@test/type-only-skip-${Date.now()}",
+  version: "2026.02.11.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const typeOnlyCode = `
+// Type-only file — all declarations erased at compile time.
+export interface ServerConfig {
+  host: string;
+  port: number;
+}
+
+export type Status = "running" | "stopped" | "error";
+`;
+
+  await withTempModels({
+    "models/my_model/mod.ts": validModelCode,
+    "models/my_model/types.ts": typeOnlyCode,
+  }, async (dir) => {
+    const loader = createTestLoader();
+    const result = await loader.loadModels(dir);
+
+    // Should load only the valid model
+    assertEquals(result.loaded.length, 1);
+    assertEquals(result.loaded[0], join("models", "my_model", "mod.ts"));
+
+    // Type-only files should be silently skipped (not in failed list)
+    assertEquals(result.failed.length, 0);
+  });
+});
+
 Deno.test("UserModelLoader invalidates bundle cache when dependency changes", async () => {
   const ts = Date.now();
   const helperCode = `export const greeting = "hello";`;

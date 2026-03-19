@@ -353,9 +353,10 @@ export async function bundleExtension(
     let js = await Deno.readTextFile(tempFile);
 
     if (!js) {
-      throw new Error(
-        `deno bundle produced empty output for: ${absolutePath}`,
-      );
+      // Type-only files (interfaces, type aliases) produce empty bundles
+      // because TypeScript erases them at compile time. Return a minimal
+      // module so the loader can silently skip it (no model/extension export).
+      js = "export {};\n";
     }
 
     // Fix CJS/ESM interop for packages like tslib that set __esModule.

@@ -443,3 +443,22 @@ Deno.test("uint8ArrayToBase64 handles large input without stack overflow", () =>
   assertEquals(typeof result, "string");
   assertEquals(result.length > 0, true);
 });
+
+Deno.test("bundleExtension returns minimal module for type-only files", async () => {
+  const tsCode = `
+// A type-only file — all declarations are erased at compile time.
+export interface Config {
+  name: string;
+  value?: number;
+}
+
+export type Status = "running" | "stopped";
+`;
+
+  await withTempFile(tsCode, async (path) => {
+    const js = await bundleExtension(path, DENO_PATH);
+
+    // Should return a minimal module instead of throwing
+    assertEquals(js, "export {};\n");
+  });
+});
