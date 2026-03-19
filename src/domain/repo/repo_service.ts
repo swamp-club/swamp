@@ -572,6 +572,7 @@ This repository is managed with [swamp](https://github.com/systeminit/swamp).
 3. **Use the data model.** Once data exists in a model (via \`lookup\`, \`start\`, \`sync\`, etc.), reference it with CEL expressions. Don't re-fetch data that's already available.
 4. **CEL expressions everywhere.** Wire models together with CEL expressions. Always prefer \`data.latest("<name>", "<dataName>").attributes.<field>\` over the deprecated \`model.<name>.resource.<spec>.<instance>.attributes.<field>\` pattern.
 5. **Verify before destructive operations.** Always \`swamp model get <name> --json\` and verify resource IDs before running delete/stop/destroy methods.
+6. **Extension npm deps are bundled, not lockfile-tracked.** Swamp's bundler inlines all npm packages (except zod) into extension bundles at bundle time. \`deno.lock\` and \`package.json\` do NOT cover extension model dependencies — this is by design. Always pin explicit versions in \`npm:\` import specifiers (e.g., \`npm:lodash-es@4.17.21\`).
 
 ## Skills
 
@@ -586,6 +587,7 @@ essential context for working with this repository.
 - \`swamp-extension-model\` - Create custom TypeScript models
 - \`swamp-extension-driver\` - Create custom execution drivers
 - \`swamp-extension-datastore\` - Create custom datastore backends
+- \`swamp-extension-vault\` - Create custom vault providers
 - \`swamp-issue\` - Submit bug reports and feature requests
 - \`swamp-troubleshooting\` - Debug and diagnose swamp issues
 
