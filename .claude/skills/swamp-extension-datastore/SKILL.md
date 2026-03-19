@@ -145,22 +145,27 @@ swamp datastore status --json
 **Priority order:** `SWAMP_DATASTORE` env var > CLI `--datastore` arg >
 `.swamp.yaml` config > default filesystem.
 
-## Verify
+## Development Workflow
 
-After creating your datastore:
-
-```bash
-swamp datastore status --json              # Should show your custom type
-```
-
-If `healthy: false`, check the error message, fix the issue in your
-`createVerifier().verify()` implementation, then delete stale bundles and
-re-verify:
-
-```bash
-rm -rf .swamp/datastore-bundles/
-swamp datastore status --json
-```
+1. **Search existing**: `swamp extension search datastore` — if a match exists,
+   install it and skip to step 5
+2. **Create mod.ts**: Create `extensions/datastores/my-store/mod.ts` using the
+   Quick Start template above
+3. **Configure**: Add the datastore type and config to `.swamp.yaml` (or set
+   `SWAMP_DATASTORE` env var)
+4. **Verify**: Run `swamp datastore status --json` — should show your custom
+   type with `healthy: true`
+   - If `healthy: false`, check the error message and fix your
+     `createVerifier().verify()` implementation
+   - If type not found, check the export name is `export const datastore` and
+     the file is under `extensions/datastores/`
+   - After fixes, delete stale bundles and re-verify:
+     ```bash
+     rm -rf .swamp/datastore-bundles/
+     swamp datastore status --json
+     ```
+5. **Test**: Run a model operation that uses the datastore to confirm end-to-end
+   functionality
 
 ## Discovery & Loading
 
