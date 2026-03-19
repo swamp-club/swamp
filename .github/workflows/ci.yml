@@ -31,11 +31,14 @@ jobs:
       - name: Run deno fmt --check
         run: deno fmt --check
 
+      - name: Run deno check
+        run: deno task check
+
       - name: Run deno test
-        run: deno test --unstable-bundle --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys
+        run: deno task test
 
       - name: Compile binary
-        run: deno run compile
+        run: deno task compile
 
   deps-audit:
     name: Dependency Audit

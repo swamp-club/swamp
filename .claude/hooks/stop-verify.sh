@@ -8,7 +8,7 @@ cd "$CLAUDE_PROJECT_DIR"
 
 ERRORS=""
 
-if ! deno check 2>&1; then
+if ! deno task check 2>&1; then
   ERRORS="${ERRORS}deno check failed\n"
 fi
 
@@ -16,8 +16,8 @@ if ! deno lint 2>&1; then
   ERRORS="${ERRORS}deno lint failed\n"
 fi
 
-if ! deno run test 2>&1; then
-  ERRORS="${ERRORS}deno run test failed\n"
+if ! deno task test 2>&1; then
+  ERRORS="${ERRORS}deno test failed\n"
 fi
 
 if [ -n "$ERRORS" ]; then
