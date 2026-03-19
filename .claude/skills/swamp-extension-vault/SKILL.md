@@ -31,13 +31,13 @@ Custom vaults let you:
 
 ## Quick Reference
 
-| Task                | Command/Action                             |
-| ------------------- | ------------------------------------------ |
-| Search community    | `swamp extension search vault --json`      |
-| Create vault        | Create `extensions/vaults/my-vault/mod.ts` |
-| Verify registration | `swamp vault status --json`                |
-| Check config        | View `.swamp.yaml` vault section           |
-| Push extension      | `swamp extension push manifest.yaml --json`|
+| Task                | Command/Action                                 |
+| ------------------- | ---------------------------------------------- |
+| Search community    | `swamp extension search vault --json`          |
+| Create vault        | Create `extensions/vaults/my-vault/mod.ts`     |
+| Verify registration | `swamp vault status --json`                    |
+| Check config        | View `.swamp.yaml` vault section               |
+| Push extension      | `swamp extension push manifest.yaml --json`    |
 | Dry-run push        | `swamp extension push manifest.yaml --dry-run` |
 
 ## Quick Start
@@ -68,7 +68,9 @@ export const vault = {
           { headers: { Authorization: `Bearer ${parsed.token}` } },
         );
         if (!response.ok) {
-          throw new Error(`Failed to get secret '${secretKey}': ${response.statusText}`);
+          throw new Error(
+            `Failed to get secret '${secretKey}': ${response.statusText}`,
+          );
         }
         const data = await response.json();
         return data.value;
@@ -87,7 +89,9 @@ export const vault = {
           },
         );
         if (!response.ok) {
-          throw new Error(`Failed to put secret '${secretKey}': ${response.statusText}`);
+          throw new Error(
+            `Failed to put secret '${secretKey}': ${response.statusText}`,
+          );
         }
       },
       list: async (): Promise<string[]> => {
@@ -121,19 +125,19 @@ export const vault = {
 The `type` must match the pattern `@collective/name` or `collective/name` (e.g.,
 `@myorg/custom-vault`). Reserved collectives (`swamp`, `si`) cannot be used.
 
-**Note:** The `createProvider` function receives two arguments: `name` (the vault
-instance name from `.swamp.yaml`) and `config` (the provider-specific
+**Note:** The `createProvider` function receives two arguments: `name` (the
+vault instance name from `.swamp.yaml`) and `config` (the provider-specific
 configuration object). This differs from datastore providers which only receive
 `config`.
 
 ## VaultProvider Methods
 
-| Method     | Required | Description                                        |
-| ---------- | -------- | -------------------------------------------------- |
-| `get`      | Yes      | Retrieves a secret value by key                    |
-| `put`      | Yes      | Stores a secret key-value pair                     |
-| `list`     | Yes      | Lists all secret key names (not values)            |
-| `getName`  | Yes      | Returns the vault instance name                    |
+| Method    | Required | Description                             |
+| --------- | -------- | --------------------------------------- |
+| `get`     | Yes      | Retrieves a secret value by key         |
+| `put`     | Yes      | Stores a secret key-value pair          |
+| `list`    | Yes      | Lists all secret key names (not values) |
+| `getName` | Yes      | Returns the vault instance name         |
 
 For full interface signatures and type details, see
 [references/api.md](references/api.md).
@@ -160,8 +164,8 @@ swamp vault status --json
 
 1. **Search existing**: `swamp extension search vault` — if a match exists,
    install it and skip to step 5
-2. **Create mod.ts**: Create `extensions/vaults/my-vault/mod.ts` using the
-   Quick Start template above
+2. **Create mod.ts**: Create `extensions/vaults/my-vault/mod.ts` using the Quick
+   Start template above
 3. **Configure**: Add the vault type and config to `.swamp.yaml`
 4. **Verify**: Run `swamp vault status --json` — should show your custom type
    - If type not found, check the export name is `export const vault` and the
@@ -194,18 +198,19 @@ swamp vault status --json
    dynamic `import()` is not supported
 6. **Pin npm versions**: Always pin versions — either inline (`npm:pkg@1.2.3`)
    or via a `deno.json` import map
-7. **createProvider takes two args**: `(name: string, config: Record<string, unknown>)` —
-   the first arg is the vault instance name, the second is the parsed config
+7. **createProvider takes two args**:
+   `(name: string, config: Record<string, unknown>)` — the first arg is the
+   vault instance name, the second is the parsed config
 
 ## When to Use Other Skills
 
-| Need                                | Use Skill                    |
-| ----------------------------------- | ---------------------------- |
-| Use existing vaults (CLI commands)  | `swamp-vault`                |
-| Create custom models                | `swamp-extension-model`      |
-| Create custom datastores            | `swamp-extension-datastore`  |
-| Create custom execution drivers     | `swamp-extension-driver`     |
-| Repository setup and configuration  | `swamp-repo`                 |
+| Need                               | Use Skill                   |
+| ---------------------------------- | --------------------------- |
+| Use existing vaults (CLI commands) | `swamp-vault`               |
+| Create custom models               | `swamp-extension-model`     |
+| Create custom datastores           | `swamp-extension-datastore` |
+| Create custom execution drivers    | `swamp-extension-driver`    |
+| Repository setup and configuration | `swamp-repo`                |
 
 ## References
 

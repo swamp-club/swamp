@@ -143,8 +143,10 @@ export const vault = {
     const parsed = ConfigSchema.parse(config);
 
     const encrypt = async (plaintext: string): Promise<string> => {
-      const keyBytes = Uint8Array.from(atob(parsed.encryptionKey), (c) =>
-        c.charCodeAt(0));
+      const keyBytes = Uint8Array.from(
+        atob(parsed.encryptionKey),
+        (c) => c.charCodeAt(0),
+      );
       const key = await crypto.subtle.importKey(
         "raw",
         keyBytes,
@@ -165,8 +167,10 @@ export const vault = {
     };
 
     const decrypt = async (ciphertext: string): Promise<string> => {
-      const keyBytes = Uint8Array.from(atob(parsed.encryptionKey), (c) =>
-        c.charCodeAt(0));
+      const keyBytes = Uint8Array.from(
+        atob(parsed.encryptionKey),
+        (c) => c.charCodeAt(0),
+      );
       const key = await crypto.subtle.importKey(
         "raw",
         keyBytes,
@@ -174,8 +178,10 @@ export const vault = {
         false,
         ["decrypt"],
       );
-      const combined = Uint8Array.from(atob(ciphertext), (c) =>
-        c.charCodeAt(0));
+      const combined = Uint8Array.from(
+        atob(ciphertext),
+        (c) => c.charCodeAt(0),
+      );
       const iv = combined.slice(0, 12);
       const data = combined.slice(12);
       const decrypted = await crypto.subtle.decrypt(

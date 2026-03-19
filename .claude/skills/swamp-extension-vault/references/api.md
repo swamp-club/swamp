@@ -57,9 +57,9 @@ Configuration structure used when configuring vaults.
 
 ```typescript
 interface VaultConfiguration {
-  name: string;                      // Vault instance name
-  type: string;                      // Vault provider type (e.g., "@myorg/custom-vault")
-  config: Record<string, unknown>;   // Provider-specific configuration
+  name: string; // Vault instance name
+  type: string; // Vault provider type (e.g., "@myorg/custom-vault")
+  config: Record<string, unknown>; // Provider-specific configuration
 }
 ```
 
