@@ -54,9 +54,9 @@ export function expandEnvVars(path: string): string {
 
     const varName = bracedVar ?? unbracedVar;
     const value = Deno.env.get(varName);
-    if (value === undefined) {
+    if (value === undefined || value === "") {
       throw new UserError(
-        `Environment variable "${varName}" is not set (referenced in path "${path}")`,
+        `Environment variable "${varName}" is not set or empty (referenced in path "${path}")`,
       );
     }
     return value;

@@ -84,6 +84,21 @@ Deno.test("expandEnvVars - throws on undefined ${VAR}", () => {
   );
 });
 
+Deno.test("expandEnvVars - throws on empty $VAR value", () => {
+  const original = Deno.env.get("SWAMP_EMPTY_TEST_VAR");
+  try {
+    Deno.env.set("SWAMP_EMPTY_TEST_VAR", "");
+    assertThrows(
+      () => expandEnvVars("$SWAMP_EMPTY_TEST_VAR/path"),
+      Error,
+      'Environment variable "SWAMP_EMPTY_TEST_VAR" is not set or empty',
+    );
+  } finally {
+    if (original) Deno.env.set("SWAMP_EMPTY_TEST_VAR", original);
+    else Deno.env.delete("SWAMP_EMPTY_TEST_VAR");
+  }
+});
+
 Deno.test("expandEnvVars - absolute path passes through unchanged", () => {
   assertEquals(expandEnvVars("/absolute/path"), "/absolute/path");
 });
