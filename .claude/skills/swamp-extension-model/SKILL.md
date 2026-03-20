@@ -44,6 +44,10 @@ swamp model create @swamp/digitalocean/droplet my-droplet
   → creates my-droplet definition
 ```
 
+If the task is transforming/analyzing existing model output into a report,
+create a report extension instead (see `swamp-report` skill). Extension models
+are for new data sources and integrations.
+
 **Important:** Do not default to generic CLI types (like `command/shell`) for
 specific service integrations. If the user wants to manage S3 buckets, EC2
 instances, or other resources, create a dedicated model for that service rather
@@ -484,6 +488,7 @@ swamp model type describe @myorg/my-model --json  # Check schema
 | Manage secrets for models | `swamp-vault`    |
 | Repository structure      | `swamp-repo`     |
 | Manage model data         | `swamp-data`     |
+| Create reports for models | `swamp-report`   |
 
 ## References
 

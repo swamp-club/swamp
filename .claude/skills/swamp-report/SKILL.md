@@ -9,6 +9,19 @@ Create and run reports that analyze model and workflow executions. Reports
 produce markdown (human-readable) and JSON (machine-readable) output. All
 commands support `--json` for machine-readable output.
 
+## When to Create a Report
+
+Create a report extension when you need a **repeatable pipeline** to transform,
+aggregate, or analyze model output — security reports, cost analysis, compliance
+checks, execution summaries, etc.
+
+Reports are the right choice when:
+
+- The analysis will be run more than once
+- The output should be stored and versioned alongside model data
+- Multiple models or workflows need the same analysis
+- The user asks for a "report", "analysis", "summary", or "audit"
+
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
 `swamp help model report` or `swamp help model method run` for the complete,
 up-to-date CLI schema.
