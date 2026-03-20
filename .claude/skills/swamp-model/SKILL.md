@@ -537,6 +537,7 @@ validation.
 | Task                                                  | Approach                                  |
 | ----------------------------------------------------- | ----------------------------------------- |
 | New API/service integration                           | Extension model (`swamp-extension-model`) |
+| Existing model missing a method                       | Extend it (`swamp-extension-model`)       |
 | Reusable data pipeline (reports, analysis, summaries) | Report extension (`swamp-report`)         |
 | Ad-hoc debugging or one-off data inspection           | Inline processing is fine                 |
 

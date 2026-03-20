@@ -11,42 +11,31 @@ startup.
 ## When to Create a Custom Model
 
 **Create an extension model when no built-in or community type exists for your
-use case.**
+use case.** Before creating one:
 
-Before creating a custom model, always check both local types and community
-extensions:
-
-1. Search local types: `swamp model type search <query>`
-2. Search community extensions: `swamp extension search <query>`
+1. `swamp model type search <query>` — check local types
+2. `swamp extension search <query>` — check community extensions
 3. If a community extension exists, install it instead of building from scratch
-4. Only create a custom model if nothing exists locally or in the community
+4. Only create a custom model if nothing exists
 
-Note: Extensions from trusted collectives (`@swamp/*`, `@si/*`, and your
-membership collectives) auto-resolve on first use — no manual `extension pull`
-needed. Just reference the type and swamp installs the extension automatically.
-Use `swamp extension trust list` to see which collectives are trusted, and
-`swamp extension trust add <name>` to trust additional collectives.
-
-Extension models let you:
-
-- Integrate with any API or service (AWS S3, Stripe, custom APIs, etc.)
-- Define any automation logic you need
-- Create reusable components for your workflows
-
-**Example decision flow:**
-
-```
-User wants to work with DigitalOcean droplets
-swamp model type search droplet → no local results
-swamp model create @swamp/digitalocean/droplet my-droplet
-  → auto-resolves @swamp/digitalocean from registry
-  → installs and hot-loads 32 models
-  → creates my-droplet definition
-```
+Trusted collectives (`@swamp/*`, `@si/*`, membership collectives) auto-resolve
+on first use — no manual `extension pull` needed. Use
+`swamp extension trust list` to see trusted collectives.
 
 If the task is transforming/analyzing existing model output into a report,
 create a report extension instead (see `swamp-report` skill). Extension models
 are for new data sources and integrations.
+
+**When a model type exists but is missing a method:**
+
+If the model type covers your domain but doesn't have the method you need:
+
+1. Confirm the type exists: `swamp model type describe <type> --json`
+2. Verify the method is missing from the output
+3. Add the method via `export const extension` — see
+   [Extending Existing Model Types](#extending-existing-model-types) below
+4. Do not fall back to CLI tools (`gh`, `aws`, `curl`) when the domain model
+   already exists
 
 **Important:** Do not default to generic CLI types (like `command/shell`) for
 specific service integrations. If the user wants to manage S3 buckets, EC2
@@ -332,21 +321,12 @@ sync pattern with workflow examples.
 
 ### Optional Patterns for Cloud/API Models
 
-Two patterns are common for models that manage real cloud resources. Neither is
-required — ask the user whether they want them when creating a new extension
-model.
+Ask the user whether they want these when creating a new extension model:
 
 - **[Polling to completion](references/examples.md#polling-to-completion)** —
-  When the provider's API is async, poll until the resource is fully provisioned
-  before returning. Useful when downstream models depend on attributes that
-  aren't populated until ready (IPs, ARNs, endpoints). Not needed when the API
-  returns complete state synchronously.
-
-- **[Idempotent creates](references/examples.md#idempotent-creates)** — Check
-  `context.readResource()` for existing state before creating, to avoid
-  duplicates on workflow re-runs. Useful for non-idempotent APIs (droplets, EC2
-  instances). Not needed when the API is naturally idempotent (tags, S3 buckets)
-  or you intentionally want multiple instances.
+  poll async APIs until the resource is fully provisioned
+- **[Idempotent creates](references/examples.md#idempotent-creates)** — check
+  for existing state before creating to avoid duplicates on re-runs
 
 ## Pre-flight Checks
 

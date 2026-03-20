@@ -20,6 +20,8 @@ startup.
 
 ## Quick Start
 
+1. Create the driver file:
+
 ```typescript
 // extensions/drivers/my-driver/mod.ts
 import { z } from "npm:zod@4";
@@ -93,6 +95,12 @@ export const driver = {
   },
 };
 ```
+
+2. Verify it loaded: `swamp model type search --json` — your driver type should
+   appear in the output. If it doesn't, see [Verify](#verify) below.
+
+3. Test with a model: create a definition with `driver: "@myorg/my-driver"` and
+   run a method to confirm end-to-end execution.
 
 ## Export Contract
 
@@ -176,16 +184,21 @@ no merging across levels.
 
 After creating your driver:
 
-1. Check registration: `swamp model type search --json` — your driver type
-   should be loadable
+1. Check registration: `swamp model type search --json` — look for your driver
+   type in the output. If it appears, the driver loaded successfully.
 2. Test with a model: create a definition with `driver: "@myorg/my-driver"` and
-   run a method
-3. If the driver isn't found, delete stale bundles and retry:
+   run a method. A `"status": "success"` in the output confirms end-to-end
+   execution works.
+3. If the driver doesn't appear in step 1 or the method fails in step 2, delete
+   stale bundles and retry:
 
 ```bash
 rm -rf .swamp/driver-bundles/
 swamp model method run my-instance run --json
 ```
+
+If it still fails after clearing bundles, check for TypeScript errors in your
+driver file — swamp silently skips files that fail to compile.
 
 ## Discovery & Loading
 

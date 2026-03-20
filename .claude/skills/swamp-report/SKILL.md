@@ -278,13 +278,14 @@ Failed reports appear as `{ "_error": "error message" }`.
 
 ## When to Use Other Skills
 
-| Need                      | Use Skill               |
-| ------------------------- | ----------------------- |
-| Work with models          | `swamp-model`           |
-| Create/run workflows      | `swamp-workflow`        |
-| Create custom model types | `swamp-extension-model` |
-| Manage model data         | `swamp-data`            |
-| Repository structure      | `swamp-repo`            |
+| Need                         | Use Skill               |
+| ---------------------------- | ----------------------- |
+| Work with models             | `swamp-model`           |
+| Create/run workflows         | `swamp-workflow`        |
+| Create custom model types    | `swamp-extension-model` |
+| Extend model with new method | `swamp-extension-model` |
+| Manage model data            | `swamp-data`            |
+| Repository structure         | `swamp-repo`            |
 
 ## References
 
