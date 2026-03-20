@@ -51,6 +51,7 @@ import {
   executeReports,
 } from "../../domain/reports/report_execution_service.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { BUILTIN_WORKFLOW_REPORTS } from "../../domain/reports/builtin/mod.ts";
 import type {
   WorkflowReportContext,
 } from "../../domain/reports/report_context.ts";
@@ -624,6 +625,8 @@ async function* executePostRunReports(
     workflow.reportSelection,
     filterOptions,
     noopEvents,
+    undefined, // methodName
+    BUILTIN_WORKFLOW_REPORTS,
   );
 
   for (const result of wfSummary.results) {
