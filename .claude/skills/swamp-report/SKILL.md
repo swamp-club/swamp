@@ -99,6 +99,20 @@ to handle their inputs. They don't declare which model types they support.
 See [references/report-types.md](references/report-types.md) for full type
 definitions.
 
+### Redacting Sensitive Arguments
+
+The context provides `redactSensitiveArgs()` which replaces values marked
+`{ sensitive: true }` in the model type's Zod schema with `"***"`. Use it
+when including argument values in report output:
+
+```typescript
+const globalArgs = context.redactSensitiveArgs(context.globalArgs, "global");
+const methodArgs = context.redactSensitiveArgs(context.methodArgs, "method");
+```
+
+The helper is available on method and model scope contexts. It returns args
+unchanged if no schema is found, so it is safe to call unconditionally.
+
 ### Key Rules
 
 1. **Return both markdown and json** — every report must produce both
@@ -107,6 +121,8 @@ definitions.
 4. **Use scope correctly** — method-scope for per-execution analysis,
    model-scope for cross-method analysis, workflow-scope for multi-step
    aggregation
+5. **Redact sensitive args** — use `context.redactSensitiveArgs()` when
+   including argument values in report output
 
 ## Three-Level Report Control Model
 

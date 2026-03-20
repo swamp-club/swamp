@@ -38,6 +38,7 @@ import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistenc
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
+import { BUILTIN_METHOD_REPORTS } from "../reports/builtin/mod.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
@@ -88,7 +89,6 @@ import {
 } from "../reports/report_execution_service.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
 import type { MethodReportContext } from "../reports/report_context.ts";
-import { buildReportDataHandles } from "../reports/report_data_handles.ts";
 import { modelRegistry } from "../models/model.ts";
 /**
  * Context for step execution.
@@ -324,6 +324,12 @@ export class DefaultStepExecutor implements StepExecutor {
     // Save evaluated definition (with vault expressions still raw) for --last-evaluated
     const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(ctx.repoDir);
     await evaluatedDefRepo.save(modelType, evaluatedDefinition);
+
+    // Capture pre-vault args for report context (so vault secrets stay as expressions)
+    const reportGlobalArgs = evaluatedDefinition.globalArguments;
+    const reportMethodArgs = evaluatedDefinition.getMethodArguments(
+      task.methodName,
+    );
 
     // Resolve runtime expressions (vault and env) at runtime (never persisted)
     const evalService = new ExpressionEvaluationService(
@@ -574,11 +580,7 @@ export class DefaultStepExecutor implements StepExecutor {
       if (
         reportRegistry.getAll().length > 0 && ctx.reportFilterOptions
       ) {
-        const dataHandles = await buildReportDataHandles(
-          unifiedDataRepo,
-          modelType,
-          evaluatedDefinition.id,
-        );
+        const dataHandles = result.dataHandles ?? [];
 
         // Compute vary suffix from forEach variable
         let reportVarySuffix: string | undefined;
@@ -643,7 +645,10 @@ export class DefaultStepExecutor implements StepExecutor {
 
         // Look up model-type defaults for report filtering
         const stepModelDef = modelRegistry.get(modelType);
-        const stepModelTypeReports = stepModelDef?.reports;
+        const stepModelTypeReports = [
+          ...BUILTIN_METHOD_REPORTS,
+          ...(stepModelDef?.reports ?? []),
+        ];
 
         // Method-scope reports
         const methodContext: MethodReportContext = {
@@ -660,8 +665,8 @@ export class DefaultStepExecutor implements StepExecutor {
             version: evaluatedDefinition.version,
             tags: evaluatedDefinition.tags,
           },
-          globalArgs: evaluatedDefinition.globalArguments,
-          methodArgs: evaluatedDefinition.getMethodArguments(task.methodName),
+          globalArgs: reportGlobalArgs,
+          methodArgs: reportMethodArgs,
           methodName: task.methodName,
           executionStatus: "succeeded",
           dataHandles,
@@ -702,6 +707,7 @@ export class DefaultStepExecutor implements StepExecutor {
         resources,
         files,
         dataArtifacts: savedArtifacts,
+        dataHandles: result.dataHandles ?? [],
       };
     } catch (error) {
       // Mark output as failed and save
@@ -1406,6 +1412,7 @@ export class WorkflowExecutionService {
       });
 
       // Track data artifacts and update expression context if this was a model method
+      let stepDataHandles: import("../models/model.ts").DataHandle[] | undefined;
       if (step.task.isModelMethod() && output && typeof output === "object") {
         const taskOutput = output as {
           model?: string;
@@ -1417,7 +1424,9 @@ export class WorkflowExecutionService {
             version: number;
             tags: Record<string, string>;
           }>;
+          dataHandles?: import("../models/model.ts").DataHandle[];
         };
+        stepDataHandles = taskOutput.dataHandles;
 
         // Track data artifacts in step run
         if (taskOutput.dataArtifacts) {
@@ -1472,7 +1481,7 @@ export class WorkflowExecutionService {
       }
 
       stepRun.succeed(output);
-      yield { kind: "step_completed", jobId: job.name, stepId: stepName };
+      yield { kind: "step_completed", jobId: job.name, stepId: stepName, dataHandles: stepDataHandles };
     } catch (error) {
       const errorMessage = error instanceof Error
         ? error.message
