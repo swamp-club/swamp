@@ -1,0 +1,68 @@
+[
+  {
+    "query": "How do I create a custom execution driver for SSH?",
+    "should_trigger": true
+  },
+  {
+    "query": "Build a Lambda execution driver for running jobs on AWS",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to create a custom driver that runs on Kubernetes",
+    "should_trigger": true
+  },
+  {
+    "query": "Guide me through implementing a remote execution driver",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a custom driver for executing tasks on GCP Cloud Run",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I implement the ExecutionDriver interface in TypeScript?",
+    "should_trigger": true
+  },
+  {
+    "query": "Build a driver that executes workloads on a Docker Swarm cluster",
+    "should_trigger": true
+  },
+  {
+    "query": "Create an extension driver for running code on a custom VM",
+    "should_trigger": true
+  },
+  {
+    "query": "Implement a driver plugin for Nomad job orchestration",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a model type for processing Docker containers",
+    "should_trigger": false,
+    "note": "Building custom model types → swamp-extension-model"
+  },
+  {
+    "query": "How do I orchestrate multiple remote jobs in a workflow?",
+    "should_trigger": false,
+    "note": "Defining workflows → swamp-workflow"
+  },
+  {
+    "query": "What custom datastores can I build?",
+    "should_trigger": false,
+    "note": "Building custom datastores → swamp-extension-datastore"
+  },
+  {
+    "query": "My SSH driver is timing out when executing remote tasks",
+    "should_trigger": false,
+    "note": "Debugging driver issues → swamp-troubleshooting"
+  },
+  {
+    "query": "Run this workflow step on a remote Kubernetes cluster",
+    "should_trigger": false,
+    "note": "Orchestrating workflow execution → swamp-workflow"
+  },
+  {
+    "query": "Store the execution credentials in a secure vault",
+    "should_trigger": false,
+    "note": "Managing secrets → swamp-vault"
+  }
+]

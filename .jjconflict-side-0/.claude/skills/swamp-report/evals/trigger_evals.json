@@ -1,0 +1,65 @@
+[
+  {
+    "query": "How do I create a report on model performance metrics?",
+    "should_trigger": true
+  },
+  {
+    "query": "Run a report to show all workflow executions from last week",
+    "should_trigger": true
+  },
+  {
+    "query": "Generate a report extension for custom data analysis",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a report that tracks data model changes over time",
+    "should_trigger": true
+  },
+  { "query": "Can I export a report as CSV or JSON?", "should_trigger": true },
+  {
+    "query": "Run a compliance report for all stored secrets",
+    "should_trigger": true
+  },
+  {
+    "query": "Configure report labels in the model definition YAML",
+    "should_trigger": true
+  },
+  {
+    "query": "Skip a report from running in a specific workflow",
+    "should_trigger": true
+  },
+  {
+    "query": "Show me the report results from the last automation run",
+    "should_trigger": true
+  },
+  {
+    "query": "List the version history for the Payment model",
+    "should_trigger": false,
+    "note": "Viewing data version history → swamp-data"
+  },
+  {
+    "query": "I need to define a multi-step automation that runs daily",
+    "should_trigger": false,
+    "note": "Creating workflows → swamp-workflow"
+  },
+  {
+    "query": "Help me debug an issue with my model output",
+    "should_trigger": false,
+    "note": "Debugging model errors → swamp-troubleshooting"
+  },
+  {
+    "query": "Create a custom execution driver for running on Kubernetes",
+    "should_trigger": false,
+    "note": "Building custom drivers → swamp-extension-driver"
+  },
+  {
+    "query": "Execute the processing workflow and show logs",
+    "should_trigger": false,
+    "note": "Running workflows → swamp-workflow"
+  },
+  {
+    "query": "The report generation is timing out",
+    "should_trigger": false,
+    "note": "Debugging report execution issues → swamp-troubleshooting"
+  }
+]
