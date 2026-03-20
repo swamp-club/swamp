@@ -31,6 +31,37 @@ export interface DataArtifactView {
  * Read-model projection of a completed model method run.
  * Presentation-oriented view with computed fields (duration, artifacts).
  */
+/**
+ * Result of a single report execution for the view.
+ */
+export interface ReportResultView {
+  name: string;
+  scope?: string;
+  success: boolean;
+  markdown?: string;
+  json?: Record<string, unknown>;
+  error?: string;
+}
+
+/**
+ * Read-model projection of a completed model method run.
+ * Presentation-oriented view with computed fields (duration, artifacts).
+ */
+/**
+ * Read-model projection of a standalone report run (no method execution).
+ */
+export interface ModelReportView {
+  modelId: string;
+  modelName: string;
+  modelType: string;
+  status: "succeeded" | "failed";
+  reports: Record<string, ReportResultView>;
+}
+
+/**
+ * Read-model projection of a completed model method run.
+ * Presentation-oriented view with computed fields (duration, artifacts).
+ */
 export interface ModelMethodRunView {
   modelId: string;
   modelName: string;
@@ -41,4 +72,5 @@ export interface ModelMethodRunView {
   outputId: string;
   logFile?: string;
   dataArtifacts: DataArtifactView[];
+  reports?: Record<string, ReportResultView>;
 }

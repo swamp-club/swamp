@@ -292,6 +292,17 @@ export interface MethodContext {
   skipCheckLabels?: string[];
   /** Skip all pre-flight checks. */
   skipAllChecks?: boolean;
+
+  /** Report names to skip during post-run reports. */
+  skipReportNames?: string[];
+  /** Skip reports that have any of these labels. */
+  skipReportLabels?: string[];
+  /** Skip all post-run reports. */
+  skipAllReports?: boolean;
+  /** Only run these specific reports (inclusion filter). */
+  reportNames?: string[];
+  /** Only run reports matching these labels (inclusion filter). */
+  reportLabels?: string[];
 }
 
 /**
@@ -591,6 +602,12 @@ export interface ModelDefinition<
   checks?: Record<string, CheckDefinition>;
 
   /**
+   * Names of standalone reports that are defaults for this model type.
+   * Reports are registered independently via UserReportLoader.
+   */
+  reports?: string[];
+
+  /**
    * Ordered list of upgrade functions for migrating definitions between versions.
    * Each entry transforms attributes from the previous version to `toVersion`.
    * Must be ordered chronologically by `toVersion`.
@@ -686,6 +703,7 @@ export class ModelRegistry {
     type: string | ModelType,
     methods: Record<string, MethodDefinition>,
     checks?: Record<string, CheckDefinition>,
+    reports?: string[],
   ): void {
     const modelType = typeof type === "string" ? ModelType.create(type) : type;
     const key = modelType.normalized;
@@ -721,6 +739,14 @@ export class ModelRegistry {
       methods: { ...existing.methods, ...methods },
       ...(checks || existing.checks
         ? { checks: { ...(existing.checks ?? {}), ...(checks ?? {}) } }
+        : {}),
+      ...(reports || existing.reports
+        ? {
+          reports: [
+            ...(existing.reports ?? []),
+            ...(reports ?? []),
+          ],
+        }
         : {}),
     };
 

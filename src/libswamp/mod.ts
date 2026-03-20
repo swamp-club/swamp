@@ -86,7 +86,30 @@ export {
 export {
   type DataArtifactView,
   type ModelMethodRunView,
+  type ModelReportView,
+  type ReportResultView,
 } from "./models/model_method_run_view.ts";
+
+// Report operations (top-level)
+export { reportDescribe, type ReportDescribeDeps } from "./reports/describe.ts";
+export {
+  reportSearch,
+  type ReportSearchDeps,
+  type ReportSearchInput,
+} from "./reports/search.ts";
+export {
+  reportGet,
+  type ReportGetDeps,
+  type ReportGetInput,
+} from "./reports/get.ts";
+export type {
+  ReportDefinitionDetail,
+  ReportDescribeEvent,
+  ReportGetEvent,
+  ReportSearchEvent,
+  StoredReportDetail,
+  StoredReportSummary,
+} from "./reports/report_views.ts";
 export {
   createModelGetDeps,
   modelGet,
