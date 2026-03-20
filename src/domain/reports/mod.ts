@@ -38,4 +38,3 @@ export {
   type ReportExecutionSummary,
   type ReportFilterOptions,
 } from "./report_execution_service.ts";
-export { buildReportDataHandles } from "./report_data_handles.ts";
