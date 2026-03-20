@@ -18,6 +18,30 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
+ * Determines whether a position in a shell command string is inside double quotes.
+ * Tracks single-quote and double-quote state, respecting backslash escapes outside
+ * single quotes. Used by resolveForShell to decide whether to add quoting around
+ * environment variable references.
+ */
+function isInsideDoubleQuotes(str: string, position: number): boolean {
+  let inDouble = false;
+  let inSingle = false;
+  for (let i = 0; i < position; i++) {
+    const ch = str[i];
+    if (ch === "\\" && !inSingle) {
+      i++; // skip escaped character
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+    } else if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+    }
+  }
+  return inDouble;
+}
+
+/**
  * VaultSecretBag is a value object that maps sentinel tokens to raw secret values.
  *
  * During vault expression resolution, secret values are replaced with unique
@@ -86,11 +110,17 @@ export class VaultSecretBag {
   }
 
   /**
-   * Replaces sentinel tokens in a shell command string with double-quoted
-   * environment variable references, and returns the env var map.
+   * Replaces sentinel tokens in a shell command string with environment
+   * variable references, and returns the env var map.
    *
    * Shell variable expansion happens after command parsing, so metacharacters
    * in the secret value are never interpreted as shell syntax.
+   *
+   * The replacement is quoting-context-aware:
+   * - If the sentinel is inside existing double quotes, uses bare `${VAR}`
+   *   (the user's quotes already protect against word splitting)
+   * - If the sentinel is outside quotes, uses `"${VAR}"` (adds quotes to
+   *   prevent word splitting and glob expansion)
    */
   resolveForShell(
     command: string,
@@ -99,9 +129,13 @@ export class VaultSecretBag {
     let result = command;
     let envIdx = 0;
     for (const [sentinel, value] of this.secrets) {
-      if (result.includes(sentinel)) {
+      const pos = result.indexOf(sentinel);
+      if (pos !== -1) {
         const envName = `__SWAMP_VAULT_${envIdx++}`;
-        result = result.split(sentinel).join(`"\${${envName}}"`);
+        const ref = isInsideDoubleQuotes(result, pos)
+          ? `\${${envName}}`
+          : `"\${${envName}}"`;
+        result = result.split(sentinel).join(ref);
         env[envName] = value;
       }
     }

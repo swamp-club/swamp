@@ -1,0 +1,68 @@
+[
+  {
+    "query": "How do I create a custom model using TypeScript and Zod?",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to build a new model type that integrates with our internal API",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a user-defined model for processing healthcare records",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I extend swamp with a custom transformation model?",
+    "should_trigger": true
+  },
+  {
+    "query": "Guide me through building a model that works with GraphQL",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a Zod schema for my custom data validation model",
+    "should_trigger": true
+  },
+  {
+    "query": "Build a new model type for extracting entities from text",
+    "should_trigger": true
+  },
+  {
+    "query": "Implement the model interface in TypeScript for my domain",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a deno model plugin for Salesforce CRM integration",
+    "should_trigger": true
+  },
+  {
+    "query": "What are the available model types already in swamp?",
+    "should_trigger": false,
+    "note": "Searching existing model types → swamp-model"
+  },
+  {
+    "query": "How do I retrieve secrets from a vault in my model?",
+    "should_trigger": false,
+    "note": "Using vault secrets → swamp-vault"
+  },
+  {
+    "query": "Can I run this custom model as part of a scheduled workflow?",
+    "should_trigger": false,
+    "note": "Orchestrating workflows → swamp-workflow"
+  },
+  {
+    "query": "I'm getting a type error in my custom model code",
+    "should_trigger": false,
+    "note": "Debugging model errors → swamp-troubleshooting"
+  },
+  {
+    "query": "Execute my custom model with this input data",
+    "should_trigger": false,
+    "note": "Running existing models → swamp-model"
+  },
+  {
+    "query": "List all the data stored from running my models",
+    "should_trigger": false,
+    "note": "Viewing model data → swamp-data"
+  }
+]

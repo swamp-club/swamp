@@ -82,7 +82,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Review skills
         run: deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/review_skills.ts
@@ -90,11 +90,6 @@ jobs:
   skill-trigger-eval:
     name: Skill Trigger Eval
     runs-on: ubuntu-latest
-    # Only run when skill files or the eval framework change
-    if: |
-      contains(github.event.pull_request.labels.*.name, 'skill-eval') ||
-      github.event_name == 'schedule'
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -107,7 +102,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Install Claude CLI
         run: npm install -g @anthropic-ai/claude-code
@@ -316,7 +311,8 @@ jobs:
 
   auto-merge:
     name: Auto-merge PR
-    needs: [test, deps-audit, skill-review, claude-review, claude-adversarial-review]
+    needs:
+      [test, deps-audit, skill-review, claude-review, claude-adversarial-review]
     runs-on: ubuntu-latest
     # Only auto-merge PRs from the same repo (not forks) for security
     # Skip auto-merge if PR has the 'hold' label

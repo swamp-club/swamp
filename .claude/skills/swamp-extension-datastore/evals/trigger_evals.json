@@ -1,0 +1,68 @@
+[
+  {
+    "query": "How do I implement a custom DatastoreProvider for MongoDB?",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a custom datastore backend for PostgreSQL",
+    "should_trigger": true
+  },
+  {
+    "query": "Build a datastore that stores data in S3 buckets",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to extend swamp with a custom vector database datastore",
+    "should_trigger": true
+  },
+  {
+    "query": "Guide me through creating a DatastoreProvider interface implementation",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a custom datastore for graph database support",
+    "should_trigger": true
+  },
+  {
+    "query": "Build a datastore backend for DynamoDB with locking support",
+    "should_trigger": true
+  },
+  {
+    "query": "Implement a datastore plugin for Redis with sync capabilities",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a custom datastore for Cassandra",
+    "should_trigger": true
+  },
+  {
+    "query": "Initialize a new swamp repository with the default datastore",
+    "should_trigger": false,
+    "note": "Initializing repos and configuring datastores → swamp-repo"
+  },
+  {
+    "query": "List all versions of my data stored in the datastore",
+    "should_trigger": false,
+    "note": "Viewing data versions → swamp-data"
+  },
+  {
+    "query": "Implement a custom vault provider for storing secrets",
+    "should_trigger": false,
+    "note": "Building custom vault providers → swamp-extension-vault"
+  },
+  {
+    "query": "Datastore writes are failing intermittently",
+    "should_trigger": false,
+    "note": "Debugging datastore issues → swamp-troubleshooting"
+  },
+  {
+    "query": "How do I store my API key securely?",
+    "should_trigger": false,
+    "note": "Using vault for secrets → swamp-vault"
+  },
+  {
+    "query": "Run garbage collection to clean up old data",
+    "should_trigger": false,
+    "note": "Managing data cleanup → swamp-data"
+  }
+]

@@ -1,0 +1,73 @@
+[
+  {
+    "query": "What model types are available in swamp?",
+    "should_trigger": true
+  },
+  {
+    "query": "Describe the schema for the Order model including all fields",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I create an input object for the process() method?",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the validation method on this JSON data",
+    "should_trigger": true
+  },
+  {
+    "query": "Show me the output format from the transform method",
+    "should_trigger": true
+  },
+  {
+    "query": "Can I use CEL expressions to filter model fields?",
+    "should_trigger": true
+  },
+  {
+    "query": "Execute the enrichment model with my input data",
+    "should_trigger": true
+  },
+  {
+    "query": "Type search for models that handle payments",
+    "should_trigger": true
+  },
+  {
+    "query": "View the output logs from the last model execution",
+    "should_trigger": true
+  },
+  {
+    "query": "List all the data I have stored in the system",
+    "should_trigger": false,
+    "note": "Listing stored data → swamp-data"
+  },
+  {
+    "query": "I want to create a completely custom model type using TypeScript",
+    "should_trigger": false,
+    "note": "Building custom model type → swamp-extension-model"
+  },
+  {
+    "query": "How do I chain this model into an automated workflow?",
+    "should_trigger": false,
+    "note": "Orchestrating models in workflows → swamp-workflow"
+  },
+  {
+    "query": "The model is throwing a type error I can't understand",
+    "should_trigger": false,
+    "note": "Debugging model errors → swamp-troubleshooting"
+  },
+  {
+    "query": "Delete this model from the repository",
+    "should_trigger": false,
+    "note": "Model lifecycle management (edit/delete) → swamp-model but borderline; context determines if this is about removing from system vs managing the definition"
+  },
+  {
+    "query": "Run a report on model performance over time",
+    "should_trigger": false,
+    "note": "Creating/running reports → swamp-report"
+  },
+  {
+    "query": "Build a Zod schema for my custom validation model",
+    "should_trigger": false,
+    "note": "Building custom model types → swamp-extension-model"
+  }
+]

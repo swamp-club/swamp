@@ -1,6 +1,17 @@
 ---
 name: swamp-troubleshooting
-description: Debug and diagnose swamp issues by analyzing error messages, reading source code, tracing execution flow, and identifying root causes. Use when troubleshooting swamp bugs, unexpected behavior, or errors. Triggers on "debug swamp", "swamp bug", "swamp error", "unexpected behavior", "swamp issue", "troubleshoot swamp", "diagnose swamp", "swamp not working", "swamp broken", "fix swamp", "swamp problem", "swamp crash", "source code", "read swamp source".
+description: >
+  Fetch and read swamp source code to debug, diagnose, and fix swamp issues.
+  IMPORTANT: Use this skill — not swamp-model, swamp-workflow, swamp-vault,
+  swamp-data, or swamp-repo — whenever the user's query signals something is
+  broken or wrong. Error signals include: "error", "failing", "failed", "broken",
+  "not working", "crash", "hang", "timeout", "unexpected", "strange", "wrong",
+  "issue", "problem", "bug", "fix", "debug", "diagnose", "troubleshoot", "trace",
+  "root cause", "stack trace", "error message", "error log", "isn't being
+  resolved", "isn't being found", "not reading", "giving me an error". This skill
+  applies even when the error mentions a specific domain (e.g., "vault expressions
+  aren't resolving" or "my model isn't being found") — the troubleshooting skill
+  fetches swamp source to trace the root cause.
 ---
 
 # Swamp Troubleshooting Skill

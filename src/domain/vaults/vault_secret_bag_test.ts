@@ -157,4 +157,49 @@ Deno.test("VaultSecretBag", async (t) => {
     assertEquals(result.command, "echo hello world");
     assertEquals(result.env, {});
   });
+
+  await t.step(
+    "resolveForShell: inside double quotes uses bare env var ref",
+    () => {
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("my-token");
+      const cmd = 'curl -H "Authorization: Bearer ' + sentinel +
+        '" https://api.example.com';
+      const result = bag.resolveForShell(cmd);
+      assertEquals(
+        result.command,
+        'curl -H "Authorization: Bearer ${__SWAMP_VAULT_0}" https://api.example.com',
+      );
+      assertEquals(result.env, { __SWAMP_VAULT_0: "my-token" });
+    },
+  );
+
+  await t.step(
+    "resolveForShell: after closed double quotes uses quoted env var ref",
+    () => {
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("value");
+      const cmd = 'echo "hello" ' + sentinel;
+      const result = bag.resolveForShell(cmd);
+      assertEquals(
+        result.command,
+        'echo "hello" "${__SWAMP_VAULT_0}"',
+      );
+    },
+  );
+
+  await t.step(
+    "resolveForShell: respects escaped quotes",
+    () => {
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("val");
+      // \" does not open a quoted section
+      const cmd = 'echo \\"' + sentinel;
+      const result = bag.resolveForShell(cmd);
+      assertEquals(
+        result.command,
+        'echo \\"' + '"${__SWAMP_VAULT_0}"',
+      );
+    },
+  );
 });

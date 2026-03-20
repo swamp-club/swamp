@@ -1,0 +1,68 @@
+[
+  {
+    "query": "File a bug report for a crash in the vault system",
+    "should_trigger": true
+  },
+  {
+    "query": "Report a feature request for dashboard improvements",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a GitHub issue documenting unexpected behavior in swamp",
+    "should_trigger": true
+  },
+  {
+    "query": "File a bug report about performance degradation",
+    "should_trigger": true
+  },
+  {
+    "query": "Submit an issue requesting support for PostgreSQL",
+    "should_trigger": true
+  },
+  {
+    "query": "Report that the CLI is not respecting vault expressions",
+    "should_trigger": true
+  },
+  {
+    "query": "File a bug about workflows not executing on schedule",
+    "should_trigger": true
+  },
+  {
+    "query": "Submit a feature request for better error messages",
+    "should_trigger": true
+  },
+  {
+    "query": "Report an issue with data version handling",
+    "should_trigger": true
+  },
+  {
+    "query": "Create and submit a pull request with my fix",
+    "should_trigger": false,
+    "note": "Creating/submitting PRs → github-pr skill"
+  },
+  {
+    "query": "Debug why my workflow is failing",
+    "should_trigger": false,
+    "note": "Debugging issues → swamp-troubleshooting"
+  },
+  {
+    "query": "List all the data versions I have",
+    "should_trigger": false,
+    "note": "Listing data → swamp-data"
+  },
+  {
+    "query": "Show me the existing issues in the swamp repository",
+    "should_trigger": false,
+    "note": "Viewing existing issues (not creating) → out of scope"
+  },
+  {
+    "query": "Help me plan the architecture for a new feature",
+    "should_trigger": false,
+    "note": "Architecture planning → ddd skill"
+  },
+  {
+    "query": "How do I retrieve secrets from a vault?",
+    "should_trigger": false,
+    "note": "Using vault → swamp-vault"
+  }
+]

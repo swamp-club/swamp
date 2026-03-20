@@ -1,0 +1,68 @@
+[
+  {
+    "query": "How do I define a workflow in YAML that orchestrates multiple models?",
+    "should_trigger": true
+  },
+  {
+    "query": "Show me the run history for the deployment workflow",
+    "should_trigger": true
+  },
+  {
+    "query": "Wire together the validation and processing models in a DAG",
+    "should_trigger": true
+  },
+  {
+    "query": "Validate that my workflow doesn't have circular dependencies",
+    "should_trigger": true
+  },
+  {
+    "query": "Create an automated job that runs the data sync every night",
+    "should_trigger": true
+  },
+  {
+    "query": "Inspect the execution logs from the last workflow run",
+    "should_trigger": true
+  },
+  {
+    "query": "Run the production workflow and monitor for failures",
+    "should_trigger": true
+  },
+  {
+    "query": "Define dependencies between workflow steps",
+    "should_trigger": true
+  },
+  {
+    "query": "Execute this workflow and show me the results",
+    "should_trigger": true
+  },
+  {
+    "query": "List all stored secrets and their expiration dates",
+    "should_trigger": false,
+    "note": "Managing secrets/vaults → swamp-vault"
+  },
+  {
+    "query": "I want to create a custom SSH execution driver",
+    "should_trigger": false,
+    "note": "Building custom drivers → swamp-extension-driver"
+  },
+  {
+    "query": "How do I describe the schema for this data model?",
+    "should_trigger": false,
+    "note": "Understanding model schemas → swamp-model"
+  },
+  {
+    "query": "The workflow is erroring on the second step",
+    "should_trigger": false,
+    "note": "Debugging workflow execution → swamp-troubleshooting"
+  },
+  {
+    "query": "Clean up old data versions from the system",
+    "should_trigger": false,
+    "note": "Managing data versions → swamp-data"
+  },
+  {
+    "query": "Generate a cost report for workflow executions",
+    "should_trigger": false,
+    "note": "Creating/running reports → swamp-report"
+  }
+]

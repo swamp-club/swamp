@@ -1,0 +1,62 @@
+[
+  {
+    "query": "How do I initialize a new swamp repository?",
+    "should_trigger": true
+  },
+  {
+    "query": "I need to upgrade swamp to the latest version",
+    "should_trigger": true
+  },
+  {
+    "query": "Sync the datastore with the remote repository",
+    "should_trigger": true
+  },
+  {
+    "query": "What lock mechanisms are available for concurrent access?",
+    "should_trigger": true
+  },
+  {
+    "query": "Set up a new datastore for production use",
+    "should_trigger": true
+  },
+  { "query": "How do I upgrade the web application?", "should_trigger": true },
+  {
+    "query": "Release a stuck lock that's blocking datastore writes",
+    "should_trigger": true
+  },
+  {
+    "query": "Configure an S3 datastore for my swamp project",
+    "should_trigger": true
+  },
+  { "query": "Check the datastore status and health", "should_trigger": true },
+  {
+    "query": "Create a custom model type for AWS Lambda",
+    "should_trigger": false,
+    "note": "Building custom model types → swamp-extension-model"
+  },
+  {
+    "query": "List all the data versions in my system",
+    "should_trigger": false,
+    "note": "Viewing data versions → swamp-data"
+  },
+  {
+    "query": "How do I define a workflow that runs nightly?",
+    "should_trigger": false,
+    "note": "Creating/defining workflows → swamp-workflow"
+  },
+  {
+    "query": "The datastore sync is failing with an error",
+    "should_trigger": false,
+    "note": "Debugging datastore issues → swamp-troubleshooting"
+  },
+  {
+    "query": "Help me plan the architecture for a new feature",
+    "should_trigger": false,
+    "note": "Architecture planning → ddd skill"
+  },
+  {
+    "query": "Implement a custom datastore backend for PostgreSQL",
+    "should_trigger": false,
+    "note": "Building custom datastore → swamp-extension-datastore"
+  }
+]
