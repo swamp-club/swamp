@@ -10,11 +10,6 @@ Swamp is a CLI that supercharges AI agents to create operational workflows that
 are reviewable, shareable, and accurate. Built for agents, there to empower
 humans. All the data lives in the `.swamp/` (the swamp).
 
-> **Open Alpha** — Swamp is under active development. Expect breaking changes,
-> rough edges, and rapid iteration. We're here to support you — file
-> [bug reports and feature requests](https://github.com/systeminit/swamp/issues)
-> and we'll take care of the rest. Have fun with it.
-
 Come join the [swamp party on discord](https://discord.gg/swamp-club).
 
 ## Getting Started
