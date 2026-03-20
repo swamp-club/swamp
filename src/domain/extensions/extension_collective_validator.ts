@@ -21,7 +21,7 @@ import type { ExtensionContentMetadata } from "./extension_content.ts";
 
 /** A single content item whose collective doesn't match the extension's collective. */
 export interface CollectiveMismatch {
-  kind: "model" | "vault" | "workflow" | "driver" | "datastore";
+  kind: "model" | "vault" | "workflow" | "driver" | "datastore" | "report";
   identifier: string;
   fileName: string;
 }
@@ -97,6 +97,16 @@ export function validateContentCollectives(
         kind: "datastore",
         identifier: datastore.type,
         fileName: datastore.fileName,
+      });
+    }
+  }
+
+  for (const report of contentMetadata.reports) {
+    if (!report.name.startsWith(collectivePrefix)) {
+      mismatches.push({
+        kind: "report",
+        identifier: report.name,
+        fileName: report.fileName,
       });
     }
   }
