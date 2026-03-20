@@ -21,6 +21,16 @@ import { cancelled, type SwampError } from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
+import {
+  executeReports,
+  type ReportExecutionResult,
+} from "../../domain/reports/report_execution_service.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import type {
+  MethodReportContext,
+  ModelReportContext,
+} from "../../domain/reports/report_context.ts";
+import type { ReportResultView } from "./model_method_run_view.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -46,6 +56,7 @@ import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detec
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
+import { buildReportDataHandles } from "../../domain/reports/report_data_handles.ts";
 
 /**
  * Events emitted by the libswamp model method run generator.
@@ -87,6 +98,24 @@ export type ModelMethodRunEvent =
     event: MethodExecutionEvent;
   }
   | { kind: "data_artifact_saved"; name: string; path: string }
+  | {
+    kind: "report_started";
+    reportName: string;
+    scope: string;
+  }
+  | {
+    kind: "report_completed";
+    reportName: string;
+    scope: string;
+    markdown: string;
+    json: Record<string, unknown>;
+  }
+  | {
+    kind: "report_failed";
+    reportName: string;
+    scope: string;
+    error: string;
+  }
   | { kind: "completed"; run: ModelMethodRunView }
   | { kind: "error"; error: SwampError };
 
@@ -143,6 +172,11 @@ export interface ModelMethodRunInput {
   skipCheckNames?: string[];
   skipCheckLabels?: string[];
   skipAllChecks?: boolean;
+  skipReportNames?: string[];
+  skipReportLabels?: string[];
+  skipAllReports?: boolean;
+  reportNames?: string[];
+  reportLabels?: string[];
   driver?: string;
 }
 
@@ -470,17 +504,156 @@ export async function* modelMethodRun(
     output.markSucceeded();
     await deps.outputRepo.save(modelType, input.methodName, output);
 
+    // --- Post-run reports ---
+    let reportResults: Record<string, ReportResultView> | undefined;
+    let reportFailures = 0;
+
+    if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
+      const dataHandles = await buildReportDataHandles(
+        deps.dataRepo,
+        modelType,
+        evaluatedDefinition.id,
+      );
+
+      // Run method-scope reports
+      const methodContext: MethodReportContext = {
+        scope: "method",
+        repoDir: deps.repoDir,
+        logger: getRunLogger(definition.name, input.methodName),
+        dataRepository: deps.dataRepo,
+        definitionRepository: deps.definitionRepo,
+        modelType,
+        modelId: evaluatedDefinition.id,
+        definition: {
+          id: evaluatedDefinition.id,
+          name: evaluatedDefinition.name,
+          version: evaluatedDefinition.version,
+          tags: evaluatedDefinition.tags,
+        },
+        globalArgs: evaluatedDefinition.globalArguments,
+        methodArgs: evaluatedDefinition.getMethodArguments(input.methodName),
+        methodName: input.methodName,
+        executionStatus: "succeeded",
+        dataHandles,
+      };
+
+      const methodSummary = await executeReports(
+        reportRegistry,
+        methodContext,
+        modelType,
+        evaluatedDefinition.id,
+        definition.reportSelection,
+        {
+          skipAllReports: input.skipAllReports,
+          skipReportNames: input.skipReportNames,
+          skipReportLabels: input.skipReportLabels,
+          reportNames: input.reportNames,
+          reportLabels: input.reportLabels,
+        },
+        {
+          onReportStarted: () => {},
+          onReportCompleted: () => {},
+          onReportFailed: () => {},
+        },
+        input.methodName,
+        modelDef.reports,
+      );
+
+      // Yield report events and collect results
+      reportResults = {};
+      for (const result of methodSummary.results) {
+        yield {
+          kind: "report_started" as const,
+          reportName: result.name,
+          scope: result.scope,
+        };
+        if (result.success) {
+          yield {
+            kind: "report_completed" as const,
+            reportName: result.name,
+            scope: result.scope,
+            markdown: result.markdown!,
+            json: result.json!,
+          };
+        } else {
+          yield {
+            kind: "report_failed" as const,
+            reportName: result.name,
+            scope: result.scope,
+            error: result.error!,
+          };
+        }
+        reportResults[result.name] = toReportResultView(result);
+      }
+      reportFailures += methodSummary.failures;
+
+      // Run model-scope reports
+      const modelContext: ModelReportContext = {
+        ...methodContext,
+        scope: "model",
+      };
+
+      const modelSummary = await executeReports(
+        reportRegistry,
+        modelContext,
+        modelType,
+        evaluatedDefinition.id,
+        definition.reportSelection,
+        {
+          skipAllReports: input.skipAllReports,
+          skipReportNames: input.skipReportNames,
+          skipReportLabels: input.skipReportLabels,
+          reportNames: input.reportNames,
+          reportLabels: input.reportLabels,
+        },
+        {
+          onReportStarted: () => {},
+          onReportCompleted: () => {},
+          onReportFailed: () => {},
+        },
+        input.methodName,
+        modelDef.reports,
+      );
+
+      for (const result of modelSummary.results) {
+        yield {
+          kind: "report_started" as const,
+          reportName: result.name,
+          scope: result.scope,
+        };
+        if (result.success) {
+          yield {
+            kind: "report_completed" as const,
+            reportName: result.name,
+            scope: result.scope,
+            markdown: result.markdown!,
+            json: result.json!,
+          };
+        } else {
+          yield {
+            kind: "report_failed" as const,
+            reportName: result.name,
+            scope: result.scope,
+            error: result.error!,
+          };
+        }
+        reportResults[result.name] = toReportResultView(result);
+      }
+      reportFailures += modelSummary.failures;
+    }
+
     // --- Complete ---
     const view: ModelMethodRunView = {
       modelId: definition.id,
       modelName: definition.name,
       modelType: modelType.normalized,
       methodName: input.methodName,
-      status: "succeeded",
+      status: reportFailures > 0 ? "failed" : "succeeded",
       duration: output.durationMs,
       outputId: output.id,
       logFile: logFilePath,
       dataArtifacts,
+      reports: reportResults,
     };
     yield { kind: "completed", run: view };
   } finally {
@@ -546,5 +719,21 @@ export function methodExecutionFailed(cause: unknown): SwampError {
     code: "method_execution_failed",
     message,
     cause: cause instanceof Error ? cause : undefined,
+  };
+}
+
+/**
+ * Converts a ReportExecutionResult to a ReportResultView.
+ */
+export function toReportResultView(
+  result: ReportExecutionResult,
+): ReportResultView {
+  return {
+    name: result.name,
+    scope: result.scope,
+    success: result.success,
+    markdown: result.markdown,
+    json: result.json,
+    error: result.error,
   };
 }

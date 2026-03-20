@@ -22,6 +22,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
 export interface ModelMethodRunRenderOpts {
   modelName: string;
@@ -119,6 +120,24 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
           { path: e.path, name: e.name },
         );
       },
+      report_started: () => {},
+      report_completed: (e) => {
+        const logger = getRunLogger(this.modelName, this.methodName);
+        const separator = "\u2500".repeat(60);
+        const parts = [
+          `Running report: "${e.reportName}"`,
+          `\u2500\u2500 Report: ${e.reportName} ${separator}`,
+          renderMarkdownToTerminal(e.markdown),
+          separator,
+        ];
+        logger.info(parts.join("\n"));
+      },
+      report_failed: (e) => {
+        getRunLogger(this.modelName, this.methodName).warn(
+          "Running report: {reportName} \u2192 \u2717 {error}",
+          { reportName: e.reportName, error: e.error },
+        );
+      },
       completed: (e) => {
         if (e.run.status === "failed") {
           this._failed = true;
@@ -168,6 +187,9 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       method_output: () => {},
       method_event: () => {},
       data_artifact_saved: () => {},
+      report_started: () => {},
+      report_completed: () => {},
+      report_failed: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
