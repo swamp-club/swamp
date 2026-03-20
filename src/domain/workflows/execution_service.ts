@@ -81,6 +81,15 @@ import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { merge } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
+import {
+  executeReports,
+  type ReportEventCallback,
+  type ReportFilterOptions,
+} from "../reports/report_execution_service.ts";
+import { reportRegistry } from "../reports/report_registry.ts";
+import type { MethodReportContext } from "../reports/report_context.ts";
+import { buildReportDataHandles } from "../reports/report_data_handles.ts";
+import { modelRegistry } from "../models/model.ts";
 /**
  * Context for step execution.
  */
@@ -115,6 +124,8 @@ export interface StepExecutionContext {
   driver?: string;
   /** Execution driver config override from workflow/CLI level */
   driverConfig?: Record<string, unknown>;
+  /** Report filter options for per-step report execution */
+  reportFilterOptions?: ReportFilterOptions;
 }
 
 /**
@@ -559,6 +570,131 @@ export class DefaultStepExecutor implements StepExecutor {
         { method: task.methodName, model: originalDefinition.name },
       );
 
+      // --- Per-step reports (method + model scope) ---
+      if (
+        reportRegistry.getAll().length > 0 && ctx.reportFilterOptions
+      ) {
+        const dataHandles = await buildReportDataHandles(
+          unifiedDataRepo,
+          modelType,
+          evaluatedDefinition.id,
+        );
+
+        // Compute vary suffix from forEach variable
+        let reportVarySuffix: string | undefined;
+        if (ctx.forEachVariable?.value !== undefined) {
+          const val = ctx.forEachVariable.value;
+          if (typeof val === "object" && val !== null && "key" in val) {
+            reportVarySuffix = String(
+              (val as Record<string, unknown>).key,
+            );
+          } else {
+            reportVarySuffix = String(val);
+          }
+        }
+
+        const reportEventCallbacks: ReportEventCallback = {
+          onReportStarted: (name, scope) => {
+            ctx.emitEvent?.({
+              kind: "report_started",
+              reportName: name,
+              scope,
+            });
+          },
+          onReportCompleted: (
+            name,
+            scope,
+            markdown,
+            json,
+            reportDataHandles,
+          ) => {
+            ctx.emitEvent?.({
+              kind: "report_completed",
+              reportName: name,
+              scope,
+              markdown,
+              json,
+            });
+            // Track report data artifacts alongside method artifacts
+            for (const handle of reportDataHandles) {
+              output.addDataArtifact({
+                dataId: handle.dataId,
+                name: handle.name,
+                version: handle.version,
+                tags: handle.tags,
+              });
+              savedArtifacts.push({
+                dataId: handle.dataId,
+                name: handle.name,
+                version: handle.version,
+                tags: handle.tags,
+              });
+            }
+          },
+          onReportFailed: (name, scope, error) => {
+            ctx.emitEvent?.({
+              kind: "report_failed",
+              reportName: name,
+              scope,
+              error,
+            });
+          },
+        };
+
+        // Look up model-type defaults for report filtering
+        const stepModelDef = modelRegistry.get(modelType);
+        const stepModelTypeReports = stepModelDef?.reports;
+
+        // Method-scope reports
+        const methodContext: MethodReportContext = {
+          scope: "method",
+          repoDir: ctx.repoDir,
+          logger: runLogger,
+          dataRepository: unifiedDataRepo,
+          definitionRepository: definitionRepo,
+          modelType,
+          modelId: evaluatedDefinition.id,
+          definition: {
+            id: evaluatedDefinition.id,
+            name: evaluatedDefinition.name,
+            version: evaluatedDefinition.version,
+            tags: evaluatedDefinition.tags,
+          },
+          globalArgs: evaluatedDefinition.globalArguments,
+          methodArgs: evaluatedDefinition.getMethodArguments(task.methodName),
+          methodName: task.methodName,
+          executionStatus: "succeeded",
+          dataHandles,
+        };
+
+        await executeReports(
+          reportRegistry,
+          methodContext,
+          modelType,
+          evaluatedDefinition.id,
+          originalDefinition.reportSelection,
+          ctx.reportFilterOptions,
+          reportEventCallbacks,
+          task.methodName,
+          stepModelTypeReports,
+          reportVarySuffix,
+        );
+
+        // Model-scope reports
+        await executeReports(
+          reportRegistry,
+          { ...methodContext, scope: "model" },
+          modelType,
+          evaluatedDefinition.id,
+          originalDefinition.reportSelection,
+          ctx.reportFilterOptions,
+          reportEventCallbacks,
+          task.methodName,
+          stepModelTypeReports,
+          reportVarySuffix,
+        );
+      }
+
       return {
         type: "model_method",
         model: task.modelIdOrName,
@@ -685,6 +821,7 @@ interface StepOptions {
   secretRedactor?: SecretRedactor;
   signal?: AbortSignal;
   driver?: string;
+  reportFilterOptions?: ReportFilterOptions;
 }
 
 /**
@@ -726,6 +863,8 @@ export class WorkflowExecutionService {
       /** Execution driver override (from CLI --driver flag) */
       driver?: string;
       signal?: AbortSignal;
+      /** Report filter options for per-step report execution */
+      reportFilterOptions?: ReportFilterOptions;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     // Look up workflow
@@ -829,6 +968,7 @@ export class WorkflowExecutionService {
       secretRedactor,
       signal: options?.signal,
       driver: options?.driver,
+      reportFilterOptions: options?.reportFilterOptions,
     };
 
     // Sort jobs topologically
@@ -1260,6 +1400,7 @@ export class WorkflowExecutionService {
           driverConfig: step.driverConfig ?? job.driverConfig ??
             workflow.driverConfig,
           emitEvent: push,
+          reportFilterOptions: options.reportFilterOptions,
         };
         return this.executor.execute(step, ctx);
       });

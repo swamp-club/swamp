@@ -28,6 +28,7 @@ import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveDriversDir } from "../resolve_drivers_dir.ts";
 import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
+import { resolveReportsDir } from "../resolve_reports_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 import {
   RepoMarkerRepository,
@@ -187,6 +188,7 @@ export const extensionSearchCommand = new Command()
       const vaultsDir = resolveVaultsDir(marker);
       const driversDir = resolveDriversDir(marker);
       const datastoresDir = resolveDatastoresDir(marker);
+      const reportsDir = resolveReportsDir(marker);
 
       const pullCtx: PullContext = {
         extensionClient: client,
@@ -196,6 +198,7 @@ export const extensionSearchCommand = new Command()
         vaultsDir,
         driversDir,
         datastoresDir,
+        reportsDir,
         repoDir,
         force: false,
         outputMode: ctx.outputMode,

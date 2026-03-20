@@ -485,6 +485,60 @@ Deno.test("Workflow.fromData and toData roundtrip with driver", () => {
   assertEquals(restored.driverConfig, { image: "deno:latest" });
 });
 
+// Reports field tests
+
+Deno.test("Workflow.create creates workflow with reports", () => {
+  const workflow = Workflow.create({
+    name: "reported-workflow",
+    reports: { require: ["cost-report", { name: "audit", methods: ["run"] }] },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(workflow.reports?.require?.length, 2);
+  assertEquals(workflow.reports?.require?.[0], "cost-report");
+  assertEquals(workflow.reportSelection?.require?.[1], {
+    name: "audit",
+    methods: ["run"],
+  });
+});
+
+Deno.test("Workflow.create defaults reports to undefined", () => {
+  const workflow = Workflow.create({ name: "no-reports-workflow" });
+  assertEquals(workflow.reports, undefined);
+  assertEquals(workflow.reportSelection, undefined);
+});
+
+Deno.test("Workflow.toData includes reports in output", () => {
+  const workflow = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    reports: { require: ["cost-report"], skip: ["verbose-report"] },
+    jobs: [createTestJob("job1")],
+  });
+
+  const data = workflow.toData();
+  assertEquals(data.reports?.require, ["cost-report"]);
+  assertEquals(data.reports?.skip, ["verbose-report"]);
+});
+
+Deno.test("Workflow.fromData and toData roundtrip with reports", () => {
+  const original = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "roundtrip-reports",
+    reports: {
+      require: ["cost-report", { name: "audit", methods: ["sync"] }],
+      skip: ["debug-report"],
+    },
+    jobs: [createTestJob("deploy")],
+  });
+
+  const data = original.toData();
+  const restored = Workflow.fromData(data);
+
+  assertEquals(restored.reports?.require, original.reports?.require);
+  assertEquals(restored.reports?.skip, ["debug-report"]);
+});
+
 Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
   // Simulate legacy data without tags field — Zod .default({}) fills it in
   const data = {

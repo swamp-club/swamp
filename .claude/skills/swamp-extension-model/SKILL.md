@@ -122,6 +122,7 @@ export const model = {
 | `inputsSchema`    | No       | Zod schema for runtime inputs                     |
 | `methods`         | Yes      | Object of method definitions with `arguments` Zod |
 | `checks`          | No       | Pre-flight checks run before mutating methods     |
+| `reports`         | No       | Inline report definitions (see `swamp-report`)    |
 
 ## Resources & Files
 
