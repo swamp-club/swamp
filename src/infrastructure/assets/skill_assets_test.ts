@@ -275,6 +275,15 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-repo reference files", async ()
 
     const troubleshootingStat = await Deno.stat(troubleshootingPath);
     assertEquals(troubleshootingStat.isFile, true);
+
+    const ciIntegrationPath = join(
+      dir,
+      "swamp-repo",
+      "references",
+      "ci-integration.md",
+    );
+    const ciIntegrationStat = await Deno.stat(ciIntegrationPath);
+    assertEquals(ciIntegrationStat.isFile, true);
   });
 });
 

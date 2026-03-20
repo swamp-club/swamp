@@ -64,5 +64,10 @@
     "query": "Generate a cost report for workflow executions",
     "should_trigger": false,
     "note": "Creating/running reports → swamp-report"
+  },
+  {
+    "query": "How do I install swamp in CI to run workflows on every PR?",
+    "should_trigger": false,
+    "note": "CI installation → swamp-repo"
   }
 ]

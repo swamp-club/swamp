@@ -30,6 +30,14 @@
   },
   { "query": "Check the datastore status and health", "should_trigger": true },
   {
+    "query": "How do I install swamp in a GitHub Actions CI pipeline?",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a GitHub Actions workflow that runs swamp on every PR",
+    "should_trigger": true
+  },
+  {
     "query": "Create a custom model type for AWS Lambda",
     "should_trigger": false,
     "note": "Building custom model types → swamp-extension-model"

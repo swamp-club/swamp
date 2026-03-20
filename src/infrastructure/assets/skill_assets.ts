@@ -85,6 +85,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-repo",
   },
   {
+    relativePath: "swamp-repo/references/ci-integration.md",
+    name: "swamp-repo",
+  },
+  {
     relativePath: "swamp-report/SKILL.md",
     name: "swamp-report",
   },

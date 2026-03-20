@@ -1,6 +1,6 @@
 ---
 name: swamp-repo
-description: Manage swamp repositories and datastores — initializing repos, upgrading swamp, syncing data, releasing stuck locks. Use when initializing repos, upgrading swamp, starting the webapp, or configuring datastores. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release".
+description: Manage swamp repositories and datastores — initializing repos, upgrading swamp, syncing data, releasing stuck locks, and installing swamp in CI. Use when initializing repos, upgrading swamp, starting the webapp, configuring datastores, or setting up swamp in CI/CD pipelines. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release", "install swamp", "CI", "CI/CD", "GitHub Actions", "install in CI", "setup CI".
 ---
 
 # Swamp Repository Skill
@@ -271,6 +271,9 @@ export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 
 ## References
 
+- **CI/CD integration**: See
+  [references/ci-integration.md](references/ci-integration.md) for installing
+  swamp in CI, GitHub Actions examples, and version pinning
 - **Structure**: See [references/structure.md](references/structure.md) for
   complete directory layout reference
 - **Troubleshooting**: See

@@ -467,6 +467,9 @@ End-to-end workflow creation:
 
 ## References
 
+- **CI/CD integration**: See `swamp-repo` skill's
+  [references/ci-integration.md](../swamp-repo/references/ci-integration.md) for
+  installing swamp in CI and GitHub Actions examples
 - **Nested workflows**: See
   [references/nested-workflows.md](references/nested-workflows.md) for full
   examples of workflows calling other workflows, forEach with workflows, and
