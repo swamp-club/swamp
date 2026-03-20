@@ -27,9 +27,6 @@ When creating or updating `swamp-*` skills in `.claude/skills/`, follow the
 Changes should only touch what's necessary — don't refactor adjacent code that
 isn't part of the task. Keep the blast radius small.
 
-Post-edit hooks in `.claude/hooks/` automatically run license headers,
-`deno fmt`, and `deno lint --fix` on each changed file.
-
 ## Commands
 
 Use `deno run` to get a complete list of custom tasks.
@@ -57,14 +54,13 @@ Use `deno run` to get a complete list of custom tasks.
 
 ## Verification
 
-Post-edit hooks in `.claude/hooks/` automatically run license headers,
-`deno fmt`, and `deno lint --fix` on each changed file. After completing all
-work, run these project-wide checks to catch cross-file issues:
+After completing work, run these checks:
 
-1. `deno check` - Project-wide type checking (catches cross-file breakage)
-2. `deno lint` - Project-wide linting
-3. `deno run test` - Tests
-4. `deno run compile` - Recompile the binary
+1. `deno check` - Type checking
+2. `deno lint` - Linting
+3. `deno fmt` - Formatting
+4. `deno run test` - Tests
+5. `deno run compile` - Recompile the binary
 
 ## Architecture
 
