@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ReportResultView } from "../models/model_method_run_view.ts";
+
 /**
  * Read-model projections of workflow run domain aggregates.
  * These are presentation-oriented views with computed fields (duration, path, artifacts).
@@ -73,4 +75,5 @@ export interface WorkflowRunView {
   jobs: JobRunView[];
   duration?: number;
   path?: string;
+  reports?: ReportResultView[];
 }

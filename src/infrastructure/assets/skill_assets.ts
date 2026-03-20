@@ -84,6 +84,14 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp-repo/references/troubleshooting.md",
     name: "swamp-repo",
   },
+  {
+    relativePath: "swamp-report/SKILL.md",
+    name: "swamp-report",
+  },
+  {
+    relativePath: "swamp-report/references/report-types.md",
+    name: "swamp-report",
+  },
   { relativePath: "swamp-workflow/SKILL.md", name: "swamp-workflow" },
   {
     relativePath: "swamp-workflow/references/data-chaining.md",

@@ -96,7 +96,8 @@ function createFakeDataRepo(): any {
     ) => `/data/${dataName}/v${version}`,
     getContent: () => Promise.resolve(null),
     findAllForModel: () => Promise.resolve([]),
-    save: () => Promise.resolve(),
+    save: () => Promise.resolve({ version: 1 }),
+    nextId: () => crypto.randomUUID(),
   };
 }
 
