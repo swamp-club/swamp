@@ -945,6 +945,7 @@ export async function installExtension(
       absoluteVaultsDir,
       absoluteDriversDir,
       absoluteDatastoresDir,
+      absoluteReportsDir,
     );
 
     // Update upstream_extensions.json

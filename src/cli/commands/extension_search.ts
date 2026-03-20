@@ -66,7 +66,7 @@ export const extensionSearchCommand = new Command()
   .option("--label <label:string>", "Filter by label", { collect: true })
   .option(
     "--content-type <contentType:string>",
-    "Filter by content type (models, workflows, vaults, datastores, drivers)",
+    "Filter by content type (models, workflows, vaults, datastores, drivers, reports)",
     { collect: true },
   )
   .option(
@@ -113,6 +113,7 @@ export const extensionSearchCommand = new Command()
       "vaults",
       "datastores",
       "drivers",
+      "reports",
     ];
     for (const ct of options.contentType ?? []) {
       if (!validContentTypes.includes(ct)) {
