@@ -206,6 +206,9 @@ export const extensionPushCommand = new Command()
       datastoresDir,
       datastoreEntryPoints,
       allDatastoreFiles,
+      reportsDir,
+      reportEntryPoints,
+      allReportFiles,
       workflowFiles,
       additionalFilePaths,
     } = resolved;
@@ -318,6 +321,8 @@ export const extensionPushCommand = new Command()
         driversDir,
         allDatastoreFiles,
         datastoresDir,
+        allReportFiles,
+        reportsDir,
       );
       ctx.logger
         .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.drivers.length} drivers, ${contentMetadata.datastores.length} datastores`;
@@ -409,6 +414,21 @@ export const extensionPushCommand = new Command()
       };
     });
 
+    const extractedReportsByFile = new Map(
+      (contentMetadata?.reports ?? []).map((r) => [r.fileName, r]),
+    );
+    const resolvedReports = allReportFiles.map((f) => {
+      const relPath = relative(repoDir, f);
+      const extracted = extractedReportsByFile.get(relative(reportsDir, f));
+      return {
+        name: extracted?.name ?? relPath,
+        fileName: relPath,
+        description: extracted?.description,
+        scope: extracted?.scope,
+        labels: extracted?.labels,
+      };
+    });
+
     const resolvedReleaseNotes = options.releaseNotes ?? manifest.releaseNotes;
     renderExtensionPushResolved(
       {
@@ -424,6 +444,7 @@ export const extensionPushCommand = new Command()
         vaults: resolvedVaults,
         drivers: resolvedDrivers,
         datastores: resolvedDatastores,
+        reports: resolvedReports,
         additionalFiles: additionalFilePaths.map((f) => relative(repoDir, f)),
         platforms: manifest.platforms,
         labels: manifest.labels,
@@ -438,6 +459,7 @@ export const extensionPushCommand = new Command()
       ...allVaultFiles,
       ...allDriverFiles,
       ...allDatastoreFiles,
+      ...allReportFiles,
       ...workflowFiles.map((wf) => wf.sourcePath),
       ...additionalFilePaths,
     ];
@@ -550,6 +572,20 @@ export const extensionPushCommand = new Command()
       }
     }
 
+    // Bundle report entry points
+    const reportBundles = new Map<string, string>();
+    for (const entryPoint of reportEntryPoints) {
+      const entryName = relative(reportsDir, entryPoint).replace(/\.ts$/, "");
+      try {
+        const js = await bundleExtension(entryPoint, denoPath);
+        reportBundles.set(entryName, js);
+        ctx.logger.debug`Bundled report ${entryName} (${js.length} bytes)`;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        compilationErrors.push({ file: entryPoint, error: msg });
+      }
+    }
+
     if (compilationErrors.length > 0) {
       renderExtensionPushCompilationErrors(
         compilationErrors,
@@ -607,6 +643,8 @@ export const extensionPushCommand = new Command()
       await Deno.mkdir(join(extDir, "driver-bundles"), { recursive: true });
       await Deno.mkdir(join(extDir, "datastores"), { recursive: true });
       await Deno.mkdir(join(extDir, "datastore-bundles"), { recursive: true });
+      await Deno.mkdir(join(extDir, "reports"), { recursive: true });
+      await Deno.mkdir(join(extDir, "report-bundles"), { recursive: true });
       await Deno.mkdir(join(extDir, "files"), { recursive: true });
 
       // Write normalized manifest
@@ -623,6 +661,7 @@ export const extensionPushCommand = new Command()
           vaults: manifest.vaults,
           drivers: manifest.drivers,
           datastores: manifest.datastores,
+          reports: manifest.reports,
           additionalFiles: manifest.additionalFiles,
           ...(manifest.platforms.length > 0
             ? { platforms: manifest.platforms }
@@ -698,6 +737,21 @@ export const extensionPushCommand = new Command()
           "datastore-bundles",
           `${entryName}.js`,
         );
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.writeTextFile(destPath, js);
+      }
+
+      // Copy report source files (preserving relative paths from reportsDir)
+      for (const reportFile of allReportFiles) {
+        const relPath = relative(reportsDir, reportFile);
+        const destPath = join(extDir, "reports", relPath);
+        await Deno.mkdir(dirname(destPath), { recursive: true });
+        await Deno.copyFile(reportFile, destPath);
+      }
+
+      // Write compiled report bundles
+      for (const [entryName, js] of reportBundles) {
+        const destPath = join(extDir, "report-bundles", `${entryName}.js`);
         await Deno.mkdir(dirname(destPath), { recursive: true });
         await Deno.writeTextFile(destPath, js);
       }
@@ -805,6 +859,7 @@ export const extensionPushCommand = new Command()
           vaultCount: allVaultFiles.length,
           driverCount: allDriverFiles.length,
           datastoreCount: allDatastoreFiles.length,
+          reportCount: allReportFiles.length,
         },
         ctx.outputMode,
       );

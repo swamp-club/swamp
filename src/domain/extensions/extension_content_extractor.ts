@@ -27,6 +27,7 @@ import type {
   ExtractedFile,
   ExtractedMethod,
   ExtractedModel,
+  ExtractedReport,
   ExtractedResource,
   ExtractedVault,
   ExtractedWorkflow,
@@ -53,12 +54,15 @@ export async function extractContentMetadata(
   driversDir = "",
   datastoreFiles: string[] = [],
   datastoresDir = "",
+  reportFiles: string[] = [],
+  reportsDir = "",
 ): Promise<ExtensionContentMetadata> {
   const models: ExtractedModel[] = [];
   const workflows: ExtractedWorkflow[] = [];
   const vaults: ExtractedVault[] = [];
   const drivers: ExtractedDriver[] = [];
   const datastores: ExtractedDatastore[] = [];
+  const reports: ExtractedReport[] = [];
 
   for (const filePath of modelFiles) {
     try {
@@ -124,7 +128,19 @@ export async function extractContentMetadata(
     }
   }
 
-  return { models, workflows, vaults, drivers, datastores };
+  for (const filePath of reportFiles) {
+    try {
+      const content = await Deno.readTextFile(filePath);
+      const report = extractReportFromSource(content, filePath, reportsDir);
+      if (report) {
+        reports.push(report);
+      }
+    } catch {
+      // Non-fatal: skip files that can't be read or parsed
+    }
+  }
+
+  return { models, workflows, vaults, drivers, datastores, reports };
 }
 
 /**
@@ -767,6 +783,56 @@ function extractDatastoreFromSource(
     description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
     hasConfigSchema,
     configFields,
+  };
+}
+
+/**
+ * Extracts report metadata from a TypeScript source file.
+ * Returns null if the file doesn't contain a recognizable report definition.
+ * Uses `execute` as the discriminator combined with `export const report`.
+ */
+function extractReportFromSource(
+  content: string,
+  filePath: string,
+  reportsDir: string,
+): ExtractedReport | null {
+  const reportMatch = content.match(/export\s+const\s+report\s*=\s*\{/);
+  if (!reportMatch || reportMatch.index === undefined) return null;
+
+  // Must contain execute to be a report file
+  if (!/execute/.test(content)) return null;
+
+  const reportStart = reportMatch.index + reportMatch[0].length;
+  const reportBody = extractBalancedBraces(content, reportStart);
+  if (!reportBody) return null;
+
+  const nameMatch = reportBody.match(/(?<![.\w])name:\s*["']([^"']+)["']/);
+  if (!nameMatch) return null;
+
+  const descMatch = reportBody.match(
+    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
+  );
+
+  const scopeMatch = reportBody.match(/(?<![.\w])scope:\s*["']([^"']+)["']/);
+
+  // Extract labels array
+  const labels: string[] = [];
+  const labelsMatch = reportBody.match(/(?<![.\w])labels:\s*\[([^\]]*)\]/);
+  if (labelsMatch) {
+    const labelsContent = labelsMatch[1];
+    const labelPattern = /["']([^"']+)["']/g;
+    let labelMatch;
+    while ((labelMatch = labelPattern.exec(labelsContent)) !== null) {
+      labels.push(labelMatch[1]);
+    }
+  }
+
+  return {
+    fileName: relative(reportsDir, filePath),
+    name: nameMatch[1],
+    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
+    scope: scopeMatch ? scopeMatch[1] : "",
+    labels,
   };
 }
 

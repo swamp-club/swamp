@@ -27,6 +27,7 @@ import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 import { resolveDriversDir } from "../resolve_drivers_dir.ts";
 import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
+import { resolveReportsDir } from "../resolve_reports_dir.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -99,6 +100,7 @@ export interface InstallContext {
   vaultsDir: string;
   driversDir: string;
   datastoresDir: string;
+  reportsDir: string;
   repoDir: string;
   force: boolean;
   alreadyPulled: Set<string>;
@@ -405,6 +407,8 @@ export async function detectConflicts(
   driverBundlesDir?: string,
   datastoresDir?: string,
   datastoreBundlesDir?: string,
+  reportsDir?: string,
+  reportBundlesDir?: string,
 ): Promise<string[]> {
   const conflicts: string[] = [];
 
@@ -509,6 +513,30 @@ export async function detectConflicts(
     }
   }
 
+  // Check reports
+  if (reportsDir) {
+    const reportsSrc = join(extractDir, "reports");
+    for (const file of await listFiles(reportsSrc)) {
+      const relPath = relative(reportsSrc, file);
+      const destPath = join(reportsDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
+  // Check report bundles
+  if (reportBundlesDir) {
+    const reportBundlesSrc = join(extractDir, "report-bundles");
+    for (const file of await listFiles(reportBundlesSrc)) {
+      const relPath = relative(reportBundlesSrc, file);
+      const destPath = join(reportBundlesDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
+    }
+  }
+
   // Check additional files
   const filesSrc = join(extractDir, "files");
   for (const file of await listFiles(filesSrc)) {
@@ -530,6 +558,7 @@ export interface PullContext {
   vaultsDir: string;
   driversDir: string;
   datastoresDir: string;
+  reportsDir: string;
   repoDir: string;
   force: boolean;
   outputMode: "log" | "json";
@@ -741,11 +770,15 @@ export async function installExtension(
     const datastoreTsFiles = (
       await listFiles(join(extractDir, "datastores"))
     ).filter((f) => f.endsWith(".ts"));
+    const reportTsFiles = (await listFiles(join(extractDir, "reports"))).filter(
+      (f) => f.endsWith(".ts"),
+    );
     const tsFiles = [
       ...modelTsFiles,
       ...vaultTsFiles,
       ...driverTsFiles,
       ...datastoreTsFiles,
+      ...reportTsFiles,
     ];
     if (tsFiles.length > 0) {
       const safetyResult = await analyzeExtensionSafety(tsFiles);
@@ -769,10 +802,12 @@ export async function installExtension(
     const absoluteVaultsDir = resolve(repoDir, ctx.vaultsDir);
     const absoluteDriversDir = resolve(repoDir, ctx.driversDir);
     const absoluteDatastoresDir = resolve(repoDir, ctx.datastoresDir);
+    const absoluteReportsDir = resolve(repoDir, ctx.reportsDir);
     const bundlesDir = swampPath(repoDir, "bundles");
     const vaultBundlesDir = swampPath(repoDir, "vault-bundles");
     const driverBundlesDir = swampPath(repoDir, "driver-bundles");
     const datastoreBundlesDir = swampPath(repoDir, "datastore-bundles");
+    const reportBundlesDir = swampPath(repoDir, "report-bundles");
 
     const conflicts = await detectConflicts(
       extractDir,
@@ -786,6 +821,8 @@ export async function installExtension(
       driverBundlesDir,
       absoluteDatastoresDir,
       datastoreBundlesDir,
+      absoluteReportsDir,
+      reportBundlesDir,
     );
 
     if (conflicts.length > 0 && !ctx.force) {
@@ -875,6 +912,24 @@ export async function installExtension(
       repoDir,
     );
     extractedFiles.push(...datastoreBundlesExtracted);
+
+    // Reports → reportsDir
+    await Deno.mkdir(absoluteReportsDir, { recursive: true });
+    const reportsExtracted = await copyDir(
+      join(extractDir, "reports"),
+      absoluteReportsDir,
+      repoDir,
+    );
+    extractedFiles.push(...reportsExtracted);
+
+    // Report bundles → .swamp/report-bundles/
+    await Deno.mkdir(reportBundlesDir, { recursive: true });
+    const reportBundlesExtracted = await copyDir(
+      join(extractDir, "report-bundles"),
+      reportBundlesDir,
+      repoDir,
+    );
+    extractedFiles.push(...reportBundlesExtracted);
 
     // Additional files → modelsDir
     const filesExtracted = await copyDir(
@@ -1038,6 +1093,7 @@ export async function pullExtension(
     vaultsDir: ctx.vaultsDir,
     driversDir: ctx.driversDir,
     datastoresDir: ctx.datastoresDir,
+    reportsDir: ctx.reportsDir,
     repoDir: ctx.repoDir,
     force: ctx.force,
     alreadyPulled: ctx.alreadyPulled,
@@ -1115,6 +1171,7 @@ export const extensionPullCommand = new Command()
     const vaultsDir = resolveVaultsDir(marker);
     const driversDir = resolveDriversDir(marker);
     const datastoresDir = resolveDatastoresDir(marker);
+    const reportsDir = resolveReportsDir(marker);
 
     // 5. Resolve server URL (from env or default)
     const serverUrl = resolveServerUrl();
@@ -1130,6 +1187,7 @@ export const extensionPullCommand = new Command()
       vaultsDir,
       driversDir,
       datastoresDir,
+      reportsDir,
       repoDir,
       force: options.force ?? false,
       outputMode: ctx.outputMode,

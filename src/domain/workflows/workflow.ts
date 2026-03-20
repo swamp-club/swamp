@@ -28,6 +28,10 @@ import {
   DriverConfigFieldSchema,
   DriverFieldSchema,
 } from "../drivers/driver_config.ts";
+import {
+  type ReportSelection,
+  ReportSelectionSchema,
+} from "../reports/report_selection.ts";
 
 /**
  * Zod schema for Workflow aggregate root.
@@ -48,6 +52,7 @@ export const WorkflowSchema = z.object({
   inputs: InputsSchemaSchema,
   jobs: z.array(JobSchema).min(1),
   version: z.number().int().positive().default(1),
+  reports: ReportSelectionSchema,
   driver: DriverFieldSchema,
   driverConfig: DriverConfigFieldSchema,
 });
@@ -73,6 +78,7 @@ export interface CreateWorkflowProps {
   inputs?: InputsSchema;
   jobs?: Job[];
   version?: number;
+  reports?: ReportSelection;
   driver?: string;
   driverConfig?: Record<string, unknown>;
 }
@@ -96,6 +102,7 @@ export class Workflow {
     readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
     readonly version: number,
+    readonly reports: ReportSelection | undefined,
     readonly driver: string | undefined,
     readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
@@ -118,6 +125,7 @@ export class Workflow {
       inputs: props.inputs,
       jobs: jobs.map((j) => j.toData()),
       version,
+      reports: props.reports,
       driver: props.driver,
       driverConfig: props.driverConfig,
     };
@@ -138,6 +146,7 @@ export class Workflow {
       data.inputs,
       jobs,
       data.version,
+      data.reports,
       data.driver,
       data.driverConfig,
     );
@@ -158,9 +167,17 @@ export class Workflow {
       validated.inputs,
       jobs,
       validated.version,
+      validated.reports,
       validated.driver,
       validated.driverConfig,
     );
+  }
+
+  /**
+   * Returns the report selection (require/skip lists).
+   */
+  get reportSelection(): ReportSelection | undefined {
+    return this.reports ? structuredClone(this.reports) : undefined;
   }
 
   /**
@@ -199,6 +216,7 @@ export class Workflow {
       inputs: this.inputs,
       jobs: this._jobs.map((j) => j.toData()) as JobData[],
       version: this.version,
+      reports: this.reports,
       driver: this.driver,
       driverConfig: this.driverConfig,
     };

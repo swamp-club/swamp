@@ -91,6 +91,27 @@ export const modelMethodRunCommand = new Command()
     { collect: true },
   )
   .option("--skip-checks", "Skip all pre-flight checks", { default: false })
+  .option("--skip-reports", "Skip all post-run reports", { default: false })
+  .option(
+    "--skip-report <name:string>",
+    "Skip a specific post-run report by name",
+    { collect: true },
+  )
+  .option(
+    "--skip-report-label <label:string>",
+    "Skip post-run reports with this label",
+    { collect: true },
+  )
+  .option(
+    "--report <name:string>",
+    "Run only this report (inclusion filter)",
+    { collect: true },
+  )
+  .option(
+    "--report-label <label:string>",
+    "Run only reports with this label (inclusion filter)",
+    { collect: true },
+  )
   .option(
     "--driver <driver:string>",
     "Override execution driver (e.g. raw, docker)",
@@ -203,6 +224,11 @@ export const modelMethodRunCommand = new Command()
             skipCheckNames: options.skipCheck as string[] | undefined,
             skipCheckLabels: options.skipCheckLabel as string[] | undefined,
             skipAllChecks: options.skipChecks as boolean | undefined,
+            skipReportNames: options.skipReport as string[] | undefined,
+            skipReportLabels: options.skipReportLabel as string[] | undefined,
+            skipAllReports: options.skipReports as boolean | undefined,
+            reportNames: options.report as string[] | undefined,
+            reportLabels: options.reportLabel as string[] | undefined,
             driver: options.driver as string | undefined,
           }),
           renderer.handlers(),
