@@ -26,6 +26,7 @@ import {
   type ReportExecutionResult,
 } from "../../domain/reports/report_execution_service.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { BUILTIN_METHOD_REPORTS } from "../../domain/reports/builtin/mod.ts";
 import type {
   MethodReportContext,
   ModelReportContext,
@@ -556,7 +557,7 @@ export async function* modelMethodRun(
           onReportFailed: () => {},
         },
         input.methodName,
-        modelDef.reports,
+        [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
       );
 
       // Yield report events and collect results
@@ -612,7 +613,7 @@ export async function* modelMethodRun(
           onReportFailed: () => {},
         },
         input.methodName,
-        modelDef.reports,
+        [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
       );
 
       for (const result of modelSummary.results) {

@@ -38,6 +38,7 @@ import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistenc
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
+import { BUILTIN_METHOD_REPORTS } from "../reports/builtin/mod.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
@@ -643,7 +644,10 @@ export class DefaultStepExecutor implements StepExecutor {
 
         // Look up model-type defaults for report filtering
         const stepModelDef = modelRegistry.get(modelType);
-        const stepModelTypeReports = stepModelDef?.reports;
+        const stepModelTypeReports = [
+          ...BUILTIN_METHOD_REPORTS,
+          ...(stepModelDef?.reports ?? []),
+        ];
 
         // Method-scope reports
         const methodContext: MethodReportContext = {
