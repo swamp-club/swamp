@@ -88,6 +88,7 @@ function createFakeOutputRepo(): any {
 // deno-lint-ignore no-explicit-any
 function createFakeDataRepo(): any {
   return {
+    nextId: () => crypto.randomUUID(),
     getPath: (
       _type: ModelType,
       _modelId: string,
@@ -96,7 +97,7 @@ function createFakeDataRepo(): any {
     ) => `/data/${dataName}/v${version}`,
     getContent: () => Promise.resolve(null),
     findAllForModel: () => Promise.resolve([]),
-    save: () => Promise.resolve(),
+    save: () => Promise.resolve({ version: 1 }),
   };
 }
 
