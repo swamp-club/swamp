@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+# Skip in CI — reviews don't need formatting hooks
+if [ "${CI:-}" = "true" ]; then
+  exit 0
+fi
+
 INPUT=$(cat)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 

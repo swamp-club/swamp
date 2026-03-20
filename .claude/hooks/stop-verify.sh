@@ -6,6 +6,11 @@ set -euo pipefail
 
 cd "$CLAUDE_PROJECT_DIR"
 
+# Skip in CI — reviews don't need verification hooks
+if [ "${CI:-}" = "true" ]; then
+  exit 0
+fi
+
 # Skip verification if no files were changed (committed, staged, unstaged, or untracked)
 if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
   # Can't compare — run verification to be safe
