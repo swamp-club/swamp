@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { MethodExecutionEvent } from "../models/method_events.ts";
+import type { DataHandle } from "../models/model.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { WorkflowRun } from "./workflow_run.ts";
 
@@ -35,7 +36,7 @@ export type WorkflowExecutionEvent =
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
   | { kind: "step_started"; jobId: string; stepId: string }
-  | { kind: "step_completed"; jobId: string; stepId: string }
+  | { kind: "step_completed"; jobId: string; stepId: string; dataHandles?: DataHandle[] }
   | { kind: "step_skipped"; jobId: string; stepId: string }
   | {
     kind: "step_failed";
