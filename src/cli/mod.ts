@@ -61,6 +61,8 @@ import { UserReportLoader } from "../domain/reports/user_report_loader.ts";
 import "../domain/drivers/driver_types.ts";
 // Import datastore types barrel to trigger built-in datastore registration
 import "../domain/datastore/datastore_types.ts";
+// Import builtin reports to trigger registration
+import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   type RepoMarkerData,

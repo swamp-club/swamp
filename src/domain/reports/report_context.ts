@@ -31,6 +31,19 @@ interface BaseReportContext {
   logger: Logger;
   dataRepository: UnifiedDataRepository;
   definitionRepository: DefinitionRepository;
+
+  /**
+   * Redacts fields marked `{ sensitive: true }` in the model type's Zod schema.
+   * Returns a deep clone with sensitive values replaced by "***".
+   * If the model type has no schema, returns args unchanged.
+   *
+   * @param args - The arguments object to redact
+   * @param argsKind - Which schema to use: "global" or "method"
+   */
+  redactSensitiveArgs?(
+    args: Record<string, unknown>,
+    argsKind: "global" | "method",
+  ): Record<string, unknown>;
 }
 
 /**

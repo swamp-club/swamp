@@ -27,6 +27,7 @@ import type { OutputMode } from "../output/output.ts";
 import {
   getRunLogger,
   getWorkflowRunLogger,
+  writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
@@ -132,14 +133,15 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
       report_started: () => {},
       report_completed: (e) => {
         const logger = getWorkflowRunLogger(this.workflowName);
+        logger.info('Running report: "{reportName}"', {
+          reportName: e.reportName,
+        });
         const separator = "\u2500".repeat(60);
-        const parts = [
-          `Running report: "${e.reportName}"`,
-          `\u2500\u2500 Report: ${e.reportName} ${separator}`,
-          renderMarkdownToTerminal(e.markdown),
-          separator,
-        ];
-        logger.info(parts.join("\n"));
+        writeOutput(
+          `\u2500\u2500 Report: ${e.reportName} ${separator}\n${
+            renderMarkdownToTerminal(e.markdown)
+          }\n${separator}`,
+        );
       },
       report_failed: (e) => {
         getWorkflowRunLogger(this.workflowName).warn(

@@ -25,6 +25,12 @@ import type { DataHandle } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { DefaultDataWriter } from "../models/data_writer.ts";
+import { modelRegistry } from "../models/model.ts";
+import {
+  extractSensitiveFields,
+  getNestedValue,
+  setNestedValue,
+} from "../models/sensitive_field_extractor.ts";
 
 /**
  * Options for filtering which reports to execute.
@@ -278,6 +284,40 @@ export interface ReportEventCallback {
 }
 
 /**
+ * Builds a redactSensitiveArgs helper bound to the given report context.
+ */
+function buildRedactSensitiveArgs(
+  context: ReportContext,
+): (
+  args: Record<string, unknown>,
+  argsKind: "global" | "method",
+) => Record<string, unknown> {
+  return (args, argsKind) => {
+    if (Object.keys(args).length === 0) return args;
+    if (context.scope === "workflow") return args;
+
+    const modelDef = modelRegistry.get(context.modelType);
+    if (!modelDef) return args;
+
+    const schema = argsKind === "global"
+      ? modelDef.globalArguments
+      : modelDef.methods[context.methodName]?.arguments;
+    if (!schema) return args;
+
+    const fields = extractSensitiveFields(schema);
+    if (fields.length === 0) return args;
+
+    const redacted = structuredClone(args);
+    for (const field of fields) {
+      if (getNestedValue(redacted, field.path) !== undefined) {
+        setNestedValue(redacted, field.path, "***");
+      }
+    }
+    return redacted;
+  };
+}
+
+/**
  * Executes applicable reports and persists their results.
  */
 export async function executeReports(
@@ -308,6 +348,8 @@ export async function executeReports(
 
   const results: ReportExecutionResult[] = [];
   let failures = 0;
+
+  context.redactSensitiveArgs = buildRedactSensitiveArgs(context);
 
   for (const { name, report } of applicable) {
     events?.onReportStarted(name, report.scope);
