@@ -650,6 +650,125 @@ Deno.test("inputValidationFailed returns correct error structure", () => {
   assertEquals(error.message, "Input validation failed:\n  name is required");
 });
 
+// --- Report event collection tests ---
+
+Deno.test("workflowRun collects report_completed events from execution service", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const deps = createTestDeps(workflow, [
+    {
+      kind: "started",
+      runId: run.id,
+      workflowName: "test-workflow",
+      logPath: "/tmp/log",
+    },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "model_resolved",
+      jobId: "job1",
+      stepId: "step1",
+      modelName: "my-model",
+      modelType: "command/shell",
+      methodName: "run",
+    },
+    {
+      kind: "report_started",
+      reportName: "test-report",
+      scope: "method",
+    },
+    {
+      kind: "report_completed",
+      reportName: "test-report",
+      scope: "method",
+      markdown: "# Report",
+      json: { status: "ok" },
+    },
+    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    { kind: "job_completed", jobId: "job1", status: "succeeded" },
+    { kind: "completed", run },
+  ]);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  // Report events should be forwarded
+  const reportStarted = events.find((e) => e.kind === "report_started");
+  assertEquals(reportStarted?.kind, "report_started");
+  if (reportStarted?.kind === "report_started") {
+    assertEquals(reportStarted.reportName, "test-report");
+  }
+
+  const reportCompleted = events.find((e) => e.kind === "report_completed");
+  assertEquals(reportCompleted?.kind, "report_completed");
+  if (reportCompleted?.kind === "report_completed") {
+    assertEquals(reportCompleted.reportName, "test-report");
+    assertEquals(reportCompleted.markdown, "# Report");
+  }
+
+  // Completed event should include per-step report results
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.run.reports?.length, 1);
+    assertEquals(completed.run.reports![0].name, "test-report");
+    assertEquals(completed.run.reports![0].success, true);
+  }
+});
+
+Deno.test("workflowRun collects report_failed events from execution service", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const deps = createTestDeps(workflow, [
+    {
+      kind: "started",
+      runId: run.id,
+      workflowName: "test-workflow",
+      logPath: "/tmp/log",
+    },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "report_failed",
+      reportName: "broken-report",
+      scope: "method",
+      error: "report crashed",
+    },
+    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    { kind: "job_completed", jobId: "job1", status: "succeeded" },
+    { kind: "completed", run },
+  ]);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  // Report failed event should be forwarded
+  const reportFailed = events.find((e) => e.kind === "report_failed");
+  assertEquals(reportFailed?.kind, "report_failed");
+  if (reportFailed?.kind === "report_failed") {
+    assertEquals(reportFailed.reportName, "broken-report");
+    assertEquals(reportFailed.error, "report crashed");
+  }
+
+  // Completed event should include the failed report result
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.run.reports?.length, 1);
+    assertEquals(completed.run.reports![0].name, "broken-report");
+    assertEquals(completed.run.reports![0].success, false);
+    assertEquals(completed.run.reports![0].error, "report crashed");
+  }
+});
+
 // --- Cancellation tests ---
 
 Deno.test("workflowRun yields cancelled error when abort signal fires during execution", async () => {
