@@ -67,6 +67,27 @@ export const workflowRunCommand = new Command()
     "--driver <driver:string>",
     "Override execution driver (e.g. raw, docker)",
   )
+  .option("--skip-reports", "Skip all post-run reports", { default: false })
+  .option(
+    "--skip-report <name:string>",
+    "Skip a specific post-run report by name",
+    { collect: true },
+  )
+  .option(
+    "--skip-report-label <label:string>",
+    "Skip post-run reports with this label",
+    { collect: true },
+  )
+  .option(
+    "--report <name:string>",
+    "Run only this report (inclusion filter)",
+    { collect: true },
+  )
+  .option(
+    "--report-label <label:string>",
+    "Run only reports with this label (inclusion filter)",
+    { collect: true },
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
@@ -169,6 +190,8 @@ export const workflowRunCommand = new Command()
         },
         createExecutionService: (wfRepo, rnRepo, dir) =>
           new WorkflowExecutionService(wfRepo, rnRepo, dir),
+        dataRepo: repoContext.unifiedDataRepo,
+        definitionRepo: repoContext.definitionRepo,
       };
 
       const libCtx = createLibSwampContext();
@@ -184,6 +207,11 @@ export const workflowRunCommand = new Command()
           runtimeTags,
           verbose: ctx.verbosity === "verbose",
           driver: options.driver as string | undefined,
+          skipAllReports: options.skipReports as boolean | undefined,
+          skipReportNames: options.skipReport as string[] | undefined,
+          skipReportLabels: options.skipReportLabel as string[] | undefined,
+          reportNames: options.report as string[] | undefined,
+          reportLabels: options.reportLabel as string[] | undefined,
         }),
         renderer.handlers(),
       );

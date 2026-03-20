@@ -36,6 +36,7 @@ import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
+import { resolveReportsDir } from "./resolve_reports_dir.ts";
 
 export interface ResolveExtensionFilesContext {
   repoDir: string;
@@ -59,6 +60,9 @@ export interface ResolvedExtensionFiles {
   datastoresDir: string;
   datastoreEntryPoints: string[];
   allDatastoreFiles: string[];
+  reportsDir: string;
+  reportEntryPoints: string[];
+  allReportFiles: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
   additionalFilePaths: string[];
 }
@@ -95,6 +99,7 @@ export async function resolveExtensionFiles(
   const vaultsDir = resolve(repoDir, resolveVaultsDir(marker));
   const driversDir = resolve(repoDir, resolveDriversDir(marker));
   const datastoresDir = resolve(repoDir, resolveDatastoresDir(marker));
+  const reportsDir = resolve(repoDir, resolveReportsDir(marker));
 
   // 3. Collect model files from manifest
   const modelEntryPoints: string[] = [];
@@ -276,7 +281,31 @@ export async function resolveExtensionFiles(
     allDatastoreFiles.push(...datastoreImportResult.resolvedFiles);
   }
 
-  // 12. Validate additional files
+  // 12. Collect report files from manifest
+  const reportEntryPoints: string[] = [];
+  for (const reportRef of manifest.reports) {
+    const reportPath = resolve(reportsDir, reportRef);
+    try {
+      await Deno.stat(reportPath);
+    } catch {
+      throw new UserError(
+        `Report file not found: ${reportRef} (expected at ${reportPath})`,
+      );
+    }
+    reportEntryPoints.push(reportPath);
+  }
+
+  // 13. Resolve local imports for report entry points
+  const allReportFiles: string[] = [];
+  if (reportEntryPoints.length > 0) {
+    const reportImportResult = await resolveLocalImports(
+      reportEntryPoints,
+      reportsDir,
+    );
+    allReportFiles.push(...reportImportResult.resolvedFiles);
+  }
+
+  // 14. Validate additional files
   const additionalFilePaths: string[] = [];
   for (const af of manifest.additionalFiles) {
     const afPath = resolve(dirname(absoluteManifestPath), af);
@@ -305,6 +334,9 @@ export async function resolveExtensionFiles(
     datastoresDir,
     datastoreEntryPoints,
     allDatastoreFiles,
+    reportsDir,
+    reportEntryPoints,
+    allReportFiles,
     workflowFiles,
     additionalFilePaths,
   };

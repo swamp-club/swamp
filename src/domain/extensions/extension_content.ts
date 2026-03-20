@@ -112,11 +112,21 @@ export interface ExtractedDatastore {
   configFields: ExtractedArgument[];
 }
 
-/** Content metadata extracted from all models, workflows, vaults, drivers, and datastores in an extension. */
+/** Metadata extracted from a single report TypeScript file. */
+export interface ExtractedReport {
+  fileName: string;
+  name: string;
+  description: string;
+  scope: string;
+  labels: string[];
+}
+
+/** Content metadata extracted from all models, workflows, vaults, drivers, datastores, and reports in an extension. */
 export interface ExtensionContentMetadata {
   models: ExtractedModel[];
   workflows: ExtractedWorkflow[];
   vaults: ExtractedVault[];
   drivers: ExtractedDriver[];
   datastores: ExtractedDatastore[];
+  reports: ExtractedReport[];
 }
