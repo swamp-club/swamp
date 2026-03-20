@@ -18,9 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { setColorEnabled, stripAnsiCode } from "@std/fmt/colors";
+import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, resolve } from "@std/path";
-import { parseLogLevel } from "@logtape/logtape";
+import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
@@ -38,6 +38,7 @@ import { authCommand } from "./commands/auth.ts";
 import { extensionCommand } from "./commands/extension.ts";
 import { summariseCommand } from "./commands/summarise.ts";
 import { datastoreCommand } from "./commands/datastore.ts";
+import { reportCommand } from "./commands/report.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import {
@@ -54,6 +55,7 @@ import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
+import { UserReportLoader } from "../domain/reports/user_report_loader.ts";
 
 // Import driver types barrel to trigger built-in driver registration
 import "../domain/drivers/driver_types.ts";
@@ -105,6 +107,10 @@ import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 export { resolveDriversDir };
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 export { resolveDatastoresDir };
+import { resolveReportsDir } from "./resolve_reports_dir.ts";
+export { resolveReportsDir };
+
+const logger = getLogger(["swamp", "cli"]);
 
 /**
  * Resolves the log level.
@@ -201,25 +207,17 @@ async function loadUserModels(
     const result = await loader.loadModels(absoluteModelsDir);
 
     // Log extension successes at debug level
-    if (Deno.env.get("SWAMP_DEBUG")) {
-      for (const file of result.extended) {
-        console.debug(`Extended model type from ${file}`);
-      }
+    for (const file of result.extended) {
+      logger.debug`Extended model type from ${file}`;
     }
 
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      console.error(
-        `Warning: Failed to load user model ${failure.file}: ${
-          stripAnsiCode(failure.error)
-        }`,
-      );
+      logger.warn`Failed to load user model ${failure.file}: ${failure.error}`;
     }
   } catch (error) {
     // Not in a swamp repo or other error - log at debug level for troubleshooting
-    if (Deno.env.get("SWAMP_DEBUG")) {
-      console.debug(`Skipping user models: ${error}`);
-    }
+    logger.debug`Skipping user models: ${error}`;
   }
 }
 
@@ -241,25 +239,17 @@ async function loadUserVaults(
     const result = await loader.loadVaults(absoluteVaultsDir);
 
     // Log successes at debug level
-    if (Deno.env.get("SWAMP_DEBUG")) {
-      for (const file of result.loaded) {
-        console.debug(`Loaded user vault type from ${file}`);
-      }
+    for (const file of result.loaded) {
+      logger.debug`Loaded user vault type from ${file}`;
     }
 
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      console.error(
-        `Warning: Failed to load user vault ${failure.file}: ${
-          stripAnsiCode(failure.error)
-        }`,
-      );
+      logger.warn`Failed to load user vault ${failure.file}: ${failure.error}`;
     }
   } catch (error) {
     // Not in a swamp repo or other error - log at debug level for troubleshooting
-    if (Deno.env.get("SWAMP_DEBUG")) {
-      console.debug(`Skipping user vaults: ${error}`);
-    }
+    logger.debug`Skipping user vaults: ${error}`;
   }
 }
 
@@ -278,25 +268,17 @@ async function loadUserDrivers(
     const result = await loader.loadDrivers(absoluteDriversDir);
 
     // Log successes at debug level
-    if (Deno.env.get("SWAMP_DEBUG")) {
-      for (const file of result.loaded) {
-        console.debug(`Loaded user driver type from ${file}`);
-      }
+    for (const file of result.loaded) {
+      logger.debug`Loaded user driver type from ${file}`;
     }
 
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      console.error(
-        `Warning: Failed to load user driver ${failure.file}: ${
-          stripAnsiCode(failure.error)
-        }`,
-      );
+      logger.warn`Failed to load user driver ${failure.file}: ${failure.error}`;
     }
   } catch (error) {
     // Not in a swamp repo or other error - log at debug level for troubleshooting
-    if (Deno.env.get("SWAMP_DEBUG")) {
-      console.debug(`Skipping user drivers: ${error}`);
-    }
+    logger.debug`Skipping user drivers: ${error}`;
   }
 }
 
@@ -315,25 +297,47 @@ async function loadUserDatastores(
     const result = await loader.loadDatastores(absoluteDatastoresDir);
 
     // Log successes at debug level
-    if (Deno.env.get("SWAMP_DEBUG")) {
-      for (const file of result.loaded) {
-        console.debug(`Loaded user datastore type from ${file}`);
-      }
+    for (const file of result.loaded) {
+      logger.debug`Loaded user datastore type from ${file}`;
     }
 
     // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      console.error(
-        `Warning: Failed to load user datastore ${failure.file}: ${
-          stripAnsiCode(failure.error)
-        }`,
-      );
+      logger
+        .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
     }
   } catch (error) {
     // Not in a swamp repo or other error - log at debug level for troubleshooting
-    if (Deno.env.get("SWAMP_DEBUG")) {
-      console.debug(`Skipping user datastores: ${error}`);
+    logger.debug`Skipping user datastores: ${error}`;
+  }
+}
+
+async function loadUserReports(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+): Promise<void> {
+  try {
+    const reportsDir = resolveReportsDir(marker);
+    const absoluteReportsDir = isAbsolute(reportsDir)
+      ? reportsDir
+      : resolve(repoDir, reportsDir);
+
+    const loader = new UserReportLoader(denoRuntime, repoDir);
+    const result = await loader.loadReports(absoluteReportsDir);
+
+    // Log successes at debug level
+    for (const file of result.loaded) {
+      logger.debug`Loaded user report from ${file}`;
     }
+
+    // Log failures as warnings (don't block CLI startup)
+    for (const failure of result.failed) {
+      logger.warn`Failed to load user report ${failure.file}: ${failure.error}`;
+    }
+  } catch (error) {
+    // Not in a swamp repo or other error - log at debug level for troubleshooting
+    logger.debug`Skipping user reports: ${error}`;
   }
 }
 
@@ -497,6 +501,7 @@ export async function runCli(args: string[]): Promise<void> {
       loadUserVaults(repoDir, marker, denoRuntime),
       loadUserDrivers(repoDir, marker, denoRuntime),
       loadUserDatastores(repoDir, marker, denoRuntime),
+      loadUserReports(repoDir, marker, denoRuntime),
     ]);
   }
 
@@ -531,6 +536,7 @@ export async function runCli(args: string[]): Promise<void> {
           vaultsDir,
           driversDir: resolveDriversDir(marker),
           datastoresDir: resolveDatastoresDir(marker),
+          reportsDir: resolveReportsDir(marker),
           repoDir,
           denoRuntime,
         }),
@@ -609,7 +615,8 @@ export async function runCli(args: string[]): Promise<void> {
     .command("auth", authCommand)
     .command("extension", extensionCommand)
     .command("summarise", summariseCommand)
-    .command("datastore", datastoreCommand);
+    .command("datastore", datastoreCommand)
+    .command("report", reportCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));

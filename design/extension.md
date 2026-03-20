@@ -1,9 +1,9 @@
 # Extensions
 
 An extension in swamp is a distributable package of models, workflows, vaults,
-drivers, and datastores that can be shared through a registry. Extensions allow
-the community to share reusable automation components that others can pull into
-their repositories.
+drivers, datastores, and reports that can be shared through a registry.
+Extensions allow the community to share reusable automation components that
+others can pull into their repositories.
 
 ## Name
 
@@ -40,8 +40,8 @@ what the extension contains and how it should be packaged.
 - `manifestVersion`: Must be `1` (the only supported version).
 - `name`: Scoped name (`@collective/name`).
 - `version`: CalVer version string.
-- At least one of `models`, `workflows`, `vaults`, `drivers`, or `datastores`
-  must be present.
+- At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`, or
+  `reports` must be present.
 
 ### Optional Fields
 
@@ -52,6 +52,7 @@ what the extension contains and how it should be packaged.
 - `vaults`: Array of relative paths to TypeScript vault files.
 - `drivers`: Array of relative paths to TypeScript driver files.
 - `datastores`: Array of relative paths to TypeScript datastore files.
+- `reports`: Array of relative paths to TypeScript report files.
 - `additionalFiles`: Array of paths to non-model files to include (README,
   config, etc.).
 - `platforms`: Array of platform identifiers the extension supports (e.g.,
@@ -72,6 +73,8 @@ models:
   - ssh/connection.ts
 workflows:
   - ssh-check.yaml
+reports:
+  - cost-summary.ts
 additionalFiles:
   - ssh/known_hosts_template.txt
 dependencies:
@@ -108,6 +111,8 @@ extension.tar.gz
     ├── driver-bundles/       # Compiled driver JavaScript bundles
     ├── datastores/           # Source TypeScript datastore files
     ├── datastore-bundles/    # Compiled datastore JavaScript bundles
+    ├── reports/              # Source TypeScript report files
+    ├── report-bundles/       # Compiled report JavaScript bundles
     └── files/                # Additional files
 ```
 
@@ -186,13 +191,14 @@ config. This supports pulled extensions that were built with a `deno.json` or
 `package.json` project — the archive includes pre-built bundles but not the
 project config.
 
-### Vaults, Drivers, and Datastores
+### Vaults, Drivers, Datastores, and Reports
 
-Vault, driver, and datastore entry points are bundled with the same strategy as
-models — deno bundle with zod externalized. Each entry point gets a compiled
-`.js` file in its corresponding `-bundles/` directory (`vault-bundles/`,
-`driver-bundles/`, `datastore-bundles/`). Local imports are resolved recursively
-within the directory boundary.
+Vault, driver, datastore, and report entry points are bundled with the same
+strategy as models — deno bundle with zod externalized. Each entry point gets a
+compiled `.js` file in its corresponding `-bundles/` directory
+(`vault-bundles/`, `driver-bundles/`, `datastore-bundles/`,
+`report-bundles/`). Local imports are resolved recursively within the directory
+boundary.
 
 The export from each bundle is validated against a Zod schema:
 
@@ -202,13 +208,15 @@ The export from each bundle is validated against a Zod schema:
   optional `configSchema`, and `createDriver`
 - **Datastores**: `export const datastore` — must have `type`, `name`,
   `description`, optional `configSchema`, and `createProvider`
+- **Reports**: `export const report` — must have `name`, `description`,
+  `scope`, optional `labels`, and `execute`
 
 ### Collective Validation
 
 All content types — model types, vault types, workflow names, driver types,
-datastore types — must use the same collective as the extension name. This is
-enforced during push to prevent an extension from registering types under a
-different collective.
+datastore types, report names — must use the same collective as the extension
+name. This is enforced during push to prevent an extension from registering
+types under a different collective.
 
 ### Workflows
 
@@ -223,11 +231,11 @@ preserving their relative paths.
 ## Import Resolution
 
 When packaging an extension, the CLI resolves all local TypeScript imports
-starting from each entry point (model, vault, driver, or datastore). The
-resolver follows relative `import`/`export` statements (e.g., `./helpers.ts`,
-`../shared.ts`) and includes all transitively imported files. Only files within
-the respective directory boundary are included. Non-local imports (npm packages)
-are skipped as they are resolved at runtime.
+starting from each entry point (model, vault, driver, datastore, or report).
+The resolver follows relative `import`/`export` statements (e.g.,
+`./helpers.ts`, `../shared.ts`) and includes all transitively imported files.
+Only files within the respective directory boundary are included. Non-local
+imports (npm packages) are skipped as they are resolved at runtime.
 
 ## Dependencies
 
@@ -428,6 +436,8 @@ When pulled, extension files are extracted to their destinations:
 | `driver-bundles/`    | `.swamp/driver-bundles/`                                               |
 | `datastores/`        | `{datastoresDir}` (from `.swamp.yaml`, default `extensions/datastores/`) |
 | `datastore-bundles/` | `.swamp/datastore-bundles/`                                            |
+| `reports/`           | `{reportsDir}` (from `.swamp.yaml`, default `extensions/reports/`)     |
+| `report-bundles/`    | `.swamp/report-bundles/`                                               |
 | `files/`             | `{modelsDir}`                                                          |
 
 If files already exist at the destination and `--force` is not set, the user is

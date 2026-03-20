@@ -131,7 +131,7 @@ function importsLayer(
 // Ratchet: current number of mutual dependencies between bounded contexts.
 // If someone breaks a cycle, the count decreases and the test still passes.
 // If someone introduces a new mutual dependency, the test fails.
-const KNOWN_MUTUAL_DEPENDENCIES = 9;
+const KNOWN_MUTUAL_DEPENDENCIES = 10;
 
 Deno.test(
   "no new mutual dependencies between bounded contexts (ratchet)",

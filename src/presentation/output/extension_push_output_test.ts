@@ -56,6 +56,7 @@ Deno.test("renderExtensionPushResolved outputs JSON in json mode", () => {
         vaults: [],
         drivers: [],
         datastores: [],
+        reports: [],
         additionalFiles: [],
         platforms: [],
         labels: [],
@@ -83,6 +84,7 @@ Deno.test("renderExtensionPush outputs JSON in json mode", () => {
         vaultCount: 0,
         driverCount: 0,
         datastoreCount: 0,
+        reportCount: 0,
       },
       "json",
     );
