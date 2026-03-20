@@ -58,10 +58,13 @@ Use `deno run` to get a complete list of custom tasks.
 ## Verification
 
 Post-edit hooks in `.claude/hooks/` automatically run license headers,
-`deno fmt`, and `deno lint --fix` on each changed file. A Stop hook in
-`.claude/hooks/stop-verify.sh` runs project-wide `deno check`, `deno lint`, and
-`deno run test` before completion — blocking until all pass. After completing
-all work, run `deno run compile` to recompile the binary.
+`deno fmt`, and `deno lint --fix` on each changed file. After completing all
+work, run these project-wide checks to catch cross-file issues:
+
+1. `deno check` - Project-wide type checking (catches cross-file breakage)
+2. `deno lint` - Project-wide linting
+3. `deno run test` - Tests
+4. `deno run compile` - Recompile the binary
 
 ## Architecture
 
