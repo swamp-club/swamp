@@ -200,7 +200,7 @@ version: "2026.02.26.1"
   const error = assertThrows(() => parseExtensionManifest(yaml));
   assertStringIncludes(
     (error as Error).message,
-    "at least one model, workflow, vault, driver, or datastore",
+    "at least one model, workflow, vault, driver, datastore, or report",
   );
 });
 

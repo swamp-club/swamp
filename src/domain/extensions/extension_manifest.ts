@@ -64,7 +64,7 @@ const ExtensionManifestSchemaV1 = z.object({
     (data.reports && data.reports.length > 0),
   {
     message:
-      "Extension must include at least one model, workflow, vault, driver, or datastore",
+      "Extension must include at least one model, workflow, vault, driver, datastore, or report",
   },
 );
 

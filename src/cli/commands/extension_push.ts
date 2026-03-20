@@ -237,6 +237,7 @@ export const extensionPushCommand = new Command()
           ...vaultEntryPoints,
           ...driverEntryPoints,
           ...datastoreEntryPoints,
+          ...reportEntryPoints,
         ];
         let hasBare = false;
         for (const ep of allEntryPoints) {
@@ -325,7 +326,7 @@ export const extensionPushCommand = new Command()
         reportsDir,
       );
       ctx.logger
-        .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.drivers.length} drivers, ${contentMetadata.datastores.length} datastores`;
+        .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.drivers.length} drivers, ${contentMetadata.datastores.length} datastores, ${contentMetadata.reports.length} reports`;
     } catch {
       ctx.logger.debug`Content metadata extraction failed, skipping`;
     }
@@ -346,7 +347,7 @@ export const extensionPushCommand = new Command()
         );
         throw new UserError(
           "Extension content uses collectives that don't match the extension package. " +
-            "All model types, vault types, workflow names, driver types, and datastore types must use the same collective as the extension.",
+            "All model types, vault types, workflow names, driver types, datastore types, and report names must use the same collective as the extension.",
         );
       }
     }
@@ -577,7 +578,7 @@ export const extensionPushCommand = new Command()
     for (const entryPoint of reportEntryPoints) {
       const entryName = relative(reportsDir, entryPoint).replace(/\.ts$/, "");
       try {
-        const js = await bundleExtension(entryPoint, denoPath);
+        const js = await bundleExtension(entryPoint, denoPath, bundleOptions);
         reportBundles.set(entryName, js);
         ctx.logger.debug`Bundled report ${entryName} (${js.length} bytes)`;
       } catch (error) {
