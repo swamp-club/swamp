@@ -574,6 +574,7 @@ This repository is managed with [swamp](https://github.com/systeminit/swamp).
 5. **Verify before destructive operations.** Always \`swamp model get <name> --json\` and verify resource IDs before running delete/stop/destroy methods.
 6. **Prefer fan-out methods over loops.** When operating on multiple targets, use a single method that handles all targets internally (factory pattern) rather than looping N separate \`swamp model method run\` calls against the same model. Multiple parallel calls against the same model contend on the per-model lock, causing timeouts. A single fan-out method acquires the lock once and produces all outputs in one execution. Check \`swamp model type describe\` for methods that accept filters or produce multiple outputs.
 7. **Extension npm deps are bundled, not lockfile-tracked.** Swamp's bundler inlines all npm packages (except zod) into extension bundles at bundle time. \`deno.lock\` and \`package.json\` do NOT cover extension model dependencies — this is by design. Always pin explicit versions in \`npm:\` import specifiers (e.g., \`npm:lodash-es@4.17.21\`).
+8. **Reports for reusable data pipelines.** When the task involves building a repeatable pipeline to transform, aggregate, or analyze model output (security reports, cost analysis, compliance checks, summaries), create a report extension. Use the \`swamp-report\` skill for guidance.
 
 ## Skills
 
@@ -584,6 +585,7 @@ essential context for working with this repository.
 - \`swamp-workflow\` - Work with workflows (creating, editing, running)
 - \`swamp-vault\` - Manage secrets and credentials
 - \`swamp-data\` - Manage model data lifecycle
+- \`swamp-report\` - Create and run reports for models and workflows
 - \`swamp-repo\` - Repository management
 - \`swamp-extension-model\` - Create custom TypeScript models
 - \`swamp-extension-driver\` - Create custom execution drivers

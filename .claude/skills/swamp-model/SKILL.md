@@ -532,6 +532,14 @@ Data is owned by the creating model — see
 [references/data-ownership.md](references/data-ownership.md) for rules and
 validation.
 
+## Choosing the Right Approach
+
+| Task                                                  | Approach                                  |
+| ----------------------------------------------------- | ----------------------------------------- |
+| New API/service integration                           | Extension model (`swamp-extension-model`) |
+| Reusable data pipeline (reports, analysis, summaries) | Report extension (`swamp-report`)         |
+| Ad-hoc debugging or one-off data inspection           | Inline processing is fine                 |
+
 ## When to Use Other Skills
 
 | Need                            | Use Skill               |
@@ -541,6 +549,7 @@ validation.
 | Repository structure            | `swamp-repo`            |
 | Manage data lifecycle           | `swamp-data`            |
 | Create custom TypeScript models | `swamp-extension-model` |
+| Create reports for models       | `swamp-report`          |
 
 ## References
 
