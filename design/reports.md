@@ -1,0 +1,342 @@
+# Reports
+
+Reports are post-execution analysis functions that produce markdown and JSON
+output from model and workflow execution context. They run after a method
+completes (or on demand) and persist their results as data artifacts. Reports
+are generic — they operate on whatever context they receive at runtime, not on
+specific model types. This decouples report logic from model implementation.
+
+## Report Definition
+
+A report is defined by the `ReportDefinition` interface:
+
+```typescript
+interface ReportDefinition {
+  description: string;
+  scope: ReportScope;
+  labels?: string[];
+  execute(context: ReportContext): Promise<ReportResult>;
+}
+
+interface ReportResult {
+  markdown: string;
+  json: Record<string, unknown>;
+}
+```
+
+- **description** — what the report produces (human-readable).
+- **scope** — `"method"`, `"model"`, or `"workflow"`. Determines which context
+  variant the report receives.
+- **labels** — optional categorization tags for filtering (e.g., `["cost",
+  "finops"]`).
+- **execute** — the function that analyzes context and returns a result.
+
+See `src/domain/reports/report.ts` for the full interface.
+
+## Scopes
+
+Each report declares the scope at which it operates. The scope determines the
+shape of the context passed to `execute`.
+
+| Scope      | When it runs                             | Context variant          |
+| ---------- | ---------------------------------------- | ------------------------ |
+| `method`   | After a single method execution          | `MethodReportContext`    |
+| `model`    | After a method execution (model-level)   | `ModelReportContext`     |
+| `workflow`  | After a full workflow run completes      | `WorkflowReportContext`  |
+
+Reports with `scope: "method"` or `scope: "model"` run in the context of a
+specific model instance and method invocation. Reports with `scope: "workflow"`
+run after all workflow steps complete and receive summary data about every step.
+
+## Report Context
+
+The three context variants share a base set of fields and diverge based on
+scope. See `src/domain/reports/report_context.ts`.
+
+### Base Fields (all scopes)
+
+| Field                  | Type                       | Description                              |
+| ---------------------- | -------------------------- | ---------------------------------------- |
+| `repoDir`              | `string`                   | Repository root path                     |
+| `logger`               | `Logger`                   | LogTape logger for report output         |
+| `dataRepository`       | `UnifiedDataRepository`    | Read/query persisted data                |
+| `definitionRepository` | `DefinitionRepository`     | Read model definitions                   |
+
+### MethodReportContext / ModelReportContext
+
+Both method and model scope contexts carry the same fields:
+
+| Field             | Type                         | Description                                  |
+| ----------------- | ---------------------------- | -------------------------------------------- |
+| `scope`           | `"method"` / `"model"`       | Discriminant                                 |
+| `modelType`       | `ModelType`                  | The model type                               |
+| `modelId`         | `string`                     | Model instance ID                            |
+| `definition`      | `{ id, name, version, tags }`| Definition metadata                          |
+| `globalArgs`      | `Record<string, unknown>`    | Evaluated global arguments                   |
+| `methodArgs`      | `Record<string, unknown>`    | Per-method arguments                         |
+| `methodName`      | `string`                     | Which method was invoked                     |
+| `executionStatus` | `"succeeded"` / `"failed"`   | Method outcome                               |
+| `dataHandles`     | `DataHandle[]`               | Data artifacts produced by the method        |
+
+### WorkflowReportContext
+
+| Field              | Type                             | Description                                   |
+| ------------------ | -------------------------------- | --------------------------------------------- |
+| `scope`            | `"workflow"`                     | Discriminant                                  |
+| `workflowId`       | `string`                         | Workflow UUID                                 |
+| `workflowRunId`    | `string`                         | Run UUID                                      |
+| `workflowName`     | `string`                         | Workflow name                                 |
+| `workflowStatus`   | `"succeeded"` / `"failed"`      | Overall run outcome                           |
+| `stepExecutions`   | `StepExecution[]`                | Per-step details (job, model, method, status) |
+
+Each `stepExecutions` entry contains `jobName`, `stepName`, `modelName`,
+`modelType`, `methodName`, `status`, `dataHandles`, `methodArgs`, `modelId`,
+and `globalArgs`.
+
+## Standalone Report Extensions
+
+Reports are implemented as TypeScript files in `extensions/reports/`. Each file
+exports a `report` object:
+
+```typescript
+export const report = {
+  name: "@myorg/cost-summary",
+  description: "Summarize estimated costs from resource attributes",
+  scope: "method" as const,
+  labels: ["cost", "finops"],
+  execute: async (context) => {
+    // Analyze context.dataHandles, context.globalArgs, etc.
+    return {
+      markdown: "## Cost Summary\n...",
+      json: { totalEstimatedCost: 42.50 },
+    };
+  },
+};
+```
+
+### Name Convention
+
+Report names follow the `@collective/name` pattern (e.g.,
+`@myorg/cost-report`). The collective must match the extension's collective
+when distributed via `extension push`.
+
+### Loader Validation
+
+`UserReportLoader` discovers `.ts` files recursively in the reports directory
+(excluding `_test.ts`), bundles each with Deno (zod externalized), and
+validates the export against a Zod schema requiring:
+
+- `name` — matches `@collective/name` or `collective/name`
+- `description` — non-empty string
+- `scope` — one of `"method"`, `"model"`, `"workflow"`
+- `labels` — optional `string[]`
+- `execute` — function
+
+Files without a `report` export are silently skipped (they may be utility
+modules). Bundles are cached in `.swamp/report-bundles/` with mtime-based
+invalidation.
+
+See `src/domain/reports/user_report_loader.ts`.
+
+## Report Registry
+
+The `ReportRegistry` is a `Map`-backed registry of report definitions keyed by
+name. It provides `register`, `get`, `getAll`, `getByScope`, and `has` methods.
+
+The global singleton uses `globalThis` so the same registry is shared across
+module boundaries (important when extensions are loaded outside the bundle):
+
+```typescript
+const REPORT_REGISTRY_KEY = "__swampReportRegistry";
+export const reportRegistry: ReportRegistry =
+  (globalThis as any)[REPORT_REGISTRY_KEY] ??= new ReportRegistry();
+```
+
+Duplicate name registration throws an error. See
+`src/domain/reports/report_registry.ts`.
+
+## Three-Level Control Model
+
+Reports are selected through three layers, from broadest to most specific:
+
+### 1. Model-Type Defaults
+
+A model type declares default reports via `ModelDefinition.reports: string[]`.
+These are report names (not values) — the model references reports by name,
+decoupling the model and report bounded contexts:
+
+```typescript
+export const model = {
+  type: "@myorg/ec2-instance",
+  reports: ["@myorg/cost-summary", "@myorg/compliance-check"],
+  // ...
+};
+```
+
+All registered reports whose name appears in this list are candidates whenever
+a method runs on this model type.
+
+### 2. Definition YAML Overrides
+
+Each definition can refine which reports run via a `reports` field:
+
+```yaml
+reports:
+  require:
+    - "@myorg/cost-summary"
+    - name: "@myorg/security-audit"
+      methods: ["create", "update"]
+  skip:
+    - "@myorg/compliance-check"
+```
+
+- **`require`** — reports listed here are added to the candidate set and are
+  immune to CLI skip flags. Entries can be a plain string (applies to all
+  methods) or an object with `name` and optional `methods` array for method
+  scoping.
+- **`skip`** — reports listed here are always skipped. Skip wins over require
+  if the same report appears in both.
+
+### 3. Workflow YAML Overrides
+
+Workflows also support a `reports` field at the workflow level with the same
+`require`/`skip` structure. This applies to workflow-scope reports.
+
+```yaml
+reports:
+  require:
+    - "@myorg/workflow-summary"
+  skip:
+    - "@myorg/verbose-audit"
+```
+
+## Report Selection
+
+The `ReportSelection` type and `ReportRef` union define the YAML-driven
+selection schema. See `src/domain/reports/report_selection.ts`.
+
+```typescript
+type ReportRef = string | { name: string; methods?: string[] };
+
+type ReportSelection = {
+  require?: ReportRef[];
+  skip?: string[];
+};
+```
+
+The `ReportSelectionSchema` (Zod) validates report selection in both definition
+and workflow YAML files.
+
+## Filtering Semantics
+
+The `filterReports` function in `report_execution_service.ts` applies the full
+filtering pipeline. The algorithm:
+
+1. **Build candidate set** — union of model-type defaults
+   (`ModelDefinition.reports`) and `selection.require` names. For workflow scope
+   (no model-type defaults), candidates are `selection.require` only.
+2. **Scope filter** — only reports matching the requested scope pass.
+3. **Definition/workflow skip** — `selection.skip` names are removed. Skip
+   always wins.
+4. **Method scoping** — required refs with a `methods` array are excluded when
+   the current method is not in the list.
+5. **Required immunity** — reports in `selection.require` survive all CLI skip
+   flags.
+6. **CLI skip flags** — `--skip-reports` removes all non-required reports.
+   `--skip-report <name>` and `--skip-report-label <label>` remove matching
+   non-required reports.
+7. **Inclusion filters** — `--report <name>` and `--report-label <label>`
+   narrow the remaining set to only matching reports.
+
+Key invariants:
+
+- **Skip always wins over require.** If a report is in both `skip` and
+  `require`, it is skipped.
+- **Required reports are immune to CLI skip flags.** `--skip-reports` and
+  `--skip-report <name>` cannot suppress a required report.
+- **Only candidates run.** A report must be in model-type defaults or in
+  `require` to be considered. Registration alone is not enough.
+
+## Data Persistence
+
+Report results are automatically persisted as data artifacts via
+`persistReportData`. Each report produces two artifacts:
+
+| Artifact   | Data name                     | Content type         |
+| ---------- | ----------------------------- | -------------------- |
+| Markdown   | `report-{reportName}`         | `text/markdown`      |
+| JSON       | `report-{reportName}-json`    | `application/json`   |
+
+Both artifacts are written with:
+
+- **Lifetime**: `30d`
+- **Garbage collection**: `5` (keep latest 5 versions)
+- **Tags**: `{ type: "report", reportName, reportScope }`
+
+Data handles are returned in the `ReportExecutionResult` and included in the
+final view. The `buildReportDataHandles` helper (in
+`src/domain/reports/report_data_handles.ts`) reconstructs `DataHandle[]` from
+persisted data for standalone report invocations.
+
+## CLI
+
+### `swamp model report`
+
+Runs reports for a model without executing a method. Uses the evaluated
+(post-CEL) definition when available.
+
+```bash
+swamp model report my-model
+swamp model report my-model --method create
+swamp model report my-model --label cost
+```
+
+| Flag               | Description                                     |
+| ------------------ | ----------------------------------------------- |
+| `--method <name>`  | Simulate a method context for report scoping    |
+| `--label <label>`  | Only run reports matching this label (repeatable)|
+
+See `src/cli/commands/model_report.ts`.
+
+### Report Flags on `model method run`
+
+| Flag                              | Description                                      |
+| --------------------------------- | ------------------------------------------------ |
+| `--skip-reports`                  | Skip all post-run reports                        |
+| `--skip-report <name>`           | Skip a specific report by name (repeatable)      |
+| `--skip-report-label <label>`    | Skip reports matching a label (repeatable)       |
+| `--report <name>`                | Only run this report (inclusion, repeatable)     |
+| `--report-label <label>`         | Only run reports with this label (inclusion)     |
+
+### Report Flags on `workflow run`
+
+| Flag                              | Description                                      |
+| --------------------------------- | ------------------------------------------------ |
+| `--skip-reports`                  | Skip all post-run reports                        |
+| `--skip-report <name>`           | Skip a specific report by name (repeatable)      |
+| `--skip-report-label <label>`    | Skip reports matching a label (repeatable)       |
+| `--report <name>`                | Only run this report (inclusion, repeatable)     |
+| `--report-label <label>`         | Only run reports with this label (inclusion)     |
+
+## Output
+
+Reports support two output modes, consistent with the rest of the CLI:
+
+- **Log mode** — renders each report's markdown to the terminal with a
+  separator header showing the report name. Uses `renderMarkdownToTerminal`
+  for terminal-friendly formatting.
+- **JSON mode** — emits a single JSON object with the full `ModelReportView`
+  containing all report results (name, scope, success, markdown, json, error).
+
+See `src/presentation/renderers/model_report.ts`.
+
+## Reports Directory Resolution
+
+The reports directory is resolved with the same priority as other extension
+directories:
+
+1. `SWAMP_REPORTS_DIR` environment variable
+2. `reportsDir` in `.swamp.yaml`
+3. Default: `extensions/reports/`
+
+See `src/cli/resolve_reports_dir.ts`.
