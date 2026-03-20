@@ -30,6 +30,7 @@ function makeMetadata(
     vaults: [],
     drivers: [],
     datastores: [],
+    reports: [],
     ...overrides,
   };
 }

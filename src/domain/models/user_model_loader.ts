@@ -131,6 +131,7 @@ const UserModelSchema = z.object({
   methods: z.record(z.string(), UserMethodSchema),
   checks: z.record(z.string(), UserCheckSchema).optional(),
   upgrades: z.array(UserUpgradeSchema).optional(),
+  reports: z.array(z.string()).optional(),
 });
 
 /**
@@ -703,6 +704,7 @@ export class UserModelLoader {
       methods,
       ...(checks ? { checks } : {}),
       ...(upgrades && upgrades.length > 0 ? { upgrades } : {}),
+      ...(userModel.reports ? { reports: userModel.reports } : {}),
     };
   }
 

@@ -76,4 +76,22 @@ export type WorkflowExecutionEvent =
     methodName: string;
     event: MethodExecutionEvent;
   }
+  | {
+    kind: "report_started";
+    reportName: string;
+    scope: string;
+  }
+  | {
+    kind: "report_completed";
+    reportName: string;
+    scope: string;
+    markdown: string;
+    json: Record<string, unknown>;
+  }
+  | {
+    kind: "report_failed";
+    reportName: string;
+    scope: string;
+    error: string;
+  }
   | { kind: "completed"; run: WorkflowRun };
