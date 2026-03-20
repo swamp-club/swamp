@@ -231,9 +231,23 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     method: MethodDefinition,
     context: MethodContext,
   ): Promise<MethodResult> {
-    // Validate per-method arguments against the method's schema
+    // Get raw method arguments (may contain vault sentinel tokens)
     const rawMethodArgs = definition.getMethodArguments(context.methodName);
-    const methodArgs = coerceMethodArgs(rawMethodArgs, method.arguments);
+
+    // Resolve vault sentinels to raw values for method args and global args.
+    // This ensures extension models receive exact secret values with no escaping.
+    const secretBag = context.vaultSecrets;
+    const resolvedMethodArgs = secretBag && !secretBag.isEmpty
+      ? secretBag.resolveDeep(rawMethodArgs) as Record<string, unknown>
+      : rawMethodArgs;
+    const resolvedGlobalArgs = secretBag && !secretBag.isEmpty
+      ? secretBag.resolveDeep(
+        definition.globalArguments,
+      ) as Record<string, unknown>
+      : definition.globalArguments;
+
+    // Validate per-method arguments against the method's schema
+    const methodArgs = coerceMethodArgs(resolvedMethodArgs, method.arguments);
     const argsResult = method.arguments.safeParse(methodArgs);
 
     if (!argsResult.success) {
@@ -249,8 +263,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // accesses a field with an unresolved ${{ ... }} expression.
     // This allows methods that don't need certain fields to succeed while
     // failing fast with a helpful message if they do.
-    const rawGlobalArgs = definition.globalArguments;
-    const globalArgsProxy = new Proxy(rawGlobalArgs, {
+    const globalArgsProxy = new Proxy(resolvedGlobalArgs, {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
         if (
@@ -274,6 +287,9 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         version: definition.version,
         tags: definition.tags,
       },
+      // Store unresolved args (with sentinels) so the shell model can
+      // resolve vault secrets via env vars instead of command string injection
+      unresolvedMethodArgs: rawMethodArgs,
     };
 
     // Execute the method with pre-validated args
@@ -317,6 +333,21 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         context.modelType,
         currentDefinition,
       );
+    }
+
+    // Resolve vault sentinels in globalArguments before validation.
+    // Sentinels must be replaced with raw values so Zod schemas (e.g., url(),
+    // regex()) validate against actual secret values, not sentinel tokens.
+    const secretBag = context.vaultSecrets;
+    if (secretBag && !secretBag.isEmpty) {
+      const rawGlobal = currentDefinition.globalArguments;
+      const resolvedGlobal = secretBag.resolveDeep(rawGlobal) as Record<
+        string,
+        unknown
+      >;
+      for (const [key, value] of Object.entries(resolvedGlobal)) {
+        currentDefinition.setGlobalArgument(key, value);
+      }
     }
 
     // Validate globalArguments against schema (after upgrade and runtime resolution).

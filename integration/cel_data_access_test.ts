@@ -603,12 +603,19 @@ Deno.test("CEL Data Access: access environment variables", async () => {
       );
 
       // Resolve runtime expressions (env + vault) — this is the runtime phase
-      const resolved = await evalService.resolveRuntimeExpressionsInDefinition(
-        result.definition,
-      );
+      const runtimeResult = await evalService
+        .resolveRuntimeExpressionsInDefinition(
+          result.definition,
+        );
 
-      assertEquals(resolved.globalArguments.from_env, "test-value");
-      assertEquals(resolved.globalArguments.number_as_string, "42");
+      assertEquals(
+        runtimeResult.definition.globalArguments.from_env,
+        "test-value",
+      );
+      assertEquals(
+        runtimeResult.definition.globalArguments.number_as_string,
+        "42",
+      );
     } finally {
       Deno.env.delete("CEL_TEST_VAR");
       Deno.env.delete("CEL_TEST_NUMBER");

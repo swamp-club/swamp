@@ -22,6 +22,7 @@ import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import type { Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
+import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { CalVer } from "./calver.ts";
@@ -303,6 +304,19 @@ export interface MethodContext {
   reportNames?: string[];
   /** Only run reports matching these labels (inclusion filter). */
   reportLabels?: string[];
+
+  /**
+   * Vault secret bag containing sentinel-to-value mappings from runtime
+   * expression resolution. Used by the shell model to pass secrets via
+   * environment variables instead of embedding them in command strings.
+   */
+  vaultSecrets?: VaultSecretBag;
+
+  /**
+   * Pre-resolution method arguments containing sentinel tokens.
+   * Used by the shell model to resolve vault secrets for shell safety.
+   */
+  unresolvedMethodArgs?: Record<string, unknown>;
 }
 
 /**

@@ -196,24 +196,34 @@ attributes:
 
 ### Shell Safety
 
-When vault secrets are injected into the `run` field of a `command/shell` model via CEL
-string concatenation, shell metacharacters in the secret value are automatically escaped so
-that the value is always treated as **literal data**, never as shell syntax.
+When vault secrets are used in the `run` field of a `command/shell` model, the
+shell model passes secret values via **environment variables** instead of
+embedding them in the command string. This prevents all shell metacharacter
+injection — the shell never parses secret content as syntax.
 
-Specifically, `$` and `` ` `` are escaped so that `$(cmd)` and `` `cmd` `` in a secret
-value do not trigger command substitution:
+Internally, vault secrets are replaced with unique sentinel tokens during CEL
+evaluation. At the shell model boundary, sentinels are replaced with
+double-quoted environment variable references (`"${__SWAMP_VAULT_N}"`), and the
+raw secret values are passed through the process environment. Shell variable
+expansion happens after command parsing, so metacharacters in the secret value
+are always treated as literal data.
 
 ```yaml
-# Secret value: $(cat /etc/passwd)
-# Shell receives: \$(cat /etc/passwd)  → outputs literally: $(cat /etc/passwd)
-attributes:
-  run: '"echo " + vault.get(''my-vault'', ''SECRET'') + '' done'''
+# Secret value: pass;rm -rf /
+# Shell receives: echo "${__SWAMP_VAULT_0}"  (with env __SWAMP_VAULT_0="pass;rm -rf /")
+# Output: pass;rm -rf /  (literal, no injection)
+globalArguments:
+  run: "echo ${{ vault.get('my-vault', 'SECRET') }}"
 ```
 
 This means:
-- `$VAR_NAME` in a secret is **not** expanded as a shell variable — it appears literally.
-- `$(cmd)` and `` `cmd` `` in a secret are **not** executed — they appear literally.
-- Prices, connection strings, and other data containing `$` are safe to store and use.
+- `;`, `|`, `&`, `(`, `)`, `<`, `>` in a secret do **not** split or redirect commands.
+- `$VAR_NAME` and `$(cmd)` in a secret are **not** expanded or executed.
+- `` `cmd` `` in a secret is **not** executed.
+- `!` in a secret does **not** trigger bash history expansion.
+- All current and future shell metacharacters are handled — no character blocklist.
+- Non-shell contexts (extension models, API calls) receive exact raw secret values
+  with no escaping artifacts.
 
 ## Environment Variables
 

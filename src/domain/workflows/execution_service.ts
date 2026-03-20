@@ -325,16 +325,19 @@ export class DefaultStepExecutor implements StepExecutor {
     const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(ctx.repoDir);
     await evaluatedDefRepo.save(modelType, evaluatedDefinition);
 
-    // Resolve runtime expressions (vault and env) at runtime (never persisted)
+    // Resolve runtime expressions (vault and env) at runtime (never persisted).
+    // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
     const evalService = new ExpressionEvaluationService(
       new YamlDefinitionRepository(ctx.repoDir),
       ctx.repoDir,
     );
-    evaluatedDefinition = await evalService
+    const runtimeResult = await evalService
       .resolveRuntimeExpressionsInDefinition(
         evaluatedDefinition,
         ctx.secretRedactor,
       );
+    evaluatedDefinition = runtimeResult.definition;
+    const secretBag = runtimeResult.secretBag;
 
     // Validate method exists on the model
     const method = modelDef.methods[task.methodName];
@@ -451,6 +454,7 @@ export class DefaultStepExecutor implements StepExecutor {
           dataOutputOverrides: stepDataOutputOverrides,
           vaultService,
           redactor: ctx.secretRedactor,
+          vaultSecrets: secretBag,
           driver: ctx.driver ?? evaluatedDefinition.driver,
           driverConfig: ctx.driverConfig ?? evaluatedDefinition.driverConfig,
           onEvent: ctx.emitEvent

@@ -41,6 +41,7 @@ import {
 } from "./model_resolver.ts";
 import { CyclicDependencyError } from "./errors.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import {
   CyclicDependencyError as TopoCyclicError,
   type GraphNode,
@@ -83,6 +84,16 @@ export function containsEnvExpression(celExpression: string): boolean {
 export function containsRuntimeExpression(celExpression: string): boolean {
   return containsVaultExpression(celExpression) ||
     containsEnvExpression(celExpression);
+}
+
+/**
+ * Result of resolving runtime expressions in a definition.
+ * Includes the resolved definition and a VaultSecretBag containing
+ * sentinel-to-value mappings for any vault secrets encountered.
+ */
+export interface RuntimeResolutionResult {
+  definition: Definition;
+  secretBag: VaultSecretBag;
 }
 
 /**
@@ -409,14 +420,20 @@ export class ExpressionEvaluationService {
    * Resolves remaining runtime expressions (vault and env) in an already-evaluated definition.
    * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
    *
+   * Vault secrets are replaced with sentinel tokens. The returned VaultSecretBag
+   * maps sentinels to raw values, allowing the caller to resolve them appropriately:
+   * - Non-shell contexts: VaultSecretBag.resolveDeep() for raw values
+   * - Shell commands: VaultSecretBag.resolveForShell() for env var injection
+   *
    * @param definition - The definition (may contain remaining ${{ vault.get(...) }} or ${{ env.* }} expressions)
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
-   * @returns A new definition with all runtime expressions resolved
+   * @returns The definition with sentinels and the VaultSecretBag for resolving them
    */
   async resolveRuntimeExpressionsInDefinition(
     definition: Definition,
     redactor?: SecretRedactor,
-  ): Promise<Definition> {
+  ): Promise<RuntimeResolutionResult> {
+    const secretBag = new VaultSecretBag();
     const definitionData = definition.toData();
     const expressions = extractExpressions(definitionData);
 
@@ -426,23 +443,29 @@ export class ExpressionEvaluationService {
     );
 
     if (runtimeExpressions.length === 0) {
-      return definition;
+      return { definition, secretBag };
     }
 
-    return await this.resolveRuntimeInExpressions(
+    const resolvedDefinition = await this.resolveRuntimeInExpressions(
       definitionData,
       runtimeExpressions,
       redactor,
+      secretBag,
     );
+
+    return { definition: resolvedDefinition, secretBag };
   }
 
   /**
    * Resolves remaining runtime expressions (vault and env) in arbitrary data.
    * This is the runtime phase — vault secrets and env variables are resolved here and never persisted.
    *
+   * When vault secrets are present, sentinels are resolved to raw values inline
+   * (no VaultSecretBag is returned). This is appropriate for non-shell data contexts.
+   *
    * @param data - The data (may contain remaining runtime expressions)
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
-   * @returns The data with all runtime expressions resolved
+   * @returns The data with all runtime expressions resolved (sentinels replaced with raw values)
    */
   async resolveRuntimeExpressionsInData(
     data: unknown,
@@ -457,6 +480,7 @@ export class ExpressionEvaluationService {
       return data;
     }
 
+    const secretBag = new VaultSecretBag();
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of runtimeExpressions) {
       // Resolve vault references first (if any), then evaluate the full CEL
@@ -465,6 +489,7 @@ export class ExpressionEvaluationService {
         resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
           expr.celExpression,
           redactor,
+          secretBag,
         );
       }
       const value = this.celEvaluator.evaluate(resolvedCelExpr, {
@@ -474,16 +499,31 @@ export class ExpressionEvaluationService {
       evaluatedValues.set(expr.raw, value);
     }
 
-    return replaceExpressions(data, evaluatedValues);
+    // For the data path, resolve sentinels to raw values immediately
+    // since there's no shell context to worry about.
+    const resolved = replaceExpressions(data, evaluatedValues);
+    if (!secretBag.isEmpty) {
+      return secretBag.resolveDeep(resolved);
+    }
+    return resolved;
   }
 
   /**
    * @deprecated Use resolveRuntimeExpressionsInDefinition instead.
    */
-  resolveVaultExpressionsInDefinition(
+  async resolveVaultExpressionsInDefinition(
     definition: Definition,
   ): Promise<Definition> {
-    return this.resolveRuntimeExpressionsInDefinition(definition);
+    const result = await this.resolveRuntimeExpressionsInDefinition(definition);
+    // Legacy callers expect raw values, so resolve sentinels immediately
+    if (!result.secretBag.isEmpty) {
+      const data = result.definition.toData();
+      const resolved = result.secretBag.resolveDeep(data);
+      return DefinitionClass.fromData(
+        resolved as ReturnType<Definition["toData"]>,
+      );
+    }
+    return result.definition;
   }
 
   /**
@@ -495,11 +535,13 @@ export class ExpressionEvaluationService {
 
   /**
    * Internal: resolves runtime expressions in definition data and returns a new Definition.
+   * Vault secrets are replaced with sentinel tokens stored in the secretBag.
    */
   private async resolveRuntimeInExpressions(
     definitionData: ReturnType<Definition["toData"]>,
     runtimeExpressions: ExpressionLocation[],
     redactor?: SecretRedactor,
+    secretBag?: VaultSecretBag,
   ): Promise<Definition> {
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of runtimeExpressions) {
@@ -509,6 +551,7 @@ export class ExpressionEvaluationService {
         resolvedCelExpr = await this.modelResolver.resolveVaultExpressions(
           expr.celExpression,
           redactor,
+          secretBag,
         );
       }
       const value = this.celEvaluator.evaluate(resolvedCelExpr, {

@@ -345,9 +345,12 @@ export async function* modelMethodRun(
       }
     }
 
-    // Resolve runtime expressions (vault and env)
-    evaluatedDefinition = await evaluationService
+    // Resolve runtime expressions (vault and env).
+    // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
+    const runtimeResult = await evaluationService
       .resolveRuntimeExpressionsInDefinition(evaluatedDefinition, redactor);
+    evaluatedDefinition = runtimeResult.definition;
+    const secretBag = runtimeResult.secretBag;
 
     // --- Execute ---
     yield {
@@ -404,6 +407,7 @@ export async function* modelMethodRun(
               runtimeTags: input.runtimeTags,
               vaultService,
               redactor,
+              vaultSecrets: secretBag,
               skipCheckNames: input.skipCheckNames,
               skipCheckLabels: input.skipCheckLabels,
               skipAllChecks: input.skipAllChecks,

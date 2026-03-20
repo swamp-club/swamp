@@ -34,6 +34,7 @@ import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { z } from "zod";
+import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
@@ -120,7 +121,10 @@ function createFakeEvaluationService(): any {
         hadExpressions: false,
       }),
     resolveRuntimeExpressionsInDefinition: (def: Definition) =>
-      Promise.resolve(def),
+      Promise.resolve({
+        definition: def,
+        secretBag: new VaultSecretBag(),
+      }),
   };
 }
 

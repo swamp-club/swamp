@@ -95,11 +95,28 @@ async function executeCommand(
     context.redactor?.hasSecrets ? context.redactor.redact(text) : text;
 
   try {
+    // Resolve vault secrets via environment variables to prevent shell injection.
+    // The unresolved run field contains sentinel tokens for vault secrets.
+    // We replace sentinels with "${__SWAMP_VAULT_N}" env var references and
+    // pass the raw secret values through the process environment, so the shell
+    // never parses secret content as syntax.
+    let shellCommand = args.run;
+    let shellEnv = args.env ?? {};
+    const secretBag = context.vaultSecrets;
+    if (secretBag && !secretBag.isEmpty && context.unresolvedMethodArgs) {
+      const unresolvedRun = context.unresolvedMethodArgs.run;
+      if (typeof unresolvedRun === "string") {
+        const resolved = secretBag.resolveForShell(unresolvedRun);
+        shellCommand = resolved.command;
+        shellEnv = { ...shellEnv, ...resolved.env };
+      }
+    }
+
     const result = await executeProcess({
       command: "sh",
-      args: ["-c", args.run],
+      args: ["-c", shellCommand],
       cwd: args.workingDir,
-      env: args.env,
+      env: Object.keys(shellEnv).length > 0 ? shellEnv : undefined,
       timeoutMs: args.timeout,
       logger: context.logger,
       redactor: context.redactor,

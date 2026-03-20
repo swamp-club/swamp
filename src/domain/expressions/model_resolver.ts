@@ -27,6 +27,7 @@ import type { Data } from "../data/data.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
+import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 /**
  * Builds env context from Deno environment variables.
@@ -809,13 +810,20 @@ export class ModelResolver {
   /**
    * Resolves vault expressions in a string by evaluating vault.get() calls.
    *
+   * Secret values are replaced with sentinel tokens in the CEL expression.
+   * The sentinel-to-value mapping is stored in the provided VaultSecretBag,
+   * allowing callers to resolve sentinels later — either to raw values
+   * (non-shell contexts) or to environment variable references (shell commands).
+   *
    * @param value - The string that may contain vault expressions
    * @param redactor - Optional SecretRedactor to register resolved secret values for redaction
-   * @returns The string with vault expressions resolved to actual secret values
+   * @param secretBag - VaultSecretBag to store sentinel-to-value mappings
+   * @returns The string with vault.get() calls replaced by sentinel tokens wrapped as CEL strings
    */
   async resolveVaultExpressions(
     value: string,
     redactor?: SecretRedactor,
+    secretBag?: VaultSecretBag,
   ): Promise<string> {
     // Pattern to match vault.get(vaultName, secretKey) expressions
     // Handles both quoted and unquoted arguments
@@ -837,23 +845,28 @@ export class ModelResolver {
       try {
         const secretValue = await vaultService.get(vaultName, secretKey);
         redactor?.addSecret(secretValue);
-        // Escape special characters to prevent CEL parsing issues and injection attacks.
-        // For $ and `, we use a \\X prefix (two backslashes + char) so that:
-        //   - CEL sees \\ → produces one \, then the char is a plain literal
-        //   - Shell receives \$ or \` → literal character, no command substitution
-        const escapedValue = secretValue
-          .replace(/\\/g, "\\\\")
-          .replace(/\$/g, "\\\\$") // $ → \\$ so CEL produces \$, shell treats as literal $
-          .replace(/`/g, "\\\\`") // ` → \\` so CEL produces \`, shell treats as literal `
-          .replace(/"/g, '\\"')
-          .replace(/'/g, "\\'")
-          .replace(/\n/g, "\\n")
-          .replace(/\r/g, "\\r")
-          .replace(/\t/g, "\\t");
-        // Replace the entire vault.get(...) call with the escaped secret value wrapped in quotes for CEL
-        resolvedValue = resolvedValue.split(fullMatch).join(
-          `"${escapedValue}"`,
-        );
+
+        let celReplacement: string;
+        if (secretBag) {
+          // Sentinel-based resolution: secret value goes into the bag,
+          // sentinel token goes into the CEL expression.
+          const sentinel = secretBag.addSecret(secretValue);
+          celReplacement = `"${sentinel}"`;
+        } else {
+          // Legacy fallback: escape for CEL string safety only.
+          // No shell-specific escaping — shell safety is handled by the
+          // shell model via VaultSecretBag.resolveForShell().
+          const escapedValue = secretValue
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"')
+            .replace(/'/g, "\\'")
+            .replace(/\n/g, "\\n")
+            .replace(/\r/g, "\\r")
+            .replace(/\t/g, "\\t");
+          celReplacement = `"${escapedValue}"`;
+        }
+
+        resolvedValue = resolvedValue.split(fullMatch).join(celReplacement);
       } catch (error) {
         throw new Error(
           `Failed to resolve vault expression ${fullMatch}: ${
