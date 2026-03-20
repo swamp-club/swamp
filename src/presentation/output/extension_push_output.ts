@@ -60,6 +60,15 @@ export interface ResolvedDatastoreEntry {
   configFields?: ExtractedArgument[];
 }
 
+/** A report entry enriched with extracted metadata for the resolved display. */
+export interface ResolvedReportEntry {
+  name: string;
+  fileName: string;
+  description?: string;
+  scope?: string;
+  labels?: string[];
+}
+
 /** Data for showing resolved extension contents before push. */
 export interface ExtensionPushResolvedData {
   name: string;
@@ -72,6 +81,7 @@ export interface ExtensionPushResolvedData {
   vaults: ResolvedVaultEntry[];
   drivers: ResolvedDriverEntry[];
   datastores: ResolvedDatastoreEntry[];
+  reports: ResolvedReportEntry[];
   additionalFiles: string[];
   platforms: string[];
   labels: string[];
@@ -90,6 +100,7 @@ export interface ExtensionPushSuccessData {
   vaultCount: number;
   driverCount: number;
   datastoreCount: number;
+  reportCount: number;
 }
 
 /** Data for compilation error output. */
@@ -177,6 +188,13 @@ export function renderExtensionPushResolved(
             logger.info`      ${field.name}: ${field.type}${opt}`;
           }
         }
+      }
+    }
+    if (data.reports.length > 0) {
+      logger.info`Reports (${data.reports.length}):`;
+      for (const r of data.reports) {
+        const scopeLabel = r.scope ? ` [${r.scope}]` : "";
+        logger.info`  ${r.name}${scopeLabel} (${r.fileName})`;
       }
     }
     if (data.additionalFiles.length > 0) {
@@ -278,6 +296,7 @@ export function renderExtensionPush(
     if (data.datastoreCount > 0) {
       parts.push(`Datastores: ${data.datastoreCount}`);
     }
+    if (data.reportCount > 0) parts.push(`Reports: ${data.reportCount}`);
     parts.push(`Bundles: ${data.bundleCount}`);
     logger.info`${parts.join(", ")}`;
   }

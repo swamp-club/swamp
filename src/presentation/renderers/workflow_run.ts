@@ -29,6 +29,7 @@ import {
   getWorkflowRunLogger,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
 export interface WorkflowRunRenderOpts {
   workflowName: string;
@@ -128,6 +129,24 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
             break;
         }
       },
+      report_started: () => {},
+      report_completed: (e) => {
+        const logger = getWorkflowRunLogger(this.workflowName);
+        const separator = "\u2500".repeat(60);
+        const parts = [
+          `Running report: "${e.reportName}"`,
+          `\u2500\u2500 Report: ${e.reportName} ${separator}`,
+          renderMarkdownToTerminal(e.markdown),
+          separator,
+        ];
+        logger.info(parts.join("\n"));
+      },
+      report_failed: (e) => {
+        getWorkflowRunLogger(this.workflowName).warn(
+          "Running report: {reportName} \u2192 \u2717 {error}",
+          { reportName: e.reportName, error: e.error },
+        );
+      },
       completed: (e) => {
         const wfLogger = getWorkflowRunLogger(this.workflowName);
         if (e.run.status === "failed") {
@@ -201,6 +220,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       method_executing: () => {},
       method_output: () => {},
       method_event: () => {},
+      report_started: () => {},
+      report_completed: () => {},
+      report_failed: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));

@@ -41,6 +41,7 @@ export interface RepoMarkerData {
   vaultsDir?: string;
   driversDir?: string;
   datastoresDir?: string;
+  reportsDir?: string;
   repoId?: string;
   telemetryEndpoint?: string;
   telemetryDisabled?: boolean;

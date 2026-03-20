@@ -231,6 +231,7 @@ Deno.test("Definition.toData returns correct structure", () => {
       properties: { name: { type: "string" } },
     },
     checks: undefined,
+    reports: undefined,
     driver: undefined,
     driverConfig: undefined,
   });
