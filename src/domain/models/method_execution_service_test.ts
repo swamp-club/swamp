@@ -1192,6 +1192,7 @@ Deno.test("executeWorkflow - skips validation when model has no globalArguments 
  */
 function createMockDataRepoWithData(
   existingData: Data[],
+  contentByName?: Record<string, Uint8Array>,
 ): UnifiedDataRepository & {
   savedData: Array<{ data: Data; content: Uint8Array }>;
 } {
@@ -1208,12 +1209,16 @@ function createMockDataRepoWithData(
       savedData.push({ data, content });
       return Promise.resolve({ version: data.version });
     },
-    getContent: () => Promise.resolve(null),
+    getContent: (
+      _type: ModelType,
+      _modelId: string,
+      name: string,
+    ) => Promise.resolve(contentByName?.[name] ?? null),
     savedData,
   };
 }
 
-Deno.test("executeWorkflow - delete method writes deletion markers for existing resources", async () => {
+Deno.test("executeWorkflow - delete method writes deletion markers with last known state", async () => {
   const service = new DefaultMethodExecutionService();
 
   const existingData = Data.create({
@@ -1229,10 +1234,96 @@ Deno.test("executeWorkflow - delete method writes deletion markers for existing 
     version: 3,
   });
 
-  const mockRepo = createMockDataRepoWithData([existingData]);
+  const activeContent = new TextEncoder().encode(JSON.stringify({
+    id: "vol-abc123",
+    name: "my-volume",
+    region: "us-east-1",
+  }));
+
+  const mockRepo = createMockDataRepoWithData([existingData], {
+    "my-resource": activeContent,
+  });
 
   const model: ModelDefinition = {
     type: ModelType.create("test/delete-marker"),
+    version: "1",
+    resources: {
+      "my-resource": {
+        description: "A resource",
+        schema: z.object({}),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      delete: {
+        description: "Delete the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const contextWithRepo: MethodContext = {
+    ...context,
+    dataRepository: mockRepo,
+  };
+
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "delete",
+    contextWithRepo,
+  );
+
+  // Should have saved a deletion marker
+  assertEquals(mockRepo.savedData.length, 1);
+  const saved = mockRepo.savedData[0];
+  assertEquals(saved.data.lifecycle, "deleted");
+  assertEquals(saved.data.version, 4); // existingData.version + 1
+  assertEquals(saved.data.contentType, "application/json");
+
+  // Marker content should include last known state merged with deletion metadata
+  const content = JSON.parse(new TextDecoder().decode(saved.content));
+  assertEquals(content.id, "vol-abc123");
+  assertEquals(content.name, "my-volume");
+  assertEquals(content.region, "us-east-1");
+  assertEquals(typeof content.deletedAt, "string");
+  assertEquals(content.deletedByMethod, "delete");
+
+  // Result should include deletion marker as a data handle
+  assertEquals(result.dataHandles?.length, 1);
+  assertEquals(result.dataHandles?.[0].name, "my-resource");
+  assertEquals(result.dataHandles?.[0].kind, "resource");
+});
+
+Deno.test("executeWorkflow - delete marker gracefully handles missing active content", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const existingData = Data.create({
+    name: "my-resource",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", specName: "my-resource" },
+    ownerDefinition: {
+      ownerType: "model-method",
+      ownerRef: "test/model:create",
+    },
+    version: 3,
+  });
+
+  // No content provided — getContent returns null
+  const mockRepo = createMockDataRepoWithData([existingData]);
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/delete-no-content"),
     version: "1",
     resources: {
       "my-resource": {
@@ -1269,17 +1360,15 @@ Deno.test("executeWorkflow - delete method writes deletion markers for existing 
     contextWithRepo,
   );
 
-  // Should have saved a deletion marker
+  // Should still write a deletion marker with just the metadata
   assertEquals(mockRepo.savedData.length, 1);
-  const saved = mockRepo.savedData[0];
-  assertEquals(saved.data.lifecycle, "deleted");
-  assertEquals(saved.data.version, 4); // existingData.version + 1
-  assertEquals(saved.data.contentType, "application/json");
-
-  // Check the marker content
-  const content = JSON.parse(new TextDecoder().decode(saved.content));
+  const content = JSON.parse(
+    new TextDecoder().decode(mockRepo.savedData[0].content),
+  );
   assertEquals(typeof content.deletedAt, "string");
   assertEquals(content.deletedByMethod, "delete");
+  // No last known state attributes since content was null
+  assertEquals(Object.keys(content).length, 2);
 });
 
 Deno.test("executeWorkflow - read after delete throws UserError", async () => {
@@ -1692,7 +1781,10 @@ Deno.test("executeWorkflow - deletion markers only written for declared resource
     version: 2,
   });
 
-  const mockRepo = createMockDataRepoWithData([resourceData, untaggedData]);
+  const mockRepo = createMockDataRepoWithData([resourceData, untaggedData], {
+    "my-resource": new TextEncoder().encode(JSON.stringify({ id: "res-1" })),
+    "some-old-data": new TextEncoder().encode(JSON.stringify({ id: "old-1" })),
+  });
 
   const model: ModelDefinition = {
     type: ModelType.create("test/delete-scoped-markers"),

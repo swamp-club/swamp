@@ -654,6 +654,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
     // Write deletion markers after a successful delete method.
     // Only mark declared resource data — untagged or non-resource data is left alone.
+    // Markers include the last known active state so that data.latest() still
+    // resolves original attributes after deletion (enables idempotent workflow re-runs).
     if (methodKind === "delete") {
       const resources = modelDef.resources ?? {};
       if (Object.keys(resources).length > 0) {
@@ -667,10 +669,30 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         );
         for (const data of resourceData) {
           if (!data.isDeleted) {
+            // Read last known active state to preserve in tombstone
+            let lastKnownState: Record<string, unknown> = {};
+            if (data.contentType === "application/json") {
+              try {
+                const activeContent = await context.dataRepository.getContent(
+                  context.modelType,
+                  context.modelId,
+                  data.name,
+                );
+                if (activeContent) {
+                  lastKnownState = JSON.parse(
+                    new TextDecoder().decode(activeContent),
+                  ) as Record<string, unknown>;
+                }
+              } catch {
+                // Not valid JSON or read error — proceed with empty state
+              }
+            }
+
             const marker = data.withDeletionMarker({
               version: data.version + 1,
             });
-            const content = new TextEncoder().encode(JSON.stringify({
+            const markerContent = new TextEncoder().encode(JSON.stringify({
+              ...lastKnownState,
               deletedAt: new Date().toISOString(),
               deletedByMethod: methodName,
             }));
@@ -678,8 +700,29 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               context.modelType,
               context.modelId,
               marker,
-              content,
+              markerContent,
             );
+
+            // Append deletion marker as a data handle so it surfaces
+            // in the method response as a data artifact.
+            currentHandles.push({
+              name: data.name,
+              specName: data.tags["specName"] ?? data.name,
+              kind: "resource",
+              dataId: marker.id,
+              version: marker.version,
+              size: markerContent.byteLength,
+              tags: { ...marker.tags },
+              metadata: {
+                contentType: marker.contentType,
+                lifetime: marker.lifetime,
+                garbageCollection: marker.garbageCollection,
+                streaming: marker.streaming,
+                tags: { ...marker.tags },
+                ownerDefinition: marker.ownerDefinition,
+                lifecycle: marker.lifecycle,
+              },
+            });
           }
         }
       }
