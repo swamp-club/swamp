@@ -137,7 +137,6 @@ jobs:
           EVAL_RUNS: "1"
           EVAL_WORKERS: "25"
           EVAL_TIMEOUT: "30"
-          EVAL_MODEL: "claude-haiku-4-5-20251001"
         run: deno run eval-skill-triggers
 
   claude-review:
