@@ -38,6 +38,7 @@ const aiToolType = new EnumType([
   "opencode",
   "codex",
   "kiro",
+  "none",
 ]);
 
 // Exported for reuse by repoCommand default action
@@ -81,7 +82,7 @@ export const repoInitCommand = new Command()
   .type("aiTool", aiToolType)
   .option(
     "-t, --tool <tool:aiTool>",
-    "AI coding tool to configure for (claude, cursor, opencode, codex, kiro)",
+    "AI coding tool to configure for (claude, cursor, opencode, codex, kiro, none)",
     { default: "claude" },
   )
   .action(repoInitAction);
@@ -135,7 +136,7 @@ export const repoCommand = new Command()
   .type("aiTool", aiToolType)
   .option(
     "-t, --tool <tool:aiTool>",
-    "AI coding tool to configure for (claude, cursor, opencode, codex, kiro)",
+    "AI coding tool to configure for (claude, cursor, opencode, codex, kiro, none)",
     { default: "claude" },
   )
   .action(repoInitAction)
@@ -149,7 +150,7 @@ export const repoCommand = new Command()
       .type("aiTool", aiToolType)
       .option(
         "-t, --tool <tool:aiTool>",
-        "AI coding tool to configure for (claude, cursor, opencode, codex, kiro)",
+        "AI coding tool to configure for (claude, cursor, opencode, codex, kiro, none)",
         { default: "claude" },
       )
       .action(repoInitAction),

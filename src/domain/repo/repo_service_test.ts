@@ -892,7 +892,7 @@ Deno.test("RepoService.init cursor instructions have MDC frontmatter", async () 
 });
 
 Deno.test("RepoService.init includes tool-specific gitignore entries", async () => {
-  const toolGitignoreEntries: Record<AiTool, string> = {
+  const toolGitignoreEntries: Partial<Record<AiTool, string>> = {
     claude: ".claude/",
     cursor: ".cursor/skills/",
     opencode: ".agents/skills/",
@@ -2034,5 +2034,75 @@ Deno.test("RepoService.upgrade with duplicate END markers throws clear error", a
       Error,
       "multiple swamp managed sections",
     );
+  });
+});
+
+// --tool none tests
+
+Deno.test("RepoService.init with tool none creates core structure but skips skills and instructions", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { tool: "none" });
+
+    // Core structure should exist
+    assertEquals(result.tool, "none");
+    const swampDir = join(tempDir, ".swamp");
+    const stat = await Deno.stat(swampDir);
+    assertEquals(stat.isDirectory, true);
+
+    // .swamp.yaml should exist with tool: none
+    const markerPath = join(tempDir, ".swamp.yaml");
+    const markerContent = await Deno.readTextFile(markerPath);
+    assertStringIncludes(markerContent, "tool: none");
+
+    // Models/workflows/vaults dirs should exist
+    for (const dir of ["models", "workflows", "vaults"]) {
+      const dirStat = await Deno.stat(join(tempDir, dir));
+      assertEquals(dirStat.isDirectory, true);
+    }
+
+    // No skills should be copied
+    assertEquals(result.skillsCopied, []);
+
+    // No instructions file should be created
+    assertEquals(result.instructionsFileCreated, false);
+
+    // No settings should be created
+    assertEquals(result.settingsCreated, false);
+
+    // .gitignore should have .swamp/ but no tool-specific entry
+    const gitignorePath = join(tempDir, ".gitignore");
+    const gitignoreContent = await Deno.readTextFile(gitignorePath);
+    assertStringIncludes(gitignoreContent, ".swamp/");
+    assertStringIncludes(
+      gitignoreContent,
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
+    // Should not contain any tool-specific entries
+    assertEquals(gitignoreContent.includes(".claude/"), false);
+    assertEquals(gitignoreContent.includes(".cursor/"), false);
+    assertEquals(gitignoreContent.includes(".agents/"), false);
+    assertEquals(gitignoreContent.includes(".kiro/"), false);
+  });
+});
+
+Deno.test("RepoService.upgrade with tool none skips skills and instructions", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with none first
+    await service.init(repoPath, { tool: "none" });
+
+    // Upgrade
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "none" });
+
+    assertEquals(result.tool, "none");
+    assertEquals(result.skillsUpdated, []);
+    assertEquals(result.instructionsUpdated, false);
+    assertEquals(result.settingsUpdated, false);
   });
 });

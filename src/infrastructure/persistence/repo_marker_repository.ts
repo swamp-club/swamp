@@ -27,7 +27,13 @@ import type { DatastoreConfigData } from "../../domain/datastore/datastore_confi
 /**
  * The AI coding tool to configure skills and instructions for.
  */
-export type AiTool = "claude" | "cursor" | "opencode" | "codex" | "kiro";
+export type AiTool =
+  | "claude"
+  | "cursor"
+  | "opencode"
+  | "codex"
+  | "kiro"
+  | "none";
 
 /**
  * Data structure for the .swamp.yaml marker file.
