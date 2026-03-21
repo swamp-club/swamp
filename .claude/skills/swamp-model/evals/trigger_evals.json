@@ -36,6 +36,11 @@
     "should_trigger": true
   },
   {
+    "query": "Delete this model from the repository",
+    "should_trigger": true,
+    "note": "model delete is a listed trigger keyword"
+  },
+  {
     "query": "List all the data I have stored in the system",
     "should_trigger": false,
     "note": "Listing stored data → swamp-data"
@@ -54,11 +59,6 @@
     "query": "The model is throwing a type error I can't understand",
     "should_trigger": false,
     "note": "Debugging model errors → swamp-troubleshooting"
-  },
-  {
-    "query": "Delete this model from the repository",
-    "should_trigger": false,
-    "note": "Model lifecycle management (edit/delete) → swamp-model but borderline; context determines if this is about removing from system vs managing the definition"
   },
   {
     "query": "Run a report on model performance over time",
