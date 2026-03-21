@@ -286,6 +286,7 @@ Failed reports appear as `{ "_error": "error message" }`.
 | Extend model with new method | `swamp-extension-model` |
 | Manage model data            | `swamp-data`            |
 | Repository structure         | `swamp-repo`            |
+| Understand swamp internals   | `swamp-troubleshooting` |
 
 ## References
 

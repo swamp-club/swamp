@@ -302,13 +302,22 @@ transparently resolves to the new name.
 - Reorganizing data after a model's purpose evolves
 - Fixing typos in data names without losing history
 
-```bash
-# Rename a data instance
-swamp data rename my-model old-name new-name
+**Rename workflow:**
 
-# With explicit repo directory
-swamp data rename my-model old-name new-name --repo-dir ./my-repo
-```
+1. **Verify** the new name doesn't already exist:
+   ```bash
+   swamp data get my-model new-name --no-content --json
+   ```
+   This should return an error (not found). If it succeeds, the name is taken.
+2. **Rename** the data instance:
+   ```bash
+   swamp data rename my-model old-name new-name
+   ```
+3. **Confirm** the forward reference works:
+   ```bash
+   swamp data get my-model old-name --no-content --json
+   ```
+   Should resolve to `new-name` via the forward reference.
 
 **What happens:**
 
@@ -334,13 +343,21 @@ overwrite the forward reference.
 
 Clean up expired data and old versions based on lifecycle settings.
 
-**Preview what would be deleted:**
+**IMPORTANT: Always dry-run first.** GC deletes data permanently. Follow this
+workflow:
 
-```bash
-swamp data gc --dry-run --json
-```
+1. **Preview** what will be deleted:
+   ```bash
+   swamp data gc --dry-run --json
+   ```
+2. **Review** the output — verify only expected items appear
+3. **Run** the actual GC only after confirming the dry-run output:
+   ```bash
+   swamp data gc --json
+   swamp data gc -f --json  # Skip confirmation prompt
+   ```
 
-**Output shape:**
+**Dry-run output shape:**
 
 ```json
 {
@@ -351,25 +368,12 @@ swamp data gc --dry-run --json
       "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
       "dataName": "cache",
       "reason": "lifetime:ephemeral"
-    },
-    {
-      "type": "other-type",
-      "modelId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
-      "dataName": "log",
-      "reason": "lifetime:1h"
     }
   ]
 }
 ```
 
-**Run garbage collection:**
-
-```bash
-swamp data gc --json
-swamp data gc -f --json  # Skip confirmation prompt
-```
-
-**Output shape:**
+**GC output shape:**
 
 ```json
 {
@@ -410,13 +414,14 @@ Data is stored in the `.swamp/data/` directory:
 
 ## When to Use Other Skills
 
-| Need                 | Use Skill                       |
-| -------------------- | ------------------------------- |
-| Create/run models    | `swamp-model`                   |
-| View model outputs   | `swamp-model` (output commands) |
-| Create/run workflows | `swamp-workflow`                |
-| Repository structure | `swamp-repo`                    |
-| Manage secrets       | `swamp-vault`                   |
+| Need                       | Use Skill                       |
+| -------------------------- | ------------------------------- |
+| Create/run models          | `swamp-model`                   |
+| View model outputs         | `swamp-model` (output commands) |
+| Create/run workflows       | `swamp-workflow`                |
+| Repository structure       | `swamp-repo`                    |
+| Manage secrets             | `swamp-vault`                   |
+| Understand swamp internals | `swamp-troubleshooting`         |
 
 ## References
 

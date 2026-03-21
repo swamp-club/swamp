@@ -268,13 +268,14 @@ See the **swamp-extension-model** skill for full schema examples.
 
 ## When to Use Other Skills
 
-| Need                      | Use Skill               |
-| ------------------------- | ----------------------- |
-| Vault usage in workflows  | `swamp-workflow`        |
-| Create/run models         | `swamp-model`           |
-| Create custom model types | `swamp-extension-model` |
-| Repository structure      | `swamp-repo`            |
-| Manage model data         | `swamp-data`            |
+| Need                       | Use Skill               |
+| -------------------------- | ----------------------- |
+| Vault usage in workflows   | `swamp-workflow`        |
+| Create/run models          | `swamp-model`           |
+| Create custom model types  | `swamp-extension-model` |
+| Repository structure       | `swamp-repo`            |
+| Manage model data          | `swamp-data`            |
+| Understand swamp internals | `swamp-troubleshooting` |
 
 ## References
 

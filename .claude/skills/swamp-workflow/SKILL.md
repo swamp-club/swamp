@@ -457,13 +457,14 @@ End-to-end workflow creation:
 
 ## When to Use Other Skills
 
-| Need                 | Use Skill               |
-| -------------------- | ----------------------- |
-| Create/run models    | `swamp-model`           |
-| Vault management     | `swamp-vault`           |
-| Repository structure | `swamp-repo`            |
-| Manage model data    | `swamp-data`            |
-| Create custom models | `swamp-extension-model` |
+| Need                       | Use Skill               |
+| -------------------------- | ----------------------- |
+| Create/run models          | `swamp-model`           |
+| Vault management           | `swamp-vault`           |
+| Repository structure       | `swamp-repo`            |
+| Manage model data          | `swamp-data`            |
+| Create custom models       | `swamp-extension-model` |
+| Understand swamp internals | `swamp-troubleshooting` |
 
 ## References
 

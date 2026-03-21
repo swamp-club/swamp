@@ -211,6 +211,7 @@ swamp vault status --json
 | Create custom datastores           | `swamp-extension-datastore` |
 | Create custom execution drivers    | `swamp-extension-driver`    |
 | Repository setup and configuration | `swamp-repo`                |
+| Understand swamp internals         | `swamp-troubleshooting`     |
 
 ## References
 

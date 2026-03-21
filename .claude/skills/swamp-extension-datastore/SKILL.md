@@ -199,6 +199,7 @@ swamp datastore status --json
 | Create custom execution drivers     | `swamp-extension-driver` |
 | Repository setup and configuration  | `swamp-repo`             |
 | Manage secrets for datastore config | `swamp-vault`            |
+| Understand swamp internals          | `swamp-troubleshooting`  |
 
 ## References
 

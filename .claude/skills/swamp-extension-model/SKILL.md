@@ -461,14 +461,15 @@ swamp model type describe @myorg/my-model --json  # Check schema
 
 ## When to Use Other Skills
 
-| Need                      | Use Skill        |
-| ------------------------- | ---------------- |
-| Use existing models       | `swamp-model`    |
-| Create/run workflows      | `swamp-workflow` |
-| Manage secrets for models | `swamp-vault`    |
-| Repository structure      | `swamp-repo`     |
-| Manage model data         | `swamp-data`     |
-| Create reports for models | `swamp-report`   |
+| Need                       | Use Skill               |
+| -------------------------- | ----------------------- |
+| Use existing models        | `swamp-model`           |
+| Create/run workflows       | `swamp-workflow`        |
+| Manage secrets for models  | `swamp-vault`           |
+| Repository structure       | `swamp-repo`            |
+| Manage model data          | `swamp-data`            |
+| Create reports for models  | `swamp-report`          |
+| Understand swamp internals | `swamp-troubleshooting` |
 
 ## References
 

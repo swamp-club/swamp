@@ -233,3 +233,12 @@ driver file — swamp silently skips files that fail to compile.
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md) for common
   issues (driver not found, output types, resolution priority)
+
+## When to Use Other Skills
+
+| Need                       | Use Skill               |
+| -------------------------- | ----------------------- |
+| Use existing models        | `swamp-model`           |
+| Create custom models       | `swamp-extension-model` |
+| Repository structure       | `swamp-repo`            |
+| Understand swamp internals | `swamp-troubleshooting` |

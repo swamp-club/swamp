@@ -268,6 +268,7 @@ export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 | Create custom TypeScript models | `swamp-extension-model`     |
 | Create custom datastores        | `swamp-extension-datastore` |
 | Create custom drivers           | `swamp-extension-driver`    |
+| Understand swamp internals      | `swamp-troubleshooting`     |
 
 ## References
 

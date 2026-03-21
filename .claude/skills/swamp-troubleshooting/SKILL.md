@@ -1,23 +1,23 @@
 ---
 name: swamp-troubleshooting
 description: >
-  Fetch and read swamp source code to debug, diagnose, and fix swamp issues.
-  IMPORTANT: Use this skill — not swamp-model, swamp-workflow, swamp-vault,
-  swamp-data, or swamp-repo — whenever the user's query signals something is
-  broken or wrong. Error signals include: "error", "failing", "failed", "broken",
-  "not working", "crash", "hang", "timeout", "unexpected", "strange", "wrong",
-  "issue", "problem", "bug", "fix", "debug", "diagnose", "troubleshoot", "trace",
-  "root cause", "stack trace", "error message", "error log", "isn't being
-  resolved", "isn't being found", "not reading", "giving me an error". This skill
-  applies even when the error mentions a specific domain (e.g., "vault expressions
-  aren't resolving" or "my model isn't being found") — the troubleshooting skill
-  fetches swamp source to trace the root cause.
+  Navigate swamp source code to trace error origins, identify execution
+  flows, inspect internal data structures, and understand CLI behavior when
+  --help is insufficient. Use this skill whenever something is broken
+  ("error", "failing", "not working", "crash", "timeout", "bug", "fix",
+  "debug", "troubleshoot", "root cause", "stack trace", "isn't being found",
+  "giving me an error") OR when you need to understand how swamp works
+  internally ("how does", "what happens when", "where is", "internals",
+  "under the hood"). Applies even when the query mentions a specific domain
+  (e.g., "vault expressions aren't resolving" or "how does extension push
+  work") — fetch swamp source to find the answer.
 ---
 
 # Swamp Troubleshooting Skill
 
-Diagnose and troubleshoot swamp issues by fetching and reading the swamp source
-code. All commands support `--json` for machine-readable output.
+Diagnose and troubleshoot swamp issues, or understand swamp internals, by
+fetching and reading the swamp source code. All commands support `--json` for
+machine-readable output.
 
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
 `swamp help source` for the complete, up-to-date CLI schema.
@@ -31,6 +31,26 @@ code. All commands support `--json` for machine-readable output.
 | Fetch specific ver  | `swamp source fetch --version v1.0.0 --json` |
 | Fetch main branch   | `swamp source fetch --version main --json`   |
 | Clean source        | `swamp source clean --json`                  |
+
+## When CLI Help Isn't Enough
+
+If `swamp <command> --help` doesn't fully answer a question about how something
+works, fetch the source and read the implementation. Common areas where source
+context is needed:
+
+- **Auth**: How credentials are stored (`~/.config/swamp/auth.json`), API key
+  format (`swamp_` prefix), headless/CI setup — check `src/infrastructure/auth/`
+- **Extension push**: What the push flow does internally, how bundles are
+  packaged, registry interaction — check `src/cli/commands/extension*.ts` and
+  `src/domain/extensions/`
+- **Init**: What files and directories `swamp repo init` creates and why — check
+  `src/cli/commands/repo*.ts` and `src/domain/repo/`
+- **Data persistence**: How data is stored, versioned, and garbage collected —
+  check `src/infrastructure/persistence/`
+
+**General rule:** When a skill's CLI commands and documentation don't provide
+enough detail, use `swamp source fetch` to get the source and read the relevant
+files directly.
 
 ## Troubleshooting Workflow
 
@@ -122,68 +142,9 @@ Based on the error message or symptoms:
 4. **Vault/secret issues**: Check `src/domain/vaults/`
 5. **Data persistence issues**: Check `src/infrastructure/persistence/`
 6. **Output formatting issues**: Check `src/presentation/output/`
-7. **Pre-flight check failures**: See below
-
-#### Pre-flight Check Failures
-
-When a method fails with a check-related error (e.g., "Pre-flight check failed:
-..."):
-
-- Read the error messages returned by the failing check — they describe exactly
-  what condition was not met.
-- To identify which check failed, look at the check name in the error output.
-- To skip a specific check temporarily:
-  ```bash
-  swamp model method run <name> <method> --skip-check <check-name> --json
-  ```
-- To skip all checks (e.g., in an offline environment where live API checks
-  can't run):
-  ```bash
-  swamp model method run <name> <method> --skip-checks --json
-  ```
-- To skip all checks with a given label (e.g., `live` checks):
-  ```bash
-  swamp model method run <name> <method> --skip-check-label live --json
-  ```
-- To run only the checks (without running the method) to diagnose:
-  ```bash
-  swamp model validate <name> --method <method> --json
-  ```
-- To run only checks with a specific label:
-  ```bash
-  swamp model validate <name> --label offline --json
-  ```
-- Check source at `src/domain/models/` for the check's `execute` function to
-  understand what it validates.
-
-#### Check Selection Errors
-
-When `model validate` reports `Check selection` failed:
-
-- **"Required check X not found on model type Y"** — the definition's
-  `checks.require` references a check name that doesn't exist on the model type.
-  Fix: run `swamp model type describe <type>` to see available checks, then
-  correct the name in the YAML definition.
-- **"Skipped check X not found on model type Y"** — same issue but for
-  `checks.skip`. The check was removed or renamed in the extension.
-- **"Check X is in both require and skip lists"** — the definition lists the
-  same check in both `require` and `skip`. `skip` wins, but this is likely
-  unintentional. Remove it from one list.
-
-#### Extension Check Conflicts
-
-When an extension fails to load with "Check 'X' already exists on model type
-'Y'":
-
-- Two extensions define the same check name for the same model type.
-- Fix: rename one of the checks in the extension's `checks` array.
-
-#### Required Check Won't Skip
-
-If `--skip-checks` or `--skip-check <name>` doesn't skip a check, the
-definition's `checks.require` list includes it. Required checks are immune to
-CLI skip flags. To override: edit the YAML definition and remove the check from
-`require`, or add it to `skip` (which always wins).
+7. **Pre-flight check failures**: See
+   [references/checks.md](references/checks.md) for skip flags, check selection
+   errors, extension conflicts, and required check behavior
 
 ### 5. Explain and Suggest Fixes
 
