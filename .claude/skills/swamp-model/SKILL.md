@@ -1,6 +1,17 @@
 ---
 name: swamp-model
-description: Work with swamp models for AI-native automation. Use when searching for model types, describing model schemas, creating model inputs, running model methods, or viewing outputs. Triggers on "swamp model", "model type", "create input", "type search", "type describe", "run method", "execute method", "model validate", "model delete", "model edit", "model output", "output logs", "CEL expression", or running automation workflows.
+description: >
+  Work with existing swamp models — structured automation units that define
+  typed schemas, methods (validate, transform, enrich), and outputs for data
+  processing. Use when searching for model types, describing schemas, creating
+  inputs, running or executing methods, viewing outputs, or managing lifecycle
+  (edit, delete). Do NOT use when the user wants to build, create, or implement
+  a custom model type, Zod schema, or TypeScript model — that is
+  swamp-extension-model. Triggers on "swamp model", "model type", "model
+  schema", "create input", "type search", "type describe", "run method",
+  "execute method", "validation method", "transform method", "enrichment model",
+  "model validate", "model delete", "model edit", "model output", "output logs",
+  "output format", "CEL expression".
 ---
 
 # Swamp Model Skill
