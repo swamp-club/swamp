@@ -1,6 +1,6 @@
 ---
 name: swamp-data
-description: List model data, view version history, delete expired versions, and run garbage collection. Use when listing data, viewing versions, cleaning up old data, or configuring data retention. Triggers on "swamp data", "model data", "data list", "data get", "data versions", "garbage collection", "gc", "data gc", "clean up data", "old data", "data retention", "data lifecycle", "version history", "data cleanup", "prune data", "expire data", "ephemeral data".
+description: List model data, view version history, delete expired versions, and run garbage collection. Use when listing data, viewing versions, cleaning up old data, or configuring data retention. Triggers on "swamp data", "model data", "data list", "data get", "data versions", "garbage collection", "gc", "data gc", "clean up data", "old data", "data retention", "data lifecycle", "version history", "data cleanup", "prune data", "expire data", "ephemeral data - anothe rtest".
 ---
 
 # Swamp Data Skill
