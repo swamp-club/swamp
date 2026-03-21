@@ -134,9 +134,10 @@ jobs:
       - name: Run skill trigger evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          EVAL_RUNS: "3"
-          EVAL_WORKERS: "5"
+          EVAL_RUNS: "1"
+          EVAL_WORKERS: "25"
           EVAL_TIMEOUT: "30"
+          EVAL_MODEL: "claude-haiku-4-5-20251001"
         run: deno run eval-skill-triggers
 
   claude-review:

@@ -29,7 +29,7 @@
  * Usage: deno run eval-skill-triggers [--skill <name>] [--model <model>] [--verbose]
  *
  * Options (via environment variables):
- *   EVAL_WORKERS        - Parallel claude -p workers (default: 5)
+ *   EVAL_WORKERS        - Parallel claude -p workers (default: 25)
  *   EVAL_TIMEOUT        - Timeout per query in seconds (default: 30)
  *   EVAL_RUNS           - Runs per query for statistical confidence (default: 3)
  *   EVAL_THRESHOLD      - Trigger rate threshold 0.0–1.0 (default: 0.5)
@@ -66,18 +66,6 @@ interface QueryResult {
   pass: boolean;
 }
 
-/** Full eval output for a skill */
-interface EvalOutput {
-  skill_name: string;
-  description: string;
-  results: QueryResult[];
-  summary: {
-    total: number;
-    passed: number;
-    failed: number;
-  };
-}
-
 /** Aggregated score for reporting */
 interface SkillEvalScore {
   name: string;
@@ -112,7 +100,7 @@ function getConfig(): EvalConfig {
   });
 
   return {
-    workers: parseInt(Deno.env.get("EVAL_WORKERS") ?? "5"),
+    workers: parseInt(Deno.env.get("EVAL_WORKERS") ?? "25"),
     timeout: parseInt(Deno.env.get("EVAL_TIMEOUT") ?? "30"),
     runsPerQuery: parseInt(Deno.env.get("EVAL_RUNS") ?? "3"),
     triggerThreshold: parseFloat(Deno.env.get("EVAL_THRESHOLD") ?? "0.5"),
@@ -513,108 +501,6 @@ async function pooled<T>(
   return results;
 }
 
-// ─── Skill eval runner ───────────────────────────────────────────────────────
-
-async function runSkillEval(
-  skillName: string,
-  skillDir: string,
-  evalSet: EvalQuery[],
-  config: EvalConfig,
-): Promise<EvalOutput> {
-  const { description } = await parseSkillMd(skillDir);
-  const projectRoot = findProjectRoot();
-
-  // Build tasks: each query × runsPerQuery
-  interface RunInfo {
-    query: string;
-    should_trigger: boolean;
-    runIndex: number;
-  }
-
-  const runInfos: RunInfo[] = [];
-  const tasks: (() => Promise<boolean>)[] = [];
-  let isFirstTask = true;
-
-  for (const item of evalSet) {
-    for (let r = 0; r < config.runsPerQuery; r++) {
-      runInfos.push({
-        query: item.query,
-        should_trigger: item.should_trigger,
-        runIndex: r,
-      });
-      // Only enable debug on the very first run to avoid flooding output
-      const enableDebug = config.debug && isFirstTask;
-      isFirstTask = false;
-      tasks.push(() =>
-        runSingleQuery(
-          item.query,
-          skillName,
-          description,
-          config.timeout,
-          projectRoot,
-          config.model,
-          enableDebug,
-        )
-      );
-    }
-  }
-
-  // Run with concurrency pool
-  const triggerResults = await pooled(tasks, config.workers);
-
-  // Aggregate by query
-  const queryTriggers = new Map<string, boolean[]>();
-  const queryItems = new Map<string, EvalQuery>();
-
-  for (let i = 0; i < runInfos.length; i++) {
-    const info = runInfos[i];
-    if (!queryTriggers.has(info.query)) {
-      queryTriggers.set(info.query, []);
-    }
-    queryTriggers.get(info.query)!.push(triggerResults[i]);
-
-    if (!queryItems.has(info.query)) {
-      const evalItem = evalSet.find((e) => e.query === info.query)!;
-      queryItems.set(info.query, evalItem);
-    }
-  }
-
-  const results: QueryResult[] = [];
-  for (const [query, triggers] of queryTriggers) {
-    const item = queryItems.get(query)!;
-    const triggerCount = triggers.filter(Boolean).length;
-    const triggerRate = triggerCount / triggers.length;
-    const shouldTrigger = item.should_trigger;
-
-    const didPass = shouldTrigger
-      ? triggerRate >= config.triggerThreshold
-      : triggerRate < config.triggerThreshold;
-
-    results.push({
-      query,
-      should_trigger: shouldTrigger,
-      trigger_rate: triggerRate,
-      triggers: triggerCount,
-      runs: triggers.length,
-      pass: didPass,
-    });
-  }
-
-  const passed = results.filter((r) => r.pass).length;
-  const total = results.length;
-
-  return {
-    skill_name: skillName,
-    description,
-    results,
-    summary: {
-      total,
-      passed,
-      failed: total - passed,
-    },
-  };
-}
-
 // ─── Summary table ───────────────────────────────────────────────────────────
 
 function buildSummaryTable(
@@ -703,9 +589,21 @@ async function main(): Promise<void> {
     `  workers=${config.workers} timeout=${config.timeout}s runs=${config.runsPerQuery} threshold=${config.triggerThreshold}`,
   );
 
-  const scores: SkillEvalScore[] = [];
   let allPassed = true;
   let skippedCount = 0;
+  const projectRoot = findProjectRoot();
+
+  // ── Phase 1: Load and validate all eval sets ──────────────────────────────
+
+  interface SkillPlan {
+    name: string;
+    skillDir: string;
+    evalSet: EvalQuery[];
+    description: string;
+  }
+
+  const plans: SkillPlan[] = [];
+  const errorScores: SkillEvalScore[] = [];
 
   for (const name of skillNames) {
     const skillDir = join(assets.getSkillsDir(), name);
@@ -717,13 +615,12 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // Validate eval set structure
     const validationErrors = validateEvalSet(evalSet, name);
     if (validationErrors.length > 0) {
       for (const err of validationErrors) {
         console.error(`  ${err}`);
       }
-      scores.push({
+      errorScores.push({
         name,
         total: 0,
         passed: 0,
@@ -737,56 +634,13 @@ async function main(): Promise<void> {
       continue;
     }
 
-    console.log(
-      `  ${name}: running ${evalSet.length} queries (${config.runsPerQuery} runs each)…`,
-    );
-
     try {
-      const output = await runSkillEval(name, skillDir, evalSet, config);
-      const { summary } = output;
-      const passRate = summary.total > 0
-        ? summary.passed / summary.total
-        : 0;
-
-      const positiveResults = output.results.filter((r) => r.should_trigger);
-      const negativeResults = output.results.filter((r) => !r.should_trigger);
-
-      scores.push({
-        name,
-        total: summary.total,
-        passed: summary.passed,
-        failed: summary.failed,
-        passRate,
-        positiveResults,
-        negativeResults,
-      });
-
-      if (passRate < config.passThreshold) {
-        allPassed = false;
-      }
-
-      // Print per-query details
-      for (const r of output.results) {
-        const status = r.pass ? "PASS" : "FAIL";
-        const expected = r.should_trigger
-          ? "should trigger"
-          : "should NOT trigger";
-        console.log(
-          `    [${status}] ${r.triggers}/${r.runs} (${expected}): ${
-            r.query.slice(0, 70)
-          }`,
-        );
-      }
-
-      console.log(
-        `    ${name}: ${summary.passed}/${summary.total} passed (${
-          (passRate * 100).toFixed(0)
-        }%)`,
-      );
+      const { description } = await parseSkillMd(skillDir);
+      plans.push({ name, skillDir, evalSet, description });
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error(`    Failed to evaluate ${name}: ${msg}`);
-      scores.push({
+      console.error(`  ${name}: failed to parse SKILL.md: ${msg}`);
+      errorScores.push({
         name,
         total: 0,
         passed: 0,
@@ -798,6 +652,137 @@ async function main(): Promise<void> {
       });
       allPassed = false;
     }
+  }
+
+  // ── Phase 2: Build one global task pool across ALL skills ─────────────────
+
+  interface TaskInfo {
+    skillName: string;
+    query: string;
+    should_trigger: boolean;
+  }
+
+  const taskInfos: TaskInfo[] = [];
+  const tasks: (() => Promise<boolean>)[] = [];
+
+  for (const plan of plans) {
+    for (const item of plan.evalSet) {
+      for (let r = 0; r < config.runsPerQuery; r++) {
+        const enableDebug = config.debug && tasks.length === 0;
+        taskInfos.push({
+          skillName: plan.name,
+          query: item.query,
+          should_trigger: item.should_trigger,
+        });
+        tasks.push(() =>
+          runSingleQuery(
+            item.query,
+            plan.name,
+            plan.description,
+            config.timeout,
+            projectRoot,
+            config.model,
+            enableDebug,
+          )
+        );
+      }
+    }
+  }
+
+  console.log(
+    `  Dispatching ${tasks.length} queries across ${plans.length} skills (${config.workers} workers)…`,
+  );
+
+  // Run everything concurrently with the global worker pool
+  const allResults = await pooled(tasks, config.workers);
+
+  // ── Phase 3: Aggregate results back per-skill ─────────────────────────────
+
+  // Group results by skill → query
+  const skillQueryTriggers = new Map<
+    string,
+    Map<string, { triggers: boolean[]; should_trigger: boolean }>
+  >();
+
+  for (let i = 0; i < taskInfos.length; i++) {
+    const info = taskInfos[i];
+    if (!skillQueryTriggers.has(info.skillName)) {
+      skillQueryTriggers.set(info.skillName, new Map());
+    }
+    const queryMap = skillQueryTriggers.get(info.skillName)!;
+    if (!queryMap.has(info.query)) {
+      queryMap.set(info.query, {
+        triggers: [],
+        should_trigger: info.should_trigger,
+      });
+    }
+    queryMap.get(info.query)!.triggers.push(allResults[i]);
+  }
+
+  // Build scores from aggregated results
+  const scores: SkillEvalScore[] = [...errorScores];
+
+  for (const plan of plans) {
+    const queryMap = skillQueryTriggers.get(plan.name);
+    if (!queryMap) continue;
+
+    const results: QueryResult[] = [];
+    for (const [query, data] of queryMap) {
+      const triggerCount = data.triggers.filter(Boolean).length;
+      const triggerRate = triggerCount / data.triggers.length;
+      const didPass = data.should_trigger
+        ? triggerRate >= config.triggerThreshold
+        : triggerRate < config.triggerThreshold;
+
+      results.push({
+        query,
+        should_trigger: data.should_trigger,
+        trigger_rate: triggerRate,
+        triggers: triggerCount,
+        runs: data.triggers.length,
+        pass: didPass,
+      });
+    }
+
+    const passed = results.filter((r) => r.pass).length;
+    const total = results.length;
+    const passRate = total > 0 ? passed / total : 0;
+
+    const positiveResults = results.filter((r) => r.should_trigger);
+    const negativeResults = results.filter((r) => !r.should_trigger);
+
+    scores.push({
+      name: plan.name,
+      total,
+      passed,
+      failed: total - passed,
+      passRate,
+      positiveResults,
+      negativeResults,
+    });
+
+    if (passRate < config.passThreshold) {
+      allPassed = false;
+    }
+
+    // Print per-query details
+    for (const r of results) {
+      const status = r.pass ? "PASS" : "FAIL";
+      const expected = r.should_trigger
+        ? "should trigger"
+        : "should NOT trigger";
+      console.log(
+        `    [${status}] ${r.triggers}/${r.runs} (${expected}): ${
+          r.query.slice(0, 70)
+        }`,
+      );
+    }
+
+    console.log(
+      `    ${plan.name}: ${passed}/${total} passed (${
+        (passRate * 100).toFixed(0)
+      }%)`,
+    );
   }
 
   // Write GitHub Actions summary
