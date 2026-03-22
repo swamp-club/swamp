@@ -19,39 +19,24 @@
 
 import { Command } from "@cliffy/command";
 import {
-  renderVaultEdit,
-  type VaultEditData,
-} from "../../presentation/output/vault_edit_output.ts";
+  consumeStream,
+  createLibSwampContext,
+  createVaultEditDeps,
+  vaultEdit,
+} from "../../libswamp/mod.ts";
 import {
   renderVaultSearch,
   toVaultSearchItem,
   type VaultSearchData,
   type VaultSearchItem,
 } from "../../presentation/output/vault_search_output.tsx";
+import { createVaultEditRenderer } from "../../presentation/renderers/vault_edit.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { VaultConfig } from "../../domain/vaults/vault_config.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Gets the file path for a vault configuration.
- */
-function getVaultPath(repoDir: string, config: VaultConfig): string {
-  return swampPath(
-    repoDir,
-    SWAMP_SUBDIRS.vault,
-    config.type,
-    `${config.id}.yaml`,
-  );
-}
 
 export const vaultEditCommand = new Command()
   .name("edit")
@@ -60,28 +45,24 @@ export const vaultEditCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
   .action(async function (options: AnyOptions, vaultNameOrId?: string) {
-    const ctx = createContext(options as GlobalOptions, ["vault", "edit"]);
-    ctx.logger.debug`Editing vault: ${vaultNameOrId ?? "(interactive)"}`;
+    const cliCtx = createContext(options as GlobalOptions, ["vault", "edit"]);
+    cliCtx.logger.debug`Editing vault: ${vaultNameOrId ?? "(interactive)"}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepo({
+    const { repoContext, repoDir } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
     const vaultType = options.type as string | undefined;
-    const repo = repoContext.vaultConfigRepo;
-    const editorService = new EditorService();
 
-    let config: VaultConfig | null = null;
-
+    // Interactive search mode when no argument provided
     if (!vaultNameOrId) {
-      // No argument provided - check if interactive mode
-      if (ctx.outputMode === "json") {
+      if (cliCtx.outputMode === "json") {
         throw new UserError(
           "Vault name or ID is required in non-interactive mode",
         );
       }
 
-      // Show search UI to select a vault
+      const repo = repoContext.vaultConfigRepo;
       const allVaults = await repo.findAll();
 
       if (allVaults.length === 0) {
@@ -94,84 +75,28 @@ export const vaultEditCommand = new Command()
         results: searchItems,
       };
 
-      const selected = await renderVaultSearch(searchData, ctx.outputMode);
+      const selected = await renderVaultSearch(searchData, cliCtx.outputMode);
 
       if (!selected) {
-        ctx.logger.debug`Search cancelled`;
+        cliCtx.logger.debug`Search cancelled`;
         return;
       }
 
-      ctx.logger.debug`Selected vault: ${selected.name} (${selected.id})`;
-
-      // Find the full vault config
-      config = await repo.findByName(selected.name);
-      if (!config) {
-        throw new UserError(`Vault not found: ${selected.name}`);
-      }
-    } else {
-      // Look up the vault by name or ID
-      ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
-
-      // Try to find by name first
-      config = await repo.findByName(vaultNameOrId);
-
-      // If not found by name, try to find by ID
-      if (!config) {
-        if (vaultType) {
-          config = await repo.findById(vaultType, vaultNameOrId);
-        } else {
-          const allVaults = await repo.findAll();
-          config = allVaults.find((v) => v.id === vaultNameOrId) ?? null;
-        }
-      }
-
-      // If type was specified, verify it matches
-      if (config && vaultType && config.type !== vaultType) {
-        throw new UserError(
-          `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
-        );
-      }
-
-      if (!config) {
-        const typeHint = vaultType ? ` of type '${vaultType}'` : "";
-        throw new UserError(`Vault not found: ${vaultNameOrId}${typeHint}`);
-      }
+      cliCtx.logger.debug`Selected vault: ${selected.name} (${selected.id})`;
+      vaultNameOrId = selected.name;
     }
 
-    ctx.logger
-      .debug`Found vault: id=${config.id}, name=${config.name}, type=${config.type}`;
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createVaultEditDeps(repoDir);
 
-    // Get the file path
-    const filePath = getVaultPath(repoDir, config);
+    const renderer = createVaultEditRenderer(cliCtx.outputMode);
+    await consumeStream(
+      vaultEdit(ctx, deps, {
+        vaultNameOrId,
+        vaultType,
+      }),
+      renderer.handlers(),
+    );
 
-    // Check if file exists
-    try {
-      await Deno.stat(filePath);
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        throw new UserError(
-          `Vault configuration file not found at: ${filePath}`,
-        );
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      throw new UserError(
-        `Failed to access vault configuration file: ${message}`,
-      );
-    }
-
-    ctx.logger.debug`Opening file: ${filePath}`;
-
-    // Open the editor
-    const result = await editorService.openFile(filePath);
-
-    const data: VaultEditData = {
-      path: filePath,
-      editor: result.editor,
-      status: "opened",
-      name: config.name,
-      type: config.type,
-    };
-
-    renderVaultEdit(data, ctx.outputMode);
-    ctx.logger.debug("Vault edit command completed");
+    cliCtx.logger.debug("Vault edit command completed");
   });

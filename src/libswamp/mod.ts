@@ -338,6 +338,37 @@ export {
   type ExtensionListEvent,
 } from "./extensions/list.ts";
 
+// Model edit operations
+export {
+  createModelEditDeps,
+  modelEdit,
+  type ModelEditData,
+  type ModelEditDeps,
+  type ModelEditEvent,
+  type ModelEditInput,
+} from "./models/edit.ts";
+
+// Workflow edit operations
+export {
+  createWorkflowEditDeps,
+  workflowEdit,
+  type WorkflowEditData,
+  type WorkflowEditDeps,
+  type WorkflowEditEvent,
+  type WorkflowEditInput,
+} from "./workflows/edit.ts";
+
+// Vault edit operations
+export {
+  createVaultEditDeps,
+  vaultEdit,
+  type VaultEditConfigInfo,
+  type VaultEditData,
+  type VaultEditDeps,
+  type VaultEditEvent,
+  type VaultEditInput,
+} from "./vaults/edit.ts";
+
 // Telemetry operations
 export {
   createTelemetryStatsDeps,
