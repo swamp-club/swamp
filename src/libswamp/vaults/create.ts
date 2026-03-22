@@ -26,6 +26,8 @@ import {
   vaultTypeRegistry,
 } from "../../domain/vaults/vault_type_registry.ts";
 import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_service.ts";
+import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -57,6 +59,7 @@ export interface VaultCreateInput {
 
 /** Dependencies for the vault create operation. */
 export interface VaultCreateDeps {
+  resolveExtensionVaultType: (type: string) => Promise<void>;
   getVaultTypeInfo: (type: string) => VaultTypeInfo | undefined;
   findByName: (name: string) => Promise<boolean>;
   save: (config: VaultConfig) => Promise<void>;
@@ -67,6 +70,11 @@ export interface VaultCreateDeps {
 export function createVaultCreateDeps(repoDir: string): VaultCreateDeps {
   const repo = new YamlVaultConfigRepository(repoDir);
   return {
+    resolveExtensionVaultType: async (type) => {
+      if (!vaultTypeRegistry.has(type) && type.startsWith("@")) {
+        await resolveVaultType(type, getAutoResolver());
+      }
+    },
     getVaultTypeInfo: (type) => vaultTypeRegistry.get(type),
     findByName: async (name) => {
       const existing = await repo.findByName(name);
@@ -104,6 +112,9 @@ export async function* vaultCreate(
   yield { kind: "creating" };
 
   ctx.logger.debug`Creating vault: type=${input.vaultType}, name=${input.name}`;
+
+  // Auto-resolve extension vault types if not already registered
+  await deps.resolveExtensionVaultType(input.vaultType);
 
   // Validate the vault type
   const typeInfo = deps.getVaultTypeInfo(input.vaultType);

@@ -28,6 +28,7 @@ import {
 
 function makeDeps(overrides: Partial<VaultCreateDeps> = {}): VaultCreateDeps {
   return {
+    resolveExtensionVaultType: () => Promise.resolve(),
     getVaultTypeInfo: () =>
       ({
         type: "local_encryption",
