@@ -369,6 +369,56 @@ export {
   type VaultEditInput,
 } from "./vaults/edit.ts";
 
+// Model delete operations
+export {
+  createModelDeleteDeps,
+  modelDelete,
+  type ModelDeleteData,
+  type ModelDeleteDeps,
+  type ModelDeleteEvent,
+  type ModelDeleteInput,
+  type ModelDeletePreview,
+  modelDeletePreview,
+} from "./models/delete.ts";
+
+// Workflow delete operations
+export {
+  createWorkflowDeleteDeps,
+  workflowDelete,
+  type WorkflowDeleteData,
+  type WorkflowDeleteDeps,
+  type WorkflowDeleteEvent,
+  type WorkflowDeleteInput,
+  type WorkflowDeletePreview,
+  workflowDeletePreview,
+} from "./workflows/delete.ts";
+
+// Vault put operations
+export {
+  createVaultPutDeps,
+  vaultPut,
+  type VaultPutConfigInfo,
+  type VaultPutData,
+  type VaultPutDeps,
+  type VaultPutEvent,
+  type VaultPutInput,
+  type VaultPutPreview,
+  vaultPutPreview,
+} from "./vaults/put.ts";
+
+// Data GC operations
+export {
+  createDataGcDeps,
+  dataGc,
+  type DataGcData,
+  type DataGcDeps,
+  type DataGcEvent,
+  type DataGcInput,
+  type DataGcPreview,
+  dataGcPreview,
+  type DataGcPreviewItem,
+} from "./data/gc.ts";
+
 // Telemetry operations
 export {
   createTelemetryStatsDeps,

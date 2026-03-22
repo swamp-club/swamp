@@ -19,18 +19,20 @@
 
 import { Command } from "@cliffy/command";
 import {
-  renderDataGC,
-  renderDataGCCancelled,
-  renderDataGCPreview,
-} from "../../presentation/output/data_gc_output.ts";
+  consumeStream,
+  createDataGcDeps,
+  createLibSwampContext,
+  dataGc,
+  dataGcPreview,
+} from "../../libswamp/mod.ts";
+import {
+  createDataGcRenderer,
+  renderDataGcCancelled,
+  renderDataGcPreview,
+} from "../../presentation/renderers/data_gc.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { DefaultDataLifecycleService } from "../../domain/data/data_lifecycle_service.ts";
 
-/**
- * Prompts user for confirmation in interactive mode.
- * Uses basic stdin reading for confirmation prompt.
- */
 async function promptConfirmation(message: string): Promise<boolean> {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -39,9 +41,7 @@ async function promptConfirmation(message: string): Promise<boolean> {
 
   const buf = new Uint8Array(1024);
   const n = await Deno.stdin.read(buf);
-  if (n === null) {
-    return false;
-  }
+  if (n === null) return false;
 
   const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
   return response === "y" || response === "yes";
@@ -57,38 +57,38 @@ export const dataGcCommand = new Command()
   .option("--dry-run", "Show what would be deleted without deleting")
   .option("-f, --force", "Skip confirmation prompt")
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["data", "gc"]);
-    const { repoContext } = await requireInitializedRepo({
+    const cliCtx = createContext(options as GlobalOptions, ["data", "gc"]);
+
+    const { repoDir } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
 
-    const service = new DefaultDataLifecycleService(
-      repoContext.unifiedDataRepo,
-      repoContext.workflowRunRepo,
-    );
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createDataGcDeps(repoDir);
 
-    // If interactive and no force, prompt for confirmation
-    if (ctx.outputMode === "log" && !options.force && !options.dryRun) {
-      const preview = await service.findExpiredData();
-      if (preview.length === 0) {
+    // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
+    if (cliCtx.outputMode === "log" && !options.force && !options.dryRun) {
+      const preview = await dataGcPreview(ctx, deps);
+      if (preview.items.length === 0) {
         console.log("No expired data found. Nothing to clean up.");
         return;
       }
 
-      renderDataGCPreview(preview, ctx.outputMode);
+      renderDataGcPreview(preview, cliCtx.outputMode);
       const confirmed = await promptConfirmation(
         "Proceed with garbage collection?",
       );
       if (!confirmed) {
-        renderDataGCCancelled(ctx.outputMode);
+        renderDataGcCancelled(cliCtx.outputMode);
         return;
       }
     }
 
-    // Execute GC
-    const result = await service.deleteExpiredData({
-      dryRun: options.dryRun,
-    });
-    renderDataGC(result, ctx.outputMode);
+    // Phase 2: Execute GC
+    const renderer = createDataGcRenderer(cliCtx.outputMode);
+    await consumeStream(
+      dataGc(ctx, deps, { dryRun: !!options.dryRun }),
+      renderer.handlers(),
+    );
   });

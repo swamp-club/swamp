@@ -19,39 +19,23 @@
 
 import { Command } from "@cliffy/command";
 import {
-  renderVaultPut,
+  consumeStream,
+  createLibSwampContext,
+  createVaultPutDeps,
+  vaultPut,
+  vaultPutPreview,
+} from "../../libswamp/mod.ts";
+import {
+  createVaultPutRenderer,
   renderVaultPutCancelled,
-  type VaultPutData,
-} from "../../presentation/output/vault_put_output.ts";
+} from "../../presentation/renderers/vault_put.ts";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createVaultSecretUpdated } from "../../domain/events/types.ts";
 import {
   readSecretFromTty,
   readStdin,
 } from "../../infrastructure/io/stdin_reader.ts";
-
-/**
- * Prompts user for confirmation in interactive mode.
- * Uses basic stdin reading for confirmation prompt.
- */
-async function promptConfirmation(message: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-
-  await Deno.stdout.write(encoder.encode(`${message} [y/N] `));
-
-  const buf = new Uint8Array(1024);
-  const n = await Deno.stdin.read(buf);
-  if (n === null) {
-    return false;
-  }
-
-  const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
-  return response === "y" || response === "yes";
-}
 
 /**
  * Parses a KEY=VALUE string into key and value parts.
@@ -77,14 +61,6 @@ export function parseKeyValue(
 
 /**
  * Resolves a key and value from a CLI argument and optional stdin content.
- *
- * Resolution order:
- * 1. If the argument contains '=', parse as KEY=VALUE (existing behavior)
- * 2. If no '=', treat argument as KEY and use stdinContent as the value
- * 3. If no '=' and no stdinContent, return an error
- *
- * Stdin values have a single trailing newline stripped (pipes/files
- * typically append one).
  */
 export function resolveKeyValue(
   argument: string,
@@ -95,14 +71,12 @@ export function resolveKeyValue(
     return parsed;
   }
 
-  // No '=' found — treat argument as key and use stdin as value
   const key = argument;
   if (key.length === 0) {
     return { error: "Key cannot be empty" };
   }
 
   if (stdinContent !== null) {
-    // Strip a single trailing newline (pipes/files typically append one)
     const value = stdinContent.replace(/\n$/, "");
     return { key, value };
   }
@@ -115,21 +89,18 @@ export function resolveKeyValue(
   };
 }
 
-/**
- * Checks if a secret exists in the vault by attempting to get it.
- */
-async function secretExists(
-  vaultService: VaultService,
-  vaultName: string,
-  secretKey: string,
-): Promise<boolean> {
-  try {
-    await vaultService.get(vaultName, secretKey);
-    return true;
-  } catch {
-    // Secret doesn't exist or error retrieving it
-    return false;
-  }
+async function promptConfirmation(message: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  await Deno.stdout.write(encoder.encode(`${message} [y/N] `));
+
+  const buf = new Uint8Array(1024);
+  const n = await Deno.stdin.read(buf);
+  if (n === null) return false;
+
+  const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
+  return response === "y" || response === "yes";
 }
 
 // deno-lint-ignore no-explicit-any
@@ -146,17 +117,15 @@ export const vaultPutCommand = new Command()
     vaultName: string,
     keyValue: string,
   ) {
-    const ctx = createContext(options as GlobalOptions, ["vault", "put"]);
-    ctx.logger.debug`Storing secret in vault: ${vaultName}`;
+    const cliCtx = createContext(options as GlobalOptions, ["vault", "put"]);
+    cliCtx.logger.debug`Storing secret in vault: ${vaultName}`;
 
     const { repoDir, repoContext } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
 
     // Parse KEY=VALUE argument, or KEY with value from stdin/interactive prompt.
-    // Only consume stdin when the argument has no '=' — this preserves
-    // the ability for promptConfirmation to read interactive input later.
     const parsed = parseKeyValue(keyValue);
     let key: string;
     let value: string;
@@ -166,7 +135,6 @@ export const vaultPutCommand = new Command()
       key = parsed.key;
       value = parsed.value;
     } else if (!isStdinTty()) {
-      // Stdin is piped — read value from stdin
       stdinContent = await readStdin();
       const resolved = resolveKeyValue(keyValue, stdinContent);
       if ("error" in resolved) {
@@ -174,8 +142,7 @@ export const vaultPutCommand = new Command()
       }
       key = resolved.key;
       value = resolved.value;
-    } else if (ctx.outputMode === "log") {
-      // Interactive TTY — prompt for the secret value
+    } else if (cliCtx.outputMode === "log") {
       key = keyValue;
       if (key.length === 0) {
         throw new UserError("Key cannot be empty");
@@ -184,13 +151,12 @@ export const vaultPutCommand = new Command()
         value = await readSecretFromTty(`Enter value for ${key}: `);
       } catch (err) {
         if (err instanceof Error && err.message === "Cancelled.") {
-          renderVaultPutCancelled(ctx.outputMode);
+          renderVaultPutCancelled(cliCtx.outputMode);
           return;
         }
         throw err;
       }
     } else {
-      // JSON mode, no piped input, no inline value — error
       const resolved = resolveKeyValue(keyValue, null);
       if ("error" in resolved) {
         throw new UserError(resolved.error);
@@ -198,39 +164,24 @@ export const vaultPutCommand = new Command()
       key = resolved.key;
       value = resolved.value;
     }
-    ctx.logger.debug`Parsed key: ${key}`;
+    cliCtx.logger.debug`Parsed key: ${key}`;
 
-    // Verify vault exists
-    const repo = repoContext.vaultConfigRepo;
-    const vaultConfig = await repo.findByName(vaultName);
-    if (!vaultConfig) {
-      // List available vaults for helpful error message
-      const allVaults = await repo.findAll();
-      if (allVaults.length === 0) {
-        throw new UserError(
-          `Vault '${vaultName}' not found. No vaults are configured.\n` +
-            `Create a vault using: swamp vault create <type> ${vaultName}`,
-        );
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createVaultPutDeps(repoDir, repoContext.eventBus);
+
+    // Phase 1: Preview — check vault existence and whether secret exists
+    let preview;
+    try {
+      preview = await vaultPutPreview(ctx, deps, vaultName, key);
+    } catch (error) {
+      if ("code" in (error as Record<string, unknown>)) {
+        throw new UserError((error as { message: string }).message);
       }
-      const vaultNames = allVaults.map((v) => v.name).join(", ");
-      throw new UserError(
-        `Vault '${vaultName}' not found. Available vaults: ${vaultNames}`,
-      );
+      throw error;
     }
 
-    ctx.logger.debug`Found vault: ${vaultConfig.name} (${vaultConfig.type})`;
-
-    // Load vault service to interact with secrets
-    const vaultService = await VaultService.fromRepository(repoDir);
-
-    // Check if secret already exists
-    const exists = await secretExists(vaultService, vaultName, key);
-    ctx.logger.debug`Secret exists: ${exists}`;
-
-    // Prompt for confirmation if overwriting in interactive mode.
-    // When stdin was piped (stdinContent is not null), skip the prompt since
-    // there's no interactive user — require --force instead.
-    if (exists && ctx.outputMode === "log" && !options.force) {
+    // Phase 2: Prompt on overwrite
+    if (preview.secretExists && cliCtx.outputMode === "log" && !options.force) {
       if (stdinContent !== null) {
         throw new UserError(
           `Secret '${key}' already exists in vault '${vaultName}'.\n` +
@@ -241,33 +192,22 @@ export const vaultPutCommand = new Command()
         `Secret '${key}' already exists in vault '${vaultName}'. Overwrite?`,
       );
       if (!confirmed) {
-        renderVaultPutCancelled(ctx.outputMode);
+        renderVaultPutCancelled(cliCtx.outputMode);
         return;
       }
     }
 
-    // Store the secret
-    await vaultService.put(vaultName, key, value);
-    ctx.logger.debug`Secret stored successfully`;
-
-    // Emit event to update the logical view symlinks
-    const event = createVaultSecretUpdated(
-      vaultConfig.id,
-      vaultConfig.type,
-      vaultConfig.name,
-      key,
+    // Phase 3: Execute mutation
+    const renderer = createVaultPutRenderer(cliCtx.outputMode);
+    await consumeStream(
+      vaultPut(ctx, deps, {
+        vaultName,
+        key,
+        value,
+        overwritten: preview.secretExists,
+      }),
+      renderer.handlers(),
     );
-    await repoContext.eventBus.publish(event);
-    ctx.logger.debug`Emitted VaultSecretUpdated event`;
 
-    const data: VaultPutData = {
-      vaultName,
-      secretKey: key,
-      vaultType: vaultConfig.type,
-      overwritten: exists,
-      timestamp: new Date().toISOString(),
-    };
-
-    renderVaultPut(data, ctx.outputMode);
-    ctx.logger.debug("Vault put command completed");
+    cliCtx.logger.debug("Vault put command completed");
   });
