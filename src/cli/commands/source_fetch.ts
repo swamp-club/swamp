@@ -20,10 +20,13 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { VERSION } from "./version.ts";
-import { SourceService } from "../../domain/source/mod.ts";
-import { HttpSourceDownloader } from "../../infrastructure/source/http_source_downloader.ts";
-import { JsonSourceMetadataRepository } from "../../infrastructure/source/json_source_metadata_repository.ts";
-import { renderSourceFetch } from "../../presentation/output/source_output.ts";
+import {
+  consumeStream,
+  createLibSwampContext,
+  createSourceFetchDeps,
+  sourceFetch,
+} from "../../libswamp/mod.ts";
+import { createSourceFetchRenderer } from "../../presentation/renderers/source_fetch.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -38,17 +41,15 @@ export const sourceFetchCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["source", "fetch"]);
     ctx.logger.debug("Executing source fetch command");
 
-    // Use current CLI version if no version specified
     const version = options.version ?? VERSION;
-    ctx.logger.debug`Fetching source version: ${version}`;
 
-    const downloader = new HttpSourceDownloader();
-    const repository = new JsonSourceMetadataRepository();
-    const service = new SourceService(downloader, repository);
-
-    const result = await service.fetch(version);
-
-    renderSourceFetch(result, ctx.outputMode);
+    const libCtx = createLibSwampContext({ logger: ctx.logger });
+    const deps = createSourceFetchDeps();
+    const renderer = createSourceFetchRenderer(ctx.outputMode);
+    await consumeStream(
+      sourceFetch(libCtx, deps, { version }),
+      renderer.handlers(),
+    );
 
     ctx.logger.debug("Source fetch command completed");
   });

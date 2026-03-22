@@ -18,203 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, dim, green, red } from "@std/fmt/colors";
-import type { OutputMode } from "./output.ts";
+import type { EventHandlers, SummariseEvent } from "../../libswamp/mod.ts";
+import type { Renderer } from "../renderer.ts";
+import type { OutputMode } from "../output/output.ts";
 import type { Verbosity } from "../../cli/context.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  getSwampLogger,
+  writeOutput,
+} from "../../infrastructure/logging/logger.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { ActivitySummary } from "../../domain/summary/summary_types.ts";
-
-const logger = getSwampLogger(["summarise"]);
-
-/**
- * Renders an activity summary in json or log mode.
- */
-export function renderSummary(
-  summary: ActivitySummary,
-  sinceLabel: string,
-  mode: OutputMode,
-  verbosity: Verbosity,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(summary, null, 2));
-    return;
-  }
-
-  renderLogMode(summary, sinceLabel, verbosity);
-}
-
-/**
- * Renders a message when there is no activity to summarise.
- */
-export function renderNoActivity(
-  sinceLabel: string,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify({ message: "No activity found." }, null, 2));
-  } else {
-    logger.info(`No activity found in the last ${sinceLabel}.`);
-  }
-}
-
-function renderLogMode(
-  summary: ActivitySummary,
-  sinceLabel: string,
-  verbosity: Verbosity,
-): void {
-  const verbose = verbosity === "verbose";
-
-  console.log(bold(`Activity summary (last ${sinceLabel})`));
-  console.log();
-
-  // ── Method Executions ─────────────────────────────────────────
-  renderMethodExecutions(summary, verbose);
-
-  // ── Workflow Runs ─────────────────────────────────────────────
-  renderWorkflowRuns(summary, verbose);
-
-  // ── Data ──────────────────────────────────────────────────────
-  renderDataSummary(summary, verbose);
-}
-
-function renderMethodExecutions(
-  summary: ActivitySummary,
-  verbose: boolean,
-): void {
-  const models = summary.methodExecutions;
-  if (models.length === 0) {
-    console.log(dim("Direct Model Method Executions: none"));
-    console.log();
-    return;
-  }
-
-  const totalAll = models.reduce((s, m) => s + m.total, 0);
-  const succeededAll = models.reduce((s, m) => s + m.succeeded, 0);
-  const failedAll = models.reduce((s, m) => s + m.failed, 0);
-
-  let header =
-    `Direct Model Method Executions (${totalAll} total: ${succeededAll} succeeded`;
-  if (failedAll > 0) {
-    header += `, ${failedAll} failed`;
-  }
-  header += ")";
-  console.log(bold(header));
-
-  for (const model of models) {
-    console.log(`  Model: ${bold(model.modelName)} ${dim(`(${model.type})`)}`);
-
-    for (const method of model.methods) {
-      const parts: string[] = [];
-      if (method.succeeded > 0) parts.push(green(`✓ ${method.succeeded}`));
-      if (method.failed > 0) parts.push(red(`✗ ${method.failed}`));
-      console.log(`    ${method.method}   ${parts.join("  ")}`);
-
-      if (verbose) {
-        for (const run of method.runs) {
-          const time = formatDateTime(run.startedAt);
-          const dur = run.durationMs !== undefined
-            ? formatDuration(run.durationMs)
-            : "";
-          const trigger = dim(run.triggeredBy);
-          const statusStr = run.status === "failed"
-            ? red(run.status)
-            : dim(run.status);
-          const errStr = run.error ? `  ${red(run.error)}` : "";
-          console.log(
-            `      ${dim(time)}  ${statusStr}  ${dur}  ${trigger}${errStr}`,
-          );
-        }
-      }
-    }
-  }
-  console.log();
-}
-
-function renderWorkflowRuns(
-  summary: ActivitySummary,
-  verbose: boolean,
-): void {
-  const groups = summary.workflows;
-  if (groups.length === 0) {
-    console.log(dim("Workflow Runs: none"));
-    console.log();
-    return;
-  }
-
-  const totalAll = groups.reduce((s, g) => s + g.total, 0);
-  const succeededAll = groups.reduce((s, g) => s + g.succeeded, 0);
-  const failedAll = groups.reduce((s, g) => s + g.failed, 0);
-
-  let header = `Workflow Runs (${totalAll} total: ${succeededAll} succeeded`;
-  if (failedAll > 0) {
-    header += `, ${failedAll} failed`;
-  }
-  header += ")";
-  console.log(bold(header));
-
-  const maxLabel = Math.max(...groups.map((g) => g.workflowName.length));
-
-  for (const group of groups) {
-    const label = group.workflowName.padEnd(maxLabel + 2);
-    const parts: string[] = [];
-    if (group.succeeded > 0) parts.push(green(`✓ ${group.succeeded}`));
-    if (group.failed > 0) parts.push(red(`✗ ${group.failed}`));
-    console.log(`  ${label} ${parts.join("  ")}`);
-
-    if (verbose) {
-      for (const run of group.runs) {
-        const time = formatDateTime(run.startedAt);
-        const statusStr = run.status === "failed"
-          ? red(run.status)
-          : dim(run.status);
-        const failedAt = run.firstFailedStep
-          ? `  ${red(`at ${run.firstFailedStep}`)}`
-          : "";
-        console.log(`    ${dim(time)}  ${statusStr}${failedAt}`);
-
-        for (const step of run.steps) {
-          const model = step.modelName ? ` (${step.modelName})` : "";
-          const dur = step.durationMs !== undefined
-            ? `  ${formatDuration(step.durationMs)}`
-            : "";
-          const stepStatus = step.status === "failed"
-            ? red(step.status)
-            : dim(step.status);
-          const errStr = step.error ? `  ${red(step.error)}` : "";
-          console.log(
-            `      ${step.jobName} > ${step.stepName}${model}  ${stepStatus}${dur}${errStr}`,
-          );
-        }
-      }
-    }
-  }
-  console.log();
-}
-
-function renderDataSummary(
-  summary: ActivitySummary,
-  verbose: boolean,
-): void {
-  const { totalItems, totalVersions, uniqueModels, byModelType } = summary.data;
-  if (totalItems === 0) {
-    console.log(dim("Data: none"));
-    return;
-  }
-
-  console.log(
-    bold("Data") +
-      ` (${totalItems} items, ${totalVersions} versions, ${uniqueModels} models)`,
-  );
-
-  if (verbose && byModelType.length > 0) {
-    for (const group of byModelType) {
-      console.log(
-        `  ${
-          group.modelType.padEnd(30)
-        } ${group.items} items, ${group.versions} versions`,
-      );
-    }
-  }
-}
 
 function formatDateTime(iso?: string): string {
   if (!iso) return "unknown";
@@ -229,4 +42,216 @@ function formatDateTime(iso?: string): string {
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function renderMethodExecutions(
+  summary: ActivitySummary,
+  verbose: boolean,
+): void {
+  const models = summary.methodExecutions;
+  if (models.length === 0) {
+    writeOutput(dim("Direct Model Method Executions: none"));
+    writeOutput("");
+    return;
+  }
+
+  const totalAll = models.reduce((s, m) => s + m.total, 0);
+  const succeededAll = models.reduce((s, m) => s + m.succeeded, 0);
+  const failedAll = models.reduce((s, m) => s + m.failed, 0);
+
+  let header =
+    `Direct Model Method Executions (${totalAll} total: ${succeededAll} succeeded`;
+  if (failedAll > 0) {
+    header += `, ${failedAll} failed`;
+  }
+  header += ")";
+  writeOutput(bold(header));
+
+  for (const model of models) {
+    writeOutput(`  Model: ${bold(model.modelName)} ${dim(`(${model.type})`)}`);
+
+    for (const method of model.methods) {
+      const parts: string[] = [];
+      if (method.succeeded > 0) parts.push(green(`\u2713 ${method.succeeded}`));
+      if (method.failed > 0) parts.push(red(`\u2717 ${method.failed}`));
+      writeOutput(`    ${method.method}   ${parts.join("  ")}`);
+
+      if (verbose) {
+        for (const run of method.runs) {
+          const time = formatDateTime(run.startedAt);
+          const dur = run.durationMs !== undefined
+            ? formatDuration(run.durationMs)
+            : "";
+          const trigger = dim(run.triggeredBy);
+          const statusStr = run.status === "failed"
+            ? red(run.status)
+            : dim(run.status);
+          const errStr = run.error ? `  ${red(run.error)}` : "";
+          writeOutput(
+            `      ${dim(time)}  ${statusStr}  ${dur}  ${trigger}${errStr}`,
+          );
+        }
+      }
+    }
+  }
+  writeOutput("");
+}
+
+function renderWorkflowRuns(
+  summary: ActivitySummary,
+  verbose: boolean,
+): void {
+  const groups = summary.workflows;
+  if (groups.length === 0) {
+    writeOutput(dim("Workflow Runs: none"));
+    writeOutput("");
+    return;
+  }
+
+  const totalAll = groups.reduce((s, g) => s + g.total, 0);
+  const succeededAll = groups.reduce((s, g) => s + g.succeeded, 0);
+  const failedAll = groups.reduce((s, g) => s + g.failed, 0);
+
+  let header = `Workflow Runs (${totalAll} total: ${succeededAll} succeeded`;
+  if (failedAll > 0) {
+    header += `, ${failedAll} failed`;
+  }
+  header += ")";
+  writeOutput(bold(header));
+
+  const maxLabel = Math.max(...groups.map((g) => g.workflowName.length));
+
+  for (const group of groups) {
+    const label = group.workflowName.padEnd(maxLabel + 2);
+    const parts: string[] = [];
+    if (group.succeeded > 0) parts.push(green(`\u2713 ${group.succeeded}`));
+    if (group.failed > 0) parts.push(red(`\u2717 ${group.failed}`));
+    writeOutput(`  ${label} ${parts.join("  ")}`);
+
+    if (verbose) {
+      for (const run of group.runs) {
+        const time = formatDateTime(run.startedAt);
+        const statusStr = run.status === "failed"
+          ? red(run.status)
+          : dim(run.status);
+        const failedAt = run.firstFailedStep
+          ? `  ${red(`at ${run.firstFailedStep}`)}`
+          : "";
+        writeOutput(`    ${dim(time)}  ${statusStr}${failedAt}`);
+
+        for (const step of run.steps) {
+          const model = step.modelName ? ` (${step.modelName})` : "";
+          const dur = step.durationMs !== undefined
+            ? `  ${formatDuration(step.durationMs)}`
+            : "";
+          const stepStatus = step.status === "failed"
+            ? red(step.status)
+            : dim(step.status);
+          const errStr = step.error ? `  ${red(step.error)}` : "";
+          writeOutput(
+            `      ${step.jobName} > ${step.stepName}${model}  ${stepStatus}${dur}${errStr}`,
+          );
+        }
+      }
+    }
+  }
+  writeOutput("");
+}
+
+function renderDataSummary(
+  summary: ActivitySummary,
+  verbose: boolean,
+): void {
+  const { totalItems, totalVersions, uniqueModels, byModelType } = summary.data;
+  if (totalItems === 0) {
+    writeOutput(dim("Data: none"));
+    return;
+  }
+
+  writeOutput(
+    bold("Data") +
+      ` (${totalItems} items, ${totalVersions} versions, ${uniqueModels} models)`,
+  );
+
+  if (verbose && byModelType.length > 0) {
+    for (const group of byModelType) {
+      writeOutput(
+        `  ${
+          group.modelType.padEnd(30)
+        } ${group.items} items, ${group.versions} versions`,
+      );
+    }
+  }
+}
+
+function renderLogSummary(
+  summary: ActivitySummary,
+  sinceLabel: string,
+  verbosity: Verbosity,
+): void {
+  const verbose = verbosity === "verbose";
+
+  writeOutput(bold(`Activity summary (last ${sinceLabel})`));
+  writeOutput("");
+
+  renderMethodExecutions(summary, verbose);
+  renderWorkflowRuns(summary, verbose);
+  renderDataSummary(summary, verbose);
+}
+
+class LogSummariseRenderer implements Renderer<SummariseEvent> {
+  readonly #verbosity: Verbosity;
+
+  constructor(verbosity: Verbosity) {
+    this.#verbosity = verbosity;
+  }
+
+  handlers(): EventHandlers<SummariseEvent> {
+    const logger = getSwampLogger(["summarise"]);
+    return {
+      completed: (e) => {
+        const data = e.data;
+        if (data.status === "no_activity") {
+          logger.info(`No activity found in the last ${data.sinceLabel}.`);
+        } else {
+          renderLogSummary(data.summary, data.sinceLabel, this.#verbosity);
+        }
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+class JsonSummariseRenderer implements Renderer<SummariseEvent> {
+  handlers(): EventHandlers<SummariseEvent> {
+    return {
+      completed: (e) => {
+        const data = e.data;
+        if (data.status === "no_activity") {
+          console.log(
+            JSON.stringify({ message: "No activity found." }, null, 2),
+          );
+        } else {
+          console.log(JSON.stringify(data.summary, null, 2));
+        }
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createSummariseRenderer(
+  mode: OutputMode,
+  verbosity: Verbosity,
+): Renderer<SummariseEvent> {
+  switch (mode) {
+    case "json":
+      return new JsonSummariseRenderer();
+    case "log":
+      return new LogSummariseRenderer(verbosity);
+  }
 }

@@ -505,3 +505,67 @@ export {
   type TelemetryStatsEvent,
   type TelemetryStatsInput,
 } from "./telemetry/stats.ts";
+
+// Source operations
+export {
+  createSourcePathDeps,
+  sourcePath,
+  type SourcePathData,
+  type SourcePathDeps,
+  type SourcePathEvent,
+} from "./source/path.ts";
+export {
+  createSourceFetchDeps,
+  sourceFetch,
+  type SourceFetchData,
+  type SourceFetchDeps,
+  type SourceFetchEvent,
+  type SourceFetchInput,
+} from "./source/fetch.ts";
+export {
+  createSourceCleanDeps,
+  sourceClean,
+  type SourceCleanData,
+  type SourceCleanDeps,
+  type SourceCleanEvent,
+} from "./source/clean.ts";
+
+// Issue operations
+export {
+  createIssueCreateDeps,
+  issueCreate,
+  type IssueCreateData,
+  type IssueCreateDeps,
+  type IssueCreateEvent,
+  type IssueCreateInput,
+} from "./issues/create.ts";
+
+// Audit operations
+export {
+  auditTimeline,
+  type AuditTimelineData,
+  type AuditTimelineDeps,
+  type AuditTimelineEvent,
+  type AuditTimelineInput,
+  createAuditTimelineDeps,
+} from "./audit/timeline.ts";
+
+// Update operations
+export {
+  createUpdateCheckDeps,
+  updateCheck,
+  type UpdateCheckData,
+  type UpdateCheckDeps,
+  type UpdateCheckEvent,
+  type UpdateCheckInput,
+} from "./update/check.ts";
+
+// Summary operations
+export {
+  createSummariseDeps,
+  summarise,
+  type SummariseData,
+  type SummariseDeps,
+  type SummariseEvent,
+  type SummariseInput,
+} from "./summary/summarise.ts";

@@ -18,14 +18,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import {
-  type IssueCreateData,
-  renderIssueCancelled,
-  renderIssueCreate,
-} from "../../presentation/output/issue_output.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  consumeStream,
+  createIssueCreateDeps,
+  createLibSwampContext,
+  issueCreate,
+} from "../../libswamp/mod.ts";
+import {
+  createIssueCreateRenderer,
+  type IssueCancelledData,
+  renderIssueCancelled,
+} from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
-import { GitHubIssueService } from "../../infrastructure/github/github_issue_service.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -117,7 +122,6 @@ export const issueBugCommand = new Command()
     ctx.logger.debug`Submitting bug report`;
 
     const editorService = new EditorService();
-    const githubService = new GitHubIssueService();
 
     let title: string;
     let body: string;
@@ -157,7 +161,7 @@ export const issueBugCommand = new Command()
         const parsed = parseBugContent(content);
         if (!parsed) {
           renderIssueCancelled(
-            { type: "bug", reason: "empty" },
+            { type: "bug", reason: "empty" } as IssueCancelledData,
             ctx.outputMode,
           );
           return;
@@ -177,30 +181,18 @@ export const issueBugCommand = new Command()
 
     ctx.logger.debug`Creating GitHub issue with title: ${title}`;
 
-    // Create the GitHub issue
-    const result = await githubService.createIssue({
-      title,
-      body,
-      labels: ["bug", "external"],
-    });
-
-    const data: IssueCreateData = result.method === "created"
-      ? {
-        method: "created",
-        url: result.url,
-        number: result.number,
-        type: "bug",
+    const libCtx = createLibSwampContext({ logger: ctx.logger });
+    const deps = createIssueCreateDeps();
+    const renderer = createIssueCreateRenderer(ctx.outputMode);
+    await consumeStream(
+      issueCreate(libCtx, deps, {
         title,
-      }
-      : {
-        method: "url",
-        url: result.url,
+        body,
+        labels: ["bug", "external"],
         type: "bug",
-        title,
-        body: result.body,
-        labels: result.labels,
-      };
+      }),
+      renderer.handlers(),
+    );
 
-    renderIssueCreate(data, ctx.outputMode);
     ctx.logger.debug("Bug report submitted successfully");
   });

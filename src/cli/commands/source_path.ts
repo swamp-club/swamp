@@ -19,10 +19,13 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { SourceService } from "../../domain/source/mod.ts";
-import { HttpSourceDownloader } from "../../infrastructure/source/http_source_downloader.ts";
-import { JsonSourceMetadataRepository } from "../../infrastructure/source/json_source_metadata_repository.ts";
-import { renderSourcePath } from "../../presentation/output/source_output.ts";
+import {
+  consumeStream,
+  createLibSwampContext,
+  createSourcePathDeps,
+  sourcePath,
+} from "../../libswamp/mod.ts";
+import { createSourcePathRenderer } from "../../presentation/renderers/source_path.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -33,13 +36,10 @@ export const sourcePathCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["source", "path"]);
     ctx.logger.debug("Executing source path command");
 
-    const downloader = new HttpSourceDownloader();
-    const repository = new JsonSourceMetadataRepository();
-    const service = new SourceService(downloader, repository);
-
-    const result = await service.getInfo();
-
-    renderSourcePath(result, ctx.outputMode);
+    const libCtx = createLibSwampContext({ logger: ctx.logger });
+    const deps = createSourcePathDeps();
+    const renderer = createSourcePathRenderer(ctx.outputMode);
+    await consumeStream(sourcePath(libCtx, deps), renderer.handlers());
 
     ctx.logger.debug("Source path command completed");
   });

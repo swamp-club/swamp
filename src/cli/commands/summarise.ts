@@ -20,12 +20,14 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { SummaryService } from "../../domain/summary/summary_service.ts";
 import { parseDuration } from "./data_search.ts";
 import {
-  renderNoActivity,
-  renderSummary,
-} from "../../presentation/output/summarise_output.ts";
+  consumeStream,
+  createLibSwampContext,
+  createSummariseDeps,
+  summarise,
+} from "../../libswamp/mod.ts";
+import { createSummariseRenderer } from "../../presentation/renderers/summarise.ts";
 
 /**
  * `swamp summarise`
@@ -54,25 +56,22 @@ export const summariseCommand = new Command()
     const durationMs = parseDuration(options.since);
     const cutoffDate = new Date(Date.now() - durationMs);
 
-    const service = new SummaryService(
-      repoContext.outputRepo,
-      repoContext.workflowRunRepo,
-      repoContext.unifiedDataRepo,
-      repoContext.definitionRepo,
-      repoContext.workflowRepo,
+    const libCtx = createLibSwampContext({ logger: ctx.logger });
+    const deps = createSummariseDeps({
+      outputRepo: repoContext.outputRepo,
+      workflowRunRepo: repoContext.workflowRunRepo,
+      dataRepo: repoContext.unifiedDataRepo,
+      definitionRepo: repoContext.definitionRepo,
+      workflowRepo: repoContext.workflowRepo,
+    });
+    const renderer = createSummariseRenderer(ctx.outputMode, ctx.verbosity);
+    await consumeStream(
+      summarise(libCtx, deps, {
+        since: cutoffDate,
+        sinceLabel: options.since,
+      }),
+      renderer.handlers(),
     );
 
-    const summary = await service.summarise(cutoffDate);
-
-    const hasActivity = summary.methodExecutions.length > 0 ||
-      summary.workflows.length > 0 ||
-      summary.data.totalItems > 0;
-
-    if (!hasActivity) {
-      renderNoActivity(options.since, ctx.outputMode);
-      return;
-    }
-
-    renderSummary(summary, options.since, ctx.outputMode, ctx.verbosity);
     ctx.logger.debug`Summarise command completed`;
   });

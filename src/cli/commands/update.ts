@@ -21,9 +21,13 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { VERSION } from "./version.ts";
 import { Platform } from "../../domain/update/platform.ts";
-import { UpdateService } from "../../domain/update/update_service.ts";
-import { HttpUpdateChecker } from "../../infrastructure/update/http_update_checker.ts";
-import { renderUpdateResult } from "../../presentation/output/update_output.ts";
+import {
+  consumeStream,
+  createLibSwampContext,
+  createUpdateCheckDeps,
+  updateCheck,
+} from "../../libswamp/mod.ts";
+import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 import { Spinner } from "../../presentation/spinner.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -39,10 +43,6 @@ export const updateCommand = new Command()
     const platform = Platform.detect();
     ctx.logger.debug`Detected platform: ${platform}`;
 
-    const checker = new HttpUpdateChecker();
-    const binaryPath = Deno.execPath();
-    const service = new UpdateService(checker, VERSION, binaryPath);
-
     const spinner = ctx.outputMode !== "json" ? new Spinner() : null;
 
     try {
@@ -51,13 +51,18 @@ export const updateCommand = new Command()
         : "Updating swamp...";
       spinner?.start(message);
 
-      const result = options.check
-        ? await service.check(platform)
-        : await service.update(platform);
+      const libCtx = createLibSwampContext({ logger: ctx.logger });
+      const deps = createUpdateCheckDeps(VERSION, Deno.execPath());
+      const renderer = createUpdateCheckRenderer(ctx.outputMode);
+      await consumeStream(
+        updateCheck(libCtx, deps, {
+          checkOnly: options.check ?? false,
+          platform,
+        }),
+        renderer.handlers(),
+      );
 
       spinner?.stop();
-
-      renderUpdateResult(result, ctx.outputMode);
     } catch (err) {
       spinner?.stop();
       throw err;

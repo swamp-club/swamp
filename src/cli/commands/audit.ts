@@ -24,16 +24,18 @@ import { AuditService } from "../../domain/audit/audit_service.ts";
 import { createBashCommandEntry } from "../../domain/audit/audit_command_entry.ts";
 import { JsonlAuditRepository } from "../../infrastructure/persistence/jsonl_audit_repository.ts";
 import {
-  renderAuditTimeline,
-  renderAuditToolNotSupported,
-  renderNoAuditData,
-} from "../../presentation/output/audit_output.ts";
-import {
   type HookTool,
   normalizeHookInput,
 } from "../../domain/audit/hook_input.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import {
+  auditTimeline,
+  consumeStream,
+  createAuditTimelineDeps,
+  createLibSwampContext,
+} from "../../libswamp/mod.ts";
+import { createAuditTimelineRenderer } from "../../presentation/renderers/audit_timeline.ts";
 
 /**
  * Reads all of stdin as a string.
@@ -160,28 +162,19 @@ export const auditCommand = new Command()
     const marker = await markerRepo.read(RepoPath.create(repoDir));
     const configuredTool = marker?.tool ?? "claude";
 
-    if (configuredTool === "codex") {
-      renderAuditToolNotSupported("codex", ctx.outputMode);
-    }
+    const libCtx = createLibSwampContext({ logger: ctx.logger });
+    const deps = createAuditTimelineDeps(repoDir);
+    const renderer = createAuditTimelineRenderer(ctx.outputMode);
+    await consumeStream(
+      auditTimeline(libCtx, deps, {
+        hours: options.hours,
+        showAll: options.all ?? false,
+        sessionId: options.session,
+        tool: configuredTool,
+      }),
+      renderer.handlers(),
+    );
 
-    const auditRepository = new JsonlAuditRepository(repoDir);
-    const service = new AuditService(auditRepository);
-
-    const timeline = await service.getTimeline({
-      hours: options.hours,
-      showAll: options.all ?? false,
-      sessionId: options.session,
-    });
-
-    if (
-      timeline.entries.length === 0 && timeline.totalSwamp === 0 &&
-      timeline.totalDirect === 0
-    ) {
-      renderNoAuditData(ctx.outputMode);
-      return;
-    }
-
-    renderAuditTimeline(timeline, ctx.outputMode);
     ctx.logger.debug("Audit command completed");
   })
   .command("record", auditRecordCommand);

@@ -19,10 +19,13 @@
 
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { SourceService } from "../../domain/source/mod.ts";
-import { HttpSourceDownloader } from "../../infrastructure/source/http_source_downloader.ts";
-import { JsonSourceMetadataRepository } from "../../infrastructure/source/json_source_metadata_repository.ts";
-import { renderSourceClean } from "../../presentation/output/source_output.ts";
+import {
+  consumeStream,
+  createLibSwampContext,
+  createSourceCleanDeps,
+  sourceClean,
+} from "../../libswamp/mod.ts";
+import { createSourceCleanRenderer } from "../../presentation/renderers/source_clean.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -33,13 +36,10 @@ export const sourceCleanCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["source", "clean"]);
     ctx.logger.debug("Executing source clean command");
 
-    const downloader = new HttpSourceDownloader();
-    const repository = new JsonSourceMetadataRepository();
-    const service = new SourceService(downloader, repository);
-
-    const result = await service.clean();
-
-    renderSourceClean(result, ctx.outputMode);
+    const libCtx = createLibSwampContext({ logger: ctx.logger });
+    const deps = createSourceCleanDeps();
+    const renderer = createSourceCleanRenderer(ctx.outputMode);
+    await consumeStream(sourceClean(libCtx, deps), renderer.handlers());
 
     ctx.logger.debug("Source clean command completed");
   });
