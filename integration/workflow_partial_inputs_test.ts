@@ -167,3 +167,88 @@ Deno.test("Workflow: succeeds with partial inputs when globalArguments reference
     assertEquals(output.jobs[0].steps[0].status, "succeeded");
   });
 });
+
+// Regression test for issue #814.
+//
+// A ternary expression in methods.execute.arguments.run must resolve correctly
+// when the condition input is provided but one branch input is absent.
+//
+// The ternary is placed in methods.execute.arguments.run (not globalArguments)
+// because the shell model reads args.run directly — this gives a clear pass/fail
+// signal without being dependent on any model-specific globalArgs access.
+//
+// Before the fix: expression is skipped (regex pre-check treats all referenced
+// inputs as required), shell executes the raw "${{ ... }}" string → exit code 1.
+// After the fix: CEL short-circuits the ternary and resolves to "echo 100.64.0.1".
+Deno.test("Workflow: ternary expression resolves when condition input provided and one branch input absent", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+
+    const model = Definition.create({
+      name: "transport-host-model",
+      inputs: {
+        properties: {
+          transport: { type: "string" },
+          lan_host: { type: "string" },
+          tailnet_host: { type: "string" },
+        },
+        required: ["transport", "tailnet_host"],
+      },
+      globalArguments: {},
+      methods: {
+        execute: {
+          arguments: {
+            run:
+              '${{ "echo " + (inputs.transport == "lan" ? inputs.lan_host : inputs.tailnet_host) }}',
+          },
+        },
+      },
+    });
+    await definitionRepo.save(SHELL_MODEL_TYPE, model);
+
+    const workflow = Workflow.create({
+      name: "ternary-transport-workflow",
+      jobs: [
+        Job.create({
+          name: "run-job",
+          steps: [
+            Step.create({
+              name: "run-step",
+              task: StepTask.model("transport-host-model", "execute", {
+                transport: "wan",
+                tailnet_host: "100.64.0.1",
+                // lan_host deliberately absent — only the wan branch is needed
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const result = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "ternary-transport-workflow",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    assertEquals(
+      result.code,
+      0,
+      `Workflow should succeed with ternary expression. stderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    assertEquals(output.status, "succeeded");
+    assertEquals(output.jobs[0].steps[0].status, "succeeded");
+  });
+});

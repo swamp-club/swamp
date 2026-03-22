@@ -23,6 +23,7 @@ import {
   extractCelExpression,
   extractExpressions,
   extractInputReferences,
+  extractInputReferencesFromCel,
   isTaskInputsPath,
   replaceExpressions,
 } from "./expression_parser.ts";
@@ -371,5 +372,18 @@ Deno.test("extractInputReferences handles mixed dot and bracket notation", () =>
   assertEquals(
     extractInputReferences(data),
     new Set(["region", "drop-name"]),
+  );
+});
+
+// Documents why extractInputReferencesFromCel must not be used as a skip gate
+// for expression evaluation. It reports all inputs in ALL branches of a ternary,
+// regardless of which branch CEL would actually evaluate at runtime.
+// This was the root cause of the #814 regression introduced in #655.
+Deno.test("extractInputReferencesFromCel: returns all branch inputs in ternary regardless of which branch runs", () => {
+  assertEquals(
+    extractInputReferencesFromCel(
+      `inputs.transport == "lan" ? inputs.lan_host : inputs.tailnet_host`,
+    ),
+    new Set(["transport", "lan_host", "tailnet_host"]),
   );
 });

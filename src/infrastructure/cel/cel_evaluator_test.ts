@@ -904,3 +904,23 @@ Deno.test("CelEvaluator data.version() converts CEL int (bigint) to number for c
   );
   assertEquals(v1Vary, "first");
 });
+
+// Regression tests for issue #814: ternary expressions must short-circuit
+// so that a missing branch input does not cause evaluation to fail.
+
+Deno.test("CelEvaluator: ternary short-circuits — missing other-branch input does not throw", () => {
+  const evaluator = new CelEvaluator();
+  const result = evaluator.evaluate(
+    `inputs.transport == "lan" ? inputs.lan_host : inputs.tailnet_host`,
+    { inputs: { transport: "wan", tailnet_host: "100.64.0.1" } },
+  );
+  assertEquals(result, "100.64.0.1");
+});
+
+Deno.test("CelEvaluator: directly-missing input throws InvalidExpressionError", () => {
+  const evaluator = new CelEvaluator();
+  assertThrows(
+    () => evaluator.evaluate("inputs.cidrBlock", { inputs: {} }),
+    InvalidExpressionError,
+  );
+});

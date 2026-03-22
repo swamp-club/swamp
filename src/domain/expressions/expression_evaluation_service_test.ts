@@ -17,12 +17,25 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { Definition } from "../definitions/definition.ts";
+import { ModelType } from "../models/model_type.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   containsEnvExpression,
   containsRuntimeExpression,
   containsVaultExpression,
+  ExpressionEvaluationService,
 } from "./expression_evaluation_service.ts";
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-eval-service-" });
+  try {
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
 
 // ============================================================================
 // containsVaultExpression
@@ -125,4 +138,85 @@ Deno.test("containsRuntimeExpression returns false for model/self/inputs", () =>
   );
   assertEquals(containsRuntimeExpression("self.name"), false);
   assertEquals(containsRuntimeExpression("inputs.param"), false);
+});
+
+// ============================================================================
+// evaluateDefinition — ternary expression regression (#814)
+// ============================================================================
+
+// Regression test for issue #814: a ternary in globalArguments must resolve
+// when the condition input is provided, even if one branch input is absent.
+// Before the fix the regex pre-check treated all referenced inputs as required,
+// so the whole expression was skipped and the globalArgument stayed as a raw
+// ${{ }} string.
+Deno.test("evaluateDefinition: ternary in globalArguments resolves when condition input provided and one branch input absent", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const definition = Definition.create({
+      name: "transport-model",
+      inputs: {
+        properties: {
+          transport: { type: "string" },
+          lan_host: { type: "string" },
+          tailnet_host: { type: "string" },
+        },
+        required: ["transport", "tailnet_host"],
+      },
+      globalArguments: {
+        host:
+          '${{ inputs.transport == "lan" ? inputs.lan_host : inputs.tailnet_host }}',
+      },
+      methods: { exec: { arguments: { run: "echo hello" } } },
+    });
+
+    const result = await service.evaluateDefinition(
+      definition,
+      type,
+      { transport: "wan", tailnet_host: "100.64.0.1" }, // lan_host deliberately absent
+    );
+
+    assertEquals(result.definition.globalArguments.host, "100.64.0.1");
+  });
+});
+
+// Confirms the original #653 fix still works: a directly-referenced missing
+// input leaves the expression unresolved rather than throwing.
+Deno.test("evaluateDefinition: directly-missing input in globalArguments stays unresolved", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const definition = Definition.create({
+      name: "factory-model",
+      inputs: {
+        properties: {
+          instanceName: { type: "string" },
+          cidrBlock: { type: "string" },
+        },
+        required: ["instanceName", "cidrBlock"],
+      },
+      globalArguments: {
+        run: '${{ "echo " + inputs.instanceName }}',
+        unusedArg: "${{ inputs.cidrBlock }}",
+      },
+      methods: { execute: { arguments: { run: "echo fallback" } } },
+    });
+
+    const result = await service.evaluateDefinition(
+      definition,
+      type,
+      { instanceName: "test-instance" }, // cidrBlock deliberately absent
+    );
+
+    // run is resolved, unusedArg stays as a raw expression
+    assertEquals(result.definition.globalArguments.run, "echo test-instance");
+    assertStringIncludes(
+      result.definition.globalArguments.unusedArg as string,
+      "${{",
+    );
+  });
 });

@@ -47,7 +47,6 @@ import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
 import {
   extractExpressions,
-  extractInputReferencesFromCel,
   isTaskInputsPath,
   replaceExpressions,
 } from "../expressions/expression_parser.ts";
@@ -743,11 +742,6 @@ export class DefaultStepExecutor implements StepExecutor {
       return definition;
     }
 
-    // Build set of provided input keys for selective skipping
-    const providedInputKeys = context.inputs
-      ? new Set(Object.keys(context.inputs))
-      : new Set<string>();
-
     // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of expressions) {
@@ -755,45 +749,39 @@ export class DefaultStepExecutor implements StepExecutor {
         continue;
       }
 
-      // Skip expressions that reference inputs not provided by the caller.
-      // This allows methods that don't need certain inputs to run without
-      // those inputs being provided (e.g., delete doesn't need create-time inputs).
-      const inputRefs = extractInputReferencesFromCel(expr.celExpression);
-      let hasMissing = false;
-      if (inputRefs.size > 0) {
-        for (const ref of inputRefs) {
-          if (!providedInputKeys.has(ref)) {
-            hasMissing = true;
+      // Skip expressions referencing model resource/file data that isn't
+      // available in context (e.g., referenced model was never executed).
+      // Unlike inputs, model data is never conditionally accessed in CEL —
+      // member access on a missing model ref is always an error.
+      let hasMissingModelDep = false;
+      const deps = extractDependencies(expr.celExpression);
+      for (const dep of deps) {
+        if (dep.type === "resource" || dep.type === "file") {
+          const modelData = context.model[dep.modelRef];
+          if (
+            !modelData ||
+            (dep.type === "resource" && !modelData.resource) ||
+            (dep.type === "file" && !modelData.file)
+          ) {
+            hasMissingModelDep = true;
             break;
           }
         }
       }
 
-      // Skip expressions referencing model resource/file data that isn't
-      // available in context (e.g., referenced model was never executed).
-      if (!hasMissing) {
-        const deps = extractDependencies(expr.celExpression);
-        for (const dep of deps) {
-          if (dep.type === "resource" || dep.type === "file") {
-            const modelData = context.model[dep.modelRef];
-            if (
-              !modelData ||
-              (dep.type === "resource" && !modelData.resource) ||
-              (dep.type === "file" && !modelData.file)
-            ) {
-              hasMissing = true;
-              break;
-            }
-          }
-        }
-      }
-
-      if (hasMissing) {
+      if (hasMissingModelDep) {
         continue;
       }
 
-      const value = celEvaluator.evaluate(expr.celExpression, context);
-      evaluatedValues.set(expr.raw, value);
+      try {
+        const value = celEvaluator.evaluate(expr.celExpression, context);
+        evaluatedValues.set(expr.raw, value);
+      } catch {
+        // Leave unresolved — CEL threw because an input referenced directly
+        // (not inside a conditional branch) is absent from context.
+        // The Proxy on globalArgs will surface a clear error if the method
+        // actually needs the unresolved value.
+      }
     }
 
     // Replace only CEL-only expressions with evaluated values
