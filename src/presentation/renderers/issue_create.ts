@@ -78,9 +78,6 @@ export function createIssueCreateRenderer(
   }
 }
 
-/**
- * Renders issue cancelled output in either log or JSON mode.
- */
 /** Data structure for issue editor cancelled output. */
 export interface IssueCancelledData {
   type: "bug" | "feature";

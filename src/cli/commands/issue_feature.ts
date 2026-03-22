@@ -27,7 +27,6 @@ import {
 } from "../../libswamp/mod.ts";
 import {
   createIssueCreateRenderer,
-  type IssueCancelledData,
   renderIssueCancelled,
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
@@ -160,7 +159,7 @@ export const issueFeatureCommand = new Command()
         const parsed = parseFeatureContent(content);
         if (!parsed) {
           renderIssueCancelled(
-            { type: "feature", reason: "empty" } as IssueCancelledData,
+            { type: "feature", reason: "empty" },
             ctx.outputMode,
           );
           return;
