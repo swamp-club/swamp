@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       skills: ${{ steps.filter.outputs.skills }}
+      code: ${{ steps.filter.outputs.code }}
+      core: ${{ steps.filter.outputs.core }}
       ux: ${{ steps.filter.outputs.ux }}
     steps:
       - name: Checkout code
@@ -32,10 +34,19 @@ jobs:
               - 'CLAUDE.md'
               - 'scripts/review_skills.ts'
               - 'scripts/eval_skill_triggers.ts'
+            code:
+              - 'src/**'
+              - 'integration/**'
+              - 'deno.json'
+            core:
+              - 'src/domain/**'
+              - 'src/infrastructure/**'
+              - 'src/libswamp/**'
             ux:
               - 'src/cli/commands/**'
               - 'src/presentation/**'
               - 'src/domain/errors.ts'
+              - 'src/libswamp/**'
 
   test:
     name: Lint, Test, and Format Check
@@ -148,6 +159,7 @@ jobs:
     # NOTE: For this to block merges, enable branch protection on main with:
     # "Require a pull request before merging" + "Require approving reviews"
     # Claude will use --request-changes to block or --approve to allow
+    # This job runs on EVERY non-draft PR to ensure branch protection approval
     name: Claude Code Review
     needs: [test, deps-audit, skill-review]
     runs-on: ubuntu-latest
@@ -201,20 +213,36 @@ jobs:
             If there ARE blocking issues that must be addressed:
             ```
             gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
+            touch /tmp/review-failed
             ```
 
-            Your review body should clearly list any blocking issues at the top, followed by suggestions.
+            Format your review body as:
+            ## Code Review
+
+            ### Blocking Issues (if any)
+            [numbered list]
+
+            ### Suggestions (if any)
+            [numbered list]
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-6
-            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
+            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)
+
+      - name: Fail if changes requested
+        run: |
+          if [ -f /tmp/review-failed ]; then
+            echo "::error::Code review requested changes — blocking merge"
+            exit 1
+          fi
 
   claude-adversarial-review:
     name: Adversarial Code Review
-    needs: [test, deps-audit, skill-review]
+    needs: [changes, test, deps-audit, skill-review]
     runs-on: ubuntu-latest
     if: |
       !failure() && !cancelled() &&
+      needs.changes.outputs.core == 'true' &&
       github.event.pull_request.draft == false
     concurrency:
       group: claude-adversarial-review-${{ github.event.pull_request.number }}
@@ -321,6 +349,7 @@ jobs:
             If there ARE critical or high severity findings:
             ```
             gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
+            touch /tmp/review-failed
             ```
 
             Format your review body as:
@@ -340,7 +369,14 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-6
-            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
+            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)
+
+      - name: Fail if changes requested
+        run: |
+          if [ -f /tmp/review-failed ]; then
+            echo "::error::Adversarial review requested changes — blocking merge"
+            exit 1
+          fi
 
   claude-ux-review:
     name: CLI UX Review
@@ -437,6 +473,7 @@ jobs:
             If there ARE blocking issues:
             ```
             gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
+            touch /tmp/review-failed
             ```
 
             Format your review body as:
@@ -453,7 +490,14 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-sonnet-4-6
-            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
+            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)
+
+      - name: Fail if changes requested
+        run: |
+          if [ -f /tmp/review-failed ]; then
+            echo "::error::UX review requested changes — blocking merge"
+            exit 1
+          fi
 
   auto-merge:
     name: Auto-merge PR
