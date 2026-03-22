@@ -150,6 +150,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-extension-model",
   },
   {
+    relativePath: "swamp-extension-model/references/smoke_testing.md",
+    name: "swamp-extension-model",
+  },
+  {
     relativePath: "swamp-model/references/execution-drivers.md",
     name: "swamp-model",
   },
