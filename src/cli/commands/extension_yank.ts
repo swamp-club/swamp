@@ -18,25 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
-import { UserError } from "../../domain/errors.ts";
-import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
-import { parseExtensionRef } from "./extension_pull.ts";
 import {
-  renderExtensionYank,
+  consumeStream,
+  createExtensionYankDeps,
+  createLibSwampContext,
+  extensionYank,
+  extensionYankPreview,
+} from "../../libswamp/mod.ts";
+import {
+  createExtensionYankRenderer,
   renderExtensionYankCancelled,
-} from "../../presentation/output/extension_yank_output.ts";
+} from "../../presentation/renderers/extension_yank.ts";
+import { createContext, type GlobalOptions } from "../context.ts";
+import { UserError } from "../../domain/errors.ts";
+import { parseExtensionRef } from "./extension_pull.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
-const DEFAULT_SERVER_URL = "https://swamp.club";
-
-function resolveServerUrl(): string {
-  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL;
-}
 
 async function promptConfirmation(message: string): Promise<boolean> {
   const encoder = new TextEncoder();
@@ -63,63 +61,55 @@ export const extensionYankCommand = new Command()
     extension: string,
     version?: string,
   ) {
-    const ctx = createContext(options as GlobalOptions, ["extension", "yank"]);
-    ctx.logger.debug`Starting extension yank`;
+    const cliCtx = createContext(options as GlobalOptions, [
+      "extension",
+      "yank",
+    ]);
+    cliCtx.logger.debug`Starting extension yank`;
 
-    // 1. Load auth credentials
-    const authRepo = new AuthRepository();
-    const credentials = await authRepo.load();
-    if (!credentials) {
-      throw new UserError(
-        "Not authenticated. Run 'swamp auth login' first.",
-      );
-    }
-
-    // 2. Parse extension reference
+    // Parse extension reference
     const ref = parseExtensionRef(extension);
-
-    if (!SCOPED_NAME_PATTERN.test(ref.name)) {
-      throw new UserError(
-        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed).`,
-      );
-    }
-
-    // Version can come from the separate CLI arg or embedded in the ref (@ns/name@version)
     const resolvedVersion = version ?? ref.version ?? null;
 
-    // 3. Confirmation prompt (log mode only, unless --yes)
-    if (ctx.outputMode === "log" && !options.yes) {
-      const target = resolvedVersion
-        ? `${ref.name}@${resolvedVersion}`
-        : `${ref.name} (all versions)`;
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createExtensionYankDeps();
+    const input = {
+      extensionName: ref.name,
+      version: resolvedVersion,
+      reason: options.reason as string,
+    };
+
+    // Phase 1: Preview — validate credentials and extension name
+    let preview;
+    try {
+      preview = await extensionYankPreview(ctx, deps, input);
+    } catch (error) {
+      if ("code" in (error as Record<string, unknown>)) {
+        throw new UserError((error as { message: string }).message);
+      }
+      throw error;
+    }
+
+    // Phase 2: Confirmation prompt (log mode only, unless --yes)
+    if (cliCtx.outputMode === "log" && !options.yes) {
+      const target = preview.version
+        ? `${preview.extensionName}@${preview.version}`
+        : `${preview.extensionName} (all versions)`;
       const confirmed = await promptConfirmation(
         `Yank ${target}? This will remove it from the registry.`,
       );
       if (!confirmed) {
-        renderExtensionYankCancelled(ctx.outputMode);
+        renderExtensionYankCancelled(cliCtx.outputMode);
         return;
       }
     }
 
-    // 4. Call the yank API
-    const serverUrl = credentials.serverUrl ?? resolveServerUrl();
-    const client = new ExtensionApiClient(serverUrl);
-    await client.yankExtension(
-      ref.name,
-      resolvedVersion,
-      options.reason,
-      credentials.apiKey,
+    // Phase 3: Execute mutation
+    const renderer = createExtensionYankRenderer(cliCtx.outputMode);
+    await consumeStream(
+      extensionYank(ctx, deps, input),
+      renderer.handlers(),
     );
 
-    // 5. Render success
-    renderExtensionYank(
-      {
-        name: ref.name,
-        version: resolvedVersion,
-        reason: options.reason,
-      },
-      ctx.outputMode,
-    );
-
-    ctx.logger.debug("Extension yank command completed");
+    cliCtx.logger.debug("Extension yank command completed");
   });

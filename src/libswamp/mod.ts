@@ -337,6 +337,56 @@ export {
   type ExtensionListEntry,
   type ExtensionListEvent,
 } from "./extensions/list.ts";
+export {
+  createExtensionFmtDeps,
+  extensionFmt,
+  type ExtensionFmtCheckData,
+  type ExtensionFmtData,
+  type ExtensionFmtDeps,
+  type ExtensionFmtEvent,
+  type ExtensionFmtFixData,
+  type ExtensionFmtInput,
+} from "./extensions/fmt.ts";
+export {
+  createExtensionYankDeps,
+  extensionYank,
+  type ExtensionYankData,
+  type ExtensionYankDeps,
+  type ExtensionYankEvent,
+  type ExtensionYankInput,
+  type ExtensionYankPreview,
+  extensionYankPreview,
+} from "./extensions/yank.ts";
+export {
+  createExtensionUpdateDeps,
+  extensionUpdate,
+  type ExtensionUpdateDeps,
+  type ExtensionUpdateEvent,
+  type ExtensionUpdateInput,
+} from "./extensions/update.ts";
+export type { ExtensionUpdateResult } from "../domain/extensions/extension_update_service.ts";
+export {
+  type CompilationError,
+  createExtensionPushExecuteDeps,
+  createExtensionPushPrepareDeps,
+  extensionPush,
+  type ExtensionPushCounts,
+  type ExtensionPushEvent,
+  type ExtensionPushExecuteDeps,
+  type ExtensionPushExecuteInput,
+  type ExtensionPushMetadata,
+  extensionPushPrepare,
+  type ExtensionPushPrepared,
+  type ExtensionPushPrepareDeps,
+  type ExtensionPushPrepareInput,
+  type ExtensionPushResolvedData,
+  type ExtensionPushSuccessData,
+  type ResolvedDatastoreEntry,
+  type ResolvedDriverEntry,
+  type ResolvedModelEntry,
+  type ResolvedReportEntry,
+  type ResolvedVaultEntry,
+} from "./extensions/push.ts";
 
 // Model edit operations
 export {
@@ -460,6 +510,17 @@ export {
   type DataRenameEvent,
   type DataRenameInput,
 } from "./data/rename.ts";
+
+// Auth login operations
+export {
+  authLogin,
+  type AuthLoginData,
+  type AuthLoginDeps,
+  type AuthLoginEvent,
+  type AuthLoginInput,
+  type CallbackServerHandle,
+  createAuthLoginDeps,
+} from "./auth/login.ts";
 
 // Auth logout operations
 export {

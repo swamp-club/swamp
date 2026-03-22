@@ -17,24 +17,87 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
+import type {
+  EventHandlers,
+  ExtensionUpdateEvent,
+  ExtensionUpdateResult,
+} from "../../libswamp/mod.ts";
+import type { Renderer } from "../renderer.ts";
+import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import type { ExtensionUpdateResult } from "../../domain/extensions/extension_update_service.ts";
+import { UserError } from "../../domain/errors.ts";
 
-const logger = getSwampLogger(["extension", "update"]);
-
-/**
- * Renders the result of `--check` mode (what's outdated, without pulling).
- */
-export function renderExtensionUpdateCheck(
-  result: ExtensionUpdateResult,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(result, null, 2));
-    return;
+class LogExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
+  handlers(): EventHandlers<ExtensionUpdateEvent> {
+    const logger = getSwampLogger(["extension", "update"]);
+    return {
+      no_extensions: () => {
+        logger.info("No upstream extensions installed.");
+        logger.info(
+          "Use 'swamp extension pull @namespace/name' to install one.",
+        );
+      },
+      extension_not_installed: (e) => {
+        logger.error`Extension ${e.name} is not installed.`;
+      },
+      checking: () => {},
+      updating: (e) => {
+        logger.info`Updating ${e.name}: v${e.from} -> v${e.to}`;
+      },
+      completed: (e) => {
+        if (e.mode === "check") {
+          renderCheckLog(e.data, logger);
+        } else {
+          renderUpdateLog(e.data, logger);
+        }
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
   }
+}
 
+class JsonExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
+  handlers(): EventHandlers<ExtensionUpdateEvent> {
+    return {
+      no_extensions: () => {
+        console.log(
+          JSON.stringify({ extensions: [], summary: { total: 0 } }, null, 2),
+        );
+      },
+      extension_not_installed: (e) => {
+        console.log(
+          JSON.stringify(
+            { error: `Extension ${e.name} is not installed.` },
+            null,
+            2,
+          ),
+        );
+      },
+      checking: () => {},
+      updating: (e) => {
+        console.log(
+          JSON.stringify(
+            { status: "updating", name: e.name, from: e.from, to: e.to },
+            null,
+            2,
+          ),
+        );
+      },
+      completed: (e) => {
+        console.log(JSON.stringify(e.data, null, 2));
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+import type { Logger } from "@logtape/logtape";
+
+function renderCheckLog(result: ExtensionUpdateResult, logger: Logger): void {
   if (result.extensions.length === 0) {
     logger.info("No upstream extensions installed.");
     return;
@@ -84,18 +147,7 @@ export function renderExtensionUpdateCheck(
   }
 }
 
-/**
- * Renders the final result after performing updates.
- */
-export function renderExtensionUpdateResult(
-  result: ExtensionUpdateResult,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-
+function renderUpdateLog(result: ExtensionUpdateResult, logger: Logger): void {
   for (const ext of result.extensions) {
     switch (ext.status) {
       case "updated":
@@ -129,52 +181,13 @@ export function renderExtensionUpdateResult(
   });
 }
 
-/**
- * Renders per-extension progress while updating.
- */
-export function renderExtensionUpdateProgress(
-  name: string,
-  from: string,
-  to: string,
+export function createExtensionUpdateRenderer(
   mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(
-      JSON.stringify({ status: "updating", name, from, to }, null, 2),
-    );
-  } else {
-    logger.info`Updating ${name}: v${from} -> v${to}`;
-  }
-}
-
-/**
- * Renders a message when no extensions are installed.
- */
-export function renderNoExtensionsInstalled(mode: OutputMode): void {
-  if (mode === "json") {
-    console.log(
-      JSON.stringify({ extensions: [], summary: { total: 0 } }, null, 2),
-    );
-  } else {
-    logger.info("No upstream extensions installed.");
-    logger.info(
-      "Use 'swamp extension pull @namespace/name' to install one.",
-    );
-  }
-}
-
-/**
- * Renders a message when a specific extension is not found locally.
- */
-export function renderExtensionNotInstalled(
-  name: string,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(
-      JSON.stringify({ error: `Extension ${name} is not installed.` }, null, 2),
-    );
-  } else {
-    logger.error`Extension ${name} is not installed.`;
+): Renderer<ExtensionUpdateEvent> {
+  switch (mode) {
+    case "json":
+      return new JsonExtensionUpdateRenderer();
+    case "log":
+      return new LogExtensionUpdateRenderer();
   }
 }
