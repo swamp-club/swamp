@@ -17,11 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       skills: ${{ steps.filter.outputs.skills }}
+      ux: ${{ steps.filter.outputs.ux }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Check for skill changes
+      - name: Check for changes
         uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -31,6 +32,10 @@ jobs:
               - 'CLAUDE.md'
               - 'scripts/review_skills.ts'
               - 'scripts/eval_skill_triggers.ts'
+            ux:
+              - 'src/cli/commands/**'
+              - 'src/presentation/**'
+              - 'src/domain/errors.ts'
 
   test:
     name: Lint, Test, and Format Check
@@ -337,10 +342,123 @@ jobs:
             --model claude-opus-4-6
             --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
 
+  claude-ux-review:
+    name: CLI UX Review
+    needs: [changes, test]
+    runs-on: ubuntu-latest
+    if: |
+      !failure() && !cancelled() &&
+      needs.changes.outputs.ux == 'true' &&
+      github.event.pull_request.draft == false
+    concurrency:
+      group: claude-ux-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Claude environment
+        run: |
+          mkdir -p ~/.claude
+
+      - name: CLI UX Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are a CLI UX reviewer. Your job is to evaluate how this PR affects the
+            user experience of the swamp CLI tool. You are reviewing from the perspective
+            of someone USING the CLI, not reading the code.
+
+            First, read CLAUDE.md to understand the project's conventions, especially:
+            - Every command must support both "log" and "json" output modes
+            - The CLI uses Cliffy for commands and LogTape for log-mode output
+
+            Then read every changed file in this PR. Focus ONLY on files that affect
+            what users see: commands, renderers, output formatters, and error handling.
+
+            ## Review Dimensions
+
+            ### 1. Help Text & Discoverability
+            - Are new flags and options documented in the command's help text?
+            - Are flag names consistent with existing commands? (check similar commands for patterns)
+            - Are option descriptions clear and concise?
+            - Do flag names use the same conventions as the rest of the CLI? (e.g., --verbose, --json, --field vs --filter)
+
+            ### 2. Error Messages
+            - When the command fails, does the user get a clear, actionable message?
+            - Does the error tell the user WHAT went wrong and HOW to fix it?
+            - Are error messages consistent in tone and format with existing commands?
+            - Read `src/domain/errors.ts` to understand the UserError pattern
+
+            ### 3. Log-Mode Output (human-readable)
+            - Is the output readable and scannable?
+            - Is the information hierarchy clear? (most important info first)
+            - Is formatting consistent with other commands? (check similar renderers for patterns)
+            - Are colors, icons, or formatting used consistently?
+
+            ### 4. JSON-Mode Output (machine-readable)
+            - Does the JSON output include all the data a script would need?
+            - Are field names consistent with other commands' JSON output?
+            - Is the shape documented or self-evident?
+            - Are there fields that are present in log mode but missing from JSON mode (or vice versa)?
+
+            ### 5. Behavioral Consistency
+            - Does the command behave consistently with similar commands in the CLI?
+            - Are exit codes correct? (0 for success, non-zero for failure)
+            - If the command is destructive, does it require confirmation or support --force?
+            - Does the output change correctly between normal and --verbose modes?
+
+            ## Review Rules
+
+            - Compare against EXISTING commands to check consistency. Don't just review in isolation.
+            - Be SPECIFIC — reference the exact flag, message, or output format.
+            - Only flag issues that affect the user experience. Ignore internal code quality.
+            - If the PR doesn't meaningfully change UX (e.g., only refactors internals), say so and approve.
+
+            ## Severity Classification
+
+            - **Blocking**: Broken help text, misleading error messages, missing JSON output for new
+              functionality, inconsistent flag names that would confuse users. These block merge.
+            - **Suggestion**: Minor wording improvements, optional additional output, nice-to-have
+              consistency tweaks. These do NOT block merge.
+
+            After reviewing, submit your review:
+
+            If there are NO blocking issues:
+            ```
+            gh pr review ${{ github.event.pull_request.number }} --approve --body "your review here"
+            ```
+
+            If there ARE blocking issues:
+            ```
+            gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
+            ```
+
+            Format your review body as:
+            ## CLI UX Review
+
+            ### Blocking (if any)
+            [numbered list with specific file, flag/message/output, what's wrong, suggested fix]
+
+            ### Suggestions (if any)
+            [numbered list]
+
+            ### Verdict
+            [PASS / NEEDS CHANGES with one-line summary]
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --model claude-sonnet-4-6
+            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)
+
   auto-merge:
     name: Auto-merge PR
     needs:
-      [test, deps-audit, skill-review, claude-review, claude-adversarial-review]
+      [test, deps-audit, skill-review, claude-review, claude-adversarial-review, claude-ux-review]
     runs-on: ubuntu-latest
     # Only auto-merge PRs from the same repo (not forks) for security
     # Skip auto-merge if PR has the 'hold' label

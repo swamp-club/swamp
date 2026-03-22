@@ -19,18 +19,14 @@
 
 import { Command } from "@cliffy/command";
 import {
-  type ModelCreateData,
-  renderModelCreate,
-} from "../../presentation/output/model_create_output.ts";
+  consumeStream,
+  createLibSwampContext,
+  createModelCreateDeps,
+  modelCreate,
+} from "../../libswamp/mod.ts";
+import { createModelCreateRenderer } from "../../presentation/renderers/model_create.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { UserError } from "../../domain/errors.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
-import { Definition } from "../../domain/definitions/definition.ts";
-import { modelRegistry } from "../../domain/models/model.ts";
-import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
-import { getAutoResolver } from "../auto_resolver_context.ts";
-import { toMethodDescribeData, zodToJsonSchema } from "./type_describe.ts";
 import { parseKeyValueInputs } from "../input_parser.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
@@ -57,98 +53,30 @@ export const modelCreateCommand = new Command()
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, typeArg: string, name: string) {
-    const ctx = createContext(options as GlobalOptions, ["model", "create"]);
-    ctx.logger.debug`Creating model definition: type=${typeArg}, name=${name}`;
+    const cliCtx = createContext(options as GlobalOptions, ["model", "create"]);
+    cliCtx.logger
+      .debug`Creating model definition: type=${typeArg}, name=${name}`;
 
-    // Validate the model type
-    const modelType = ModelType.create(typeArg);
-    ctx.logger.debug`Normalized type: ${modelType.normalized}`;
-
-    // Check if model type is registered (auto-resolve if needed)
-    const resolvedDef = await resolveModelType(modelType, getAutoResolver());
-    if (!resolvedDef) {
-      const availableTypes = modelRegistry.types().map((t) => t.normalized)
-        .join(", ");
-      throw new UserError(
-        `Unknown model type: ${typeArg}. Available types: ${
-          availableTypes || "none"
-        }`,
-      );
-    }
-
-    // Validate repo initialization and create context
-    const { repoContext } = await requireInitializedRepo({
+    const { repoDir } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
-    const definitionRepo = repoContext.definitionRepo;
 
-    // Check if name already exists (globally unique across all types)
-    const existing = await definitionRepo.findByNameGlobal(name);
-    if (existing) {
-      throw new UserError(
-        `Model definition with name '${name}' already exists (type: '${existing.type.normalized}')`,
-      );
-    }
-
-    // Create and save the definition
-    const modelDef = modelRegistry.get(modelType);
-
-    // Parse --global-arg options
+    // Parse --global-arg options (stays in CLI)
     const globalArgEntries: string[] = options.globalArg ?? [];
-    let globalArguments: Record<string, unknown> | undefined =
-      globalArgEntries.length > 0
-        ? await parseKeyValueInputs(globalArgEntries)
-        : undefined;
+    const globalArguments = globalArgEntries.length > 0
+      ? await parseKeyValueInputs(globalArgEntries)
+      : undefined;
 
-    // Validate global arguments against model type schema if present
-    if (globalArguments && modelDef?.globalArguments) {
-      const result = modelDef.globalArguments.safeParse(globalArguments);
-      if (!result.success) {
-        const issues = result.error.issues.map((i) =>
-          `  ${i.path.join(".")}: ${i.message}`
-        ).join("\n");
-        throw new UserError(
-          `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
-        );
-      }
-      globalArguments = result.data as Record<string, unknown>;
-    }
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createModelCreateDeps(repoDir);
+    const renderer = createModelCreateRenderer(cliCtx.outputMode);
+    await consumeStream(
+      modelCreate(ctx, deps, { typeArg, name, globalArguments }),
+      renderer.handlers(),
+    );
 
-    const definition = Definition.create({
-      name,
-      type: modelType.normalized,
-      typeVersion: modelDef?.version,
-      globalArguments,
-    });
-    await definitionRepo.save(modelType, definition);
-
-    ctx.logger.debug`Created definition with ID: ${definition.id}`;
-
-    const data: ModelCreateData = {
-      id: definition.id,
-      type: modelType.normalized,
-      name: definition.name,
-      path: definitionRepo.getPath(modelType, definition.id),
-      version: modelDef?.version,
-      globalArguments: modelDef?.globalArguments
-        ? zodToJsonSchema(modelDef.globalArguments)
-        : undefined,
-      methods: modelDef
-        ? Object.entries(modelDef.methods).map(
-          ([name, method]) =>
-            toMethodDescribeData(
-              name,
-              method,
-              modelDef.resources,
-              modelDef.files,
-            ),
-        )
-        : undefined,
-    };
-
-    renderModelCreate(data, ctx.outputMode);
-    ctx.logger.debug("Model create command completed");
+    cliCtx.logger.debug("Model create command completed");
   });
 
 export const modelCommand = new Command()

@@ -19,13 +19,14 @@
 
 import { Command } from "@cliffy/command";
 import {
-  type DataRenameData,
-  renderDataRename,
-} from "../../presentation/output/data_rename_output.ts";
+  consumeStream,
+  createDataRenameDeps,
+  createLibSwampContext,
+  dataRename,
+} from "../../libswamp/mod.ts";
+import { createDataRenameRenderer } from "../../presentation/renderers/data_rename.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { DataRenameService } from "../../domain/data/data_rename_service.ts";
-import { UserError } from "../../domain/errors.ts";
 
 export const dataRenameCommand = new Command()
   .name("rename")
@@ -39,46 +40,24 @@ export const dataRenameCommand = new Command()
       oldName: string,
       newName: string,
     ) {
-      const ctx = createContext(options as GlobalOptions, ["data", "rename"]);
+      const cliCtx = createContext(options as GlobalOptions, [
+        "data",
+        "rename",
+      ]);
 
-      if (oldName === newName) {
-        throw new UserError("Old name and new name must be different.");
-      }
-
-      const { repoContext } = await requireInitializedRepo({
+      const { repoDir } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
-        outputMode: ctx.outputMode,
+        outputMode: cliCtx.outputMode,
       });
 
-      const service = new DataRenameService(
-        repoContext.unifiedDataRepo,
-        repoContext.definitionRepo,
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createDataRenameDeps(repoDir);
+      const renderer = createDataRenameRenderer(cliCtx.outputMode);
+      await consumeStream(
+        dataRename(ctx, deps, { modelIdOrName, oldName, newName }),
+        renderer.handlers(),
       );
 
-      try {
-        const result = await service.rename(modelIdOrName, oldName, newName);
-
-        const output: DataRenameData = {
-          oldName: result.oldName,
-          newName: result.newName,
-          modelId: result.modelId,
-          modelName: result.modelName,
-          modelType: result.modelType,
-          copiedVersion: result.copiedVersion,
-          newVersion: result.newVersion,
-          warning:
-            `Any workflows or models that produce data under "${result.oldName}" ` +
-            `will overwrite the forward reference. Update them to use "${result.newName}" instead.`,
-        };
-
-        renderDataRename(output, ctx.outputMode);
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new UserError(error.message);
-        }
-        throw error;
-      }
-
-      ctx.logger.debug("Data rename command completed");
+      cliCtx.logger.debug("Data rename command completed");
     },
   );

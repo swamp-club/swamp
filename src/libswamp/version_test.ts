@@ -17,32 +17,24 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { assertEquals } from "@std/assert";
+import { collect } from "./testing.ts";
+import { createLibSwampContext } from "./context.ts";
+import { version, type VersionDeps, type VersionEvent } from "./version.ts";
 
-const logger = getSwampLogger(["vault", "create"]);
+Deno.test("version: yields completed with version data", async () => {
+  const deps: VersionDeps = {} as VersionDeps;
 
-/**
- * Data for vault create output.
- */
-export interface VaultCreateData {
-  id: string;
-  name: string;
-  type: string;
-  typeName: string;
-  config: Record<string, unknown>;
-}
+  const events = await collect<VersionEvent>(
+    version(createLibSwampContext(), deps, { version: "1.2.3" }),
+  );
 
-/**
- * Renders vault create output in either log or JSON mode.
- */
-export function renderVaultCreate(
-  data: VaultCreateData,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    logger.info`Created vault: ${data.name} (${data.typeName})`;
-  }
-}
+  assertEquals(events, [
+    {
+      kind: "completed",
+      data: {
+        version: "1.2.3",
+      },
+    },
+  ]);
+});

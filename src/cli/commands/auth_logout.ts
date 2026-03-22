@@ -18,8 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import {
+  authLogout,
+  consumeStream,
+  createAuthLogoutDeps,
+  createLibSwampContext,
+} from "../../libswamp/mod.ts";
+import { createAuthLogoutRenderer } from "../../presentation/renderers/auth_logout.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -28,40 +34,13 @@ export const authLogoutCommand = new Command()
   .name("logout")
   .description("Remove stored authentication credentials")
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["auth", "logout"]);
-    ctx.logger.debug("Executing auth logout command");
+    const cliCtx = createContext(options as GlobalOptions, ["auth", "logout"]);
+    cliCtx.logger.debug("Executing auth logout command");
 
-    const repo = new AuthRepository();
-    const credentials = await repo.load();
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createAuthLogoutDeps();
+    const renderer = createAuthLogoutRenderer(cliCtx.outputMode);
+    await consumeStream(authLogout(ctx, deps), renderer.handlers());
 
-    if (!credentials) {
-      if (ctx.outputMode === "json") {
-        console.log(
-          JSON.stringify({ loggedOut: false, reason: "not authenticated" }),
-        );
-      } else {
-        console.log("Not currently authenticated.");
-      }
-      return;
-    }
-
-    await repo.delete();
-
-    if (ctx.outputMode === "json") {
-      console.log(JSON.stringify(
-        {
-          loggedOut: true,
-          username: credentials.username,
-          serverUrl: credentials.serverUrl,
-        },
-        null,
-        2,
-      ));
-    } else {
-      console.log(
-        `Logged out ${credentials.username} from ${credentials.serverUrl}`,
-      );
-    }
-
-    ctx.logger.debug("Auth logout command completed");
+    cliCtx.logger.debug("Auth logout command completed");
   });

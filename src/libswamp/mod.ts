@@ -419,6 +419,83 @@ export {
   type DataGcPreviewItem,
 } from "./data/gc.ts";
 
+// Model create operations
+export {
+  createModelCreateDeps,
+  modelCreate,
+  type ModelCreateData,
+  type ModelCreateDeps,
+  type ModelCreateEvent,
+  type ModelCreateInput,
+} from "./models/create.ts";
+
+// Workflow create operations
+export {
+  createWorkflowCreateDeps,
+  workflowCreate,
+  type WorkflowCreateData,
+  type WorkflowCreateDeps,
+  type WorkflowCreateEvent,
+  type WorkflowCreateInput,
+  type WorkflowCreateJobData,
+  type WorkflowCreateStepData,
+} from "./workflows/create.ts";
+
+// Vault create operations
+export {
+  createVaultCreateDeps,
+  vaultCreate,
+  type VaultCreateData,
+  type VaultCreateDeps,
+  type VaultCreateEvent,
+  type VaultCreateInput,
+} from "./vaults/create.ts";
+
+// Data rename operations
+export {
+  createDataRenameDeps,
+  dataRename,
+  type DataRenameData,
+  type DataRenameDeps,
+  type DataRenameEvent,
+  type DataRenameInput,
+} from "./data/rename.ts";
+
+// Auth logout operations
+export {
+  authLogout,
+  type AuthLogoutData,
+  type AuthLogoutDeps,
+  type AuthLogoutEvent,
+  createAuthLogoutDeps,
+} from "./auth/logout.ts";
+
+// Repo init/upgrade operations
+export {
+  createRepoInitDeps,
+  createRepoUpgradeDeps,
+  repoInit,
+  type RepoInitData,
+  type RepoInitDeps,
+  type RepoInitEvent,
+  type RepoInitInput,
+  repoUpgrade,
+  type RepoUpgradeData,
+  type RepoUpgradeDeps,
+  type RepoUpgradeEvent,
+  type RepoUpgradeInput,
+} from "./repo/init.ts";
+
+// Version operations
+export {
+  createVersionDeps,
+  version,
+  type VersionData,
+  type VersionDeps,
+  type VersionEvent,
+  type VersionInput,
+} from "./version.ts";
+
 // Telemetry operations
 export {
   createTelemetryStatsDeps,

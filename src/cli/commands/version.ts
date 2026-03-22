@@ -19,9 +19,13 @@
 
 import { Command } from "@cliffy/command";
 import {
-  renderVersion,
+  consumeStream,
+  createLibSwampContext,
+  createVersionDeps,
+  version,
   type VersionData,
-} from "../../presentation/output/output.ts";
+} from "../../libswamp/mod.ts";
+import { createVersionRenderer } from "../../presentation/renderers/version.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 
 // This gets replaced by the compile script during release builds
@@ -36,14 +40,19 @@ type AnyOptions = any;
 
 export const versionCommand = new Command()
   .description("Display the version of swamp")
-  .action(function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["version"]);
-    ctx.logger.debug("Executing version command");
-    ctx.logger
-      .debug`Output mode: ${ctx.outputMode}, verbosity: ${ctx.verbosity}`;
+  .action(async function (options: AnyOptions) {
+    const cliCtx = createContext(options as GlobalOptions, ["version"]);
+    cliCtx.logger.debug("Executing version command");
+    cliCtx.logger
+      .debug`Output mode: ${cliCtx.outputMode}, verbosity: ${cliCtx.verbosity}`;
 
-    const data = getVersionData();
-    renderVersion(data, ctx.outputMode);
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createVersionDeps();
+    const renderer = createVersionRenderer(cliCtx.outputMode);
+    await consumeStream(
+      version(ctx, deps, { version: VERSION }),
+      renderer.handlers(),
+    );
 
-    ctx.logger.debug("Version command completed");
+    cliCtx.logger.debug("Version command completed");
   });

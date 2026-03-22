@@ -19,41 +19,18 @@
 
 import { Command } from "@cliffy/command";
 import {
-  renderVaultCreate,
-  type VaultCreateData,
-} from "../../presentation/output/vault_create_output.ts";
+  consumeStream,
+  createLibSwampContext,
+  createVaultCreateDeps,
+  vaultCreate,
+} from "../../libswamp/mod.ts";
+import { createVaultCreateRenderer } from "../../presentation/renderers/vault_create.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
-import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
-import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import {
-  createVaultConfigId,
-  VaultConfig,
-} from "../../domain/vaults/vault_config.ts";
-import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_service.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Resolves provider-specific configuration for built-in vault types.
- */
-function resolveProviderConfig(
-  vaultType: string,
-  repoDir: string,
-): Record<string, unknown> {
-  switch (vaultType) {
-    case "local_encryption":
-      return {
-        auto_generate: true,
-        base_dir: repoDir,
-      };
-    default:
-      return {};
-  }
-}
 
 /**
  * Prompts user for vault name in interactive mode.
@@ -73,13 +50,6 @@ async function promptVaultName(): Promise<string> {
   return decoder.decode(buf.subarray(0, n)).trim();
 }
 
-/**
- * Generates a unique ID for a vault config.
- */
-function generateVaultId(): string {
-  return crypto.randomUUID();
-}
-
 export const vaultCreateCommand = new Command()
   .name("create")
   .description("Create a new vault configuration")
@@ -95,16 +65,19 @@ export const vaultCreateCommand = new Command()
       vaultType: string,
       vaultNameArg?: string,
     ) {
-      const ctx = createContext(options as GlobalOptions, ["vault", "create"]);
-      const { repoDir, repoContext } = await requireInitializedRepo({
+      const cliCtx = createContext(options as GlobalOptions, [
+        "vault",
+        "create",
+      ]);
+      const { repoDir } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
-        outputMode: ctx.outputMode,
+        outputMode: cliCtx.outputMode,
       });
 
-      // Get vault name - prompt if not provided
+      // Get vault name - prompt if not provided (stays in CLI)
       let vaultName = vaultNameArg;
       if (!vaultName) {
-        if (ctx.outputMode === "json") {
+        if (cliCtx.outputMode === "json") {
           throw new UserError(
             "Vault name is required in non-interactive mode. Usage: swamp vault create <type> <name>",
           );
@@ -115,117 +88,31 @@ export const vaultCreateCommand = new Command()
         }
       }
 
-      ctx.logger
-        .debug`Creating vault: type=${vaultType}, name=${vaultName}`;
-
-      // Auto-resolve extension vault types if not already installed
-      if (!vaultTypeRegistry.has(vaultType) && vaultType.startsWith("@")) {
-        await resolveVaultType(vaultType, getAutoResolver());
-      }
-
-      // Validate the vault type using the registry
-      const typeInfo = vaultTypeRegistry.get(vaultType);
-      if (!typeInfo) {
-        const renamed = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
-        if (renamed) {
-          throw new UserError(
-            `The type '${vaultType}' has been renamed to '${renamed}'. Use: swamp vault create ${renamed} ${vaultName}`,
-          );
-        }
-        const availableTypes = vaultTypeRegistry.getAll().map((v) => v.type)
-          .join(", ");
-        throw new UserError(
-          `Unknown vault type: ${vaultType}. Available types: ${availableTypes}. Use 'swamp vault type search' to see available types.`,
-        );
-      }
-
-      // Validate vault name
-      if (!/^[a-z][a-z0-9-]*$/.test(vaultName)) {
-        throw new UserError(
-          `Invalid vault name: ${vaultName}. Vault names must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens.`,
-        );
-      }
-
-      const repo = repoContext.vaultConfigRepo;
-
-      const existingVault = await repo.findByName(vaultName);
-      if (existingVault) {
-        throw new UserError(
-          `Vault '${vaultName}' already exists. Use a different name or remove the existing vault configuration.`,
-        );
-      }
-
-      // Resolve provider configuration
-      let providerConfig: Record<string, unknown>;
-
-      if (!typeInfo.isBuiltIn && typeInfo.createProvider) {
-        // Extension vault type: parse --config JSON, defaulting to {} if not provided
-        if (options.config) {
-          try {
-            providerConfig = JSON.parse(options.config) as Record<
-              string,
-              unknown
-            >;
-          } catch {
-            throw new UserError(
-              `Invalid JSON in --config: ${options.config}`,
-            );
-          }
-        } else {
-          providerConfig = {};
-        }
-
-        // Validate against configSchema if provided
-        if (typeInfo.configSchema) {
-          const result = typeInfo.configSchema.safeParse(providerConfig);
-          if (!result.success) {
-            throw new UserError(
-              `Invalid config for vault type '${vaultType}': ${result.error.message}`,
-            );
-          }
-        }
-      } else if (options.config) {
-        // Built-in type with explicit --config JSON
+      // Parse --config JSON (stays in CLI as input parsing)
+      let config: Record<string, unknown> | undefined;
+      if (options.config) {
         try {
-          providerConfig = JSON.parse(options.config) as Record<
-            string,
-            unknown
-          >;
+          config = JSON.parse(options.config) as Record<string, unknown>;
         } catch {
           throw new UserError(
             `Invalid JSON in --config: ${options.config}`,
           );
         }
-      } else {
-        // Built-in vault type: resolve defaults
-        providerConfig = resolveProviderConfig(
-          vaultType,
-          repoDir,
-        );
       }
 
-      const vaultId = createVaultConfigId(generateVaultId());
-      const vaultConfig = VaultConfig.create(
-        vaultId,
-        vaultName,
-        vaultType,
-        providerConfig,
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createVaultCreateDeps(repoDir);
+      const renderer = createVaultCreateRenderer(cliCtx.outputMode);
+      await consumeStream(
+        vaultCreate(ctx, deps, {
+          vaultType,
+          name: vaultName,
+          config,
+          repoDir,
+        }),
+        renderer.handlers(),
       );
 
-      // Save to repository
-      await repo.save(vaultConfig);
-
-      ctx.logger.debug`Vault created: ${vaultName}`;
-
-      const data: VaultCreateData = {
-        id: vaultId,
-        name: vaultName,
-        type: vaultType,
-        typeName: typeInfo.name,
-        config: providerConfig,
-      };
-
-      renderVaultCreate(data, ctx.outputMode);
-      ctx.logger.debug("Vault create command completed");
+      cliCtx.logger.debug("Vault create command completed");
     },
   );

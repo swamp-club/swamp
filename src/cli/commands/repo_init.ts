@@ -19,14 +19,18 @@
 
 import { Command, EnumType } from "@cliffy/command";
 import {
-  renderRepoInit,
-  renderRepoUpgrade,
-  type RepoInitData,
-  type RepoUpgradeData,
-} from "../../presentation/output/repo_output.ts";
+  consumeStream,
+  createLibSwampContext,
+  createRepoInitDeps,
+  createRepoUpgradeDeps,
+  repoInit,
+  repoUpgrade,
+} from "../../libswamp/mod.ts";
+import {
+  createRepoInitRenderer,
+  createRepoUpgradeRenderer,
+} from "../../presentation/renderers/repo_init.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { type AiTool, RepoService } from "../../domain/repo/repo_service.ts";
 import { VERSION } from "./version.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -46,33 +50,23 @@ export async function repoInitAction(
   options: AnyOptions,
   pathArg?: string,
 ): Promise<void> {
-  const ctx = createContext(options as GlobalOptions, ["repo", "init"]);
-  ctx.logger.debug`Initializing repository at: ${pathArg ?? "."}`;
+  const cliCtx = createContext(options as GlobalOptions, ["repo", "init"]);
+  cliCtx.logger.debug`Initializing repository at: ${pathArg ?? "."}`;
 
-  const repoPath = RepoPath.create(pathArg ?? ".");
-  const service = new RepoService(VERSION);
-  const tool = (options.tool as AiTool) ?? "claude";
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createRepoInitDeps(VERSION);
+  const renderer = createRepoInitRenderer(cliCtx.outputMode);
+  await consumeStream(
+    repoInit(ctx, deps, {
+      path: pathArg ?? ".",
+      force: !!options.force,
+      tool: (options.tool as string) ?? "claude",
+      version: VERSION,
+    }),
+    renderer.handlers(),
+  );
 
-  const result = await service.init(repoPath, {
-    force: options.force,
-    tool,
-  });
-
-  ctx.logger.debug`Repository initialized: ${result.path}`;
-
-  const data: RepoInitData = {
-    path: result.path,
-    version: result.version,
-    initializedAt: result.initializedAt,
-    skillsCopied: result.skillsCopied,
-    instructionsFileCreated: result.instructionsFileCreated,
-    settingsCreated: result.settingsCreated,
-    gitignoreAction: result.gitignoreAction,
-    tool: result.tool,
-  };
-
-  renderRepoInit(data, ctx.outputMode);
-  ctx.logger.debug("Repo init command completed");
+  cliCtx.logger.debug("Repo init command completed");
 }
 
 export const repoInitCommand = new Command()
@@ -97,35 +91,23 @@ export const repoUpgradeCommand = new Command()
   )
   .option("--include-gitignore", "Manage a swamp section in .gitignore")
   .action(async function (options: AnyOptions, pathArg?: string) {
-    const ctx = createContext(options as GlobalOptions, ["repo", "upgrade"]);
-    ctx.logger.debug`Upgrading repository at: ${pathArg ?? "."}`;
+    const cliCtx = createContext(options as GlobalOptions, ["repo", "upgrade"]);
+    cliCtx.logger.debug`Upgrading repository at: ${pathArg ?? "."}`;
 
-    const repoPath = RepoPath.create(pathArg ?? ".");
-    const service = new RepoService(VERSION);
-    const tool = options.tool as AiTool | undefined;
-    const includeGitignore = options.includeGitignore as boolean | undefined;
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createRepoUpgradeDeps(VERSION);
+    const renderer = createRepoUpgradeRenderer(cliCtx.outputMode);
+    await consumeStream(
+      repoUpgrade(ctx, deps, {
+        path: pathArg ?? ".",
+        tool: options.tool as string | undefined,
+        includeGitignore: options.includeGitignore as boolean | undefined,
+        version: VERSION,
+      }),
+      renderer.handlers(),
+    );
 
-    const result = await service.upgrade(repoPath, {
-      tool,
-      includeGitignore,
-    });
-
-    ctx.logger.debug`Repository upgraded: ${result.path}`;
-
-    const data: RepoUpgradeData = {
-      path: result.path,
-      previousVersion: result.previousVersion,
-      newVersion: result.newVersion,
-      upgradedAt: result.upgradedAt,
-      skillsUpdated: result.skillsUpdated,
-      instructionsUpdated: result.instructionsUpdated,
-      settingsUpdated: result.settingsUpdated,
-      gitignoreAction: result.gitignoreAction,
-      tool: result.tool,
-    };
-
-    renderRepoUpgrade(data, ctx.outputMode);
-    ctx.logger.debug("Repo upgrade command completed");
+    cliCtx.logger.debug("Repo upgrade command completed");
   });
 
 export const repoCommand = new Command()
