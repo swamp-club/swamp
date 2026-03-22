@@ -64,5 +64,25 @@
     "query": "List all the data stored from running my models",
     "should_trigger": false,
     "note": "Viewing model data → swamp-data"
+  },
+  {
+    "query": "Smoke test my extension model against the live API",
+    "should_trigger": true
+  },
+  {
+    "query": "I need to test my extension before pushing it",
+    "should_trigger": true
+  },
+  {
+    "query": "Verify my model works against the real API",
+    "should_trigger": true
+  },
+  {
+    "query": "Run a before push test on my custom model",
+    "should_trigger": true
+  },
+  {
+    "query": "Test my extension model's CRUD lifecycle",
+    "should_trigger": true
   }
 ]

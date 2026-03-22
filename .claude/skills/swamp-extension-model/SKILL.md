@@ -1,6 +1,6 @@
 ---
 name: swamp-extension-model
-description: Create user-defined TypeScript models for swamp — define Zod schemas, implement model interfaces, configure output specs. Use when users want to extend swamp with custom model types, create automation models, or add new integrations. Triggers on "create model", "new model type", "custom model", "extension model", "user model", "typescript model", "extend swamp", "build integration", "zod schema", "model plugin", "deno model", "extensions/models", "model development", "implement model".
+description: Create user-defined TypeScript models for swamp — define Zod schemas, implement model interfaces, configure output specs. Use when users want to extend swamp with custom model types, create automation models, or add new integrations. Triggers on "create model", "new model type", "custom model", "extension model", "user model", "typescript model", "extend swamp", "build integration", "zod schema", "model plugin", "deno model", "extensions/models", "model development", "implement model", "smoke test", "test extension", "verify model", "test against API", "before push test".
 ---
 
 # Swamp Extension Model
@@ -61,6 +61,7 @@ than wrapping CLI commands.
 | Check formatting    | `swamp extension fmt manifest.yaml --check --json`                   |
 | Push extension      | `swamp extension push manifest.yaml --json`                          |
 | Dry-run push        | `swamp extension push manifest.yaml --dry-run --json`                |
+| Smoke test model    | See [references/smoke_testing.md](references/smoke_testing.md)       |
 
 ## Quick Start
 
@@ -383,6 +384,17 @@ Swamp discovers models and extensions recursively:
 Files are classified by export name: `export const model` defines new types,
 `export const extension` adds methods to existing types.
 
+## Smoke Testing
+
+Before pushing an extension, verify it works against the live API. Unit tests
+with mocked responses can't catch Content-Type mismatches, bundle caching bugs,
+or API validation quirks that only surface with real HTTP calls.
+
+Follow the smoke-test protocol in
+[references/smoke_testing.md](references/smoke_testing.md) to systematically
+test your model's methods against the real API. Start with safe read-only
+methods (list, get), then run the full CRUD lifecycle.
+
 ## Publishing Extensions
 
 Extensions are published to the swamp registry via a `manifest.yaml` and the
@@ -484,6 +496,9 @@ swamp model type describe @myorg/my-model --json  # Check schema
   end-to-end scenarios (custom API, cloud CRUD, factory models)
 - **Publishing**: See [references/publishing.md](references/publishing.md) for
   manifest schema, push workflow, safety rules, and CalVer versioning
+- **Smoke Testing**: See
+  [references/smoke_testing.md](references/smoke_testing.md) for the pre-push
+  smoke-test protocol, CRUD lifecycle testing, and common failure patterns
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md)
 - **Docker execution**: See
