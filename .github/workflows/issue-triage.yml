@@ -142,7 +142,8 @@ jobs:
             - **Potential Challenges**: Risks, edge cases, or complications
 
             Reminders for the plan:
-            - Keep the blast radius small — only touch what is necessary
+            - Keep the blast radius small — only touch what is necessary. If the scope is large, recommend splitting into multiple PRs.
+            - Focus on WHAT needs to change and WHERE, not exact implementation details. The implementer will make design choices like formatting, heuristics, and UX. The plan should describe the problem and the approach, not prescribe every detail.
             - New `.ts`/`.tsx` files need the AGPLv3 license header (run `deno run license-headers`)
             - CLI commands must import from `src/libswamp/mod.ts`, never internal paths
             - Every command must support both `"log"` and `"json"` output modes
