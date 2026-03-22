@@ -104,4 +104,6 @@ pattern (`await initializeLogging({})` and
 If you hit a non-obvious problem during a session — something that wasted time,
 caused a wrong approach, or revealed a convention not documented here — propose
 an update to CLAUDE.md or the relevant skill before finishing. Only capture
-things that would trip up future sessions, not one-off issues.
+things that would trip up future sessions, not one-off issues. Frame learnings
+as positive conventions (what to do) rather than reactive rules (what not to
+do).

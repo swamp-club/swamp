@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { walk } from "@std/fs/walk";
 import { join, relative } from "@std/path";
 
@@ -51,6 +51,13 @@ function importsLayer(
   return rel.startsWith(targetLayer + "/");
 }
 
+/**
+ * Check if an import is a logging import (cross-cutting concern, not a real violation).
+ */
+function isLoggingImport(filePath: string, importPath: string): boolean {
+  return importsLayer(filePath, importPath, "infrastructure/logging");
+}
+
 // Ratchet counts: current number of known violations.
 // If someone fixes a violation, the count decreases and the test still passes.
 // If someone adds a new violation, the count increases and the test fails.
@@ -74,6 +81,8 @@ Deno.test(
 
       for (const imp of imports) {
         if (importsLayer(entry.path, imp, "infrastructure")) {
+          // Logging is a cross-cutting concern, not an infrastructure dependency
+          if (isLoggingImport(entry.path, imp)) continue;
           violations.push(relative(ROOT, entry.path));
           break; // Count each file only once
         }
@@ -99,10 +108,8 @@ Deno.test(
   },
 );
 
-const KNOWN_PRESENTATION_INFRA_VIOLATIONS = 51;
-
 Deno.test(
-  "presentation layer must not add new infrastructure imports (ratchet)",
+  "presentation layer must not import infrastructure (excluding logging)",
   async () => {
     const presentationDir = join(ROOT, "src", "presentation");
     const violations: string[] = [];
@@ -119,27 +126,21 @@ Deno.test(
 
       for (const imp of imports) {
         if (importsLayer(entry.path, imp, "infrastructure")) {
+          // Logging is a cross-cutting concern, not an infrastructure dependency
+          if (isLoggingImport(entry.path, imp)) continue;
           violations.push(relative(ROOT, entry.path));
           break; // Count each file only once
         }
       }
     }
 
-    const count = violations.length;
-
-    assert(
-      count <= KNOWN_PRESENTATION_INFRA_VIOLATIONS,
-      `Presentation→Infrastructure violation count increased from ${KNOWN_PRESENTATION_INFRA_VIOLATIONS} to ${count}.\n` +
-        `New violations:\n${violations.sort().join("\n")}\n\n` +
+    assertEquals(
+      violations.length,
+      0,
+      `Presentation→Infrastructure violations found (excluding logging):\n` +
+        `${violations.sort().join("\n")}\n\n` +
         `The presentation layer should go through the CLI/application layer, not reach into infrastructure.\n` +
-        `If you fixed violations, update KNOWN_PRESENTATION_INFRA_VIOLATIONS in this test.`,
+        `Logging imports (infrastructure/logging/) are excluded as a cross-cutting concern.`,
     );
-
-    if (count < KNOWN_PRESENTATION_INFRA_VIOLATIONS) {
-      console.log(
-        `  [ratchet] Presentation→Infrastructure violations decreased from ${KNOWN_PRESENTATION_INFRA_VIOLATIONS} to ${count}. ` +
-          `Update KNOWN_PRESENTATION_INFRA_VIOLATIONS to ${count} to lock in the improvement.`,
-      );
-    }
   },
 );
