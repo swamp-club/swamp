@@ -27,74 +27,20 @@ import {
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
-  type DatastoreLockReleaseData,
-  type DatastoreLockStatusData,
-  renderDatastoreLockRelease,
-  renderDatastoreLockStatus,
-} from "../../presentation/output/datastore_output.ts";
-import { walk } from "@std/fs";
-import { relative } from "@std/path";
-import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
+  consumeStream,
+  createDatastoreLockReleaseDeps,
+  createDatastoreLockStatusDeps,
+  createLibSwampContext,
+  datastoreLockRelease,
+  datastoreLockStatus,
+} from "../../libswamp/mod.ts";
+import {
+  createDatastoreLockReleaseRenderer,
+  createDatastoreLockStatusRenderer,
+} from "../../presentation/renderers/datastore_lock.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Scans the datastore for per-model lock files.
- *
- * Returns an array of { lockKey, modelType, modelId, info } for each
- * found per-model lock. Only works for filesystem datastores.
- */
-async function scanModelLocks(
-  datastorePath: string,
-): Promise<
-  Array<{
-    lockKey: string;
-    modelType: string;
-    modelId: string;
-    info: LockInfo;
-  }>
-> {
-  const results: Array<{
-    lockKey: string;
-    modelType: string;
-    modelId: string;
-    info: LockInfo;
-  }> = [];
-
-  try {
-    for await (
-      const entry of walk(datastorePath, {
-        includeDirs: false,
-        match: [/\.lock$/],
-      })
-    ) {
-      const rel = relative(datastorePath, entry.path);
-      // Match pattern: data/{modelType}/{modelId}/.lock
-      const parts = rel.split("/");
-      if (
-        parts.length === 4 && parts[0] === "data" && parts[3] === ".lock"
-      ) {
-        try {
-          const content = await Deno.readTextFile(entry.path);
-          const info = JSON.parse(content) as LockInfo;
-          results.push({
-            lockKey: rel,
-            modelType: parts[1],
-            modelId: parts[2],
-            info,
-          });
-        } catch {
-          // Skip unreadable lock files
-        }
-      }
-    }
-  } catch {
-    // Datastore directory may not exist
-  }
-
-  return results;
-}
 
 /**
  * Shows the current datastore lock status.
@@ -103,7 +49,7 @@ const datastoreLockStatusCommand = new Command()
   .description("Show who holds the datastore lock")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, [
+    const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
       "lock",
       "status",
@@ -113,33 +59,22 @@ const datastoreLockStatusCommand = new Command()
       options.repoDir ?? ".",
     );
 
-    // Check global lock
     const lock = createDatastoreLock(config);
-    const info = await lock.inspect();
+    const deps = createDatastoreLockStatusDeps(lock, config);
 
-    const data: DatastoreLockStatusData = {
-      held: info !== null,
-      info: info ?? undefined,
-      datastoreType: config.type,
-    };
+    const isFilesystem = !isCustomDatastoreConfig(config) &&
+      config.type === "filesystem";
 
-    renderDatastoreLockStatus(data, ctx.outputMode);
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const renderer = createDatastoreLockStatusRenderer(cliCtx.outputMode);
 
-    // Scan for per-model locks (filesystem only)
-    if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-      const modelLocks = await scanModelLocks(config.path);
-      if (modelLocks.length > 0) {
-        for (const ml of modelLocks) {
-          const modelData: DatastoreLockStatusData = {
-            held: true,
-            info: ml.info,
-            datastoreType: config.type,
-            lockScope: `${ml.modelType}/${ml.modelId}`,
-          };
-          renderDatastoreLockStatus(modelData, ctx.outputMode);
-        }
-      }
-    }
+    await consumeStream(
+      datastoreLockStatus(ctx, deps, {
+        datastoreType: config.type,
+        isFilesystemDatastore: isFilesystem,
+      }),
+      renderer.handlers(),
+    );
   });
 
 /**
@@ -154,7 +89,7 @@ const datastoreLockReleaseCommand = new Command()
     "Release a specific model's lock (type/id format, e.g. aws-ec2/my-server)",
   )
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, [
+    const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
       "lock",
       "release",
@@ -175,7 +110,6 @@ const datastoreLockReleaseCommand = new Command()
 
     let lock;
     if (modelSpec) {
-      // Per-model lock release
       const parts = modelSpec.split("/");
       if (parts.length !== 2) {
         throw new UserError(
@@ -184,40 +118,17 @@ const datastoreLockReleaseCommand = new Command()
       }
       lock = createModelLock(config, parts[0], parts[1]);
     } else {
-      // Global lock release
       lock = createDatastoreLock(config);
     }
 
-    const info = await lock.inspect();
+    const deps = createDatastoreLockReleaseDeps(lock);
 
-    if (!info) {
-      const releaseData: DatastoreLockReleaseData = {
-        released: false,
-        reason: "no lock held",
-      };
-      renderDatastoreLockRelease(releaseData, ctx.outputMode);
-      return;
-    }
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const renderer = createDatastoreLockReleaseRenderer(cliCtx.outputMode);
 
-    // Re-verify the lock holder hasn't changed between inspect and delete.
-    // forceRelease() re-reads the nonce immediately before deleting to
-    // minimise the TOCTOU window.
-    const released = await lock.forceRelease(info.nonce!);
-    if (!released) {
-      renderDatastoreLockRelease(
-        {
-          released: false,
-          reason:
-            "lock holder changed — aborting to avoid breaking an active lock",
-        },
-        ctx.outputMode,
-      );
-      return;
-    }
-
-    renderDatastoreLockRelease(
-      { released: true, previousHolder: info },
-      ctx.outputMode,
+    await consumeStream(
+      datastoreLockRelease(ctx, deps, {}),
+      renderer.handlers(),
     );
   });
 

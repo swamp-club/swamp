@@ -630,3 +630,45 @@ export {
   type SummariseEvent,
   type SummariseInput,
 } from "./summary/summarise.ts";
+
+// Datastore operations
+export {
+  createDatastoreStatusDeps,
+  datastoreStatus,
+  type DatastoreStatusData,
+  type DatastoreStatusDeps,
+  type DatastoreStatusEvent,
+} from "./datastores/status.ts";
+export {
+  createDatastoreSyncDeps,
+  datastoreSync,
+  type DatastoreSyncData,
+  type DatastoreSyncDeps,
+  type DatastoreSyncEvent,
+  type DatastoreSyncInput,
+} from "./datastores/sync.ts";
+export {
+  createDatastoreSetupDeps,
+  type DatastoreSetupData,
+  type DatastoreSetupDeps,
+  type DatastoreSetupEvent,
+  datastoreSetupFilesystem,
+  type DatastoreSetupFilesystemInput,
+  datastoreSetupS3,
+  type DatastoreSetupS3Input,
+} from "./datastores/setup.ts";
+export {
+  createDatastoreLockReleaseDeps,
+  createDatastoreLockStatusDeps,
+  datastoreLockRelease,
+  type DatastoreLockReleaseData,
+  type DatastoreLockReleaseDeps,
+  type DatastoreLockReleaseEvent,
+  type DatastoreLockReleaseInput,
+  datastoreLockStatus,
+  type DatastoreLockStatusData,
+  type DatastoreLockStatusDeps,
+  type DatastoreLockStatusEvent,
+  type DatastoreLockStatusInput,
+  type LockInfo,
+} from "./datastores/lock.ts";

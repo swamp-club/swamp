@@ -1,0 +1,160 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertCompletes } from "../testing.ts";
+import { createLibSwampContext } from "../context.ts";
+import {
+  datastoreStatus,
+  type DatastoreStatusDeps,
+  type DatastoreStatusEvent,
+} from "./status.ts";
+import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+
+function makeDeps(
+  overrides: Partial<DatastoreStatusDeps> = {},
+): DatastoreStatusDeps {
+  const defaultConfig: DatastoreConfig = {
+    type: "filesystem",
+    path: "/tmp/swamp-data",
+  };
+  return {
+    loadConfig: () => defaultConfig,
+    verifyHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 5 }),
+    getDirectories: () => ["data", "outputs", "workflow-runs"],
+    ...overrides,
+  };
+}
+
+Deno.test("datastoreStatus: healthy filesystem datastore", async () => {
+  const deps = makeDeps();
+
+  await assertCompletes<DatastoreStatusEvent>(
+    datastoreStatus(createLibSwampContext(), deps),
+    {
+      kind: "completed",
+      data: {
+        type: "filesystem",
+        path: "/tmp/swamp-data",
+        bucket: undefined,
+        prefix: undefined,
+        region: undefined,
+        healthy: true,
+        message: "OK",
+        latencyMs: 5,
+        directories: ["data", "outputs", "workflow-runs"],
+        exclude: undefined,
+      },
+    },
+  );
+});
+
+Deno.test("datastoreStatus: healthy S3 datastore", async () => {
+  const s3Config: DatastoreConfig = {
+    type: "s3",
+    bucket: "my-bucket",
+    prefix: "swamp/",
+    region: "us-east-1",
+    cachePath: "/tmp/cache",
+  };
+  const deps = makeDeps({
+    loadConfig: () => s3Config,
+    verifyHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 120 }),
+  });
+
+  await assertCompletes<DatastoreStatusEvent>(
+    datastoreStatus(createLibSwampContext(), deps),
+    {
+      kind: "completed",
+      data: {
+        type: "s3",
+        path: undefined,
+        bucket: "my-bucket",
+        prefix: "swamp/",
+        region: "us-east-1",
+        healthy: true,
+        message: "OK",
+        latencyMs: 120,
+        directories: ["data", "outputs", "workflow-runs"],
+        exclude: undefined,
+      },
+    },
+  );
+});
+
+Deno.test("datastoreStatus: unhealthy datastore", async () => {
+  const deps = makeDeps({
+    verifyHealth: () =>
+      Promise.resolve({
+        healthy: false,
+        message: "Connection refused",
+        latencyMs: 0,
+      }),
+  });
+
+  await assertCompletes<DatastoreStatusEvent>(
+    datastoreStatus(createLibSwampContext(), deps),
+    {
+      kind: "completed",
+      data: {
+        type: "filesystem",
+        path: "/tmp/swamp-data",
+        bucket: undefined,
+        prefix: undefined,
+        region: undefined,
+        healthy: false,
+        message: "Connection refused",
+        latencyMs: 0,
+        directories: ["data", "outputs", "workflow-runs"],
+        exclude: undefined,
+      },
+    },
+  );
+});
+
+Deno.test("datastoreStatus: includes exclude patterns", async () => {
+  const config: DatastoreConfig = {
+    type: "filesystem",
+    path: "/tmp/swamp-data",
+    exclude: ["*.log", "temp/"],
+  };
+  const deps = makeDeps({
+    loadConfig: () => config,
+  });
+
+  await assertCompletes<DatastoreStatusEvent>(
+    datastoreStatus(createLibSwampContext(), deps),
+    {
+      kind: "completed",
+      data: {
+        type: "filesystem",
+        path: "/tmp/swamp-data",
+        bucket: undefined,
+        prefix: undefined,
+        region: undefined,
+        healthy: true,
+        message: "OK",
+        latencyMs: 5,
+        directories: ["data", "outputs", "workflow-runs"],
+        exclude: ["*.log", "temp/"],
+      },
+    },
+  );
+});

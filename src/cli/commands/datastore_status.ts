@@ -18,19 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import {
+  consumeStream,
+  createDatastoreStatusDeps,
+  createLibSwampContext,
+  datastoreStatus,
+} from "../../libswamp/mod.ts";
+import { createDatastoreStatusRenderer } from "../../presentation/renderers/datastore_status.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import {
-  getDatastoreDirectories,
-  isCustomDatastoreConfig,
-} from "../../domain/datastore/datastore_config.ts";
-import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
-import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
-import { S3DatastoreVerifier } from "../../infrastructure/persistence/s3_datastore_verifier.ts";
-import {
-  type DatastoreStatusData,
-  renderDatastoreStatus,
-} from "../../presentation/output/datastore_output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -42,72 +38,21 @@ export const datastoreStatusCommand = new Command()
   .description("Show datastore configuration and health")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, [
+    const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
       "status",
     ]);
+    cliCtx.logger.debug("Executing datastore status command");
 
     const { datastoreResolver } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
-      outputMode: ctx.outputMode,
+      outputMode: cliCtx.outputMode,
     });
 
-    const config = datastoreResolver.config();
-    const directories = [...getDatastoreDirectories(config)];
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createDatastoreStatusDeps(datastoreResolver);
+    const renderer = createDatastoreStatusRenderer(cliCtx.outputMode);
+    await consumeStream(datastoreStatus(ctx, deps), renderer.handlers());
 
-    // Verify health
-    let healthy = false;
-    let message = "Unknown";
-    let latencyMs = 0;
-
-    if (isCustomDatastoreConfig(config)) {
-      const typeInfo = datastoreTypeRegistry.get(config.type);
-      if (typeInfo?.createProvider) {
-        const provider = typeInfo.createProvider(config.config);
-        const verifier = provider.createVerifier();
-        const result = await verifier.verify();
-        healthy = result.healthy;
-        message = result.message;
-        latencyMs = result.latencyMs;
-      }
-    } else if (config.type === "filesystem") {
-      const verifier = new FilesystemDatastoreVerifier(config.path);
-      const result = await verifier.verify();
-      healthy = result.healthy;
-      message = result.message;
-      latencyMs = result.latencyMs;
-    } else {
-      const verifier = new S3DatastoreVerifier(
-        config.bucket,
-        config.prefix,
-        config.region,
-      );
-      const result = await verifier.verify();
-      healthy = result.healthy;
-      message = result.message;
-      latencyMs = result.latencyMs;
-    }
-
-    const data: DatastoreStatusData = {
-      type: config.type,
-      path: !isCustomDatastoreConfig(config) && config.type === "filesystem"
-        ? config.path
-        : undefined,
-      bucket: !isCustomDatastoreConfig(config) && config.type === "s3"
-        ? config.bucket
-        : undefined,
-      prefix: !isCustomDatastoreConfig(config) && config.type === "s3"
-        ? config.prefix
-        : undefined,
-      region: !isCustomDatastoreConfig(config) && config.type === "s3"
-        ? config.region
-        : undefined,
-      healthy,
-      message,
-      latencyMs,
-      directories,
-      exclude: config.exclude,
-    };
-
-    renderDatastoreStatus(data, ctx.outputMode);
+    cliCtx.logger.debug("Datastore status command completed");
   });
