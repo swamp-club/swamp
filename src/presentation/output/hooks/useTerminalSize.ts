@@ -56,8 +56,8 @@ export function useTerminalSize(): TerminalSize {
     // Listen to resize events
     stdout.on("resize", updateSize);
 
-    // Poll as fallback (every 100ms)
-    const interval = setInterval(updateSize, 100);
+    // Poll as fallback (every 500ms)
+    const interval = setInterval(updateSize, 500);
 
     return () => {
       stdout.off("resize", updateSize);
