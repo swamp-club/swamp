@@ -20,7 +20,7 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { parseDuration } from "./data_search.ts";
+import { parseDuration } from "../../libswamp/mod.ts";
 import {
   consumeStream,
   createLibSwampContext,

@@ -69,6 +69,32 @@ export {
   type WorkflowRunView,
 } from "./workflows/workflow_run_view.ts";
 
+// Workflow search operations
+export {
+  workflowSearch,
+  type WorkflowSearchData,
+  type WorkflowSearchDeps,
+  type WorkflowSearchEvent,
+  type WorkflowSearchInput,
+  type WorkflowSearchItem,
+} from "./workflows/search.ts";
+export {
+  workflowRunSearch,
+  type WorkflowRunSearchData,
+  type WorkflowRunSearchDeps,
+  type WorkflowRunSearchEvent,
+  type WorkflowRunSearchInput,
+  type WorkflowRunSearchItem,
+} from "./workflows/run_search.ts";
+export {
+  workflowHistorySearch,
+  type WorkflowHistorySearchData,
+  type WorkflowHistorySearchDeps,
+  type WorkflowHistorySearchEvent,
+  type WorkflowHistorySearchInput,
+  type WorkflowHistorySearchItem,
+} from "./workflows/history_search.ts";
+
 // Model operations
 export {
   type EnvVarUsage,
@@ -117,6 +143,22 @@ export {
   type ModelGetDeps,
   type ModelGetEvent,
 } from "./models/get.ts";
+export {
+  modelSearch,
+  type ModelSearchData,
+  type ModelSearchDeps,
+  type ModelSearchEvent,
+  type ModelSearchInput,
+  type ModelSearchItem,
+} from "./models/search.ts";
+export {
+  modelOutputSearch,
+  type ModelOutputSearchData,
+  type ModelOutputSearchDeps,
+  type ModelOutputSearchEvent,
+  type ModelOutputSearchInput,
+  type ModelOutputSearchItem,
+} from "./models/output_search.ts";
 export {
   type ArtifactsData,
   createModelOutputGetDeps,
@@ -201,6 +243,18 @@ export {
   type WorkflowDataListItem,
 } from "./data/list.ts";
 
+// Data search operations
+export {
+  dataSearch,
+  type DataSearchData,
+  type DataSearchDeps,
+  type DataSearchEvent,
+  type DataSearchInput,
+  type DataSearchItem,
+  parseDuration,
+  parseTags,
+} from "./data/search.ts";
+
 // Extension trust operations
 export {
   DEFAULT_TRUSTED,
@@ -247,6 +301,34 @@ export {
   toMethodDescribeData,
   zodToJsonSchema,
 } from "./types/schema_helpers.ts";
+export {
+  typeSearch,
+  type TypeSearchData,
+  type TypeSearchDeps,
+  type TypeSearchEvent,
+  type TypeSearchInput,
+  type TypeSearchItem,
+} from "./types/search.ts";
+
+// Vault type search operations
+export {
+  vaultTypeSearch,
+  type VaultTypeSearchData,
+  type VaultTypeSearchDeps,
+  type VaultTypeSearchEvent,
+  type VaultTypeSearchInput,
+  type VaultTypeSearchItem,
+} from "./vaults/type_search.ts";
+
+// Vault search operations
+export {
+  vaultSearch,
+  type VaultSearchData,
+  type VaultSearchDeps,
+  type VaultSearchEvent,
+  type VaultSearchInput,
+  type VaultSearchItem,
+} from "./vaults/search.ts";
 
 // Workflow schema operations
 export {
@@ -327,6 +409,17 @@ export {
   type VaultListKeysEvent,
   type VaultListKeysInput,
 } from "./vaults/list_keys.ts";
+
+// Extension search operations
+export {
+  extensionSearch,
+  type ExtensionSearchData,
+  type ExtensionSearchDeps,
+  type ExtensionSearchEvent,
+  type ExtensionSearchInput,
+  type ExtensionSearchItem,
+  type ExtensionSearchMeta,
+} from "./extensions/search.ts";
 
 // Extension operations
 export {

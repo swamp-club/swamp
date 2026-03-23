@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import type { ModelSearchItem } from "../../presentation/output/model_search_output.tsx";
+import type { ModelSearchItem } from "../../libswamp/mod.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -49,7 +49,9 @@ Deno.test("modelSearchCommand is registered as subcommand of modelCommand", asyn
 
 // filterModels tests
 Deno.test("filterModels returns all models when query is empty", async () => {
-  const { filterModels } = await import("./model_search.ts");
+  const { filterModels } = await import(
+    "../../presentation/renderers/model_search.tsx"
+  );
   const models: ModelSearchItem[] = [
     { id: "id-1", name: "model-a", type: "swamp/echo" },
     { id: "id-2", name: "model-b", type: "swamp/echo" },
@@ -60,7 +62,9 @@ Deno.test("filterModels returns all models when query is empty", async () => {
 });
 
 Deno.test("filterModels filters by name (case-insensitive)", async () => {
-  const { filterModels } = await import("./model_search.ts");
+  const { filterModels } = await import(
+    "../../presentation/renderers/model_search.tsx"
+  );
   const models: ModelSearchItem[] = [
     { id: "id-1", name: "Production-Server", type: "swamp/echo" },
     { id: "id-2", name: "staging-server", type: "swamp/echo" },
@@ -74,7 +78,9 @@ Deno.test("filterModels filters by name (case-insensitive)", async () => {
 });
 
 Deno.test("filterModels filters by type", async () => {
-  const { filterModels } = await import("./model_search.ts");
+  const { filterModels } = await import(
+    "../../presentation/renderers/model_search.tsx"
+  );
   const models: ModelSearchItem[] = [
     { id: "id-1", name: "model-a", type: "swamp/echo" },
     { id: "id-2", name: "model-b", type: "swamp/database" },
@@ -87,7 +93,9 @@ Deno.test("filterModels filters by type", async () => {
 });
 
 Deno.test("filterModels filters by id", async () => {
-  const { filterModels } = await import("./model_search.ts");
+  const { filterModels } = await import(
+    "../../presentation/renderers/model_search.tsx"
+  );
   const models: ModelSearchItem[] = [
     {
       id: "550e8400-e29b-41d4-a716-446655440000",
@@ -107,7 +115,9 @@ Deno.test("filterModels filters by id", async () => {
 });
 
 Deno.test("filterModels returns empty array when no matches", async () => {
-  const { filterModels } = await import("./model_search.ts");
+  const { filterModels } = await import(
+    "../../presentation/renderers/model_search.tsx"
+  );
   const models: ModelSearchItem[] = [
     { id: "id-1", name: "model-a", type: "swamp/echo" },
     { id: "id-2", name: "model-b", type: "swamp/echo" },
@@ -118,7 +128,9 @@ Deno.test("filterModels returns empty array when no matches", async () => {
 });
 
 Deno.test("filterModels handles empty model list", async () => {
-  const { filterModels } = await import("./model_search.ts");
+  const { filterModels } = await import(
+    "../../presentation/renderers/model_search.tsx"
+  );
   const models: ModelSearchItem[] = [];
 
   const result = filterModels(models, "anything");

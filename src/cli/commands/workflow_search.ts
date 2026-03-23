@@ -19,11 +19,14 @@
 
 import { Command } from "@cliffy/command";
 import {
-  renderWorkflowSearch,
-  type WorkflowSearchData,
+  consumeStream,
+  createLibSwampContext,
+  type WorkflowGetData,
+  workflowSearch,
+  type WorkflowSearchDeps,
   type WorkflowSearchItem,
-} from "../../presentation/output/workflow_search_output.tsx";
-import type { WorkflowGetData } from "../../libswamp/mod.ts";
+} from "../../libswamp/mod.ts";
+import { createWorkflowSearchRenderer } from "../../presentation/renderers/workflow_search.tsx";
 import { renderWorkflowGet } from "../../presentation/renderers/workflow_get.ts";
 import { renderWorkflowActionSelect } from "../../presentation/output/workflow_action_select_output.tsx";
 import { renderInputFileSelect } from "../../presentation/output/input_file_select_output.tsx";
@@ -37,7 +40,6 @@ import {
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
@@ -47,37 +49,6 @@ import type { InputsSchema } from "../../domain/definitions/definition.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Converts a Workflow to WorkflowSearchItem.
- */
-function toSearchItem(workflow: Workflow): WorkflowSearchItem {
-  return {
-    id: workflow.id,
-    name: workflow.name,
-    description: workflow.description,
-    jobCount: workflow.jobs.length,
-  };
-}
-
-/**
- * Filters workflows by a query string (case-insensitive match on name, id, or description).
- */
-function filterWorkflows(
-  workflows: WorkflowSearchItem[],
-  query: string,
-): WorkflowSearchItem[] {
-  if (!query) {
-    return workflows;
-  }
-  const lowerQuery = query.toLowerCase();
-  return workflows.filter(
-    (w) =>
-      w.name.toLowerCase().includes(lowerQuery) ||
-      w.id.toLowerCase().includes(lowerQuery) ||
-      (w.description?.toLowerCase().includes(lowerQuery) ?? false),
-  );
-}
 
 /**
  * Displays the workflow get output for a selected workflow.
@@ -264,6 +235,7 @@ export const workflowSearchCommand = new Command()
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
     const effectiveMode = interactiveOutputMode(ctx);
+    const libCtx = createLibSwampContext();
     ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
 
     // Interactive mode can trigger workflow execution (a write operation),
@@ -278,41 +250,30 @@ export const workflowSearchCommand = new Command()
     const repo = repoContext.workflowRepo;
     const runRepo = repoContext.workflowRunRepo;
 
-    const allWorkflows = await repo.findAll();
-    const searchItems = allWorkflows.map(toSearchItem);
+    const deps: WorkflowSearchDeps = {
+      findAllWorkflows: () => repo.findAll(),
+    };
 
-    if (effectiveMode === "json") {
-      // Non-interactive: filter and output JSON
-      const filteredWorkflows = filterWorkflows(searchItems, query ?? "");
+    const renderer = createWorkflowSearchRenderer(effectiveMode);
+    await consumeStream(
+      workflowSearch(libCtx, deps, { query }),
+      renderer.handlers(),
+    );
 
-      // If query matches exactly one workflow, show full details (same as interactive selection)
-      if (query && filteredWorkflows.length === 1) {
-        await displayWorkflowGet(filteredWorkflows[0], repo, options);
+    const selected = renderer.selectedItem();
+
+    if (selected) {
+      ctx.logger.debug`Selected workflow: ${selected.name}`;
+
+      if (effectiveMode === "json") {
+        // JSON mode: auto-selected single match, display details
+        await displayWorkflowGet(selected, repo, options);
       } else {
-        const data: WorkflowSearchData = {
-          query: query ?? "",
-          results: filteredWorkflows,
-        };
-        await renderWorkflowSearch(data, effectiveMode);
-      }
-    } else {
-      // Interactive: show fuzzy search UI
-      const data: WorkflowSearchData = {
-        query: query ?? "",
-        results: searchItems,
-      };
-
-      const selected = await renderWorkflowSearch(data, effectiveMode);
-
-      if (selected) {
-        ctx.logger.debug`Selected workflow: ${selected.name}`;
-
-        // Get the full workflow to check for inputs
+        // Interactive mode: show action selection
         const workflow = await repo.findByName(selected.name);
         const hasInputs = !!(workflow?.inputs &&
           Object.keys(workflow.inputs).length > 0);
 
-        // Show action selection
         const action = await renderWorkflowActionSelect(
           {
             workflowName: selected.name,
@@ -328,10 +289,8 @@ export const workflowSearchCommand = new Command()
         }
 
         if (action === "view") {
-          // Display the workflow details
           await displayWorkflowGet(selected, repo, options);
         } else if (action === "run") {
-          // Execute the workflow
           await executeWorkflowFromSearch(
             selected,
             repo,
@@ -340,9 +299,9 @@ export const workflowSearchCommand = new Command()
             options,
           );
         }
-      } else {
-        ctx.logger.debug`Search cancelled`;
       }
+    } else {
+      ctx.logger.debug`Search cancelled`;
     }
 
     ctx.logger.debug("Workflow search command completed");

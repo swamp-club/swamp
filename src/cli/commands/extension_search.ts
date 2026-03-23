@@ -37,10 +37,15 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   ExtensionApiClient,
-  type ExtensionSearchParams,
 } from "../../infrastructure/http/extension_api_client.ts";
 import { type PullContext, pullExtension } from "./extension_pull.ts";
-import { renderExtensionSearch } from "../../presentation/output/extension_search_output.tsx";
+import {
+  consumeStream,
+  createLibSwampContext,
+  extensionSearch,
+  type ExtensionSearchDeps,
+} from "../../libswamp/mod.ts";
+import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
 
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
@@ -137,43 +142,47 @@ export const extensionSearchCommand = new Command()
 
     const serverUrl = resolveServerUrl();
     const client = new ExtensionApiClient(serverUrl);
+    const effectiveMode = interactiveOutputMode(ctx);
+    const libCtx = createLibSwampContext();
 
-    const params: ExtensionSearchParams = {
-      q: query,
-      collective: options.collective,
-      platform: options.platform,
-      label: options.label,
-      contentType: options.contentType,
-      sort: options.sort,
-      perPage: options.perPage,
-      page: options.page,
+    ctx.logger.debug`Searching extensions with query: ${query ?? "(none)"}`;
+
+    const deps: ExtensionSearchDeps = {
+      searchExtensions: (params) =>
+        client.searchExtensions({
+          ...params,
+          sort: params.sort as
+            | "name"
+            | "relevance"
+            | "new"
+            | "updated"
+            | undefined,
+        }),
     };
 
-    ctx.logger.debug`Searching extensions with params: ${
-      JSON.stringify(params)
-    }`;
-
-    const response = await client.searchExtensions(params);
-
-    const effectiveMode = interactiveOutputMode(ctx);
-    const result = await renderExtensionSearch(
-      {
-        extensions: response.extensions.map((ext) => ({
-          name: ext.name,
-          description: ext.description,
-          latestVersion: ext.latestVersion,
-          platforms: ext.platforms,
-          labels: ext.labels,
-          contentTypes: ext.contentTypes ?? [],
-          createdAt: ext.createdAt,
-          updatedAt: ext.updatedAt,
-        })),
-        meta: response.meta,
-      },
-      effectiveMode,
+    const renderer = createExtensionSearchRenderer(effectiveMode);
+    await consumeStream(
+      extensionSearch(
+        libCtx,
+        deps,
+        {
+          query,
+          collective: options.collective,
+          platform: options.platform,
+          label: options.label,
+          contentType: options.contentType,
+          sort: options.sort,
+          perPage: options.perPage,
+          page: options.page,
+        },
+      ),
+      renderer.handlers(),
     );
 
-    if (result?.action === "install") {
+    const selected = renderer.selectedItem();
+    const action = renderer.selectedAction();
+
+    if (selected && action === "install") {
       // Install writes files to the repo, so acquire the datastore lock
       const repoDir = ".";
       await requireInitializedRepo({
@@ -208,7 +217,7 @@ export const extensionSearchCommand = new Command()
       };
 
       await pullExtension(
-        { name: result.extension.name, version: null },
+        { name: selected.name, version: null },
         pullCtx,
       );
     }

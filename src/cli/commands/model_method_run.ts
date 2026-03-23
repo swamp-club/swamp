@@ -32,7 +32,7 @@ import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { parseInputs } from "../input_parser.ts";
-import { parseTags } from "./data_search.ts";
+import { parseTags } from "../../libswamp/mod.ts";
 import { join } from "@std/path";
 import {
   SWAMP_SUBDIRS,

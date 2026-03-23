@@ -19,11 +19,15 @@
 
 import { Command } from "@cliffy/command";
 import {
-  type DataSearchData,
+  consumeStream,
+  createLibSwampContext,
+  type DataGetData,
+  dataSearch,
+  type DataSearchDeps,
   type DataSearchItem,
-  renderDataSearch,
-} from "../../presentation/output/data_search_output.tsx";
-import type { DataGetData } from "../../libswamp/mod.ts";
+  parseTags,
+} from "../../libswamp/mod.ts";
+import { createDataSearchRenderer } from "../../presentation/renderers/data_search.tsx";
 import { renderDataGet } from "../../presentation/renderers/data_get.ts";
 import {
   createContext,
@@ -32,194 +36,15 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
-import type { Data } from "../../domain/data/data.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
+import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Options for filtering data search results.
- */
-export interface DataSearchFilterOptions {
-  type?: string;
-  lifetime?: string;
-  ownerType?: string;
-  workflow?: string;
-  model?: string;
-  contentType?: string;
-  since?: string;
-  output?: string;
-  run?: string;
-  streaming?: boolean;
-  tags?: Record<string, string>;
-  query?: string;
-}
-
-/**
- * Parses a duration string (e.g., "1h", "1d", "7d", "1w", "1mo") to milliseconds.
- */
-export function parseDuration(duration: string): number {
-  const match = duration.match(/^(\d+)(mo|y|h|m|d|w)$/);
-  if (!match) {
-    throw new UserError(
-      `Invalid duration format: "${duration}". Expected format like 1h, 1d, 7d, 1w, 1mo`,
-    );
-  }
-
-  const value = parseInt(match[1], 10);
-  const unit = match[2];
-
-  switch (unit) {
-    case "mo":
-      return value * 30 * 24 * 60 * 60 * 1000;
-    case "y":
-      return value * 365 * 24 * 60 * 60 * 1000;
-    case "h":
-      return value * 60 * 60 * 1000;
-    case "m":
-      return value * 60 * 1000;
-    case "d":
-      return value * 24 * 60 * 60 * 1000;
-    case "w":
-      return value * 7 * 24 * 60 * 60 * 1000;
-    default:
-      throw new UserError(`Unknown duration unit: ${unit}`);
-  }
-}
-
-/**
- * Parses an array of "KEY=VALUE" strings into a Record<string, string>.
- * Throws UserError on invalid format (missing key or missing `=`).
- */
-export function parseTags(raw: string[]): Record<string, string> {
-  const tags: Record<string, string> = {};
-  for (const entry of raw) {
-    const eqIdx = entry.indexOf("=");
-    if (eqIdx < 1) {
-      throw new UserError(
-        `Invalid tag format: "${entry}". Expected KEY=VALUE`,
-      );
-    }
-    tags[entry.slice(0, eqIdx)] = entry.slice(eqIdx + 1);
-  }
-  return tags;
-}
-
-/**
- * Converts raw repository data to DataSearchItem array.
- */
-async function toDataSearchItems(
-  results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
-  definitionRepo: YamlDefinitionRepository,
-): Promise<DataSearchItem[]> {
-  const items: DataSearchItem[] = [];
-
-  for (const { data, modelType, modelId } of results) {
-    let modelName = modelId;
-    const definition = await definitionRepo.findById(
-      modelType,
-      createDefinitionId(modelId),
-    );
-    if (definition) {
-      modelName = definition.name;
-    }
-
-    items.push({
-      id: data.id,
-      name: data.name,
-      version: data.version,
-      contentType: data.contentType,
-      type: data.type,
-      lifetime: data.lifetime,
-      ownerType: data.ownerDefinition.ownerType,
-      ownerRef: data.ownerDefinition.ownerRef,
-      modelId,
-      modelName,
-      modelType: modelType.normalized,
-      streaming: data.streaming,
-      size: data.size,
-      createdAt: data.createdAt.toISOString(),
-      tags: data.tags,
-      workflowTag: data.tags.workflow,
-      stepTag: data.tags.step,
-    });
-  }
-
-  return items;
-}
-
-/**
- * Filters data search items according to the provided options.
- * All filters combine with AND logic.
- */
-export function filterData(
-  items: DataSearchItem[],
-  opts: DataSearchFilterOptions,
-): DataSearchItem[] {
-  let result = items;
-
-  if (opts.type) {
-    result = result.filter((i) => i.type === opts.type);
-  }
-  if (opts.lifetime) {
-    result = result.filter((i) => i.lifetime === opts.lifetime);
-  }
-  if (opts.ownerType) {
-    result = result.filter((i) => i.ownerType === opts.ownerType);
-  }
-  if (opts.workflow) {
-    result = result.filter((i) => i.workflowTag === opts.workflow);
-  }
-  if (opts.model) {
-    result = result.filter((i) => i.modelName === opts.model);
-  }
-  if (opts.contentType) {
-    result = result.filter((i) => i.contentType === opts.contentType);
-  }
-  if (opts.streaming) {
-    result = result.filter((i) => i.streaming);
-  }
-  if (opts.since) {
-    const cutoff = Date.now() - parseDuration(opts.since);
-    result = result.filter((i) => new Date(i.createdAt).getTime() >= cutoff);
-  }
-  if (opts.output) {
-    const outputId = opts.output;
-    result = result.filter((i) =>
-      i.ownerRef.includes(outputId) || i.id === outputId
-    );
-  }
-  if (opts.run) {
-    const runId = opts.run;
-    result = result.filter((i) => i.ownerRef.includes(runId));
-  }
-  if (opts.tags) {
-    const tagEntries = Object.entries(opts.tags);
-    result = result.filter((i) =>
-      tagEntries.every(([k, v]) => i.tags[k] === v)
-    );
-  }
-
-  if (opts.query) {
-    const q = opts.query.toLowerCase();
-    result = result.filter(
-      (i) =>
-        i.name.toLowerCase().includes(q) ||
-        i.type.toLowerCase().includes(q) ||
-        i.modelName.toLowerCase().includes(q) ||
-        i.ownerRef.toLowerCase().includes(q),
-    );
-  }
-
-  return result;
-}
 
 /**
  * Fetches and displays full data details after selection from interactive search.
@@ -334,6 +159,7 @@ export const dataSearchCommand = new Command()
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["data", "search"]);
     const effectiveMode = interactiveOutputMode(ctx);
+    const libCtx = createLibSwampContext();
     ctx.logger.debug`Searching data with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepoReadOnly({
@@ -343,87 +169,43 @@ export const dataSearchCommand = new Command()
     const definitionRepo = repoContext.definitionRepo;
     const dataRepo = repoContext.unifiedDataRepo;
 
-    // Validate --model if provided
-    if (options.model) {
-      const modelResult = await findDefinitionByIdOrName(
-        definitionRepo,
-        options.model as string,
-      );
-      if (!modelResult) {
-        throw new UserError(`Model not found: ${options.model}`);
-      }
-    }
-
-    // Get all data from repository
-    const allResults = await dataRepo.findAllGlobal();
-    const allItems = await toDataSearchItems(allResults, definitionRepo);
-
     // Parse --tag values into Record<string, string>
     const parsedTags = options.tag
       ? parseTags(options.tag as string[])
       : undefined;
 
-    // Build filter options
-    const filterOpts: DataSearchFilterOptions = {
-      type: options.type as string | undefined,
-      lifetime: options.lifetime as string | undefined,
-      ownerType: options.ownerType as string | undefined,
-      workflow: options.workflow as string | undefined,
-      model: options.model as string | undefined,
-      contentType: options.contentType as string | undefined,
-      since: options.since as string | undefined,
-      output: options.output as string | undefined,
-      run: options.run as string | undefined,
-      streaming: options.streaming as boolean | undefined,
-      tags: parsedTags,
-      query,
+    const deps: DataSearchDeps = {
+      findAllGlobal: () => dataRepo.findAllGlobal(),
+      findDefinitionById: (type, defId) =>
+        definitionRepo.findById(
+          ModelType.create(type.normalized),
+          createDefinitionId(defId),
+        ),
+      findDefinitionByIdOrName: (idOrName) =>
+        findDefinitionByIdOrName(definitionRepo, idOrName),
     };
 
-    // Apply filters
-    const filtered = filterData(allItems, filterOpts);
-
-    // Sort by createdAt descending (most recent first)
-    filtered.sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    const renderer = createDataSearchRenderer(effectiveMode);
+    await consumeStream(
+      dataSearch(libCtx, deps, {
+        query,
+        type: options.type as string | undefined,
+        lifetime: options.lifetime as string | undefined,
+        ownerType: options.ownerType as string | undefined,
+        workflow: options.workflow as string | undefined,
+        model: options.model as string | undefined,
+        contentType: options.contentType as string | undefined,
+        since: options.since as string | undefined,
+        output: options.output as string | undefined,
+        run: options.run as string | undefined,
+        streaming: options.streaming as boolean | undefined,
+        tags: parsedTags,
+        limit: (options.limit as number) ?? 50,
+      }),
+      renderer.handlers(),
     );
 
-    // Apply limit
-    const limit = (options.limit as number) ?? 50;
-    const total = filtered.length;
-    const limited = total > limit;
-    const results = filtered.slice(0, limit);
-
-    // Build active filters for output
-    const filters: Record<string, string> = {};
-    if (options.type) filters.type = options.type as string;
-    if (options.lifetime) filters.lifetime = options.lifetime as string;
-    if (options.ownerType) filters.ownerType = options.ownerType as string;
-    if (options.workflow) filters.workflow = options.workflow as string;
-    if (options.model) filters.model = options.model as string;
-    if (options.contentType) {
-      filters.contentType = options.contentType as string;
-    }
-    if (options.since) filters.since = options.since as string;
-    if (options.output) filters.output = options.output as string;
-    if (options.run) filters.run = options.run as string;
-    if (options.streaming) filters.streaming = "true";
-    if (parsedTags) {
-      for (const [k, v] of Object.entries(parsedTags)) {
-        filters[`tag:${k}`] = v;
-      }
-    }
-
-    const data: DataSearchData = {
-      query: query ?? "",
-      filters,
-      results,
-      total,
-      limited,
-    };
-
-    const selected = await renderDataSearch(data, effectiveMode);
-
+    const selected = renderer.selectedItem();
     if (selected) {
       const repoDir = options.repoDir ?? ".";
       await displayDataDetail(selected, dataRepo, repoDir, effectiveMode);

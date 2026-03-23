@@ -25,10 +25,13 @@ import {
   type WorkflowRunData,
 } from "../../presentation/output/workflow_run_output.ts";
 import {
-  renderWorkflowHistorySearch,
-  type WorkflowHistorySearchData,
-  type WorkflowHistorySearchItem,
-} from "../../presentation/output/workflow_history_search_output.tsx";
+  consumeStream,
+  createLibSwampContext,
+  parseTags,
+  workflowRunSearch,
+  type WorkflowRunSearchDeps,
+} from "../../libswamp/mod.ts";
+import { createWorkflowRunSearchRenderer } from "../../presentation/renderers/workflow_run_search.tsx";
 import {
   createContext,
   type GlobalOptions,
@@ -40,7 +43,6 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
-import { parseDuration, parseTags } from "./data_search.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -87,100 +89,6 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
   };
 }
 
-/**
- * Converts a WorkflowRun to WorkflowHistorySearchItem.
- */
-function toSearchItem(run: WorkflowRun): WorkflowHistorySearchItem {
-  const startTime = run.startedAt?.getTime();
-  const endTime = run.completedAt?.getTime();
-  const tags = Object.keys(run.tags).length > 0 ? { ...run.tags } : undefined;
-
-  return {
-    runId: run.id,
-    workflowId: run.workflowId,
-    workflowName: run.workflowName,
-    status: run.status,
-    startedAt: run.startedAt?.toISOString(),
-    completedAt: run.completedAt?.toISOString(),
-    duration: startTime && endTime ? endTime - startTime : undefined,
-    tags,
-  };
-}
-
-/**
- * Filters runs by a query string (case-insensitive match on workflow name, run id, or status).
- */
-function filterByQuery(
-  runs: WorkflowHistorySearchItem[],
-  query: string,
-): WorkflowHistorySearchItem[] {
-  if (!query) {
-    return runs;
-  }
-  const lowerQuery = query.toLowerCase();
-  return runs.filter(
-    (r) =>
-      r.workflowName.toLowerCase().includes(lowerQuery) ||
-      r.runId.toLowerCase().includes(lowerQuery) ||
-      r.status.toLowerCase().includes(lowerQuery),
-  );
-}
-
-/**
- * Options for filtering workflow run search results.
- */
-interface RunSearchFilterOptions {
-  since?: string;
-  status?: string;
-  workflow?: string;
-  tags?: Record<string, string>;
-  limit?: number;
-}
-
-/**
- * Applies structured filters to workflow run search items.
- */
-export function applyFilters(
-  runs: WorkflowHistorySearchItem[],
-  options: RunSearchFilterOptions,
-): WorkflowHistorySearchItem[] {
-  let filtered = runs;
-
-  if (options.since) {
-    const durationMs = parseDuration(options.since);
-    const cutoff = Date.now() - durationMs;
-    filtered = filtered.filter((r) => {
-      if (!r.startedAt) return false;
-      return new Date(r.startedAt).getTime() >= cutoff;
-    });
-  }
-
-  if (options.status) {
-    const status = options.status.toLowerCase();
-    filtered = filtered.filter((r) => r.status === status);
-  }
-
-  if (options.workflow) {
-    const name = options.workflow.toLowerCase();
-    filtered = filtered.filter(
-      (r) => r.workflowName.toLowerCase() === name,
-    );
-  }
-
-  if (options.tags) {
-    const tagEntries = Object.entries(options.tags);
-    filtered = filtered.filter((r) =>
-      tagEntries.every(([k, v]) => r.tags?.[k] === v)
-    );
-  }
-
-  if (options.limit !== undefined) {
-    filtered = filtered.slice(0, options.limit);
-  }
-
-  return filtered;
-}
-
 export async function workflowRunSearchAction(
   options: AnyOptions,
   query?: string,
@@ -190,6 +98,7 @@ export async function workflowRunSearchAction(
     ["workflow", "run", "search"],
   );
   const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflow runs with query: ${query ?? "(none)"}`;
 
   const { repoContext } = await requireInitializedRepoReadOnly({
@@ -199,73 +108,48 @@ export async function workflowRunSearchAction(
   const workflowRepo = repoContext.workflowRepo;
   const runRepo = repoContext.workflowRunRepo;
 
-  // Get all workflows
-  const allWorkflows = await workflowRepo.findAll();
-
-  // Get all runs for all workflows
-  const allRuns: WorkflowRun[] = [];
-  for (const workflow of allWorkflows) {
-    const runs = await runRepo.findAllByWorkflowId(workflow.id);
-    allRuns.push(...runs);
-  }
-
-  // Sort by startedAt descending (most recent first)
-  allRuns.sort((a, b) => {
-    const aTime = a.startedAt?.getTime() ?? 0;
-    const bTime = b.startedAt?.getTime() ?? 0;
-    return bTime - aTime;
-  });
-
   // Parse --tag values into Record<string, string>
   const parsedTags = options.tag
     ? parseTags(options.tag as string[])
     : undefined;
 
-  // Convert to search items and apply structured filters
-  let searchItems = allRuns.map(toSearchItem);
-  searchItems = applyFilters(searchItems, {
-    since: options.since as string | undefined,
-    status: options.status as string | undefined,
-    workflow: options.workflow as string | undefined,
-    tags: parsedTags,
-    limit: options.limit as number | undefined,
-  });
+  const deps: WorkflowRunSearchDeps = {
+    findAllWorkflows: () => workflowRepo.findAll(),
+    findAllRunsByWorkflowId: (id) =>
+      runRepo.findAllByWorkflowId(createWorkflowId(id)),
+  };
 
-  if (effectiveMode === "json") {
-    // Non-interactive: also apply query text filter
-    const filteredRuns = filterByQuery(searchItems, query ?? "");
-    const data: WorkflowHistorySearchData = {
-      query: query ?? "",
-      results: filteredRuns,
-    };
-    await renderWorkflowHistorySearch(data, effectiveMode);
-  } else {
-    // Interactive: show fuzzy search UI
-    const data: WorkflowHistorySearchData = {
-      query: query ?? "",
-      results: searchItems,
-    };
+  const renderer = createWorkflowRunSearchRenderer(effectiveMode);
+  await consumeStream(
+    workflowRunSearch(libCtx, deps, {
+      query,
+      since: options.since as string | undefined,
+      status: options.status as string | undefined,
+      workflow: options.workflow as string | undefined,
+      tags: parsedTags,
+      limit: options.limit as number | undefined,
+    }),
+    renderer.handlers(),
+  );
 
-    const selected = await renderWorkflowHistorySearch(data, effectiveMode);
-
-    if (selected) {
-      ctx.logger.debug`Selected run: ${selected.runId}`;
-      // Display the run details
-      const run = await runRepo.findById(
+  const selected = renderer.selectedItem();
+  if (selected) {
+    ctx.logger.debug`Selected run: ${selected.runId}`;
+    // Display the run details
+    const run = await runRepo.findById(
+      createWorkflowId(selected.workflowId),
+      createWorkflowRunId(selected.runId),
+    );
+    if (run) {
+      const path = runRepo.getPath(
         createWorkflowId(selected.workflowId),
         createWorkflowRunId(selected.runId),
       );
-      if (run) {
-        const path = runRepo.getPath(
-          createWorkflowId(selected.workflowId),
-          createWorkflowRunId(selected.runId),
-        );
-        const runData = toRunData(run, path);
-        renderWorkflowRun(runData, effectiveMode);
-      }
-    } else {
-      ctx.logger.debug`Search cancelled`;
+      const runData = toRunData(run, path);
+      renderWorkflowRun(runData, effectiveMode);
     }
+  } else {
+    ctx.logger.debug`Search cancelled`;
   }
 
   ctx.logger.debug("Workflow run search command completed");

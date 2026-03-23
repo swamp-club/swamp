@@ -18,70 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { applyFilters } from "./workflow_run_search.ts";
-import type { WorkflowHistorySearchItem } from "../../presentation/output/workflow_history_search_output.tsx";
 
-function makeItem(
-  overrides: Partial<WorkflowHistorySearchItem> = {},
-): WorkflowHistorySearchItem {
-  return {
-    runId: crypto.randomUUID(),
-    workflowId: crypto.randomUUID(),
-    workflowName: "test-workflow",
-    status: "succeeded",
-    startedAt: new Date().toISOString(),
-    ...overrides,
-  };
-}
-
-Deno.test("applyFilters with --tag filters by matching tags (AND logic)", () => {
-  const items = [
-    makeItem({ tags: { env: "prod", region: "us-east-1" } }),
-    makeItem({ tags: { env: "staging", region: "us-east-1" } }),
-    makeItem({ tags: { env: "prod", region: "eu-west-1" } }),
-  ];
-
-  const result = applyFilters(items, {
-    tags: { env: "prod", region: "us-east-1" },
-  });
-
-  assertEquals(result.length, 1);
-  assertEquals(result[0].tags?.env, "prod");
-  assertEquals(result[0].tags?.region, "us-east-1");
-});
-
-Deno.test("applyFilters with --tag single tag filter", () => {
-  const items = [
-    makeItem({ tags: { env: "prod" } }),
-    makeItem({ tags: { env: "staging" } }),
-    makeItem({ tags: { env: "prod", team: "platform" } }),
-  ];
-
-  const result = applyFilters(items, { tags: { env: "prod" } });
-
-  assertEquals(result.length, 2);
-});
-
-Deno.test("applyFilters with --tag items without tags do not match", () => {
-  const items = [
-    makeItem({ tags: { env: "prod" } }),
-    makeItem({}),
-    makeItem({ tags: undefined }),
-  ];
-
-  const result = applyFilters(items, { tags: { env: "prod" } });
-
-  assertEquals(result.length, 1);
-  assertEquals(result[0].tags?.env, "prod");
-});
-
-Deno.test("applyFilters without --tag returns all items", () => {
-  const items = [
-    makeItem({ tags: { env: "prod" } }),
-    makeItem({}),
-  ];
-
-  const result = applyFilters(items, {});
-
-  assertEquals(result.length, 2);
+Deno.test("workflowRunSearchCommand module loads", async () => {
+  const { workflowRunSearchCommand } = await import(
+    "./workflow_run_search.ts"
+  );
+  assertEquals(workflowRunSearchCommand.getName(), "search");
 });

@@ -19,11 +19,12 @@
 
 import { Command } from "@cliffy/command";
 import {
-  renderVaultTypeSearch,
-  toVaultTypeSearchItem,
-  type VaultTypeSearchData,
-  type VaultTypeSearchItem,
-} from "../../presentation/output/vault_type_search_output.tsx";
+  consumeStream,
+  createLibSwampContext,
+  vaultTypeSearch,
+  type VaultTypeSearchDeps,
+} from "../../libswamp/mod.ts";
+import { createVaultTypeSearchRenderer } from "../../presentation/renderers/vault_type_search.tsx";
 import {
   renderVaultTypeDescribe,
 } from "../../presentation/output/vault_type_describe_output.ts";
@@ -37,44 +38,6 @@ import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-/**
- * Gets all vault types as VaultTypeSearchItem array.
- */
-function getAllVaultTypes(): VaultTypeSearchItem[] {
-  return getVaultTypes().map(toVaultTypeSearchItem);
-}
-
-/**
- * Filters vault types by a query string (case-insensitive match on type, name, or description).
- */
-function filterVaultTypes(
-  types: VaultTypeSearchItem[],
-  query: string,
-): VaultTypeSearchItem[] {
-  if (!query) {
-    return types;
-  }
-  const lowerQuery = query.toLowerCase();
-  return types.filter(
-    (t) =>
-      t.type.toLowerCase().includes(lowerQuery) ||
-      t.name.toLowerCase().includes(lowerQuery) ||
-      t.description.toLowerCase().includes(lowerQuery),
-  );
-}
-
-/**
- * Displays the vault type describe output for a selected vault type.
- */
-function displayVaultTypeDescribe(
-  item: VaultTypeSearchItem,
-  options: AnyOptions,
-): void {
-  const ctx = createContext(options as GlobalOptions, ["vault", "type-search"]);
-  const effectiveMode = interactiveOutputMode(ctx);
-  renderVaultTypeDescribe(item, effectiveMode);
-}
-
 export async function vaultTypeSearchAction(
   options: AnyOptions,
   query?: string,
@@ -84,34 +47,25 @@ export async function vaultTypeSearchAction(
     "type-search",
   ]);
   const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching vault types with query: ${query ?? "(none)"}`;
 
-  const allTypes = getAllVaultTypes();
+  const deps: VaultTypeSearchDeps = {
+    getVaultTypes: () => getVaultTypes(),
+  };
 
-  if (effectiveMode === "json") {
-    // Non-interactive: filter and output JSON
-    const filteredTypes = filterVaultTypes(allTypes, query ?? "");
-    const data: VaultTypeSearchData = {
-      query: query ?? "",
-      results: filteredTypes,
-    };
-    await renderVaultTypeSearch(data, effectiveMode);
+  const renderer = createVaultTypeSearchRenderer(effectiveMode);
+  await consumeStream(
+    vaultTypeSearch(libCtx, deps, { query }),
+    renderer.handlers(),
+  );
+
+  const selected = renderer.selectedItem();
+  if (selected) {
+    ctx.logger.debug`Selected vault type: ${selected.type}`;
+    renderVaultTypeDescribe(selected, effectiveMode);
   } else {
-    // Interactive: show fuzzy search UI
-    const data: VaultTypeSearchData = {
-      query: query ?? "",
-      results: allTypes,
-    };
-
-    const selected = await renderVaultTypeSearch(data, effectiveMode);
-
-    if (selected) {
-      ctx.logger.debug`Selected vault type: ${selected.type}`;
-      // Display the vault type description
-      displayVaultTypeDescribe(selected, options);
-    } else {
-      ctx.logger.debug`Search cancelled`;
-    }
+    ctx.logger.debug`Search cancelled`;
   }
 
   ctx.logger.debug("Vault type search command completed");

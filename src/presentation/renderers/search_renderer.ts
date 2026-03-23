@@ -17,19 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
-import type { VaultTypeSearchItem } from "../../libswamp/mod.ts";
+import type { StreamEvent } from "../../libswamp/mod.ts";
+import type { Renderer } from "../renderer.ts";
 
 /**
- * Renders vault type description in either log or JSON mode.
+ * Extended renderer interface for search commands that support interactive
+ * item selection. After `consumeStream()` completes, `selectedItem()` returns
+ * the item the user chose (Ink) or `undefined` (JSON / cancelled).
  */
-export function renderVaultTypeDescribe(
-  data: VaultTypeSearchItem,
-  mode: OutputMode,
-): void {
-  if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
-  } else {
-    console.log(JSON.stringify(data, null, 2));
-  }
+export interface SearchRenderer<E extends StreamEvent, T> extends Renderer<E> {
+  selectedItem(): T | undefined;
 }

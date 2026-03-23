@@ -31,7 +31,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { parseInputs } from "../input_parser.ts";
-import { parseTags } from "./data_search.ts";
+import { parseTags } from "../../libswamp/mod.ts";
 import { workflowRunSearchCommand } from "./workflow_run_search.ts";
 import {
   consumeStream,

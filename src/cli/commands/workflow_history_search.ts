@@ -25,10 +25,12 @@ import {
   type WorkflowRunData,
 } from "../../presentation/output/workflow_run_output.ts";
 import {
-  renderWorkflowHistorySearch,
-  type WorkflowHistorySearchData,
-  type WorkflowHistorySearchItem,
-} from "../../presentation/output/workflow_history_search_output.tsx";
+  consumeStream,
+  createLibSwampContext,
+  workflowHistorySearch,
+  type WorkflowHistorySearchDeps,
+} from "../../libswamp/mod.ts";
+import { createWorkflowHistorySearchRenderer } from "../../presentation/renderers/workflow_history_search.tsx";
 import {
   createContext,
   type GlobalOptions,
@@ -86,43 +88,6 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
   };
 }
 
-/**
- * Converts a WorkflowRun to WorkflowHistorySearchItem.
- */
-function toSearchItem(run: WorkflowRun): WorkflowHistorySearchItem {
-  const startTime = run.startedAt?.getTime();
-  const endTime = run.completedAt?.getTime();
-
-  return {
-    runId: run.id,
-    workflowId: run.workflowId,
-    workflowName: run.workflowName,
-    status: run.status,
-    startedAt: run.startedAt?.toISOString(),
-    completedAt: run.completedAt?.toISOString(),
-    duration: startTime && endTime ? endTime - startTime : undefined,
-  };
-}
-
-/**
- * Filters runs by a query string (case-insensitive match on workflow name, run id, or status).
- */
-function filterRuns(
-  runs: WorkflowHistorySearchItem[],
-  query: string,
-): WorkflowHistorySearchItem[] {
-  if (!query) {
-    return runs;
-  }
-  const lowerQuery = query.toLowerCase();
-  return runs.filter(
-    (r) =>
-      r.workflowName.toLowerCase().includes(lowerQuery) ||
-      r.runId.toLowerCase().includes(lowerQuery) ||
-      r.status.toLowerCase().includes(lowerQuery),
-  );
-}
-
 export async function workflowHistorySearchAction(
   options: AnyOptions,
   query?: string,
@@ -132,6 +97,7 @@ export async function workflowHistorySearchAction(
     ["workflow", "history", "search"],
   );
   const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflow history with query: ${query ?? "(none)"}`;
 
   const { repoContext } = await requireInitializedRepoReadOnly({
@@ -141,60 +107,36 @@ export async function workflowHistorySearchAction(
   const workflowRepo = repoContext.workflowRepo;
   const runRepo = repoContext.workflowRunRepo;
 
-  // Get all workflows
-  const allWorkflows = await workflowRepo.findAll();
+  const deps: WorkflowHistorySearchDeps = {
+    findAllWorkflows: () => workflowRepo.findAll(),
+    findAllRunsByWorkflowId: (id) =>
+      runRepo.findAllByWorkflowId(createWorkflowId(id)),
+  };
 
-  // Get all runs for all workflows
-  const allRuns: WorkflowRun[] = [];
-  for (const workflow of allWorkflows) {
-    const runs = await runRepo.findAllByWorkflowId(workflow.id);
-    allRuns.push(...runs);
-  }
+  const renderer = createWorkflowHistorySearchRenderer(effectiveMode);
+  await consumeStream(
+    workflowHistorySearch(libCtx, deps, { query }),
+    renderer.handlers(),
+  );
 
-  // Sort by startedAt descending (most recent first)
-  allRuns.sort((a, b) => {
-    const aTime = a.startedAt?.getTime() ?? 0;
-    const bTime = b.startedAt?.getTime() ?? 0;
-    return bTime - aTime;
-  });
-
-  const searchItems = allRuns.map(toSearchItem);
-
-  if (effectiveMode === "json") {
-    // Non-interactive: filter and output JSON
-    const filteredRuns = filterRuns(searchItems, query ?? "");
-    const data: WorkflowHistorySearchData = {
-      query: query ?? "",
-      results: filteredRuns,
-    };
-    await renderWorkflowHistorySearch(data, effectiveMode);
-  } else {
-    // Interactive: show fuzzy search UI
-    const data: WorkflowHistorySearchData = {
-      query: query ?? "",
-      results: searchItems,
-    };
-
-    const selected = await renderWorkflowHistorySearch(data, effectiveMode);
-
-    if (selected) {
-      ctx.logger.debug`Selected run: ${selected.runId}`;
-      // Display the run details
-      const run = await runRepo.findById(
+  const selected = renderer.selectedItem();
+  if (selected) {
+    ctx.logger.debug`Selected run: ${selected.runId}`;
+    // Display the run details
+    const run = await runRepo.findById(
+      createWorkflowId(selected.workflowId),
+      createWorkflowRunId(selected.runId),
+    );
+    if (run) {
+      const path = runRepo.getPath(
         createWorkflowId(selected.workflowId),
         createWorkflowRunId(selected.runId),
       );
-      if (run) {
-        const path = runRepo.getPath(
-          createWorkflowId(selected.workflowId),
-          createWorkflowRunId(selected.runId),
-        );
-        const runData = toRunData(run, path);
-        renderWorkflowRun(runData, effectiveMode);
-      }
-    } else {
-      ctx.logger.debug`Search cancelled`;
+      const runData = toRunData(run, path);
+      renderWorkflowRun(runData, effectiveMode);
     }
+  } else {
+    ctx.logger.debug`Search cancelled`;
   }
 
   ctx.logger.debug("Workflow history search command completed");
