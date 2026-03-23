@@ -197,6 +197,7 @@ export const workflowRunCommand = new Command()
       const libCtx = createLibSwampContext();
       const renderer = createWorkflowRunRenderer(ctx.outputMode, {
         workflowName: workflowIdOrName,
+        forceLog: ctx.forceLog,
       });
 
       await consumeStream(

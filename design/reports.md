@@ -274,9 +274,42 @@ Both artifacts are written with:
 - **Tags**: `{ type: "report", reportName, reportScope }`
 
 Data handles are returned in the `ReportExecutionResult` and included in the
-final view. The `buildReportDataHandles` helper (in
-`src/domain/reports/report_data_handles.ts`) reconstructs `DataHandle[]` from
-persisted data for standalone report invocations.
+final view.
+
+## Sensitive Argument Redaction
+
+Report contexts include an optional `redactSensitiveArgs` helper that replaces
+values marked `{ sensitive: true }` in the model type's Zod schema with `"***"`.
+The helper is built by `buildRedactSensitiveArgs` in
+`src/domain/reports/report_execution_service.ts` and attached to the context
+before report execution.
+
+```typescript
+redactSensitiveArgs?(
+  args: Record<string, unknown>,
+  argsKind: "global" | "method",
+): Record<string, unknown>;
+```
+
+The helper uses `extractSensitiveFields` from
+`src/domain/models/sensitive_field_extractor.ts` to walk the model type's Zod
+schema, then deep-clones the args and replaces matching values with `"***"`.
+
+- **Method/model scope** — looks up the schema via `modelRegistry.get(modelType)`
+  and returns a redacted clone.
+- **Workflow scope** — returns args unchanged (no single model type to look up).
+- **No schema found** — returns args unchanged. Safe to call unconditionally.
+
+Reports that include argument values in their output should call
+`context.redactSensitiveArgs(args, kind)` to avoid persisting secrets. The
+builtin `@swamp/method-summary` report uses this for both global and method
+arguments.
+
+Additionally, report contexts receive **pre-vault** arguments — args are
+captured before `resolveRuntimeExpressionsInDefinition` replaces vault
+expressions with sentinel tokens. This ensures vault expression strings like
+`${{ vault.default.password }}` appear in reports, never the resolved secret
+values.
 
 ## CLI
 

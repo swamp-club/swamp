@@ -142,3 +142,24 @@ Deno.test("getRepoDirFromArgs finds flag among other args", () => {
   ]);
   assertEquals(result, "/tmp/my-repo");
 });
+
+// ============================================================================
+// forceLog Tests
+// ============================================================================
+
+Deno.test("createContext: forceLog defaults to false", () => {
+  const ctx = createContext({});
+  assertEquals(ctx.forceLog, false);
+});
+
+Deno.test("createContext: log=true sets forceLog", () => {
+  const ctx = createContext({ log: true });
+  assertEquals(ctx.forceLog, true);
+  assertEquals(ctx.outputMode, "log");
+});
+
+Deno.test("createContext: log and json can both be set", () => {
+  const ctx = createContext({ json: true, log: true });
+  assertEquals(ctx.outputMode, "json");
+  assertEquals(ctx.forceLog, true);
+});
