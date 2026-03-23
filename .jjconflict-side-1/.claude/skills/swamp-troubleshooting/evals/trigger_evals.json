@@ -1,0 +1,79 @@
+[
+  {
+    "query": "Debug why my workflow is failing on the second step",
+    "should_trigger": true
+  },
+  {
+    "query": "Swamp is throwing an unexpected type error",
+    "should_trigger": true
+  },
+  {
+    "query": "Help me diagnose why vault expressions aren't being resolved",
+    "should_trigger": true
+  },
+  {
+    "query": "The datastore sync is hanging and timing out",
+    "should_trigger": true
+  },
+  {
+    "query": "Fix the issue where my custom model isn't being found",
+    "should_trigger": true
+  },
+  {
+    "query": "The swamp CLI command is giving me a strange error message",
+    "should_trigger": true,
+    "note": "Added 'swamp' anchor to avoid being too generic"
+  },
+  {
+    "query": "Trace the swamp execution flow to find where the data pipeline failed",
+    "should_trigger": true,
+    "note": "Added 'swamp' anchor to clarify domain"
+  },
+  {
+    "query": "Read the swamp source code to understand what's causing this error",
+    "should_trigger": true
+  },
+  {
+    "query": "Why is the workflow not reading the correct data version?",
+    "should_trigger": true
+  },
+  {
+    "query": "My model method is crashing with a stack trace, help me find the root cause",
+    "should_trigger": true
+  },
+  {
+    "query": "File a bug report for this issue on GitHub",
+    "should_trigger": false,
+    "note": "Creating GitHub issues → swamp-issue"
+  },
+  {
+    "query": "How do I define a workflow that handles errors gracefully?",
+    "should_trigger": false,
+    "note": "Creating/defining workflows → swamp-workflow"
+  },
+  {
+    "query": "List all the data stored in my system",
+    "should_trigger": false,
+    "note": "Viewing stored data → swamp-data"
+  },
+  {
+    "query": "Create a pull request to fix the swamp core",
+    "should_trigger": false,
+    "note": "Creating/submitting PRs → github-pr skill"
+  },
+  {
+    "query": "How do I store my database password securely?",
+    "should_trigger": false,
+    "note": "Using vault → swamp-vault"
+  },
+  {
+    "query": "Show me the execution logs from the last workflow run",
+    "should_trigger": false,
+    "note": "Viewing normal workflow output → swamp-workflow"
+  },
+  {
+    "query": "Format the output of this CLI command",
+    "should_trigger": false,
+    "note": "Formatting output → terminal-output skill"
+  }
+]

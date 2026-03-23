@@ -1,0 +1,68 @@
+[
+  {
+    "query": "How do I implement a custom VaultProvider for HashiCorp Vault?",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a vault backend that integrates with AWS Secrets Manager",
+    "should_trigger": true
+  },
+  {
+    "query": "Build a custom vault implementation for Azure Key Vault",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to extend swamp with a custom vault provider",
+    "should_trigger": true
+  },
+  {
+    "query": "Guide me through creating a VaultProvider interface implementation",
+    "should_trigger": true
+  },
+  {
+    "query": "Implement a custom vault that uses environment variables",
+    "should_trigger": true
+  },
+  {
+    "query": "Build a vault plugin for GCP Secret Manager",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a user-defined vault backend for Kubernetes secrets",
+    "should_trigger": true
+  },
+  {
+    "query": "Implement a vault provider for Hashicorp Consul",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I store and retrieve secrets in the built-in vault?",
+    "should_trigger": false,
+    "note": "Using vault for secrets → swamp-vault"
+  },
+  {
+    "query": "List all the secrets in my production vault",
+    "should_trigger": false,
+    "note": "Managing vault contents → swamp-vault"
+  },
+  {
+    "query": "Create a custom datastore backend for Cassandra",
+    "should_trigger": false,
+    "note": "Building custom datastores → swamp-extension-datastore"
+  },
+  {
+    "query": "The vault provider is not connecting to Vault",
+    "should_trigger": false,
+    "note": "Debugging vault issues → swamp-troubleshooting"
+  },
+  {
+    "query": "How do I use vault expressions in my workflow?",
+    "should_trigger": false,
+    "note": "Using vault in workflows → swamp-vault"
+  },
+  {
+    "query": "Build a Lambda driver for running on AWS",
+    "should_trigger": false,
+    "note": "Building custom drivers → swamp-extension-driver"
+  }
+]

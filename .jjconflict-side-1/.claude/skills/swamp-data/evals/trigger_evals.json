@@ -1,0 +1,65 @@
+[
+  {
+    "query": "Show me all the model data currently stored in swamp",
+    "should_trigger": true
+  },
+  {
+    "query": "List the version history for the Customer model",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I delete old data versions that are no longer needed?",
+    "should_trigger": true
+  },
+  {
+    "query": "Run garbage collection to clean up expired data",
+    "should_trigger": true
+  },
+  {
+    "query": "What data retention policies are in place?",
+    "should_trigger": true
+  },
+  {
+    "query": "Get the latest version of the Payment data",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I prune ephemeral data that's past its expiration?",
+    "should_trigger": true
+  },
+  { "query": "Configure data gc to run on a schedule", "should_trigger": true },
+  {
+    "query": "View the data lifecycle and retention settings",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to understand the schema fields in this model type",
+    "should_trigger": false,
+    "note": "Understanding schema structure → swamp-model"
+  },
+  {
+    "query": "How do I create a custom input for the validation method?",
+    "should_trigger": false,
+    "note": "Creating model inputs → swamp-model"
+  },
+  {
+    "query": "Run the transform method on this dataset",
+    "should_trigger": false,
+    "note": "Running model methods → swamp-model"
+  },
+  {
+    "query": "Help me set up a new datastore backend",
+    "should_trigger": false,
+    "note": "Building datastore provider → swamp-extension-datastore"
+  },
+  {
+    "query": "Debug why my workflow isn't reading the right data version",
+    "should_trigger": false,
+    "note": "Debugging execution issues → swamp-troubleshooting"
+  },
+  {
+    "query": "Create a custom datastore for MongoDB",
+    "should_trigger": false,
+    "note": "Building custom datastore → swamp-extension-datastore"
+  }
+]

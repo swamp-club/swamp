@@ -1,0 +1,62 @@
+name: Issue Auto Responder
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  triage:
+    name: Triage New Issue
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if author is a maintainer
+        id: check-role
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const login = context.payload.issue.user.login;
+            let isMaintainer = false;
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: login,
+              });
+              core.info(`Permission level for ${login}: ${data.permission}`);
+              isMaintainer = ['admin', 'write'].includes(data.permission);
+            } catch (error) {
+              core.info(`Could not fetch permission level for ${login}: ${error.message}`);
+            }
+            core.setOutput('is_maintainer', isMaintainer.toString());
+
+      - name: Add needs-triage label
+        if: steps.check-role.outputs.is_maintainer == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              labels: ['needs-triage'],
+            });
+
+      - name: Post welcome comment
+        if: steps.check-role.outputs.is_maintainer == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const author = context.payload.issue.user.login;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `Hi @${author}, thanks for opening this issue!\n\nWe appreciate you taking the time to report it. A maintainer will review it as soon as possible.\n\nIn the meantime, please make sure you've included all relevant details (steps to reproduce, expected vs actual behaviour, swamp version, etc.) to help us triage it quickly.`,
+            });

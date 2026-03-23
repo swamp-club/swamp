@@ -1,0 +1,73 @@
+[
+  {
+    "query": "How do I store my database password securely in swamp?",
+    "should_trigger": true
+  },
+  {
+    "query": "Retrieve the API key from my production vault",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a new vault and add my AWS credentials to it",
+    "should_trigger": true
+  },
+  { "query": "List all secrets stored in the vault", "should_trigger": true },
+  {
+    "query": "How do I reference a vault secret inside a workflow step?",
+    "should_trigger": true
+  },
+  {
+    "query": "Delete an expired credential from the vault",
+    "should_trigger": true
+  },
+  {
+    "query": "I need to store a token so my models can authenticate with an external API",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I use vault expressions like vault.get in my workflow YAML?",
+    "should_trigger": true
+  },
+  {
+    "query": "Put a secret called db-password into my vault",
+    "should_trigger": true
+  },
+  {
+    "query": "Which vault providers does swamp support out of the box?",
+    "should_trigger": true
+  },
+  {
+    "query": "Get the OAuth token from my vault for the integration",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to build a custom vault provider that talks to HashiCorp Vault",
+    "should_trigger": false,
+    "note": "Building custom vault provider → swamp-extension-vault"
+  },
+  {
+    "query": "Implement VaultProvider interface for Azure Key Vault",
+    "should_trigger": false,
+    "note": "Implementing vault interface → swamp-extension-vault"
+  },
+  {
+    "query": "Show me the version history of my stored model data",
+    "should_trigger": false,
+    "note": "Data version history → swamp-data"
+  },
+  {
+    "query": "Create a new TypeScript model type for DNS management",
+    "should_trigger": false,
+    "note": "Creating model types → swamp-extension-model"
+  },
+  {
+    "query": "The vault command keeps crashing with a stack trace",
+    "should_trigger": false,
+    "note": "Debugging crashes → swamp-troubleshooting"
+  },
+  {
+    "query": "Run the deploy workflow and show me the logs",
+    "should_trigger": false,
+    "note": "Running workflows → swamp-workflow"
+  }
+]
