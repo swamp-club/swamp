@@ -31,8 +31,7 @@ import { resolveLocalImports } from "../../domain/models/local_import_resolver.t
 import type { Logger } from "@logtape/logtape";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { getTracer } from "../../infrastructure/tracing/mod.ts";
-import { SpanStatusCode } from "@opentelemetry/api";
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export const DEFAULT_SERVER_URL = "https://swamp.club";
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
@@ -958,45 +957,36 @@ export async function* extensionPull(
   deps: ExtensionPullDeps,
   input: ExtensionPullInput,
 ): AsyncIterable<ExtensionPullEvent> {
-  const pullSpan = getTracer().startSpan("swamp.extension.pull", {
-    attributes: { "extension.name": input.ref.name },
-  });
+  yield* withGeneratorSpan(
+    "swamp.extension.pull",
+    { "extension.name": input.ref.name },
+    (async function* () {
+      yield { kind: "installing" } as const;
 
-  try {
-    yield { kind: "installing" };
+      const installCtx: InstallContext = {
+        getExtension: deps.getExtension,
+        downloadArchive: deps.downloadArchive,
+        getChecksum: deps.getChecksum,
+        logger: ctx.logger,
+        modelsDir: deps.modelsDir,
+        workflowsDir: deps.workflowsDir,
+        vaultsDir: deps.vaultsDir,
+        driversDir: deps.driversDir,
+        datastoresDir: deps.datastoresDir,
+        reportsDir: deps.reportsDir,
+        repoDir: deps.repoDir,
+        force: input.force,
+        alreadyPulled: deps.alreadyPulled,
+        depth: deps.depth,
+      };
 
-    const installCtx: InstallContext = {
-      getExtension: deps.getExtension,
-      downloadArchive: deps.downloadArchive,
-      getChecksum: deps.getChecksum,
-      logger: ctx.logger,
-      modelsDir: deps.modelsDir,
-      workflowsDir: deps.workflowsDir,
-      vaultsDir: deps.vaultsDir,
-      driversDir: deps.driversDir,
-      datastoresDir: deps.datastoresDir,
-      reportsDir: deps.reportsDir,
-      repoDir: deps.repoDir,
-      force: input.force,
-      alreadyPulled: deps.alreadyPulled,
-      depth: deps.depth,
-    };
-
-    // Let ConflictError propagate — CLI catches it for the two-phase prompt flow
-    const result = await installExtension(input.ref, installCtx);
-    if (result) {
-      pullSpan.setStatus({ code: SpanStatusCode.OK });
-      yield { kind: "completed", data: result };
-    }
-  } catch (error) {
-    pullSpan.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  } finally {
-    pullSpan.end();
-  }
+      // Let ConflictError propagate — CLI catches it for the two-phase prompt flow
+      const result = await installExtension(input.ref, installCtx);
+      if (result) {
+        yield { kind: "completed" as const, data: result };
+      }
+    })(),
+  );
 }
 
 /** Wires real infrastructure into ExtensionPullDeps. */

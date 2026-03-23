@@ -26,8 +26,7 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { getTracer } from "../../infrastructure/tracing/mod.ts";
-import { SpanStatusCode } from "@opentelemetry/api";
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 /** Preview item for a single expired data entry. */
 export interface DataGcPreviewItem {
@@ -111,37 +110,24 @@ export async function* dataGc(
   deps: DataGcDeps,
   input: DataGcInput,
 ): AsyncIterable<DataGcEvent> {
-  const gcSpan = getTracer().startSpan("swamp.data.gc", {
-    attributes: { "gc.dry_run": input.dryRun },
-  });
+  yield* withGeneratorSpan(
+    "swamp.data.gc",
+    { "gc.dry_run": input.dryRun },
+    (async function* () {
+      yield { kind: "collecting" } as const;
 
-  try {
-    yield { kind: "collecting" };
+      const result = await deps.deleteExpiredData({ dryRun: input.dryRun });
 
-    const result = await deps.deleteExpiredData({ dryRun: input.dryRun });
-
-    gcSpan.setAttribute("gc.entries_expired", result.dataEntriesExpired);
-    gcSpan.setAttribute("gc.versions_deleted", result.versionsDeleted);
-    gcSpan.setAttribute("gc.bytes_reclaimed", result.bytesReclaimed);
-    gcSpan.setStatus({ code: SpanStatusCode.OK });
-
-    yield {
-      kind: "completed",
-      data: {
-        dataEntriesExpired: result.dataEntriesExpired,
-        versionsDeleted: result.versionsDeleted,
-        bytesReclaimed: result.bytesReclaimed,
-        dryRun: result.dryRun,
-        expiredEntries: result.expiredEntries,
-      },
-    };
-  } catch (error) {
-    gcSpan.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  } finally {
-    gcSpan.end();
-  }
+      yield {
+        kind: "completed" as const,
+        data: {
+          dataEntriesExpired: result.dataEntriesExpired,
+          versionsDeleted: result.versionsDeleted,
+          bytesReclaimed: result.bytesReclaimed,
+          dryRun: result.dryRun,
+          expiredEntries: result.expiredEntries,
+        },
+      };
+    })(),
+  );
 }

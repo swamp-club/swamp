@@ -18,5 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 export { initTracing, shutdownTracing } from "./otel_init.ts";
-export { getTracer, withGeneratorSpan, withSpan } from "./tracer.ts";
+export {
+  getTracer,
+  SpanStatusCode,
+  withGeneratorSpan,
+  withSpan,
+} from "./tracer.ts";
 export { extractTraceContext, injectTraceContext } from "./propagation.ts";

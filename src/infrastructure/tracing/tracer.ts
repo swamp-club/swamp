@@ -19,6 +19,7 @@
 
 import {
   type Attributes,
+  context,
   type Span,
   SpanStatusCode,
   trace,
@@ -26,6 +27,12 @@ import {
 } from "@opentelemetry/api";
 
 const TRACER_NAME = "swamp";
+
+/**
+ * Re-export SpanStatusCode so consumers don't need a direct
+ * `@opentelemetry/api` dependency.
+ */
+export { SpanStatusCode };
 
 /**
  * Returns the swamp tracer from the global tracer provider.
@@ -36,19 +43,9 @@ export function getTracer(): Tracer {
 }
 
 /**
- * Convenience wrapper around `tracer.startActiveSpan()`.
- *
- * Creates a span that is automatically set as the active span for the
- * duration of `fn`. Records errors and ends the span in `finally`.
- *
- * @param name - Span name (e.g. "swamp.workflow.run")
- * @param attributes - Span attributes
- * @param fn - Async function to execute within the span
- * @returns The return value of `fn`
- */
-/**
- * Wraps an async generator with a span. The span starts when iteration
- * begins and ends when the generator completes, errors, or is abandoned.
+ * Wraps an async generator with a span. The span is set as the active
+ * context so that child spans created during iteration are properly
+ * parented.
  *
  * Events with `kind: "error"` are detected and recorded on the span.
  */
@@ -57,16 +54,24 @@ export async function* withGeneratorSpan<T extends { kind: string }>(
   attributes: Attributes,
   generator: AsyncIterable<T>,
 ): AsyncGenerator<T> {
-  const span = getTracer().startSpan(name, { attributes });
+  const tracer = getTracer();
+  const span = tracer.startSpan(name, { attributes });
+  const ctx = trace.setSpan(context.active(), span);
+  let hasError = false;
   try {
-    for await (const event of generator) {
+    // Bind each iteration to the span's context so child spans are parented
+    const iterator = generator[Symbol.asyncIterator]();
+    while (true) {
+      const result = await context.with(ctx, () => iterator.next());
+      if (result.done) break;
+      const event = result.value;
       if (event.kind === "error") {
+        hasError = true;
         span.setStatus({ code: SpanStatusCode.ERROR });
       }
       yield event;
     }
-    // Only set OK if we didn't already set ERROR
-    if (span.isRecording()) {
+    if (!hasError) {
       span.setStatus({ code: SpanStatusCode.OK });
     }
   } catch (error) {

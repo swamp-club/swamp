@@ -89,8 +89,7 @@ import {
 import { reportRegistry } from "../reports/report_registry.ts";
 import type { MethodReportContext } from "../reports/report_context.ts";
 import { modelRegistry } from "../models/model.ts";
-import { getTracer } from "../../infrastructure/tracing/mod.ts";
-import { SpanStatusCode } from "@opentelemetry/api";
+import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 /**
  * Context for step execution.
  */

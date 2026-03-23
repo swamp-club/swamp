@@ -63,8 +63,7 @@ import {
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import { getTracer } from "../infrastructure/tracing/mod.ts";
-import { SpanStatusCode } from "@opentelemetry/api";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
 
 /**
  * Resolves a DatastoreProvider for a custom datastore config.
@@ -244,12 +243,11 @@ export async function requireInitializedRepoReadOnly(
  * @returns The validated repo context
  * @throws UserError if not initialized
  */
-export async function requireInitializedRepo(
+export function requireInitializedRepo(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
-  const repoSpan = getTracer().startSpan("swamp.repo.init");
-  try {
+  return withSpan("swamp.repo.init", {}, async () => {
     const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
       options.repoDir,
     );
@@ -349,21 +347,12 @@ export async function requireInitializedRepo(
       ...factoryConfig,
     });
 
-    repoSpan.setStatus({ code: SpanStatusCode.OK });
     return {
       repoDir: repoPath.value,
       repoContext,
       datastoreResolver,
     };
-  } catch (error) {
-    repoSpan.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  } finally {
-    repoSpan.end();
-  }
+  });
 }
 
 /**

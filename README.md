@@ -289,6 +289,44 @@ Valid levels: `trace`, `debug`, `info`, `warning`, `error`, `fatal`.
 Priority order (highest to lowest): `-q` / `--log-level` flag →
 `SWAMP_LOG_LEVEL` env var → `.swamp.yaml` `logLevel` → default (`info`).
 
+## Tracing
+
+Swamp has native OpenTelemetry tracing for diagnosing slow or failing
+operations. Tracing is opt-in and has zero overhead when disabled.
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable:
+
+```bash
+# Send traces to a local Jaeger instance
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 swamp workflow run my-workflow
+
+# Quick debug: print spans to stderr (no collector needed)
+OTEL_TRACES_EXPORTER=console swamp workflow run my-workflow
+```
+
+Traces capture the full execution hierarchy — CLI command, workflow, job, step,
+model method, and driver execution — with automatic context propagation to
+in-process extensions and Docker containers via `TRACEPARENT`.
+
+### Local development
+
+Run Jaeger for a local trace UI:
+
+```bash
+docker run -d --name jaeger -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one:latest
+```
+
+Then open `http://localhost:16686` and search for the `swamp` service.
+
+### Configuration
+
+| Variable                      | Purpose                                | Default         |
+| ----------------------------- | -------------------------------------- | --------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector URL (tracing off when unset) | _(unset = off)_ |
+| `OTEL_TRACES_EXPORTER`        | `otlp`, `console`, or `none`           | `otlp`          |
+| `OTEL_SERVICE_NAME`           | Service name in traces                 | `swamp`         |
+| `OTEL_EXPORTER_OTLP_HEADERS`  | Auth headers (`key=val,key=val`)       | _(none)_        |
+
 ## Telemetry
 
 Swamp collects anonymous usage telemetry to help us understand which commands

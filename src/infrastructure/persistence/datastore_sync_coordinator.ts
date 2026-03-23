@@ -34,8 +34,7 @@
 
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
-import { getTracer } from "../tracing/mod.ts";
-import { SpanStatusCode } from "@opentelemetry/api";
+import { getTracer, SpanStatusCode } from "../tracing/mod.ts";
 
 /**
  * Common interface for sync services compatible with the coordinator.

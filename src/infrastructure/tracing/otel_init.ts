@@ -86,7 +86,7 @@ export async function initTracing(): Promise<void> {
     }
 
     const exporter = new OTLPTraceExporter({
-      url: `${endpoint}/v1/traces`,
+      url: `${endpoint!.replace(/\/+$/, "")}/v1/traces`,
       headers,
     });
     provider.addSpanProcessor(new BatchSpanProcessor(exporter));
