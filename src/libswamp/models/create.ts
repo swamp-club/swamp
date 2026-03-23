@@ -34,6 +34,7 @@ import {
   zodToJsonSchema,
 } from "../types/schema_helpers.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the model create output.
  */
@@ -110,87 +111,94 @@ export async function* modelCreate(
   deps: ModelCreateDeps,
   input: ModelCreateInput,
 ): AsyncIterable<ModelCreateEvent> {
-  yield { kind: "creating" };
+  yield* withGeneratorSpan(
+    "swamp.model.create",
+    { "model.type": input.typeArg, "model.name": input.name },
+    (async function* () {
+      yield { kind: "creating" };
 
-  ctx.logger.debug`Creating model: type=${input.typeArg}, name=${input.name}`;
+      ctx.logger
+        .debug`Creating model: type=${input.typeArg}, name=${input.name}`;
 
-  // Validate and resolve the model type
-  const modelType = ModelType.create(input.typeArg);
-  const resolvedDef = await deps.resolveModelType(input.typeArg);
-  if (!resolvedDef) {
-    const availableTypes = deps.listAvailableTypes().join(", ");
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Unknown model type: ${input.typeArg}. Available types: ${
-          availableTypes || "none"
-        }`,
-      ),
-    };
-    return;
-  }
-
-  // Check name uniqueness
-  const exists = await deps.findByNameGlobal(input.name);
-  if (exists) {
-    yield {
-      kind: "error",
-      error: alreadyExists("Model", input.name),
-    };
-    return;
-  }
-
-  // Validate global arguments against model schema if present
-  const modelDef = deps.getModelDef(modelType);
-  let globalArguments = input.globalArguments;
-  if (globalArguments && modelDef?.globalArguments) {
-    const result = modelDef.globalArguments.safeParse(globalArguments);
-    if (!result.success) {
-      const issues = result.error.issues.map((i) =>
-        `  ${i.path.join(".")}: ${i.message}`
-      ).join("\n");
-      yield {
-        kind: "error",
-        error: validationFailed(
-          `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
-        ),
-      };
-      return;
-    }
-    globalArguments = result.data as Record<string, unknown>;
-  }
-
-  // Create and save the definition
-  const definition = await deps.createAndSave(
-    modelType,
-    input.name,
-    modelDef?.version,
-    globalArguments,
-  );
-
-  ctx.logger.debug`Created definition with ID: ${definition.id}`;
-
-  const data: ModelCreateData = {
-    id: definition.id,
-    type: modelType.normalized,
-    name: definition.name,
-    path: deps.getPath(modelType, definition.id),
-    version: modelDef?.version,
-    globalArguments: modelDef?.globalArguments
-      ? zodToJsonSchema(modelDef.globalArguments)
-      : undefined,
-    methods: modelDef
-      ? Object.entries(modelDef.methods).map(
-        ([name, method]) =>
-          toMethodDescribeData(
-            name,
-            method,
-            modelDef.resources,
-            modelDef.files,
+      // Validate and resolve the model type
+      const modelType = ModelType.create(input.typeArg);
+      const resolvedDef = await deps.resolveModelType(input.typeArg);
+      if (!resolvedDef) {
+        const availableTypes = deps.listAvailableTypes().join(", ");
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Unknown model type: ${input.typeArg}. Available types: ${
+              availableTypes || "none"
+            }`,
           ),
-      )
-      : undefined,
-  };
+        };
+        return;
+      }
 
-  yield { kind: "completed", data };
+      // Check name uniqueness
+      const exists = await deps.findByNameGlobal(input.name);
+      if (exists) {
+        yield {
+          kind: "error",
+          error: alreadyExists("Model", input.name),
+        };
+        return;
+      }
+
+      // Validate global arguments against model schema if present
+      const modelDef = deps.getModelDef(modelType);
+      let globalArguments = input.globalArguments;
+      if (globalArguments && modelDef?.globalArguments) {
+        const result = modelDef.globalArguments.safeParse(globalArguments);
+        if (!result.success) {
+          const issues = result.error.issues.map((i) =>
+            `  ${i.path.join(".")}: ${i.message}`
+          ).join("\n");
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
+            ),
+          };
+          return;
+        }
+        globalArguments = result.data as Record<string, unknown>;
+      }
+
+      // Create and save the definition
+      const definition = await deps.createAndSave(
+        modelType,
+        input.name,
+        modelDef?.version,
+        globalArguments,
+      );
+
+      ctx.logger.debug`Created definition with ID: ${definition.id}`;
+
+      const data: ModelCreateData = {
+        id: definition.id,
+        type: modelType.normalized,
+        name: definition.name,
+        path: deps.getPath(modelType, definition.id),
+        version: modelDef?.version,
+        globalArguments: modelDef?.globalArguments
+          ? zodToJsonSchema(modelDef.globalArguments)
+          : undefined,
+        methods: modelDef
+          ? Object.entries(modelDef.methods).map(
+            ([name, method]) =>
+              toMethodDescribeData(
+                name,
+                method,
+                modelDef.resources,
+                modelDef.files,
+              ),
+          )
+          : undefined,
+      };
+
+      yield { kind: "completed", data };
+    })(),
+  );
 }

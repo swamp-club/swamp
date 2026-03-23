@@ -118,7 +118,7 @@ export class DockerExecutionDriver implements ExecutionDriver {
 
     const run = request.methodArgs.run as string;
     const containerName = `swamp-${crypto.randomUUID().slice(0, 8)}`;
-    const args = this.buildCommandArgs(containerName, run);
+    const args = this.buildCommandArgs(containerName, run, request);
 
     try {
       const command = new Deno.Command(this.config.command, {
@@ -290,7 +290,7 @@ export class DockerExecutionDriver implements ExecutionDriver {
 
       // Build docker args for bundle mode
       const containerName = `swamp-${crypto.randomUUID().slice(0, 8)}`;
-      const args = this.buildBundleArgs(containerName, tempDir);
+      const args = this.buildBundleArgs(containerName, tempDir, request);
 
       const command = new Deno.Command(this.config.command, {
         args,
@@ -472,8 +472,12 @@ export class DockerExecutionDriver implements ExecutionDriver {
   /**
    * Builds the docker run argument array for command mode.
    */
-  buildCommandArgs(containerName: string, commandString: string): string[] {
-    const args = this.buildCommonArgs(containerName);
+  buildCommandArgs(
+    containerName: string,
+    commandString: string,
+    request?: ExecutionRequest,
+  ): string[] {
+    const args = this.buildCommonArgs(containerName, request);
     args.push(this.config.image);
     args.push("sh", "-c", commandString);
     return args;
@@ -482,8 +486,12 @@ export class DockerExecutionDriver implements ExecutionDriver {
   /**
    * Builds the docker run argument array for bundle mode.
    */
-  buildBundleArgs(containerName: string, tempDir: string): string[] {
-    const args = this.buildCommonArgs(containerName);
+  buildBundleArgs(
+    containerName: string,
+    tempDir: string,
+    request?: ExecutionRequest,
+  ): string[] {
+    const args = this.buildCommonArgs(containerName, request);
 
     // Mount the workspace with bundle, request, and runner
     args.push("-v", `${tempDir}:/swamp:ro`);
@@ -498,7 +506,10 @@ export class DockerExecutionDriver implements ExecutionDriver {
   /**
    * Builds the common docker run arguments shared by both modes.
    */
-  private buildCommonArgs(containerName: string): string[] {
+  private buildCommonArgs(
+    containerName: string,
+    request?: ExecutionRequest,
+  ): string[] {
     const args: string[] = ["run", "--rm", "--name", containerName];
 
     if (this.config.network) {
@@ -518,6 +529,12 @@ export class DockerExecutionDriver implements ExecutionDriver {
     if (this.config.env) {
       for (const [key, value] of Object.entries(this.config.env)) {
         args.push("-e", `${key}=${value}`);
+      }
+    }
+    // Propagate W3C Trace Context headers as environment variables
+    if (request?.traceHeaders) {
+      for (const [key, value] of Object.entries(request.traceHeaders)) {
+        args.push("-e", `${key.toUpperCase().replace(/-/g, "_")}=${value}`);
       }
     }
     if (this.config.extraArgs) {

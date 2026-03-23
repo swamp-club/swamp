@@ -20,6 +20,7 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** A single extension entry in search results. */
 export interface ExtensionSearchItem {
   name: string;
@@ -95,34 +96,40 @@ export async function* extensionSearch(
   deps: ExtensionSearchDeps,
   input: ExtensionSearchInput,
 ): AsyncGenerator<ExtensionSearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.extension.search",
+    { "search.query": input.query ?? "" },
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const response = await deps.searchExtensions({
-    q: input.query,
-    collective: input.collective,
-    platform: input.platform,
-    label: input.label,
-    contentType: input.contentType,
-    sort: input.sort,
-    perPage: input.perPage,
-    page: input.page,
-  });
+      const response = await deps.searchExtensions({
+        q: input.query,
+        collective: input.collective,
+        platform: input.platform,
+        label: input.label,
+        contentType: input.contentType,
+        sort: input.sort,
+        perPage: input.perPage,
+        page: input.page,
+      });
 
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      results: response.extensions.map((ext) => ({
-        name: ext.name,
-        description: ext.description,
-        latestVersion: ext.latestVersion,
-        platforms: ext.platforms,
-        labels: ext.labels,
-        contentTypes: ext.contentTypes ?? [],
-        createdAt: ext.createdAt,
-        updatedAt: ext.updatedAt,
-      })),
-      meta: response.meta,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          results: response.extensions.map((ext) => ({
+            name: ext.name,
+            description: ext.description,
+            latestVersion: ext.latestVersion,
+            platforms: ext.platforms,
+            labels: ext.labels,
+            contentTypes: ext.contentTypes ?? [],
+            createdAt: ext.createdAt,
+            updatedAt: ext.updatedAt,
+          })),
+          meta: response.meta,
+        },
+      };
+    })(),
+  );
 }

@@ -29,6 +29,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -152,38 +153,44 @@ export async function* workflowDelete(
   deps: WorkflowDeleteDeps,
   input: WorkflowDeleteInput,
 ): AsyncIterable<WorkflowDeleteEvent> {
-  yield { kind: "deleting" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.delete",
+    { "workflow.id_or_name": input.workflowIdOrName },
+    (async function* () {
+      yield { kind: "deleting" };
 
-  const workflow = await findWorkflow(deps, input.workflowIdOrName);
-  if (!workflow) {
-    yield {
-      kind: "error",
-      error: notFound("Workflow", input.workflowIdOrName),
-    };
-    return;
-  }
+      const workflow = await findWorkflow(deps, input.workflowIdOrName);
+      if (!workflow) {
+        yield {
+          kind: "error",
+          error: notFound("Workflow", input.workflowIdOrName),
+        };
+        return;
+      }
 
-  const workflowPath = deps.getPath(workflow.id);
+      const workflowPath = deps.getPath(workflow.id);
 
-  // Delete runs
-  ctx.logger.debug`Deleting workflow runs`;
-  const runsDeleted = await deps.deleteRuns(workflow.id);
+      // Delete runs
+      ctx.logger.debug`Deleting workflow runs`;
+      const runsDeleted = await deps.deleteRuns(workflow.id);
 
-  // Delete evaluated workflow
-  ctx.logger.debug`Deleting evaluated workflow`;
-  await deps.deleteEvaluated(workflow.id);
+      // Delete evaluated workflow
+      ctx.logger.debug`Deleting evaluated workflow`;
+      await deps.deleteEvaluated(workflow.id);
 
-  // Delete workflow
-  ctx.logger.debug`Deleting workflow: ${workflow.id}`;
-  await deps.deleteWorkflow(workflow.id);
+      // Delete workflow
+      ctx.logger.debug`Deleting workflow: ${workflow.id}`;
+      await deps.deleteWorkflow(workflow.id);
 
-  yield {
-    kind: "completed",
-    data: {
-      id: workflow.id,
-      name: workflow.name,
-      workflowPath,
-      runsDeleted,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          id: workflow.id,
+          name: workflow.name,
+          workflowPath,
+          runsDeleted,
+        },
+      };
+    })(),
+  );
 }

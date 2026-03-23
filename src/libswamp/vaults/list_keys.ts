@@ -22,6 +22,7 @@ import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Data payload for the completed event. */
 export interface VaultListKeysData {
   vaultName: string;
@@ -71,54 +72,60 @@ export async function* vaultListKeys(
   deps: VaultListKeysDeps,
   input: VaultListKeysInput,
 ): AsyncIterable<VaultListKeysEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.vault.list_keys",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  if (!input.vaultName) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        "Missing required argument: vault_name\n\n" +
-          "Usage: swamp vault list-keys <vault_name>\n\n" +
-          "Use 'swamp vault search' to see available vaults.",
-      ),
-    };
-    return;
-  }
+      if (!input.vaultName) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            "Missing required argument: vault_name\n\n" +
+              "Usage: swamp vault list-keys <vault_name>\n\n" +
+              "Use 'swamp vault search' to see available vaults.",
+          ),
+        };
+        return;
+      }
 
-  const vaultConfig = await deps.findVaultByName(input.vaultName);
-  if (!vaultConfig) {
-    const allVaults = await deps.findAllVaults();
-    if (allVaults.length === 0) {
+      const vaultConfig = await deps.findVaultByName(input.vaultName);
+      if (!vaultConfig) {
+        const allVaults = await deps.findAllVaults();
+        if (allVaults.length === 0) {
+          yield {
+            kind: "error",
+            error: notFound(
+              "Vault",
+              `'${input.vaultName}'. No vaults are configured.\n` +
+                `Create a vault using: swamp vault create <type> ${input.vaultName}`,
+            ),
+          };
+        } else {
+          const vaultNames = allVaults.map((v) => v.name).join(", ");
+          yield {
+            kind: "error",
+            error: notFound(
+              "Vault",
+              `'${input.vaultName}'. Available vaults: ${vaultNames}`,
+            ),
+          };
+        }
+        return;
+      }
+
+      const secretKeys = await deps.listKeys(input.vaultName);
+
       yield {
-        kind: "error",
-        error: notFound(
-          "Vault",
-          `'${input.vaultName}'. No vaults are configured.\n` +
-            `Create a vault using: swamp vault create <type> ${input.vaultName}`,
-        ),
+        kind: "completed",
+        data: {
+          vaultName: input.vaultName,
+          vaultType: vaultConfig.type,
+          secretKeys,
+          count: secretKeys.length,
+        },
       };
-    } else {
-      const vaultNames = allVaults.map((v) => v.name).join(", ");
-      yield {
-        kind: "error",
-        error: notFound(
-          "Vault",
-          `'${input.vaultName}'. Available vaults: ${vaultNames}`,
-        ),
-      };
-    }
-    return;
-  }
-
-  const secretKeys = await deps.listKeys(input.vaultName);
-
-  yield {
-    kind: "completed",
-    data: {
-      vaultName: input.vaultName,
-      vaultType: vaultConfig.type,
-      secretKeys,
-      count: secretKeys.length,
-    },
-  };
+    })(),
+  );
 }

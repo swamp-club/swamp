@@ -23,6 +23,7 @@ import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 import type { VaultConfigInfo } from "./get.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for vault describe output (full config data).
  */
@@ -63,49 +64,55 @@ export async function* vaultDescribe(
   vaultNameOrId: string,
   vaultType?: string,
 ): AsyncIterable<VaultDescribeEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.vault.describe",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  // Try to find by name first
-  let config = await deps.findByName(vaultNameOrId);
+      // Try to find by name first
+      let config = await deps.findByName(vaultNameOrId);
 
-  // If not found by name, try to find by ID
-  if (!config) {
-    if (vaultType) {
-      config = await deps.findById(vaultType, vaultNameOrId);
-    } else {
-      const allVaults = await deps.findAll();
-      config = allVaults.find((v) => v.id === vaultNameOrId) ?? null;
-    }
-  }
+      // If not found by name, try to find by ID
+      if (!config) {
+        if (vaultType) {
+          config = await deps.findById(vaultType, vaultNameOrId);
+        } else {
+          const allVaults = await deps.findAll();
+          config = allVaults.find((v) => v.id === vaultNameOrId) ?? null;
+        }
+      }
 
-  // If type was specified, verify it matches
-  if (config && vaultType && config.type !== vaultType) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
-      ),
-    };
-    return;
-  }
+      // If type was specified, verify it matches
+      if (config && vaultType && config.type !== vaultType) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
+          ),
+        };
+        return;
+      }
 
-  if (!config) {
-    const typeHint = vaultType ? ` of type '${vaultType}'` : "";
-    yield {
-      kind: "error",
-      error: notFound("Vault", `${vaultNameOrId}${typeHint}`),
-    };
-    return;
-  }
+      if (!config) {
+        const typeHint = vaultType ? ` of type '${vaultType}'` : "";
+        yield {
+          kind: "error",
+          error: notFound("Vault", `${vaultNameOrId}${typeHint}`),
+        };
+        return;
+      }
 
-  yield {
-    kind: "completed",
-    data: {
-      id: config.id,
-      name: config.name,
-      type: config.type,
-      config: config.config,
-      createdAt: config.createdAt.toISOString(),
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          id: config.id,
+          name: config.name,
+          type: config.type,
+          config: config.config,
+          createdAt: config.createdAt.toISOString(),
+        },
+      };
+    })(),
+  );
 }

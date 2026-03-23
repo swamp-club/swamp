@@ -26,6 +26,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 const LOCK_RETRY_COUNT = 10;
 const LOCK_RETRY_DELAY_MS = 100;
 
@@ -258,56 +259,62 @@ export async function* extensionRm(
   deps: ExtensionRmDeps,
   input: ExtensionRmInput,
 ): AsyncIterable<ExtensionRmEvent> {
-  yield { kind: "deleting" };
+  yield* withGeneratorSpan(
+    "swamp.extension.rm",
+    {},
+    (async function* () {
+      yield { kind: "deleting" };
 
-  const upstreamData = await deps.readUpstreamExtensions(deps.modelsDir);
-  const entry = upstreamData[input.extensionName];
+      const upstreamData = await deps.readUpstreamExtensions(deps.modelsDir);
+      const entry = upstreamData[input.extensionName];
 
-  if (!entry || !entry.files) {
-    yield {
-      kind: "error",
-      error: notFound("Extension", input.extensionName),
-    };
-    return;
-  }
-
-  let filesDeleted = 0;
-  let filesSkipped = 0;
-  const parentDirs: string[] = [];
-
-  for (const filePath of entry.files) {
-    const absolutePath = join(deps.repoDir, filePath);
-    try {
-      await deps.removeFile(absolutePath);
-      filesDeleted++;
-      parentDirs.push(dirname(absolutePath));
-      ctx.logger.debug("  deleted {file}", { file: filePath });
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        filesSkipped++;
-        ctx.logger.debug("  skipped {file} (already missing)", {
-          file: filePath,
-        });
-      } else {
-        throw error;
+      if (!entry || !entry.files) {
+        yield {
+          kind: "error",
+          error: notFound("Extension", input.extensionName),
+        };
+        return;
       }
-    }
-  }
 
-  const dirsRemoved = await pruneEmptyDirs(parentDirs, deps.repoDir, deps);
+      let filesDeleted = 0;
+      let filesSkipped = 0;
+      const parentDirs: string[] = [];
 
-  await deps.removeUpstreamExtension(deps.modelsDir, input.extensionName);
+      for (const filePath of entry.files) {
+        const absolutePath = join(deps.repoDir, filePath);
+        try {
+          await deps.removeFile(absolutePath);
+          filesDeleted++;
+          parentDirs.push(dirname(absolutePath));
+          ctx.logger.debug("  deleted {file}", { file: filePath });
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) {
+            filesSkipped++;
+            ctx.logger.debug("  skipped {file} (already missing)", {
+              file: filePath,
+            });
+          } else {
+            throw error;
+          }
+        }
+      }
 
-  yield {
-    kind: "completed",
-    data: {
-      name: input.extensionName,
-      version: entry.version,
-      filesDeleted,
-      filesSkipped,
-      dirsRemoved,
-    },
-  };
+      const dirsRemoved = await pruneEmptyDirs(parentDirs, deps.repoDir, deps);
+
+      await deps.removeUpstreamExtension(deps.modelsDir, input.extensionName);
+
+      yield {
+        kind: "completed",
+        data: {
+          name: input.extensionName,
+          version: entry.version,
+          filesDeleted,
+          filesSkipped,
+          dirsRemoved,
+        },
+      };
+    })(),
+  );
 }
 
 /** Wires real infrastructure into ExtensionRmDeps. */

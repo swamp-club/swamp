@@ -25,6 +25,7 @@ import { JsonTelemetryRepository } from "../../infrastructure/persistence/json_t
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Data payload for the completed event. */
 export interface TelemetryStatsData extends TelemetryStats {}
 
@@ -60,14 +61,20 @@ export async function* telemetryStats(
   deps: TelemetryStatsDeps,
   input: TelemetryStatsInput,
 ): AsyncIterable<TelemetryStatsEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.telemetry.stats",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const stats = await deps.getStats(input.days);
+      const stats = await deps.getStats(input.days);
 
-  if (stats.totalInvocations === 0) {
-    yield { kind: "completed", data: null };
-    return;
-  }
+      if (stats.totalInvocations === 0) {
+        yield { kind: "completed", data: null };
+        return;
+      }
 
-  yield { kind: "completed", data: stats };
+      yield { kind: "completed", data: stats };
+    })(),
+  );
 }

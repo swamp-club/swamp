@@ -26,6 +26,7 @@ import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Data for a check-only run. */
 export interface ExtensionFmtCheckData {
   mode: "check";
@@ -103,40 +104,46 @@ export async function* extensionFmt(
   deps: ExtensionFmtDeps,
   input: ExtensionFmtInput,
 ): AsyncIterable<ExtensionFmtEvent> {
-  ctx.logger.debug`Executing extension fmt`;
+  yield* withGeneratorSpan(
+    "swamp.extension.fmt",
+    {},
+    (async function* () {
+      ctx.logger.debug`Executing extension fmt`;
 
-  if (input.tsFiles.length === 0) {
-    yield { kind: "no_files" };
-    return;
-  }
+      if (input.tsFiles.length === 0) {
+        yield { kind: "no_files" };
+        return;
+      }
 
-  if (input.check) {
-    const result = await deps.checkQuality(input.tsFiles);
-    yield {
-      kind: "completed",
-      data: {
-        mode: "check",
-        passed: result.passed,
-        issues: result.issues,
-      },
-    };
-    return;
-  }
+      if (input.check) {
+        const result = await deps.checkQuality(input.tsFiles);
+        yield {
+          kind: "completed",
+          data: {
+            mode: "check",
+            passed: result.passed,
+            issues: result.issues,
+          },
+        };
+        return;
+      }
 
-  // Auto-fix mode
-  const fmtOutput = await deps.runFmt(input.tsFiles);
-  const lintOutput = await deps.runLint(input.tsFiles);
-  const remaining = await deps.checkQuality(input.tsFiles);
+      // Auto-fix mode
+      const fmtOutput = await deps.runFmt(input.tsFiles);
+      const lintOutput = await deps.runLint(input.tsFiles);
+      const remaining = await deps.checkQuality(input.tsFiles);
 
-  yield {
-    kind: "completed",
-    data: {
-      mode: "fix",
-      fileCount: input.tsFiles.length,
-      fmtOutput,
-      lintOutput,
-      remainingIssues: remaining.issues,
-      passed: remaining.passed,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          mode: "fix",
+          fileCount: input.tsFiles.length,
+          fmtOutput,
+          lintOutput,
+          remainingIssues: remaining.issues,
+          passed: remaining.passed,
+        },
+      };
+    })(),
+  );
 }

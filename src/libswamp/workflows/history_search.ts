@@ -21,6 +21,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import type { WorkflowRunSearchItem } from "./run_search.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Re-export the shared item type for history search consumers.
  */
@@ -77,48 +78,56 @@ export async function* workflowHistorySearch(
   deps: WorkflowHistorySearchDeps,
   input: WorkflowHistorySearchInput,
 ): AsyncGenerator<WorkflowHistorySearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.history.search",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const allWorkflows = await deps.findAllWorkflows();
+      const allWorkflows = await deps.findAllWorkflows();
 
-  // Fetch all runs for all workflows in parallel
-  const runsPerWorkflow = await Promise.all(
-    allWorkflows.map((workflow) => deps.findAllRunsByWorkflowId(workflow.id)),
+      // Fetch all runs for all workflows in parallel
+      const runsPerWorkflow = await Promise.all(
+        allWorkflows.map((workflow) =>
+          deps.findAllRunsByWorkflowId(workflow.id)
+        ),
+      );
+      const allRuns = runsPerWorkflow.flat();
+
+      // Sort by startedAt descending (most recent first)
+      allRuns.sort((a, b) => {
+        const aTime = a.startedAt?.getTime() ?? 0;
+        const bTime = b.startedAt?.getTime() ?? 0;
+        return bTime - aTime;
+      });
+
+      // Convert to search items
+      const results: WorkflowHistorySearchItem[] = allRuns.map((run) => {
+        const startTime = run.startedAt?.getTime();
+        const endTime = run.completedAt?.getTime();
+        const tags = run.tags && Object.keys(run.tags).length > 0
+          ? { ...run.tags }
+          : undefined;
+
+        return {
+          runId: run.id,
+          workflowId: run.workflowId,
+          workflowName: run.workflowName,
+          status: run.status,
+          startedAt: run.startedAt?.toISOString(),
+          completedAt: run.completedAt?.toISOString(),
+          duration: startTime && endTime ? endTime - startTime : undefined,
+          tags,
+        };
+      });
+
+      yield {
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          results,
+        },
+      };
+    })(),
   );
-  const allRuns = runsPerWorkflow.flat();
-
-  // Sort by startedAt descending (most recent first)
-  allRuns.sort((a, b) => {
-    const aTime = a.startedAt?.getTime() ?? 0;
-    const bTime = b.startedAt?.getTime() ?? 0;
-    return bTime - aTime;
-  });
-
-  // Convert to search items
-  const results: WorkflowHistorySearchItem[] = allRuns.map((run) => {
-    const startTime = run.startedAt?.getTime();
-    const endTime = run.completedAt?.getTime();
-    const tags = run.tags && Object.keys(run.tags).length > 0
-      ? { ...run.tags }
-      : undefined;
-
-    return {
-      runId: run.id,
-      workflowId: run.workflowId,
-      workflowName: run.workflowName,
-      status: run.status,
-      startedAt: run.startedAt?.toISOString(),
-      completedAt: run.completedAt?.toISOString(),
-      duration: startTime && endTime ? endTime - startTime : undefined,
-      tags,
-    };
-  });
-
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      results,
-    },
-  };
 }

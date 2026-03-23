@@ -34,6 +34,8 @@
 
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { getTracer } from "../tracing/mod.ts";
+import { SpanStatusCode } from "@opentelemetry/api";
 
 /**
  * Common interface for sync services compatible with the coordinator.
@@ -132,17 +134,35 @@ export async function registerDatastoreSyncNamed(
 
   // Acquire distributed lock if provided
   if (lock) {
-    await lock.acquire();
+    const lockSpan = getTracer().startSpan("swamp.lock.acquire", {
+      attributes: { "lock.key": key, "lock.label": label },
+    });
+    try {
+      await lock.acquire();
+      lockSpan.setStatus({ code: SpanStatusCode.OK });
+    } catch (error) {
+      lockSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      lockSpan.end();
+    }
     installSignalHandler();
   }
 
   // Pull changed files if a sync service is registered
   if (service) {
+    const syncSpan = getTracer().startSpan("swamp.datastore.sync", {
+      attributes: { "sync.direction": "pull", "sync.label": label },
+    });
     const logger = getSwampLogger(["datastore", "sync"]);
     try {
       logger.info("Syncing from {label}...", { label });
       const pulled = await service.pullChanged();
       if (pulled && pulled > 0) {
+        syncSpan.setAttribute("sync.file_count", pulled);
         logger.info("Synced {count} file(s) from {label}", {
           count: pulled,
           label,
@@ -150,8 +170,10 @@ export async function registerDatastoreSyncNamed(
       } else {
         logger.info("{label} sync complete, already up to date", { label });
       }
+      syncSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: msg });
       logger.error("Failed to pull changes from {label}: {error}", {
         label,
         error: msg,
@@ -159,6 +181,8 @@ export async function registerDatastoreSyncNamed(
       throw new Error(
         `${label} sync failed: could not pull changes: ${msg}`,
       );
+    } finally {
+      syncSpan.end();
     }
   }
 }
@@ -191,12 +215,16 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
   entries.delete(key);
 
   if (entry.service) {
+    const syncSpan = getTracer().startSpan("swamp.datastore.sync", {
+      attributes: { "sync.direction": "push", "sync.label": entry.label },
+    });
     const logger = getSwampLogger(["datastore", "sync"]);
     const label = entry.label;
     try {
       logger.info("Pushing changes to {label}...", { label });
       const pushed = await entry.service.pushChanged();
       if (pushed && pushed > 0) {
+        syncSpan.setAttribute("sync.file_count", pushed);
         logger.info("Pushed {count} file(s) to {label}", {
           count: pushed,
           label,
@@ -204,11 +232,18 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
       } else {
         logger.info("{label} push complete, no changes", { label });
       }
+      syncSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
+      syncSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
       logger.warn("Failed to push changes to {label}: {error}", {
         label,
         error: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      syncSpan.end();
     }
   }
 

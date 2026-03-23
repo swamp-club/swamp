@@ -28,6 +28,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the repo init output.
  */
@@ -77,42 +78,48 @@ export async function* repoInit(
   deps: RepoInitDeps,
   input: RepoInitInput,
 ): AsyncIterable<RepoInitEvent> {
-  yield { kind: "initializing" };
+  yield* withGeneratorSpan(
+    "swamp.repo.create",
+    {},
+    (async function* () {
+      yield { kind: "initializing" };
 
-  ctx.logger.debug`Initializing repository at: ${input.path}`;
+      ctx.logger.debug`Initializing repository at: ${input.path}`;
 
-  const repoPath = RepoPath.create(input.path);
+      const repoPath = RepoPath.create(input.path);
 
-  let result: RepoInitResult;
-  try {
-    result = await deps.init(repoPath, {
-      force: input.force,
-      tool: input.tool as AiTool,
-    });
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
-    };
-    return;
-  }
+      let result: RepoInitResult;
+      try {
+        result = await deps.init(repoPath, {
+          force: input.force,
+          tool: input.tool as AiTool,
+        });
+      } catch (error) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
 
-  ctx.logger.debug`Repository initialized: ${result.path}`;
+      ctx.logger.debug`Repository initialized: ${result.path}`;
 
-  const data: RepoInitData = {
-    path: result.path,
-    version: result.version,
-    initializedAt: result.initializedAt,
-    skillsCopied: result.skillsCopied,
-    instructionsFileCreated: result.instructionsFileCreated,
-    settingsCreated: result.settingsCreated,
-    gitignoreAction: result.gitignoreAction,
-    tool: result.tool,
-  };
+      const data: RepoInitData = {
+        path: result.path,
+        version: result.version,
+        initializedAt: result.initializedAt,
+        skillsCopied: result.skillsCopied,
+        instructionsFileCreated: result.instructionsFileCreated,
+        settingsCreated: result.settingsCreated,
+        gitignoreAction: result.gitignoreAction,
+        tool: result.tool,
+      };
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }
 
 // --- Repo Upgrade ---
@@ -167,41 +174,47 @@ export async function* repoUpgrade(
   deps: RepoUpgradeDeps,
   input: RepoUpgradeInput,
 ): AsyncIterable<RepoUpgradeEvent> {
-  yield { kind: "upgrading" };
+  yield* withGeneratorSpan(
+    "swamp.repo.upgrade",
+    {},
+    (async function* () {
+      yield { kind: "upgrading" };
 
-  ctx.logger.debug`Upgrading repository at: ${input.path}`;
+      ctx.logger.debug`Upgrading repository at: ${input.path}`;
 
-  const repoPath = RepoPath.create(input.path);
+      const repoPath = RepoPath.create(input.path);
 
-  let result: RepoUpgradeResult;
-  try {
-    result = await deps.upgrade(repoPath, {
-      tool: input.tool as AiTool | undefined,
-      includeGitignore: input.includeGitignore,
-    });
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
-    };
-    return;
-  }
+      let result: RepoUpgradeResult;
+      try {
+        result = await deps.upgrade(repoPath, {
+          tool: input.tool as AiTool | undefined,
+          includeGitignore: input.includeGitignore,
+        });
+      } catch (error) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
 
-  ctx.logger.debug`Repository upgraded: ${result.path}`;
+      ctx.logger.debug`Repository upgraded: ${result.path}`;
 
-  const data: RepoUpgradeData = {
-    path: result.path,
-    previousVersion: result.previousVersion,
-    newVersion: result.newVersion,
-    upgradedAt: result.upgradedAt,
-    skillsUpdated: result.skillsUpdated,
-    instructionsUpdated: result.instructionsUpdated,
-    settingsUpdated: result.settingsUpdated,
-    gitignoreAction: result.gitignoreAction,
-    tool: result.tool,
-  };
+      const data: RepoUpgradeData = {
+        path: result.path,
+        previousVersion: result.previousVersion,
+        newVersion: result.newVersion,
+        upgradedAt: result.upgradedAt,
+        skillsUpdated: result.skillsUpdated,
+        instructionsUpdated: result.instructionsUpdated,
+        settingsUpdated: result.settingsUpdated,
+        gitignoreAction: result.gitignoreAction,
+        tool: result.tool,
+      };
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }

@@ -26,6 +26,7 @@ import { JsonlAuditRepository } from "../../infrastructure/persistence/jsonl_aud
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the audit timeline output.
  */
@@ -66,33 +67,39 @@ export async function* auditTimeline(
   deps: AuditTimelineDeps,
   input: AuditTimelineInput,
 ): AsyncIterable<AuditTimelineEvent> {
-  ctx.logger.debug`Fetching audit timeline`;
+  yield* withGeneratorSpan(
+    "swamp.audit.timeline",
+    {},
+    (async function* () {
+      ctx.logger.debug`Fetching audit timeline`;
 
-  // Check if the configured tool supports audit hooks
-  if (input.tool === "codex") {
-    yield {
-      kind: "completed",
-      data: { status: "tool_not_supported", tool: input.tool },
-    };
-    return;
-  }
+      // Check if the configured tool supports audit hooks
+      if (input.tool === "codex") {
+        yield {
+          kind: "completed",
+          data: { status: "tool_not_supported", tool: input.tool },
+        };
+        return;
+      }
 
-  const timeline = await deps.getTimeline({
-    hours: input.hours,
-    showAll: input.showAll,
-    sessionId: input.sessionId,
-  });
+      const timeline = await deps.getTimeline({
+        hours: input.hours,
+        showAll: input.showAll,
+        sessionId: input.sessionId,
+      });
 
-  if (
-    timeline.entries.length === 0 && timeline.totalSwamp === 0 &&
-    timeline.totalDirect === 0
-  ) {
-    yield { kind: "completed", data: { status: "no_data" } };
-    return;
-  }
+      if (
+        timeline.entries.length === 0 && timeline.totalSwamp === 0 &&
+        timeline.totalDirect === 0
+      ) {
+        yield { kind: "completed", data: { status: "no_data" } };
+        return;
+      }
 
-  yield {
-    kind: "completed",
-    data: { status: "timeline", timeline },
-  };
+      yield {
+        kind: "completed",
+        data: { status: "timeline", timeline },
+      };
+    })(),
+  );
 }

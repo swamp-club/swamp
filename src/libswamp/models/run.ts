@@ -57,6 +57,7 @@ import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detec
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 /**
  * Events emitted by the libswamp model method run generator.
@@ -188,483 +189,492 @@ export async function* modelMethodRun(
   deps: ModelMethodRunDeps,
   input: ModelMethodRunInput,
 ): AsyncGenerator<ModelMethodRunEvent> {
-  // --- Validate inputs phase ---
-  yield { kind: "validating_inputs" };
+  yield* withGeneratorSpan(
+    "swamp.model.method.run",
+    {
+      "model.id_or_name": input.modelIdOrName,
+      "method.name": input.methodName,
+    },
+    (async function* () {
+      // --- Validate inputs phase ---
+      yield { kind: "validating_inputs" };
 
-  // --- Resolve model ---
-  yield { kind: "resolving_model", modelIdOrName: input.modelIdOrName };
+      // --- Resolve model ---
+      yield { kind: "resolving_model", modelIdOrName: input.modelIdOrName };
 
-  const lookupResult = await deps.lookupDefinition(input.modelIdOrName);
-  if (!lookupResult) {
-    yield { kind: "error", error: modelNotFound(input.modelIdOrName) };
-    return;
-  }
-  const { definition, type: modelType } = lookupResult;
+      const lookupResult = await deps.lookupDefinition(input.modelIdOrName);
+      if (!lookupResult) {
+        yield { kind: "error", error: modelNotFound(input.modelIdOrName) };
+        return;
+      }
+      const { definition, type: modelType } = lookupResult;
 
-  // Get model definition from registry (may auto-resolve if async)
-  const modelDef = await Promise.resolve(deps.getModelDef(modelType));
-  if (!modelDef) {
-    yield { kind: "error", error: unknownModelType(modelType.normalized) };
-    return;
-  }
+      // Get model definition from registry (may auto-resolve if async)
+      const modelDef = await Promise.resolve(deps.getModelDef(modelType));
+      if (!modelDef) {
+        yield { kind: "error", error: unknownModelType(modelType.normalized) };
+        return;
+      }
 
-  // Validate method exists
-  const method = modelDef.methods[input.methodName];
-  if (!method) {
-    const availableMethods = Object.keys(modelDef.methods).join(", ");
-    yield {
-      kind: "error",
-      error: unknownMethod(
-        input.methodName,
-        modelType.normalized,
-        availableMethods,
-      ),
-    };
-    return;
-  }
-
-  // Coerce and validate inputs against model's input schema
-  const inputs = { ...input.inputs };
-  if (definition.inputs) {
-    const coercedInputs = coerceInputTypes(inputs, definition.inputs);
-    Object.assign(inputs, coercedInputs);
-
-    const validationService = new InputValidationService();
-    const inputsWithDefaults = validationService.applyDefaults(
-      inputs,
-      definition.inputs,
-    );
-
-    // Build effective schema: only require inputs referenced by the method's arguments
-    const referencedInputs = extractInputReferences(
-      definition.getMethodArguments(input.methodName),
-    );
-    const originalRequired = definition.inputs.required ?? [];
-    const effectiveRequired = originalRequired.filter((name) =>
-      referencedInputs.has(name)
-    );
-    const effectiveSchema: InputsSchema = {
-      ...definition.inputs,
-      required: effectiveRequired,
-    };
-
-    const validationResult = validationService.validate(
-      inputsWithDefaults,
-      effectiveSchema,
-    );
-    if (!validationResult.valid) {
-      yield {
-        kind: "error",
-        error: inputValidationFailed(validationResult.errors),
-      };
-      return;
-    }
-    Object.assign(inputs, inputsWithDefaults);
-  }
-
-  yield {
-    kind: "model_resolved",
-    modelName: definition.name,
-    modelType: modelType.normalized,
-    methodName: input.methodName,
-  };
-
-  // --- Check for env var usage and warn ---
-  const envVarUsages = detectEnvVarUsageInDefinition(definition);
-  if (envVarUsages.length > 0) {
-    yield {
-      kind: "env_var_warning",
-      modelName: definition.name,
-      envVars: envVarUsages,
-      message:
-        "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
-    };
-  }
-
-  // --- Set up logging ---
-  const runLog = await deps.createRunLog(
-    modelType,
-    input.methodName,
-    definition.id,
-  );
-  const { logFilePath, redactor } = runLog;
-
-  try {
-    // --- Evaluate expressions ---
-    yield {
-      kind: "evaluating_expressions",
-      lastEvaluated: input.lastEvaluated,
-    };
-
-    const evaluationService = deps.createEvaluationService();
-    let evaluatedDefinition = definition;
-
-    if (input.lastEvaluated) {
-      const lastEval = await deps.loadEvaluatedDefinition(
-        modelType,
-        definition.name,
-      );
-      if (!lastEval) {
+      // Validate method exists
+      const method = modelDef.methods[input.methodName];
+      if (!method) {
+        const availableMethods = Object.keys(modelDef.methods).join(", ");
         yield {
           kind: "error",
-          error: noEvaluatedDefinition(definition.name),
+          error: unknownMethod(
+            input.methodName,
+            modelType.normalized,
+            availableMethods,
+          ),
         };
         return;
       }
-      evaluatedDefinition = lastEval;
-    } else {
-      if (
-        evaluationService.hasDefinitionExpressions(definition) ||
-        Object.keys(inputs).length > 0
-      ) {
-        const evalResult = await evaluationService.evaluateDefinition(
-          definition,
-          modelType,
+
+      // Coerce and validate inputs against model's input schema
+      const inputs = { ...input.inputs };
+      if (definition.inputs) {
+        const coercedInputs = coerceInputTypes(inputs, definition.inputs);
+        Object.assign(inputs, coercedInputs);
+
+        const validationService = new InputValidationService();
+        const inputsWithDefaults = validationService.applyDefaults(
           inputs,
+          definition.inputs,
         );
-        evaluatedDefinition = evalResult.definition;
+
+        // Build effective schema: only require inputs referenced by the method's arguments
+        const referencedInputs = extractInputReferences(
+          definition.getMethodArguments(input.methodName),
+        );
+        const originalRequired = definition.inputs.required ?? [];
+        const effectiveRequired = originalRequired.filter((name) =>
+          referencedInputs.has(name)
+        );
+        const effectiveSchema: InputsSchema = {
+          ...definition.inputs,
+          required: effectiveRequired,
+        };
+
+        const validationResult = validationService.validate(
+          inputsWithDefaults,
+          effectiveSchema,
+        );
+        if (!validationResult.valid) {
+          yield {
+            kind: "error",
+            error: inputValidationFailed(validationResult.errors),
+          };
+          return;
+        }
+        Object.assign(inputs, inputsWithDefaults);
       }
-      await deps.saveEvaluatedDefinition(modelType, evaluatedDefinition);
-    }
 
-    // Merge override inputs into method arguments
-    const definitionInputKeys = definition.inputs
-      ? Object.keys(
-        (definition.inputs as { properties?: Record<string, unknown> })
-          .properties || {},
-      )
-      : [];
-    const overrideInputs = Object.fromEntries(
-      Object.entries(inputs).filter(([key]) =>
-        !definitionInputKeys.includes(key)
-      ),
-    );
-    if (Object.keys(overrideInputs).length > 0) {
-      for (const [key, value] of Object.entries(overrideInputs)) {
-        evaluatedDefinition.setMethodArgument(input.methodName, key, value);
+      yield {
+        kind: "model_resolved",
+        modelName: definition.name,
+        modelType: modelType.normalized,
+        methodName: input.methodName,
+      };
+
+      // --- Check for env var usage and warn ---
+      const envVarUsages = detectEnvVarUsageInDefinition(definition);
+      if (envVarUsages.length > 0) {
+        yield {
+          kind: "env_var_warning",
+          modelName: definition.name,
+          envVars: envVarUsages,
+          message:
+            "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+        };
       }
-    }
 
-    // Capture pre-vault args for report context (so vault secrets stay as expressions)
-    const reportGlobalArgs = evaluatedDefinition.globalArguments;
-    const reportMethodArgs = evaluatedDefinition.getMethodArguments(
-      input.methodName,
-    );
-
-    // Resolve runtime expressions (vault and env).
-    // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
-    const runtimeResult = await evaluationService
-      .resolveRuntimeExpressionsInDefinition(evaluatedDefinition, redactor);
-    evaluatedDefinition = runtimeResult.definition;
-    const secretBag = runtimeResult.secretBag;
-
-    // --- Execute ---
-    yield {
-      kind: "executing",
-      modelName: definition.name,
-      methodName: input.methodName,
-    };
-
-    // Create ModelOutput for tracking
-    const definitionHash = await definition.computeHash();
-    const output = ModelOutput.create({
-      definitionId: definition.id,
-      methodName: input.methodName,
-      provenance: {
-        definitionHash,
-        modelVersion: modelDef.version,
-        triggeredBy: "manual",
-      },
-    });
-    output.markRunning();
-    output.setLogFile(logFilePath);
-    await deps.outputRepo.save(modelType, input.methodName, output);
-
-    const vaultService = await deps.createVaultService();
-    const executionService = deps.createExecutionService();
-
-    let execResult: MethodResult;
-    try {
-      execResult = yield* withEventBridge<
-        ModelMethodRunEvent,
-        MethodResult
-      >(
-        (push) =>
-          executionService.executeWorkflow(
-            evaluatedDefinition,
-            modelDef,
-            input.methodName,
-            {
-              signal: ctx.signal,
-              repoDir: deps.repoDir,
-              modelType,
-              modelId: evaluatedDefinition.id,
-              globalArgs: evaluatedDefinition.globalArguments,
-              definition: {
-                id: evaluatedDefinition.id,
-                name: evaluatedDefinition.name,
-                version: evaluatedDefinition.version,
-                tags: evaluatedDefinition.tags,
-              },
-              methodName: input.methodName,
-              logger: getRunLogger(definition.name, input.methodName),
-              dataRepository: deps.dataRepo,
-              definitionRepository: deps.definitionRepo,
-              runtimeTags: input.runtimeTags,
-              vaultService,
-              redactor,
-              vaultSecrets: secretBag,
-              skipCheckNames: input.skipCheckNames,
-              skipCheckLabels: input.skipCheckLabels,
-              skipAllChecks: input.skipAllChecks,
-              driver: input.driver,
-              onEvent: (event: MethodExecutionEvent) => {
-                if (event.type === "output") {
-                  push({
-                    kind: "method_output",
-                    modelName: definition.name,
-                    methodName: input.methodName,
-                    stream: event.stream,
-                    line: event.line,
-                  });
-                } else {
-                  push({
-                    kind: "method_event",
-                    modelName: definition.name,
-                    methodName: input.methodName,
-                    event,
-                  });
-                }
-              },
-            },
-          ),
+      // --- Set up logging ---
+      const runLog = await deps.createRunLog(
+        modelType,
+        input.methodName,
+        definition.id,
       );
-    } catch (error) {
-      // Mark output as failed and save
-      const errorMessage = error instanceof Error
-        ? error.message
-        : String(error);
-      const errorStack = error instanceof Error ? error.stack : undefined;
-      output.markFailed({ message: errorMessage, stack: errorStack });
-      await deps.outputRepo.save(modelType, input.methodName, output);
+      const { logFilePath, redactor } = runLog;
 
-      if (
-        error instanceof DOMException && error.name === "AbortError"
-      ) {
-        yield { kind: "error", error: cancelled(error) };
-        return;
-      }
+      try {
+        // --- Evaluate expressions ---
+        yield {
+          kind: "evaluating_expressions",
+          lastEvaluated: input.lastEvaluated,
+        };
 
-      yield { kind: "error", error: methodExecutionFailed(error) };
-      return;
-    }
+        const evaluationService = deps.createEvaluationService();
+        let evaluatedDefinition = definition;
 
-    // --- Process data artifacts ---
-    const dataArtifacts: DataArtifactView[] = [];
-    if (execResult.dataHandles && execResult.dataHandles.length > 0) {
-      for (const handle of execResult.dataHandles) {
-        const dataPath = deps.dataRepo.getPath(
-          modelType,
-          definition.id,
-          handle.name,
-          handle.version,
-        );
-
-        output.addDataArtifact({
-          dataId: handle.dataId,
-          name: handle.name,
-          version: handle.version,
-          tags: handle.tags,
-        });
-
-        // Parse content if JSON for display
-        let attributes: Record<string, unknown> | undefined;
-        if (handle.metadata.contentType === "application/json") {
-          try {
-            const content = await deps.dataRepo.getContent(
+        if (input.lastEvaluated) {
+          const lastEval = await deps.loadEvaluatedDefinition(
+            modelType,
+            definition.name,
+          );
+          if (!lastEval) {
+            yield {
+              kind: "error",
+              error: noEvaluatedDefinition(definition.name),
+            };
+            return;
+          }
+          evaluatedDefinition = lastEval;
+        } else {
+          if (
+            evaluationService.hasDefinitionExpressions(definition) ||
+            Object.keys(inputs).length > 0
+          ) {
+            const evalResult = await evaluationService.evaluateDefinition(
+              definition,
               modelType,
-              evaluatedDefinition.id,
-              handle.name,
-              handle.version,
+              inputs,
             );
-            if (content) {
-              const text = new TextDecoder().decode(content);
-              attributes = JSON.parse(text) as Record<string, unknown>;
-            }
-          } catch {
-            // Not valid JSON, skip attributes
+            evaluatedDefinition = evalResult.definition;
+          }
+          await deps.saveEvaluatedDefinition(modelType, evaluatedDefinition);
+        }
+
+        // Merge override inputs into method arguments
+        const definitionInputKeys = definition.inputs
+          ? Object.keys(
+            (definition.inputs as { properties?: Record<string, unknown> })
+              .properties || {},
+          )
+          : [];
+        const overrideInputs = Object.fromEntries(
+          Object.entries(inputs).filter(([key]) =>
+            !definitionInputKeys.includes(key)
+          ),
+        );
+        if (Object.keys(overrideInputs).length > 0) {
+          for (const [key, value] of Object.entries(overrideInputs)) {
+            evaluatedDefinition.setMethodArgument(input.methodName, key, value);
           }
         }
 
-        dataArtifacts.push({
-          id: handle.dataId,
-          name: handle.name,
-          path: dataPath,
-          attributes,
+        // Capture pre-vault args for report context (so vault secrets stay as expressions)
+        const reportGlobalArgs = evaluatedDefinition.globalArguments;
+        const reportMethodArgs = evaluatedDefinition.getMethodArguments(
+          input.methodName,
+        );
+
+        // Resolve runtime expressions (vault and env).
+        // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
+        const runtimeResult = await evaluationService
+          .resolveRuntimeExpressionsInDefinition(evaluatedDefinition, redactor);
+        evaluatedDefinition = runtimeResult.definition;
+        const secretBag = runtimeResult.secretBag;
+
+        // --- Execute ---
+        yield {
+          kind: "executing",
+          modelName: definition.name,
+          methodName: input.methodName,
+        };
+
+        // Create ModelOutput for tracking
+        const definitionHash = await definition.computeHash();
+        const output = ModelOutput.create({
+          definitionId: definition.id,
+          methodName: input.methodName,
+          provenance: {
+            definitionHash,
+            modelVersion: modelDef.version,
+            triggeredBy: "manual",
+          },
         });
-        yield {
-          kind: "data_artifact_saved",
-          name: handle.name,
-          path: dataPath,
-        };
-      }
-    }
+        output.markRunning();
+        output.setLogFile(logFilePath);
+        await deps.outputRepo.save(modelType, input.methodName, output);
 
-    // Mark output as succeeded and save
-    output.markSucceeded();
-    await deps.outputRepo.save(modelType, input.methodName, output);
+        const vaultService = await deps.createVaultService();
+        const executionService = deps.createExecutionService();
 
-    // --- Post-run reports ---
-    let reportResults: Record<string, ReportResultView> | undefined;
-    let reportFailures = 0;
+        let execResult: MethodResult;
+        try {
+          execResult = yield* withEventBridge<
+            ModelMethodRunEvent,
+            MethodResult
+          >(
+            (push) =>
+              executionService.executeWorkflow(
+                evaluatedDefinition,
+                modelDef,
+                input.methodName,
+                {
+                  signal: ctx.signal,
+                  repoDir: deps.repoDir,
+                  modelType,
+                  modelId: evaluatedDefinition.id,
+                  globalArgs: evaluatedDefinition.globalArguments,
+                  definition: {
+                    id: evaluatedDefinition.id,
+                    name: evaluatedDefinition.name,
+                    version: evaluatedDefinition.version,
+                    tags: evaluatedDefinition.tags,
+                  },
+                  methodName: input.methodName,
+                  logger: getRunLogger(definition.name, input.methodName),
+                  dataRepository: deps.dataRepo,
+                  definitionRepository: deps.definitionRepo,
+                  runtimeTags: input.runtimeTags,
+                  vaultService,
+                  redactor,
+                  vaultSecrets: secretBag,
+                  skipCheckNames: input.skipCheckNames,
+                  skipCheckLabels: input.skipCheckLabels,
+                  skipAllChecks: input.skipAllChecks,
+                  driver: input.driver,
+                  onEvent: (event: MethodExecutionEvent) => {
+                    if (event.type === "output") {
+                      push({
+                        kind: "method_output",
+                        modelName: definition.name,
+                        methodName: input.methodName,
+                        stream: event.stream,
+                        line: event.line,
+                      });
+                    } else {
+                      push({
+                        kind: "method_event",
+                        modelName: definition.name,
+                        methodName: input.methodName,
+                        event,
+                      });
+                    }
+                  },
+                },
+              ),
+          );
+        } catch (error) {
+          // Mark output as failed and save
+          const errorMessage = error instanceof Error
+            ? error.message
+            : String(error);
+          const errorStack = error instanceof Error ? error.stack : undefined;
+          output.markFailed({ message: errorMessage, stack: errorStack });
+          await deps.outputRepo.save(modelType, input.methodName, output);
 
-    if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
-      const dataHandles = execResult.dataHandles ?? [];
+          if (
+            error instanceof DOMException && error.name === "AbortError"
+          ) {
+            yield { kind: "error", error: cancelled(error) };
+            return;
+          }
 
-      // Run method-scope reports
-      const methodContext: MethodReportContext = {
-        scope: "method",
-        repoDir: deps.repoDir,
-        logger: getRunLogger(definition.name, input.methodName),
-        dataRepository: deps.dataRepo,
-        definitionRepository: deps.definitionRepo,
-        modelType,
-        modelId: evaluatedDefinition.id,
-        definition: {
-          id: evaluatedDefinition.id,
-          name: evaluatedDefinition.name,
-          version: evaluatedDefinition.version,
-          tags: evaluatedDefinition.tags,
-        },
-        globalArgs: reportGlobalArgs,
-        methodArgs: reportMethodArgs,
-        methodName: input.methodName,
-        executionStatus: "succeeded",
-        dataHandles,
-      };
-
-      const methodSummary = await executeReports(
-        reportRegistry,
-        methodContext,
-        modelType,
-        evaluatedDefinition.id,
-        definition.reportSelection,
-        {
-          skipAllReports: input.skipAllReports,
-          skipReportNames: input.skipReportNames,
-          skipReportLabels: input.skipReportLabels,
-          reportNames: input.reportNames,
-          reportLabels: input.reportLabels,
-        },
-        {
-          onReportStarted: () => {},
-          onReportCompleted: () => {},
-          onReportFailed: () => {},
-        },
-        input.methodName,
-        [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
-      );
-
-      // Yield report events and collect results
-      reportResults = {};
-      for (const result of methodSummary.results) {
-        yield {
-          kind: "report_started" as const,
-          reportName: result.name,
-          scope: result.scope,
-        };
-        if (result.success) {
-          yield {
-            kind: "report_completed" as const,
-            reportName: result.name,
-            scope: result.scope,
-            markdown: result.markdown!,
-            json: result.json!,
-          };
-        } else {
-          yield {
-            kind: "report_failed" as const,
-            reportName: result.name,
-            scope: result.scope,
-            error: result.error!,
-          };
+          yield { kind: "error", error: methodExecutionFailed(error) };
+          return;
         }
-        reportResults[result.name] = toReportResultView(result);
-      }
-      reportFailures += methodSummary.failures;
 
-      // Run model-scope reports
-      const modelContext: ModelReportContext = {
-        ...methodContext,
-        scope: "model",
-      };
+        // --- Process data artifacts ---
+        const dataArtifacts: DataArtifactView[] = [];
+        if (execResult.dataHandles && execResult.dataHandles.length > 0) {
+          for (const handle of execResult.dataHandles) {
+            const dataPath = deps.dataRepo.getPath(
+              modelType,
+              definition.id,
+              handle.name,
+              handle.version,
+            );
 
-      const modelSummary = await executeReports(
-        reportRegistry,
-        modelContext,
-        modelType,
-        evaluatedDefinition.id,
-        definition.reportSelection,
-        {
-          skipAllReports: input.skipAllReports,
-          skipReportNames: input.skipReportNames,
-          skipReportLabels: input.skipReportLabels,
-          reportNames: input.reportNames,
-          reportLabels: input.reportLabels,
-        },
-        {
-          onReportStarted: () => {},
-          onReportCompleted: () => {},
-          onReportFailed: () => {},
-        },
-        input.methodName,
-        [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
-      );
+            output.addDataArtifact({
+              dataId: handle.dataId,
+              name: handle.name,
+              version: handle.version,
+              tags: handle.tags,
+            });
 
-      for (const result of modelSummary.results) {
-        yield {
-          kind: "report_started" as const,
-          reportName: result.name,
-          scope: result.scope,
-        };
-        if (result.success) {
-          yield {
-            kind: "report_completed" as const,
-            reportName: result.name,
-            scope: result.scope,
-            markdown: result.markdown!,
-            json: result.json!,
-          };
-        } else {
-          yield {
-            kind: "report_failed" as const,
-            reportName: result.name,
-            scope: result.scope,
-            error: result.error!,
-          };
+            // Parse content if JSON for display
+            let attributes: Record<string, unknown> | undefined;
+            if (handle.metadata.contentType === "application/json") {
+              try {
+                const content = await deps.dataRepo.getContent(
+                  modelType,
+                  evaluatedDefinition.id,
+                  handle.name,
+                  handle.version,
+                );
+                if (content) {
+                  const text = new TextDecoder().decode(content);
+                  attributes = JSON.parse(text) as Record<string, unknown>;
+                }
+              } catch {
+                // Not valid JSON, skip attributes
+              }
+            }
+
+            dataArtifacts.push({
+              id: handle.dataId,
+              name: handle.name,
+              path: dataPath,
+              attributes,
+            });
+            yield {
+              kind: "data_artifact_saved",
+              name: handle.name,
+              path: dataPath,
+            };
+          }
         }
-        reportResults[result.name] = toReportResultView(result);
-      }
-      reportFailures += modelSummary.failures;
-    }
 
-    // --- Complete ---
-    const view: ModelMethodRunView = {
-      modelId: definition.id,
-      modelName: definition.name,
-      modelType: modelType.normalized,
-      methodName: input.methodName,
-      status: reportFailures > 0 ? "failed" : "succeeded",
-      duration: output.durationMs,
-      outputId: output.id,
-      logFile: logFilePath,
-      dataArtifacts,
-      reports: reportResults,
-    };
-    yield { kind: "completed", run: view };
-  } finally {
-    runLog.cleanup();
-  }
+        // Mark output as succeeded and save
+        output.markSucceeded();
+        await deps.outputRepo.save(modelType, input.methodName, output);
+
+        // --- Post-run reports ---
+        let reportResults: Record<string, ReportResultView> | undefined;
+        let reportFailures = 0;
+
+        if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
+          const dataHandles = execResult.dataHandles ?? [];
+
+          // Run method-scope reports
+          const methodContext: MethodReportContext = {
+            scope: "method",
+            repoDir: deps.repoDir,
+            logger: getRunLogger(definition.name, input.methodName),
+            dataRepository: deps.dataRepo,
+            definitionRepository: deps.definitionRepo,
+            modelType,
+            modelId: evaluatedDefinition.id,
+            definition: {
+              id: evaluatedDefinition.id,
+              name: evaluatedDefinition.name,
+              version: evaluatedDefinition.version,
+              tags: evaluatedDefinition.tags,
+            },
+            globalArgs: reportGlobalArgs,
+            methodArgs: reportMethodArgs,
+            methodName: input.methodName,
+            executionStatus: "succeeded",
+            dataHandles,
+          };
+
+          const methodSummary = await executeReports(
+            reportRegistry,
+            methodContext,
+            modelType,
+            evaluatedDefinition.id,
+            definition.reportSelection,
+            {
+              skipAllReports: input.skipAllReports,
+              skipReportNames: input.skipReportNames,
+              skipReportLabels: input.skipReportLabels,
+              reportNames: input.reportNames,
+              reportLabels: input.reportLabels,
+            },
+            {
+              onReportStarted: () => {},
+              onReportCompleted: () => {},
+              onReportFailed: () => {},
+            },
+            input.methodName,
+            [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
+          );
+
+          // Yield report events and collect results
+          reportResults = {};
+          for (const result of methodSummary.results) {
+            yield {
+              kind: "report_started" as const,
+              reportName: result.name,
+              scope: result.scope,
+            };
+            if (result.success) {
+              yield {
+                kind: "report_completed" as const,
+                reportName: result.name,
+                scope: result.scope,
+                markdown: result.markdown!,
+                json: result.json!,
+              };
+            } else {
+              yield {
+                kind: "report_failed" as const,
+                reportName: result.name,
+                scope: result.scope,
+                error: result.error!,
+              };
+            }
+            reportResults[result.name] = toReportResultView(result);
+          }
+          reportFailures += methodSummary.failures;
+
+          // Run model-scope reports
+          const modelContext: ModelReportContext = {
+            ...methodContext,
+            scope: "model",
+          };
+
+          const modelSummary = await executeReports(
+            reportRegistry,
+            modelContext,
+            modelType,
+            evaluatedDefinition.id,
+            definition.reportSelection,
+            {
+              skipAllReports: input.skipAllReports,
+              skipReportNames: input.skipReportNames,
+              skipReportLabels: input.skipReportLabels,
+              reportNames: input.reportNames,
+              reportLabels: input.reportLabels,
+            },
+            {
+              onReportStarted: () => {},
+              onReportCompleted: () => {},
+              onReportFailed: () => {},
+            },
+            input.methodName,
+            [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
+          );
+
+          for (const result of modelSummary.results) {
+            yield {
+              kind: "report_started" as const,
+              reportName: result.name,
+              scope: result.scope,
+            };
+            if (result.success) {
+              yield {
+                kind: "report_completed" as const,
+                reportName: result.name,
+                scope: result.scope,
+                markdown: result.markdown!,
+                json: result.json!,
+              };
+            } else {
+              yield {
+                kind: "report_failed" as const,
+                reportName: result.name,
+                scope: result.scope,
+                error: result.error!,
+              };
+            }
+            reportResults[result.name] = toReportResultView(result);
+          }
+          reportFailures += modelSummary.failures;
+        }
+
+        // --- Complete ---
+        const view: ModelMethodRunView = {
+          modelId: definition.id,
+          modelName: definition.name,
+          modelType: modelType.normalized,
+          methodName: input.methodName,
+          status: reportFailures > 0 ? "failed" : "succeeded",
+          duration: output.durationMs,
+          outputId: output.id,
+          logFile: logFilePath,
+          dataArtifacts,
+          reports: reportResults,
+        };
+        yield { kind: "completed", run: view };
+      } finally {
+        runLog.cleanup();
+      }
+    })(),
+  );
 }
 
 /**

@@ -31,6 +31,7 @@ import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Log file data. */
 export interface LogData {
   lines: string[];
@@ -129,99 +130,105 @@ export async function* workflowHistoryLogs(
   deps: WorkflowHistoryLogsDeps,
   input: WorkflowHistoryLogsInput,
 ): AsyncIterable<WorkflowHistoryLogsEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.history.logs",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  let run: WorkflowRun | undefined;
+      let run: WorkflowRun | undefined;
 
-  // Try partial ID matching first if input looks like an ID
-  if (deps.isPartialId(input.runIdOrWorkflow)) {
-    const result = await deps.matchRunByPartialId(input.runIdOrWorkflow);
+      // Try partial ID matching first if input looks like an ID
+      if (deps.isPartialId(input.runIdOrWorkflow)) {
+        const result = await deps.matchRunByPartialId(input.runIdOrWorkflow);
 
-    if (result.status === "found" && result.match) {
-      run = result.match;
-    } else if (result.status === "ambiguous" && result.matches) {
-      yield {
-        kind: "error",
-        error: validationFailed(
-          `Ambiguous ID prefix "${input.runIdOrWorkflow}" matches:\n` +
-            result.matches.map((m) => `  ${m.id}`).join("\n"),
-        ),
-      };
-      return;
-    }
-    // not_found: fall through to workflow name lookup
-  }
+        if (result.status === "found" && result.match) {
+          run = result.match;
+        } else if (result.status === "ambiguous" && result.matches) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Ambiguous ID prefix "${input.runIdOrWorkflow}" matches:\n` +
+                result.matches.map((m) => `  ${m.id}`).join("\n"),
+            ),
+          };
+          return;
+        }
+        // not_found: fall through to workflow name lookup
+      }
 
-  // If not found as run ID, try as workflow name and get latest run
-  if (!run) {
-    const workflow = await deps.findWorkflow(input.runIdOrWorkflow);
+      // If not found as run ID, try as workflow name and get latest run
+      if (!run) {
+        const workflow = await deps.findWorkflow(input.runIdOrWorkflow);
 
-    if (!workflow) {
-      yield {
-        kind: "error",
-        error: {
-          code: "not_found",
-          message:
-            `No workflow run or workflow found: ${input.runIdOrWorkflow}`,
-          details: {
-            entityType: "Workflow run or workflow",
-            idOrName: input.runIdOrWorkflow,
+        if (!workflow) {
+          yield {
+            kind: "error",
+            error: {
+              code: "not_found",
+              message:
+                `No workflow run or workflow found: ${input.runIdOrWorkflow}`,
+              details: {
+                entityType: "Workflow run or workflow",
+                idOrName: input.runIdOrWorkflow,
+              },
+            },
+          };
+          return;
+        }
+
+        const latestRun = await deps.findLatestRun(workflow.id);
+        if (!latestRun) {
+          yield {
+            kind: "error",
+            error: notFound("Run", `for workflow: ${workflow.name}`),
+          };
+          return;
+        }
+
+        run = latestRun;
+      }
+
+      // Read log file
+      if (!run.logFile) {
+        yield {
+          kind: "completed",
+          data: {
+            type: "no_log_file",
+            info: {
+              runId: run.id,
+              workflowName: run.workflowName,
+            },
           },
-        },
-      };
-      return;
-    }
+        };
+        return;
+      }
 
-    const latestRun = await deps.findLatestRun(workflow.id);
-    if (!latestRun) {
+      const logData = await deps.readLogFile(run.logFile, { tail: input.tail });
+      const displayPath = deps.toRelativePath(input.repoDir, run.logFile);
+
+      if (logData.lines.length === 0) {
+        yield {
+          kind: "completed",
+          data: {
+            type: "empty_log",
+            info: {
+              runId: run.id,
+              workflowName: run.workflowName,
+              path: displayPath,
+            },
+          },
+        };
+        return;
+      }
+
       yield {
-        kind: "error",
-        error: notFound("Run", `for workflow: ${workflow.name}`),
+        kind: "completed",
+        data: {
+          type: "log",
+          log: { ...logData, path: displayPath },
+        },
       };
-      return;
-    }
-
-    run = latestRun;
-  }
-
-  // Read log file
-  if (!run.logFile) {
-    yield {
-      kind: "completed",
-      data: {
-        type: "no_log_file",
-        info: {
-          runId: run.id,
-          workflowName: run.workflowName,
-        },
-      },
-    };
-    return;
-  }
-
-  const logData = await deps.readLogFile(run.logFile, { tail: input.tail });
-  const displayPath = deps.toRelativePath(input.repoDir, run.logFile);
-
-  if (logData.lines.length === 0) {
-    yield {
-      kind: "completed",
-      data: {
-        type: "empty_log",
-        info: {
-          runId: run.id,
-          workflowName: run.workflowName,
-          path: displayPath,
-        },
-      },
-    };
-    return;
-  }
-
-  yield {
-    kind: "completed",
-    data: {
-      type: "log",
-      log: { ...logData, path: displayPath },
-    },
-  };
+    })(),
+  );
 }

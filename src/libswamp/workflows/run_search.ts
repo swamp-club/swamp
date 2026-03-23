@@ -21,6 +21,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single workflow run search result item.
  */
@@ -91,91 +92,99 @@ export async function* workflowRunSearch(
   deps: WorkflowRunSearchDeps,
   input: WorkflowRunSearchInput,
 ): AsyncGenerator<WorkflowRunSearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.run_search",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const allWorkflows = await deps.findAllWorkflows();
+      const allWorkflows = await deps.findAllWorkflows();
 
-  // Fetch all runs for all workflows in parallel
-  const runsPerWorkflow = await Promise.all(
-    allWorkflows.map((workflow) => deps.findAllRunsByWorkflowId(workflow.id)),
+      // Fetch all runs for all workflows in parallel
+      const runsPerWorkflow = await Promise.all(
+        allWorkflows.map((workflow) =>
+          deps.findAllRunsByWorkflowId(workflow.id)
+        ),
+      );
+      const allRuns = runsPerWorkflow.flat();
+
+      // Sort by startedAt descending (most recent first)
+      allRuns.sort((a, b) => {
+        const aTime = a.startedAt?.getTime() ?? 0;
+        const bTime = b.startedAt?.getTime() ?? 0;
+        return bTime - aTime;
+      });
+
+      // Convert to search items
+      let results: WorkflowRunSearchItem[] = allRuns.map((run) => {
+        const startTime = run.startedAt?.getTime();
+        const endTime = run.completedAt?.getTime();
+        const tags = run.tags && Object.keys(run.tags).length > 0
+          ? { ...run.tags }
+          : undefined;
+
+        return {
+          runId: run.id,
+          workflowId: run.workflowId,
+          workflowName: run.workflowName,
+          status: run.status,
+          startedAt: run.startedAt?.toISOString(),
+          completedAt: run.completedAt?.toISOString(),
+          duration: startTime && endTime ? endTime - startTime : undefined,
+          tags,
+        };
+      });
+
+      // Apply filters
+      if (input.since) {
+        const durationMs = parseDuration(input.since);
+        const cutoff = Date.now() - durationMs;
+        results = results.filter((r) => {
+          if (!r.startedAt) return false;
+          return new Date(r.startedAt).getTime() >= cutoff;
+        });
+      }
+
+      if (input.status) {
+        const status = input.status.toLowerCase();
+        results = results.filter((r) => r.status.toLowerCase() === status);
+      }
+
+      if (input.workflow) {
+        const name = input.workflow.toLowerCase();
+        results = results.filter(
+          (r) => r.workflowName.toLowerCase() === name,
+        );
+      }
+
+      if (input.tags) {
+        const tagEntries = Object.entries(input.tags);
+        results = results.filter((r) =>
+          tagEntries.every(([k, v]) => r.tags?.[k] === v)
+        );
+      }
+
+      if (input.query) {
+        const q = input.query.toLowerCase();
+        results = results.filter(
+          (r) =>
+            r.workflowName.toLowerCase().includes(q) ||
+            r.runId.toLowerCase().includes(q) ||
+            r.status.toLowerCase().includes(q),
+        );
+      }
+
+      if (input.limit !== undefined) {
+        results = results.slice(0, input.limit);
+      }
+
+      yield {
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          results,
+        },
+      };
+    })(),
   );
-  const allRuns = runsPerWorkflow.flat();
-
-  // Sort by startedAt descending (most recent first)
-  allRuns.sort((a, b) => {
-    const aTime = a.startedAt?.getTime() ?? 0;
-    const bTime = b.startedAt?.getTime() ?? 0;
-    return bTime - aTime;
-  });
-
-  // Convert to search items
-  let results: WorkflowRunSearchItem[] = allRuns.map((run) => {
-    const startTime = run.startedAt?.getTime();
-    const endTime = run.completedAt?.getTime();
-    const tags = run.tags && Object.keys(run.tags).length > 0
-      ? { ...run.tags }
-      : undefined;
-
-    return {
-      runId: run.id,
-      workflowId: run.workflowId,
-      workflowName: run.workflowName,
-      status: run.status,
-      startedAt: run.startedAt?.toISOString(),
-      completedAt: run.completedAt?.toISOString(),
-      duration: startTime && endTime ? endTime - startTime : undefined,
-      tags,
-    };
-  });
-
-  // Apply filters
-  if (input.since) {
-    const durationMs = parseDuration(input.since);
-    const cutoff = Date.now() - durationMs;
-    results = results.filter((r) => {
-      if (!r.startedAt) return false;
-      return new Date(r.startedAt).getTime() >= cutoff;
-    });
-  }
-
-  if (input.status) {
-    const status = input.status.toLowerCase();
-    results = results.filter((r) => r.status.toLowerCase() === status);
-  }
-
-  if (input.workflow) {
-    const name = input.workflow.toLowerCase();
-    results = results.filter(
-      (r) => r.workflowName.toLowerCase() === name,
-    );
-  }
-
-  if (input.tags) {
-    const tagEntries = Object.entries(input.tags);
-    results = results.filter((r) =>
-      tagEntries.every(([k, v]) => r.tags?.[k] === v)
-    );
-  }
-
-  if (input.query) {
-    const q = input.query.toLowerCase();
-    results = results.filter(
-      (r) =>
-        r.workflowName.toLowerCase().includes(q) ||
-        r.runId.toLowerCase().includes(q) ||
-        r.status.toLowerCase().includes(q),
-    );
-  }
-
-  if (input.limit !== undefined) {
-    results = results.slice(0, input.limit);
-  }
-
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      results,
-    },
-  };
 }

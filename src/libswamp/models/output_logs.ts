@@ -28,6 +28,7 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Data payload for the completed event. */
 export interface ModelOutputLogsData {
   outputId: string;
@@ -114,93 +115,101 @@ export async function* modelOutputLogs(
   deps: ModelOutputLogsDeps,
   input: ModelOutputLogsInput,
 ): AsyncIterable<ModelOutputLogsEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.output.logs",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  if (!deps.isPartialId(input.outputIdArg)) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Invalid output ID format: ${input.outputIdArg}. ` +
-          `Expected a UUID or partial ID (3+ hex characters).`,
-      ),
-    };
-    return;
-  }
-
-  const result = await deps.matchOutputByPartialId(input.outputIdArg);
-
-  if (result.status === "not_found") {
-    yield {
-      kind: "error",
-      error: notFound("Output", input.outputIdArg),
-    };
-    return;
-  }
-
-  if (result.status === "ambiguous" && result.matches) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Ambiguous ID prefix "${input.outputIdArg}" matches:\n` +
-          result.matches.map((m) => `  ${m.id}`).join("\n"),
-      ),
-    };
-    return;
-  }
-
-  const { output, type } = result.match!;
-
-  // Get log IDs from artifacts (find all artifacts with type "log")
-  const logArtifacts = output.artifacts.dataArtifacts.filter(
-    (a) => a.tags.type === "log",
-  );
-  if (logArtifacts.length === 0) {
-    yield {
-      kind: "error",
-      error: notFound(
-        "Log artifacts",
-        `Output ${output.id} has no log artifacts. ` +
-          `Status: ${output.status}, Method: ${output.methodName}`,
-      ),
-    };
-    return;
-  }
-
-  // Fetch and collect log lines
-  const allEntries: string[] = [];
-
-  for (const artifact of logArtifacts) {
-    const dataResult = await deps.findDataByName(
-      type,
-      output.definitionId,
-      artifact.name,
-    );
-    if (dataResult) {
-      const content = await deps.getContent(
-        type,
-        output.definitionId,
-        artifact.name,
-      );
-      if (content) {
-        const text = new TextDecoder().decode(content);
-        const lines = text.split("\n").filter((line) => line.length > 0);
-        allEntries.push(...lines);
+      if (!deps.isPartialId(input.outputIdArg)) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Invalid output ID format: ${input.outputIdArg}. ` +
+              `Expected a UUID or partial ID (3+ hex characters).`,
+          ),
+        };
+        return;
       }
-    }
-  }
 
-  // Apply --tail if specified
-  const entriesToShow = input.tail ? allEntries.slice(-input.tail) : allEntries;
+      const result = await deps.matchOutputByPartialId(input.outputIdArg);
 
-  yield {
-    kind: "completed",
-    data: {
-      outputId: output.id,
-      methodName: output.methodName,
-      logArtifacts: logArtifacts.map((a) => a.name),
-      lines: entriesToShow,
-      totalLines: allEntries.length,
-      showingLines: entriesToShow.length,
-    },
-  };
+      if (result.status === "not_found") {
+        yield {
+          kind: "error",
+          error: notFound("Output", input.outputIdArg),
+        };
+        return;
+      }
+
+      if (result.status === "ambiguous" && result.matches) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Ambiguous ID prefix "${input.outputIdArg}" matches:\n` +
+              result.matches.map((m) => `  ${m.id}`).join("\n"),
+          ),
+        };
+        return;
+      }
+
+      const { output, type } = result.match!;
+
+      // Get log IDs from artifacts (find all artifacts with type "log")
+      const logArtifacts = output.artifacts.dataArtifacts.filter(
+        (a) => a.tags.type === "log",
+      );
+      if (logArtifacts.length === 0) {
+        yield {
+          kind: "error",
+          error: notFound(
+            "Log artifacts",
+            `Output ${output.id} has no log artifacts. ` +
+              `Status: ${output.status}, Method: ${output.methodName}`,
+          ),
+        };
+        return;
+      }
+
+      // Fetch and collect log lines
+      const allEntries: string[] = [];
+
+      for (const artifact of logArtifacts) {
+        const dataResult = await deps.findDataByName(
+          type,
+          output.definitionId,
+          artifact.name,
+        );
+        if (dataResult) {
+          const content = await deps.getContent(
+            type,
+            output.definitionId,
+            artifact.name,
+          );
+          if (content) {
+            const text = new TextDecoder().decode(content);
+            const lines = text.split("\n").filter((line) => line.length > 0);
+            allEntries.push(...lines);
+          }
+        }
+      }
+
+      // Apply --tail if specified
+      const entriesToShow = input.tail
+        ? allEntries.slice(-input.tail)
+        : allEntries;
+
+      yield {
+        kind: "completed",
+        data: {
+          outputId: output.id,
+          methodName: output.methodName,
+          logArtifacts: logArtifacts.map((a) => a.name),
+          lines: entriesToShow,
+          totalLines: allEntries.length,
+          showingLines: entriesToShow.length,
+        },
+      };
+    })(),
+  );
 }

@@ -30,6 +30,7 @@ import {
   zodToJsonSchema,
 } from "./schema_helpers.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the type describe output.
  */
@@ -70,46 +71,52 @@ export async function* typeDescribe(
   deps: TypeDescribeDeps,
   modelType: ModelType,
 ): AsyncIterable<TypeDescribeEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.type.describe",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const definition = await deps.resolveModelType(modelType);
-  if (!definition) {
-    const availableTypes = deps.getAvailableTypes().join(", ");
-    yield {
-      kind: "error",
-      error: notFound(
-        "Model type",
-        `${modelType.raw}. Available types: ${availableTypes || "none"}`,
-      ),
-    };
-    return;
-  }
+      const definition = await deps.resolveModelType(modelType);
+      if (!definition) {
+        const availableTypes = deps.getAvailableTypes().join(", ");
+        yield {
+          kind: "error",
+          error: notFound(
+            "Model type",
+            `${modelType.raw}. Available types: ${availableTypes || "none"}`,
+          ),
+        };
+        return;
+      }
 
-  const globalArguments = definition.globalArguments
-    ? zodToJsonSchema(definition.globalArguments)
-    : undefined;
+      const globalArguments = definition.globalArguments
+        ? zodToJsonSchema(definition.globalArguments)
+        : undefined;
 
-  const methods: MethodDescribeData[] = Object.entries(definition.methods)
-    .map(
-      ([name, method]) =>
-        toMethodDescribeData(
-          name,
-          method,
-          definition.resources,
-          definition.files,
-        ),
-    );
+      const methods: MethodDescribeData[] = Object.entries(definition.methods)
+        .map(
+          ([name, method]) =>
+            toMethodDescribeData(
+              name,
+              method,
+              definition.resources,
+              definition.files,
+            ),
+        );
 
-  yield {
-    kind: "completed",
-    data: {
-      type: {
-        raw: modelType.raw,
-        normalized: modelType.normalized,
-      },
-      version: definition.version,
-      globalArguments,
-      methods,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          type: {
+            raw: modelType.raw,
+            normalized: modelType.normalized,
+          },
+          version: definition.version,
+          globalArguments,
+          methods,
+        },
+      };
+    })(),
+  );
 }

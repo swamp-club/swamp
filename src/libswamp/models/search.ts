@@ -20,6 +20,7 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single model search result item.
  */
@@ -72,22 +73,28 @@ export async function* modelSearch(
   deps: ModelSearchDeps,
   input: ModelSearchInput,
 ): AsyncGenerator<ModelSearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.search",
+    { "search.query": input.query ?? "" },
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const allResults = await deps.findAllGlobal();
-  const results: ModelSearchItem[] = allResults.map(
-    ({ definition, type }) => ({
-      id: definition.id,
-      name: definition.name,
-      type: type.normalized,
-    }),
+      const allResults = await deps.findAllGlobal();
+      const results: ModelSearchItem[] = allResults.map(
+        ({ definition, type }) => ({
+          id: definition.id,
+          name: definition.name,
+          type: type.normalized,
+        }),
+      );
+
+      yield {
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          results,
+        },
+      };
+    })(),
   );
-
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      results,
-    },
-  };
 }

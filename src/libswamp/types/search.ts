@@ -20,6 +20,7 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single type search result item.
  */
@@ -67,19 +68,25 @@ export async function* typeSearch(
   deps: TypeSearchDeps,
   input: TypeSearchInput,
 ): AsyncGenerator<TypeSearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.type.search",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const types = deps.getRegisteredTypes();
-  const results: TypeSearchItem[] = types.map((t) => ({
-    raw: t.raw,
-    normalized: t.normalized,
-  }));
+      const types = deps.getRegisteredTypes();
+      const results: TypeSearchItem[] = types.map((t) => ({
+        raw: t.raw,
+        normalized: t.normalized,
+      }));
 
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      results,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          results,
+        },
+      };
+    })(),
+  );
 }

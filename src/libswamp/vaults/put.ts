@@ -25,6 +25,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Minimal vault config shape needed by the generator. */
 export interface VaultPutConfigInfo {
   id: string;
@@ -162,36 +163,42 @@ export async function* vaultPut(
   deps: VaultPutDeps,
   input: VaultPutInput,
 ): AsyncIterable<VaultPutEvent> {
-  yield { kind: "storing" };
+  yield* withGeneratorSpan(
+    "swamp.vault.put",
+    {},
+    (async function* () {
+      yield { kind: "storing" };
 
-  const config = await deps.findVault(input.vaultName);
-  if (!config) {
-    yield {
-      kind: "error",
-      error: notFound("Vault", input.vaultName),
-    };
-    return;
-  }
+      const config = await deps.findVault(input.vaultName);
+      if (!config) {
+        yield {
+          kind: "error",
+          error: notFound("Vault", input.vaultName),
+        };
+        return;
+      }
 
-  await deps.putSecret(input.vaultName, input.key, input.value);
-  ctx.logger.debug`Secret stored successfully`;
+      await deps.putSecret(input.vaultName, input.key, input.value);
+      ctx.logger.debug`Secret stored successfully`;
 
-  await deps.publishSecretUpdated(
-    config.id,
-    config.type,
-    config.name,
-    input.key,
+      await deps.publishSecretUpdated(
+        config.id,
+        config.type,
+        config.name,
+        input.key,
+      );
+      ctx.logger.debug`Emitted VaultSecretUpdated event`;
+
+      yield {
+        kind: "completed",
+        data: {
+          vaultName: input.vaultName,
+          secretKey: input.key,
+          vaultType: config.type,
+          overwritten: input.overwritten,
+          timestamp: new Date().toISOString(),
+        },
+      };
+    })(),
   );
-  ctx.logger.debug`Emitted VaultSecretUpdated event`;
-
-  yield {
-    kind: "completed",
-    data: {
-      vaultName: input.vaultName,
-      secretKey: input.key,
-      vaultType: config.type,
-      overwritten: input.overwritten,
-      timestamp: new Date().toISOString(),
-    },
-  };
 }

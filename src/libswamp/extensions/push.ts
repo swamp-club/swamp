@@ -34,6 +34,8 @@ import type { ExtensionManifest } from "../../domain/extensions/extension_manife
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
+import { getTracer } from "../../infrastructure/tracing/mod.ts";
+import { SpanStatusCode } from "@opentelemetry/api";
 
 // ── Data types ────────────────────────────────────────────────────────
 
@@ -635,95 +637,130 @@ export async function* extensionPush(
   deps: ExtensionPushExecuteDeps,
   input: ExtensionPushExecuteInput,
 ): AsyncIterable<ExtensionPushEvent> {
-  const credentials = await deps.loadCredentials();
-  if (!credentials) {
-    yield { kind: "error", error: notAuthenticated() };
-    return;
-  }
+  const pushSpan = getTracer().startSpan("swamp.extension.push", {
+    attributes: { "extension.name": input.manifest.name },
+  });
 
-  const releaseNotes = input.releaseNotes ?? input.manifest.releaseNotes;
-  const pushMetadata = {
-    name: input.manifest.name,
-    version: input.manifest.version,
-    description: input.manifest.description ?? "",
-    dependencies: input.manifest.dependencies,
-    platforms: input.manifest.platforms,
-    labels: input.manifest.labels,
-    repository: input.manifest.repository || undefined,
-    ...(releaseNotes ? { releaseNotes } : {}),
-  };
-
-  // Phase 1: Initiate
-  yield { kind: "pushing", phase: "initiate" };
-  ctx.logger.debug("Initiating push...");
-  let initResult: { uploadUrl: string };
   try {
-    initResult = await deps.initiatePush(
-      credentials.serverUrl,
-      pushMetadata,
-      credentials.apiKey,
-    );
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
-    };
-    return;
-  }
+    const credentials = await deps.loadCredentials();
+    if (!credentials) {
+      pushSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: "Not authenticated",
+      });
+      pushSpan.end();
+      yield { kind: "error", error: notAuthenticated() };
+      return;
+    }
 
-  // Phase 2: Upload archive
-  yield { kind: "pushing", phase: "upload" };
-  ctx.logger.debug("Uploading archive...");
-  try {
-    await deps.uploadArchive(initResult.uploadUrl, input.archiveBytes);
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
+    const releaseNotes = input.releaseNotes ?? input.manifest.releaseNotes;
+    const pushMetadata = {
+      name: input.manifest.name,
+      version: input.manifest.version,
+      description: input.manifest.description ?? "",
+      dependencies: input.manifest.dependencies,
+      platforms: input.manifest.platforms,
+      labels: input.manifest.labels,
+      repository: input.manifest.repository || undefined,
+      ...(releaseNotes ? { releaseNotes } : {}),
     };
-    return;
-  }
 
-  // Phase 3: Confirm
-  yield { kind: "pushing", phase: "confirm" };
-  ctx.logger.debug("Confirming push...");
-  let confirmResult: { name: string; version: string; extensionId: string };
-  try {
-    confirmResult = await deps.confirmPush(
-      credentials.serverUrl,
-      { ...pushMetadata, contentMetadata: input.contentMetadata },
-      credentials.apiKey,
-    );
-  } catch (error) {
+    // Phase 1: Initiate
+    yield { kind: "pushing", phase: "initiate" };
+    ctx.logger.debug("Initiating push...");
+    let initResult: { uploadUrl: string };
+    try {
+      initResult = await deps.initiatePush(
+        credentials.serverUrl,
+        pushMetadata,
+        credentials.apiKey,
+      );
+    } catch (error) {
+      pushSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: "initiate failed",
+      });
+      pushSpan.end();
+      yield {
+        kind: "error",
+        error: validationFailed(
+          error instanceof Error ? error.message : String(error),
+        ),
+      };
+      return;
+    }
+
+    // Phase 2: Upload archive
+    yield { kind: "pushing", phase: "upload" };
+    ctx.logger.debug("Uploading archive...");
+    try {
+      await deps.uploadArchive(initResult.uploadUrl, input.archiveBytes);
+    } catch (error) {
+      pushSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: "upload failed",
+      });
+      pushSpan.end();
+      yield {
+        kind: "error",
+        error: validationFailed(
+          error instanceof Error ? error.message : String(error),
+        ),
+      };
+      return;
+    }
+
+    // Phase 3: Confirm
+    yield { kind: "pushing", phase: "confirm" };
+    ctx.logger.debug("Confirming push...");
+    let confirmResult: { name: string; version: string; extensionId: string };
+    try {
+      confirmResult = await deps.confirmPush(
+        credentials.serverUrl,
+        { ...pushMetadata, contentMetadata: input.contentMetadata },
+        credentials.apiKey,
+      );
+    } catch (error) {
+      pushSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: "confirm failed",
+      });
+      pushSpan.end();
+      yield {
+        kind: "error",
+        error: validationFailed(
+          error instanceof Error ? error.message : String(error),
+        ),
+      };
+      return;
+    }
+
+    pushSpan.setStatus({ code: SpanStatusCode.OK });
+    pushSpan.end();
     yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
+      kind: "completed",
+      data: {
+        name: confirmResult.name,
+        version: confirmResult.version,
+        extensionId: confirmResult.extensionId,
+        archiveSize: input.archiveBytes.length,
+        modelCount: input.counts.models,
+        workflowCount: input.counts.workflows,
+        bundleCount: input.counts.bundles,
+        vaultCount: input.counts.vaults,
+        driverCount: input.counts.drivers,
+        datastoreCount: input.counts.datastores,
+        reportCount: input.counts.reports,
+      },
     };
-    return;
+  } catch (error) {
+    pushSpan.setStatus({
+      code: SpanStatusCode.ERROR,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    pushSpan.end();
+    throw error;
   }
-
-  yield {
-    kind: "completed",
-    data: {
-      name: confirmResult.name,
-      version: confirmResult.version,
-      extensionId: confirmResult.extensionId,
-      archiveSize: input.archiveBytes.length,
-      modelCount: input.counts.models,
-      workflowCount: input.counts.workflows,
-      bundleCount: input.counts.bundles,
-      vaultCount: input.counts.vaults,
-      driverCount: input.counts.drivers,
-      datastoreCount: input.counts.datastores,
-      reportCount: input.counts.reports,
-    },
-  };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────

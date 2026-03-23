@@ -27,6 +27,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { alreadyExists } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structures for the workflow create output.
  */
@@ -84,58 +85,64 @@ export async function* workflowCreate(
   deps: WorkflowCreateDeps,
   input: WorkflowCreateInput,
 ): AsyncIterable<WorkflowCreateEvent> {
-  yield { kind: "creating" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.create",
+    { "workflow.name": input.name },
+    (async function* () {
+      yield { kind: "creating" };
 
-  ctx.logger.debug`Creating workflow: name=${input.name}`;
+      ctx.logger.debug`Creating workflow: name=${input.name}`;
 
-  // Check name uniqueness
-  const existing = await deps.findByName(input.name);
-  if (existing) {
-    yield {
-      kind: "error",
-      error: alreadyExists("Workflow", input.name),
-    };
-    return;
-  }
+      // Check name uniqueness
+      const existing = await deps.findByName(input.name);
+      if (existing) {
+        yield {
+          kind: "error",
+          error: alreadyExists("Workflow", input.name),
+        };
+        return;
+      }
 
-  // Create workflow with a default job (schema requires at least one job)
-  const defaultJob = Job.create({
-    name: "main",
-    description: "Main job (edit or replace)",
-    steps: [
-      Step.create({
-        name: "example",
-        description: "Example step (edit or replace)",
-        task: StepTask.model("example-model", "run"),
-      }),
-    ],
-  });
+      // Create workflow with a default job (schema requires at least one job)
+      const defaultJob = Job.create({
+        name: "main",
+        description: "Main job (edit or replace)",
+        steps: [
+          Step.create({
+            name: "example",
+            description: "Example step (edit or replace)",
+            task: StepTask.model("example-model", "run"),
+          }),
+        ],
+      });
 
-  const workflow = Workflow.create({
-    name: input.name,
-    jobs: [defaultJob],
-  });
+      const workflow = Workflow.create({
+        name: input.name,
+        jobs: [defaultJob],
+      });
 
-  await deps.save(workflow);
+      await deps.save(workflow);
 
-  ctx.logger.debug`Created workflow with ID: ${workflow.id}`;
+      ctx.logger.debug`Created workflow with ID: ${workflow.id}`;
 
-  const jobs: WorkflowCreateJobData[] = workflow.jobs.map((job) => ({
-    name: job.name,
-    description: job.description ?? "",
-    steps: job.steps.map((step) => ({
-      name: step.name,
-      description: step.description ?? "",
-      taskType: step.task.data.type,
-    })),
-  }));
+      const jobs: WorkflowCreateJobData[] = workflow.jobs.map((job) => ({
+        name: job.name,
+        description: job.description ?? "",
+        steps: job.steps.map((step) => ({
+          name: step.name,
+          description: step.description ?? "",
+          taskType: step.task.data.type,
+        })),
+      }));
 
-  const data: WorkflowCreateData = {
-    id: workflow.id,
-    name: workflow.name,
-    path: deps.getPath(workflow.id),
-    jobs,
-  };
+      const data: WorkflowCreateData = {
+        id: workflow.id,
+        name: workflow.name,
+        path: deps.getPath(workflow.id),
+        jobs,
+      };
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }

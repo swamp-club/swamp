@@ -33,6 +33,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for provenance information.
  */
@@ -167,13 +168,19 @@ export async function* modelOutputGet(
   deps: ModelOutputGetDeps,
   outputIdOrModelName: string,
 ): AsyncIterable<ModelOutputGetEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.output.get",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  if (deps.isPartialId(outputIdOrModelName)) {
-    yield* lookupByPartialId(deps, outputIdOrModelName);
-  } else {
-    yield* lookupByModelName(deps, outputIdOrModelName);
-  }
+      if (deps.isPartialId(outputIdOrModelName)) {
+        yield* lookupByPartialId(deps, outputIdOrModelName);
+      } else {
+        yield* lookupByModelName(deps, outputIdOrModelName);
+      }
+    })(),
+  );
 }
 
 async function* lookupByPartialId(

@@ -93,6 +93,7 @@ import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/output/update_notification_output.ts";
 import { getOutputModeFromArgs } from "./context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -628,7 +629,13 @@ export async function runCli(args: string[]): Promise<void> {
   cli.command("help", createHelpCommand(cli));
 
   try {
-    await cli.parse(args);
+    await withSpan("swamp.cli", {
+      "swamp.command": commandInfo.command,
+      "swamp.subcommand": commandInfo.subcommand ?? "",
+      "swamp.version": VERSION,
+    }, async () => {
+      await cli.parse(args);
+    });
 
     // Flush datastore sync (push to S3 + release lock)
     await flushDatastoreSync();

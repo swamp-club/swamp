@@ -27,6 +27,7 @@ import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** UUID v4 regex pattern for detecting if an argument is a UUID. */
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -195,11 +196,17 @@ export async function* workflowValidate(
   deps: WorkflowValidateDeps,
   input: WorkflowValidateInput,
 ): AsyncIterable<WorkflowValidateEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.validate",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  if (!input.workflowIdOrName) {
-    yield* validateAll(deps);
-  } else {
-    yield* validateSingle(deps, input.workflowIdOrName);
-  }
+      if (!input.workflowIdOrName) {
+        yield* validateAll(deps);
+      } else {
+        yield* validateSingle(deps, input.workflowIdOrName);
+      }
+    })(),
+  );
 }

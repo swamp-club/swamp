@@ -24,6 +24,7 @@ import { JsonSourceMetadataRepository } from "../../infrastructure/source/json_s
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the source fetch output.
  */
@@ -60,11 +61,17 @@ export async function* sourceFetch(
   deps: SourceFetchDeps,
   input: SourceFetchInput,
 ): AsyncIterable<SourceFetchEvent> {
-  ctx.logger.debug`Fetching source version: ${input.version}`;
+  yield* withGeneratorSpan(
+    "swamp.source.fetch",
+    {},
+    (async function* () {
+      ctx.logger.debug`Fetching source version: ${input.version}`;
 
-  yield { kind: "fetching" };
+      yield { kind: "fetching" };
 
-  const result = await deps.fetch(input.version);
+      const result = await deps.fetch(input.version);
 
-  yield { kind: "completed", data: result };
+      yield { kind: "completed", data: result };
+    })(),
+  );
 }

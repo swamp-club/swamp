@@ -27,6 +27,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the workflow get output.
  */
@@ -87,33 +88,39 @@ export async function* workflowGet(
   deps: WorkflowGetDeps,
   workflowIdOrName: string,
 ): AsyncIterable<WorkflowGetEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.get",
+    { "workflow.id_or_name": workflowIdOrName },
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const workflow = await deps.findWorkflow(workflowIdOrName);
+      const workflow = await deps.findWorkflow(workflowIdOrName);
 
-  if (!workflow) {
-    yield { kind: "error", error: notFound("Workflow", workflowIdOrName) };
-    return;
-  }
+      if (!workflow) {
+        yield { kind: "error", error: notFound("Workflow", workflowIdOrName) };
+        return;
+      }
 
-  const data: WorkflowGetData = {
-    id: workflow.id,
-    name: workflow.name,
-    description: workflow.description,
-    version: workflow.version,
-    jobs: workflow.jobs.map((job) => ({
-      name: job.name,
-      description: job.description,
-      steps: job.steps.map((step) => ({
-        name: step.name,
-        description: step.description,
-        task: step.task.toData(),
-      })),
-    })),
-    path: deps.getWorkflowPath(workflow.id),
-  };
+      const data: WorkflowGetData = {
+        id: workflow.id,
+        name: workflow.name,
+        description: workflow.description,
+        version: workflow.version,
+        jobs: workflow.jobs.map((job) => ({
+          name: job.name,
+          description: job.description,
+          steps: job.steps.map((step) => ({
+            name: step.name,
+            description: step.description,
+            task: step.task.toData(),
+          })),
+        })),
+        path: deps.getWorkflowPath(workflow.id),
+      };
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }
 
 /** Checks if a string looks like a UUID. */

@@ -29,6 +29,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
 function resolveServerUrl(): string {
@@ -96,102 +97,110 @@ export async function* extensionUpdate(
   deps: ExtensionUpdateDeps,
   input: ExtensionUpdateInput,
 ): AsyncIterable<ExtensionUpdateEvent> {
-  ctx.logger.debug`Executing extension update`;
+  yield* withGeneratorSpan(
+    "swamp.extension.update",
+    {},
+    (async function* () {
+      ctx.logger.debug`Executing extension update`;
 
-  const upstream = await deps.readUpstreamExtensions();
-  const installedNames = Object.keys(upstream);
+      const upstream = await deps.readUpstreamExtensions();
+      const installedNames = Object.keys(upstream);
 
-  if (installedNames.length === 0) {
-    yield { kind: "no_extensions" };
-    return;
-  }
-
-  // Validate specific extension exists
-  let targetNames: string[];
-  if (input.extensionName) {
-    if (!upstream[input.extensionName]) {
-      yield { kind: "extension_not_installed", name: input.extensionName };
-      yield {
-        kind: "error",
-        error: validationFailed(
-          `Extension ${input.extensionName} is not installed. Use 'swamp extension pull ${input.extensionName}' to install it.`,
-        ),
-      };
-      return;
-    }
-    targetNames = [input.extensionName];
-  } else {
-    targetNames = installedNames;
-  }
-
-  // Check each extension for updates
-  const statuses: ExtensionUpdateStatus[] = [];
-  for (const name of targetNames) {
-    yield { kind: "checking", name };
-    const installedVersion = upstream[name].version;
-
-    const extInfo = await deps.getExtension(name);
-    if (!extInfo) {
-      statuses.push({
-        status: "not_found",
-        name,
-        installedVersion,
-        error: `Failed to fetch registry info for ${name}.`,
-      });
-      continue;
-    }
-
-    statuses.push(
-      checkExtensionVersion(name, installedVersion, extInfo.latestVersion),
-    );
-  }
-
-  // Check-only mode
-  if (input.checkOnly) {
-    yield {
-      kind: "completed",
-      data: buildUpdateResult(statuses),
-      mode: "check",
-    };
-    return;
-  }
-
-  // Update mode
-  const finalStatuses: ExtensionUpdateStatus[] = [];
-  for (const s of statuses) {
-    if (s.status === "update_available") {
-      yield {
-        kind: "updating",
-        name: s.name,
-        from: s.installedVersion,
-        to: s.latestVersion,
-      };
-
-      try {
-        await deps.installExtension(s.name, s.latestVersion);
-        finalStatuses.push({
-          status: "updated",
-          name: s.name,
-          previousVersion: s.installedVersion,
-          newVersion: s.latestVersion,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        finalStatuses.push({
-          status: "failed",
-          name: s.name,
-          installedVersion: s.installedVersion,
-          error: `Update failed: ${message}`,
-        });
+      if (installedNames.length === 0) {
+        yield { kind: "no_extensions" };
+        return;
       }
-    } else {
-      finalStatuses.push(s);
-    }
-  }
 
-  yield {
-    kind: "completed",
-    data: buildUpdateResult(finalStatuses),
-    mode: "update",
-  };
+      // Validate specific extension exists
+      let targetNames: string[];
+      if (input.extensionName) {
+        if (!upstream[input.extensionName]) {
+          yield { kind: "extension_not_installed", name: input.extensionName };
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Extension ${input.extensionName} is not installed. Use 'swamp extension pull ${input.extensionName}' to install it.`,
+            ),
+          };
+          return;
+        }
+        targetNames = [input.extensionName];
+      } else {
+        targetNames = installedNames;
+      }
+
+      // Check each extension for updates
+      const statuses: ExtensionUpdateStatus[] = [];
+      for (const name of targetNames) {
+        yield { kind: "checking", name };
+        const installedVersion = upstream[name].version;
+
+        const extInfo = await deps.getExtension(name);
+        if (!extInfo) {
+          statuses.push({
+            status: "not_found",
+            name,
+            installedVersion,
+            error: `Failed to fetch registry info for ${name}.`,
+          });
+          continue;
+        }
+
+        statuses.push(
+          checkExtensionVersion(name, installedVersion, extInfo.latestVersion),
+        );
+      }
+
+      // Check-only mode
+      if (input.checkOnly) {
+        yield {
+          kind: "completed",
+          data: buildUpdateResult(statuses),
+          mode: "check",
+        };
+        return;
+      }
+
+      // Update mode
+      const finalStatuses: ExtensionUpdateStatus[] = [];
+      for (const s of statuses) {
+        if (s.status === "update_available") {
+          yield {
+            kind: "updating",
+            name: s.name,
+            from: s.installedVersion,
+            to: s.latestVersion,
+          };
+
+          try {
+            await deps.installExtension(s.name, s.latestVersion);
+            finalStatuses.push({
+              status: "updated",
+              name: s.name,
+              previousVersion: s.installedVersion,
+              newVersion: s.latestVersion,
+            });
+          } catch (error) {
+            const message = error instanceof Error
+              ? error.message
+              : String(error);
+            finalStatuses.push({
+              status: "failed",
+              name: s.name,
+              installedVersion: s.installedVersion,
+              error: `Update failed: ${message}`,
+            });
+          }
+        } else {
+          finalStatuses.push(s);
+        }
+      }
+
+      yield {
+        kind: "completed",
+        data: buildUpdateResult(finalStatuses),
+        mode: "update",
+      };
+    })(),
+  );
 }

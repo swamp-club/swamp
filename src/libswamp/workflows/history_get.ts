@@ -32,6 +32,7 @@ import { notFound } from "../errors.ts";
 import type { WorkflowRunView } from "./workflow_run_view.ts";
 import { toRunData } from "./run.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export type WorkflowHistoryGetEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: WorkflowRunView }
@@ -66,25 +67,34 @@ export async function* workflowHistoryGet(
   deps: WorkflowHistoryGetDeps,
   workflowIdOrName: string,
 ): AsyncIterable<WorkflowHistoryGetEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.history.get",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const workflow = await deps.findWorkflow(workflowIdOrName);
-  if (!workflow) {
-    yield { kind: "error", error: notFound("Workflow", workflowIdOrName) };
-    return;
-  }
+      const workflow = await deps.findWorkflow(workflowIdOrName);
+      if (!workflow) {
+        yield { kind: "error", error: notFound("Workflow", workflowIdOrName) };
+        return;
+      }
 
-  const latestRun = await deps.findLatestRun(workflow.id);
-  if (!latestRun) {
-    yield {
-      kind: "error",
-      error: notFound("Workflow run", `no runs for workflow: ${workflow.name}`),
-    };
-    return;
-  }
+      const latestRun = await deps.findLatestRun(workflow.id);
+      if (!latestRun) {
+        yield {
+          kind: "error",
+          error: notFound(
+            "Workflow run",
+            `no runs for workflow: ${workflow.name}`,
+          ),
+        };
+        return;
+      }
 
-  const path = deps.getRunPath(workflow.id, latestRun.id);
-  const data = toRunData(latestRun, path);
+      const path = deps.getRunPath(workflow.id, latestRun.id);
+      const data = toRunData(latestRun, path);
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }

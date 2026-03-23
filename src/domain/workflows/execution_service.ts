@@ -89,6 +89,8 @@ import {
 import { reportRegistry } from "../reports/report_registry.ts";
 import type { MethodReportContext } from "../reports/report_context.ts";
 import { modelRegistry } from "../models/model.ts";
+import { getTracer } from "../../infrastructure/tracing/mod.ts";
+import { SpanStatusCode } from "@opentelemetry/api";
 /**
  * Context for step execution.
  */
@@ -865,144 +867,165 @@ export class WorkflowExecutionService {
       reportFilterOptions?: ReportFilterOptions;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    // Look up workflow
-    let workflow = await this.lookupWorkflow(idOrName);
-    if (!workflow) {
-      throw new Error(`Workflow not found: ${idOrName}`);
-    }
+    const tracer = getTracer();
+    const runSpan = tracer.startSpan("swamp.workflow.run", {
+      attributes: { "workflow.name": idOrName },
+    });
 
-    let expressionContext: ExpressionContext | undefined;
+    try {
+      // Look up workflow
+      let workflow = await this.lookupWorkflow(idOrName);
+      if (!workflow) {
+        throw new Error(`Workflow not found: ${idOrName}`);
+      }
 
-    if (options?.lastEvaluated) {
-      // Load previously evaluated workflow from cache
-      const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-        this.repoDir,
-      );
-      const lastEvaluated = await evaluatedWorkflowRepo.findByName(
-        workflow.name,
-      );
-      if (!lastEvaluated) {
-        throw new UserError(
-          `No previously evaluated workflow found for "${workflow.name}".\n\n` +
-            `Evaluate the workflow first to generate evaluated data:\n` +
-            `  swamp workflow evaluate ${workflow.name}`,
+      let expressionContext: ExpressionContext | undefined;
+
+      if (options?.lastEvaluated) {
+        // Load previously evaluated workflow from cache
+        const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+          this.repoDir,
         );
-      }
-      // Use the fully evaluated workflow (forEach expanded, expressions resolved)
-      workflow = lastEvaluated;
+        const lastEvaluated = await evaluatedWorkflowRepo.findByName(
+          workflow.name,
+        );
+        if (!lastEvaluated) {
+          throw new UserError(
+            `No previously evaluated workflow found for "${workflow.name}".\n\n` +
+              `Evaluate the workflow first to generate evaluated data:\n` +
+              `  swamp workflow evaluate ${workflow.name}`,
+          );
+        }
+        // Use the fully evaluated workflow (forEach expanded, expressions resolved)
+        workflow = lastEvaluated;
 
-      // Build a minimal expression context so step outputs can be tracked
-      // and deferred expressions (e.g. model.previous.resource.*) can be
-      // evaluated at step execution time.
-      expressionContext = {
-        model: {},
-        env: buildEnvContext(),
-      };
-      if (options?.inputs) {
-        expressionContext.inputs = options.inputs;
-      }
-    } else {
-      // Build expression context and evaluate workflow
-      expressionContext = await this.modelResolver.buildContext();
+        // Build a minimal expression context so step outputs can be tracked
+        // and deferred expressions (e.g. model.previous.resource.*) can be
+        // evaluated at step execution time.
+        expressionContext = {
+          model: {},
+          env: buildEnvContext(),
+        };
+        if (options?.inputs) {
+          expressionContext.inputs = options.inputs;
+        }
+      } else {
+        // Build expression context and evaluate workflow
+        expressionContext = await this.modelResolver.buildContext();
 
-      // Add workflow inputs to context
-      if (options?.inputs) {
-        expressionContext.inputs = options.inputs;
-      }
+        // Add workflow inputs to context
+        if (options?.inputs) {
+          expressionContext.inputs = options.inputs;
+        }
 
-      workflow = this.evaluateWorkflow(
-        workflow,
-        expressionContext,
-      );
-      const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-        this.repoDir,
-      );
-      await evaluatedWorkflowRepo.save(workflow);
-    }
-
-    // Create workflow run with merged tags (runtime tags take precedence)
-    const mergedTags: Record<string, string> = {
-      ...(workflow.tags ?? {}),
-      ...(options?.runtimeTags ?? {}),
-    };
-    const run = WorkflowRun.create(workflow, mergedTags);
-
-    // Create secret redactor — populated during vault resolution, used by log sink and data writers
-    const secretRedactor = new SecretRedactor();
-
-    // Register run file sink target for the workflow log output
-    const workflowLogPath = join(
-      swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
-      workflow.id,
-      `workflow-run-${run.id}.log`,
-    );
-    const workflowLogCategory: string[] = [];
-    const workflowLogBoundary = swampPath(this.repoDir);
-    await runFileSink.register(
-      workflowLogCategory,
-      workflowLogPath,
-      secretRedactor,
-      workflowLogBoundary,
-    );
-    run.setLogFile(workflowLogPath);
-
-    // Start execution
-    run.start();
-    yield {
-      kind: "started",
-      runId: run.id,
-      workflowName: workflow.name,
-      logPath: workflowLogPath,
-    };
-
-    await this.saveRun(workflow.id, run);
-
-    const stepOpts: StepOptions = {
-      lastEvaluated: options?.lastEvaluated,
-      workflowNestingDepth: options?.workflowNestingDepth,
-      ancestorWorkflowIds: options?.ancestorWorkflowIds,
-      workflowTags: workflow.tags,
-      runtimeTags: options?.runtimeTags,
-      secretRedactor,
-      signal: options?.signal,
-      driver: options?.driver,
-      reportFilterOptions: options?.reportFilterOptions,
-    };
-
-    // Sort jobs topologically
-    const jobNodes: GraphNode[] = workflow.jobs.map((job) => ({
-      name: job.name,
-      weight: job.weight,
-      dependencies: job.getDependencyNames(),
-    }));
-
-    const sortedJobs = this.sortService.sort(jobNodes);
-
-    // Execute jobs level by level
-    for (const level of sortedJobs.levels) {
-      // Merge parallel job generators within each level
-      const jobStreams = level.map((jobName) =>
-        this.runJob(
+        workflow = this.evaluateWorkflow(
           workflow,
-          run,
-          jobName,
           expressionContext,
-          stepOpts,
-        )
-      );
-      for await (const event of merge(jobStreams, options?.signal)) {
-        yield event;
+        );
+        const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+          this.repoDir,
+        );
+        await evaluatedWorkflowRepo.save(workflow);
       }
+
+      // Create workflow run with merged tags (runtime tags take precedence)
+      const mergedTags: Record<string, string> = {
+        ...(workflow.tags ?? {}),
+        ...(options?.runtimeTags ?? {}),
+      };
+      const run = WorkflowRun.create(workflow, mergedTags);
+
+      // Create secret redactor — populated during vault resolution, used by log sink and data writers
+      const secretRedactor = new SecretRedactor();
+
+      // Register run file sink target for the workflow log output
+      const workflowLogPath = join(
+        swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
+        workflow.id,
+        `workflow-run-${run.id}.log`,
+      );
+      const workflowLogCategory: string[] = [];
+      const workflowLogBoundary = swampPath(this.repoDir);
+      await runFileSink.register(
+        workflowLogCategory,
+        workflowLogPath,
+        secretRedactor,
+        workflowLogBoundary,
+      );
+      run.setLogFile(workflowLogPath);
+
+      // Enrich span with resolved workflow metadata
+      runSpan.setAttribute("workflow.id", workflow.id);
+      runSpan.setAttribute("workflow.run_id", run.id);
+
+      // Start execution
+      run.start();
+      yield {
+        kind: "started",
+        runId: run.id,
+        workflowName: workflow.name,
+        logPath: workflowLogPath,
+      };
+
       await this.saveRun(workflow.id, run);
+
+      const stepOpts: StepOptions = {
+        lastEvaluated: options?.lastEvaluated,
+        workflowNestingDepth: options?.workflowNestingDepth,
+        ancestorWorkflowIds: options?.ancestorWorkflowIds,
+        workflowTags: workflow.tags,
+        runtimeTags: options?.runtimeTags,
+        secretRedactor,
+        signal: options?.signal,
+        driver: options?.driver,
+        reportFilterOptions: options?.reportFilterOptions,
+      };
+
+      // Sort jobs topologically
+      const jobNodes: GraphNode[] = workflow.jobs.map((job) => ({
+        name: job.name,
+        weight: job.weight,
+        dependencies: job.getDependencyNames(),
+      }));
+
+      const sortedJobs = this.sortService.sort(jobNodes);
+
+      // Execute jobs level by level
+      for (const level of sortedJobs.levels) {
+        // Merge parallel job generators within each level
+        const jobStreams = level.map((jobName) =>
+          this.runJob(
+            workflow,
+            run,
+            jobName,
+            expressionContext,
+            stepOpts,
+          )
+        );
+        for await (const event of merge(jobStreams, options?.signal)) {
+          yield event;
+        }
+        await this.saveRun(workflow.id, run);
+      }
+
+      // Complete workflow
+      run.complete();
+      yield { kind: "completed", run };
+      await this.saveRun(workflow.id, run);
+
+      // Unregister workflow log file sink
+      runFileSink.unregister(workflowLogCategory);
+
+      runSpan.setStatus({ code: SpanStatusCode.OK });
+    } catch (error) {
+      runSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      runSpan.end();
     }
-
-    // Complete workflow
-    run.complete();
-    yield { kind: "completed", run };
-    await this.saveRun(workflow.id, run);
-
-    // Unregister workflow log file sink
-    runFileSink.unregister(workflowLogCategory);
   }
 
   /**
@@ -1035,123 +1058,145 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    const job = workflow.getJob(jobName);
-    if (!job) {
-      throw new Error(`Job not found: ${jobName}`);
-    }
+    const tracer = getTracer();
+    const jobSpan = tracer.startSpan("swamp.workflow.job", {
+      attributes: { "job.name": jobName },
+    });
 
-    const jobRun = run.getJob(jobName);
-    if (!jobRun) {
-      throw new Error(`Job run not found: ${jobName}`);
-    }
+    try {
+      const job = workflow.getJob(jobName);
+      if (!job) {
+        throw new Error(`Job not found: ${jobName}`);
+      }
 
-    // Check if job's trigger condition is met
-    const shouldRun = this.shouldJobRun(job, run);
-    if (!shouldRun) {
-      jobRun.skip();
-      yield { kind: "job_skipped", jobId: jobName };
-      return;
-    }
+      const jobRun = run.getJob(jobName);
+      if (!jobRun) {
+        throw new Error(`Job run not found: ${jobName}`);
+      }
 
-    // Start job
-    jobRun.start();
-    yield { kind: "job_started", jobId: jobName };
+      // Check if job's trigger condition is met
+      const shouldRun = this.shouldJobRun(job, run);
+      if (!shouldRun) {
+        jobRun.skip();
+        jobSpan.setAttribute("job.status", "skipped");
+        yield { kind: "job_skipped", jobId: jobName };
+        return;
+      }
 
-    // Expand forEach steps if we have expression context
-    let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
-    if (expressionContext && !options.lastEvaluated) {
-      expandedStepsMap = this.expandForEachSteps(job, expressionContext);
-    }
+      // Start job
+      jobRun.start();
+      yield { kind: "job_started", jobId: jobName };
 
-    // Build step graph nodes from explicit dependencies
-    const stepNodes: GraphNode[] = job.steps.map((step) => ({
-      name: step.name,
-      weight: step.weight,
-      dependencies: step.getDependencyNames(),
-    }));
+      // Expand forEach steps if we have expression context
+      let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
+      if (expressionContext && !options.lastEvaluated) {
+        expandedStepsMap = this.expandForEachSteps(job, expressionContext);
+      }
 
-    // If we have expanded steps, update the graph nodes
-    let effectiveNodes = stepNodes;
-    if (expandedStepsMap) {
-      effectiveNodes = [];
-      for (const node of stepNodes) {
-        const expanded = expandedStepsMap.get(node.name);
-        if (expanded && expanded.length > 0) {
-          // Create nodes for each expanded step
-          for (const exp of expanded) {
-            effectiveNodes.push({
-              name: exp.expandedName,
-              weight: node.weight,
-              // Map dependencies to all expanded step names
-              dependencies: node.dependencies.flatMap((dep) => {
-                const depExpanded = expandedStepsMap!.get(dep);
-                return depExpanded && depExpanded.length > 0
-                  ? depExpanded.map((d) => d.expandedName)
-                  : [dep];
-              }),
-            });
+      // Build step graph nodes from explicit dependencies
+      const stepNodes: GraphNode[] = job.steps.map((step) => ({
+        name: step.name,
+        weight: step.weight,
+        dependencies: step.getDependencyNames(),
+      }));
+
+      // If we have expanded steps, update the graph nodes
+      let effectiveNodes = stepNodes;
+      if (expandedStepsMap) {
+        effectiveNodes = [];
+        for (const node of stepNodes) {
+          const expanded = expandedStepsMap.get(node.name);
+          if (expanded && expanded.length > 0) {
+            // Create nodes for each expanded step
+            for (const exp of expanded) {
+              effectiveNodes.push({
+                name: exp.expandedName,
+                weight: node.weight,
+                // Map dependencies to all expanded step names
+                dependencies: node.dependencies.flatMap((dep) => {
+                  const depExpanded = expandedStepsMap!.get(dep);
+                  return depExpanded && depExpanded.length > 0
+                    ? depExpanded.map((d) => d.expandedName)
+                    : [dep];
+                }),
+              });
+            }
+          } else if (!expanded || expanded.length === 0) {
+            // Skip steps that expanded to empty (e.g., empty array)
+            continue;
+          } else {
+            effectiveNodes.push(node);
           }
-        } else if (!expanded || expanded.length === 0) {
-          // Skip steps that expanded to empty (e.g., empty array)
-          continue;
-        } else {
-          effectiveNodes.push(node);
         }
       }
-    }
 
-    const sortedSteps = this.sortService.sort(effectiveNodes);
+      const sortedSteps = this.sortService.sort(effectiveNodes);
 
-    // Execute steps level by level
-    let jobFailed = false;
-    for (const level of sortedSteps.levels) {
-      if (jobFailed) break;
+      // Execute steps level by level
+      let jobFailed = false;
+      for (const level of sortedSteps.levels) {
+        if (jobFailed) break;
 
-      // Merge parallel step generators within each level
-      const stepStreams = level.map((stepName) => {
-        // Find the expanded step info if applicable
-        let forEachVar: { name: string; value: unknown } | undefined;
-        let originalStep: Step | undefined;
+        // Merge parallel step generators within each level
+        const stepStreams = level.map((stepName) => {
+          // Find the expanded step info if applicable
+          let forEachVar: { name: string; value: unknown } | undefined;
+          let originalStep: Step | undefined;
 
-        if (expandedStepsMap) {
-          for (const [, expanded] of expandedStepsMap) {
-            const found = expanded.find((e) => e.expandedName === stepName);
-            if (found) {
-              forEachVar = found.forEachVar;
-              originalStep = found.step;
-              break;
+          if (expandedStepsMap) {
+            for (const [, expanded] of expandedStepsMap) {
+              const found = expanded.find((e) => e.expandedName === stepName);
+              if (found) {
+                forEachVar = found.forEachVar;
+                originalStep = found.step;
+                break;
+              }
             }
           }
-        }
 
-        return this.runStep(
-          workflow,
-          run,
-          job,
-          jobRun,
-          stepName,
-          originalStep,
-          forEachVar,
-          expressionContext,
-          options,
-        );
-      });
+          return this.runStep(
+            workflow,
+            run,
+            job,
+            jobRun,
+            stepName,
+            originalStep,
+            forEachVar,
+            expressionContext,
+            options,
+          );
+        });
 
-      for await (const event of merge(stepStreams, options.signal)) {
-        yield event;
-        if (event.kind === "step_failed" && !event.allowedFailure) {
-          jobFailed = true;
+        for await (const event of merge(stepStreams, options.signal)) {
+          yield event;
+          if (event.kind === "step_failed" && !event.allowedFailure) {
+            jobFailed = true;
+          }
         }
       }
-    }
 
-    // Complete job
-    if (jobFailed) {
-      jobRun.fail();
-    } else {
-      jobRun.succeed();
+      // Complete job
+      if (jobFailed) {
+        jobRun.fail();
+        jobSpan.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: "Job failed",
+        });
+      } else {
+        jobRun.succeed();
+        jobSpan.setStatus({ code: SpanStatusCode.OK });
+      }
+      jobSpan.setAttribute("job.status", jobRun.status);
+      yield { kind: "job_completed", jobId: jobName, status: jobRun.status };
+    } catch (error) {
+      jobSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      jobSpan.end();
     }
-    yield { kind: "job_completed", jobId: jobName, status: jobRun.status };
   }
 
   /**
@@ -1302,11 +1347,20 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
+    const stepSpan = getTracer().startSpan("swamp.workflow.step", {
+      attributes: {
+        "step.name": stepName,
+        "job.name": job.name,
+      },
+    });
+
     // For forEach-expanded steps, use the original step but create a dynamic step run
     const step = originalStep ?? job.getStep(stepName);
     if (!step) {
+      stepSpan.end();
       throw new Error(`Step not found: ${stepName}`);
     }
+    stepSpan.setAttribute("step.task.type", step.task.data.type);
 
     // For forEach-expanded steps, we need to dynamically create the step run
     let stepRun = jobRun.getStep(stepName);
@@ -1316,6 +1370,7 @@ export class WorkflowExecutionService {
       stepRun = jobRun.getStep(stepName);
     }
     if (!stepRun) {
+      stepSpan.end();
       throw new Error(`Step run not found: ${stepName}`);
     }
 
@@ -1325,6 +1380,8 @@ export class WorkflowExecutionService {
       const shouldRun = this.shouldStepRun(step, jobRun);
       if (!shouldRun) {
         stepRun.skip();
+        stepSpan.setAttribute("step.status", "skipped");
+        stepSpan.end();
         yield { kind: "step_skipped", jobId: job.name, stepId: stepName };
         return;
       }
@@ -1475,6 +1532,7 @@ export class WorkflowExecutionService {
       }
 
       stepRun.succeed(output);
+      stepSpan.setStatus({ code: SpanStatusCode.OK });
       yield {
         kind: "step_completed",
         jobId: job.name,
@@ -1490,6 +1548,10 @@ export class WorkflowExecutionService {
       if (isAllowed) {
         stepRun.markAllowedFailure();
       }
+      stepSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: errorMessage,
+      });
       yield {
         kind: "step_failed",
         jobId: job.name,
@@ -1499,6 +1561,8 @@ export class WorkflowExecutionService {
       };
       // Do not re-throw: merge() continues draining all step generators
       // (allSettled semantics). The job generator tracks failure via step_failed events.
+    } finally {
+      stepSpan.end();
     }
   }
 
@@ -1681,58 +1745,78 @@ export class WorkflowExecutionService {
     workflow: Workflow,
     context: ExpressionContext,
   ): Workflow {
-    const celEvaluator = new CelEvaluator();
-    const workflowData = workflow.toData();
-    const expressions = extractExpressions(workflowData);
+    const evalSpan = getTracer().startSpan("swamp.workflow.evaluate", {
+      attributes: { "workflow.name": workflow.name },
+    });
 
-    if (expressions.length === 0) {
-      return workflow;
-    }
+    try {
+      const celEvaluator = new CelEvaluator();
+      const workflowData = workflow.toData();
+      const expressions = extractExpressions(workflowData);
 
-    // Collect forEach.in expressions to skip during evaluation
-    const forEachInExpressions = new Set<string>();
-    for (const job of workflow.jobs) {
-      for (const step of job.steps) {
-        if (step.forEach) {
-          const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
-          if (match) {
-            forEachInExpressions.add(step.forEach.in);
+      if (expressions.length === 0) {
+        return workflow;
+      }
+
+      // Collect forEach.in expressions to skip during evaluation
+      const forEachInExpressions = new Set<string>();
+      for (const job of workflow.jobs) {
+        for (const step of job.steps) {
+          if (step.forEach) {
+            const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
+            if (match) {
+              forEachInExpressions.add(step.forEach.in);
+            }
           }
         }
       }
+
+      // Evaluate CEL-only expressions; skip runtime (vault, env), self.*, and forEach.in expressions
+      const evaluatedValues = new Map<string, unknown>();
+      for (const expr of expressions) {
+        if (containsRuntimeExpression(expr.celExpression)) {
+          continue;
+        }
+        // Skip self.* expressions — they reference forEach variables resolved at runtime
+        if (expr.celExpression.match(/\bself\./)) {
+          continue;
+        }
+        // Skip forEach.in expressions — they must remain as strings for forEach expansion
+        if (forEachInExpressions.has(expr.raw)) {
+          continue;
+        }
+        // Skip task.inputs expressions that depend on step outputs (resource, file, execution, data, file.contents).
+        // These are evaluated at step execution time when upstream step outputs are available.
+        if (
+          isTaskInputsPath(expr.path) &&
+          hasStepOutputDependency(expr.celExpression)
+        ) {
+          continue;
+        }
+
+        const value = celEvaluator.evaluate(expr.celExpression, context);
+        evaluatedValues.set(expr.raw, value);
+      }
+
+      // Replace only CEL-only expressions with evaluated values
+      const evaluatedData = replaceExpressions(workflowData, evaluatedValues);
+
+      // Create new Workflow from evaluated data
+      const result = Workflow.fromData(evaluatedData as WorkflowInput);
+      evalSpan.setAttribute(
+        "workflow.expressions_evaluated",
+        evaluatedValues.size,
+      );
+      evalSpan.setStatus({ code: SpanStatusCode.OK });
+      return result;
+    } catch (error) {
+      evalSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      evalSpan.end();
     }
-
-    // Evaluate CEL-only expressions; skip runtime (vault, env), self.*, and forEach.in expressions
-    const evaluatedValues = new Map<string, unknown>();
-    for (const expr of expressions) {
-      if (containsRuntimeExpression(expr.celExpression)) {
-        continue;
-      }
-      // Skip self.* expressions — they reference forEach variables resolved at runtime
-      if (expr.celExpression.match(/\bself\./)) {
-        continue;
-      }
-      // Skip forEach.in expressions — they must remain as strings for forEach expansion
-      if (forEachInExpressions.has(expr.raw)) {
-        continue;
-      }
-      // Skip task.inputs expressions that depend on step outputs (resource, file, execution, data, file.contents).
-      // These are evaluated at step execution time when upstream step outputs are available.
-      if (
-        isTaskInputsPath(expr.path) &&
-        hasStepOutputDependency(expr.celExpression)
-      ) {
-        continue;
-      }
-
-      const value = celEvaluator.evaluate(expr.celExpression, context);
-      evaluatedValues.set(expr.raw, value);
-    }
-
-    // Replace only CEL-only expressions with evaluated values
-    const evaluatedData = replaceExpressions(workflowData, evaluatedValues);
-
-    // Create new Workflow from evaluated data
-    return Workflow.fromData(evaluatedData as WorkflowInput);
   }
 }

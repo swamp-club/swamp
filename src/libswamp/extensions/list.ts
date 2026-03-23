@@ -26,6 +26,7 @@ import { readUpstreamExtensions } from "../../infrastructure/persistence/upstrea
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** A single extension entry for list output. */
 export interface ExtensionListEntry {
   name: string;
@@ -76,18 +77,24 @@ export async function* extensionList(
   _ctx: LibSwampContext,
   deps: ExtensionListDeps,
 ): AsyncIterable<ExtensionListEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.extension.list",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const upstreamData = await deps.readUpstreamExtensions();
+      const upstreamData = await deps.readUpstreamExtensions();
 
-  const entries: ExtensionListEntry[] = Object.entries(upstreamData)
-    .map(([name, entry]) => ({
-      name,
-      version: entry.version,
-      pulledAt: entry.pulledAt ?? "",
-      files: entry.files ?? [],
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+      const entries: ExtensionListEntry[] = Object.entries(upstreamData)
+        .map(([name, entry]) => ({
+          name,
+          version: entry.version,
+          pulledAt: entry.pulledAt ?? "",
+          files: entry.files ?? [],
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
 
-  yield { kind: "completed", data: { extensions: entries } };
+      yield { kind: "completed", data: { extensions: entries } };
+    })(),
+  );
 }
