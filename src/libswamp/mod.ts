@@ -59,6 +59,7 @@ export {
   type WorkflowRunDeps,
   type WorkflowRunEvent,
   type WorkflowRunInput,
+  type WorkflowRunJobInfo,
 } from "./workflows/run.ts";
 export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
 export {
