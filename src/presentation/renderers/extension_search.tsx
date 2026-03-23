@@ -53,12 +53,7 @@ class JsonExtensionSearchRenderer implements ExtensionSearchRenderer {
           query: e.data.query,
           extensions: e.data.results.map((ext) => {
             const { platforms, labels, contentTypes, ...rest } = ext;
-            return {
-              ...rest,
-              ...(platforms.length > 0 ? { platforms } : {}),
-              ...(labels.length > 0 ? { labels } : {}),
-              ...(contentTypes.length > 0 ? { contentTypes } : {}),
-            };
+            return { ...rest, platforms, labels, contentTypes };
           }),
           meta: e.data.meta,
         };
