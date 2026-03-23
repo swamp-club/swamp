@@ -345,6 +345,12 @@ export async function* modelMethodRun(
       }
     }
 
+    // Capture pre-vault args for report context (so vault secrets stay as expressions)
+    const reportGlobalArgs = evaluatedDefinition.globalArguments;
+    const reportMethodArgs = evaluatedDefinition.getMethodArguments(
+      input.methodName,
+    );
+
     // Resolve runtime expressions (vault and env).
     // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
     const runtimeResult = await evaluationService
@@ -530,8 +536,8 @@ export async function* modelMethodRun(
           version: evaluatedDefinition.version,
           tags: evaluatedDefinition.tags,
         },
-        globalArgs: evaluatedDefinition.globalArguments,
-        methodArgs: evaluatedDefinition.getMethodArguments(input.methodName),
+        globalArgs: reportGlobalArgs,
+        methodArgs: reportMethodArgs,
         methodName: input.methodName,
         executionStatus: "succeeded",
         dataHandles,
