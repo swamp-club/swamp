@@ -31,9 +31,19 @@ import {
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { InkWorkflowRunRenderer } from "./workflow_run_tree/mod.ts";
+
+function isStdoutTty(): boolean {
+  try {
+    return Deno.stdout.isTerminal();
+  } catch {
+    return false;
+  }
+}
 
 export interface WorkflowRunRenderOpts {
   workflowName: string;
+  forceLog?: boolean;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -248,6 +258,9 @@ export function createWorkflowRunRenderer(
     case "json":
       return new JsonWorkflowRunRenderer();
     case "log":
+      if (!opts.forceLog && isStdoutTty()) {
+        return new InkWorkflowRunRenderer(opts);
+      }
       return new LogWorkflowRunRenderer(opts);
   }
 }
