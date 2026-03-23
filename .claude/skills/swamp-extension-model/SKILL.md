@@ -69,11 +69,15 @@ than wrapping CLI commands.
 // extensions/models/my_model.ts
 import { z } from "npm:zod@4";
 
-const GlobalArgsSchema = z.object({ message: z.string() });
+const GlobalArgsSchema = z.object({
+  message: z.string(),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
 
 const OutputSchema = z.object({
+  id: z.uuid(),
   message: z.string(),
-  timestamp: z.string(),
+  timestamp: z.iso.datetime(),
 });
 
 export const model = {
@@ -94,6 +98,7 @@ export const model = {
       arguments: z.object({}),
       execute: async (args, context) => {
         const handle = await context.writeResource("result", "main", {
+          id: crypto.randomUUID(),
           message: context.globalArgs.message.toUpperCase(),
           timestamp: new Date().toISOString(),
         });
@@ -117,6 +122,26 @@ export const model = {
 | `methods`         | Yes      | Object of method definitions with `arguments` Zod |
 | `checks`          | No       | Pre-flight checks run before mutating methods     |
 | `reports`         | No       | Inline report definitions (see `swamp-report`)    |
+
+## Supported Zod Types
+
+All standard Zod types work in `globalArguments`, method `arguments`, and
+resource `schema` definitions:
+
+| Zod Type                            | JSON Schema Output                             | Use Case        |
+| ----------------------------------- | ---------------------------------------------- | --------------- |
+| `z.string()`                        | `{ type: "string" }`                           | Text fields     |
+| `z.number()`                        | `{ type: "number" }`                           | Numeric values  |
+| `z.boolean()`                       | `{ type: "boolean" }`                          | Flags           |
+| `z.uuid()`                          | `{ type: "string", format: "uuid" }`           | Resource IDs    |
+| `z.iso.datetime()`                  | `{ type: "string", format: "date-time" }`      | Timestamps      |
+| `z.enum(["a", "b"])`                | `{ type: "string", enum: [...] }`              | Fixed choices   |
+| `z.object({ ... })`                 | `{ type: "object", ... }`                      | Structured data |
+| `z.array(z.string())`               | `{ type: "array", items: ... }`                | Lists           |
+| `z.record(z.string(), z.unknown())` | `{ type: "object", additionalProperties: {} }` | Key-value maps  |
+
+All types support `.optional()`, `.default()`, `.describe()`, and
+`.meta({ sensitive: true })` modifiers.
 
 ## Resources & Files
 
