@@ -30,8 +30,24 @@ import { WorkflowRun } from "./workflow_run.ts";
  * libswamp layer catches thrown errors and wraps them as
  * `{ kind: "error", error: SwampError }` for the consumer.
  */
+/**
+ * Lightweight job metadata emitted with the `started` event so renderers
+ * can display the full tree skeleton before any jobs begin executing.
+ */
+export interface WorkflowJobInfo {
+  id: string;
+  stepCount: number;
+  dependsOn: string[];
+}
+
 export type WorkflowExecutionEvent =
-  | { kind: "started"; runId: string; workflowName: string; logPath: string }
+  | {
+    kind: "started";
+    runId: string;
+    workflowName: string;
+    logPath: string;
+    jobs: WorkflowJobInfo[];
+  }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
@@ -86,6 +102,8 @@ export type WorkflowExecutionEvent =
     kind: "report_started";
     reportName: string;
     scope: string;
+    jobId?: string;
+    stepId?: string;
   }
   | {
     kind: "report_completed";
@@ -93,11 +111,15 @@ export type WorkflowExecutionEvent =
     scope: string;
     markdown: string;
     json: Record<string, unknown>;
+    jobId?: string;
+    stepId?: string;
   }
   | {
     kind: "report_failed";
     reportName: string;
     scope: string;
     error: string;
+    jobId?: string;
+    stepId?: string;
   }
   | { kind: "completed"; run: WorkflowRun };
