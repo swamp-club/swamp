@@ -560,6 +560,7 @@ export async function runCli(args: string[]): Promise<void> {
     .globalType("model_type", new ModelTypeType())
     .globalType("workflow_name", new WorkflowNameType())
     .globalOption("--json", "Output in JSON format (non-interactive)")
+    .globalOption("--log", "Force flat log output (no interactive tree)")
     .globalOption(
       "--log-level <level:string>",
       "Set log level (trace, debug, info, warning, error, fatal)",
