@@ -194,6 +194,7 @@ Deno.test("workflowRun yields validating_inputs and evaluating_workflow prefix e
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "completed", run },
   ]);
@@ -234,6 +235,7 @@ Deno.test("workflowRun forwards job and step events", async () => {
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "job_started", jobId: "job1" },
     { kind: "step_started", jobId: "job1", stepId: "step1" },
@@ -255,6 +257,86 @@ Deno.test("workflowRun forwards job and step events", async () => {
   assertEquals(steps.includes("completed"), true);
 });
 
+Deno.test("workflowRun started event includes jobs array from domain event", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const deps = createTestDeps(workflow, [
+    {
+      kind: "started",
+      runId: run.id,
+      workflowName: "test-workflow",
+      logPath: "/tmp/log",
+      jobs: [
+        { id: "job1", stepCount: 2, dependsOn: [] },
+        { id: "job2", stepCount: 1, dependsOn: ["job1"] },
+      ],
+    },
+    { kind: "completed", run },
+  ]);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  const started = events.find((e) => e.kind === "started");
+  assertEquals(started?.kind, "started");
+  if (started?.kind === "started") {
+    assertEquals(started.jobs.length, 2);
+    assertEquals(started.jobs[0].id, "job1");
+    assertEquals(started.jobs[0].stepCount, 2);
+    assertEquals(started.jobs[0].dependsOn, []);
+    assertEquals(started.jobs[1].id, "job2");
+    assertEquals(started.jobs[1].dependsOn, ["job1"]);
+  }
+});
+
+Deno.test("workflowRun passes through report event jobId and stepId", async () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.complete();
+
+  const deps = createTestDeps(workflow, [
+    {
+      kind: "started",
+      runId: run.id,
+      workflowName: "test-workflow",
+      logPath: "/tmp/log",
+      jobs: [],
+    },
+    { kind: "job_started", jobId: "job1" },
+    { kind: "step_started", jobId: "job1", stepId: "step1" },
+    {
+      kind: "report_completed",
+      reportName: "@swamp/method-summary",
+      scope: "method",
+      markdown: "# Summary",
+      json: {},
+      jobId: "job1",
+      stepId: "step1",
+    },
+    { kind: "step_completed", jobId: "job1", stepId: "step1" },
+    { kind: "job_completed", jobId: "job1", status: "succeeded" },
+    { kind: "completed", run },
+  ]);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  const reportEvent = events.find((e) => e.kind === "report_completed");
+  assertEquals(reportEvent?.kind, "report_completed");
+  if (reportEvent?.kind === "report_completed") {
+    assertEquals(reportEvent.jobId, "job1");
+    assertEquals(reportEvent.stepId, "step1");
+  }
+});
+
 Deno.test("workflowRun completed event contains WorkflowRunData", async () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);
@@ -267,6 +349,7 @@ Deno.test("workflowRun completed event contains WorkflowRunData", async () => {
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "completed", run },
   ]);
@@ -389,6 +472,7 @@ Deno.test("workflowRun coerces string inputs to match schema types", async () =>
       runId: run.id,
       workflowName: "coerce-wf",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "completed", run },
   ], captured);
@@ -466,6 +550,7 @@ Deno.test("workflowRun applies default values from schema", async () => {
       runId: run.id,
       workflowName: "defaults-wf",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "completed", run },
   ], captured);
@@ -509,6 +594,7 @@ Deno.test("workflowRun with lastEvaluated skips validation but still coerces", a
       runId: run.id,
       workflowName: "last-eval-wf",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "completed", run },
   ], captured);
@@ -540,6 +626,7 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "job_started", jobId: "job1" },
     { kind: "step_started", jobId: "job1", stepId: "step1" },
@@ -602,6 +689,7 @@ Deno.test("workflowRun forwards method_event events", async () => {
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "job_started", jobId: "job1" },
     { kind: "step_started", jobId: "job1", stepId: "step1" },
@@ -664,6 +752,7 @@ Deno.test("workflowRun collects report_completed events from execution service",
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "job_started", jobId: "job1" },
     { kind: "step_started", jobId: "job1", stepId: "step1" },
@@ -732,6 +821,7 @@ Deno.test("workflowRun collects report_failed events from execution service", as
       runId: run.id,
       workflowName: "test-workflow",
       logPath: "/tmp/log",
+      jobs: [],
     },
     { kind: "job_started", jobId: "job1" },
     { kind: "step_started", jobId: "job1", stepId: "step1" },
