@@ -350,6 +350,18 @@ export {
   type WorkflowValidateInput,
 } from "./workflows/validate.ts";
 
+// Workflow evaluate operations
+export {
+  createWorkflowEvaluateDeps,
+  isWorkflowEvaluateAllData,
+  workflowEvaluate,
+  type WorkflowEvaluateAllData,
+  type WorkflowEvaluateDeps,
+  type WorkflowEvaluateEvent,
+  type WorkflowEvaluateInput,
+  type WorkflowEvaluateItemData,
+} from "./workflows/evaluate.ts";
+
 // Workflow history logs operations
 export {
   createWorkflowHistoryLogsDeps,
@@ -372,6 +384,18 @@ export {
   type ValidationItemData as ModelValidationItemData,
   type ValidationWarningData as ModelValidationWarningData,
 } from "./models/validate.ts";
+
+// Model evaluate operations
+export {
+  createModelEvaluateDeps,
+  isModelEvaluateAllData,
+  modelEvaluate,
+  type ModelEvaluateAllData,
+  type ModelEvaluateDeps,
+  type ModelEvaluateEvent,
+  type ModelEvaluateInput,
+  type ModelEvaluateItemData,
+} from "./models/evaluate.ts";
 
 // Model method history logs operations
 export {
