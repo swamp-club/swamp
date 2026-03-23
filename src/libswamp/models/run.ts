@@ -26,6 +26,7 @@ import {
   type ReportExecutionResult,
 } from "../../domain/reports/report_execution_service.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { BUILTIN_METHOD_REPORTS } from "../../domain/reports/builtin/mod.ts";
 import type {
   MethodReportContext,
   ModelReportContext,
@@ -56,7 +57,6 @@ import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detec
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
-import { buildReportDataHandles } from "../../domain/reports/report_data_handles.ts";
 
 /**
  * Events emitted by the libswamp model method run generator.
@@ -513,11 +513,7 @@ export async function* modelMethodRun(
     let reportFailures = 0;
 
     if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
-      const dataHandles = await buildReportDataHandles(
-        deps.dataRepo,
-        modelType,
-        evaluatedDefinition.id,
-      );
+      const dataHandles = execResult.dataHandles ?? [];
 
       // Run method-scope reports
       const methodContext: MethodReportContext = {
@@ -560,7 +556,7 @@ export async function* modelMethodRun(
           onReportFailed: () => {},
         },
         input.methodName,
-        modelDef.reports,
+        [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
       );
 
       // Yield report events and collect results
@@ -616,7 +612,7 @@ export async function* modelMethodRun(
           onReportFailed: () => {},
         },
         input.methodName,
-        modelDef.reports,
+        [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
       );
 
       for (const result of modelSummary.results) {

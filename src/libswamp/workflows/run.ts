@@ -51,6 +51,7 @@ import {
   executeReports,
 } from "../../domain/reports/report_execution_service.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { BUILTIN_WORKFLOW_REPORTS } from "../../domain/reports/builtin/mod.ts";
 import type {
   WorkflowReportContext,
 } from "../../domain/reports/report_context.ts";
@@ -61,7 +62,7 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
-import { buildReportDataHandles } from "../../domain/reports/report_data_handles.ts";
+import type { DataHandle } from "../../domain/models/model.ts";
 
 /**
  * Events emitted by the libswamp workflow run generator.
@@ -391,6 +392,8 @@ export async function* workflowRun(
   const stepStatuses = new Map<string, "succeeded" | "failed" | "skipped">();
   // Track step job names
   const stepJobNames = new Map<string, string>();
+  // Track per-step data handles from step_completed events
+  const dataHandlesByStep = new Map<string, DataHandle[]>();
 
   try {
     let completedEvent: WorkflowRunEvent | undefined;
@@ -426,6 +429,12 @@ export async function* workflowRun(
       }
       if (event.kind === "step_completed") {
         stepStatuses.set(`${event.jobId}:${event.stepId}`, "succeeded");
+        if (event.dataHandles) {
+          dataHandlesByStep.set(
+            `${event.jobId}:${event.stepId}`,
+            event.dataHandles,
+          );
+        }
       }
       if (event.kind === "step_failed") {
         stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
@@ -476,6 +485,7 @@ export async function* workflowRun(
         stepStatuses,
         stepJobNames,
         reportResults,
+        dataHandlesByStep,
       );
       if (reportResults.length > 0) {
         completedEvent = {
@@ -518,6 +528,7 @@ async function* executePostRunReports(
   stepStatuses: Map<string, "succeeded" | "failed" | "skipped">,
   stepJobNames: Map<string, string>,
   reportResults: ReportResultView[],
+  dataHandlesByStep: Map<string, DataHandle[]>,
 ): AsyncGenerator<WorkflowRunEvent> {
   // Reports require dataRepo and definitionRepo; skip if not provided
   if (!deps.dataRepo || !deps.definitionRepo) {
@@ -579,14 +590,10 @@ async function* executePostRunReports(
       continue;
     }
 
-    const { definition, type: modelType } = lookupResult;
+    const { definition } = lookupResult;
 
-    // Build data handles from persisted data repository
-    const stepDataHandles = await buildReportDataHandles(
-      deps.dataRepo,
-      modelType,
-      definition.id,
-    );
+    // Use data handles tracked from step_completed events (current-run only)
+    const stepDataHandles = dataHandlesByStep.get(key) ?? [];
 
     stepExecutions.push({
       jobName,
@@ -624,6 +631,8 @@ async function* executePostRunReports(
     workflow.reportSelection,
     filterOptions,
     noopEvents,
+    undefined, // methodName
+    BUILTIN_WORKFLOW_REPORTS,
   );
 
   for (const result of wfSummary.results) {

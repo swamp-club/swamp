@@ -34,6 +34,22 @@ Deno.test("renderMarkdownToTerminal - renders bold text", () => {
   assertStringIncludes(result, "bold");
 });
 
+Deno.test("renderMarkdownToTerminal - renders JSON code blocks without undefined", () => {
+  const md = '```json\n{"region": "us-east-1"}\n```';
+  const result = renderMarkdownToTerminal(md);
+  assertStringIncludes(result, "region");
+  assertStringIncludes(result, "us-east-1");
+  const lines = result.split("\n");
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    if (line.trim() === "undefined") {
+      throw new Error(
+        "Rendered markdown contains 'undefined' — likely a LogTape placeholder issue",
+      );
+    }
+  }
+});
+
 Deno.test("renderMarkdownPlain - returns markdown unchanged", () => {
   const md = "# Hello\n\nSome **bold** text";
   const result = renderMarkdownPlain(md);
