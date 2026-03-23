@@ -77,7 +77,12 @@ function fullEventStream(
   return [
     { kind: "validating_inputs" },
     { kind: "evaluating_workflow" },
-    { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
     { kind: "job_started", jobId: "job-1" },
     { kind: "step_started", jobId: "job-1", stepId: "step-1" },
     {
@@ -133,7 +138,12 @@ Deno.test("LogWorkflowRunRenderer - failed workflow sets workflowFailed() to tru
   });
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
-    { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
     { kind: "job_started", jobId: "job-1" },
     {
       kind: "step_failed",
@@ -164,7 +174,12 @@ Deno.test("LogWorkflowRunRenderer - handles skipped events", async () => {
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
     { kind: "evaluating_workflow" },
-    { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
     { kind: "job_started", jobId: "job-1" },
     { kind: "step_skipped", jobId: "job-1", stepId: "step-1" },
     { kind: "job_skipped", jobId: "job-1" },
@@ -202,7 +217,12 @@ Deno.test("JsonWorkflowRunRenderer - intermediate events produce no output", () 
     const events: WorkflowRunEvent[] = [
       { kind: "validating_inputs" },
       { kind: "evaluating_workflow" },
-      { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+      {
+        kind: "started",
+        runId: "run-1",
+        workflowName: "test-workflow",
+        jobs: [],
+      },
       { kind: "job_started", jobId: "job-1" },
       { kind: "step_started", jobId: "job-1", stepId: "step-1" },
       { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
@@ -319,7 +339,12 @@ Deno.test("LogWorkflowRunRenderer - handles model_resolved event without error",
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
     { kind: "evaluating_workflow" },
-    { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
     { kind: "job_started", jobId: "job-1" },
     { kind: "step_started", jobId: "job-1", stepId: "step-1" },
     {
@@ -345,7 +370,12 @@ Deno.test("LogWorkflowRunRenderer - handles method_executing event without error
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
     { kind: "evaluating_workflow" },
-    { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
     { kind: "job_started", jobId: "job-1" },
     { kind: "step_started", jobId: "job-1", stepId: "step-1" },
     {
@@ -370,7 +400,12 @@ Deno.test("LogWorkflowRunRenderer - handles method_output events without error",
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
     { kind: "evaluating_workflow" },
-    { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
     { kind: "job_started", jobId: "job-1" },
     { kind: "step_started", jobId: "job-1", stepId: "step-1" },
     {
@@ -452,7 +487,12 @@ Deno.test("LogWorkflowRunRenderer - handles method_event vault_secret_stored wit
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
     { kind: "evaluating_workflow" },
-    { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
     { kind: "job_started", jobId: "job-1" },
     { kind: "step_started", jobId: "job-1", stepId: "step-1" },
     {
@@ -483,7 +523,12 @@ Deno.test("LogWorkflowRunRenderer - handles method_event schema_validation_warni
   const events: WorkflowRunEvent[] = [
     { kind: "validating_inputs" },
     { kind: "evaluating_workflow" },
-    { kind: "started", runId: "run-1", workflowName: "test-workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
     { kind: "job_started", jobId: "job-1" },
     { kind: "step_started", jobId: "job-1", stepId: "step-1" },
     {

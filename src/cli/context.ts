@@ -26,6 +26,7 @@ export type Verbosity = "quiet" | "normal" | "verbose";
 
 export interface GlobalOptions {
   json?: boolean;
+  log?: boolean;
   logLevel?: string;
   quiet?: boolean;
   verbose?: boolean;
@@ -36,6 +37,7 @@ export interface GlobalOptions {
 
 export interface CommandContext {
   outputMode: OutputMode;
+  forceLog: boolean;
   verbosity: Verbosity;
   logger: Logger;
 }
@@ -66,6 +68,7 @@ export function createContext(
 
   return {
     outputMode,
+    forceLog: options.log ?? false,
     verbosity: getVerbosity(options),
     logger: getSwampLogger(loggerCategory),
   };

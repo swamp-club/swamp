@@ -67,10 +67,25 @@ import type { DataHandle } from "../../domain/models/model.ts";
 /**
  * Events emitted by the libswamp workflow run generator.
  */
+/**
+ * Lightweight job metadata included in the `started` event so renderers
+ * can display the full tree skeleton before any jobs begin executing.
+ */
+export interface WorkflowRunJobInfo {
+  id: string;
+  stepCount: number;
+  dependsOn: string[];
+}
+
 export type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
-  | { kind: "started"; runId: string; workflowName: string }
+  | {
+    kind: "started";
+    runId: string;
+    workflowName: string;
+    jobs: WorkflowRunJobInfo[];
+  }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
@@ -120,6 +135,8 @@ export type WorkflowRunEvent =
     kind: "report_started";
     reportName: string;
     scope: string;
+    jobId?: string;
+    stepId?: string;
   }
   | {
     kind: "report_completed";
@@ -127,12 +144,16 @@ export type WorkflowRunEvent =
     scope: string;
     markdown: string;
     json: Record<string, unknown>;
+    jobId?: string;
+    stepId?: string;
   }
   | {
     kind: "report_failed";
     reportName: string;
     scope: string;
     error: string;
+    jobId?: string;
+    stepId?: string;
   }
   | { kind: "completed"; run: WorkflowRunView }
   | { kind: "error"; error: SwampError };
@@ -291,6 +312,11 @@ function mapEvent(
         kind: "started",
         runId: event.runId,
         workflowName: event.workflowName,
+        jobs: event.jobs.map((j) => ({
+          id: j.id,
+          stepCount: j.stepCount,
+          dependsOn: j.dependsOn,
+        })),
       };
     case "completed": {
       const path = deps.runRepo.getPath(
