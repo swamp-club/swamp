@@ -32,17 +32,10 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
-import { z } from "zod";
+import { zodToJsonSchema } from "../../libswamp/mod.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Converts a Zod schema to JSON Schema format.
- */
-function zodToJsonSchema(schema: z.ZodTypeAny): object {
-  return z.toJSONSchema(schema);
-}
 
 /**
  * Gets all registered types as TypeSearchItem array.
