@@ -201,7 +201,10 @@ export const extensionSearchCommand = new Command()
       const reportsDir = resolveReportsDir(marker);
 
       const pullCtx: PullContext = {
-        extensionClient: client,
+        getExtension: (name) => client.getExtension(name),
+        downloadArchive: (name, version) =>
+          client.downloadArchive(name, version),
+        getChecksum: (name, version) => client.getChecksum(name, version),
         logger: ctx.logger,
         modelsDir,
         workflowsDir,

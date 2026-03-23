@@ -19,13 +19,15 @@
 
 import { getLogger } from "@logtape/logtape";
 import { isAbsolute, resolve } from "@std/path";
-import type { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import type {
   AutoResolveOutputPort,
   ExtensionInstallerPort,
 } from "../domain/extensions/extension_auto_resolver.ts";
-import { installExtension } from "./commands/extension_pull.ts";
+import {
+  type ExtensionRegistryInfo,
+  installExtension,
+} from "../libswamp/mod.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
@@ -40,7 +42,9 @@ import {
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
 interface InstallerAdapterConfig {
-  extensionClient: ExtensionApiClient;
+  getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
+  downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
+  getChecksum: (name: string, version: string) => Promise<string | null>;
   modelsDir: string;
   workflowsDir: string;
   vaultsDir: string;
@@ -59,7 +63,9 @@ export function createAutoResolveInstallerAdapter(
   config: InstallerAdapterConfig,
 ): ExtensionInstallerPort {
   const {
-    extensionClient,
+    getExtension,
+    downloadArchive,
+    getChecksum,
     modelsDir,
     workflowsDir,
     vaultsDir,
@@ -75,7 +81,9 @@ export function createAutoResolveInstallerAdapter(
       const result = await installExtension(
         { name: extensionName, version: null },
         {
-          extensionClient,
+          getExtension,
+          downloadArchive,
+          getChecksum,
           logger,
           modelsDir,
           workflowsDir,

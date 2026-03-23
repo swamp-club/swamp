@@ -480,6 +480,37 @@ export {
   type ResolvedReportEntry,
   type ResolvedVaultEntry,
 } from "./extensions/push.ts";
+export {
+  ConflictError,
+  createExtensionPullDeps,
+  createInstallContext,
+  detectConflicts,
+  extensionPull,
+  type ExtensionPullDeps,
+  type ExtensionPullEvent,
+  type ExtensionPullInput,
+  type ExtensionRef,
+  type ExtensionRegistryInfo,
+  type ExtensionSafetyWarning,
+  type InstallContext,
+  installExtension,
+  type InstallResult,
+  parseExtensionRef,
+  resolveServerUrl,
+  updateUpstreamExtensions,
+  validateExtensionName,
+} from "./extensions/pull.ts";
+export {
+  createExtensionRmDeps,
+  extensionRm,
+  type ExtensionRmData,
+  type ExtensionRmDeps,
+  type ExtensionRmEvent,
+  type ExtensionRmInput,
+  type ExtensionRmPreview,
+  extensionRmPreview,
+  removeUpstreamExtension,
+} from "./extensions/rm.ts";
 
 // Model edit operations
 export {

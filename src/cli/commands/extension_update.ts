@@ -31,9 +31,8 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import {
-  type InstallContext,
+  createInstallContext,
   installExtension,
   parseExtensionRef,
 } from "./extension_pull.ts";
@@ -97,15 +96,13 @@ export const extensionUpdateCommand = new Command()
 
     // 4. Wire deps — inject installExtension from CLI layer
     const serverUrl = resolveServerUrl();
-    const extensionClient = new ExtensionApiClient(serverUrl);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createExtensionUpdateDeps({
       absoluteModelsDir,
       serverUrl,
       installExtension: async (name: string, version: string) => {
-        const installCtx: InstallContext = {
-          extensionClient,
+        const installCtx = createInstallContext(serverUrl, {
           logger: cliCtx.logger,
           modelsDir,
           workflowsDir,
@@ -115,9 +112,7 @@ export const extensionUpdateCommand = new Command()
           reportsDir,
           repoDir,
           force: true,
-          alreadyPulled: new Set(),
-          depth: 0,
-        };
+        });
         await installExtension({ name, version }, installCtx);
       },
     });

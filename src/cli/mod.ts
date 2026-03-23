@@ -530,7 +530,11 @@ export async function runCli(args: string[]): Promise<void> {
         allowedCollectives: trustedCollectives,
         extensionLookup: extensionClient,
         extensionInstaller: createAutoResolveInstallerAdapter({
-          extensionClient,
+          getExtension: (name) => extensionClient.getExtension(name),
+          downloadArchive: (name, version) =>
+            extensionClient.downloadArchive(name, version),
+          getChecksum: (name, version) =>
+            extensionClient.getChecksum(name, version),
           modelsDir,
           workflowsDir,
           vaultsDir,
