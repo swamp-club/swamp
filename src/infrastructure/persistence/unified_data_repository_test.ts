@@ -155,6 +155,56 @@ Deno.test("concurrent save returns unique versions with distinct content", async
   }
 });
 
+Deno.test("save rejects reserved data name 'latest'", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const data = makeData("latest");
+    const content = new TextEncoder().encode("test");
+
+    await assertRejects(
+      () => repo.save(testType, "model-1", data, content),
+      Error,
+      "reserved for internal use",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("save rejects reserved data name case-insensitively", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const data = makeData("LATEST");
+    const content = new TextEncoder().encode("test");
+
+    await assertRejects(
+      () => repo.save(testType, "model-1", data, content),
+      Error,
+      "reserved for internal use",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("allocateVersion rejects reserved data name 'latest'", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const data = makeData("latest");
+
+    await assertRejects(
+      () => repo.allocateVersion(testType, "model-1", data),
+      Error,
+      "reserved for internal use",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 // ============================================================================
 // Sync read methods
 // ============================================================================

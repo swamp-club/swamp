@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { Data } from "./data.ts";
+import { Data, isReservedDataName } from "./data.ts";
 import type { OwnerDefinition } from "./data_metadata.ts";
 
 function createTestOwner(): OwnerDefinition {
@@ -946,4 +946,19 @@ Deno.test("Data toData omits renamedTo when not set", () => {
 
   const serialized = data.toData();
   assertEquals(serialized.renamedTo, undefined);
+});
+
+Deno.test("isReservedDataName: returns true for 'latest'", () => {
+  assertEquals(isReservedDataName("latest"), true);
+});
+
+Deno.test("isReservedDataName: returns true case-insensitively", () => {
+  assertEquals(isReservedDataName("LATEST"), true);
+  assertEquals(isReservedDataName("Latest"), true);
+});
+
+Deno.test("isReservedDataName: returns false for non-reserved names", () => {
+  assertEquals(isReservedDataName("vms"), false);
+  assertEquals(isReservedDataName("my-data"), false);
+  assertEquals(isReservedDataName("latest-version"), false);
 });

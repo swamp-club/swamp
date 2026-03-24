@@ -28,6 +28,7 @@ import {
   type DataId,
   type DataMetadata,
   generateDataId,
+  isReservedDataName,
   type OwnerDefinition,
 } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -668,6 +669,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     content: Uint8Array,
   ): Promise<{ version: number }> {
+    // Reject reserved data names that collide with internal markers
+    if (isReservedDataName(data.name)) {
+      throw new Error(
+        `Data name '${data.name}' is reserved for internal use. Use a different name.`,
+      );
+    }
+
     // Check if data with this name already exists
     const existing = await this.findByName(type, modelId, data.name);
     if (existing) {
@@ -1060,6 +1068,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     data: Data,
   ): Promise<{ version: number; contentPath: string }> {
+    // Reject reserved data names that collide with internal markers
+    if (isReservedDataName(data.name)) {
+      throw new Error(
+        `Data name '${data.name}' is reserved for internal use. Use a different name.`,
+      );
+    }
+
     // Validate ownership if data with this name already exists
     const existing = await this.findByName(type, modelId, data.name);
     if (existing) {

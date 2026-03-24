@@ -34,7 +34,12 @@ export {
   OwnerTypes,
 } from "./data_metadata.ts";
 
-export { type CreateDataProps, Data } from "./data.ts";
+export {
+  type CreateDataProps,
+  Data,
+  isReservedDataName,
+  RESERVED_DATA_NAMES,
+} from "./data.ts";
 
 export { type UnifiedDataRepository } from "./repositories.ts";
 
