@@ -477,8 +477,6 @@ export async function* modelMethodRun(
               handle.name,
               handle.version,
             );
-<<<<<<< conflict 2 of 2
-+++++++ qxoxwssm e40ca050 "fix: address OTel tracing PR review feedback (#842)" (rebase destination)
 
             output.addDataArtifact({
               dataId: handle.dataId,
