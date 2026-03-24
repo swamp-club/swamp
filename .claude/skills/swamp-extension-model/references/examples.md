@@ -15,6 +15,7 @@
 - [AWS Model with Pre-flight Credential Check](#aws-model-with-pre-flight-credential-check)
 - [Using External Dependencies](#using-external-dependencies)
 - [Extending Existing Model Types](#extending-existing-model-types)
+- [Helper Scripts](#helper-scripts)
 
 ## Using External Dependencies
 
@@ -1491,3 +1492,72 @@ extensions/models/
     health_check.ts       # export const model (new type)
   shell_audit.ts          # export const extension (extends command/shell)
 ```
+
+## Helper Scripts
+
+When a model needs to shell out to a helper script that has dependencies swamp
+can't bundle (e.g., native modules), use the `include` manifest field. Include
+files are shipped alongside models but never bundled.
+
+### Manifest
+
+```yaml
+manifestVersion: 1
+name: "@myorg/homekit"
+version: "2026.03.24.1"
+models:
+  - homekit.ts
+include:
+  - homekit_discover.ts
+```
+
+### Model (shells out to helper)
+
+```typescript
+// extensions/models/homekit.ts
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@myorg/homekit",
+  version: "2026.03.24.1",
+  globalArguments: z.object({}),
+  methods: {
+    discover: {
+      description: "Discover HomeKit devices via mDNS",
+      arguments: z.object({}),
+      outputSpec: [{
+        name: "devices",
+        type: "resource",
+        description: "Discovered devices",
+      }],
+      execute: async (_args: unknown, context: { repoDir: string }) => {
+        const scriptPath =
+          `${context.repoDir}/extensions/models/homekit_discover.ts`;
+        const cmd = new Deno.Command("deno", {
+          args: ["run", "--allow-net", scriptPath],
+          stdout: "piped",
+        });
+        const output = await cmd.output();
+        return { devices: new TextDecoder().decode(output.stdout) };
+      },
+    },
+  },
+};
+```
+
+### Helper (not a model, not bundled)
+
+```typescript
+// extensions/models/homekit_discover.ts
+// This file does NOT export const model — swamp won't try to bundle it.
+import { HAPController } from "npm:hap-controller@1.0.0";
+
+const browser = new HAPController();
+const devices = await browser.discover();
+console.log(JSON.stringify(devices));
+```
+
+The loader skips files that don't declare `export const model` or
+`export const extension`, so the helper is never bundled — even without the
+`include` manifest field. The `include` field is needed to ship the helper in
+the extension archive when publishing.
