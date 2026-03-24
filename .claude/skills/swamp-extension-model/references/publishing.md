@@ -143,15 +143,20 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    the extension uses bare specifiers, it is used for bundling. `deno.json` is
    also used for quality checks; `package.json` projects use default lint/fmt
    rules.
-5. **Safety analysis** — scans all files for disallowed patterns and limits
-6. **Quality checks** — runs `deno fmt --check` and `deno lint` (using the
-   project's `deno.json` config if present, otherwise default rules)
-7. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
-   datastores) to standalone JS. If a `deno.json` is present, the import map
-   governs dependency resolution.
-8. **Version check** — verifies version doesn't already exist (offers to bump)
-9. **Build archive** — creates tar.gz with all content types and their bundles
-10. **Upload** — three-phase push: initiate, upload archive, confirm
+5. **Resolve include files** — collects files from the manifest's `include`
+   field (if present). These are copied to the archive alongside model sources
+   but not bundled or quality-checked.
+6. **Safety analysis** — scans all files (including `include` files) for
+   disallowed patterns and limits
+7. **Quality checks** — runs `deno fmt --check` and `deno lint` on model, vault,
+   driver, datastore, and report files (using the project's `deno.json` config
+   if present, otherwise default rules). Include files are excluded.
+8. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
+   datastores) to standalone JS. Include files are not bundled. If a `deno.json`
+   is present, the import map governs dependency resolution.
+9. **Version check** — verifies version doesn't already exist (offers to bump)
+10. **Build archive** — creates tar.gz with all content types and their bundles
+11. **Upload** — three-phase push: initiate, upload archive, confirm
 
 ## Extension Formatting
 

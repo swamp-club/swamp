@@ -468,10 +468,13 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    (`npm:lodash-es@4.17.21`), via a `deno.json` import map, or in `package.json`
    dependencies. See
    [references/examples.md](references/examples.md#import-styles) for details.
-5. **Type naming**: Use `@<collective>/<name>` or `<collective>/<name>` format
+5. **Helper scripts**: Use `include` in the manifest for TypeScript files that
+   are executed via `Deno.Command` subprocess and shouldn't be bundled. See
+   [references/examples.md](references/examples.md#helper-scripts) for details.
+6. **Type naming**: Use `@<collective>/<name>` or `<collective>/<name>` format
    (e.g., `@user/my-model` or `myorg/my-model`)
-6. **No type annotations**: Avoid TypeScript types in execute parameters
-7. **File naming**: Use snake_case (`my_model.ts`)
+7. **No type annotations**: Avoid TypeScript types in execute parameters
+8. **File naming**: Use snake_case (`my_model.ts`)
 
 ## Collective Rules
 
