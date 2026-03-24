@@ -605,6 +605,8 @@ export class DefaultStepExecutor implements StepExecutor {
               kind: "report_started",
               reportName: name,
               scope,
+              jobId: ctx.jobName,
+              stepId: ctx.stepName,
             });
           },
           onReportCompleted: (
@@ -620,6 +622,8 @@ export class DefaultStepExecutor implements StepExecutor {
               scope,
               markdown,
               json,
+              jobId: ctx.jobName,
+              stepId: ctx.stepName,
             });
             // Track report data artifacts alongside method artifacts
             for (const handle of reportDataHandles) {
@@ -643,6 +647,8 @@ export class DefaultStepExecutor implements StepExecutor {
               reportName: name,
               scope,
               error,
+              jobId: ctx.jobName,
+              stepId: ctx.stepName,
             });
           },
         };
@@ -964,6 +970,11 @@ export class WorkflowExecutionService {
         runId: run.id,
         workflowName: workflow.name,
         logPath: workflowLogPath,
+        jobs: workflow.jobs.map((job) => ({
+          id: job.name,
+          stepCount: job.steps.length,
+          dependsOn: job.getDependencyNames(),
+        })),
       };
 
       await this.saveRun(workflow.id, run);
