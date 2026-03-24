@@ -22,6 +22,7 @@ import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { startClawServer } from "../../claw/server.ts";
 import { createDiscordAdapter } from "../../claw/adapters/discord.ts";
+import { createWhatsAppAdapter } from "../../claw/adapters/whatsapp.ts";
 import { createAuthDeps } from "../../libswamp/mod.ts";
 import type { PlatformAdapter } from "../../claw/platform_adapter.ts";
 
@@ -36,6 +37,18 @@ export const clawServeCommand = new Command()
   )
   .option("--discord-bot-token <token:string>", "Discord bot token")
   .option("--discord-app-id <id:string>", "Discord application ID")
+  .option(
+    "--twilio-account-sid <sid:string>",
+    "Twilio Account SID for WhatsApp",
+  )
+  .option(
+    "--twilio-auth-token <token:string>",
+    "Twilio Auth Token for WhatsApp",
+  )
+  .option(
+    "--twilio-from-number <number:string>",
+    "Twilio WhatsApp sender number (e.g. whatsapp:+14155238886)",
+  )
   .action(async function (options) {
     const repoDir = (options.repoDir as string) ?? ".";
 
@@ -65,12 +78,34 @@ export const clawServeCommand = new Command()
       );
     }
 
+    const twilioAccountSid = options.twilioAccountSid as string | undefined ??
+      Deno.env.get("TWILIO_ACCOUNT_SID");
+    const twilioAuthToken = options.twilioAuthToken as string | undefined ??
+      Deno.env.get("TWILIO_AUTH_TOKEN");
+    const twilioFromNumber = options.twilioFromNumber as string | undefined ??
+      Deno.env.get("TWILIO_FROM_NUMBER");
+
+    if (twilioAccountSid && twilioAuthToken && twilioFromNumber) {
+      adapters.push(
+        createWhatsAppAdapter({
+          accountSid: twilioAccountSid,
+          authToken: twilioAuthToken,
+          fromNumber: twilioFromNumber,
+        }),
+      );
+    }
+
     if (adapters.length === 0) {
       throw new UserError(
-        "No platform adapters configured. Provide Discord credentials via flags or environment variables:\n" +
-          "  --discord-public-key / DISCORD_PUBLIC_KEY\n" +
-          "  --discord-bot-token  / DISCORD_BOT_TOKEN\n" +
-          "  --discord-app-id     / DISCORD_APP_ID",
+        "No platform adapters configured. Provide credentials via flags or environment variables:\n" +
+          "\n  Discord:\n" +
+          "    --discord-public-key / DISCORD_PUBLIC_KEY\n" +
+          "    --discord-bot-token  / DISCORD_BOT_TOKEN\n" +
+          "    --discord-app-id     / DISCORD_APP_ID\n" +
+          "\n  WhatsApp (Twilio):\n" +
+          "    --twilio-account-sid  / TWILIO_ACCOUNT_SID\n" +
+          "    --twilio-auth-token   / TWILIO_AUTH_TOKEN\n" +
+          "    --twilio-from-number  / TWILIO_FROM_NUMBER",
       );
     }
 

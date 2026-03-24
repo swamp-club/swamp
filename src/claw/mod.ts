@@ -29,3 +29,4 @@ export { parseCommand } from "./command_parser.ts";
 export { type CommandRouterDeps, routeCommand } from "./command_router.ts";
 export { type ClawServerConfig, startClawServer } from "./server.ts";
 export { createDiscordAdapter } from "./adapters/discord.ts";
+export { createWhatsAppAdapter } from "./adapters/whatsapp.ts";
