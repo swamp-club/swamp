@@ -383,7 +383,7 @@ export function resolveTelemetryEndpoint(
   return DEFAULT_TELEMETRY_ENDPOINT;
 }
 
-import { resolveTrustedCollectives } from "../libswamp/extensions/trust.ts";
+import { resolveTrustedCollectives } from "../libswamp/mod.ts";
 
 interface TelemetryContext {
   service: TelemetryService;
