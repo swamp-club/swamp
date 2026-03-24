@@ -143,6 +143,7 @@ export interface ExtensionPushPrepareInput {
   allReportFiles: string[];
   reportEntryPoints: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
+  includeFilePaths: string[];
   additionalFilePaths: string[];
   dryRun: boolean;
   releaseNotes?: string;
@@ -462,7 +463,9 @@ export async function extensionPushPrepare(
   const resolvedData = buildResolvedData(input, contentMetadata);
 
   // 6. Safety analysis
-  const allFiles = [
+  // Include files are safety-checked but excluded from quality checks
+  // (they may have their own tooling and conventions).
+  const qualityFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
     ...input.allDriverFiles,
@@ -470,6 +473,10 @@ export async function extensionPushPrepare(
     ...input.allReportFiles,
     ...input.workflowFiles.map((wf) => wf.sourcePath),
     ...input.additionalFilePaths,
+  ];
+  const allFiles = [
+    ...qualityFiles,
+    ...input.includeFilePaths,
   ];
   const safetyResult = await deps.analyzeExtensionSafety(allFiles);
 
@@ -485,7 +492,7 @@ export async function extensionPushPrepare(
 
   // 8. Quality checks
   const qualityResult = await deps.checkExtensionQuality(
-    allFiles,
+    qualityFiles,
     denoPath,
     input.denoConfigPath,
   );
@@ -931,6 +938,9 @@ async function createArchive(
         drivers: input.manifest.drivers,
         datastores: input.manifest.datastores,
         reports: input.manifest.reports,
+        ...(input.manifest.include.length > 0
+          ? { include: input.manifest.include }
+          : {}),
         additionalFiles: input.manifest.additionalFiles,
         ...(input.manifest.platforms.length > 0
           ? { platforms: input.manifest.platforms }
@@ -948,6 +958,14 @@ async function createArchive(
       const destPath = join(extDir, "models", relPath);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.copyFile(modelFile, destPath);
+    }
+
+    // Copy include files (alongside model sources, not bundled)
+    for (const incFile of input.includeFilePaths) {
+      const relPath = relative(input.modelsDir, incFile);
+      const destPath = join(extDir, "models", relPath);
+      await Deno.mkdir(dirname(destPath), { recursive: true });
+      await Deno.copyFile(incFile, destPath);
     }
 
     // Write compiled model bundles

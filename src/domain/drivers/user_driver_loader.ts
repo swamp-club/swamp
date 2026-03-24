@@ -125,6 +125,14 @@ export class UserDriverLoader {
     for (const file of files) {
       try {
         const absolutePath = resolve(driversDir, file);
+
+        // Pre-check: only bundle files that declare a driver export.
+        const source = await Deno.readTextFile(absolutePath);
+        if (!/export\s+const\s+driver\s*[=:]/.test(source)) {
+          logger.debug`Skipping ${file} (no driver export found)`;
+          continue;
+        }
+
         const js = await this.bundleWithCache(
           absolutePath,
           file,

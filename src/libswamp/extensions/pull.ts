@@ -226,6 +226,7 @@ export async function updateUpstreamExtensions(
   name: string,
   version: string,
   files: string[],
+  include?: string[],
 ): Promise<void> {
   const jsonPath = join(modelsDir, "upstream_extensions.json");
   const lockPath = `${jsonPath}.lock`;
@@ -246,6 +247,7 @@ export async function updateUpstreamExtensions(
       version,
       pulledAt: new Date().toISOString(),
       files,
+      ...(include && include.length > 0 ? { include } : {}),
     };
 
     await atomicWriteTextFile(jsonPath, JSON.stringify(data, null, 2) + "\n");
@@ -885,11 +887,19 @@ export async function installExtension(
       absoluteReportsDir,
     );
 
+    // Record include files from manifest for loader skip logic
+    const includeFiles = manifest.include.length > 0
+      ? manifest.include.map((inc) =>
+        relative(repoDir, resolve(absoluteModelsDir, inc))
+      )
+      : undefined;
+
     await updateUpstreamExtensions(
       absoluteModelsDir,
       ref.name,
       version,
       extractedFiles,
+      includeFiles,
     );
 
     const dependencyResults: InstallResult[] = [];

@@ -24,6 +24,7 @@ export interface UpstreamExtensionEntry {
   version: string;
   pulledAt: string;
   files?: string[];
+  include?: string[];
 }
 
 /** Shape of upstream_extensions.json. */

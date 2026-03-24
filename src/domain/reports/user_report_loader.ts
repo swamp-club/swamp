@@ -124,6 +124,14 @@ export class UserReportLoader {
     for (const file of files) {
       try {
         const absolutePath = resolve(reportsDir, file);
+
+        // Pre-check: only bundle files that declare a report export.
+        const source = await Deno.readTextFile(absolutePath);
+        if (!/export\s+const\s+report\s*[=:]/.test(source)) {
+          logger.debug`Skipping ${file} (no report export found)`;
+          continue;
+        }
+
         const js = await this.bundleWithCache(
           absolutePath,
           file,

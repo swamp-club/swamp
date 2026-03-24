@@ -64,6 +64,7 @@ export interface ResolvedExtensionFiles {
   reportEntryPoints: string[];
   allReportFiles: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
+  includeFilePaths: string[];
   additionalFilePaths: string[];
 }
 
@@ -305,7 +306,21 @@ export async function resolveExtensionFiles(
     allReportFiles.push(...reportImportResult.resolvedFiles);
   }
 
-  // 14. Validate additional files
+  // 14. Validate include files (resolved relative to modelsDir)
+  const includeFilePaths: string[] = [];
+  for (const inc of manifest.include) {
+    const incPath = resolve(modelsDir, inc);
+    try {
+      await Deno.stat(incPath);
+    } catch {
+      throw new UserError(
+        `Include file not found: ${inc} (expected at ${incPath})`,
+      );
+    }
+    includeFilePaths.push(incPath);
+  }
+
+  // 15. Validate additional files
   const additionalFilePaths: string[] = [];
   for (const af of manifest.additionalFiles) {
     const afPath = resolve(dirname(absoluteManifestPath), af);
@@ -338,6 +353,7 @@ export async function resolveExtensionFiles(
     reportEntryPoints,
     allReportFiles,
     workflowFiles,
+    includeFilePaths,
     additionalFilePaths,
   };
 }

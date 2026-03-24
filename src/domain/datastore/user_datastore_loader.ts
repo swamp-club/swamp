@@ -125,6 +125,14 @@ export class UserDatastoreLoader {
     for (const file of files) {
       try {
         const absolutePath = resolve(datastoresDir, file);
+
+        // Pre-check: only bundle files that declare a datastore export.
+        const source = await Deno.readTextFile(absolutePath);
+        if (!/export\s+const\s+datastore\s*[=:]/.test(source)) {
+          logger.debug`Skipping ${file} (no datastore export found)`;
+          continue;
+        }
+
         const js = await this.bundleWithCache(
           absolutePath,
           file,

@@ -310,6 +310,16 @@ export class UserModelLoader {
     for (const file of files) {
       try {
         const absolutePath = resolve(modelsDir, file);
+
+        // Pre-check: only bundle files that declare a model or extension export.
+        // This avoids attempting to bundle helper scripts with unbundleable
+        // dependencies (e.g., native modules used via Deno.Command subprocess).
+        const source = await Deno.readTextFile(absolutePath);
+        if (!/export\s+const\s+(model|extension)\s*[=:]/.test(source)) {
+          logger.debug`Skipping ${file} (no model/extension export found)`;
+          continue;
+        }
+
         const js = await this.bundleWithCache(
           absolutePath,
           file,
