@@ -19,18 +19,16 @@
 
 import { Command } from "@cliffy/command";
 import {
-  type JobRunData,
-  renderWorkflowRun,
-  type StepRunData,
-  type WorkflowRunData,
-} from "../../presentation/output/workflow_run_output.ts";
-import {
   consumeStream,
   createLibSwampContext,
+  type JobRunView,
   parseTags,
+  type StepRunView,
   workflowRunSearch,
   type WorkflowRunSearchDeps,
+  type WorkflowRunView,
 } from "../../libswamp/mod.ts";
+import { renderWorkflowRunDisplay } from "../../presentation/renderers/workflow_run_display.ts";
 import { createWorkflowRunSearchRenderer } from "../../presentation/renderers/workflow_run_search.tsx";
 import {
   createContext,
@@ -50,7 +48,7 @@ type AnyOptions = any;
 /**
  * Converts a WorkflowRun to WorkflowRunData for presentation.
  */
-function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
+function toRunData(run: WorkflowRun, path?: string): WorkflowRunView {
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
 
@@ -59,18 +57,18 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
     workflowId: run.workflowId,
     workflowName: run.workflowName,
     status: run.status,
-    jobs: run.jobs.map((job): JobRunData => {
+    jobs: run.jobs.map((job): JobRunView => {
       const jobStart = job.startedAt?.getTime();
       const jobEnd = job.completedAt?.getTime();
 
       return {
         name: job.jobName,
         status: job.status,
-        steps: job.steps.map((step): StepRunData => {
+        steps: job.steps.map((step): StepRunView => {
           const stepStart = step.startedAt?.getTime();
           const stepEnd = step.completedAt?.getTime();
 
-          const stepData: StepRunData = {
+          const stepData: StepRunView = {
             name: step.stepName,
             status: step.status,
             error: step.error,
@@ -146,7 +144,7 @@ export async function workflowRunSearchAction(
         createWorkflowRunId(selected.runId),
       );
       const runData = toRunData(run, path);
-      renderWorkflowRun(runData, effectiveMode);
+      renderWorkflowRunDisplay(runData, effectiveMode);
     }
   } else {
     ctx.logger.debug`Search cancelled`;

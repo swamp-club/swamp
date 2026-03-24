@@ -37,7 +37,7 @@ import {
   renderAutoResolveNetworkError,
   renderAutoResolveNotFound,
   renderAutoResolveSearching,
-} from "../presentation/output/extension_auto_resolve_output.ts";
+} from "../presentation/renderers/extension_auto_resolve.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 

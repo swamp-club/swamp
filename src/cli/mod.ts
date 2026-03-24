@@ -90,7 +90,7 @@ import { UpdateNotificationService } from "../domain/update/update_notification_
 import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_check_cache_file_repository.ts";
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
 import { Platform } from "../domain/update/platform.ts";
-import { renderUpdateNotification } from "../presentation/output/update_notification_output.ts";
+import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
 import { getOutputModeFromArgs } from "./context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";

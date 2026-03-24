@@ -20,10 +20,8 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import {
-  renderTypeDescribe,
-  type TypeDescribeData,
-} from "./type_describe_output.ts";
+import type { TypeDescribeData } from "../../libswamp/mod.ts";
+import { renderTypeDescribe } from "../renderers/type_describe.ts";
 
 await initializeLogging({});
 

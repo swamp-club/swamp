@@ -17,22 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { OutputMode } from "./output.ts";
+import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-
-// Re-export view-model types from libswamp with backward-compatible aliases.
-// The canonical definitions now live in libswamp/workflows/workflow_run_view.ts.
-export {
-  type DataArtifactRefData,
-  type JobRunView as JobRunData,
-  type StepArtifactsData,
-  type StepRunView as StepRunData,
-  type WorkflowRunView as WorkflowRunData,
-} from "../../libswamp/mod.ts";
-
 import type { WorkflowRunView } from "../../libswamp/mod.ts";
 
-export function renderWorkflowRun(
+export function renderWorkflowRunDisplay(
   data: WorkflowRunView,
   mode: OutputMode,
 ): void {

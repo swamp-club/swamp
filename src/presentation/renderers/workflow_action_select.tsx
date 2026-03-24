@@ -20,8 +20,8 @@
 // deno-lint-ignore verbatim-module-syntax
 import React, { useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
-import type { OutputMode } from "./output.ts";
-import { suppressInkTtyErrors } from "./ink_lifecycle.ts";
+import type { OutputMode } from "../output/output.ts";
+import { suppressInkTtyErrors } from "../output/ink_lifecycle.ts";
 
 /**
  * Available actions after selecting a workflow from search.

@@ -20,10 +20,10 @@
 // deno-lint-ignore verbatim-module-syntax
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
-import type { OutputMode } from "./output.ts";
+import type { OutputMode } from "../output/output.ts";
 import { Fzf, type FzfResultItem } from "fzf";
-import { suppressInkTtyErrors } from "./ink_lifecycle.ts";
-import { useScrollableList } from "./hooks/mod.ts";
+import { suppressInkTtyErrors } from "../output/ink_lifecycle.ts";
+import { useScrollableList } from "../output/hooks/mod.ts";
 import { join, relative } from "@std/path";
 
 /**

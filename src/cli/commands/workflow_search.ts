@@ -28,8 +28,8 @@ import {
 } from "../../libswamp/mod.ts";
 import { createWorkflowSearchRenderer } from "../../presentation/renderers/workflow_search.tsx";
 import { renderWorkflowGet } from "../../presentation/renderers/workflow_get.ts";
-import { renderWorkflowActionSelect } from "../../presentation/output/workflow_action_select_output.tsx";
-import { renderInputFileSelect } from "../../presentation/output/input_file_select_output.tsx";
+import { renderWorkflowActionSelect } from "../../presentation/renderers/workflow_action_select.tsx";
+import { renderInputFileSelect } from "../../presentation/renderers/input_file_select.tsx";
 import {
   createContext,
   type GlobalOptions,

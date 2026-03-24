@@ -35,18 +35,12 @@ import {
   type ReportGetDeps,
   reportSearch,
   type ReportSearchDeps,
-  result,
   type StoredReportSummary,
-  type SwampError,
 } from "../../libswamp/mod.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { OutputMode } from "../../presentation/output/output.ts";
-import {
-  renderReportSearch,
-  type ReportSearchData,
-} from "../../presentation/output/report_search_output.tsx";
+import { createReportSearchRenderer } from "../../presentation/renderers/report_search.tsx";
 import { createReportGetRenderer } from "../../presentation/renderers/report_get.ts";
-import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -152,43 +146,22 @@ export const reportSearchCommand = new Command()
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
 
-    // Consume the search generator to get summaries
-    let searchResult;
-    try {
-      searchResult = await result(
-        reportSearch(libCtx, buildSearchDeps(repoContext), {
-          query,
-          model: options.model as string | undefined,
-          workflow: options.workflow as string | undefined,
-          scope: options.scope as string | undefined,
-          labels: options.label as string[] | undefined,
-        }),
-      );
-    } catch (err) {
-      const swampErr = err as SwampError;
-      throw new UserError(swampErr.message ?? String(err));
-    }
+    const searchRenderer = createReportSearchRenderer(
+      effectiveMode,
+      query ?? "",
+    );
+    await consumeStream(
+      reportSearch(libCtx, buildSearchDeps(repoContext), {
+        query,
+        model: options.model as string | undefined,
+        workflow: options.workflow as string | undefined,
+        scope: options.scope as string | undefined,
+        labels: options.label as string[] | undefined,
+      }),
+      searchRenderer.handlers(),
+    );
 
-    const summaries = searchResult.data.reports;
-
-    // For JSON mode with exactly one match, show full detail directly
-    if (effectiveMode === "json" && query && summaries.length === 1) {
-      await displayReportDetail(
-        summaries[0],
-        repoContext,
-        libCtx,
-        effectiveMode,
-      );
-      return;
-    }
-
-    const data: ReportSearchData = {
-      query: query ?? "",
-      results: summaries,
-    };
-
-    const selected = await renderReportSearch(data, effectiveMode);
-
+    const selected = searchRenderer.selectedItem();
     if (selected) {
       ctx.logger.debug`Selected report: ${selected.reportName}`;
       await displayReportDetail(selected, repoContext, libCtx, effectiveMode);
