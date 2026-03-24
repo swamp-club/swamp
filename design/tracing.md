@@ -88,8 +88,10 @@ swamp.cli "workflow run"
 ### CLI Root Span
 
 Every CLI invocation creates a `swamp.cli` root span that encompasses the entire
-command lifecycle. Attributes include `swamp.command`, `swamp.subcommand`, and
-`swamp.version`.
+command lifecycle. Attributes include `swamp.command`, `swamp.subcommand`,
+`swamp.version`, `swamp.args` (sanitized positional arguments),
+`swamp.option_keys` (command-specific option names), and `swamp.global_options`
+(global flags like `--json`, `--verbose`).
 
 ### Libswamp Generator Spans
 

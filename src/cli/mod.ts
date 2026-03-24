@@ -634,6 +634,9 @@ export async function runCli(args: string[]): Promise<void> {
       "swamp.command": commandInfo.command,
       "swamp.subcommand": commandInfo.subcommand ?? "",
       "swamp.version": VERSION,
+      "swamp.args": commandInfo.args.join(" "),
+      "swamp.option_keys": commandInfo.optionKeys.join(" "),
+      "swamp.global_options": commandInfo.globalOptions.join(" "),
     }, async () => {
       await cli.parse(args);
     });
