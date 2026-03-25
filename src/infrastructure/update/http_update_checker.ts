@@ -46,6 +46,48 @@ async function removeQuarantine(path: string): Promise<void> {
 }
 
 /**
+ * Replace a binary at `targetPath` with the file at `sourcePath`.
+ *
+ * On Linux, overwriting a running binary fails with ETXTBSY because the kernel
+ * prevents writing to an inode with active text mappings. The standard fix is
+ * to remove the directory entry first (the running process keeps its fd open),
+ * then move the new file into place.
+ *
+ * Strategy:
+ * 1. Try `Deno.rename()` — atomic, no ETXTBSY (operates on directory entries).
+ * 2. If rename fails with EXDEV (cross-filesystem), fall back to
+ *    `Deno.remove()` + `Deno.copyFile()`.
+ */
+async function replaceBinary(
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
+  try {
+    // Unlink first to release the inode on Linux
+    try {
+      await Deno.remove(targetPath);
+    } catch (error) {
+      // NotFound is fine — target may not exist yet
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+    await Deno.rename(sourcePath, targetPath);
+  } catch (error) {
+    // EXDEV: source and target on different filesystems — rename won't work
+    const code = error instanceof Error
+      ? (error as Error & { code?: string }).code
+      : undefined;
+    if (code === "EXDEV") {
+      // Target already removed above, so copyFile won't hit ETXTBSY
+      await Deno.copyFile(sourcePath, targetPath);
+    } else {
+      throw error;
+    }
+  }
+}
+
+/**
  * HTTP adapter implementing UpdateChecker.
  * Checks artifacts.systeminit.com for the latest swamp binary.
  */
@@ -192,8 +234,8 @@ export class HttpUpdateChecker implements UpdateChecker {
         await removeQuarantine(extractedBinary);
       }
 
-      // Replace the current binary
-      await Deno.copyFile(extractedBinary, binaryPath);
+      // Replace the current binary (unlink-then-rename to avoid ETXTBSY on Linux)
+      await replaceBinary(extractedBinary, binaryPath);
       await Deno.chmod(binaryPath, 0o755);
 
       // Also clear quarantine on the final path (in case copyFile propagates it)

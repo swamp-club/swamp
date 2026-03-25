@@ -33,7 +33,7 @@ import {
   toMethodDescribeData,
   zodToJsonSchema,
 } from "../types/schema_helpers.ts";
-import { coerceInputTypes } from "../../domain/inputs/input_coercion.ts";
+import { coerceInputTypes } from "../../domain/inputs/mod.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
