@@ -22,9 +22,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download actionlint
-        id: get_actionlint
-        run: bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-
       - name: Run actionlint
-        run: ${{ steps.get_actionlint.outputs.executable }} -color
+        uses: rhysd/actionlint@393031adb9afb225ee52ae2ccd7a5af5525e03e8 # v1.7.11
