@@ -105,6 +105,9 @@ jobs:
             echo "All dependencies are up to date"
           fi
 
+      - name: Check for outdated GitHub Actions
+        run: deno run --allow-read --allow-net=api.github.com --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/audit_actions.ts
+
   skill-review:
     name: Skill Review
     needs: [changes]

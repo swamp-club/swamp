@@ -12,6 +12,7 @@
     "compile": "deno run -A scripts/compile.ts",
     "license-headers": "deno run --allow-read --allow-write scripts/add_license_headers.ts",
     "audit": "deno run --allow-read --allow-net=api.osv.dev scripts/audit_deps.ts && deno outdated",
+    "audit-actions": "deno run --allow-read --allow-net=api.github.com --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/audit_actions.ts",
     "review-skills": "deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/review_skills.ts",
     "eval-skill-triggers": "deno run --allow-read --allow-run --allow-env --allow-write scripts/eval_skill_triggers.ts"
   },
