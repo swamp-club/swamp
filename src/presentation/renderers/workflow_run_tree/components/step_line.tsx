@@ -36,9 +36,13 @@ export function StepLine({ step, prefix }: StepLineProps) {
   const spinnerFrame = useSpinner();
   const elapsed = useElapsed(step.startedAt);
 
-  const label = step.modelName && step.methodName
+  const modelMethod = step.modelName && step.methodName
     ? `${step.modelName} \u2192 ${step.methodName}`
-    : step.id;
+    : null;
+  const stepPrefix = modelMethod && step.id !== step.modelName
+    ? `${step.id}: `
+    : "";
+  const label = modelMethod ? `${stepPrefix}${modelMethod}` : step.id;
 
   const duration = elapsed > 0 ? formatDuration(elapsed) : "";
 

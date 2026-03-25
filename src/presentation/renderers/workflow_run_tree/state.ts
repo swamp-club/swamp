@@ -221,7 +221,8 @@ function graduateJob(job: JobState): ScrollbackItem {
   if (job.stepOrder.length === 1) {
     const step = job.steps.get(job.stepOrder[0]);
     if (step?.modelName && step?.methodName) {
-      singleStepLabel = `${step.modelName} \u2192 ${step.methodName}`;
+      const prefix = step.id !== step.modelName ? `${step.id}: ` : "";
+      singleStepLabel = `${prefix}${step.modelName} \u2192 ${step.methodName}`;
     }
   }
 

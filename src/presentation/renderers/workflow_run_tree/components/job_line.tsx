@@ -72,9 +72,13 @@ export function JobLine(
     case "running": {
       if (runningSteps.length === 1) {
         const step = runningSteps[0];
-        const label = step.modelName && step.methodName
+        const modelMethod = step.modelName && step.methodName
           ? `${step.modelName} \u2192 ${step.methodName}`
-          : step.id;
+          : null;
+        const stepPrefix = modelMethod && step.id !== step.modelName
+          ? `${step.id}: `
+          : "";
+        const label = modelMethod ? `${stepPrefix}${modelMethod}` : step.id;
         const dur = elapsed > 0 ? ` (${formatDuration(elapsed)})` : "";
         statusInfo = (
           <Text dimColor>

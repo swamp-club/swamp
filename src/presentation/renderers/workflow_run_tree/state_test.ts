@@ -190,7 +190,7 @@ Deno.test("treeReducer: job_completed graduates to scrollback and unblocks depen
   if (item.type === "job") {
     assertEquals(item.jobId, "provision");
     assertEquals(item.status, "succeeded");
-    assertEquals(item.singleStepLabel, "ec2-instance \u2192 create");
+    assertEquals(item.singleStepLabel, "step-1: ec2-instance \u2192 create");
   }
 
   // configure should now be waiting (provision dependency resolved)
@@ -482,4 +482,65 @@ Deno.test("treeReducer: batch action processes multiple events atomically", () =
   const step = job.steps.get("s1")!;
   assertEquals(step.modelName, "ec2");
   assertEquals(step.outputBuffer, ["Creating..."]);
+});
+
+Deno.test("treeReducer: singleStepLabel includes step name prefix for forEach-expanded steps", () => {
+  const state = reduce(
+    createInitialState("test"),
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test",
+      jobs: [{ id: "test-job", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "test-job" },
+    { kind: "step_started", jobId: "test-job", stepId: "test-alpine" },
+    {
+      kind: "model_resolved",
+      jobId: "test-job",
+      stepId: "test-alpine",
+      modelName: "tester",
+      modelType: "test/runner",
+      methodName: "smokeTest",
+    },
+    { kind: "step_completed", jobId: "test-job", stepId: "test-alpine" },
+    { kind: "job_completed", jobId: "test-job", status: "succeeded" },
+  );
+
+  const item = state.scrollback[0];
+  assertEquals(item.type, "job");
+  if (item.type === "job") {
+    assertEquals(item.singleStepLabel, "test-alpine: tester \u2192 smokeTest");
+  }
+});
+
+Deno.test("treeReducer: singleStepLabel omits prefix when stepId matches modelName", () => {
+  const state = reduce(
+    createInitialState("deploy"),
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "deploy",
+      jobs: [{ id: "provision", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "provision" },
+    { kind: "step_started", jobId: "provision", stepId: "ec2-instance" },
+    {
+      kind: "model_resolved",
+      jobId: "provision",
+      stepId: "ec2-instance",
+      modelName: "ec2-instance",
+      modelType: "aws/ec2",
+      methodName: "create",
+    },
+    { kind: "step_completed", jobId: "provision", stepId: "ec2-instance" },
+    { kind: "job_completed", jobId: "provision", status: "succeeded" },
+  );
+
+  const item = state.scrollback[0];
+  assertEquals(item.type, "job");
+  if (item.type === "job") {
+    // No prefix when stepId matches modelName
+    assertEquals(item.singleStepLabel, "ec2-instance \u2192 create");
+  }
 });
