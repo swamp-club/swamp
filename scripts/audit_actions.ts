@@ -69,8 +69,7 @@ function extractActionRefs(
 ): ActionRef[] {
   const refs: ActionRef[] = [];
 
-  // deno-lint-ignore no-explicit-any
-  let workflow: any;
+  let workflow: unknown;
   try {
     workflow = parseYaml(content);
   } catch {
@@ -78,11 +77,16 @@ function extractActionRefs(
     return refs;
   }
 
-  if (!workflow || typeof workflow !== "object" || !workflow.jobs) return refs;
+  if (
+    !workflow || typeof workflow !== "object" ||
+    !("jobs" in workflow) || typeof workflow.jobs !== "object" ||
+    !workflow.jobs
+  ) {
+    return refs;
+  }
 
   for (const job of Object.values(workflow.jobs)) {
-    // deno-lint-ignore no-explicit-any
-    const steps = (job as any)?.steps;
+    const steps = (job as Record<string, unknown>)?.steps;
     if (!Array.isArray(steps)) continue;
 
     for (const step of steps) {
@@ -119,6 +123,42 @@ function extractActionRefs(
   return refs;
 }
 
+function apiHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "swamp-audit-actions",
+  };
+  const token = Deno.env.get("GITHUB_TOKEN");
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+/** Resolve a git ref to a commit SHA, dereferencing annotated tags if needed. */
+async function resolveCommitSha(
+  owner: string,
+  repo: string,
+  refData: { sha: string; type: string },
+): Promise<string> {
+  if (refData.type !== "tag") return refData.sha;
+
+  // Annotated tag — dereference to get the underlying commit SHA
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/git/tags/${refData.sha}`,
+      { headers: apiHeaders() },
+    );
+    if (response.ok) {
+      const tag = await response.json();
+      return tag.object?.sha ?? refData.sha;
+    }
+  } catch {
+    // Fall back to the tag object SHA
+  }
+  return refData.sha;
+}
+
 async function getLatestTag(
   owner: string,
   repo: string,
@@ -127,32 +167,27 @@ async function getLatestTag(
   try {
     const response = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/releases/latest`,
-      {
-        headers: {
-          "Accept": "application/vnd.github+json",
-          "User-Agent": "swamp-audit-actions",
-        },
-      },
+      { headers: apiHeaders() },
     );
 
     if (response.ok) {
       const release = await response.json();
       const tagName = release.tag_name;
 
-      // Get the SHA for this tag
+      // Get the SHA for this tag, dereferencing annotated tags
       const tagResponse = await fetch(
         `https://api.github.com/repos/${owner}/${repo}/git/ref/tags/${tagName}`,
-        {
-          headers: {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "swamp-audit-actions",
-          },
-        },
+        { headers: apiHeaders() },
       );
 
       if (tagResponse.ok) {
         const tagData = await tagResponse.json();
-        return { latest: tagName, latestSha: tagData.object.sha };
+        const commitSha = await resolveCommitSha(
+          owner,
+          repo,
+          tagData.object,
+        );
+        return { latest: tagName, latestSha: commitSha };
       }
 
       return { latest: tagName, latestSha: "" };
@@ -165,12 +200,7 @@ async function getLatestTag(
   try {
     const response = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/tags?per_page=1`,
-      {
-        headers: {
-          "Accept": "application/vnd.github+json",
-          "User-Agent": "swamp-audit-actions",
-        },
-      },
+      { headers: apiHeaders() },
     );
 
     if (response.ok) {
@@ -283,9 +313,8 @@ async function main(): Promise<void> {
 
   const findings: AuditFinding[] = [];
 
-  // Check each unique action
+  // Check unpinned third-party actions (no API call needed)
   for (const [, actionRef] of uniqueActions) {
-    // Check for unpinned third-party actions
     if (!actionRef.isShaPin && !actionRef.isTrustedPublisher) {
       findings.push({
         actionRef,
@@ -294,34 +323,33 @@ async function main(): Promise<void> {
           `Third-party action not pinned to a commit SHA. Pin to a full SHA for supply chain security.`,
       });
     }
+  }
 
-    // Check for outdated versions
+  // Check for outdated versions in parallel
+  const versionChecks = [...uniqueActions.values()].map(async (actionRef) => {
     const tagInfo = await getLatestTag(actionRef.owner, actionRef.repo);
-    if (tagInfo) {
-      if (actionRef.isShaPin) {
-        // SHA-pinned: check if the SHA matches the latest tag's SHA
-        if (
-          tagInfo.latestSha && actionRef.ref !== tagInfo.latestSha
-        ) {
-          findings.push({
-            actionRef,
-            kind: "outdated",
-            detail: `Pinned SHA does not match latest release ${tagInfo.latest}`,
-          });
-        }
-      } else {
-        // Tag-pinned: check if using an older major version
-        if (!isSameMajor(actionRef.ref, tagInfo.latest)) {
-          findings.push({
-            actionRef,
-            kind: "outdated",
-            detail:
-              `Using ${actionRef.ref}, latest is ${tagInfo.latest}`,
-          });
-        }
+    if (!tagInfo) return;
+
+    if (actionRef.isShaPin) {
+      if (tagInfo.latestSha && actionRef.ref !== tagInfo.latestSha) {
+        findings.push({
+          actionRef,
+          kind: "outdated",
+          detail: `Pinned SHA does not match latest release ${tagInfo.latest}`,
+        });
+      }
+    } else {
+      if (!isSameMajor(actionRef.ref, tagInfo.latest)) {
+        findings.push({
+          actionRef,
+          kind: "outdated",
+          detail: `Using ${actionRef.ref}, latest is ${tagInfo.latest}`,
+        });
       }
     }
-  }
+  });
+
+  await Promise.all(versionChecks);
 
   // Write GitHub Actions job summary
   await writeGitHubSummary(findings);
