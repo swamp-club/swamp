@@ -111,17 +111,32 @@ export const model = {
 
 ## Model Structure
 
-| Field             | Required | Description                                       |
-| ----------------- | -------- | ------------------------------------------------- |
-| `type`            | Yes      | Unique identifier (`@collective/name`)            |
-| `version`         | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)               |
-| `globalArguments` | No       | Zod schema for global arguments                   |
-| `resources`       | No       | Resource output specs (JSON data with Zod schema) |
-| `files`           | No       | File output specs (binary/text with content type) |
-| `inputsSchema`    | No       | Zod schema for runtime inputs                     |
-| `methods`         | Yes      | Object of method definitions with `arguments` Zod |
-| `checks`          | No       | Pre-flight checks run before mutating methods     |
-| `reports`         | No       | Inline report definitions (see `swamp-report`)    |
+| Field             | Required | Description                                                              |
+| ----------------- | -------- | ------------------------------------------------------------------------ |
+| `type`            | Yes      | Unique identifier (`@collective/name`)                                   |
+| `version`         | Yes      | CalVer version (`YYYY.MM.DD.MICRO`)                                      |
+| `globalArguments` | No       | Zod schema for global arguments                                          |
+| `resources`       | No       | Resource output specs (JSON data with Zod schema)                        |
+| `files`           | No       | File output specs (binary/text with content type)                        |
+| `inputsSchema`    | No       | Zod schema for runtime inputs                                            |
+| `methods`         | Yes      | Object of method definitions with `arguments` Zod                        |
+| `checks`          | No       | Pre-flight checks run before mutating methods                            |
+| `reports`         | No       | Inline report definitions (see `swamp-report`)                           |
+| `upgrades`        | No       | Version upgrade chain ([references/upgrades.md](references/upgrades.md)) |
+
+## Version Upgrades
+
+When bumping `version`, always add an `upgrades` entry so existing instances
+migrate. **Prompt the user** to confirm:
+
+1. Did the `globalArguments` schema change?
+2. If yes: what fields were added/renamed/removed and what defaults to use?
+3. If no: add a no-op upgrade (`upgradeAttributes: (old) => old`)
+
+The last upgrade's `toVersion` must equal the model's current `version`.
+Upgrades run lazily at method execution time and persist after first run.
+
+See [references/upgrades.md](references/upgrades.md) for patterns and examples.
 
 ## Supported Zod Types
 
@@ -475,6 +490,9 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
    (e.g., `@user/my-model` or `myorg/my-model`)
 7. **No type annotations**: Avoid TypeScript types in execute parameters
 8. **File naming**: Use snake_case (`my_model.ts`)
+9. **Version upgrades**: When bumping `version`, always add an `upgrades` entry
+   and prompt the user for the migration path. See
+   [references/upgrades.md](references/upgrades.md)
 
 ## Collective Rules
 
@@ -529,5 +547,7 @@ swamp model type describe @myorg/my-model --json  # Check schema
   smoke-test protocol, CRUD lifecycle testing, and common failure patterns
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md)
+- **Version Upgrades**: See [references/upgrades.md](references/upgrades.md) for
+  upgrade patterns, user prompt workflow, and migration examples
 - **Docker execution**: See
   [references/docker-execution.md](references/docker-execution.md)

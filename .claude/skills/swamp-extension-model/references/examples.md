@@ -16,6 +16,7 @@
 - [Using External Dependencies](#using-external-dependencies)
 - [Extending Existing Model Types](#extending-existing-model-types)
 - [Helper Scripts](#helper-scripts)
+- [Model with Version Upgrades](#model-with-version-upgrades)
 
 ## Using External Dependencies
 
@@ -1561,3 +1562,79 @@ The loader skips files that don't declare `export const model` or
 `export const extension`, so the helper is never bundled — even without the
 `include` manifest field. The `include` field is needed to ship the helper in
 the extension archive when publishing.
+
+## Model with Version Upgrades
+
+A notifier model that evolves through three versions, demonstrating how to
+maintain an upgrade chain for existing instances.
+
+```typescript
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@acme/notifier",
+  version: "2026.02.09.1",
+
+  globalArguments: z.object({
+    content: z.string().min(1),
+    priority: z.enum(["low", "medium", "high"]),
+  }),
+
+  resources: {
+    "result": {
+      description: "Notification result",
+      schema: z.object({
+        sent: z.boolean(),
+        content: z.string(),
+        priority: z.string(),
+      }),
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
+    },
+  },
+
+  // Upgrade chain: each entry migrates from the previous version.
+  // The last toVersion must match the model's current version.
+  upgrades: [
+    {
+      toVersion: "2025.06.01.1",
+      description: "Add priority field with default 'medium'",
+      upgradeAttributes: (old) => ({
+        ...old,
+        priority: "medium",
+      }),
+    },
+    {
+      toVersion: "2026.02.09.1",
+      description: "Rename 'message' to 'content'",
+      upgradeAttributes: (old) => {
+        const { message, ...rest } = old;
+        return { ...rest, content: message };
+      },
+    },
+  ],
+
+  methods: {
+    send: {
+      description: "Send a notification",
+      arguments: z.object({}),
+      execute: async (args, context) => {
+        const globalArgs = context.globalArgs;
+        const handle = await context.writeResource("result", "main", {
+          sent: true,
+          content: globalArgs.content,
+          priority: globalArgs.priority,
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+  },
+};
+```
+
+An instance created at version `2025.01.15.1` with `{ message: "hello" }` will
+automatically migrate when any method runs:
+
+1. Upgrade to `2025.06.01.1`: `{ message: "hello", priority: "medium" }`
+2. Upgrade to `2026.02.09.1`: `{ content: "hello", priority: "medium" }`
+3. Definition persisted with `typeVersion: "2026.02.09.1"`

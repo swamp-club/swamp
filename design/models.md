@@ -84,12 +84,12 @@ export const model = {
     {
       toVersion: "2025.06.01.1",
       description: "Add priority field with default 'medium'",
-      upgradeGlobalArguments: (old) => ({ ...old, priority: "medium" }),
+      upgradeAttributes: (old) => ({ ...old, priority: "medium" }),
     },
     {
       toVersion: "2026.02.09.1",
       description: "Rename 'message' to 'content'",
-      upgradeGlobalArguments: (old) => {
+      upgradeAttributes: (old) => {
         const { message, ...rest } = old;
         return { ...rest, content: message };
       },
