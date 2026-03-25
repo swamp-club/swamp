@@ -327,6 +327,35 @@ Deno.test("checkExtensionQuality uses deno.json config when denoConfigPath provi
   );
 });
 
+Deno.test("checkExtensionQuality: fmt output contains no ANSI escape codes", async () => {
+  await withTempFiles(
+    { "model.ts": "export const x=1;" },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(result.passed, false);
+      const fmtIssue = result.issues.find((i) => i.check === "fmt");
+      assertEquals(fmtIssue !== undefined, true);
+      // ANSI escape codes start with ESC (\x1b) followed by [
+      assertEquals(fmtIssue!.output.includes("\x1b["), false);
+    },
+  );
+});
+
+Deno.test("checkExtensionQuality: lint output contains no ANSI escape codes", async () => {
+  await withTempFiles(
+    {
+      "model.ts": "// deno-lint-ignore no-explicit-any\nexport const x = 1;\n",
+    },
+    async (_dir, paths) => {
+      const result = await checkExtensionQuality(paths, DENO_PATH);
+      assertEquals(result.passed, false);
+      const lintIssue = result.issues.find((i) => i.check === "lint");
+      assertEquals(lintIssue !== undefined, true);
+      assertEquals(lintIssue!.output.includes("\x1b["), false);
+    },
+  );
+});
+
 Deno.test("stripCommentsAndStrings removes single-line comments", () => {
   const result = stripCommentsAndStrings('code(); // import("pkg")');
   assertEquals(result.includes("import"), false);

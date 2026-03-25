@@ -76,6 +76,7 @@ export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
         args: ["fmt", "--no-config", ...files],
         stdout: "piped",
         stderr: "piped",
+        env: { ...Deno.env.toObject(), NO_COLOR: "1" },
       });
       const output = await command.output();
       return (
@@ -88,6 +89,7 @@ export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
         args: ["lint", "--fix", "--no-config", ...files],
         stdout: "piped",
         stderr: "piped",
+        env: { ...Deno.env.toObject(), NO_COLOR: "1" },
       });
       const output = await command.output();
       return (
