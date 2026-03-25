@@ -187,7 +187,7 @@ export const issueBugCommand = new Command()
       issueCreate(libCtx, deps, {
         title,
         body,
-        labels: ["bug", "external"],
+        labels: ["bug", "needs-triage"],
         type: "bug",
       }),
       renderer.handlers(),

@@ -18,8 +18,8 @@ non-interactive mode with `--title` and `--body` flags.
 
 | Command               | Labels                    | Template sections                                         |
 | --------------------- | ------------------------- | --------------------------------------------------------- |
-| `swamp issue bug`     | `bug`, `external`         | Title, description, steps to reproduce, environment       |
-| `swamp issue feature` | `enhancement`, `external` | Title, problem statement, proposed solution, alternatives |
+| `swamp issue bug`     | `bug`, `needs-triage`     | Title, description, steps to reproduce, environment       |
+| `swamp issue feature` | `feature`, `needs-triage` | Title, problem statement, proposed solution, alternatives |
 
 **Non-interactive examples:**
 

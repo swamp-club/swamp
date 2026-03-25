@@ -186,7 +186,7 @@ export const issueFeatureCommand = new Command()
       issueCreate(libCtx, deps, {
         title,
         body,
-        labels: ["enhancement", "external"],
+        labels: ["feature", "needs-triage"],
         type: "feature",
       }),
       renderer.handlers(),
