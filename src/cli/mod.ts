@@ -219,7 +219,10 @@ async function loadUserModels(
       : resolve(repoDir, modelsDir);
 
     const loader = new UserModelLoader(denoRuntime, repoDir);
-    const result = await loader.loadModels(absoluteModelsDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
+    const result = await loader.loadModels(absoluteModelsDir, {
+      additionalDirs: [pulledDir],
+    });
 
     // Collect failures for deferred logging (logging not yet initialized)
     for (const failure of result.failed) {
@@ -250,7 +253,10 @@ async function loadUserVaults(
       : resolve(repoDir, vaultsDir);
 
     const loader = new UserVaultLoader(denoRuntime, repoDir);
-    const result = await loader.loadVaults(absoluteVaultsDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
+    const result = await loader.loadVaults(absoluteVaultsDir, {
+      additionalDirs: [pulledDir],
+    });
 
     for (const failure of result.failed) {
       deferredWarnings.push({
@@ -277,7 +283,10 @@ async function loadUserDrivers(
       : resolve(repoDir, driversDir);
 
     const loader = new UserDriverLoader(denoRuntime, repoDir);
-    const result = await loader.loadDrivers(absoluteDriversDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
+    const result = await loader.loadDrivers(absoluteDriversDir, {
+      additionalDirs: [pulledDir],
+    });
 
     for (const failure of result.failed) {
       deferredWarnings.push({
@@ -304,7 +313,10 @@ async function loadUserDatastores(
       : resolve(repoDir, datastoresDir);
 
     const loader = new UserDatastoreLoader(denoRuntime, repoDir);
-    const result = await loader.loadDatastores(absoluteDatastoresDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores);
+    const result = await loader.loadDatastores(absoluteDatastoresDir, {
+      additionalDirs: [pulledDir],
+    });
 
     for (const failure of result.failed) {
       deferredWarnings.push({
@@ -331,7 +343,10 @@ async function loadUserReports(
       : resolve(repoDir, reportsDir);
 
     const loader = new UserReportLoader(denoRuntime, repoDir);
-    const result = await loader.loadReports(absoluteReportsDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
+    const result = await loader.loadReports(absoluteReportsDir, {
+      additionalDirs: [pulledDir],
+    });
 
     for (const failure of result.failed) {
       deferredWarnings.push({

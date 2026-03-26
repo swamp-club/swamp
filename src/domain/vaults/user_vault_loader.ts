@@ -105,28 +105,39 @@ export class UserVaultLoader {
    */
   async loadVaults(
     vaultsDir: string,
-    options?: { skipAlreadyRegistered?: boolean },
+    options?: {
+      skipAlreadyRegistered?: boolean;
+      /** Additional directories to scan (e.g. pulled extensions). */
+      additionalDirs?: string[];
+    },
   ): Promise<VaultLoadResult> {
     const result: VaultLoadResult = { loaded: [], failed: [] };
 
     // Ensure swamp's Zod is available on globalThis before importing bundles.
     installZodGlobal();
 
-    // Check if directory exists
-    try {
-      await Deno.stat(vaultsDir);
-    } catch {
-      return result; // No user vaults directory - not an error
-    }
-
     // Ensure deno is available before bundling
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    const files = await this.discoverFiles(vaultsDir);
-
-    for (const file of files) {
+    // Discover files from primary dir and any additional dirs
+    const allFiles: Array<{ file: string; baseDir: string }> = [];
+    for (
+      const dir of [vaultsDir, ...(options?.additionalDirs ?? [])]
+    ) {
       try {
-        const absolutePath = resolve(vaultsDir, file);
+        await Deno.stat(dir);
+      } catch {
+        continue;
+      }
+      const files = await this.discoverFiles(dir);
+      for (const file of files) {
+        allFiles.push({ file, baseDir: dir });
+      }
+    }
+
+    for (const { file, baseDir } of allFiles) {
+      try {
+        const absolutePath = resolve(baseDir, file);
 
         // Pre-check: only bundle files that declare a vault export.
         const source = await Deno.readTextFile(absolutePath);
@@ -139,7 +150,7 @@ export class UserVaultLoader {
           absolutePath,
           file,
           denoPath,
-          vaultsDir,
+          baseDir,
         );
         const module = await this.importBundle(js, file);
 
