@@ -46,6 +46,41 @@ import type { Data } from "../data/data.ts";
 import type { DriverOutput } from "../drivers/execution_driver.ts";
 import { RawExecutionDriver } from "../drivers/raw_execution_driver.ts";
 import { driverTypeRegistry } from "../drivers/driver_type_registry.ts";
+import type { MethodExecutionEvent } from "./method_events.ts";
+
+/**
+ * Intercepts console.log/error during in-process method execution and
+ * emits them as MethodExecutionEvent output events. This allows extension
+ * models that use console.log to have their output captured in the event
+ * stream alongside out-of-process driver stdio.
+ */
+async function withConsoleCapture<T>(
+  onEvent: ((event: MethodExecutionEvent) => void) | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!onEvent) return fn();
+
+  const origLog = console.log;
+  const origError = console.error;
+
+  console.log = (...args: unknown[]) => {
+    const line = args.map(String).join(" ");
+    onEvent({ type: "output", stream: "stdout", line });
+    origLog.apply(console, args);
+  };
+  console.error = (...args: unknown[]) => {
+    const line = args.map(String).join(" ");
+    onEvent({ type: "output", stream: "stderr", line });
+    origError.apply(console, args);
+  };
+
+  try {
+    return await fn();
+  } finally {
+    console.log = origLog;
+    console.error = origError;
+  }
+}
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -292,8 +327,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       unresolvedMethodArgs: rawMethodArgs,
     };
 
-    // Execute the method with pre-validated args
-    const result = await method.execute(argsResult.data, enrichedContext);
+    // Execute the method with pre-validated args.
+    // Intercept console.log/error so in-process extension models emit
+    // method_output events (out-of-process drivers already capture stdio).
+    const result = await withConsoleCapture(
+      enrichedContext.onEvent,
+      () => method.execute(argsResult.data, enrichedContext),
+    );
 
     // Validate data handles
     if (result.dataHandles) {
