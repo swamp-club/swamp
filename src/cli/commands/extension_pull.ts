@@ -23,16 +23,15 @@ import { join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
-import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
-import { resolveDriversDir } from "../resolve_drivers_dir.ts";
-import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
-import { resolveReportsDir } from "../resolve_reports_dir.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import {
   ConflictError,
   consumeStream,
@@ -186,32 +185,39 @@ export const extensionPullCommand = new Command()
     // 3. Validate name format
     validateExtensionName(ref.name);
 
-    // 4. Resolve dirs from .swamp.yaml
+    // 4. Resolve lockfile path (stays in committed extensions/models/ dir)
     const repoPath = RepoPath.create(repoDir);
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
     const modelsDir = resolveModelsDir(marker);
-    const workflowsDir = resolveWorkflowsDir(marker);
-    const vaultsDir = resolveVaultsDir(marker);
-    const driversDir = resolveDriversDir(marker);
-    const datastoresDir = resolveDatastoresDir(marker);
-    const reportsDir = resolveReportsDir(marker);
-
-    // 5. Resolve lockfile path
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    // 5. Resolve pulled-extension dirs (.swamp/pulled-extensions/{type}/)
+    const pulledModelsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
+    const pulledWorkflowsDir = swampPath(
+      repoDir,
+      SWAMP_SUBDIRS.pulledWorkflows,
+    );
+    const pulledVaultsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
+    const pulledDriversDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
+    const pulledDatastoresDir = swampPath(
+      repoDir,
+      SWAMP_SUBDIRS.pulledDatastores,
+    );
+    const pulledReportsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
 
     // 6. Create deps via factory and pull
     const serverUrl = resolveServerUrl();
     const deps = createExtensionPullDeps(
       serverUrl,
       lockfilePath,
-      modelsDir,
-      workflowsDir,
-      vaultsDir,
-      driversDir,
-      datastoresDir,
-      reportsDir,
+      pulledModelsDir,
+      pulledWorkflowsDir,
+      pulledVaultsDir,
+      pulledDriversDir,
+      pulledDatastoresDir,
+      pulledReportsDir,
       repoDir,
     );
 
@@ -221,12 +227,12 @@ export const extensionPullCommand = new Command()
       getChecksum: deps.getChecksum,
       logger: ctx.logger,
       lockfilePath,
-      modelsDir,
-      workflowsDir,
-      vaultsDir,
-      driversDir,
-      datastoresDir,
-      reportsDir,
+      modelsDir: pulledModelsDir,
+      workflowsDir: pulledWorkflowsDir,
+      vaultsDir: pulledVaultsDir,
+      driversDir: pulledDriversDir,
+      datastoresDir: pulledDatastoresDir,
+      reportsDir: pulledReportsDir,
       repoDir,
       force: options.force ?? false,
       outputMode: ctx.outputMode,

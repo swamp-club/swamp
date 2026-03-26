@@ -26,11 +26,10 @@ import {
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
-import { resolveDriversDir } from "../resolve_drivers_dir.ts";
-import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
-import { resolveReportsDir } from "../resolve_reports_dir.ts";
-import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -195,12 +194,6 @@ export const extensionSearchCommand = new Command()
       const markerRepo = new RepoMarkerRepository();
       const marker = await markerRepo.read(repoPath);
       const modelsDir = resolveModelsDir(marker);
-      const workflowsDir = resolveWorkflowsDir(marker);
-      const vaultsDir = resolveVaultsDir(marker);
-      const driversDir = resolveDriversDir(marker);
-      const datastoresDir = resolveDatastoresDir(marker);
-      const reportsDir = resolveReportsDir(marker);
-
       const absoluteModelsDir = resolve(repoDir, modelsDir);
       const lockfilePath = join(
         absoluteModelsDir,
@@ -214,12 +207,12 @@ export const extensionSearchCommand = new Command()
         getChecksum: (name, version) => client.getChecksum(name, version),
         logger: ctx.logger,
         lockfilePath,
-        modelsDir,
-        workflowsDir,
-        vaultsDir,
-        driversDir,
-        datastoresDir,
-        reportsDir,
+        modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
+        workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
+        vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
+        driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
+        datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
+        reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
         repoDir,
         force: false,
         outputMode: ctx.outputMode,

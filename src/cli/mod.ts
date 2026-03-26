@@ -20,6 +20,10 @@
 import { Command } from "@cliffy/command";
 import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, join, resolve } from "@std/path";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
@@ -524,8 +528,6 @@ export async function runCli(args: string[]): Promise<void> {
     const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
     const extensionClient = new ExtensionApiClient(serverUrl);
     const modelsDir = resolveModelsDir(marker);
-    const workflowsDir = resolveWorkflowsDir(marker);
-    const vaultsDir = resolveVaultsDir(marker);
     const denoRuntime = new EmbeddedDenoRuntime();
     setAutoResolver(
       new ExtensionAutoResolver({
@@ -541,12 +543,12 @@ export async function runCli(args: string[]): Promise<void> {
             resolve(repoDir, modelsDir),
             "upstream_extensions.json",
           ),
-          modelsDir,
-          workflowsDir,
-          vaultsDir,
-          driversDir: resolveDriversDir(marker),
-          datastoresDir: resolveDatastoresDir(marker),
-          reportsDir: resolveReportsDir(marker),
+          modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
+          workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
+          vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
+          driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
+          datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
+          reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
           repoDir,
           denoRuntime,
         }),
