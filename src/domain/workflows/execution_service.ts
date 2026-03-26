@@ -1460,8 +1460,8 @@ export class WorkflowExecutionService {
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
-          driver: step.driver ?? job.driver ?? workflow.driver ??
-            options.driver,
+          driver: options.driver ?? step.driver ?? job.driver ??
+            workflow.driver,
           driverConfig: step.driverConfig ?? job.driverConfig ??
             workflow.driverConfig,
           emitEvent: push,

@@ -35,18 +35,20 @@ export interface ResolvedDriverConfig {
 
 /**
  * Resolves the effective driver and config using precedence:
- *   step > job > workflow > definition > "raw"
+ *   cli > step > job > workflow > definition > "raw"
  *
  * The first non-undefined `driver` value wins. Its corresponding
  * `driverConfig` is used as-is (no merging across levels).
  */
 export function resolveDriverConfig(
+  cli?: DriverSource,
   step?: DriverSource,
   job?: DriverSource,
   workflow?: DriverSource,
   definition?: DriverSource,
 ): ResolvedDriverConfig {
   const sources: (DriverSource | undefined)[] = [
+    cli,
     step,
     job,
     workflow,

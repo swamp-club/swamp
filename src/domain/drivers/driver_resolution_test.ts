@@ -20,14 +20,15 @@
 import { assertEquals } from "@std/assert";
 import { resolveDriverConfig } from "./driver_resolution.ts";
 
-Deno.test("resolveDriverConfig - defaults to raw when no sources", () => {
+Deno.test("resolveDriverConfig: defaults to raw when no sources", () => {
   const result = resolveDriverConfig();
   assertEquals(result.driver, "raw");
   assertEquals(result.driverConfig, undefined);
 });
 
-Deno.test("resolveDriverConfig - defaults to raw when all sources undefined", () => {
+Deno.test("resolveDriverConfig: defaults to raw when all sources undefined", () => {
   const result = resolveDriverConfig(
+    undefined,
     undefined,
     undefined,
     undefined,
@@ -36,8 +37,9 @@ Deno.test("resolveDriverConfig - defaults to raw when all sources undefined", ()
   assertEquals(result.driver, "raw");
 });
 
-Deno.test("resolveDriverConfig - definition driver wins over default", () => {
+Deno.test("resolveDriverConfig: definition driver wins over default", () => {
   const result = resolveDriverConfig(
+    undefined,
     undefined,
     undefined,
     undefined,
@@ -47,8 +49,9 @@ Deno.test("resolveDriverConfig - definition driver wins over default", () => {
   assertEquals(result.driverConfig, { image: "node:18" });
 });
 
-Deno.test("resolveDriverConfig - workflow driver wins over definition", () => {
+Deno.test("resolveDriverConfig: workflow driver wins over definition", () => {
   const result = resolveDriverConfig(
+    undefined,
     undefined,
     undefined,
     { driver: "docker", driverConfig: { image: "deno:latest" } },
@@ -58,8 +61,9 @@ Deno.test("resolveDriverConfig - workflow driver wins over definition", () => {
   assertEquals(result.driverConfig, { image: "deno:latest" });
 });
 
-Deno.test("resolveDriverConfig - job driver wins over workflow", () => {
+Deno.test("resolveDriverConfig: job driver wins over workflow", () => {
   const result = resolveDriverConfig(
+    undefined,
     undefined,
     { driver: "raw" },
     { driver: "docker" },
@@ -68,8 +72,9 @@ Deno.test("resolveDriverConfig - job driver wins over workflow", () => {
   assertEquals(result.driver, "raw");
 });
 
-Deno.test("resolveDriverConfig - step driver wins over all", () => {
+Deno.test("resolveDriverConfig: step driver wins over job", () => {
   const result = resolveDriverConfig(
+    undefined,
     { driver: "docker", driverConfig: { image: "step-image" } },
     { driver: "raw" },
     { driver: "raw" },
@@ -79,8 +84,45 @@ Deno.test("resolveDriverConfig - step driver wins over all", () => {
   assertEquals(result.driverConfig, { image: "step-image" });
 });
 
-Deno.test("resolveDriverConfig - skips sources without driver field", () => {
+Deno.test("resolveDriverConfig: cli driver wins over all others", () => {
   const result = resolveDriverConfig(
+    { driver: "raw" },
+    { driver: "docker", driverConfig: { image: "step-image" } },
+    { driver: "docker", driverConfig: { image: "job-image" } },
+    { driver: "docker", driverConfig: { image: "wf-image" } },
+    { driver: "docker", driverConfig: { image: "def-image" } },
+  );
+  assertEquals(result.driver, "raw");
+  assertEquals(result.driverConfig, undefined);
+});
+
+Deno.test("resolveDriverConfig: cli driver config is used when cli wins", () => {
+  const result = resolveDriverConfig(
+    { driver: "docker", driverConfig: { image: "cli-image" } },
+    { driver: "raw" },
+    { driver: "raw" },
+    { driver: "raw" },
+    { driver: "raw" },
+  );
+  assertEquals(result.driver, "docker");
+  assertEquals(result.driverConfig, { image: "cli-image" });
+});
+
+Deno.test("resolveDriverConfig: step wins when cli is undefined", () => {
+  const result = resolveDriverConfig(
+    undefined,
+    { driver: "docker", driverConfig: { image: "step-image" } },
+    { driver: "raw" },
+    { driver: "raw" },
+    { driver: "raw" },
+  );
+  assertEquals(result.driver, "docker");
+  assertEquals(result.driverConfig, { image: "step-image" });
+});
+
+Deno.test("resolveDriverConfig: skips sources without driver field", () => {
+  const result = resolveDriverConfig(
+    undefined,
     { driverConfig: { ignore: true } },
     undefined,
     { driver: "docker" },
@@ -89,8 +131,9 @@ Deno.test("resolveDriverConfig - skips sources without driver field", () => {
   assertEquals(result.driver, "docker");
 });
 
-Deno.test("resolveDriverConfig - uses driverConfig from winning level only", () => {
+Deno.test("resolveDriverConfig: uses driverConfig from winning level only", () => {
   const result = resolveDriverConfig(
+    undefined,
     undefined,
     { driver: "docker", driverConfig: { timeout: 30 } },
     { driver: "raw", driverConfig: { verbose: true } },
