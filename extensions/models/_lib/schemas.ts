@@ -61,6 +61,8 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   approve: ["plan_generated"],
   implement: ["approved"],
   ci_status: ["implementing"],
+  adversarial_review: ["plan_generated"],
+  resolve_findings: ["plan_generated"],
   fix: ["ci_review"],
   complete: ["ci_review"],
 };
@@ -160,6 +162,32 @@ export const CiResultsSchema = z.object({
   ),
   fetchedAt: z.string(),
 });
+
+export const AdversarialFindingSchema = z.object({
+  id: z.string().describe("Unique finding identifier, e.g. ADV-1"),
+  severity: z.enum(["critical", "high", "medium", "low"]),
+  category: z.enum([
+    "architecture",
+    "scope",
+    "risk",
+    "testing",
+    "complexity",
+    "correctness",
+  ]),
+  description: z.string(),
+  resolved: z.boolean().default(false),
+  resolutionNote: z.string().optional(),
+});
+
+export const AdversarialReviewSchema = z.object({
+  planVersion: z.number().describe(
+    "The plan version this review applies to",
+  ),
+  findings: z.array(AdversarialFindingSchema),
+  reviewedAt: z.string(),
+});
+
+export type AdversarialReviewData = z.infer<typeof AdversarialReviewSchema>;
 
 export const FixDirectiveSchema = z.object({
   round: z.number(),

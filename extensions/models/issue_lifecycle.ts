@@ -16,6 +16,9 @@
 
 import { z } from "zod";
 import {
+  AdversarialFindingSchema,
+  type AdversarialReviewData,
+  AdversarialReviewSchema,
   CiResultsSchema,
   ClassificationSchema,
   ContextSchema,
@@ -60,8 +63,17 @@ async function readState(
 
 export const model = {
   type: "@si/issue-lifecycle",
-  version: "2026.03.25.2",
+  version: "2026.03.26.1",
   globalArguments: GlobalArgsSchema,
+
+  upgrades: [
+    {
+      toVersion: "2026.03.26.1",
+      description:
+        "Add adversarial review resource, methods, and approval gate — no globalArguments changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
 
   resources: {
     "state": {
@@ -91,6 +103,12 @@ export const model = {
     "feedback": {
       description: "Human feedback on plan (versioned per round)",
       schema: FeedbackSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 20,
+    },
+    "adversarialReview": {
+      description: "Adversarial review findings for the current plan version",
+      schema: AdversarialReviewSchema,
       lifetime: "infinite" as const,
       garbageCollection: 20,
     },
@@ -215,6 +233,80 @@ export const model = {
             ],
           };
         }
+        return { pass: true };
+      },
+    },
+
+    "adversarial-review-clear": {
+      description:
+        "Ensures all critical/high adversarial findings are resolved before approval",
+      labels: ["policy"],
+      appliesTo: ["approve"],
+      execute: async (context: {
+        dataRepository: {
+          getContent: (
+            type: string,
+            modelId: string,
+            dataName: string,
+          ) => Promise<Uint8Array | null>;
+        };
+        modelType: string;
+        modelId: string;
+      }) => {
+        const planContent = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "plan-main",
+        );
+        if (!planContent) {
+          return { pass: false, errors: ["No plan exists."] };
+        }
+        const plan = JSON.parse(
+          new TextDecoder().decode(planContent),
+        ) as PlanData;
+
+        const reviewContent = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "adversarialReview-main",
+        );
+        if (!reviewContent) {
+          return {
+            pass: false,
+            errors: [
+              "No adversarial review exists. Run 'adversarial_review' before approving.",
+            ],
+          };
+        }
+        const review = JSON.parse(
+          new TextDecoder().decode(reviewContent),
+        ) as AdversarialReviewData;
+
+        if (review.planVersion !== plan.version) {
+          return {
+            pass: false,
+            errors: [
+              `Adversarial review is for plan v${review.planVersion} but current plan is v${plan.version}. Re-run 'adversarial_review'.`,
+            ],
+          };
+        }
+
+        const unresolved = review.findings.filter(
+          (f) =>
+            !f.resolved &&
+            (f.severity === "critical" || f.severity === "high"),
+        );
+
+        if (unresolved.length > 0) {
+          const ids = unresolved.map((f) => f.id).join(", ");
+          return {
+            pass: false,
+            errors: [
+              `${unresolved.length} unresolved critical/high finding(s): ${ids}. Resolve these before approving.`,
+            ],
+          };
+        }
+
         return { pass: true };
       },
     },
@@ -626,6 +718,211 @@ export const model = {
           `\u{1F504} **Plan revised** (v${newVersion}) \u2014 incorporated feedback round ${feedbackRound}`,
         );
         await tracker.setPhaseLabel(repo, issueNumber, "plan_generated");
+
+        return { dataHandles: handles };
+      },
+    },
+
+    adversarial_review: {
+      description:
+        "Record adversarial review findings for the current plan version",
+      arguments: z.object({
+        findings: z.array(AdversarialFindingSchema),
+      }),
+      execute: async (
+        args: {
+          findings: {
+            id: string;
+            severity: "critical" | "high" | "medium" | "low";
+            category:
+              | "architecture"
+              | "scope"
+              | "risk"
+              | "testing"
+              | "complexity"
+              | "correctness";
+            description: string;
+            resolved?: boolean;
+            resolutionNote?: string;
+          }[];
+        },
+        context: {
+          globalArgs: { repo: string; issueNumber: number };
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+          readResource: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
+        },
+      ) => {
+        const { repo, issueNumber } = context.globalArgs;
+        const handles = [];
+
+        const plan = await context.readResource!("plan-main") as
+          | PlanData
+          | null;
+        const planVersion = plan ? plan.version : 0;
+
+        const findings = args.findings.map((f) => ({
+          ...f,
+          resolved: f.resolved ?? false,
+        }));
+
+        handles.push(
+          await context.writeResource(
+            "adversarialReview",
+            "adversarialReview-main",
+            {
+              planVersion,
+              findings,
+              reviewedAt: new Date().toISOString(),
+            },
+          ),
+        );
+
+        const critical = findings.filter((f) => f.severity === "critical")
+          .length;
+        const high = findings.filter((f) => f.severity === "high").length;
+        const medium = findings.filter((f) => f.severity === "medium").length;
+        const low = findings.filter((f) => f.severity === "low").length;
+
+        context.logger.info(
+          "Adversarial review for plan v{planVersion}: {critical} critical, {high} high, {medium} medium, {low} low",
+          { planVersion, critical, high, medium, low },
+        );
+
+        const findingsText = findings
+          .map((f) =>
+            `- **${f.id}** [${f.severity}/${f.category}]: ${f.description}`
+          )
+          .join("\n");
+
+        const blockers = critical + high;
+        const status = blockers > 0
+          ? `\u{1F6D1} **${blockers} blocking finding(s)** must be resolved before approval`
+          : "\u{2705} No blocking findings — ready for approval";
+
+        await tracker.postComment(
+          repo,
+          issueNumber,
+          [
+            `\u{1F50D} **Adversarial review** (plan v${planVersion})`,
+            "",
+            findingsText,
+            "",
+            status,
+          ].join("\n"),
+        );
+
+        return { dataHandles: handles };
+      },
+    },
+
+    resolve_findings: {
+      description:
+        "Mark adversarial review findings as resolved after plan revision",
+      arguments: z.object({
+        resolutions: z.array(z.object({
+          findingId: z.string().describe("Finding ID to resolve, e.g. ADV-1"),
+          resolutionNote: z.string().describe(
+            "How this finding was addressed in the revised plan",
+          ),
+        })),
+      }),
+      execute: async (
+        args: {
+          resolutions: { findingId: string; resolutionNote: string }[];
+        },
+        context: {
+          globalArgs: { repo: string; issueNumber: number };
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+          readResource: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
+        },
+      ) => {
+        const { repo, issueNumber } = context.globalArgs;
+        const handles = [];
+
+        const current = await context.readResource!(
+          "adversarialReview-main",
+        ) as AdversarialReviewData | null;
+        if (!current) {
+          throw new Error(
+            "No adversarial review exists. Run 'adversarial_review' first.",
+          );
+        }
+
+        const resolutionMap = new Map(
+          args.resolutions.map((r) => [r.findingId, r.resolutionNote]),
+        );
+
+        const updatedFindings = current.findings.map((f) => {
+          const note = resolutionMap.get(f.id);
+          if (note) {
+            return { ...f, resolved: true, resolutionNote: note };
+          }
+          return f;
+        });
+
+        handles.push(
+          await context.writeResource(
+            "adversarialReview",
+            "adversarialReview-main",
+            {
+              planVersion: current.planVersion,
+              findings: updatedFindings,
+              reviewedAt: new Date().toISOString(),
+            },
+          ),
+        );
+
+        const resolved = args.resolutions.length;
+        const remaining = updatedFindings.filter(
+          (f) =>
+            !f.resolved &&
+            (f.severity === "critical" || f.severity === "high"),
+        ).length;
+
+        context.logger.info(
+          "Resolved {resolved} finding(s), {remaining} blocking finding(s) remain",
+          { resolved, remaining },
+        );
+
+        const resolvedText = args.resolutions
+          .map((r) => `- **${r.findingId}**: ${r.resolutionNote}`)
+          .join("\n");
+
+        await tracker.postComment(
+          repo,
+          issueNumber,
+          [
+            `\u{2705} **Findings resolved** (${resolved})`,
+            "",
+            resolvedText,
+            "",
+            remaining > 0
+              ? `\u{1F6D1} ${remaining} blocking finding(s) remain`
+              : "\u{2705} All blocking findings resolved — ready for approval",
+          ].join("\n"),
+        );
 
         return { dataHandles: handles };
       },
