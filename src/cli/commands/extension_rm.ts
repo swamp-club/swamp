@@ -33,6 +33,7 @@ import {
   extensionRm,
   extensionRmPreview,
   parseExtensionRef,
+  requireCurrentExtensionLayout,
   validateExtensionName,
 } from "../../libswamp/mod.ts";
 import {
@@ -85,6 +86,9 @@ export const extensionRemoveCommand = new Command()
     const modelsDir = resolveModelsDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    // Check for legacy extension layout
+    await requireCurrentExtensionLayout(lockfilePath);
 
     // Create libswamp context, deps, renderer
     const libCtx = createLibSwampContext({ logger: ctx.logger });

@@ -41,6 +41,7 @@ import {
   type ExtensionPullDeps,
   type ExtensionRegistryInfo,
   parseExtensionRef,
+  requireCurrentExtensionLayout,
   resolveServerUrl,
   validateExtensionName,
 } from "../../libswamp/mod.ts";
@@ -193,7 +194,10 @@ export const extensionPullCommand = new Command()
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // 5. Resolve pulled-extension dirs (.swamp/pulled-extensions/{type}/)
+    // 5. Check for legacy extension layout
+    await requireCurrentExtensionLayout(lockfilePath);
+
+    // 6. Resolve pulled-extension dirs (.swamp/pulled-extensions/{type}/)
     const pulledModelsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
     const pulledWorkflowsDir = swampPath(
       repoDir,

@@ -40,6 +40,7 @@ import {
   createExtensionUpdateDeps,
   createLibSwampContext,
   extensionUpdate,
+  requireCurrentExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { createExtensionUpdateRenderer } from "../../presentation/renderers/extension_update.ts";
 
@@ -96,7 +97,10 @@ export const extensionUpdateCommand = new Command()
     );
     const pulledReportsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
 
-    // 3. Parse extension name if given
+    // 3. Check for legacy extension layout
+    await requireCurrentExtensionLayout(lockfilePath);
+
+    // 4. Parse extension name if given
     let extensionName: string | undefined;
     if (extensionArg) {
       const ref = parseExtensionRef(extensionArg);

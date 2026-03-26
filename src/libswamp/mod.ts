@@ -537,6 +537,12 @@ export {
   removeUpstreamExtension,
 } from "./extensions/rm.ts";
 
+// Extension layout detection
+export {
+  detectLegacyExtensionLayout,
+  requireCurrentExtensionLayout,
+} from "./extensions/layout.ts";
+
 // Model edit operations
 export {
   createModelEditDeps,
