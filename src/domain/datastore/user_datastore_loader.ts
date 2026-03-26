@@ -26,7 +26,6 @@ import {
   installZodGlobal,
   rewriteZodImports,
   sanitizeDataUrlError,
-  sourceHasBareSpecifiers,
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
@@ -233,33 +232,31 @@ export class UserDatastoreLoader {
           }
         }
       } catch {
+        // Freshness check failed (e.g. missing dependency file).
+        // Fall through to attempt a rebundle rather than using a
+        // potentially stale cache.
+      }
+
+      // Try to rebundle from source. If bundling fails (e.g. bare specifiers
+      // without a deno.json import map) and a cached bundle exists, fall back
+      // to the cache. The old bundle file is untouched on failure since
+      // bundleExtension returns the JS string in memory before we write.
+      try {
+        const js = await bundleExtension(absolutePath, denoPath);
+        const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
+        await assertSafePath(bundlePath, bundleBoundary);
+        await Deno.mkdir(dirname(bundlePath), { recursive: true });
+        await Deno.writeTextFile(bundlePath, js);
+        logger.debug`Wrote datastore bundle cache: ${bundlePath}`;
+        return js;
+      } catch (bundleError) {
         if (bundleExists) {
           logger
-            .debug`Using cached datastore bundle for ${relativePath} (freshness check failed — missing dependency)`;
+            .warn`Rebundle failed for ${relativePath}, using cached bundle: ${bundleError}`;
           return await Deno.readTextFile(bundlePath);
         }
+        throw bundleError;
       }
-
-      // If the source uses bare specifiers (e.g., from "zod" instead of
-      // from "npm:zod@4") and a cached bundle exists, use it — re-bundling
-      // would fail without a deno.json import map to resolve the specifiers.
-      if (bundleExists) {
-        const source = await Deno.readTextFile(absolutePath);
-        if (sourceHasBareSpecifiers(source)) {
-          logger
-            .debug`Using cached datastore bundle for ${relativePath} (source has bare specifiers)`;
-          return await Deno.readTextFile(bundlePath);
-        }
-      }
-
-      // Bundle and write to cache
-      const js = await bundleExtension(absolutePath, denoPath);
-      const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
-      await assertSafePath(bundlePath, bundleBoundary);
-      await Deno.mkdir(dirname(bundlePath), { recursive: true });
-      await Deno.writeTextFile(bundlePath, js);
-      logger.debug`Wrote datastore bundle cache: ${bundlePath}`;
-      return js;
     }
 
     // No repo dir — just bundle without caching
