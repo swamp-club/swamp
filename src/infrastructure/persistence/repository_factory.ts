@@ -187,6 +187,8 @@ export interface RepositoryFactoryConfig {
   repoDir: string;
   enableIndexing?: boolean;
   workflowsDir?: string;
+  /** Additional workflow directories to scan (e.g. pulled extensions). */
+  additionalWorkflowsDirs?: string[];
   definitionsDir?: string;
   yamlWorkflowsDir?: string;
   vaultsDir?: string;
@@ -222,6 +224,7 @@ export function createRepositoryContext(
     repoDir,
     enableIndexing = true,
     workflowsDir,
+    additionalWorkflowsDirs,
     definitionsDir,
     yamlWorkflowsDir,
     vaultsDir,
@@ -250,7 +253,7 @@ export function createRepositoryContext(
 
   // Create composite workflow repo if extension workflows dir is provided
   const extensionWorkflowRepo = workflowsDir
-    ? new ExtensionWorkflowRepository(workflowsDir)
+    ? new ExtensionWorkflowRepository(workflowsDir, additionalWorkflowsDirs)
     : null;
   const workflowRepo: WorkflowRepository = new CompositeWorkflowRepository(
     yamlWorkflowRepo,

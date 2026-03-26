@@ -41,6 +41,10 @@ import {
 import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
@@ -218,6 +222,9 @@ export async function requireInitializedRepoReadOnly(
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
     workflowsDir,
+    additionalWorkflowsDirs: [
+      swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
+    ],
     definitionsDir,
     yamlWorkflowsDir,
     vaultsDir,
@@ -432,6 +439,9 @@ export async function requireInitializedRepoUnlocked(
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
     workflowsDir,
+    additionalWorkflowsDirs: [
+      swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
+    ],
     definitionsDir,
     yamlWorkflowsDir,
     vaultsDir,
