@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { join, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
@@ -200,12 +201,19 @@ export const extensionSearchCommand = new Command()
       const datastoresDir = resolveDatastoresDir(marker);
       const reportsDir = resolveReportsDir(marker);
 
+      const absoluteModelsDir = resolve(repoDir, modelsDir);
+      const lockfilePath = join(
+        absoluteModelsDir,
+        "upstream_extensions.json",
+      );
+
       const pullCtx: PullContext = {
         getExtension: (name) => client.getExtension(name),
         downloadArchive: (name, version) =>
           client.downloadArchive(name, version),
         getChecksum: (name, version) => client.getChecksum(name, version),
         logger: ctx.logger,
+        lockfilePath,
         modelsDir,
         workflowsDir,
         vaultsDir,

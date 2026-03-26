@@ -19,6 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import type { Logger } from "@logtape/logtape";
+import { join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
@@ -88,6 +89,8 @@ export interface PullContext {
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
   getChecksum: (name: string, version: string) => Promise<string | null>;
   logger: Logger;
+  /** Full path to the upstream_extensions.json lockfile. */
+  lockfilePath: string;
   modelsDir: string;
   workflowsDir: string;
   vaultsDir: string;
@@ -114,6 +117,7 @@ export async function pullExtension(
     getExtension: ctx.getExtension,
     downloadArchive: ctx.downloadArchive,
     getChecksum: ctx.getChecksum,
+    lockfilePath: ctx.lockfilePath,
     modelsDir: ctx.modelsDir,
     workflowsDir: ctx.workflowsDir,
     vaultsDir: ctx.vaultsDir,
@@ -193,10 +197,15 @@ export const extensionPullCommand = new Command()
     const datastoresDir = resolveDatastoresDir(marker);
     const reportsDir = resolveReportsDir(marker);
 
-    // 5. Create deps via factory and pull
+    // 5. Resolve lockfile path
+    const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    // 6. Create deps via factory and pull
     const serverUrl = resolveServerUrl();
     const deps = createExtensionPullDeps(
       serverUrl,
+      lockfilePath,
       modelsDir,
       workflowsDir,
       vaultsDir,
@@ -211,6 +220,7 @@ export const extensionPullCommand = new Command()
       downloadArchive: deps.downloadArchive,
       getChecksum: deps.getChecksum,
       logger: ctx.logger,
+      lockfilePath,
       modelsDir,
       workflowsDir,
       vaultsDir,

@@ -45,6 +45,8 @@ interface InstallerAdapterConfig {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
   getChecksum: (name: string, version: string) => Promise<string | null>;
+  /** Full path to the upstream_extensions.json lockfile. */
+  lockfilePath: string;
   modelsDir: string;
   workflowsDir: string;
   vaultsDir: string;
@@ -66,6 +68,7 @@ export function createAutoResolveInstallerAdapter(
     getExtension,
     downloadArchive,
     getChecksum,
+    lockfilePath,
     modelsDir,
     workflowsDir,
     vaultsDir,
@@ -85,6 +88,7 @@ export function createAutoResolveInstallerAdapter(
           downloadArchive,
           getChecksum,
           logger,
+          lockfilePath,
           modelsDir,
           workflowsDir,
           vaultsDir,

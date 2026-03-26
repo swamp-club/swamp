@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { resolve } from "@std/path";
+import { join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
@@ -86,6 +86,7 @@ export const extensionUpdateCommand = new Command()
     const datastoresDir = resolveDatastoresDir(marker);
     const reportsDir = resolveReportsDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
     // 3. Parse extension name if given
     let extensionName: string | undefined;
@@ -99,11 +100,12 @@ export const extensionUpdateCommand = new Command()
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createExtensionUpdateDeps({
-      absoluteModelsDir,
+      lockfilePath,
       serverUrl,
       installExtension: async (name: string, version: string) => {
         const installCtx = createInstallContext(serverUrl, {
           logger: cliCtx.logger,
+          lockfilePath,
           modelsDir,
           workflowsDir,
           vaultsDir,

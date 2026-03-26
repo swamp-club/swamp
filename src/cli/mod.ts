@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { setColorEnabled } from "@std/fmt/colors";
-import { isAbsolute, resolve } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
@@ -537,6 +537,10 @@ export async function runCli(args: string[]): Promise<void> {
             extensionClient.downloadArchive(name, version),
           getChecksum: (name, version) =>
             extensionClient.getChecksum(name, version),
+          lockfilePath: join(
+            resolve(repoDir, modelsDir),
+            "upstream_extensions.json",
+          ),
           modelsDir,
           workflowsDir,
           vaultsDir,

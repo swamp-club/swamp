@@ -51,7 +51,7 @@ function fakeDeps(
     readDirEntries: () => Promise.resolve([]),
     removeDir: () => Promise.resolve(),
     removeUpstreamExtension: () => Promise.resolve(),
-    modelsDir: "/fake/models",
+    lockfilePath: "/fake/models/upstream_extensions.json",
     repoDir: "/fake/repo",
     ...overrides,
   };

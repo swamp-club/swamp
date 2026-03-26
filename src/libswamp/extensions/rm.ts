@@ -69,7 +69,7 @@ export interface ExtensionRmInput {
 
 /** Dependencies for the extension rm operation. */
 export interface ExtensionRmDeps {
-  readUpstreamExtensions: (modelsDir: string) => Promise<UpstreamMap>;
+  readUpstreamExtensions: (lockfilePath: string) => Promise<UpstreamMap>;
   findDependents: (
     repoDir: string,
     upstreamData: UpstreamMap,
@@ -78,8 +78,12 @@ export interface ExtensionRmDeps {
   removeFile: (path: string) => Promise<void>;
   readDirEntries: (path: string) => Promise<Deno.DirEntry[]>;
   removeDir: (path: string) => Promise<void>;
-  removeUpstreamExtension: (modelsDir: string, name: string) => Promise<void>;
-  modelsDir: string;
+  removeUpstreamExtension: (
+    lockfilePath: string,
+    name: string,
+  ) => Promise<void>;
+  /** Full path to the upstream_extensions.json lockfile. */
+  lockfilePath: string;
   repoDir: string;
 }
 
@@ -183,12 +187,14 @@ async function acquireLock(lockPath: string): Promise<Deno.FsFile> {
 /**
  * Removes an extension entry from upstream_extensions.json, using a lockfile
  * for concurrency safety and atomicWriteTextFile for crash safety.
+ *
+ * @param lockfilePath Full path to the upstream_extensions.json file.
  */
 export async function removeUpstreamExtension(
-  modelsDir: string,
+  lockfilePath: string,
   name: string,
 ): Promise<void> {
-  const jsonPath = join(modelsDir, "upstream_extensions.json");
+  const jsonPath = lockfilePath;
   const lockPath = `${jsonPath}.lock`;
 
   const lockFile = await acquireLock(lockPath);
@@ -224,7 +230,7 @@ export async function extensionRmPreview(
 ): Promise<ExtensionRmPreview> {
   ctx.logger.debug`Looking up extension: ${input.extensionName}`;
 
-  const upstreamData = await deps.readUpstreamExtensions(deps.modelsDir);
+  const upstreamData = await deps.readUpstreamExtensions(deps.lockfilePath);
   const entry = upstreamData[input.extensionName];
 
   if (!entry) {
@@ -265,7 +271,7 @@ export async function* extensionRm(
     (async function* () {
       yield { kind: "deleting" };
 
-      const upstreamData = await deps.readUpstreamExtensions(deps.modelsDir);
+      const upstreamData = await deps.readUpstreamExtensions(deps.lockfilePath);
       const entry = upstreamData[input.extensionName];
 
       if (!entry || !entry.files) {
@@ -301,7 +307,7 @@ export async function* extensionRm(
 
       const dirsRemoved = await pruneEmptyDirs(parentDirs, deps.repoDir, deps);
 
-      await deps.removeUpstreamExtension(deps.modelsDir, input.extensionName);
+      await deps.removeUpstreamExtension(deps.lockfilePath, input.extensionName);
 
       yield {
         kind: "completed",
@@ -320,7 +326,7 @@ export async function* extensionRm(
 /** Wires real infrastructure into ExtensionRmDeps. */
 export function createExtensionRmDeps(
   repoDir: string,
-  modelsDir: string,
+  lockfilePath: string,
 ): ExtensionRmDeps {
   return {
     readUpstreamExtensions,
@@ -335,7 +341,7 @@ export function createExtensionRmDeps(
     },
     removeDir: (path: string) => Deno.remove(path),
     removeUpstreamExtension,
-    modelsDir,
+    lockfilePath,
     repoDir,
   };
 }

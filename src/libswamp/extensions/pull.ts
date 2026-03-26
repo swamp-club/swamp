@@ -82,6 +82,8 @@ export interface InstallContext {
     version: string,
   ) => Promise<string | null>;
   logger?: Logger;
+  /** Full path to the upstream_extensions.json lockfile. */
+  lockfilePath: string;
   modelsDir: string;
   workflowsDir: string;
   vaultsDir: string;
@@ -123,6 +125,8 @@ export interface ExtensionPullDeps {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
   getChecksum: (name: string, version: string) => Promise<string | null>;
+  /** Full path to the upstream_extensions.json lockfile. */
+  lockfilePath: string;
   modelsDir: string;
   workflowsDir: string;
   vaultsDir: string;
@@ -220,15 +224,17 @@ async function acquireLock(lockPath: string): Promise<Deno.FsFile> {
 /**
  * Updates upstream_extensions.json with a new entry, using a lockfile
  * for concurrency safety and atomicWriteTextFile for crash safety.
+ *
+ * @param lockfilePath Full path to the upstream_extensions.json file.
  */
 export async function updateUpstreamExtensions(
-  modelsDir: string,
+  lockfilePath: string,
   name: string,
   version: string,
   files: string[],
   include?: string[],
 ): Promise<void> {
-  const jsonPath = join(modelsDir, "upstream_extensions.json");
+  const jsonPath = lockfilePath;
   const lockPath = `${jsonPath}.lock`;
 
   const lockFile = await acquireLock(lockPath);
@@ -264,12 +270,14 @@ export async function updateUpstreamExtensions(
 /**
  * Removes an extension entry from upstream_extensions.json, using a lockfile
  * for concurrency safety and atomicWriteTextFile for crash safety.
+ *
+ * @param lockfilePath Full path to the upstream_extensions.json file.
  */
 export async function removeUpstreamExtension(
-  modelsDir: string,
+  lockfilePath: string,
   name: string,
 ): Promise<void> {
-  const jsonPath = join(modelsDir, "upstream_extensions.json");
+  const jsonPath = lockfilePath;
   const lockPath = `${jsonPath}.lock`;
 
   const lockFile = await acquireLock(lockPath);
@@ -895,7 +903,7 @@ export async function installExtension(
       : undefined;
 
     await updateUpstreamExtensions(
-      absoluteModelsDir,
+      ctx.lockfilePath,
       ref.name,
       version,
       extractedFiles,
@@ -909,13 +917,9 @@ export async function installExtension(
           continue;
         }
 
-        const upstreamPath = join(
-          absoluteModelsDir,
-          "upstream_extensions.json",
-        );
         let isInstalled = false;
         try {
-          const upstreamContent = await Deno.readTextFile(upstreamPath);
+          const upstreamContent = await Deno.readTextFile(ctx.lockfilePath);
           const upstream = JSON.parse(
             upstreamContent,
           ) as UpstreamExtensionsMap;
@@ -978,6 +982,7 @@ export async function* extensionPull(
         downloadArchive: deps.downloadArchive,
         getChecksum: deps.getChecksum,
         logger: ctx.logger,
+        lockfilePath: deps.lockfilePath,
         modelsDir: deps.modelsDir,
         workflowsDir: deps.workflowsDir,
         vaultsDir: deps.vaultsDir,
@@ -1002,6 +1007,7 @@ export async function* extensionPull(
 /** Wires real infrastructure into ExtensionPullDeps. */
 export function createExtensionPullDeps(
   serverUrl: string,
+  lockfilePath: string,
   modelsDir: string,
   workflowsDir: string,
   vaultsDir: string,
@@ -1015,6 +1021,7 @@ export function createExtensionPullDeps(
     getExtension: (name) => client.getExtension(name),
     downloadArchive: (name, version) => client.downloadArchive(name, version),
     getChecksum: (name, version) => client.getChecksum(name, version),
+    lockfilePath,
     modelsDir,
     workflowsDir,
     vaultsDir,
@@ -1031,6 +1038,7 @@ export function createExtensionPullDeps(
 export function createInstallContext(
   serverUrl: string,
   opts: {
+    lockfilePath: string;
     modelsDir: string;
     workflowsDir: string;
     vaultsDir: string;
@@ -1048,6 +1056,7 @@ export function createInstallContext(
     downloadArchive: (name, version) => client.downloadArchive(name, version),
     getChecksum: (name, version) => client.getChecksum(name, version),
     logger: opts.logger,
+    lockfilePath: opts.lockfilePath,
     modelsDir: opts.modelsDir,
     workflowsDir: opts.workflowsDir,
     vaultsDir: opts.vaultsDir,

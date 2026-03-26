@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { resolve } from "@std/path";
+import { join, resolve } from "@std/path";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   RepoMarkerRepository,
@@ -67,8 +67,9 @@ export async function createExtensionListDeps(
   const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
   const modelsDir = envModelsDir ?? marker?.modelsDir ?? "extensions/models";
   const absoluteModelsDir = resolve(repoDir, modelsDir);
+  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
   return {
-    readUpstreamExtensions: () => readUpstreamExtensions(absoluteModelsDir),
+    readUpstreamExtensions: () => readUpstreamExtensions(lockfilePath),
   };
 }
 

@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
 
 /** Entry in upstream_extensions.json. */
 export interface UpstreamExtensionEntry {
@@ -32,13 +31,14 @@ export type UpstreamExtensionsMap = Record<string, UpstreamExtensionEntry>;
 
 /**
  * Reads upstream_extensions.json and returns the parsed map.
+ *
+ * @param lockfilePath Full path to the upstream_extensions.json file.
  */
 export async function readUpstreamExtensions(
-  modelsDir: string,
+  lockfilePath: string,
 ): Promise<UpstreamExtensionsMap> {
-  const jsonPath = join(modelsDir, "upstream_extensions.json");
   try {
-    const content = await Deno.readTextFile(jsonPath);
+    const content = await Deno.readTextFile(lockfilePath);
     return JSON.parse(content) as UpstreamExtensionsMap;
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {

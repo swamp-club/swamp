@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { resolve } from "@std/path";
+import { join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
@@ -84,10 +84,11 @@ export const extensionRemoveCommand = new Command()
     const marker = await markerRepo.read(repoPath);
     const modelsDir = resolveModelsDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
     // Create libswamp context, deps, renderer
     const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const deps = createExtensionRmDeps(repoDir, absoluteModelsDir);
+    const deps = createExtensionRmDeps(repoDir, lockfilePath);
     const renderer = createExtensionRmRenderer(ctx.outputMode);
     const input = { extensionName: ref.name };
 
