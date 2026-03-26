@@ -39,6 +39,7 @@ import { extensionCommand } from "./commands/extension.ts";
 import { summariseCommand } from "./commands/summarise.ts";
 import { datastoreCommand } from "./commands/datastore.ts";
 import { reportCommand } from "./commands/report.ts";
+import { serveCommand } from "./commands/serve.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import {
@@ -616,7 +617,8 @@ export async function runCli(args: string[]): Promise<void> {
     .command("extension", extensionCommand)
     .command("summarise", summariseCommand)
     .command("datastore", datastoreCommand)
-    .command("report", reportCommand);
+    .command("report", reportCommand)
+    .command("serve", serveCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));

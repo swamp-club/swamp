@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "license": "AGPL-3.0-only",
   "exports": "./main.ts",
+  "workspace": ["packages/client"],
   "tasks": {
     "dev": "deno run --unstable-bundle --allow-read --allow-write --allow-env --allow-run --allow-sys main.ts",
     "test": "deno test --unstable-bundle --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys",
