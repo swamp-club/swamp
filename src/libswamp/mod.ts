@@ -543,6 +543,15 @@ export {
   requireCurrentExtensionLayout,
 } from "./extensions/layout.ts";
 
+// Extension install (restore from lockfile)
+export {
+  extensionInstall,
+  type ExtensionInstallData,
+  type ExtensionInstallDeps,
+  type ExtensionInstallEntry,
+  type ExtensionInstallEvent,
+} from "./extensions/install.ts";
+
 // Model edit operations
 export {
   createModelEditDeps,
