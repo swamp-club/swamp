@@ -29,7 +29,7 @@ import type {
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { renderInteractiveSearch } from "./components/search_tui.tsx";
+import { renderInteractivePicker } from "./components/search_picker.tsx";
 
 /**
  * Filters vault types by a query string (case-insensitive match on type, name,
@@ -90,31 +90,21 @@ class InkVaultTypeSearchRenderer implements VaultTypeSearchRenderer {
     return {
       resolving: () => {},
       completed: async (e) => {
-        this._selected = await renderInteractiveSearch<VaultTypeSearchItem>(
+        const result = await renderInteractivePicker<VaultTypeSearchItem>(
           e.data.results,
           e.data.query,
           (item) => `${item.type} ${item.name} ${item.description}`,
-          (item, isSelected) => (
-            <Box flexDirection="column">
-              <Box>
-                <Text
-                  color={isSelected ? "green" : undefined}
-                  bold={isSelected}
-                >
-                  {isSelected ? "> " : "  "}
-                  {item.type}
-                </Text>
-                <Text dimColor>- {item.name}</Text>
-              </Box>
-              {isSelected && (
-                <Box marginLeft={4}>
-                  <Text dimColor>{item.description}</Text>
-                </Box>
-              )}
-            </Box>
-          ),
+          renderVaultTypeResultLine,
+          renderVaultTypePreview,
+          renderVaultTypeScrollback,
           "vault types",
+          {
+            previewKeyFn: (item) => item.type,
+          },
         );
+        if (result) {
+          this._selected = result.item;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -132,4 +122,43 @@ export function createVaultTypeSearchRenderer(
     case "log":
       return new InkVaultTypeSearchRenderer();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering callbacks for the SearchPicker
+// ---------------------------------------------------------------------------
+
+/** Single-line result for the results list. */
+function renderVaultTypeResultLine(
+  item: VaultTypeSearchItem,
+): React.ReactElement {
+  return (
+    <Text>
+      {item.type} <Text dimColor>- {item.name}</Text>
+    </Text>
+  );
+}
+
+/** Renders preview content for a vault type. */
+function renderVaultTypePreview(
+  item: VaultTypeSearchItem,
+  _detail: VaultTypeSearchItem | undefined,
+  _width: number,
+  _height: number,
+): React.ReactElement {
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      <Text bold>{item.type}</Text>
+      <Text dimColor>name: {item.name}</Text>
+      <Text dimColor>{item.description}</Text>
+    </Box>
+  );
+}
+
+/** Produces plain-text scrollback output for a selected vault type. */
+function renderVaultTypeScrollback(
+  item: VaultTypeSearchItem,
+  _detail: VaultTypeSearchItem | undefined,
+): string {
+  return `${item.type} - ${item.name}\n${item.description}`;
 }

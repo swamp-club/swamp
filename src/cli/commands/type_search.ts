@@ -23,8 +23,10 @@ import {
   createLibSwampContext,
   createTypeDescribeDeps,
   typeDescribe,
+  type TypeDescribeData,
   typeSearch,
   type TypeSearchDeps,
+  type TypeSearchItem,
 } from "../../libswamp/mod.ts";
 import { createTypeSearchRenderer } from "../../presentation/renderers/type_search.tsx";
 import { createTypeDescribeRenderer } from "../../presentation/renderers/type_describe.ts";
@@ -38,6 +40,36 @@ import { modelRegistry } from "../../domain/models/model.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Creates a fetchPreview closure that fetches full type detail data.
+ * This bridges the presentation layer to the libswamp typeDescribe application
+ * service.
+ */
+function createTypeFetchPreview(): (
+  item: TypeSearchItem,
+) => Promise<TypeDescribeData> {
+  const libCtx = createLibSwampContext();
+  const describeDeps = createTypeDescribeDeps();
+
+  return async (item: TypeSearchItem): Promise<TypeDescribeData> => {
+    let result: TypeDescribeData | undefined;
+    await consumeStream(
+      typeDescribe(libCtx, describeDeps, ModelType.create(item.normalized)),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data;
+        },
+        error: () => {},
+      },
+    );
+    if (!result) {
+      throw new Error(`Type not found: ${item.normalized}`);
+    }
+    return result;
+  };
+}
 
 export const typeSearchCommand = new Command()
   .name("search")
@@ -53,7 +85,11 @@ export const typeSearchCommand = new Command()
       getRegisteredTypes: () => modelRegistry.types(),
     };
 
-    const renderer = createTypeSearchRenderer(effectiveMode);
+    const fetchPreview = effectiveMode === "log"
+      ? createTypeFetchPreview()
+      : undefined;
+
+    const renderer = createTypeSearchRenderer(effectiveMode, fetchPreview);
     await consumeStream(
       typeSearch(libCtx, deps, { query }),
       renderer.handlers(),
@@ -62,16 +98,21 @@ export const typeSearchCommand = new Command()
     const selected = renderer.selectedItem();
     if (selected) {
       ctx.logger.debug`Selected type: ${selected.normalized}`;
-      const describeRenderer = createTypeDescribeRenderer(effectiveMode);
-      const describeDeps = createTypeDescribeDeps();
-      await consumeStream(
-        typeDescribe(
-          libCtx,
-          describeDeps,
-          ModelType.create(selected.normalized),
-        ),
-        describeRenderer.handlers(),
-      );
+      // In JSON mode, still display the full type describe output after auto-select
+      if (effectiveMode === "json") {
+        const describeRenderer = createTypeDescribeRenderer(effectiveMode);
+        const describeDeps = createTypeDescribeDeps();
+        await consumeStream(
+          typeDescribe(
+            libCtx,
+            describeDeps,
+            ModelType.create(selected.normalized),
+          ),
+          describeRenderer.handlers(),
+        );
+      }
+      // In interactive mode, the scrollback from the picker already contains
+      // the type detail, so no additional typeDescribe call is needed.
     } else {
       ctx.logger.debug`Search cancelled`;
     }

@@ -35,6 +35,7 @@ import {
   type ReportGetDeps,
   reportSearch,
   type ReportSearchDeps,
+  type StoredReportDetail,
   type StoredReportSummary,
 } from "../../libswamp/mod.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
@@ -95,6 +96,41 @@ function buildGetDeps(repoContext: RepositoryContext): ReportGetDeps {
 }
 
 /**
+ * Creates a fetchPreview closure that fetches full report detail data.
+ * This bridges the presentation layer to the libswamp reportGet application
+ * service, capturing the repository context dependency.
+ */
+function createReportFetchPreview(
+  repoContext: RepositoryContext,
+): (item: StoredReportSummary) => Promise<StoredReportDetail> {
+  const libCtx = createLibSwampContext();
+  const getDeps = buildGetDeps(repoContext);
+
+  return async (item: StoredReportSummary): Promise<StoredReportDetail> => {
+    let result: StoredReportDetail | undefined;
+    await consumeStream(
+      reportGet(libCtx, getDeps, {
+        reportName: item.reportName,
+        model: item.workflowName ? undefined : item.modelName,
+        workflow: item.workflowName,
+        variant: item.varySuffix,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data;
+        },
+        error: () => {},
+      },
+    );
+    if (!result) {
+      throw new Error(`Report not found: ${item.reportName}`);
+    }
+    return result;
+  };
+}
+
+/**
  * Fetches and displays full report content for a selected summary.
  */
 async function displayReportDetail(
@@ -146,9 +182,14 @@ export const reportSearchCommand = new Command()
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
 
+    const fetchPreview = effectiveMode === "log"
+      ? createReportFetchPreview(repoContext)
+      : undefined;
+
     const searchRenderer = createReportSearchRenderer(
       effectiveMode,
       query ?? "",
+      fetchPreview,
     );
     await consumeStream(
       reportSearch(libCtx, buildSearchDeps(repoContext), {
@@ -164,7 +205,17 @@ export const reportSearchCommand = new Command()
     const selected = searchRenderer.selectedItem();
     if (selected) {
       ctx.logger.debug`Selected report: ${selected.reportName}`;
-      await displayReportDetail(selected, repoContext, libCtx, effectiveMode);
+      // In JSON mode, still display the full report detail after auto-select
+      if (effectiveMode === "json") {
+        await displayReportDetail(
+          selected,
+          repoContext,
+          libCtx,
+          effectiveMode,
+        );
+      }
+      // In interactive mode, the scrollback from the picker already contains
+      // the report detail, so no additional displayReportDetail call is needed.
     } else {
       ctx.logger.debug`Search cancelled`;
     }

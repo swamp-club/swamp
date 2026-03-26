@@ -29,7 +29,8 @@ import type {
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { renderInteractiveSearch } from "./components/search_tui.tsx";
+import { renderInteractivePicker } from "./components/search_picker.tsx";
+import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 
 /**
  * Filters workflows by a query string (case-insensitive match on name, id, or description).
@@ -48,16 +49,40 @@ function filterWorkflows(
   );
 }
 
-export type WorkflowSearchRenderer = SearchRenderer<
-  WorkflowSearchEvent,
-  WorkflowSearchItem
->;
+/**
+ * Detail data for the preview pane — the raw YAML file content.
+ */
+export interface WorkflowPreviewDetail {
+  yaml: string;
+  name: string;
+}
+
+/**
+ * Callback type for fetching workflow YAML for the preview pane.
+ */
+export type WorkflowPreviewFetcher = (
+  item: WorkflowSearchItem,
+) => Promise<WorkflowPreviewDetail>;
+
+export interface WorkflowSearchRendererResult {
+  item: WorkflowSearchItem;
+  action?: string;
+}
+
+export interface WorkflowSearchRenderer
+  extends SearchRenderer<WorkflowSearchEvent, WorkflowSearchItem> {
+  selectedAction(): string | undefined;
+}
 
 class JsonWorkflowSearchRenderer implements WorkflowSearchRenderer {
   private _selected: WorkflowSearchItem | undefined;
 
   selectedItem(): WorkflowSearchItem | undefined {
     return this._selected;
+  }
+
+  selectedAction(): string | undefined {
+    return undefined;
   }
 
   handlers(): EventHandlers<WorkflowSearchEvent> {
@@ -85,39 +110,48 @@ class JsonWorkflowSearchRenderer implements WorkflowSearchRenderer {
 
 class InkWorkflowSearchRenderer implements WorkflowSearchRenderer {
   private _selected: WorkflowSearchItem | undefined;
+  private _action: string | undefined;
+  private readonly fetchPreview: WorkflowPreviewFetcher | undefined;
+
+  constructor(fetchPreview?: WorkflowPreviewFetcher) {
+    this.fetchPreview = fetchPreview;
+  }
 
   selectedItem(): WorkflowSearchItem | undefined {
     return this._selected;
+  }
+
+  selectedAction(): string | undefined {
+    return this._action;
   }
 
   handlers(): EventHandlers<WorkflowSearchEvent> {
     return {
       resolving: () => {},
       completed: async (e) => {
-        this._selected = await renderInteractiveSearch<WorkflowSearchItem>(
+        const result = await renderInteractivePicker<
+          WorkflowSearchItem,
+          WorkflowPreviewDetail
+        >(
           e.data.results,
           e.data.query,
           (item) => `${item.name} ${item.id} ${item.description ?? ""}`,
-          (item, isSelected) => (
-            <Box>
-              <Text
-                color={isSelected ? "green" : undefined}
-                bold={isSelected}
-              >
-                {isSelected ? "\u25B6 " : "  "}
-                {item.name}
-              </Text>
-              <Text dimColor>({item.jobCount} jobs)</Text>
-              {item.description && (
-                <>
-                  <Text></Text>
-                  <Text dimColor>{item.description}</Text>
-                </>
-              )}
-            </Box>
-          ),
+          renderWorkflowResultLine,
+          renderWorkflowPreview,
+          renderWorkflowScrollback,
           "workflows",
+          {
+            fetchPreview: this.fetchPreview,
+            previewKeyFn: (item) => item.id,
+            actions: [
+              { key: "r", label: "Run", action: "run" },
+            ],
+          },
         );
+        if (result) {
+          this._selected = result.item;
+          this._action = result.action;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -128,11 +162,72 @@ class InkWorkflowSearchRenderer implements WorkflowSearchRenderer {
 
 export function createWorkflowSearchRenderer(
   mode: OutputMode,
+  fetchPreview?: WorkflowPreviewFetcher,
 ): WorkflowSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonWorkflowSearchRenderer();
     case "log":
-      return new InkWorkflowSearchRenderer();
+      return new InkWorkflowSearchRenderer(fetchPreview);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering callbacks for the SearchPicker
+// ---------------------------------------------------------------------------
+
+/** Single-line result for the results list. */
+function renderWorkflowResultLine(
+  item: WorkflowSearchItem,
+): React.ReactElement {
+  const desc = item.description ? ` ${item.description}` : "";
+  return (
+    <Text>
+      {`${item.name} `}
+      <Text dimColor>{`(${item.jobCount} jobs)${desc}`}</Text>
+    </Text>
+  );
+}
+
+/** Preview content for a workflow — shows YAML when available. */
+function renderWorkflowPreview(
+  item: WorkflowSearchItem,
+  detail: WorkflowPreviewDetail | undefined,
+  _width: number,
+  _height: number,
+): React.ReactElement {
+  if (!detail) {
+    // Immediate content from the search item
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        <Text bold>{item.name}</Text>
+        {item.description && <Text>{item.description}</Text>}
+        <Text dimColor>{`${item.jobCount} jobs`}</Text>
+      </Box>
+    );
+  }
+
+  // Show YAML with syntax highlighting
+  const rendered = renderMarkdownToTerminal(
+    `**${detail.name}**\n\n\`\`\`yaml\n${detail.yaml}\n\`\`\``,
+  );
+  return (
+    <Box paddingLeft={1}>
+      <Text>{rendered}</Text>
+    </Box>
+  );
+}
+
+/** Plain-text scrollback output — rendered YAML. */
+function renderWorkflowScrollback(
+  item: WorkflowSearchItem,
+  detail: WorkflowPreviewDetail | undefined,
+): string {
+  if (!detail) {
+    return `${item.name} (${item.jobCount} jobs)`;
+  }
+
+  return renderMarkdownToTerminal(
+    `**${detail.name}**\n\n\`\`\`yaml\n${detail.yaml}\n\`\`\``,
+  );
 }
