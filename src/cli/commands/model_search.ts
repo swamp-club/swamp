@@ -23,8 +23,10 @@ import {
   createLibSwampContext,
   createModelGetDeps,
   modelGet,
+  type ModelGetData,
   modelSearch,
   type ModelSearchDeps,
+  type ModelSearchItem,
 } from "../../libswamp/mod.ts";
 import { createModelSearchRenderer } from "../../presentation/renderers/model_search.tsx";
 import { createModelGetRenderer } from "../../presentation/renderers/model_get.ts";
@@ -37,6 +39,33 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Creates a fetchPreview closure that fetches full model detail data.
+ * This bridges the presentation layer to the libswamp modelGet application
+ * service, capturing the repoDir dependency.
+ */
+function createModelFetchPreview(
+  repoDir: string,
+): (item: ModelSearchItem) => Promise<ModelGetData> {
+  const libCtx = createLibSwampContext();
+  const getDeps = createModelGetDeps(repoDir);
+
+  return async (item: ModelSearchItem): Promise<ModelGetData> => {
+    let result: ModelGetData | undefined;
+    await consumeStream(modelGet(libCtx, getDeps, item.name), {
+      resolving: () => {},
+      completed: (e) => {
+        result = e.data;
+      },
+      error: () => {},
+    });
+    if (!result) {
+      throw new Error(`Model not found: ${item.name}`);
+    }
+    return result;
+  };
+}
 
 export async function modelSearchAction(
   options: AnyOptions,
@@ -56,7 +85,12 @@ export async function modelSearchAction(
     findAllGlobal: () => repoContext.definitionRepo.findAllGlobal(),
   };
 
-  const renderer = createModelSearchRenderer(effectiveMode);
+  const repoDir = options.repoDir ?? ".";
+  const fetchPreview = effectiveMode === "log"
+    ? createModelFetchPreview(repoDir)
+    : undefined;
+
+  const renderer = createModelSearchRenderer(effectiveMode, fetchPreview);
   await consumeStream(
     modelSearch(libCtx, deps, { query }),
     renderer.handlers(),
@@ -65,12 +99,17 @@ export async function modelSearchAction(
   const selected = renderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
-    const getRenderer = createModelGetRenderer(effectiveMode);
-    const getDeps = createModelGetDeps(options.repoDir ?? ".");
-    await consumeStream(
-      modelGet(libCtx, getDeps, selected.name),
-      getRenderer.handlers(),
-    );
+    // In JSON mode, still display the full model get output after auto-select
+    if (effectiveMode === "json") {
+      const getRenderer = createModelGetRenderer(effectiveMode);
+      const getDeps = createModelGetDeps(repoDir);
+      await consumeStream(
+        modelGet(libCtx, getDeps, selected.name),
+        getRenderer.handlers(),
+      );
+    }
+    // In interactive mode, the scrollback from the picker already contains
+    // the model detail, so no additional modelGet call is needed.
   } else {
     ctx.logger.debug`Search cancelled`;
   }

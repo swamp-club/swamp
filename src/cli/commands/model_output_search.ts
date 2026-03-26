@@ -23,8 +23,10 @@ import {
   createLibSwampContext,
   createModelOutputGetDeps,
   modelOutputGet,
+  type ModelOutputGetData,
   modelOutputSearch,
   type ModelOutputSearchDeps,
+  type ModelOutputSearchItem,
 } from "../../libswamp/mod.ts";
 import { createModelOutputSearchRenderer } from "../../presentation/renderers/model_output_search.tsx";
 import { createModelOutputGetRenderer } from "../../presentation/renderers/model_output_get.ts";
@@ -39,6 +41,33 @@ import { createDefinitionId } from "../../domain/definitions/definition.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Creates a fetchPreview closure that fetches full model output detail data.
+ * This bridges the presentation layer to the libswamp modelOutputGet application
+ * service, capturing the repoDir dependency.
+ */
+function createOutputFetchPreview(
+  repoDir: string,
+): (item: ModelOutputSearchItem) => Promise<ModelOutputGetData> {
+  const libCtx = createLibSwampContext();
+  const getDeps = createModelOutputGetDeps(repoDir);
+
+  return async (item: ModelOutputSearchItem): Promise<ModelOutputGetData> => {
+    let result: ModelOutputGetData | undefined;
+    await consumeStream(modelOutputGet(libCtx, getDeps, item.id), {
+      resolving: () => {},
+      completed: (e) => {
+        result = e.data;
+      },
+      error: () => {},
+    });
+    if (!result) {
+      throw new Error(`Output not found: ${item.id}`);
+    }
+    return result;
+  };
+}
 
 export const modelOutputSearchCommand = new Command()
   .name("search")
@@ -69,7 +98,15 @@ export const modelOutputSearchCommand = new Command()
         ),
     };
 
-    const renderer = createModelOutputSearchRenderer(effectiveMode);
+    const repoDir = options.repoDir ?? ".";
+    const fetchPreview = effectiveMode === "log"
+      ? createOutputFetchPreview(repoDir)
+      : undefined;
+
+    const renderer = createModelOutputSearchRenderer(
+      effectiveMode,
+      fetchPreview,
+    );
     await consumeStream(
       modelOutputSearch(libCtx, deps, { query }),
       renderer.handlers(),
@@ -78,12 +115,17 @@ export const modelOutputSearchCommand = new Command()
     const selected = renderer.selectedItem();
     if (selected) {
       ctx.logger.debug`Selected output: ${selected.id}`;
-      const getRenderer = createModelOutputGetRenderer(effectiveMode);
-      const getDeps = createModelOutputGetDeps(options.repoDir ?? ".");
-      await consumeStream(
-        modelOutputGet(libCtx, getDeps, selected.id),
-        getRenderer.handlers(),
-      );
+      // In JSON mode, still display the full output get after auto-select
+      if (effectiveMode === "json") {
+        const getRenderer = createModelOutputGetRenderer(effectiveMode);
+        const getDeps = createModelOutputGetDeps(repoDir);
+        await consumeStream(
+          modelOutputGet(libCtx, getDeps, selected.id),
+          getRenderer.handlers(),
+        );
+      }
+      // In interactive mode, the scrollback from the picker already contains
+      // the output detail, so no additional modelOutputGet call is needed.
     } else {
       ctx.logger.debug`Search cancelled`;
     }
