@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   isDevBuild,
   parseVersionFromRedirectUrl,
@@ -276,4 +276,62 @@ Deno.test("update fetches checksum and passes it to downloadAndInstall", async (
   assertEquals(result.status, "updated");
   assertEquals(calls.checksumUrls, [redirectUrl]);
   assertEquals(calls.expectedChecksums, [expectedHash]);
+});
+
+// --- Pre-flight permission check tests ---
+
+Deno.test("update rejects with UserError when binary path is not writable", async () => {
+  const tempDir = await Deno.makeTempDir();
+  const readOnlyFile = `${tempDir}/swamp`;
+  await Deno.writeTextFile(readOnlyFile, "binary");
+  await Deno.chmod(readOnlyFile, 0o444);
+
+  const redirectUrl =
+    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+  const service = new UpdateService(
+    createMockChecker(redirectUrl),
+    "20260207.123456.0-sha.abc12345",
+    readOnlyFile,
+  );
+
+  const error = await assertRejects(
+    () => service.update(platform),
+    UserError,
+  );
+  assertStringIncludes(error.message, "permission denied");
+  assertStringIncludes(error.message, "sudo swamp update");
+
+  // Cleanup
+  await Deno.chmod(readOnlyFile, 0o644);
+  await Deno.remove(tempDir, { recursive: true });
+});
+
+Deno.test("update proceeds when binary path is writable", async () => {
+  const tempDir = await Deno.makeTempDir();
+  const writableFile = `${tempDir}/swamp`;
+  await Deno.writeTextFile(writableFile, "binary");
+
+  const redirectUrl =
+    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+  const service = new UpdateService(
+    createMockChecker(redirectUrl),
+    "20260207.123456.0-sha.abc12345",
+    writableFile,
+  );
+
+  const result = await service.update(platform);
+  assertEquals(result.status, "updated");
+
+  await Deno.remove(tempDir, { recursive: true });
+});
+
+Deno.test("update proceeds when binary does not exist yet", async () => {
+  const service = new UpdateService(
+    createMockChecker(null),
+    "20260207.123456.0-sha.abc12345",
+    "/tmp/nonexistent-swamp-binary-path",
+  );
+
+  const result = await service.update(platform);
+  assertEquals(result.status, "up_to_date");
 });

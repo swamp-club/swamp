@@ -68,7 +68,13 @@ async function replaceBinary(
       await Deno.remove(targetPath);
     } catch (error) {
       // NotFound is fine — target may not exist yet
-      if (!(error instanceof Deno.errors.NotFound)) {
+      if (error instanceof Deno.errors.NotFound) {
+        // OK
+      } else if (error instanceof Deno.errors.PermissionDenied) {
+        throw new UserError(
+          `Cannot update ${targetPath}: permission denied. Re-run with: sudo swamp update`,
+        );
+      } else {
         throw error;
       }
     }
