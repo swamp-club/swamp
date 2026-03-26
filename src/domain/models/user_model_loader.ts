@@ -473,9 +473,20 @@ export class UserModelLoader {
         return js;
       } catch (bundleError) {
         if (bundleExists) {
-          logger
-            .warn`Rebundle failed for ${relativePath}, using cached bundle: ${bundleError}`;
-          return await Deno.readTextFile(bundlePath);
+          try {
+            const cached = await Deno.readTextFile(bundlePath);
+            logger
+              .warn`Rebundle failed for ${relativePath}, using cached bundle: ${bundleError}`;
+            // Touch the cache mtime so subsequent loads see it as fresh,
+            // avoiding repeated failed rebundle attempts on every cold start.
+            try {
+              const now = new Date();
+              await Deno.utime(bundlePath, now, now);
+            } catch { /* ignore — worst case we retry next load */ }
+            return cached;
+          } catch {
+            // Cache file was removed between stat and read — treat as no cache.
+          }
         }
         throw bundleError;
       }
