@@ -191,6 +191,13 @@ export function commandNeedsExtensions(args: string[]): boolean {
   return !SKIP_EXTENSION_COMMANDS.has(commandInfo.command);
 }
 
+/** A deferred warning message to emit after logging is initialized. */
+export interface DeferredWarning {
+  kind: "model" | "vault" | "driver" | "datastore" | "report";
+  file: string;
+  error: string;
+}
+
 /**
  * Load user models from configured directory.
  */
@@ -198,6 +205,7 @@ async function loadUserModels(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const modelsDir = resolveModelsDir(marker);
@@ -209,18 +217,16 @@ async function loadUserModels(
     const loader = new UserModelLoader(denoRuntime, repoDir);
     const result = await loader.loadModels(absoluteModelsDir);
 
-    // Log extension successes at debug level
-    for (const file of result.extended) {
-      logger.debug`Extended model type from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
+    // Collect failures for deferred logging (logging not yet initialized)
     for (const failure of result.failed) {
-      logger.warn`Failed to load user model ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "model",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user models: ${error}`;
+  } catch {
+    // Not in a swamp repo or models dir doesn't exist — not an error
   }
 }
 
@@ -231,6 +237,7 @@ async function loadUserVaults(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const vaultsDir = resolveVaultsDir(marker);
@@ -241,18 +248,15 @@ async function loadUserVaults(
     const loader = new UserVaultLoader(denoRuntime, repoDir);
     const result = await loader.loadVaults(absoluteVaultsDir);
 
-    // Log successes at debug level
-    for (const file of result.loaded) {
-      logger.debug`Loaded user vault type from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      logger.warn`Failed to load user vault ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "vault",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user vaults: ${error}`;
+  } catch {
+    // Not in a swamp repo or vaults dir doesn't exist — not an error
   }
 }
 
@@ -260,6 +264,7 @@ async function loadUserDrivers(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const driversDir = resolveDriversDir(marker);
@@ -270,18 +275,15 @@ async function loadUserDrivers(
     const loader = new UserDriverLoader(denoRuntime, repoDir);
     const result = await loader.loadDrivers(absoluteDriversDir);
 
-    // Log successes at debug level
-    for (const file of result.loaded) {
-      logger.debug`Loaded user driver type from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      logger.warn`Failed to load user driver ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "driver",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user drivers: ${error}`;
+  } catch {
+    // Not in a swamp repo or drivers dir doesn't exist — not an error
   }
 }
 
@@ -289,6 +291,7 @@ async function loadUserDatastores(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const datastoresDir = resolveDatastoresDir(marker);
@@ -299,19 +302,15 @@ async function loadUserDatastores(
     const loader = new UserDatastoreLoader(denoRuntime, repoDir);
     const result = await loader.loadDatastores(absoluteDatastoresDir);
 
-    // Log successes at debug level
-    for (const file of result.loaded) {
-      logger.debug`Loaded user datastore type from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      logger
-        .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "datastore",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user datastores: ${error}`;
+  } catch {
+    // Not in a swamp repo or datastores dir doesn't exist — not an error
   }
 }
 
@@ -319,6 +318,7 @@ async function loadUserReports(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const reportsDir = resolveReportsDir(marker);
@@ -329,18 +329,15 @@ async function loadUserReports(
     const loader = new UserReportLoader(denoRuntime, repoDir);
     const result = await loader.loadReports(absoluteReportsDir);
 
-    // Log successes at debug level
-    for (const file of result.loaded) {
-      logger.debug`Loaded user report from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      logger.warn`Failed to load user report ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "report",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user reports: ${error}`;
+  } catch {
+    // Not in a swamp repo or reports dir doesn't exist — not an error
   }
 }
 
@@ -496,15 +493,17 @@ export async function runCli(args: string[]): Promise<void> {
     // Not in a swamp repo - marker stays null
   }
 
-  // Load user extensions in parallel (skip for commands that don't need them)
+  // Load user extensions in parallel (skip for commands that don't need them).
+  // Collect warnings because logging is not yet initialized at this point.
+  const deferredWarnings: DeferredWarning[] = [];
   if (commandNeedsExtensions(args)) {
     const denoRuntime = new EmbeddedDenoRuntime();
     await Promise.all([
-      loadUserModels(repoDir, marker, denoRuntime),
-      loadUserVaults(repoDir, marker, denoRuntime),
-      loadUserDrivers(repoDir, marker, denoRuntime),
-      loadUserDatastores(repoDir, marker, denoRuntime),
-      loadUserReports(repoDir, marker, denoRuntime),
+      loadUserModels(repoDir, marker, denoRuntime, deferredWarnings),
+      loadUserVaults(repoDir, marker, denoRuntime, deferredWarnings),
+      loadUserDrivers(repoDir, marker, denoRuntime, deferredWarnings),
+      loadUserDatastores(repoDir, marker, denoRuntime, deferredWarnings),
+      loadUserReports(repoDir, marker, denoRuntime, deferredWarnings),
     ]);
   }
 
@@ -602,6 +601,12 @@ export async function runCli(args: string[]): Promise<void> {
         jsonMode: options.json ?? false,
         noColor,
       });
+
+      // Emit deferred warnings now that logging is initialized
+      for (const warning of deferredWarnings) {
+        logger
+          .warn`Failed to load user ${warning.kind} ${warning.file}: ${warning.error}`;
+      }
     })
     .error(unknownCommandErrorHandler)
     .action(function () {

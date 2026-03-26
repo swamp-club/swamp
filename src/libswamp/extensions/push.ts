@@ -418,7 +418,7 @@ export async function extensionPushPrepare(
   let contentMetadata: ExtensionContentMetadata | undefined;
   try {
     contentMetadata = await deps.extractContentMetadata(
-      input.allModelFiles,
+      input.modelEntryPoints,
       input.modelsDir,
       input.workflowFiles,
       input.allVaultFiles,

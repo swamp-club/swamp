@@ -1389,3 +1389,85 @@ Deno.test("extractContentMetadata skips datastore without type", async () => {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("extractContentMetadata: extracts methods from shorthand property", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "mymodel.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "const methods = {",
+        "  list: {",
+        '    description: "List resources",',
+        "    arguments: z.object({}),",
+        "    execute: async () => ({ dataHandles: [] }),",
+        "  },",
+        "  create: {",
+        '    description: "Create a resource",',
+        "    arguments: z.object({}),",
+        "    execute: async () => ({ dataHandles: [] }),",
+        "  },",
+        "};",
+        "export const model = {",
+        '  type: "@test/mymodel",',
+        '  version: "2026.03.26.1",',
+        "  methods,",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    assertEquals(result.models.length, 1);
+    assertEquals(result.models[0].methods.length, 2);
+    assertEquals(result.models[0].methods[0].name, "list");
+    assertEquals(result.models[0].methods[0].description, "List resources");
+    assertEquals(result.models[0].methods[1].name, "create");
+    assertEquals(
+      result.models[0].methods[1].description,
+      "Create a resource",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata: extracts methods from variable reference", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "refmodel.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "const myMethods = {",
+        "  sync: {",
+        '    description: "Sync data",',
+        "    arguments: z.object({}),",
+        "    execute: async () => ({ dataHandles: [] }),",
+        "  },",
+        "};",
+        "export const model = {",
+        '  type: "@test/refmodel",',
+        '  version: "2026.03.26.1",',
+        "  methods: myMethods,",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    assertEquals(result.models.length, 1);
+    assertEquals(result.models[0].methods.length, 1);
+    assertEquals(result.models[0].methods[0].name, "sync");
+    assertEquals(result.models[0].methods[0].description, "Sync data");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
