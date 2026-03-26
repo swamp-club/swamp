@@ -232,7 +232,11 @@ export async function updateUpstreamExtensions(
   name: string,
   version: string,
   files: string[],
-  include?: string[],
+  options?: {
+    include?: string[];
+    checksum?: string;
+    serverUrl?: string;
+  },
 ): Promise<void> {
   const jsonPath = lockfilePath;
   const lockPath = `${jsonPath}.lock`;
@@ -253,7 +257,11 @@ export async function updateUpstreamExtensions(
       version,
       pulledAt: new Date().toISOString(),
       files,
-      ...(include && include.length > 0 ? { include } : {}),
+      ...(options?.include && options.include.length > 0
+        ? { include: options.include }
+        : {}),
+      ...(options?.checksum ? { checksum: options.checksum } : {}),
+      ...(options?.serverUrl ? { serverUrl: options.serverUrl } : {}),
     };
 
     await atomicWriteTextFile(jsonPath, JSON.stringify(data, null, 2) + "\n");
@@ -907,7 +915,11 @@ export async function installExtension(
       ref.name,
       version,
       extractedFiles,
-      includeFiles,
+      {
+        include: includeFiles,
+        checksum: localChecksum,
+        serverUrl: resolveServerUrl(),
+      },
     );
 
     const dependencyResults: InstallResult[] = [];

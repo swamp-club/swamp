@@ -24,6 +24,10 @@ export interface UpstreamExtensionEntry {
   pulledAt: string;
   files?: string[];
   include?: string[];
+  /** SHA-256 checksum of the extension archive, for verification on re-install. */
+  checksum?: string;
+  /** Registry server URL used when pulling, for non-default registries. */
+  serverUrl?: string;
 }
 
 /** Shape of upstream_extensions.json. */
