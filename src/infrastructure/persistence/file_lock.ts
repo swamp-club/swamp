@@ -34,6 +34,7 @@ import type {
   LockOptions,
 } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import { getSwampLogger } from "../logging/logger.ts";
 
 const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
@@ -88,6 +89,17 @@ export class FileLock implements DistributedLock {
     const nonce = crypto.randomUUID();
 
     while (true) {
+      // Check timeout on every iteration — including retries after stale lock cleanup
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= this.maxWaitMs) {
+        const existing = await this.readLockFile();
+        throw new LockTimeoutError(
+          this.lockPath,
+          existing,
+          elapsed,
+        );
+      }
+
       const info = buildLockInfo(this.ttlMs, nonce);
       const content = JSON.stringify(info, null, 2);
 
@@ -122,18 +134,8 @@ export class FileLock implements DistributedLock {
           } catch {
             // Another process may have already cleaned it up
           }
-          continue; // Retry atomic create
+          continue; // Retry atomic create (timeout checked at top of loop)
         }
-      }
-
-      // Check timeout
-      const elapsed = Date.now() - startTime;
-      if (elapsed >= this.maxWaitMs) {
-        throw new LockTimeoutError(
-          this.lockPath,
-          existing,
-          elapsed,
-        );
       }
 
       // Wait and retry
@@ -150,8 +152,19 @@ export class FileLock implements DistributedLock {
 
     try {
       await Deno.remove(this.lockPath);
-    } catch {
-      // Best-effort — file may already be gone
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        // NotFound is expected (file already gone), but other errors
+        // indicate a real problem — log so operators can investigate
+        const logger = getSwampLogger(["datastore", "lock"]);
+        logger.warn(
+          "Failed to delete lock {path} during release: {error}",
+          {
+            path: this.lockPath,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
     }
   }
 

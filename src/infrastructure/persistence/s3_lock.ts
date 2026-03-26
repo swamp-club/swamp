@@ -33,6 +33,7 @@ import type {
 } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import type { S3Client } from "./s3_client.ts";
+import { getSwampLogger } from "../logging/logger.ts";
 
 const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
@@ -96,6 +97,13 @@ export class S3Lock implements DistributedLock {
     const nonce = crypto.randomUUID();
 
     while (true) {
+      // Check timeout on every iteration — including retries after stale lock cleanup
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= this.maxWaitMs) {
+        const existing = await this.readLock();
+        throw new LockTimeoutError(this.lockKey, existing, elapsed);
+      }
+
       const info = buildLockInfo(this.ttlMs, nonce);
       const body = encodeLockInfo(info);
 
@@ -122,15 +130,9 @@ export class S3Lock implements DistributedLock {
             } catch {
               // Another process may have already cleaned it up
             }
-            continue; // Retry conditional write
+            continue; // Retry conditional write (timeout checked at top of loop)
           }
         }
-      }
-
-      // Check timeout
-      const elapsed = Date.now() - startTime;
-      if (elapsed >= this.maxWaitMs) {
-        throw new LockTimeoutError(this.lockKey, existing, elapsed);
       }
 
       // Wait and retry
@@ -147,8 +149,16 @@ export class S3Lock implements DistributedLock {
 
     try {
       await this.s3.deleteObject(this.lockKey);
-    } catch {
+    } catch (error) {
       // Best-effort release — if S3 is unreachable, the lock expires via TTL
+      const logger = getSwampLogger(["datastore", "lock"]);
+      logger.warn(
+        "Failed to delete lock {key} during release: {error}",
+        {
+          key: this.lockKey,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
   }
 

@@ -54,7 +54,10 @@ import {
 import { S3Lock } from "../infrastructure/persistence/s3_lock.ts";
 import { S3Client } from "../infrastructure/persistence/s3_client.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
-import type { DistributedLock } from "../domain/datastore/distributed_lock.ts";
+import {
+  type DistributedLock,
+  LockTimeoutError,
+} from "../domain/datastore/distributed_lock.ts";
 import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
@@ -582,7 +585,11 @@ export async function acquireModelLocks(
       "Global lock held by {holder} — waiting for structural command to finish",
       { holder: globalInfo.holder },
     );
-    // Poll until the global lock is released or expires (stale lock)
+    // Poll until the global lock is released or expires (stale lock).
+    // Timeout after 2x TTL to prevent indefinite hangs if staleness
+    // detection fails (e.g. clock skew, S3 consistency issues).
+    const globalWaitStart = Date.now();
+    const globalMaxWaitMs = (globalInfo.ttlMs ?? 30_000) * 2;
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       const info = await globalLock.inspect();
@@ -595,6 +602,15 @@ export async function acquireModelLocks(
           { holder: info.holder, ttl: info.ttlMs },
         );
         break;
+      }
+      // Hard timeout to prevent indefinite hangs
+      const globalElapsed = Date.now() - globalWaitStart;
+      if (globalElapsed >= globalMaxWaitMs) {
+        throw new LockTimeoutError(
+          ".datastore.lock",
+          info,
+          globalElapsed,
+        );
       }
     }
     logger.info`Global lock released, proceeding with per-model locks`;
@@ -654,7 +670,9 @@ export async function acquireModelLocks(
       }
       lockKeys.length = 0;
 
-      // Wait for global lock to be released
+      // Wait for global lock to be released (with timeout)
+      const retryWaitStart = Date.now();
+      const retryMaxWaitMs = (postAcquireGlobalInfo.ttlMs ?? 30_000) * 2;
       while (true) {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         const info = await globalLock.inspect();
@@ -666,6 +684,14 @@ export async function acquireModelLocks(
             { holder: info.holder, ttl: info.ttlMs },
           );
           break;
+        }
+        const retryElapsed = Date.now() - retryWaitStart;
+        if (retryElapsed >= retryMaxWaitMs) {
+          throw new LockTimeoutError(
+            ".datastore.lock",
+            info,
+            retryElapsed,
+          );
         }
       }
 
