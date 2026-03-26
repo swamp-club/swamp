@@ -83,7 +83,8 @@ export function resolveKeyValue(
 
   return {
     error: `Invalid argument format: ${argument}\n\n` +
-      `Provide the value inline or via stdin:\n` +
+      `Provide the value as a separate argument, inline, or via stdin:\n` +
+      `  swamp vault put <vault> ${argument} <value>\n` +
       `  swamp vault put <vault> ${argument}=<value>\n` +
       `  echo "<value>" | swamp vault put <vault> ${argument}`,
   };
@@ -109,13 +110,14 @@ type AnyOptions = any;
 export const vaultPutCommand = new Command()
   .name("put")
   .description("Store a secret in a vault")
-  .arguments("<vault_name:string> <key_value:string>")
+  .arguments("<vault_name:string> <key:string> [value:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-f, --force", "Skip confirmation prompt when overwriting")
   .action(async function (
     options: AnyOptions,
     vaultName: string,
-    keyValue: string,
+    keyOrKeyValue: string,
+    valueArg: string | undefined,
   ) {
     const cliCtx = createContext(options as GlobalOptions, ["vault", "put"]);
     cliCtx.logger.debug`Storing secret in vault: ${vaultName}`;
@@ -125,44 +127,52 @@ export const vaultPutCommand = new Command()
       outputMode: cliCtx.outputMode,
     });
 
-    // Parse KEY=VALUE argument, or KEY with value from stdin/interactive prompt.
-    const parsed = parseKeyValue(keyValue);
+    // Resolve key and value from arguments.
+    // Priority: explicit value arg > KEY=VALUE format > stdin > interactive prompt.
     let key: string;
     let value: string;
     let stdinContent: string | null = null;
 
-    if (parsed) {
-      key = parsed.key;
-      value = parsed.value;
-    } else if (!isStdinTty()) {
-      stdinContent = await readStdin();
-      const resolved = resolveKeyValue(keyValue, stdinContent);
-      if ("error" in resolved) {
-        throw new UserError(resolved.error);
-      }
-      key = resolved.key;
-      value = resolved.value;
-    } else if (cliCtx.outputMode === "log") {
-      key = keyValue;
-      if (key.length === 0) {
-        throw new UserError("Key cannot be empty");
-      }
-      try {
-        value = await readSecretFromTty(`Enter value for ${key}: `);
-      } catch (err) {
-        if (err instanceof Error && err.message === "Cancelled.") {
-          renderVaultPutCancelled(cliCtx.outputMode);
-          return;
-        }
-        throw err;
-      }
+    if (valueArg !== undefined) {
+      // 3-arg form: swamp vault put <vault> <key> <value>
+      key = keyOrKeyValue;
+      value = valueArg;
     } else {
-      const resolved = resolveKeyValue(keyValue, null);
-      if ("error" in resolved) {
-        throw new UserError(resolved.error);
+      // 2-arg form: try KEY=VALUE, then stdin, then interactive prompt.
+      const parsed = parseKeyValue(keyOrKeyValue);
+      if (parsed) {
+        key = parsed.key;
+        value = parsed.value;
+      } else if (!isStdinTty()) {
+        stdinContent = await readStdin();
+        const resolved = resolveKeyValue(keyOrKeyValue, stdinContent);
+        if ("error" in resolved) {
+          throw new UserError(resolved.error);
+        }
+        key = resolved.key;
+        value = resolved.value;
+      } else if (cliCtx.outputMode === "log") {
+        key = keyOrKeyValue;
+        if (key.length === 0) {
+          throw new UserError("Key cannot be empty");
+        }
+        try {
+          value = await readSecretFromTty(`Enter value for ${key}: `);
+        } catch (err) {
+          if (err instanceof Error && err.message === "Cancelled.") {
+            renderVaultPutCancelled(cliCtx.outputMode);
+            return;
+          }
+          throw err;
+        }
+      } else {
+        const resolved = resolveKeyValue(keyOrKeyValue, null);
+        if ("error" in resolved) {
+          throw new UserError(resolved.error);
+        }
+        key = resolved.key;
+        value = resolved.value;
       }
-      key = resolved.key;
-      value = resolved.value;
     }
     cliCtx.logger.debug`Parsed key: ${key}`;
 
