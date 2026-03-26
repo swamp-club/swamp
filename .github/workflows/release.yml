@@ -172,6 +172,7 @@ jobs:
     needs: release
     permissions:
       contents: read
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -218,6 +219,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: systeminit/swamp:${{ env.docker_tag }}-amd64
+          provenance: mode=max
+          sbom: true
 
       - name: Build and push (arm64)
         uses: docker/build-push-action@v6
@@ -226,6 +229,8 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: systeminit/swamp:${{ env.docker_tag }}-arm64
+          provenance: mode=max
+          sbom: true
 
       - name: Create and push multi-arch manifest
         run: |
