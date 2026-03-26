@@ -17,6 +17,8 @@ jobs:
   release:
     name: Build and Release
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     # Only run on merged PRs (not closed without merge) or manual trigger
     if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
 
@@ -180,18 +182,17 @@ jobs:
       - name: Download Linux binaries from release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
         run: |
           mkdir -p docker-build/linux-amd64 docker-build/linux-arm64
-          # Find the release tag (use latest release since we just created it)
-          LATEST_TAG=$(gh release view --json tagName -q .tagName)
-          echo "Downloading binaries from release ${LATEST_TAG}"
-          gh release download "${LATEST_TAG}" --pattern "swamp-linux-x86_64" --dir docker-build/linux-amd64
-          gh release download "${LATEST_TAG}" --pattern "swamp-linux-aarch64" --dir docker-build/linux-arm64
+          RELEASE_TAG="v${RELEASE_VERSION}"
+          echo "Downloading binaries from release ${RELEASE_TAG}"
+          gh release download "${RELEASE_TAG}" --pattern "swamp-linux-x86_64" --dir docker-build/linux-amd64
+          gh release download "${RELEASE_TAG}" --pattern "swamp-linux-aarch64" --dir docker-build/linux-arm64
           mv docker-build/linux-amd64/swamp-linux-x86_64 docker-build/linux-amd64/swamp
           mv docker-build/linux-arm64/swamp-linux-aarch64 docker-build/linux-arm64/swamp
           chmod +x docker-build/linux-amd64/swamp docker-build/linux-arm64/swamp
-          # Extract version from tag for Docker tagging
-          echo "docker_tag=${LATEST_TAG#v}" >> "$GITHUB_ENV"
+          echo "docker_tag=${RELEASE_VERSION}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
