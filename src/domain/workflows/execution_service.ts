@@ -90,6 +90,7 @@ import { reportRegistry } from "../reports/report_registry.ts";
 import type { MethodReportContext } from "../reports/report_context.ts";
 import { modelRegistry } from "../models/model.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
+import { resolveDriverConfig } from "../drivers/driver_resolution.ts";
 /**
  * Context for step execution.
  */
@@ -1460,10 +1461,12 @@ export class WorkflowExecutionService {
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
-          driver: options.driver ?? step.driver ?? job.driver ??
-            workflow.driver,
-          driverConfig: step.driverConfig ?? job.driverConfig ??
-            workflow.driverConfig,
+          ...resolveDriverConfig(
+            { driver: options.driver },
+            { driver: step.driver, driverConfig: step.driverConfig },
+            { driver: job.driver, driverConfig: job.driverConfig },
+            { driver: workflow.driver, driverConfig: workflow.driverConfig },
+          ),
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,
         };
