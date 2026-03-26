@@ -307,7 +307,10 @@ export async function* extensionRm(
 
       const dirsRemoved = await pruneEmptyDirs(parentDirs, deps.repoDir, deps);
 
-      await deps.removeUpstreamExtension(deps.lockfilePath, input.extensionName);
+      await deps.removeUpstreamExtension(
+        deps.lockfilePath,
+        input.extensionName,
+      );
 
       yield {
         kind: "completed",

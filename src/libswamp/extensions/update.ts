@@ -76,8 +76,7 @@ export function createExtensionUpdateDeps(options: {
     options.serverUrl ?? resolveServerUrl(),
   );
   return {
-    readUpstreamExtensions: () =>
-      readUpstreamExtensions(options.lockfilePath),
+    readUpstreamExtensions: () => readUpstreamExtensions(options.lockfilePath),
     getExtension: async (name) => {
       try {
         const info = await extensionClient.getExtension(name);

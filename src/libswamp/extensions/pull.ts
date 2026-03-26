@@ -241,6 +241,10 @@ export async function updateUpstreamExtensions(
   const jsonPath = lockfilePath;
   const lockPath = `${jsonPath}.lock`;
 
+  // Ensure parent directory exists (lockfile may be in extensions/models/
+  // which doesn't exist in a fresh repo that only has .swamp/)
+  await Deno.mkdir(dirname(jsonPath), { recursive: true });
+
   const lockFile = await acquireLock(lockPath);
   try {
     let data: UpstreamExtensionsMap = {};
