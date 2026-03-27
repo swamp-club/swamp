@@ -39,6 +39,7 @@ export const serveCommand = new Command()
     const repoDir = options.repoDir as string ?? ".";
     const port = options.port as number;
     const host = options.host as string;
+    const isJson = ctx.outputMode === "json";
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
@@ -68,10 +69,19 @@ export const serveCommand = new Command()
         hostname: host,
         signal: ac.signal,
         onListen({ hostname, port: listenPort }) {
-          logger.info("WebSocket API server listening on {host}:{port}", {
-            host: hostname,
-            port: listenPort,
-          });
+          if (isJson) {
+            console.log(JSON.stringify({
+              status: "listening",
+              host: hostname,
+              port: listenPort,
+              url: `ws://${hostname}:${listenPort}`,
+            }));
+          } else {
+            logger.info("WebSocket API server listening on {host}:{port}", {
+              host: hostname,
+              port: listenPort,
+            });
+          }
         },
       },
       (req) => {
@@ -97,6 +107,9 @@ export const serveCommand = new Command()
 
     // Handle SIGINT/SIGTERM for graceful shutdown
     const shutdown = () => {
+      if (isJson) {
+        console.log(JSON.stringify({ status: "stopped" }));
+      }
       logger.info("Shutting down...");
       ac.abort();
     };

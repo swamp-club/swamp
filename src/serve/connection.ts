@@ -22,6 +22,7 @@
  * operations and streams serialized events back to the client.
  */
 
+import { z } from "zod";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import {
@@ -43,6 +44,62 @@ import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
+// ── Zod schemas for incoming WebSocket messages ─────────────────────────
+
+const WorkflowRunRequestSchema = z.object({
+  type: z.literal("workflow.run"),
+  id: z.string().min(1),
+  payload: z.object({
+    workflowIdOrName: z.string(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+    lastEvaluated: z.boolean().optional(),
+    driver: z.string().optional(),
+    verbose: z.boolean().optional(),
+    runtimeTags: z.record(z.string(), z.string()).optional(),
+  }),
+});
+
+const ModelMethodRunRequestSchema = z.object({
+  type: z.literal("model.method.run"),
+  id: z.string().min(1),
+  payload: z.object({
+    modelIdOrName: z.string(),
+    methodName: z.string(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+    lastEvaluated: z.boolean().optional(),
+    driver: z.string().optional(),
+    runtimeTags: z.record(z.string(), z.string()).optional(),
+  }),
+});
+
+const CancelRequestSchema = z.object({
+  type: z.literal("cancel"),
+  id: z.string().min(1),
+});
+
+const ServerRequestSchema = z.discriminatedUnion("type", [
+  WorkflowRunRequestSchema,
+  ModelMethodRunRequestSchema,
+  CancelRequestSchema,
+]);
+
+/**
+ * Validates a parsed JSON value against the ServerRequest schema.
+ * Returns the validated request on success, or a human-readable error string on failure.
+ */
+export function validateServerRequest(
+  data: unknown,
+): ServerRequest | string {
+  const result = ServerRequestSchema.safeParse(data);
+  if (result.success) {
+    return result.data as ServerRequest;
+  }
+  const issues = result.error.issues.map((i) =>
+    `${i.path.join(".")}: ${i.message}`
+  ).join("; ");
+  return `Invalid request: ${issues}`;
+}
+
 const logger = getSwampLogger(["serve", "connection"]);
 
 export interface ConnectionContext {
@@ -58,70 +115,7 @@ export function handleConnection(
   const activeRequests = new Map<string, AbortController>();
 
   socket.onmessage = (event) => {
-    let request: ServerRequest;
-    try {
-      request = JSON.parse(event.data as string) as ServerRequest;
-    } catch {
-      sendError(socket, "unknown", "invalid_request", "Invalid JSON");
-      return;
-    }
-
-    if (!request.type || !request.id) {
-      sendError(socket, "unknown", "invalid_request", "Missing type or id");
-      return;
-    }
-
-    if (request.type === "cancel") {
-      const controller = activeRequests.get(request.id);
-      if (controller) {
-        controller.abort();
-      }
-      return;
-    }
-
-    if (
-      request.type === "workflow.run" ||
-      request.type === "model.method.run"
-    ) {
-      if (activeRequests.has(request.id)) {
-        sendError(
-          socket,
-          request.id,
-          "duplicate_id",
-          `Request id '${request.id}' is already active`,
-        );
-        return;
-      }
-
-      const controller = new AbortController();
-      activeRequests.set(request.id, controller);
-
-      const task = request.type === "workflow.run"
-        ? handleWorkflowRun(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-        )
-        : handleModelMethodRun(
-          socket,
-          ctx,
-          request.id,
-          request.payload,
-          controller,
-        );
-
-      task.finally(() => activeRequests.delete(request.id));
-      return;
-    }
-
-    sendError(
-      socket,
-      (request as { id?: string }).id ?? "unknown",
-      "unknown_request_type",
-      `Unknown request type: ${(request as { type: string }).type}`,
-    );
+    handleMessage(socket, ctx, activeRequests, event);
   };
 
   socket.onclose = () => {
@@ -136,6 +130,72 @@ export function handleConnection(
       error: event instanceof ErrorEvent ? event.message : "unknown",
     });
   };
+}
+
+/**
+ * Parse, validate, and dispatch a single incoming WebSocket message.
+ * Exported for unit testing.
+ */
+export function handleMessage(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  activeRequests: Map<string, AbortController>,
+  event: MessageEvent,
+): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(event.data as string);
+  } catch {
+    sendError(socket, "unknown", "invalid_request", "Invalid JSON");
+    return;
+  }
+
+  const validated = validateServerRequest(parsed);
+  if (typeof validated === "string") {
+    sendError(socket, "unknown", "invalid_request", validated);
+    return;
+  }
+
+  const request: ServerRequest = validated;
+
+  if (request.type === "cancel") {
+    const controller = activeRequests.get(request.id);
+    if (controller) {
+      controller.abort();
+    }
+    return;
+  }
+
+  if (activeRequests.has(request.id)) {
+    sendError(
+      socket,
+      request.id,
+      "duplicate_id",
+      `Request id '${request.id}' is already active`,
+    );
+    return;
+  }
+
+  const controller = new AbortController();
+  activeRequests.set(request.id, controller);
+
+  const task = request.type === "workflow.run"
+    ? handleWorkflowRun(
+      socket,
+      ctx,
+      request.id,
+      request.payload,
+      controller,
+    )
+    : handleModelMethodRun(
+      socket,
+      ctx,
+      request.id,
+      request.payload,
+      controller,
+    );
+
+  task.finally(() => activeRequests.delete(request.id));
 }
 
 async function handleWorkflowRun(
