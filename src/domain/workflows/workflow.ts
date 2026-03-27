@@ -39,12 +39,19 @@ import {
 export const WorkflowSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).refine(
-    (name) =>
-      !name.includes("..") && !name.includes("/") && !name.includes("\\") &&
-      !name.includes("\0"),
+    (name) => {
+      if (name.includes("..") || name.includes("\\") || name.includes("\0")) {
+        return false;
+      }
+      if (name.includes("/")) {
+        // Allow '/' only in scoped @collective/name extension names
+        return /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/.test(name);
+      }
+      return true;
+    },
     {
       message:
-        "Workflow name must not contain '..', '/', '\\', or null bytes (path traversal)",
+        "Workflow name must not contain '..', '\\', or null bytes (path traversal). '/' is only allowed in scoped @collective/name patterns.",
     },
   ),
   description: z.string().optional(),

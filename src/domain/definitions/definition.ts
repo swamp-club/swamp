@@ -149,12 +149,19 @@ export const DefinitionSchema = z.object({
   ),
   id: z.string().uuid(),
   name: z.string().min(1).refine(
-    (name) =>
-      !name.includes("..") && !name.includes("/") && !name.includes("\\") &&
-      !name.includes("\0"),
+    (name) => {
+      if (name.includes("..") || name.includes("\\") || name.includes("\0")) {
+        return false;
+      }
+      if (name.includes("/")) {
+        // Allow '/' only in scoped @collective/name extension names
+        return /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/.test(name);
+      }
+      return true;
+    },
     {
       message:
-        "Definition name must not contain '..', '/', '\\', or null bytes (path traversal)",
+        "Definition name must not contain '..', '\\', or null bytes (path traversal). '/' is only allowed in scoped @collective/name patterns.",
     },
   ),
   version: z.number().int().positive(),
