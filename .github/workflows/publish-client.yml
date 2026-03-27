@@ -1,0 +1,67 @@
+name: Publish Client Library
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths:
+      - "packages/client/**"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-client
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to JSR
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Generate version
+        id: version
+        run: |
+          # Semantic version derived from date: MAJOR.YYYYMMDD.PATCH
+          VERSION="0.$(date -u +%Y%m%d).$(git rev-list --count HEAD -- packages/client)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Stamp version
+        working-directory: packages/client
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Update version in deno.json
+          deno eval "
+            const config = JSON.parse(await Deno.readTextFile('deno.json'));
+            config.version = '${VERSION}';
+            await Deno.writeTextFile('deno.json', JSON.stringify(config, null, 2) + '\n');
+          "
+          echo "Updated deno.json:"
+          cat deno.json
+
+      - name: Type check
+        working-directory: packages/client
+        run: deno check mod.ts
+
+      - name: Run tests
+        working-directory: packages/client
+        run: deno test -A
+
+      - name: Publish to JSR
+        working-directory: packages/client
+        run: deno publish --allow-dirty
