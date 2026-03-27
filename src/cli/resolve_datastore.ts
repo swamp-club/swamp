@@ -192,6 +192,8 @@ export function resolveDatastoreConfig(
         bucket: ds.bucket,
         prefix: ds.prefix,
         region: ds.region,
+        endpoint: ds.endpoint,
+        forcePathStyle: ds.forcePathStyle,
         cachePath,
         directories: ds.directories,
         exclude: ds.exclude,

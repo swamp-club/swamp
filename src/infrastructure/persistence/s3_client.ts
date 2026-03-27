@@ -35,6 +35,10 @@ export interface S3ClientConfig {
   bucket: string;
   prefix?: string;
   region?: string;
+  /** Custom S3-compatible endpoint URL (e.g., https://nyc3.digitaloceanspaces.com) */
+  endpoint?: string;
+  /** Use path-style addressing (bucket in path, not subdomain). Default: false. */
+  forcePathStyle?: boolean;
 }
 
 export interface S3ListResult {
@@ -54,6 +58,10 @@ export class S3Client {
   constructor(config: S3ClientConfig) {
     this.client = new AwsS3Client({
       region: config.region,
+      ...(config.endpoint ? { endpoint: config.endpoint } : {}),
+      ...(config.forcePathStyle != null
+        ? { forcePathStyle: config.forcePathStyle }
+        : {}),
     });
     this.bucket = config.bucket;
     this.prefix = config.prefix ?? "";

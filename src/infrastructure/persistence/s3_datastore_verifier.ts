@@ -33,9 +33,21 @@ export class S3DatastoreVerifier implements DatastoreVerifier {
   private readonly s3: S3Client;
   private readonly bucket: string;
 
-  constructor(bucket: string, prefix?: string, region?: string) {
+  constructor(
+    bucket: string,
+    prefix?: string,
+    region?: string,
+    endpoint?: string,
+    forcePathStyle?: boolean,
+  ) {
     this.bucket = bucket;
-    this.s3 = new S3Client({ bucket, prefix, region });
+    this.s3 = new S3Client({
+      bucket,
+      prefix,
+      region,
+      endpoint,
+      forcePathStyle,
+    });
   }
 
   async verify(): Promise<DatastoreHealthResult> {

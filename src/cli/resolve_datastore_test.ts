@@ -191,6 +191,53 @@ Deno.test("resolveDatastoreConfig - marker config used when no env/cli", () => {
 });
 
 // ============================================================================
+// S3 endpoint / forcePathStyle tests
+// ============================================================================
+
+Deno.test("resolveDatastoreConfig - S3 marker with endpoint and forcePathStyle", () => {
+  const marker: RepoMarkerData = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    repoId: "test-repo",
+    datastore: {
+      type: "s3",
+      bucket: "my-space",
+      region: "us-east-1",
+      endpoint: "https://nyc3.digitaloceanspaces.com",
+      forcePathStyle: false,
+    },
+  };
+  const config = resolveDatastoreConfig(marker, undefined, "/repo");
+  assertEquals(config.type, "s3");
+  if (!isCustomDatastoreConfig(config) && config.type === "s3") {
+    assertEquals(config.bucket, "my-space");
+    assertEquals(config.region, "us-east-1");
+    assertEquals(config.endpoint, "https://nyc3.digitaloceanspaces.com");
+    assertEquals(config.forcePathStyle, false);
+  }
+});
+
+Deno.test("resolveDatastoreConfig - S3 marker without endpoint defaults to undefined", () => {
+  const marker: RepoMarkerData = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    repoId: "test-repo",
+    datastore: {
+      type: "s3",
+      bucket: "my-bucket",
+      region: "us-west-2",
+    },
+  };
+  const config = resolveDatastoreConfig(marker, undefined, "/repo");
+  assertEquals(config.type, "s3");
+  if (!isCustomDatastoreConfig(config) && config.type === "s3") {
+    assertEquals(config.bucket, "my-bucket");
+    assertEquals(config.endpoint, undefined);
+    assertEquals(config.forcePathStyle, undefined);
+  }
+});
+
+// ============================================================================
 // Custom datastore type tests
 // ============================================================================
 
