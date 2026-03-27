@@ -21,7 +21,7 @@
  * Converts libswamp events to JSON-safe objects for WebSocket transmission.
  */
 
-import type { SwampError } from "../libswamp/errors.ts";
+import type { SwampError } from "../libswamp/mod.ts";
 import type { SerializedError, SerializedEvent } from "./protocol.ts";
 
 /**

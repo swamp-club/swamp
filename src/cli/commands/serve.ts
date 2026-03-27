@@ -48,6 +48,12 @@ export const serveCommand = new Command()
         outputMode: ctx.outputMode,
       });
 
+    if (host !== "127.0.0.1" && host !== "localhost") {
+      logger.warn(
+        "Binding to non-loopback address {host} — no authentication is enforced on WebSocket connections",
+        { host },
+      );
+    }
     const connectionCtx = {
       repoDir: resolvedRepoDir,
       repoContext,
@@ -66,9 +72,6 @@ export const serveCommand = new Command()
             host: hostname,
             port: listenPort,
           });
-          console.log(
-            `Swamp WebSocket API server listening on ws://${hostname}:${listenPort}`,
-          );
         },
       },
       (req) => {

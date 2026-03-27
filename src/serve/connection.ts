@@ -24,9 +24,11 @@
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
-import { createLibSwampContext } from "../libswamp/context.ts";
-import { workflowRun } from "../libswamp/workflows/run.ts";
-import { modelMethodRun } from "../libswamp/models/run.ts";
+import {
+  createLibSwampContext,
+  modelMethodRun,
+  workflowRun,
+} from "../libswamp/mod.ts";
 import { createModelMethodRunDeps, createWorkflowRunDeps } from "./deps.ts";
 import { serializeEvent } from "./serializer.ts";
 import type {

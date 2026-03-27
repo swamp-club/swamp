@@ -25,8 +25,7 @@
 
 import { join } from "@std/path";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import type { WorkflowRunDeps } from "../libswamp/workflows/run.ts";
-import type { ModelMethodRunDeps } from "../libswamp/models/run.ts";
+import type { ModelMethodRunDeps, WorkflowRunDeps } from "../libswamp/mod.ts";
 import { WorkflowExecutionService } from "../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
