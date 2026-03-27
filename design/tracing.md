@@ -263,6 +263,7 @@ cross-process propagation.
 | ----------------------------------------------- | --------------------------------------------- |
 | `src/infrastructure/tracing/mod.ts`             | Public API surface (re-exports)               |
 | `src/infrastructure/tracing/otel_init.ts`       | SDK bootstrap, dynamic loading, shutdown      |
+| `src/infrastructure/tracing/fetch_otlp_exporter.ts` | Fetch-based OTLP span exporter           |
 | `src/infrastructure/tracing/tracer.ts`          | `getTracer`, `withSpan`, `withGeneratorSpan`  |
 | `src/infrastructure/tracing/propagation.ts`     | W3C Trace Context inject/extract              |
 
@@ -283,11 +284,16 @@ cross-process propagation.
 ```json
 "@opentelemetry/api": "npm:@opentelemetry/api@^1.9.0",
 "@opentelemetry/sdk-trace-base": "npm:@opentelemetry/sdk-trace-base@^1.30.0",
-"@opentelemetry/exporter-trace-otlp-http": "npm:@opentelemetry/exporter-trace-otlp-http@^0.57.0",
+"@opentelemetry/otlp-transformer": "npm:@opentelemetry/otlp-transformer@^0.57.0",
+"@opentelemetry/core": "npm:@opentelemetry/core@^1.30.0",
 "@opentelemetry/context-async-hooks": "npm:@opentelemetry/context-async-hooks@^1.30.0",
 "@opentelemetry/resources": "npm:@opentelemetry/resources@^1.30.0",
 "@opentelemetry/semantic-conventions": "npm:@opentelemetry/semantic-conventions@^1.30.0"
 ```
+
+The OTLP exporter uses Deno's native `fetch` API instead of the Node.js
+`http`/`https` modules. This avoids TLS connection failures in Deno compiled
+binaries. `@opentelemetry/otlp-transformer` handles JSON serialization of spans.
 
 Only `@opentelemetry/api` is statically imported. All other packages are
 dynamically loaded when tracing is enabled.

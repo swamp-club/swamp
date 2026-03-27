@@ -69,10 +69,9 @@ export async function initTracing(): Promise<void> {
       new BatchSpanProcessor(new ConsoleSpanExporter()),
     );
   } else {
-    // OTLP/HTTP exporter
-    const { OTLPTraceExporter } = await import(
-      "@opentelemetry/exporter-trace-otlp-http"
-    );
+    // Fetch-based OTLP/HTTP exporter — uses Deno's native fetch instead of
+    // Node.js http/https modules, which fail TLS in compiled binaries.
+    const { FetchOtlpExporter } = await import("./fetch_otlp_exporter.ts");
 
     const headers: Record<string, string> = {};
     const rawHeaders = Deno.env.get("OTEL_EXPORTER_OTLP_HEADERS");
@@ -85,7 +84,7 @@ export async function initTracing(): Promise<void> {
       }
     }
 
-    const exporter = new OTLPTraceExporter({
+    const exporter = new FetchOtlpExporter({
       url: `${endpoint!.replace(/\/+$/, "")}/v1/traces`,
       headers,
     });
@@ -104,7 +103,11 @@ export async function initTracing(): Promise<void> {
  */
 export async function shutdownTracing(): Promise<void> {
   if (providerRef) {
-    await providerRef.shutdown();
+    try {
+      await providerRef.shutdown();
+    } catch {
+      // Silently swallow shutdown errors — tracing should never block the CLI.
+    }
     providerRef = undefined;
 
     // Disable the global context manager

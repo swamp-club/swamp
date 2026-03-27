@@ -21,7 +21,9 @@
     "npm:@marcbachmann/cel-js@7.5.1": "7.5.1",
     "npm:@opentelemetry/api@^1.9.0": "1.9.0",
     "npm:@opentelemetry/context-async-hooks@^1.30.0": "1.30.1_@opentelemetry+api@1.9.0",
-    "npm:@opentelemetry/exporter-trace-otlp-http@0.57": "0.57.2_@opentelemetry+api@1.9.0",
+    "npm:@opentelemetry/core@^1.30.0": "1.30.1_@opentelemetry+api@1.9.0",
+    "npm:@opentelemetry/otlp-transformer@0.57": "0.57.2_@opentelemetry+api@1.9.0",
+    "npm:@opentelemetry/otlp-transformer@0.57.2": "0.57.2_@opentelemetry+api@1.9.0",
     "npm:@opentelemetry/resources@^1.30.0": "1.30.1_@opentelemetry+api@1.9.0",
     "npm:@opentelemetry/sdk-trace-base@^1.30.0": "1.30.1_@opentelemetry+api@1.9.0",
     "npm:@opentelemetry/semantic-conventions@^1.30.0": "1.40.0",
@@ -704,25 +706,6 @@
       "dependencies": [
         "@opentelemetry/api",
         "@opentelemetry/semantic-conventions@1.28.0"
-      ]
-    },
-    "@opentelemetry/exporter-trace-otlp-http@0.57.2_@opentelemetry+api@1.9.0": {
-      "integrity": "sha512-sB/gkSYFu+0w2dVQ0PWY9fAMl172PKMZ/JrHkkW8dmjCL0CYkmXeE+ssqIL/yBUTPOvpLIpenX5T9RwXRBW/3g==",
-      "dependencies": [
-        "@opentelemetry/api",
-        "@opentelemetry/core",
-        "@opentelemetry/otlp-exporter-base",
-        "@opentelemetry/otlp-transformer",
-        "@opentelemetry/resources",
-        "@opentelemetry/sdk-trace-base"
-      ]
-    },
-    "@opentelemetry/otlp-exporter-base@0.57.2_@opentelemetry+api@1.9.0": {
-      "integrity": "sha512-XdxEzL23Urhidyebg5E6jZoaiW5ygP/mRjxLHixogbqwDy2Faduzb5N0o/Oi+XTIJu+iyxXdVORjXax+Qgfxag==",
-      "dependencies": [
-        "@opentelemetry/api",
-        "@opentelemetry/core",
-        "@opentelemetry/otlp-transformer"
       ]
     },
     "@opentelemetry/otlp-transformer@0.57.2_@opentelemetry+api@1.9.0": {
@@ -1786,7 +1769,8 @@
       "npm:@marcbachmann/cel-js@7.5.1",
       "npm:@opentelemetry/api@^1.9.0",
       "npm:@opentelemetry/context-async-hooks@^1.30.0",
-      "npm:@opentelemetry/exporter-trace-otlp-http@0.57",
+      "npm:@opentelemetry/core@^1.30.0",
+      "npm:@opentelemetry/otlp-transformer@0.57",
       "npm:@opentelemetry/resources@^1.30.0",
       "npm:@opentelemetry/sdk-trace-base@^1.30.0",
       "npm:@opentelemetry/semantic-conventions@^1.30.0",
