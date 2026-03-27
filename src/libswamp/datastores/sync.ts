@@ -122,6 +122,8 @@ export function createDatastoreSyncDeps(
     bucket: config.bucket,
     prefix: config.prefix,
     region: config.region,
+    endpoint: config.endpoint,
+    forcePathStyle: config.forcePathStyle,
   });
   const syncService = new S3CacheSyncService(s3, config.cachePath);
 

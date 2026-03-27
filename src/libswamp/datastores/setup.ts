@@ -71,6 +71,8 @@ export interface DatastoreSetupS3Input {
   bucket: string;
   prefix?: string;
   region?: string;
+  endpoint?: string;
+  forcePathStyle?: boolean;
   repoDir: string;
   repoId?: string;
   skipMigration: boolean;
@@ -86,11 +88,15 @@ export interface DatastoreSetupDeps {
     bucket: string,
     prefix?: string,
     region?: string,
+    endpoint?: string,
+    forcePathStyle?: boolean,
   ) => Promise<{ healthy: boolean; message: string }>;
   checkS3DatastoreExists: (
     bucket: string,
     prefix?: string,
     region?: string,
+    endpoint?: string,
+    forcePathStyle?: boolean,
   ) => Promise<boolean>;
   ensureDir: (path: string) => Promise<void>;
   getDatastoreDirectories: (config: {
@@ -122,6 +128,8 @@ export interface DatastoreSetupDeps {
     prefix: string | undefined,
     region: string | undefined,
     cachePath: string,
+    endpoint?: string,
+    forcePathStyle?: boolean,
   ) => Promise<number>;
   getSwampDataDir: () => string;
   getCachePath: (repoId: string) => string;
@@ -271,6 +279,8 @@ export async function* datastoreSetupS3(
         input.bucket,
         input.prefix,
         input.region,
+        input.endpoint,
+        input.forcePathStyle,
       );
       if (!health.healthy) {
         yield {
@@ -288,6 +298,8 @@ export async function* datastoreSetupS3(
         input.bucket,
         input.prefix,
         input.region,
+        input.endpoint,
+        input.forcePathStyle,
       );
       if (exists) {
         const prefixStr = input.prefix ?? "";
@@ -315,6 +327,8 @@ export async function* datastoreSetupS3(
         bucket: input.bucket,
         prefix: input.prefix,
         region: input.region,
+        endpoint: input.endpoint,
+        forcePathStyle: input.forcePathStyle,
       });
 
       // Migrate existing data to S3
@@ -345,6 +359,8 @@ export async function* datastoreSetupS3(
             input.prefix,
             input.region,
             cachePath,
+            input.endpoint,
+            input.forcePathStyle,
           );
           ctx.logger.debug`Pushed ${filesPushed} file(s) to S3`;
         } catch (error) {
@@ -443,16 +459,32 @@ export function createDatastoreSetupDeps(
       bucket: string,
       prefix?: string,
       region?: string,
+      endpoint?: string,
+      forcePathStyle?: boolean,
     ) => {
-      const verifier = new S3DatastoreVerifier(bucket, prefix, region);
+      const verifier = new S3DatastoreVerifier(
+        bucket,
+        prefix,
+        region,
+        endpoint,
+        forcePathStyle,
+      );
       return await verifier.verify();
     },
     checkS3DatastoreExists: async (
       bucket: string,
       prefix?: string,
       region?: string,
+      endpoint?: string,
+      forcePathStyle?: boolean,
     ) => {
-      const s3 = new S3Client({ bucket, prefix, region });
+      const s3 = new S3Client({
+        bucket,
+        prefix,
+        region,
+        endpoint,
+        forcePathStyle,
+      });
       try {
         await s3.getObject(".datastore-index.json");
         return true;
@@ -502,8 +534,16 @@ export function createDatastoreSetupDeps(
       prefix: string | undefined,
       region: string | undefined,
       cachePath: string,
+      endpoint?: string,
+      forcePathStyle?: boolean,
     ) => {
-      const s3 = new S3Client({ bucket, prefix, region });
+      const s3 = new S3Client({
+        bucket,
+        prefix,
+        region,
+        endpoint,
+        forcePathStyle,
+      });
       const syncService = new S3CacheSyncService(s3, cachePath);
       return await syncService.pushAll();
     },

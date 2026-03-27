@@ -80,6 +80,10 @@ export interface S3DatastoreConfig {
   readonly prefix?: string;
   /** AWS region */
   readonly region?: string;
+  /** Custom S3-compatible endpoint URL (e.g., https://nyc3.digitaloceanspaces.com) */
+  readonly endpoint?: string;
+  /** Use path-style addressing (bucket in path, not subdomain). Default: false. */
+  readonly forcePathStyle?: boolean;
   /** Local cache directory path (defaults to ~/.swamp/repos/{repoId}/) */
   readonly cachePath: string;
   /** Which subdirectories belong to the datastore (defaults to DEFAULT_DATASTORE_SUBDIRS) */
@@ -127,6 +131,8 @@ export interface DatastoreConfigData {
   bucket?: string;
   prefix?: string;
   region?: string;
+  endpoint?: string;
+  forcePathStyle?: boolean;
   config?: Record<string, unknown>;
   directories?: string[];
   exclude?: string[];

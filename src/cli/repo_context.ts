@@ -334,6 +334,8 @@ export function requireInitializedRepo(
         bucket: datastoreConfig.bucket,
         prefix: datastoreConfig.prefix,
         region: datastoreConfig.region,
+        endpoint: datastoreConfig.endpoint,
+        forcePathStyle: datastoreConfig.forcePathStyle,
       });
 
       const lock = new S3Lock(s3);

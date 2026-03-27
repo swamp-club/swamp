@@ -88,6 +88,14 @@ const datastoreSetupS3Command = new Command()
   .option("--bucket <bucket:string>", "S3 bucket name", { required: true })
   .option("--prefix <prefix:string>", "Key prefix within the bucket")
   .option("--region <region:string>", "AWS region")
+  .option(
+    "--endpoint <endpoint:string>",
+    "Custom S3-compatible endpoint URL (e.g., https://nyc3.digitaloceanspaces.com)",
+  )
+  .option(
+    "--force-path-style",
+    "Use path-style addressing (bucket in path, not subdomain)",
+  )
   .option("--skip-migration", "Skip pushing existing data to S3")
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -115,6 +123,8 @@ const datastoreSetupS3Command = new Command()
         bucket: options.bucket,
         prefix: options.prefix,
         region: options.region,
+        endpoint: options.endpoint,
+        forcePathStyle: options.forcePathStyle ? true : undefined,
         repoDir,
         repoId: marker?.repoId,
         skipMigration: !!options.skipMigration,

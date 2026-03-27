@@ -39,6 +39,7 @@ export interface DatastoreStatusData {
   bucket?: string;
   prefix?: string;
   region?: string;
+  endpoint?: string;
   healthy: boolean;
   message: string;
   latencyMs: number;
@@ -86,6 +87,8 @@ export function createDatastoreStatusDeps(
           config.bucket,
           config.prefix,
           config.region,
+          config.endpoint,
+          config.forcePathStyle,
         );
         return await verifier.verify();
       }
@@ -124,6 +127,9 @@ export async function* datastoreStatus(
           : undefined,
         region: !isCustomDatastoreConfig(config) && config.type === "s3"
           ? config.region
+          : undefined,
+        endpoint: !isCustomDatastoreConfig(config) && config.type === "s3"
+          ? config.endpoint
           : undefined,
         healthy,
         message,
