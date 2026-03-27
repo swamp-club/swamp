@@ -58,6 +58,7 @@ const TRUSTED_PUBLISHERS = new Set([
   "actions",
   "anthropics",
   "denoland",
+  "docker",
   "github",
 ]);
 
