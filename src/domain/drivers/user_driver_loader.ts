@@ -103,27 +103,41 @@ export class UserDriverLoader {
    * @param driversDir - The directory containing user driver files
    * @returns Result containing lists of loaded and failed files
    */
-  async loadDrivers(driversDir: string): Promise<DriverLoadResult> {
+  async loadDrivers(
+    driversDir: string,
+    options?: {
+      skipAlreadyRegistered?: boolean;
+      /** Additional directories to scan (e.g. pulled extensions). */
+      additionalDirs?: string[];
+    },
+  ): Promise<DriverLoadResult> {
     const result: DriverLoadResult = { loaded: [], failed: [] };
 
     // Ensure swamp's Zod is available on globalThis before importing bundles.
     installZodGlobal();
 
-    // Check if directory exists
-    try {
-      await Deno.stat(driversDir);
-    } catch {
-      return result; // No user drivers directory - not an error
-    }
-
     // Ensure deno is available before bundling
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    const files = await this.discoverFiles(driversDir);
-
-    for (const file of files) {
+    // Discover files from primary dir and any additional dirs
+    const allFiles: Array<{ file: string; baseDir: string }> = [];
+    for (
+      const dir of [driversDir, ...(options?.additionalDirs ?? [])]
+    ) {
       try {
-        const absolutePath = resolve(driversDir, file);
+        await Deno.stat(dir);
+      } catch {
+        continue;
+      }
+      const files = await this.discoverFiles(dir);
+      for (const file of files) {
+        allFiles.push({ file, baseDir: dir });
+      }
+    }
+
+    for (const { file, baseDir } of allFiles) {
+      try {
+        const absolutePath = resolve(baseDir, file);
 
         // Pre-check: only bundle files that declare a driver export.
         const source = await Deno.readTextFile(absolutePath);
@@ -136,7 +150,7 @@ export class UserDriverLoader {
           absolutePath,
           file,
           denoPath,
-          driversDir,
+          baseDir,
         );
         const module = await this.importBundle(js, file);
 
@@ -158,6 +172,9 @@ export class UserDriverLoader {
 
         // Register with the driver type registry
         if (driverTypeRegistry.has(userDriver.type)) {
+          if (options?.skipAlreadyRegistered) {
+            continue;
+          }
           result.failed.push({
             file,
             error: `Driver type '${userDriver.type}' is already registered`,

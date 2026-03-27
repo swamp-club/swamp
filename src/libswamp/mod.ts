@@ -537,6 +537,21 @@ export {
   removeUpstreamExtension,
 } from "./extensions/rm.ts";
 
+// Extension layout detection
+export {
+  detectLegacyExtensionLayout,
+  requireCurrentExtensionLayout,
+} from "./extensions/layout.ts";
+
+// Extension install (restore from lockfile)
+export {
+  extensionInstall,
+  type ExtensionInstallData,
+  type ExtensionInstallDeps,
+  type ExtensionInstallEntry,
+  type ExtensionInstallEvent,
+} from "./extensions/install.ts";
+
 // Model edit operations
 export {
   createModelEditDeps,

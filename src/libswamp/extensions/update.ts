@@ -68,7 +68,7 @@ export interface ExtensionUpdateDeps {
 
 /** Wires real infrastructure into ExtensionUpdateDeps. */
 export function createExtensionUpdateDeps(options: {
-  absoluteModelsDir: string;
+  lockfilePath: string;
   serverUrl?: string;
   installExtension: (name: string, version: string) => Promise<void>;
 }): ExtensionUpdateDeps {
@@ -76,8 +76,7 @@ export function createExtensionUpdateDeps(options: {
     options.serverUrl ?? resolveServerUrl(),
   );
   return {
-    readUpstreamExtensions: () =>
-      readUpstreamExtensions(options.absoluteModelsDir),
+    readUpstreamExtensions: () => readUpstreamExtensions(options.lockfilePath),
     getExtension: async (name) => {
       try {
         const info = await extensionClient.getExtension(name);

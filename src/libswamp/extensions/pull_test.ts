@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
+import { join } from "@std/path";
 import {
   parseExtensionRef,
   updateUpstreamExtensions,
@@ -82,13 +83,12 @@ Deno.test("validateExtensionName: rejects invalid names", () => {
 Deno.test("updateUpstreamExtensions: writes and updates entries", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    await updateUpstreamExtensions(tmpDir, "@test/first", "1.0.0", [
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await updateUpstreamExtensions(lockfilePath, "@test/first", "1.0.0", [
       "a.yaml",
     ]);
 
-    const content = await Deno.readTextFile(
-      `${tmpDir}/upstream_extensions.json`,
-    );
+    const content = await Deno.readTextFile(lockfilePath);
     const data = JSON.parse(content);
     assertEquals(data["@test/first"].version, "1.0.0");
     assertEquals(data["@test/first"].files, ["a.yaml"]);

@@ -275,7 +275,11 @@ export class UserModelLoader {
    */
   async loadModels(
     modelsDir: string,
-    options?: { skipAlreadyRegistered?: boolean },
+    options?: {
+      skipAlreadyRegistered?: boolean;
+      /** Additional directories to scan (e.g. pulled extensions). */
+      additionalDirs?: string[];
+    },
   ): Promise<LoadResult> {
     const result: LoadResult = { loaded: [], extended: [], failed: [] };
 
@@ -283,17 +287,26 @@ export class UserModelLoader {
     // This prevents dual-instance issues in the compiled binary.
     installZodGlobal();
 
-    // Check if directory exists
-    try {
-      await Deno.stat(modelsDir);
-    } catch {
-      return result; // No user models directory - not an error
-    }
-
     // Ensure deno is available before bundling
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    const files = await this.discoverFiles(modelsDir);
+    // Discover files from primary dir and any additional dirs, merging into
+    // a single list of { file (relative), baseDir (absolute root) } tuples.
+    // Primary dir files come first so user extensions take precedence.
+    const allFiles: Array<{ file: string; baseDir: string }> = [];
+    for (
+      const dir of [modelsDir, ...(options?.additionalDirs ?? [])]
+    ) {
+      try {
+        await Deno.stat(dir);
+      } catch {
+        continue; // Directory doesn't exist — skip
+      }
+      const files = await this.discoverFiles(dir);
+      for (const file of files) {
+        allFiles.push({ file, baseDir: dir });
+      }
+    }
 
     // Import all files and classify by export name
     const modelFiles: Array<{
@@ -306,9 +319,9 @@ export class UserModelLoader {
       module: Record<string, unknown>;
     }> = [];
 
-    for (const file of files) {
+    for (const { file, baseDir } of allFiles) {
       try {
-        const absolutePath = resolve(modelsDir, file);
+        const absolutePath = resolve(baseDir, file);
 
         // Pre-check: only bundle files that declare a model or extension export.
         // This avoids attempting to bundle helper scripts with unbundleable
@@ -323,7 +336,7 @@ export class UserModelLoader {
           absolutePath,
           file,
           denoPath,
-          modelsDir,
+          baseDir,
         );
         const module = await this.importBundle(js, file);
 

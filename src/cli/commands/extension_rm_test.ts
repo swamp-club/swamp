@@ -31,12 +31,17 @@ import {
 Deno.test("removeUpstreamExtension removes entry and preserves others", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
     // Set up two extensions
-    await updateUpstreamExtensions(tmpDir, "@test/first", "1.0.0", ["a.yaml"]);
-    await updateUpstreamExtensions(tmpDir, "@test/second", "2.0.0", ["b.yaml"]);
+    await updateUpstreamExtensions(lockfilePath, "@test/first", "1.0.0", [
+      "a.yaml",
+    ]);
+    await updateUpstreamExtensions(lockfilePath, "@test/second", "2.0.0", [
+      "b.yaml",
+    ]);
 
     // Remove the first one
-    await removeUpstreamExtension(tmpDir, "@test/first");
+    await removeUpstreamExtension(lockfilePath, "@test/first");
 
     const content = await Deno.readTextFile(
       join(tmpDir, "upstream_extensions.json"),
@@ -54,10 +59,13 @@ Deno.test("removeUpstreamExtension removes entry and preserves others", async ()
 Deno.test("removeUpstreamExtension handles non-existent extension gracefully", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    await updateUpstreamExtensions(tmpDir, "@test/first", "1.0.0", ["a.yaml"]);
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await updateUpstreamExtensions(lockfilePath, "@test/first", "1.0.0", [
+      "a.yaml",
+    ]);
 
     // Removing a non-existent entry should not throw
-    await removeUpstreamExtension(tmpDir, "@test/nonexistent");
+    await removeUpstreamExtension(lockfilePath, "@test/nonexistent");
 
     const content = await Deno.readTextFile(
       join(tmpDir, "upstream_extensions.json"),
@@ -73,8 +81,9 @@ Deno.test("removeUpstreamExtension handles non-existent extension gracefully", a
 Deno.test("removeUpstreamExtension handles missing JSON file", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
     // Should not throw even when file doesn't exist
-    await removeUpstreamExtension(tmpDir, "@test/nonexistent");
+    await removeUpstreamExtension(lockfilePath, "@test/nonexistent");
 
     const content = await Deno.readTextFile(
       join(tmpDir, "upstream_extensions.json"),
@@ -90,11 +99,12 @@ Deno.test("removeUpstreamExtension handles missing JSON file", async () => {
 Deno.test("readUpstreamExtensions reads existing entries", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    await updateUpstreamExtensions(tmpDir, "@test/ext", "1.0.0", [
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await updateUpstreamExtensions(lockfilePath, "@test/ext", "1.0.0", [
       "extensions/models/foo.yaml",
     ]);
 
-    const data = await readUpstreamExtensions(tmpDir);
+    const data = await readUpstreamExtensions(lockfilePath);
 
     assertEquals(data["@test/ext"].version, "1.0.0");
     assertEquals(data["@test/ext"].files, ["extensions/models/foo.yaml"]);
@@ -106,7 +116,8 @@ Deno.test("readUpstreamExtensions reads existing entries", async () => {
 Deno.test("readUpstreamExtensions returns empty map when file missing", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    const data = await readUpstreamExtensions(tmpDir);
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    const data = await readUpstreamExtensions(lockfilePath);
     assertEquals(Object.keys(data).length, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

@@ -103,27 +103,41 @@ export class UserDatastoreLoader {
    * @param datastoresDir - The directory containing user datastore files
    * @returns Result containing lists of loaded and failed files
    */
-  async loadDatastores(datastoresDir: string): Promise<DatastoreLoadResult> {
+  async loadDatastores(
+    datastoresDir: string,
+    options?: {
+      skipAlreadyRegistered?: boolean;
+      /** Additional directories to scan (e.g. pulled extensions). */
+      additionalDirs?: string[];
+    },
+  ): Promise<DatastoreLoadResult> {
     const result: DatastoreLoadResult = { loaded: [], failed: [] };
 
     // Ensure swamp's Zod is available on globalThis before importing bundles.
     installZodGlobal();
 
-    // Check if directory exists
-    try {
-      await Deno.stat(datastoresDir);
-    } catch {
-      return result; // No user datastores directory - not an error
-    }
-
     // Ensure deno is available before bundling
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    const files = await this.discoverFiles(datastoresDir);
-
-    for (const file of files) {
+    // Discover files from primary dir and any additional dirs
+    const allFiles: Array<{ file: string; baseDir: string }> = [];
+    for (
+      const dir of [datastoresDir, ...(options?.additionalDirs ?? [])]
+    ) {
       try {
-        const absolutePath = resolve(datastoresDir, file);
+        await Deno.stat(dir);
+      } catch {
+        continue;
+      }
+      const files = await this.discoverFiles(dir);
+      for (const file of files) {
+        allFiles.push({ file, baseDir: dir });
+      }
+    }
+
+    for (const { file, baseDir } of allFiles) {
+      try {
+        const absolutePath = resolve(baseDir, file);
 
         // Pre-check: only bundle files that declare a datastore export.
         const source = await Deno.readTextFile(absolutePath);
@@ -136,7 +150,7 @@ export class UserDatastoreLoader {
           absolutePath,
           file,
           denoPath,
-          datastoresDir,
+          baseDir,
         );
         const module = await this.importBundle(js, file);
 
@@ -158,6 +172,9 @@ export class UserDatastoreLoader {
 
         // Register with the datastore type registry
         if (datastoreTypeRegistry.has(userDatastore.type)) {
+          if (options?.skipAlreadyRegistered) {
+            continue;
+          }
           result.failed.push({
             file,
             error:

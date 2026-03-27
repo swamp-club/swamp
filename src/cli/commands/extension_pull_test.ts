@@ -59,11 +59,12 @@ Deno.test("parseExtensionRef throws on empty version after @", () => {
 Deno.test("updateUpstreamExtensions persists files array", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
     const files = [
       "extensions/models/foo/bar.yaml",
       "extensions/models/foo/baz.ts",
     ];
-    await updateUpstreamExtensions(tmpDir, "@test/ext", "1.0.0", files);
+    await updateUpstreamExtensions(lockfilePath, "@test/ext", "1.0.0", files);
 
     const content = await Deno.readTextFile(
       join(tmpDir, "upstream_extensions.json"),
@@ -81,10 +82,15 @@ Deno.test("updateUpstreamExtensions persists files array", async () => {
 Deno.test("updateUpstreamExtensions preserves existing entries", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
     // Write first extension
-    await updateUpstreamExtensions(tmpDir, "@test/first", "1.0.0", ["a.yaml"]);
+    await updateUpstreamExtensions(lockfilePath, "@test/first", "1.0.0", [
+      "a.yaml",
+    ]);
     // Write second extension
-    await updateUpstreamExtensions(tmpDir, "@test/second", "2.0.0", ["b.yaml"]);
+    await updateUpstreamExtensions(lockfilePath, "@test/second", "2.0.0", [
+      "b.yaml",
+    ]);
 
     const content = await Deno.readTextFile(
       join(tmpDir, "upstream_extensions.json"),
@@ -103,7 +109,8 @@ Deno.test("updateUpstreamExtensions preserves existing entries", async () => {
 Deno.test("updateUpstreamExtensions handles empty files array", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    await updateUpstreamExtensions(tmpDir, "@test/empty", "1.0.0", []);
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await updateUpstreamExtensions(lockfilePath, "@test/empty", "1.0.0", []);
 
     const content = await Deno.readTextFile(
       join(tmpDir, "upstream_extensions.json"),
