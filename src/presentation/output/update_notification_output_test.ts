@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { renderUpdateNotification } from "./update_notification_output.ts";
+import { renderUpdateNotification } from "../renderers/update_notification.ts";
 import type { UpdateNotification } from "../../domain/update/update_notification_service.ts";
 
 function captureStderr(fn: () => void): string[] {

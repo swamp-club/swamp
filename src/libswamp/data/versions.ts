@@ -25,6 +25,7 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Version information for a single data entry. */
 export interface DataVersionInfo {
   version: number;
@@ -100,65 +101,71 @@ export async function* dataVersions(
   deps: DataVersionsDeps,
   input: DataVersionsInput,
 ): AsyncIterable<DataVersionsEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.data.versions",
+    { "data.name": input.dataName },
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const result = await deps.lookupDefinition(input.modelIdOrName);
-  if (!result) {
-    yield { kind: "error", error: notFound("Model", input.modelIdOrName) };
-    return;
-  }
-  const { definition, type: modelType } = result;
+      const result = await deps.lookupDefinition(input.modelIdOrName);
+      if (!result) {
+        yield { kind: "error", error: notFound("Model", input.modelIdOrName) };
+        return;
+      }
+      const { definition, type: modelType } = result;
 
-  const versionNumbers = await deps.listVersions(
-    modelType,
-    definition.id,
-    input.dataName,
+      const versionNumbers = await deps.listVersions(
+        modelType,
+        definition.id,
+        input.dataName,
+      );
+
+      if (versionNumbers.length === 0) {
+        yield {
+          kind: "error",
+          error: notFound(
+            "Data",
+            `"${input.dataName}" for model "${input.modelIdOrName}"`,
+          ),
+        };
+        return;
+      }
+
+      const versions: DataVersionInfo[] = [];
+      const latestVersion = Math.max(...versionNumbers);
+
+      for (const version of versionNumbers) {
+        const data = await deps.findByName(
+          modelType,
+          definition.id,
+          input.dataName,
+          version,
+        );
+        if (data) {
+          versions.push({
+            version: data.version,
+            createdAt: data.createdAt.toISOString(),
+            size: data.size,
+            checksum: data.checksum,
+            isLatest: version === latestVersion,
+          });
+        }
+      }
+
+      // Sort versions descending (newest first)
+      versions.sort((a, b) => b.version - a.version);
+
+      yield {
+        kind: "completed",
+        data: {
+          dataName: input.dataName,
+          modelId: definition.id,
+          modelName: definition.name,
+          modelType: modelType.normalized,
+          versions,
+          total: versions.length,
+        },
+      };
+    })(),
   );
-
-  if (versionNumbers.length === 0) {
-    yield {
-      kind: "error",
-      error: notFound(
-        "Data",
-        `"${input.dataName}" for model "${input.modelIdOrName}"`,
-      ),
-    };
-    return;
-  }
-
-  const versions: DataVersionInfo[] = [];
-  const latestVersion = Math.max(...versionNumbers);
-
-  for (const version of versionNumbers) {
-    const data = await deps.findByName(
-      modelType,
-      definition.id,
-      input.dataName,
-      version,
-    );
-    if (data) {
-      versions.push({
-        version: data.version,
-        createdAt: data.createdAt.toISOString(),
-        size: data.size,
-        checksum: data.checksum,
-        isLatest: version === latestVersion,
-      });
-    }
-  }
-
-  // Sort versions descending (newest first)
-  versions.sort((a, b) => b.version - a.version);
-
-  yield {
-    kind: "completed",
-    data: {
-      dataName: input.dataName,
-      modelId: definition.id,
-      modelName: definition.name,
-      modelType: modelType.normalized,
-      versions,
-      total: versions.length,
-    },
-  };
 }

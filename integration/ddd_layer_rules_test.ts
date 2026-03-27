@@ -58,6 +58,13 @@ function isLoggingImport(filePath: string, importPath: string): boolean {
   return importsLayer(filePath, importPath, "infrastructure/logging");
 }
 
+/**
+ * Check if an import is a tracing import (cross-cutting concern, not a real violation).
+ */
+function isTracingImport(filePath: string, importPath: string): boolean {
+  return importsLayer(filePath, importPath, "infrastructure/tracing");
+}
+
 // Ratchet counts: current number of known violations.
 // If someone fixes a violation, the count decreases and the test still passes.
 // If someone adds a new violation, the count increases and the test fails.
@@ -81,8 +88,9 @@ Deno.test(
 
       for (const imp of imports) {
         if (importsLayer(entry.path, imp, "infrastructure")) {
-          // Logging is a cross-cutting concern, not an infrastructure dependency
+          // Logging and tracing are cross-cutting concerns, not infrastructure dependencies
           if (isLoggingImport(entry.path, imp)) continue;
+          if (isTracingImport(entry.path, imp)) continue;
           violations.push(relative(ROOT, entry.path));
           break; // Count each file only once
         }
@@ -126,8 +134,9 @@ Deno.test(
 
       for (const imp of imports) {
         if (importsLayer(entry.path, imp, "infrastructure")) {
-          // Logging is a cross-cutting concern, not an infrastructure dependency
+          // Logging and tracing are cross-cutting concerns, not infrastructure dependencies
           if (isLoggingImport(entry.path, imp)) continue;
+          if (isTracingImport(entry.path, imp)) continue;
           violations.push(relative(ROOT, entry.path));
           break; // Count each file only once
         }

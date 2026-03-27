@@ -140,6 +140,33 @@ Deno.test("Definition.create throws on name with null bytes", () => {
   );
 });
 
+// Scoped @collective/name tests
+
+Deno.test("Definition.create accepts scoped @collective/name", () => {
+  const def = Definition.create({ name: "@john/pod-inventory" });
+  assertEquals(def.name, "@john/pod-inventory");
+});
+
+Deno.test("Definition.create accepts scoped name with multiple segments", () => {
+  const def = Definition.create({ name: "@swamp/aws/ec2" });
+  assertEquals(def.name, "@swamp/aws/ec2");
+});
+
+Deno.test("Definition.create rejects malformed scoped names", () => {
+  assertThrows(
+    () => Definition.create({ name: "@/" }),
+    Error,
+  );
+  assertThrows(
+    () => Definition.create({ name: "@scope/" }),
+    Error,
+  );
+  assertThrows(
+    () => Definition.create({ name: "@UPPER/case" }),
+    Error,
+  );
+});
+
 Deno.test("Definition.create throws on invalid version", () => {
   assertThrows(
     () => Definition.create({ name: "test", version: 0 }),

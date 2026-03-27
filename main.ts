@@ -22,8 +22,13 @@ import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
 import { renderError } from "./src/presentation/output/error_output.ts";
 import { flushDatastoreSync } from "./src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getOutputModeFromArgs } from "./src/cli/context.ts";
+import {
+  initTracing,
+  shutdownTracing,
+} from "./src/infrastructure/tracing/mod.ts";
 
 if (import.meta.main) {
+  await initTracing();
   try {
     await runCli(Deno.args);
   } catch (error) {
@@ -34,5 +39,7 @@ if (import.meta.main) {
     });
     renderError(error);
     Deno.exit(1);
+  } finally {
+    await shutdownTracing();
   }
 }

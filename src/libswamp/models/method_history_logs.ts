@@ -36,6 +36,7 @@ import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_outp
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Log file data. */
 export interface LogData {
   lines: string[];
@@ -154,110 +155,117 @@ export async function* modelMethodHistoryLogs(
   deps: ModelMethodHistoryLogsDeps,
   input: ModelMethodHistoryLogsInput,
 ): AsyncIterable<ModelMethodHistoryLogsEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.method.history.logs",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  let output: ModelOutput | undefined;
+      let output: ModelOutput | undefined;
 
-  if (deps.isPartialId(input.outputIdOrModelName)) {
-    const result = await deps.matchOutputByPartialId(
-      input.outputIdOrModelName,
-    );
+      if (deps.isPartialId(input.outputIdOrModelName)) {
+        const result = await deps.matchOutputByPartialId(
+          input.outputIdOrModelName,
+        );
 
-    if (result.status === "found" && result.match) {
-      output = result.match;
-    } else if (result.status === "ambiguous" && result.matches) {
-      yield {
-        kind: "error",
-        error: validationFailed(
-          `Ambiguous ID prefix "${input.outputIdOrModelName}" matches:\n` +
-            result.matches.map((m) => `  ${m.id}`).join("\n"),
-        ),
-      };
-      return;
-    }
-    // not_found: fall through to model name lookup
-  }
+        if (result.status === "found" && result.match) {
+          output = result.match;
+        } else if (result.status === "ambiguous" && result.matches) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Ambiguous ID prefix "${input.outputIdOrModelName}" matches:\n` +
+                result.matches.map((m) => `  ${m.id}`).join("\n"),
+            ),
+          };
+          return;
+        }
+        // not_found: fall through to model name lookup
+      }
 
-  if (!output) {
-    const definitionResult = await deps.findDefinition(
-      input.outputIdOrModelName,
-    );
+      if (!output) {
+        const definitionResult = await deps.findDefinition(
+          input.outputIdOrModelName,
+        );
 
-    if (!definitionResult) {
-      yield {
-        kind: "error",
-        error: {
-          code: "not_found",
-          message: `No method run or model found: ${input.outputIdOrModelName}`,
-          details: {
-            entityType: "Method run or model",
-            idOrName: input.outputIdOrModelName,
+        if (!definitionResult) {
+          yield {
+            kind: "error",
+            error: {
+              code: "not_found",
+              message:
+                `No method run or model found: ${input.outputIdOrModelName}`,
+              details: {
+                entityType: "Method run or model",
+                idOrName: input.outputIdOrModelName,
+              },
+            },
+          };
+          return;
+        }
+
+        const latestOutput = await deps.findLatestOutput(
+          definitionResult.type,
+          definitionResult.definition.id,
+        );
+        if (!latestOutput) {
+          yield {
+            kind: "error",
+            error: notFound(
+              "Run",
+              `for model: ${definitionResult.definition.name}`,
+            ),
+          };
+          return;
+        }
+
+        output = latestOutput;
+      }
+
+      // Read log file
+      if (!output.logFile) {
+        const modelName = await deps.getModelName(output.definitionId);
+        yield {
+          kind: "completed",
+          data: {
+            type: "no_log_file",
+            info: {
+              outputId: output.id,
+              modelName,
+              methodName: output.methodName,
+            },
           },
-        },
-      };
-      return;
-    }
+        };
+        return;
+      }
 
-    const latestOutput = await deps.findLatestOutput(
-      definitionResult.type,
-      definitionResult.definition.id,
-    );
-    if (!latestOutput) {
+      const logData = await deps.readLogFile(output.logFile, {
+        tail: input.tail,
+      });
+      const displayPath = deps.toRelativePath(input.repoDir, output.logFile);
+
+      if (logData.lines.length === 0) {
+        yield {
+          kind: "completed",
+          data: {
+            type: "empty_log",
+            info: {
+              outputId: output.id,
+              methodName: output.methodName,
+              path: displayPath,
+            },
+          },
+        };
+        return;
+      }
+
       yield {
-        kind: "error",
-        error: notFound(
-          "Run",
-          `for model: ${definitionResult.definition.name}`,
-        ),
+        kind: "completed",
+        data: {
+          type: "log",
+          log: { ...logData, path: displayPath },
+        },
       };
-      return;
-    }
-
-    output = latestOutput;
-  }
-
-  // Read log file
-  if (!output.logFile) {
-    const modelName = await deps.getModelName(output.definitionId);
-    yield {
-      kind: "completed",
-      data: {
-        type: "no_log_file",
-        info: {
-          outputId: output.id,
-          modelName,
-          methodName: output.methodName,
-        },
-      },
-    };
-    return;
-  }
-
-  const logData = await deps.readLogFile(output.logFile, {
-    tail: input.tail,
-  });
-  const displayPath = deps.toRelativePath(input.repoDir, output.logFile);
-
-  if (logData.lines.length === 0) {
-    yield {
-      kind: "completed",
-      data: {
-        type: "empty_log",
-        info: {
-          outputId: output.id,
-          methodName: output.methodName,
-          path: displayPath,
-        },
-      },
-    };
-    return;
-  }
-
-  yield {
-    kind: "completed",
-    data: {
-      type: "log",
-      log: { ...logData, path: displayPath },
-    },
-  };
+    })(),
+  );
 }

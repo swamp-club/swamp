@@ -97,10 +97,11 @@ Deno.test("resolveKeyValue - error when no = and no stdin", () => {
   assertEquals("error" in result, true);
 });
 
-Deno.test("resolveKeyValue - error message includes both usage formats", () => {
+Deno.test("resolveKeyValue - error message includes all usage formats", () => {
   const result = resolveKeyValue("MY_KEY", null);
   assertEquals("error" in result, true);
   if ("error" in result) {
+    assertEquals(result.error.includes("MY_KEY <value>"), true);
     assertEquals(result.error.includes("MY_KEY=<value>"), true);
     assertEquals(result.error.includes("echo"), true);
   }

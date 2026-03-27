@@ -48,6 +48,8 @@ export interface ExecutionRequest {
   fileSpecs?: Record<string, unknown>;
   /** Optional bundled module for out-of-process execution. */
   bundle?: Uint8Array;
+  /** W3C Trace Context headers for distributed tracing propagation. */
+  traceHeaders?: Record<string, string>;
 }
 
 /**

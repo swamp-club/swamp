@@ -32,6 +32,7 @@ import {
   zodToJsonSchema,
 } from "../types/schema_helpers.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the model get output.
  */
@@ -76,40 +77,46 @@ export async function* modelGet(
   deps: ModelGetDeps,
   modelIdOrName: string,
 ): AsyncIterable<ModelGetEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.get",
+    { "model.id_or_name": modelIdOrName },
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const result = await deps.lookupDefinition(modelIdOrName);
-  if (!result) {
-    yield { kind: "error", error: notFound("Model", modelIdOrName) };
-    return;
-  }
+      const result = await deps.lookupDefinition(modelIdOrName);
+      if (!result) {
+        yield { kind: "error", error: notFound("Model", modelIdOrName) };
+        return;
+      }
 
-  const { definition, type: modelType } = result;
-  const modelDef = deps.getModelDef(modelType);
+      const { definition, type: modelType } = result;
+      const modelDef = deps.getModelDef(modelType);
 
-  const data: ModelGetData = {
-    id: definition.id,
-    name: definition.name,
-    type: modelType.normalized,
-    version: definition.version,
-    tags: definition.tags,
-    globalArguments: definition.globalArguments,
-    typeVersion: modelDef?.version,
-    globalArgumentsSchema: modelDef?.globalArguments
-      ? zodToJsonSchema(modelDef.globalArguments)
-      : undefined,
-    methods: modelDef
-      ? Object.entries(modelDef.methods).map(
-        ([name, method]) =>
-          toMethodDescribeData(
-            name,
-            method,
-            modelDef.resources,
-            modelDef.files,
-          ),
-      )
-      : undefined,
-  };
+      const data: ModelGetData = {
+        id: definition.id,
+        name: definition.name,
+        type: modelType.normalized,
+        version: definition.version,
+        tags: definition.tags,
+        globalArguments: definition.globalArguments,
+        typeVersion: modelDef?.version,
+        globalArgumentsSchema: modelDef?.globalArguments
+          ? zodToJsonSchema(modelDef.globalArguments)
+          : undefined,
+        methods: modelDef
+          ? Object.entries(modelDef.methods).map(
+            ([name, method]) =>
+              toMethodDescribeData(
+                name,
+                method,
+                modelDef.resources,
+                modelDef.files,
+              ),
+          )
+          : undefined,
+      };
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }

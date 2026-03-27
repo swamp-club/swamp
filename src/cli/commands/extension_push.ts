@@ -199,6 +199,7 @@ export const extensionPushCommand = new Command()
       reportEntryPoints,
       allReportFiles,
       workflowFiles,
+      includeFilePaths,
       additionalFilePaths,
     } = resolved;
 
@@ -269,6 +270,7 @@ export const extensionPushCommand = new Command()
         allReportFiles,
         reportEntryPoints,
         workflowFiles,
+        includeFilePaths,
         additionalFilePaths,
         dryRun: options.dryRun ?? false,
         releaseNotes: options.releaseNotes,
@@ -327,6 +329,7 @@ export const extensionPushCommand = new Command()
                   allReportFiles,
                   reportEntryPoints,
                   workflowFiles,
+                  includeFilePaths,
                   additionalFilePaths,
                   dryRun: options.dryRun ?? false,
                   releaseNotes: options.releaseNotes,

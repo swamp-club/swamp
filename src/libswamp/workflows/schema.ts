@@ -29,6 +29,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { zodToJsonSchema } from "../types/schema_helpers.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Schema data for all workflow-related Zod schemas. */
 export interface WorkflowSchemaData {
   workflow: object;
@@ -48,16 +49,22 @@ export type WorkflowSchemaEvent =
 export async function* workflowSchema(
   _ctx: LibSwampContext,
 ): AsyncIterable<WorkflowSchemaEvent> {
-  yield {
-    kind: "completed",
-    data: {
-      workflow: zodToJsonSchema(WorkflowSchema),
-      job: zodToJsonSchema(JobSchema),
-      jobDependency: zodToJsonSchema(JobDependencySchema),
-      step: zodToJsonSchema(StepSchema),
-      stepDependency: zodToJsonSchema(StepDependencySchema),
-      stepTask: zodToJsonSchema(StepTaskSchema),
-      triggerCondition: zodToJsonSchema(TriggerConditionSchema),
-    },
-  };
+  yield* withGeneratorSpan(
+    "swamp.workflow.schema",
+    {},
+    (async function* () {
+      yield {
+        kind: "completed",
+        data: {
+          workflow: zodToJsonSchema(WorkflowSchema),
+          job: zodToJsonSchema(JobSchema),
+          jobDependency: zodToJsonSchema(JobDependencySchema),
+          step: zodToJsonSchema(StepSchema),
+          stepDependency: zodToJsonSchema(StepDependencySchema),
+          stepTask: zodToJsonSchema(StepTaskSchema),
+          triggerCondition: zodToJsonSchema(TriggerConditionSchema),
+        },
+      };
+    })(),
+  );
 }

@@ -21,6 +21,7 @@ import { GitHubIssueService } from "../../infrastructure/github/github_issue_ser
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the issue create output.
  */
@@ -79,30 +80,36 @@ export async function* issueCreate(
   deps: IssueCreateDeps,
   input: IssueCreateInput,
 ): AsyncIterable<IssueCreateEvent> {
-  ctx.logger.debug`Creating ${input.type} issue: ${input.title}`;
+  yield* withGeneratorSpan(
+    "swamp.issue.create",
+    {},
+    (async function* () {
+      ctx.logger.debug`Creating ${input.type} issue: ${input.title}`;
 
-  const result = await deps.createIssue({
-    title: input.title,
-    body: input.body,
-    labels: input.labels,
-  });
+      const result = await deps.createIssue({
+        title: input.title,
+        body: input.body,
+        labels: input.labels,
+      });
 
-  const data: IssueCreateData = result.method === "created"
-    ? {
-      method: "created",
-      url: result.url,
-      number: result.number,
-      type: input.type,
-      title: input.title,
-    }
-    : {
-      method: "url",
-      url: result.url,
-      type: input.type,
-      title: input.title,
-      body: result.body,
-      labels: result.labels,
-    };
+      const data: IssueCreateData = result.method === "created"
+        ? {
+          method: "created",
+          url: result.url,
+          number: result.number,
+          type: input.type,
+          title: input.title,
+        }
+        : {
+          method: "url",
+          url: result.url,
+          type: input.type,
+          title: input.title,
+          body: result.body,
+          labels: result.labels,
+        };
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }

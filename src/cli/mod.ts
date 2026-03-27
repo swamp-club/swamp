@@ -19,7 +19,12 @@
 
 import { Command } from "@cliffy/command";
 import { setColorEnabled } from "@std/fmt/colors";
-import { isAbsolute, resolve } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
+import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
@@ -62,6 +67,8 @@ import { UserReportLoader } from "../domain/reports/user_report_loader.ts";
 import "../domain/drivers/driver_types.ts";
 // Import datastore types barrel to trigger built-in datastore registration
 import "../domain/datastore/datastore_types.ts";
+// Import builtin reports to trigger registration
+import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   type RepoMarkerData,
@@ -89,9 +96,10 @@ import { UpdateNotificationService } from "../domain/update/update_notification_
 import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_check_cache_file_repository.ts";
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
 import { Platform } from "../domain/update/platform.ts";
-import { renderUpdateNotification } from "../presentation/output/update_notification_output.ts";
+import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
 import { getOutputModeFromArgs } from "./context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -189,6 +197,13 @@ export function commandNeedsExtensions(args: string[]): boolean {
   return !SKIP_EXTENSION_COMMANDS.has(commandInfo.command);
 }
 
+/** A deferred warning message to emit after logging is initialized. */
+export interface DeferredWarning {
+  kind: "model" | "vault" | "driver" | "datastore" | "report" | "extensions";
+  file: string;
+  error: string;
+}
+
 /**
  * Load user models from configured directory.
  */
@@ -196,6 +211,7 @@ async function loadUserModels(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const modelsDir = resolveModelsDir(marker);
@@ -205,20 +221,22 @@ async function loadUserModels(
       : resolve(repoDir, modelsDir);
 
     const loader = new UserModelLoader(denoRuntime, repoDir);
-    const result = await loader.loadModels(absoluteModelsDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
+    const result = await loader.loadModels(absoluteModelsDir, {
+      additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
+    });
 
-    // Log extension successes at debug level
-    for (const file of result.extended) {
-      logger.debug`Extended model type from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
+    // Collect failures for deferred logging (logging not yet initialized)
     for (const failure of result.failed) {
-      logger.warn`Failed to load user model ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "model",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user models: ${error}`;
+  } catch {
+    // Not in a swamp repo or models dir doesn't exist — not an error
   }
 }
 
@@ -229,6 +247,7 @@ async function loadUserVaults(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const vaultsDir = resolveVaultsDir(marker);
@@ -237,20 +256,21 @@ async function loadUserVaults(
       : resolve(repoDir, vaultsDir);
 
     const loader = new UserVaultLoader(denoRuntime, repoDir);
-    const result = await loader.loadVaults(absoluteVaultsDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
+    const result = await loader.loadVaults(absoluteVaultsDir, {
+      additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
+    });
 
-    // Log successes at debug level
-    for (const file of result.loaded) {
-      logger.debug`Loaded user vault type from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      logger.warn`Failed to load user vault ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "vault",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user vaults: ${error}`;
+  } catch {
+    // Not in a swamp repo or vaults dir doesn't exist — not an error
   }
 }
 
@@ -258,6 +278,7 @@ async function loadUserDrivers(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const driversDir = resolveDriversDir(marker);
@@ -266,20 +287,21 @@ async function loadUserDrivers(
       : resolve(repoDir, driversDir);
 
     const loader = new UserDriverLoader(denoRuntime, repoDir);
-    const result = await loader.loadDrivers(absoluteDriversDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
+    const result = await loader.loadDrivers(absoluteDriversDir, {
+      additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
+    });
 
-    // Log successes at debug level
-    for (const file of result.loaded) {
-      logger.debug`Loaded user driver type from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      logger.warn`Failed to load user driver ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "driver",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user drivers: ${error}`;
+  } catch {
+    // Not in a swamp repo or drivers dir doesn't exist — not an error
   }
 }
 
@@ -287,6 +309,7 @@ async function loadUserDatastores(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const datastoresDir = resolveDatastoresDir(marker);
@@ -295,21 +318,21 @@ async function loadUserDatastores(
       : resolve(repoDir, datastoresDir);
 
     const loader = new UserDatastoreLoader(denoRuntime, repoDir);
-    const result = await loader.loadDatastores(absoluteDatastoresDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores);
+    const result = await loader.loadDatastores(absoluteDatastoresDir, {
+      additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
+    });
 
-    // Log successes at debug level
-    for (const file of result.loaded) {
-      logger.debug`Loaded user datastore type from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      logger
-        .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "datastore",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user datastores: ${error}`;
+  } catch {
+    // Not in a swamp repo or datastores dir doesn't exist — not an error
   }
 }
 
@@ -317,6 +340,7 @@ async function loadUserReports(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const reportsDir = resolveReportsDir(marker);
@@ -325,20 +349,77 @@ async function loadUserReports(
       : resolve(repoDir, reportsDir);
 
     const loader = new UserReportLoader(denoRuntime, repoDir);
-    const result = await loader.loadReports(absoluteReportsDir);
+    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
+    const result = await loader.loadReports(absoluteReportsDir, {
+      additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
+    });
 
-    // Log successes at debug level
-    for (const file of result.loaded) {
-      logger.debug`Loaded user report from ${file}`;
-    }
-
-    // Log failures as warnings (don't block CLI startup)
     for (const failure of result.failed) {
-      logger.warn`Failed to load user report ${failure.file}: ${failure.error}`;
+      deferredWarnings.push({
+        kind: "report",
+        file: failure.file,
+        error: failure.error,
+      });
     }
-  } catch (error) {
-    // Not in a swamp repo or other error - log at debug level for troubleshooting
-    logger.debug`Skipping user reports: ${error}`;
+  } catch {
+    // Not in a swamp repo or reports dir doesn't exist — not an error
+  }
+}
+
+/**
+ * Check if upstream_extensions.json has entries whose source files are
+ * missing from disk. This catches cases where pulled extensions weren't
+ * restored (e.g. after git clone without running `swamp extension install`).
+ */
+async function checkForMissingPulledExtensions(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  deferredWarnings: DeferredWarning[],
+): Promise<void> {
+  try {
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    const upstream = await readUpstreamExtensions(lockfilePath);
+    const extensionNames = Object.keys(upstream);
+    if (extensionNames.length === 0) return;
+
+    // Check for any missing source files (skip bundle files — they're cached)
+    const missingExtensions: string[] = [];
+    for (const [name, entry] of Object.entries(upstream)) {
+      if (!entry.files) continue;
+      const sourceFiles = entry.files.filter((f) =>
+        !f.endsWith(".js") && !f.endsWith(".md") && !f.endsWith(".txt")
+      );
+      for (const file of sourceFiles) {
+        const absolutePath = join(repoDir, file);
+        try {
+          await Deno.stat(absolutePath);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) {
+            missingExtensions.push(name);
+            break; // One missing file is enough to flag this extension
+          }
+        }
+      }
+    }
+
+    if (missingExtensions.length > 0) {
+      deferredWarnings.push({
+        kind: "extensions",
+        file: lockfilePath,
+        error:
+          `${missingExtensions.length} pulled extension(s) have missing source files: ${
+            missingExtensions.join(", ")
+          }. Run 'swamp extension install' to restore them.`,
+      });
+    }
+  } catch {
+    // Non-fatal — don't block startup for lockfile read errors
   }
 }
 
@@ -381,7 +462,7 @@ export function resolveTelemetryEndpoint(
   return DEFAULT_TELEMETRY_ENDPOINT;
 }
 
-import { resolveTrustedCollectives } from "../libswamp/extensions/trust.ts";
+import { resolveTrustedCollectives } from "../libswamp/mod.ts";
 
 interface TelemetryContext {
   service: TelemetryService;
@@ -494,16 +575,25 @@ export async function runCli(args: string[]): Promise<void> {
     // Not in a swamp repo - marker stays null
   }
 
-  // Load user extensions in parallel (skip for commands that don't need them)
+  // Load user extensions in parallel (skip for commands that don't need them).
+  // Collect warnings because logging is not yet initialized at this point.
+  const deferredWarnings: DeferredWarning[] = [];
   if (commandNeedsExtensions(args)) {
     const denoRuntime = new EmbeddedDenoRuntime();
     await Promise.all([
-      loadUserModels(repoDir, marker, denoRuntime),
-      loadUserVaults(repoDir, marker, denoRuntime),
-      loadUserDrivers(repoDir, marker, denoRuntime),
-      loadUserDatastores(repoDir, marker, denoRuntime),
-      loadUserReports(repoDir, marker, denoRuntime),
+      loadUserModels(repoDir, marker, denoRuntime, deferredWarnings),
+      loadUserVaults(repoDir, marker, denoRuntime, deferredWarnings),
+      loadUserDrivers(repoDir, marker, denoRuntime, deferredWarnings),
+      loadUserDatastores(repoDir, marker, denoRuntime, deferredWarnings),
+      loadUserReports(repoDir, marker, denoRuntime, deferredWarnings),
     ]);
+
+    // Warn if lockfile has entries but pulled extension files are missing
+    await checkForMissingPulledExtensions(
+      repoDir,
+      marker,
+      deferredWarnings,
+    );
   }
 
   // Load cached auth collectives for membership-based trust
@@ -523,21 +613,27 @@ export async function runCli(args: string[]): Promise<void> {
     const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
     const extensionClient = new ExtensionApiClient(serverUrl);
     const modelsDir = resolveModelsDir(marker);
-    const workflowsDir = resolveWorkflowsDir(marker);
-    const vaultsDir = resolveVaultsDir(marker);
     const denoRuntime = new EmbeddedDenoRuntime();
     setAutoResolver(
       new ExtensionAutoResolver({
         allowedCollectives: trustedCollectives,
         extensionLookup: extensionClient,
         extensionInstaller: createAutoResolveInstallerAdapter({
-          extensionClient,
-          modelsDir,
-          workflowsDir,
-          vaultsDir,
-          driversDir: resolveDriversDir(marker),
-          datastoresDir: resolveDatastoresDir(marker),
-          reportsDir: resolveReportsDir(marker),
+          getExtension: (name) => extensionClient.getExtension(name),
+          downloadArchive: (name, version) =>
+            extensionClient.downloadArchive(name, version),
+          getChecksum: (name, version) =>
+            extensionClient.getChecksum(name, version),
+          lockfilePath: join(
+            resolve(repoDir, modelsDir),
+            "upstream_extensions.json",
+          ),
+          modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
+          workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
+          vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
+          driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
+          datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
+          reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
           repoDir,
           denoRuntime,
         }),
@@ -554,6 +650,7 @@ export async function runCli(args: string[]): Promise<void> {
     .globalType("model_type", new ModelTypeType())
     .globalType("workflow_name", new WorkflowNameType())
     .globalOption("--json", "Output in JSON format (non-interactive)")
+    .globalOption("--log", "Force flat log output (no interactive tree)")
     .globalOption(
       "--log-level <level:string>",
       "Set log level (trace, debug, info, warning, error, fatal)",
@@ -595,6 +692,16 @@ export async function runCli(args: string[]): Promise<void> {
         jsonMode: options.json ?? false,
         noColor,
       });
+
+      // Emit deferred warnings now that logging is initialized
+      for (const warning of deferredWarnings) {
+        if (warning.kind === "extensions") {
+          logger.warn`${warning.error}`;
+        } else {
+          logger
+            .warn`Failed to load user ${warning.kind} ${warning.file}: ${warning.error}`;
+        }
+      }
     })
     .error(unknownCommandErrorHandler)
     .action(function () {
@@ -624,7 +731,16 @@ export async function runCli(args: string[]): Promise<void> {
   cli.command("help", createHelpCommand(cli));
 
   try {
-    await cli.parse(args);
+    await withSpan("swamp.cli", {
+      "swamp.command": commandInfo.command,
+      "swamp.subcommand": commandInfo.subcommand ?? "",
+      "swamp.version": VERSION,
+      "swamp.args": commandInfo.args.join(" "),
+      "swamp.option_keys": commandInfo.optionKeys.join(" "),
+      "swamp.global_options": commandInfo.globalOptions.join(" "),
+    }, async () => {
+      await cli.parse(args);
+    });
 
     // Flush datastore sync (push to S3 + release lock)
     await flushDatastoreSync();

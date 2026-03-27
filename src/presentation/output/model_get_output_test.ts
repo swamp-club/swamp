@@ -20,7 +20,8 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { type ModelGetData, renderModelGet } from "./model_get_output.ts";
+import type { ModelGetData } from "../../libswamp/mod.ts";
+import { renderModelGet } from "../renderers/model_get.ts";
 
 await initializeLogging({});
 

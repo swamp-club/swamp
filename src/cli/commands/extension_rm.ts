@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { dirname, join, resolve } from "@std/path";
+import { join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
@@ -26,24 +26,23 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { UserError } from "../../domain/errors.ts";
 import {
+  consumeStream,
+  createExtensionRmDeps,
+  createLibSwampContext,
+  extensionRm,
+  extensionRmPreview,
   parseExtensionRef,
-  removeUpstreamExtension,
-} from "./extension_pull.ts";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
-import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
+  requireCurrentExtensionLayout,
+  validateExtensionName,
+} from "../../libswamp/mod.ts";
 import {
-  renderExtensionRm,
+  createExtensionRmRenderer,
   renderExtensionRmCancelled,
-  renderExtensionRmDependencyWarning,
-  renderExtensionRmFileDelete,
-} from "../../presentation/output/extension_rm_output.ts";
+} from "../../presentation/renderers/extension_rm.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
 async function promptConfirmation(message: string): Promise<boolean> {
   const encoder = new TextEncoder();
@@ -57,78 +56,6 @@ async function promptConfirmation(message: string): Promise<boolean> {
 
   const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
   return response === "y" || response === "yes";
-}
-
-/**
- * Finds installed extensions that depend on the given extension name
- * by scanning manifest.yaml files tracked in upstream_extensions.json.
- */
-async function findDependents(
-  repoDir: string,
-  upstreamData: Record<string, { version: string; files?: string[] }>,
-  targetName: string,
-): Promise<string[]> {
-  const dependents: string[] = [];
-
-  for (const [extName, entry] of Object.entries(upstreamData)) {
-    if (extName === targetName) continue;
-    if (!entry.files) continue;
-
-    // Look for manifest.yaml among this extension's tracked files
-    const manifestFile = entry.files.find((f) => f.endsWith("manifest.yaml"));
-    if (!manifestFile) continue;
-
-    try {
-      const manifestPath = join(repoDir, manifestFile);
-      const content = await Deno.readTextFile(manifestPath);
-      const manifest = parseExtensionManifest(content);
-      if (manifest.dependencies.includes(targetName)) {
-        dependents.push(extName);
-      }
-    } catch {
-      // If manifest can't be read or parsed, skip
-    }
-  }
-
-  return dependents;
-}
-
-/**
- * Removes empty parent directories up to (but not including) the stop directory.
- * Returns the number of directories removed.
- */
-async function pruneEmptyDirs(
-  dirs: string[],
-  stopDir: string,
-): Promise<number> {
-  let removed = 0;
-  const resolvedStop = resolve(stopDir);
-
-  // Sort directories deepest-first so children are pruned before parents
-  const sorted = [...new Set(dirs)].sort((a, b) => b.length - a.length);
-
-  for (const dir of sorted) {
-    let current = resolve(dir);
-    while (current.length > resolvedStop.length && current !== resolvedStop) {
-      try {
-        const entries = [];
-        for await (const entry of Deno.readDir(current)) {
-          entries.push(entry);
-        }
-        if (entries.length === 0) {
-          await Deno.remove(current);
-          removed++;
-          current = dirname(current);
-        } else {
-          break;
-        }
-      } catch {
-        break;
-      }
-    }
-  }
-
-  return removed;
 }
 
 export const extensionRemoveCommand = new Command()
@@ -150,13 +77,7 @@ export const extensionRemoveCommand = new Command()
 
     // Parse extension reference (ignore version if provided)
     const ref = parseExtensionRef(extension);
-
-    // Validate name format
-    if (!SCOPED_NAME_PATTERN.test(ref.name)) {
-      throw new UserError(
-        `Invalid extension name: "${ref.name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed).`,
-      );
-    }
+    validateExtensionName(ref.name);
 
     // Resolve models dir from .swamp.yaml
     const repoPath = RepoPath.create(repoDir);
@@ -164,38 +85,29 @@ export const extensionRemoveCommand = new Command()
     const marker = await markerRepo.read(repoPath);
     const modelsDir = resolveModelsDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // Read upstream_extensions.json
-    const upstreamData = await readUpstreamExtensions(absoluteModelsDir);
+    // Check for legacy extension layout
+    await requireCurrentExtensionLayout(lockfilePath);
 
-    const entry = upstreamData[ref.name];
-    if (!entry) {
-      throw new UserError(
-        `Extension ${ref.name} is not installed.`,
-      );
-    }
+    // Create libswamp context, deps, renderer
+    const libCtx = createLibSwampContext({ logger: ctx.logger });
+    const deps = createExtensionRmDeps(repoDir, lockfilePath);
+    const renderer = createExtensionRmRenderer(ctx.outputMode);
+    const input = { extensionName: ref.name };
 
-    // Check if entry has a files array (required for clean removal)
-    if (!entry.files) {
-      throw new UserError(
-        `Extension ${ref.name} was pulled before file tracking was added. Re-pull with --force to populate the file list, then retry rm.`,
-      );
-    }
+    // Preview: validates extension, returns preview data
+    const preview = await extensionRmPreview(libCtx, deps, input);
 
-    // Check for dependents
-    const dependents = await findDependents(
-      repoDir,
-      upstreamData,
-      ref.name,
-    );
-    if (dependents.length > 0) {
-      renderExtensionRmDependencyWarning(dependents, ctx.outputMode);
+    // Dependency warning
+    if (preview.dependents.length > 0) {
+      renderer.renderDependencyWarning(preview.dependents);
     }
 
     // Confirmation prompt (log mode only, unless --force)
     if (ctx.outputMode === "log" && !options.force) {
       const confirmed = await promptConfirmation(
-        `Remove ${ref.name} (v${entry.version})? This will delete ${entry.files.length} file(s).`,
+        `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
       );
       if (!confirmed) {
         renderExtensionRmCancelled(ctx.outputMode);
@@ -203,49 +115,10 @@ export const extensionRemoveCommand = new Command()
       }
     }
 
-    // Delete files
-    const verbose = ctx.verbosity === "verbose";
-    let filesDeleted = 0;
-    let filesSkipped = 0;
-    const parentDirs: string[] = [];
-
-    for (const filePath of entry.files) {
-      const absolutePath = join(repoDir, filePath);
-      try {
-        await Deno.remove(absolutePath);
-        filesDeleted++;
-        parentDirs.push(dirname(absolutePath));
-        if (verbose) {
-          renderExtensionRmFileDelete(filePath, "deleted", ctx.outputMode);
-        }
-      } catch (error) {
-        if (error instanceof Deno.errors.NotFound) {
-          filesSkipped++;
-          if (verbose) {
-            renderExtensionRmFileDelete(filePath, "missing", ctx.outputMode);
-          }
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    // Prune empty parent directories
-    const dirsRemoved = await pruneEmptyDirs(parentDirs, repoDir);
-
-    // Remove entry from upstream_extensions.json
-    await removeUpstreamExtension(absoluteModelsDir, ref.name);
-
-    // Render success
-    renderExtensionRm(
-      {
-        name: ref.name,
-        version: entry.version,
-        filesDeleted,
-        filesSkipped,
-        dirsRemoved,
-      },
-      ctx.outputMode,
+    // Execute removal
+    await consumeStream(
+      extensionRm(libCtx, deps, input),
+      renderer.handlers(),
     );
 
     ctx.logger.debug("Extension remove command completed");

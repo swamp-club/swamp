@@ -28,7 +28,24 @@ import type {
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { renderInteractiveSearch } from "./components/search_tui.tsx";
+import { renderInteractivePicker } from "./components/search_picker.tsx";
+import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+
+/**
+ * Detail data fetched for the preview pane. Contains the raw content string
+ * (or a description for binary data).
+ */
+export interface DataPreviewDetail {
+  content: string | undefined;
+  contentPath: string;
+}
+
+/**
+ * Callback type for fetching data content for the preview pane.
+ */
+export type DataPreviewFetcher = (
+  item: DataSearchItem,
+) => Promise<DataPreviewDetail>;
 
 /**
  * Formats a byte count into a human-readable size string.
@@ -53,17 +70,6 @@ function formatRelativeTime(isoStr: string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-/**
- * Returns the color for a lifetime label.
- */
-function getLifetimeColor(
-  lifetime: string,
-): string | undefined {
-  if (lifetime === "infinite") return "green";
-  if (lifetime === "ephemeral") return "yellow";
-  return undefined;
 }
 
 export type DataSearchRenderer = SearchRenderer<
@@ -93,6 +99,11 @@ class JsonDataSearchRenderer implements DataSearchRenderer {
 
 class InkDataSearchRenderer implements DataSearchRenderer {
   private _selected: DataSearchItem | undefined;
+  private readonly fetchPreview: DataPreviewFetcher | undefined;
+
+  constructor(fetchPreview?: DataPreviewFetcher) {
+    this.fetchPreview = fetchPreview;
+  }
 
   selectedItem(): DataSearchItem | undefined {
     return this._selected;
@@ -102,7 +113,10 @@ class InkDataSearchRenderer implements DataSearchRenderer {
     return {
       resolving: () => {},
       completed: async (e) => {
-        this._selected = await renderInteractiveSearch<DataSearchItem>(
+        const result = await renderInteractivePicker<
+          DataSearchItem,
+          DataPreviewDetail
+        >(
           e.data.results,
           e.data.query,
           (item) =>
@@ -111,40 +125,18 @@ class InkDataSearchRenderer implements DataSearchRenderer {
             } ${item.stepTag ?? ""} ${
               Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(" ")
             }`,
-          (item, isSelected) => (
-            <Box flexDirection="column">
-              <Box>
-                <Text
-                  color={isSelected ? "green" : undefined}
-                  bold={isSelected}
-                >
-                  {isSelected ? "> " : "  "}
-                  {item.name}
-                </Text>
-                <Text dimColor>v{item.version}</Text>
-                <Text>{item.modelName}</Text>
-                <Text dimColor>{item.contentType}</Text>
-                <Text color={getLifetimeColor(item.lifetime)}>
-                  {` [${item.lifetime}]`}
-                </Text>
-                <Text dimColor>{formatSize(item.size)}</Text>
-                <Text dimColor>{formatRelativeTime(item.createdAt)}</Text>
-              </Box>
-              {isSelected && (
-                <Box marginLeft={4} flexDirection="column">
-                  <Text dimColor>type: {item.type}</Text>
-                  <Text dimColor>ownerType: {item.ownerType}</Text>
-                  <Text dimColor>ownerRef: {item.ownerRef}</Text>
-                  {item.workflowTag && (
-                    <Text dimColor>workflow: {item.workflowTag}</Text>
-                  )}
-                  {item.stepTag && <Text dimColor>step: {item.stepTag}</Text>}
-                </Box>
-              )}
-            </Box>
-          ),
+          renderDataResultLine,
+          renderDataPreview,
+          renderDataScrollback,
           "data",
+          {
+            fetchPreview: this.fetchPreview,
+            previewKeyFn: (item) => `${item.id}:${item.version}`,
+          },
         );
+        if (result) {
+          this._selected = result.item;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -155,11 +147,126 @@ class InkDataSearchRenderer implements DataSearchRenderer {
 
 export function createDataSearchRenderer(
   mode: OutputMode,
+  fetchPreview?: DataPreviewFetcher,
 ): DataSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonDataSearchRenderer();
     case "log":
-      return new InkDataSearchRenderer();
+      return new InkDataSearchRenderer(fetchPreview);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering callbacks for the SearchPicker
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the metadata section as markdown (rendered separately from content
+ * to avoid markdown-in-markdown nesting issues).
+ */
+function buildMetadataMarkdown(item: DataSearchItem): string {
+  const tagEntries = Object.entries(item.tags);
+  const lines: string[] = [
+    `**${item.name}** v${item.version}`,
+    "",
+    `**Model:** ${item.modelName} (${item.modelType})`,
+    `**Content Type:** ${item.contentType}`,
+    `**Size:** ${formatSize(item.size)}`,
+    `**Lifetime:** ${item.lifetime}`,
+    `**Type:** ${item.type}`,
+    `**Owner:** ${item.ownerType} ${item.ownerRef}`,
+  ];
+
+  if (item.workflowTag) lines.push(`**Workflow:** ${item.workflowTag}`);
+  if (item.stepTag) lines.push(`**Step:** ${item.stepTag}`);
+
+  if (tagEntries.length > 0) {
+    lines.push(
+      `**Tags:** ${tagEntries.map(([k, v]) => `${k}=${v}`).join(", ")}`,
+    );
+  }
+
+  lines.push(`**Created:** ${formatRelativeTime(item.createdAt)}`);
+
+  return lines.join("\n");
+}
+
+/**
+ * Renders content based on its type. Markdown content is rendered as markdown.
+ * JSON/YAML get syntax-highlighted code blocks. Other text is shown plain.
+ */
+function renderContentString(
+  content: string,
+  contentType: string,
+): string {
+  if (contentType === "text/markdown") {
+    // Content IS markdown — render it directly
+    return renderMarkdownToTerminal(content);
+  }
+
+  if (contentType === "application/json") {
+    return renderMarkdownToTerminal("```json\n" + content + "\n```");
+  }
+
+  if (
+    contentType === "application/yaml" || contentType === "application/x-yaml"
+  ) {
+    return renderMarkdownToTerminal("```yaml\n" + content + "\n```");
+  }
+
+  // Plain text or unknown — show as-is
+  return content;
+}
+
+function renderDataResultLine(item: DataSearchItem): React.ReactElement {
+  return (
+    <Text>
+      {`${item.name} `}
+      <Text dimColor>
+        {`${item.contentType} ${formatSize(item.size)} ${
+          formatRelativeTime(item.createdAt)
+        }`}
+      </Text>
+    </Text>
+  );
+}
+
+function renderDataPreview(
+  item: DataSearchItem,
+  detail: DataPreviewDetail | undefined,
+  _width: number,
+  _height: number,
+): React.ReactElement {
+  // Combine metadata + content into a single string to avoid Ink layout
+  // issues with multiple <Text> blocks containing ANSI-formatted content.
+  const parts: string[] = [
+    renderMarkdownToTerminal(buildMetadataMarkdown(item)),
+  ];
+
+  if (detail && detail.content) {
+    parts.push(renderContentString(detail.content, item.contentType));
+  } else if (detail && !detail.content) {
+    parts.push(`(binary data at ${detail.contentPath})`);
+  }
+
+  return (
+    <Box paddingLeft={1}>
+      <Text>{parts.join("\n")}</Text>
+    </Box>
+  );
+}
+
+function renderDataScrollback(
+  item: DataSearchItem,
+  detail: DataPreviewDetail | undefined,
+): string {
+  const metadata = renderMarkdownToTerminal(buildMetadataMarkdown(item));
+
+  if (detail?.content) {
+    const content = renderContentString(detail.content, item.contentType);
+    return metadata + "\n" + content;
+  }
+
+  return metadata;
 }

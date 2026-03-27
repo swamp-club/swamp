@@ -22,6 +22,7 @@ import type { LibSwampContext } from "../context.ts";
 import { notFound } from "../errors.ts";
 import type { ReportDescribeEvent } from "./report_views.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Dependencies for the report describe operation.
  */
@@ -37,21 +38,27 @@ export async function* reportDescribe(
   deps: ReportDescribeDeps,
   reportName: string,
 ): AsyncGenerator<ReportDescribeEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.report.describe",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const report = deps.getReport(reportName);
-  if (!report) {
-    yield { kind: "error", error: notFound("Report", reportName) };
-    return;
-  }
+      const report = deps.getReport(reportName);
+      if (!report) {
+        yield { kind: "error", error: notFound("Report", reportName) };
+        return;
+      }
 
-  yield {
-    kind: "completed",
-    data: {
-      name: reportName,
-      description: report.description,
-      scope: report.scope,
-      labels: report.labels ?? [],
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          name: reportName,
+          description: report.description,
+          scope: report.scope,
+          labels: report.labels ?? [],
+        },
+      };
+    })(),
+  );
 }

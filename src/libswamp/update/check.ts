@@ -26,6 +26,7 @@ import { HttpUpdateChecker } from "../../infrastructure/update/http_update_check
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the update check/install output.
  */
@@ -67,13 +68,19 @@ export async function* updateCheck(
   deps: UpdateCheckDeps,
   input: UpdateCheckInput,
 ): AsyncIterable<UpdateCheckEvent> {
-  ctx.logger.debug`Checking for updates (checkOnly=${input.checkOnly})`;
+  yield* withGeneratorSpan(
+    "swamp.update.check",
+    {},
+    (async function* () {
+      ctx.logger.debug`Checking for updates (checkOnly=${input.checkOnly})`;
 
-  yield { kind: "checking" };
+      yield { kind: "checking" };
 
-  const result = input.checkOnly
-    ? await deps.check(input.platform)
-    : await deps.update(input.platform);
+      const result = input.checkOnly
+        ? await deps.check(input.platform)
+        : await deps.update(input.platform);
 
-  yield { kind: "completed", data: result };
+      yield { kind: "completed", data: result };
+    })(),
+  );
 }

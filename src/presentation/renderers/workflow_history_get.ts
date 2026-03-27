@@ -24,7 +24,7 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { renderWorkflowRun } from "../output/workflow_run_output.ts";
+import { renderWorkflowRunDisplay } from "./workflow_run_display.ts";
 
 class LogWorkflowHistoryGetRenderer
   implements Renderer<WorkflowHistoryGetEvent> {
@@ -32,7 +32,7 @@ class LogWorkflowHistoryGetRenderer
     return {
       resolving: () => {},
       completed: (e) => {
-        renderWorkflowRun(e.data, "log");
+        renderWorkflowRunDisplay(e.data, "log");
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -47,7 +47,7 @@ class JsonWorkflowHistoryGetRenderer
     return {
       resolving: () => {},
       completed: (e) => {
-        renderWorkflowRun(e.data, "json");
+        renderWorkflowRunDisplay(e.data, "json");
       },
       error: (e) => {
         throw new UserError(e.error.message);

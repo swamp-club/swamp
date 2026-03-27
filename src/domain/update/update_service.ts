@@ -19,6 +19,7 @@
 
 import type { Platform } from "./platform.ts";
 import { validateRedirectUrl } from "./integrity.ts";
+import { UserError } from "../errors.ts";
 
 /**
  * Port for checking and performing updates.
@@ -147,10 +148,32 @@ export class UpdateService {
   }
 
   /**
+   * Check whether the process can write to the binary path.
+   * Throws a UserError with remediation advice if not.
+   */
+  async checkWritePermission(): Promise<void> {
+    try {
+      // Try opening the file for writing without truncating — this tests
+      // actual write permission without modifying the file.
+      const file = await Deno.open(this.binaryPath, { write: true });
+      file.close();
+    } catch (error) {
+      if (error instanceof Deno.errors.PermissionDenied) {
+        throw new UserError(
+          `Cannot update ${this.binaryPath}: permission denied. Re-run with: sudo swamp update`,
+        );
+      }
+      // Other errors (e.g. NotFound) are fine — the file may not exist yet
+    }
+  }
+
+  /**
    * Check for and install an update.
    * Downloads from the resolved versioned URL, not the stable redirect pointer.
    */
   async update(platform: Platform): Promise<UpdateResult> {
+    await this.checkWritePermission();
+
     const redirectUrl = await this.checker.checkForUpdate(platform);
     if (!redirectUrl) {
       return {

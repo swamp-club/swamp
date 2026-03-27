@@ -29,6 +29,7 @@ import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Data item in the list. */
 export interface DataListItem {
   id: string;
@@ -367,31 +368,37 @@ export async function* dataList(
   deps: DataListDeps,
   input: DataListInput,
 ): AsyncIterable<DataListEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.data.list",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  if (input.modelIdOrName && input.workflowName) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        "Cannot specify both a model and --workflow. Use one or the other.",
-      ),
-    };
-    return;
-  }
+      if (input.modelIdOrName && input.workflowName) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            "Cannot specify both a model and --workflow. Use one or the other.",
+          ),
+        };
+        return;
+      }
 
-  if (!input.modelIdOrName && !input.workflowName) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        "Either a model name or --workflow is required.",
-      ),
-    };
-    return;
-  }
+      if (!input.modelIdOrName && !input.workflowName) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            "Either a model name or --workflow is required.",
+          ),
+        };
+        return;
+      }
 
-  if (input.workflowName) {
-    yield* workflowScopedList(deps, input);
-  } else {
-    yield* modelScopedList(deps, input);
-  }
+      if (input.workflowName) {
+        yield* workflowScopedList(deps, input);
+      } else {
+        yield* modelScopedList(deps, input);
+      }
+    })(),
+  );
 }

@@ -28,6 +28,7 @@ import { relative } from "@std/path";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 
 // ── Lock status ────────────────────────────────────────────────────────
@@ -71,35 +72,41 @@ export async function* datastoreLockStatus(
   deps: DatastoreLockStatusDeps,
   input: DatastoreLockStatusInput,
 ): AsyncIterable<DatastoreLockStatusEvent> {
-  ctx.logger.debug`Checking global lock status`;
+  yield* withGeneratorSpan(
+    "swamp.datastore.lock.status",
+    {},
+    (async function* () {
+      ctx.logger.debug`Checking global lock status`;
 
-  const info = await deps.inspectGlobalLock();
+      const info = await deps.inspectGlobalLock();
 
-  // Scan for per-model locks (filesystem only) — yield these first
-  if (input.isFilesystemDatastore) {
-    const modelLocks = await deps.scanModelLocks();
-    for (const ml of modelLocks) {
+      // Scan for per-model locks (filesystem only) — yield these first
+      if (input.isFilesystemDatastore) {
+        const modelLocks = await deps.scanModelLocks();
+        for (const ml of modelLocks) {
+          yield {
+            kind: "model_lock",
+            data: {
+              held: true,
+              info: ml.info,
+              datastoreType: input.datastoreType,
+              lockScope: `${ml.modelType}/${ml.modelId}`,
+            },
+          };
+        }
+      }
+
+      // Yield the global status as the final completed event
       yield {
-        kind: "model_lock",
+        kind: "completed",
         data: {
-          held: true,
-          info: ml.info,
+          held: info !== null,
+          info: info ?? undefined,
           datastoreType: input.datastoreType,
-          lockScope: `${ml.modelType}/${ml.modelId}`,
         },
       };
-    }
-  }
-
-  // Yield the global status as the final completed event
-  yield {
-    kind: "completed",
-    data: {
-      held: info !== null,
-      info: info ?? undefined,
-      datastoreType: input.datastoreType,
-    },
-  };
+    })(),
+  );
 }
 
 // ── Lock release ───────────────────────────────────────────────────────
@@ -130,46 +137,52 @@ export async function* datastoreLockRelease(
   deps: DatastoreLockReleaseDeps,
   _input: DatastoreLockReleaseInput = {},
 ): AsyncIterable<DatastoreLockReleaseEvent> {
-  ctx.logger.debug`Checking lock before force-release`;
+  yield* withGeneratorSpan(
+    "swamp.datastore.lock.release",
+    {},
+    (async function* () {
+      ctx.logger.debug`Checking lock before force-release`;
 
-  const info = await deps.inspectLock();
+      const info = await deps.inspectLock();
 
-  if (!info) {
-    yield {
-      kind: "completed",
-      data: {
-        released: false,
-        reason: "no lock held",
-      },
-    };
-    return;
-  }
+      if (!info) {
+        yield {
+          kind: "completed",
+          data: {
+            released: false,
+            reason: "no lock held",
+          },
+        };
+        return;
+      }
 
-  // Re-verify the lock holder hasn't changed between inspect and delete.
-  // forceRelease() re-reads the nonce immediately before deleting to
-  // minimise the TOCTOU window.
-  const released = await deps.forceRelease(info.nonce!);
-  if (!released) {
-    yield {
-      kind: "completed",
-      data: {
-        released: false,
-        reason:
-          "lock holder changed — aborting to avoid breaking an active lock",
-      },
-    };
-    return;
-  }
+      // Re-verify the lock holder hasn't changed between inspect and delete.
+      // forceRelease() re-reads the nonce immediately before deleting to
+      // minimise the TOCTOU window.
+      const released = await deps.forceRelease(info.nonce!);
+      if (!released) {
+        yield {
+          kind: "completed",
+          data: {
+            released: false,
+            reason:
+              "lock holder changed — aborting to avoid breaking an active lock",
+          },
+        };
+        return;
+      }
 
-  ctx.logger.debug`Lock force-released`;
+      ctx.logger.debug`Lock force-released`;
 
-  yield {
-    kind: "completed",
-    data: {
-      released: true,
-      previousHolder: info,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          released: true,
+          previousHolder: info,
+        },
+      };
+    })(),
+  );
 }
 
 // ── Factory functions ─────────────────────────────────────────────────

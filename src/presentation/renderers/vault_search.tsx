@@ -22,6 +22,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type {
   EventHandlers,
+  VaultDescribeData,
   VaultSearchData,
   VaultSearchEvent,
   VaultSearchItem,
@@ -29,7 +30,7 @@ import type {
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { renderInteractiveSearch } from "./components/search_tui.tsx";
+import { renderInteractivePicker } from "./components/search_picker.tsx";
 
 /**
  * Filters vaults by a query string (case-insensitive match on name, type, or id).
@@ -47,6 +48,13 @@ function filterVaults(
       v.id.toLowerCase().includes(lowerQuery),
   );
 }
+
+/**
+ * Callback type for fetching vault detail data for the preview pane.
+ */
+export type VaultPreviewFetcher = (
+  item: VaultSearchItem,
+) => Promise<VaultDescribeData>;
 
 export type VaultSearchRenderer = SearchRenderer<
   VaultSearchEvent,
@@ -80,6 +88,11 @@ class JsonVaultSearchRenderer implements VaultSearchRenderer {
 
 class InkVaultSearchRenderer implements VaultSearchRenderer {
   private _selected: VaultSearchItem | undefined;
+  private readonly fetchPreview: VaultPreviewFetcher | undefined;
+
+  constructor(fetchPreview?: VaultPreviewFetcher) {
+    this.fetchPreview = fetchPreview;
+  }
 
   selectedItem(): VaultSearchItem | undefined {
     return this._selected;
@@ -89,31 +102,25 @@ class InkVaultSearchRenderer implements VaultSearchRenderer {
     return {
       resolving: () => {},
       completed: async (e) => {
-        this._selected = await renderInteractiveSearch<VaultSearchItem>(
+        const result = await renderInteractivePicker<
+          VaultSearchItem,
+          VaultDescribeData
+        >(
           e.data.results,
           e.data.query,
           (item) => `${item.name} ${item.type} ${item.id}`,
-          (item, isSelected) => (
-            <Box flexDirection="column">
-              <Box>
-                <Text
-                  color={isSelected ? "green" : undefined}
-                  bold={isSelected}
-                >
-                  {isSelected ? "> " : "  "}
-                  {item.name}
-                </Text>
-                <Text dimColor>({item.type})</Text>
-              </Box>
-              {isSelected && (
-                <Box marginLeft={4}>
-                  <Text dimColor>ID: {item.id}</Text>
-                </Box>
-              )}
-            </Box>
-          ),
+          renderVaultResultLine,
+          renderVaultPreview,
+          renderVaultScrollback,
           "vaults",
+          {
+            fetchPreview: this.fetchPreview,
+            previewKeyFn: (item) => item.id,
+          },
         );
+        if (result) {
+          this._selected = result.item;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -124,11 +131,80 @@ class InkVaultSearchRenderer implements VaultSearchRenderer {
 
 export function createVaultSearchRenderer(
   mode: OutputMode,
+  fetchPreview?: VaultPreviewFetcher,
 ): VaultSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonVaultSearchRenderer();
     case "log":
-      return new InkVaultSearchRenderer();
+      return new InkVaultSearchRenderer(fetchPreview);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering callbacks for the SearchPicker
+// ---------------------------------------------------------------------------
+
+/** Single-line result for the results list. */
+function renderVaultResultLine(item: VaultSearchItem): React.ReactElement {
+  return (
+    <Text>
+      {item.name} <Text dimColor>({item.type})</Text>
+    </Text>
+  );
+}
+
+/** Renders preview content for a vault. */
+function renderVaultPreview(
+  item: VaultSearchItem,
+  detail: VaultDescribeData | undefined,
+  _width: number,
+  _height: number,
+): React.ReactElement {
+  if (!detail) {
+    // Immediate content from the search item
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        <Text bold>{item.name}</Text>
+        <Text dimColor>type: {item.type}</Text>
+        <Text dimColor>id: {item.id}</Text>
+      </Box>
+    );
+  }
+
+  // Full detail from fetchPreview
+  const configJson = JSON.stringify(detail.config, null, 2);
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      <Text bold>{detail.name}</Text>
+      <Text dimColor>type: {detail.type}</Text>
+      <Text dimColor>id: {detail.id}</Text>
+      <Text dimColor>created: {detail.createdAt}</Text>
+      <Box flexDirection="column" marginTop={1}>
+        <Text color="cyan" bold>Config:</Text>
+        <Text>{configJson}</Text>
+      </Box>
+    </Box>
+  );
+}
+
+/** Produces plain-text scrollback output for a selected vault. */
+function renderVaultScrollback(
+  item: VaultSearchItem,
+  detail: VaultDescribeData | undefined,
+): string {
+  if (!detail) {
+    return `${item.name} (${item.type})\nID: ${item.id}`;
+  }
+
+  const lines: string[] = [
+    `${detail.name} (${detail.type})`,
+    `ID: ${detail.id}`,
+    `created: ${detail.createdAt}`,
+    "",
+    "Config:",
+    JSON.stringify(detail.config, null, 2),
+  ];
+
+  return lines.join("\n");
 }

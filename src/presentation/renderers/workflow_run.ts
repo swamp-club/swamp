@@ -27,12 +27,23 @@ import type { OutputMode } from "../output/output.ts";
 import {
   getRunLogger,
   getWorkflowRunLogger,
+  writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { InkWorkflowRunRenderer } from "./workflow_run_tree/mod.ts";
+
+function isStdoutTty(): boolean {
+  try {
+    return Deno.stdout.isTerminal();
+  } catch {
+    return false;
+  }
+}
 
 export interface WorkflowRunRenderOpts {
   workflowName: string;
+  forceLog?: boolean;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -132,14 +143,15 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
       report_started: () => {},
       report_completed: (e) => {
         const logger = getWorkflowRunLogger(this.workflowName);
+        logger.info('Running report: "{reportName}"', {
+          reportName: e.reportName,
+        });
         const separator = "\u2500".repeat(60);
-        const parts = [
-          `Running report: "${e.reportName}"`,
-          `\u2500\u2500 Report: ${e.reportName} ${separator}`,
-          renderMarkdownToTerminal(e.markdown),
-          separator,
-        ];
-        logger.info(parts.join("\n"));
+        writeOutput(
+          `\u2500\u2500 Report: ${e.reportName} ${separator}\n${
+            renderMarkdownToTerminal(e.markdown)
+          }\n${separator}`,
+        );
       },
       report_failed: (e) => {
         getWorkflowRunLogger(this.workflowName).warn(
@@ -246,6 +258,9 @@ export function createWorkflowRunRenderer(
     case "json":
       return new JsonWorkflowRunRenderer();
     case "log":
+      if (!opts.forceLog && isStdoutTty()) {
+        return new InkWorkflowRunRenderer(opts);
+      }
       return new LogWorkflowRunRenderer(opts);
   }
 }

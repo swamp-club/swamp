@@ -20,6 +20,7 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single vault type search result item.
  */
@@ -71,20 +72,26 @@ export async function* vaultTypeSearch(
   deps: VaultTypeSearchDeps,
   input: VaultTypeSearchInput,
 ): AsyncGenerator<VaultTypeSearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.vault.type_search",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const types = deps.getVaultTypes();
-  const results: VaultTypeSearchItem[] = types.map((t) => ({
-    type: t.type,
-    name: t.name,
-    description: t.description,
-  }));
+      const types = deps.getVaultTypes();
+      const results: VaultTypeSearchItem[] = types.map((t) => ({
+        type: t.type,
+        name: t.name,
+        description: t.description,
+      }));
 
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      results,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          results,
+        },
+      };
+    })(),
+  );
 }

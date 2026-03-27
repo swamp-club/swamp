@@ -841,11 +841,11 @@ Deno.test(
       });
       await definitionRepo.save(type, s3InfraModel);
 
-      // Write resource data with specName="summary", dataName="latest"
-      // This mirrors what writeResource("summary", "latest", data) produces:
-      //   tags.type = "resource", tags.specName = "summary", data.name = "latest"
+      // Write resource data with specName="summary", dataName="current"
+      // This mirrors what writeResource("summary", "current", data) produces:
+      //   tags.type = "resource", tags.specName = "summary", data.name = "current"
       const resourceData = Data.create({
-        name: "latest",
+        name: "current",
         contentType: "application/json",
         lifetime: "infinite",
         garbageCollection: 5,
@@ -859,12 +859,12 @@ Deno.test(
         new TextEncoder().encode(JSON.stringify({ totalBuckets: 42 })),
       );
 
-      // Create "s3-report" model referencing model.s3-infra.resource.summary.latest
+      // Create "s3-report" model referencing model.s3-infra.resource.summary.current
       const s3ReportModel = Definition.create({
         name: "s3-report",
         globalArguments: {
           bucket_count:
-            "${{ model['s3-infra'].resource.summary.latest.attributes.totalBuckets }}",
+            "${{ model['s3-infra'].resource.summary.current.attributes.totalBuckets }}",
         },
       });
       await definitionRepo.save(type, s3ReportModel);
@@ -966,9 +966,9 @@ Deno.test("CEL Data Access: cross-type resource with specName tag via Expression
     await definitionRepo.save(inventoryType, sourceModel);
 
     // Write resource data the way createResourceWriter does:
-    //   name = "latest" (instance name), specName tag = "summary"
+    //   name = "current" (instance name), specName tag = "summary"
     const resourceData = Data.create({
-      name: "latest",
+      name: "current",
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 5,
@@ -985,12 +985,12 @@ Deno.test("CEL Data Access: cross-type resource with specName tag via Expression
 
     // Dependent model under a *different* type referencing the source's resource
     // Uses bracket notation for hyphenated name, matching the error from issue #370:
-    //   model["s3-infra"].resource.summary.latest.attributes.totalBuckets
+    //   model["s3-infra"].resource.summary.current.attributes.totalBuckets
     const reportModel = Definition.create({
       name: "s3-report",
       globalArguments: {
         bucket_count:
-          '${{ model["s3-infra"].resource.summary.latest.attributes.totalBuckets }}',
+          '${{ model["s3-infra"].resource.summary.current.attributes.totalBuckets }}',
       },
     });
     await definitionRepo.save(reportType, reportModel);
@@ -1030,7 +1030,7 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
     await definitionRepo.save(inventoryType, originalModel);
 
     const resourceData = Data.create({
-      name: "latest",
+      name: "current",
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 5,
@@ -1063,7 +1063,7 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
       name: "s3-report",
       globalArguments: {
         bucket_count:
-          '${{ model["s3-infra"].resource.summary.latest.attributes.totalBuckets }}',
+          '${{ model["s3-infra"].resource.summary.current.attributes.totalBuckets }}',
       },
     });
     await definitionRepo.save(reportType, reportModel);

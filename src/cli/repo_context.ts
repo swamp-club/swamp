@@ -41,6 +41,10 @@ import {
 import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
@@ -54,7 +58,10 @@ import {
 import { S3Lock } from "../infrastructure/persistence/s3_lock.ts";
 import { S3Client } from "../infrastructure/persistence/s3_client.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
-import type { DistributedLock } from "../domain/datastore/distributed_lock.ts";
+import {
+  type DistributedLock,
+  LockTimeoutError,
+} from "../domain/datastore/distributed_lock.ts";
 import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
@@ -63,6 +70,7 @@ import {
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { withSpan } from "../infrastructure/tracing/mod.ts";
 
 /**
  * Resolves a DatastoreProvider for a custom datastore config.
@@ -214,6 +222,9 @@ export async function requireInitializedRepoReadOnly(
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
     workflowsDir,
+    additionalWorkflowsDirs: [
+      swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
+    ],
     definitionsDir,
     yamlWorkflowsDir,
     vaultsDir,
@@ -242,111 +253,116 @@ export async function requireInitializedRepoReadOnly(
  * @returns The validated repo context
  * @throws UserError if not initialized
  */
-export async function requireInitializedRepo(
+export function requireInitializedRepo(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
-  const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
-    options.repoDir,
-  );
+  return withSpan("swamp.repo.init", {}, async () => {
+    const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
+      options.repoDir,
+    );
 
-  const repoPath = RepoPath.create(repoDir);
+    const repoPath = RepoPath.create(repoDir);
 
-  const workflowsDirRel = resolveWorkflowsDir(marker);
-  const workflowsDir = isAbsolute(workflowsDirRel)
-    ? workflowsDirRel
-    : resolve(repoPath.value, workflowsDirRel);
+    const workflowsDirRel = resolveWorkflowsDir(marker);
+    const workflowsDir = isAbsolute(workflowsDirRel)
+      ? workflowsDirRel
+      : resolve(repoPath.value, workflowsDirRel);
 
-  const datastoreResolver = new DefaultDatastorePathResolver(
-    repoPath.value,
-    datastoreConfig,
-  );
+    const datastoreResolver = new DefaultDatastorePathResolver(
+      repoPath.value,
+      datastoreConfig,
+    );
 
-  // Verify datastore is accessible
-  if (isCustomDatastoreConfig(datastoreConfig)) {
-    const provider = resolveCustomProvider(datastoreConfig);
-    const lock = provider.createLock(datastoreConfig.datastorePath);
+    // Verify datastore is accessible
+    if (isCustomDatastoreConfig(datastoreConfig)) {
+      const provider = resolveCustomProvider(datastoreConfig);
+      const lock = provider.createLock(datastoreConfig.datastorePath);
 
-    // If the custom provider supports sync, register sync service too
-    const syncService = datastoreConfig.cachePath
-      ? provider.createSyncService?.(repoPath.value, datastoreConfig.cachePath)
-      : undefined;
+      // If the custom provider supports sync, register sync service too
+      const syncService = datastoreConfig.cachePath
+        ? provider.createSyncService?.(
+          repoPath.value,
+          datastoreConfig.cachePath,
+        )
+        : undefined;
 
-    if (datastoreConfig.cachePath) {
+      if (datastoreConfig.cachePath) {
+        await ensureDir(datastoreConfig.cachePath);
+      }
+
+      await registerDatastoreSync({
+        service: syncService,
+        lock,
+        label: datastoreConfig.type,
+      });
+    } else if (datastoreConfig.type === "filesystem") {
+      try {
+        const stat = await Deno.stat(datastoreConfig.path);
+        if (!stat.isDirectory) {
+          throw new UserError(
+            `Datastore path is not a directory: ${datastoreConfig.path}`,
+          );
+        }
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) {
+          // Directory doesn't exist yet - that's OK, it will be created
+        } else if (error instanceof UserError) {
+          throw error;
+        } else {
+          throw new UserError(
+            `Cannot access datastore at ${datastoreConfig.path}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      // Wait for any held per-model locks to be released before acquiring global lock.
+      // This prevents the global lock from racing with in-progress per-model operations.
+      await waitForPerModelLocks(datastoreConfig.path);
+
+      // Wire file-based lock for filesystem datastores
+      const lock = new FileLock(datastoreConfig.path);
+      await registerDatastoreSync({ lock });
+    } else {
+      // S3: Ensure local cache directory exists
       await ensureDir(datastoreConfig.cachePath);
+
+      // Share a single S3Client for both lock and sync service
+      const s3 = new S3Client({
+        bucket: datastoreConfig.bucket,
+        prefix: datastoreConfig.prefix,
+        region: datastoreConfig.region,
+      });
+
+      const lock = new S3Lock(s3);
+      const syncService = new S3CacheSyncService(s3, datastoreConfig.cachePath);
+      await registerDatastoreSync({ service: syncService, lock, label: "S3" });
     }
 
-    await registerDatastoreSync({
-      service: syncService,
-      lock,
-      label: datastoreConfig.type,
-    });
-  } else if (datastoreConfig.type === "filesystem") {
-    try {
-      const stat = await Deno.stat(datastoreConfig.path);
-      if (!stat.isDirectory) {
-        throw new UserError(
-          `Datastore path is not a directory: ${datastoreConfig.path}`,
-        );
-      }
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        // Directory doesn't exist yet - that's OK, it will be created
-      } else if (error instanceof UserError) {
-        throw error;
-      } else {
-        throw new UserError(
-          `Cannot access datastore at ${datastoreConfig.path}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
+    // Compute top-level directories for definitions, workflows, and vaults
+    const definitionsDir = join(repoPath.value, "models");
+    const yamlWorkflowsDir = join(repoPath.value, "workflows");
+    const vaultsDir = join(repoPath.value, "vaults");
 
-    // Wait for any held per-model locks to be released before acquiring global lock.
-    // This prevents the global lock from racing with in-progress per-model operations.
-    await waitForPerModelLocks(datastoreConfig.path);
-
-    // Wire file-based lock for filesystem datastores
-    const lock = new FileLock(datastoreConfig.path);
-    await registerDatastoreSync({ lock });
-  } else {
-    // S3: Ensure local cache directory exists
-    await ensureDir(datastoreConfig.cachePath);
-
-    // Share a single S3Client for both lock and sync service
-    const s3 = new S3Client({
-      bucket: datastoreConfig.bucket,
-      prefix: datastoreConfig.prefix,
-      region: datastoreConfig.region,
+    // Create repository context with the validated directory and datastore resolver
+    const repoContext = createRepositoryContext({
+      repoDir: repoPath.value,
+      workflowsDir,
+      definitionsDir,
+      yamlWorkflowsDir,
+      vaultsDir,
+      datastoreResolver,
+      ...factoryConfig,
     });
 
-    const lock = new S3Lock(s3);
-    const syncService = new S3CacheSyncService(s3, datastoreConfig.cachePath);
-    await registerDatastoreSync({ service: syncService, lock, label: "S3" });
-  }
-
-  // Compute top-level directories for definitions, workflows, and vaults
-  const definitionsDir = join(repoPath.value, "models");
-  const yamlWorkflowsDir = join(repoPath.value, "workflows");
-  const vaultsDir = join(repoPath.value, "vaults");
-
-  // Create repository context with the validated directory and datastore resolver
-  const repoContext = createRepositoryContext({
-    repoDir: repoPath.value,
-    workflowsDir,
-    definitionsDir,
-    yamlWorkflowsDir,
-    vaultsDir,
-    datastoreResolver,
-    ...factoryConfig,
+    return {
+      repoDir: repoPath.value,
+      repoContext,
+      datastoreResolver,
+    };
   });
-
-  return {
-    repoDir: repoPath.value,
-    repoContext,
-    datastoreResolver,
-  };
 }
 
 /**
@@ -423,6 +439,9 @@ export async function requireInitializedRepoUnlocked(
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
     workflowsDir,
+    additionalWorkflowsDirs: [
+      swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
+    ],
     definitionsDir,
     yamlWorkflowsDir,
     vaultsDir,
@@ -576,7 +595,11 @@ export async function acquireModelLocks(
       "Global lock held by {holder} — waiting for structural command to finish",
       { holder: globalInfo.holder },
     );
-    // Poll until the global lock is released or expires (stale lock)
+    // Poll until the global lock is released or expires (stale lock).
+    // Timeout after 2x TTL to prevent indefinite hangs if staleness
+    // detection fails (e.g. clock skew, S3 consistency issues).
+    const globalWaitStart = Date.now();
+    const globalMaxWaitMs = (globalInfo.ttlMs ?? 30_000) * 2;
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       const info = await globalLock.inspect();
@@ -589,6 +612,15 @@ export async function acquireModelLocks(
           { holder: info.holder, ttl: info.ttlMs },
         );
         break;
+      }
+      // Hard timeout to prevent indefinite hangs
+      const globalElapsed = Date.now() - globalWaitStart;
+      if (globalElapsed >= globalMaxWaitMs) {
+        throw new LockTimeoutError(
+          ".datastore.lock",
+          info,
+          globalElapsed,
+        );
       }
     }
     logger.info`Global lock released, proceeding with per-model locks`;
@@ -648,7 +680,9 @@ export async function acquireModelLocks(
       }
       lockKeys.length = 0;
 
-      // Wait for global lock to be released
+      // Wait for global lock to be released (with timeout)
+      const retryWaitStart = Date.now();
+      const retryMaxWaitMs = (postAcquireGlobalInfo.ttlMs ?? 30_000) * 2;
       while (true) {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         const info = await globalLock.inspect();
@@ -660,6 +694,14 @@ export async function acquireModelLocks(
             { holder: info.holder, ttl: info.ttlMs },
           );
           break;
+        }
+        const retryElapsed = Date.now() - retryWaitStart;
+        if (retryElapsed >= retryMaxWaitMs) {
+          throw new LockTimeoutError(
+            ".datastore.lock",
+            info,
+            retryElapsed,
+          );
         }
       }
 

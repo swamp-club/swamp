@@ -29,6 +29,22 @@ import {
 } from "./data_metadata.ts";
 
 /**
+ * Names reserved for internal use within data storage directories.
+ * These cannot be used as user-supplied data names because they collide
+ * with internal markers (e.g. the "latest" version pointer file).
+ */
+export const RESERVED_DATA_NAMES: ReadonlyArray<string> = ["latest"];
+
+/**
+ * Returns true if the given name is reserved for internal use.
+ * Comparison is case-insensitive because some filesystems (e.g. macOS HFS+)
+ * are case-insensitive.
+ */
+export function isReservedDataName(name: string): boolean {
+  return RESERVED_DATA_NAMES.includes(name.toLowerCase());
+}
+
+/**
  * Properties required to create a new Data entity.
  */
 export interface CreateDataProps {

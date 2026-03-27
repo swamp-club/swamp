@@ -53,6 +53,10 @@ what the extension contains and how it should be packaged.
 - `drivers`: Array of relative paths to TypeScript driver files.
 - `datastores`: Array of relative paths to TypeScript datastore files.
 - `reports`: Array of relative paths to TypeScript report files.
+- `include`: Array of relative paths (from `modelsDir`) to TypeScript files that
+  should be included in the archive alongside models but not bundled. Used for
+  helper scripts that are executed via `Deno.Command` subprocess rather than
+  imported directly.
 - `additionalFiles`: Array of paths to non-model files to include (README,
   config, etc.).
 - `platforms`: Array of platform identifiers the extension supports (e.g.,
@@ -121,6 +125,20 @@ extension.tar.gz
 Source TypeScript files are included preserving their relative directory
 structure from the models directory. Local imports are resolved recursively —
 if `connection.ts` imports `./helpers.ts`, both files are included.
+
+Files listed in the manifest's `include` field are also copied to `models/` in
+the archive, preserving their relative paths from `modelsDir`. Include files are
+not bundled — they are raw TypeScript files intended to be executed as
+subprocesses or used as standalone utilities.
+
+### Loader pre-check
+
+At runtime, loaders discover `.ts` files in their respective directories and
+attempt to bundle each one. Before bundling, the loader reads the source and
+checks for the expected named export (`export const model`, `export const vault`,
+etc.). Files that don't declare the expected export are skipped — no bundling
+attempted, no error. This avoids failing on helper scripts with unbundleable
+dependencies (e.g., native modules used via `Deno.Command` subprocess).
 
 ### Bundles
 

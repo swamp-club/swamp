@@ -43,10 +43,10 @@ Deno.test("issue URL parsing returns 0 for invalid URL", () => {
 
 Deno.test("getNewIssueUrl uses default repo with labels", () => {
   const service = new GitHubIssueService();
-  const url = service.getNewIssueUrl({ labels: ["bug", "external"] });
+  const url = service.getNewIssueUrl({ labels: ["bug", "needs-triage"] });
   assertEquals(
     url,
-    "https://github.com/systeminit/swamp/issues/new?labels=bug%2Cexternal",
+    "https://github.com/systeminit/swamp/issues/new?labels=bug%2Cneeds-triage",
   );
 });
 
@@ -54,11 +54,11 @@ Deno.test("getNewIssueUrl uses custom repo", () => {
   const service = new GitHubIssueService();
   const url = service.getNewIssueUrl({
     repo: "owner/other-repo",
-    labels: ["enhancement"],
+    labels: ["feature"],
   });
   assertEquals(
     url,
-    "https://github.com/owner/other-repo/issues/new?labels=enhancement",
+    "https://github.com/owner/other-repo/issues/new?labels=feature",
   );
 });
 

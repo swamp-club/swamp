@@ -26,7 +26,6 @@ import {
   installZodGlobal,
   rewriteZodImports,
   sanitizeDataUrlError,
-  sourceHasBareSpecifiers,
   uint8ArrayToBase64,
 } from "./bundle.ts";
 import { resolveLocalImports } from "./local_import_resolver.ts";
@@ -276,7 +275,11 @@ export class UserModelLoader {
    */
   async loadModels(
     modelsDir: string,
-    options?: { skipAlreadyRegistered?: boolean },
+    options?: {
+      skipAlreadyRegistered?: boolean;
+      /** Additional directories to scan (e.g. pulled extensions). */
+      additionalDirs?: string[];
+    },
   ): Promise<LoadResult> {
     const result: LoadResult = { loaded: [], extended: [], failed: [] };
 
@@ -284,17 +287,26 @@ export class UserModelLoader {
     // This prevents dual-instance issues in the compiled binary.
     installZodGlobal();
 
-    // Check if directory exists
-    try {
-      await Deno.stat(modelsDir);
-    } catch {
-      return result; // No user models directory - not an error
-    }
-
     // Ensure deno is available before bundling
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    const files = await this.discoverFiles(modelsDir);
+    // Discover files from primary dir and any additional dirs, merging into
+    // a single list of { file (relative), baseDir (absolute root) } tuples.
+    // Primary dir files come first so user extensions take precedence.
+    const allFiles: Array<{ file: string; baseDir: string }> = [];
+    for (
+      const dir of [modelsDir, ...(options?.additionalDirs ?? [])]
+    ) {
+      try {
+        await Deno.stat(dir);
+      } catch {
+        continue; // Directory doesn't exist — skip
+      }
+      const files = await this.discoverFiles(dir);
+      for (const file of files) {
+        allFiles.push({ file, baseDir: dir });
+      }
+    }
 
     // Import all files and classify by export name
     const modelFiles: Array<{
@@ -307,14 +319,24 @@ export class UserModelLoader {
       module: Record<string, unknown>;
     }> = [];
 
-    for (const file of files) {
+    for (const { file, baseDir } of allFiles) {
       try {
-        const absolutePath = resolve(modelsDir, file);
+        const absolutePath = resolve(baseDir, file);
+
+        // Pre-check: only bundle files that declare a model or extension export.
+        // This avoids attempting to bundle helper scripts with unbundleable
+        // dependencies (e.g., native modules used via Deno.Command subprocess).
+        const source = await Deno.readTextFile(absolutePath);
+        if (!/export\s+const\s+(model|extension)\s*[=:]/.test(source)) {
+          logger.debug`Skipping ${file} (no model/extension export found)`;
+          continue;
+        }
+
         const js = await this.bundleWithCache(
           absolutePath,
           file,
           denoPath,
-          modelsDir,
+          baseDir,
         );
         const module = await this.importBundle(js, file);
 
@@ -418,10 +440,7 @@ export class UserModelLoader {
       );
 
       // Check mtime-based cache against all local dependencies.
-      // If the bundle exists but freshness cannot be determined (e.g. a
-      // dependency file is missing because the extension was pushed with an
-      // older swamp that had a single-line import regex), fall back to the
-      // cached bundle rather than attempting a re-bundle that will also fail.
+      // If the bundle is newer than all source files, use it directly.
       let bundleExists = false;
       try {
         const bundleStat = await Deno.stat(bundlePath);
@@ -448,34 +467,42 @@ export class UserModelLoader {
           }
         }
       } catch {
+        // Freshness check failed (e.g. missing dependency file).
+        // Fall through to attempt a rebundle rather than using a
+        // potentially stale cache.
+      }
+
+      // Try to rebundle from source. If bundling fails (e.g. bare specifiers
+      // without a deno.json import map) and a cached bundle exists, fall back
+      // to the cache. The old bundle file is untouched on failure since
+      // bundleExtension returns the JS string in memory before we write.
+      try {
+        const js = await bundleExtension(absolutePath, denoPath);
+        const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
+        await assertSafePath(bundlePath, bundleBoundary);
+        await Deno.mkdir(dirname(bundlePath), { recursive: true });
+        await Deno.writeTextFile(bundlePath, js);
+        logger.debug`Wrote bundle cache: ${bundlePath}`;
+        return js;
+      } catch (bundleError) {
         if (bundleExists) {
-          logger
-            .debug`Using cached bundle for ${relativePath} (freshness check failed — missing dependency)`;
-          return await Deno.readTextFile(bundlePath);
+          try {
+            const cached = await Deno.readTextFile(bundlePath);
+            logger
+              .warn`Rebundle failed for ${relativePath}, using cached bundle: ${bundleError}`;
+            // Touch the cache mtime so subsequent loads see it as fresh,
+            // avoiding repeated failed rebundle attempts on every cold start.
+            try {
+              const now = new Date();
+              await Deno.utime(bundlePath, now, now);
+            } catch { /* ignore — worst case we retry next load */ }
+            return cached;
+          } catch {
+            // Cache file was removed between stat and read — treat as no cache.
+          }
         }
+        throw bundleError;
       }
-
-      // If the source uses bare specifiers (e.g., from "zod" instead of
-      // from "npm:zod@4") and a cached bundle exists, use it — re-bundling
-      // would fail without a deno.json import map to resolve the specifiers.
-      // This handles pulled extensions that were built with a deno.json project.
-      if (bundleExists) {
-        const source = await Deno.readTextFile(absolutePath);
-        if (sourceHasBareSpecifiers(source)) {
-          logger
-            .debug`Using cached bundle for ${relativePath} (source has bare specifiers)`;
-          return await Deno.readTextFile(bundlePath);
-        }
-      }
-
-      // Bundle and write to cache
-      const js = await bundleExtension(absolutePath, denoPath);
-      const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
-      await assertSafePath(bundlePath, bundleBoundary);
-      await Deno.mkdir(dirname(bundlePath), { recursive: true });
-      await Deno.writeTextFile(bundlePath, js);
-      logger.debug`Wrote bundle cache: ${bundlePath}`;
-      return js;
     }
 
     // No repo dir — just bundle without caching

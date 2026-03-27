@@ -34,6 +34,7 @@ import type { ExtensionManifest } from "../../domain/extensions/extension_manife
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 // ── Data types ────────────────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ export interface ExtensionPushPrepareInput {
   allReportFiles: string[];
   reportEntryPoints: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
+  includeFilePaths: string[];
   additionalFilePaths: string[];
   dryRun: boolean;
   releaseNotes?: string;
@@ -416,7 +418,7 @@ export async function extensionPushPrepare(
   let contentMetadata: ExtensionContentMetadata | undefined;
   try {
     contentMetadata = await deps.extractContentMetadata(
-      input.allModelFiles,
+      input.modelEntryPoints,
       input.modelsDir,
       input.workflowFiles,
       input.allVaultFiles,
@@ -461,7 +463,9 @@ export async function extensionPushPrepare(
   const resolvedData = buildResolvedData(input, contentMetadata);
 
   // 6. Safety analysis
-  const allFiles = [
+  // Include files are safety-checked but excluded from quality checks
+  // (they may have their own tooling and conventions).
+  const qualityFiles = [
     ...input.allModelFiles,
     ...input.allVaultFiles,
     ...input.allDriverFiles,
@@ -469,6 +473,10 @@ export async function extensionPushPrepare(
     ...input.allReportFiles,
     ...input.workflowFiles.map((wf) => wf.sourcePath),
     ...input.additionalFilePaths,
+  ];
+  const allFiles = [
+    ...qualityFiles,
+    ...input.includeFilePaths,
   ];
   const safetyResult = await deps.analyzeExtensionSafety(allFiles);
 
@@ -484,7 +492,7 @@ export async function extensionPushPrepare(
 
   // 8. Quality checks
   const qualityResult = await deps.checkExtensionQuality(
-    allFiles,
+    qualityFiles,
     denoPath,
     input.denoConfigPath,
   );
@@ -635,95 +643,105 @@ export async function* extensionPush(
   deps: ExtensionPushExecuteDeps,
   input: ExtensionPushExecuteInput,
 ): AsyncIterable<ExtensionPushEvent> {
-  const credentials = await deps.loadCredentials();
-  if (!credentials) {
-    yield { kind: "error", error: notAuthenticated() };
-    return;
-  }
+  yield* withGeneratorSpan(
+    "swamp.extension.push",
+    { "extension.name": input.manifest.name },
+    (async function* () {
+      const credentials = await deps.loadCredentials();
+      if (!credentials) {
+        yield { kind: "error" as const, error: notAuthenticated() };
+        return;
+      }
 
-  const releaseNotes = input.releaseNotes ?? input.manifest.releaseNotes;
-  const pushMetadata = {
-    name: input.manifest.name,
-    version: input.manifest.version,
-    description: input.manifest.description ?? "",
-    dependencies: input.manifest.dependencies,
-    platforms: input.manifest.platforms,
-    labels: input.manifest.labels,
-    repository: input.manifest.repository || undefined,
-    ...(releaseNotes ? { releaseNotes } : {}),
-  };
+      const releaseNotes = input.releaseNotes ?? input.manifest.releaseNotes;
+      const pushMetadata = {
+        name: input.manifest.name,
+        version: input.manifest.version,
+        description: input.manifest.description ?? "",
+        dependencies: input.manifest.dependencies,
+        platforms: input.manifest.platforms,
+        labels: input.manifest.labels,
+        repository: input.manifest.repository || undefined,
+        ...(releaseNotes ? { releaseNotes } : {}),
+      };
 
-  // Phase 1: Initiate
-  yield { kind: "pushing", phase: "initiate" };
-  ctx.logger.debug("Initiating push...");
-  let initResult: { uploadUrl: string };
-  try {
-    initResult = await deps.initiatePush(
-      credentials.serverUrl,
-      pushMetadata,
-      credentials.apiKey,
-    );
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
-    };
-    return;
-  }
+      // Phase 1: Initiate
+      yield { kind: "pushing" as const, phase: "initiate" as const };
+      ctx.logger.debug("Initiating push...");
+      let initResult: { uploadUrl: string };
+      try {
+        initResult = await deps.initiatePush(
+          credentials.serverUrl,
+          pushMetadata,
+          credentials.apiKey,
+        );
+      } catch (error) {
+        yield {
+          kind: "error" as const,
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
 
-  // Phase 2: Upload archive
-  yield { kind: "pushing", phase: "upload" };
-  ctx.logger.debug("Uploading archive...");
-  try {
-    await deps.uploadArchive(initResult.uploadUrl, input.archiveBytes);
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
-    };
-    return;
-  }
+      // Phase 2: Upload archive
+      yield { kind: "pushing" as const, phase: "upload" as const };
+      ctx.logger.debug("Uploading archive...");
+      try {
+        await deps.uploadArchive(initResult.uploadUrl, input.archiveBytes);
+      } catch (error) {
+        yield {
+          kind: "error" as const,
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
 
-  // Phase 3: Confirm
-  yield { kind: "pushing", phase: "confirm" };
-  ctx.logger.debug("Confirming push...");
-  let confirmResult: { name: string; version: string; extensionId: string };
-  try {
-    confirmResult = await deps.confirmPush(
-      credentials.serverUrl,
-      { ...pushMetadata, contentMetadata: input.contentMetadata },
-      credentials.apiKey,
-    );
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
-    };
-    return;
-  }
+      // Phase 3: Confirm
+      yield { kind: "pushing" as const, phase: "confirm" as const };
+      ctx.logger.debug("Confirming push...");
+      let confirmResult: {
+        name: string;
+        version: string;
+        extensionId: string;
+      };
+      try {
+        confirmResult = await deps.confirmPush(
+          credentials.serverUrl,
+          { ...pushMetadata, contentMetadata: input.contentMetadata },
+          credentials.apiKey,
+        );
+      } catch (error) {
+        yield {
+          kind: "error" as const,
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
 
-  yield {
-    kind: "completed",
-    data: {
-      name: confirmResult.name,
-      version: confirmResult.version,
-      extensionId: confirmResult.extensionId,
-      archiveSize: input.archiveBytes.length,
-      modelCount: input.counts.models,
-      workflowCount: input.counts.workflows,
-      bundleCount: input.counts.bundles,
-      vaultCount: input.counts.vaults,
-      driverCount: input.counts.drivers,
-      datastoreCount: input.counts.datastores,
-      reportCount: input.counts.reports,
-    },
-  };
+      yield {
+        kind: "completed" as const,
+        data: {
+          name: confirmResult.name,
+          version: confirmResult.version,
+          extensionId: confirmResult.extensionId,
+          archiveSize: input.archiveBytes.length,
+          modelCount: input.counts.models,
+          workflowCount: input.counts.workflows,
+          bundleCount: input.counts.bundles,
+          vaultCount: input.counts.vaults,
+          driverCount: input.counts.drivers,
+          datastoreCount: input.counts.datastores,
+          reportCount: input.counts.reports,
+        },
+      };
+    })(),
+  );
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -920,6 +938,9 @@ async function createArchive(
         drivers: input.manifest.drivers,
         datastores: input.manifest.datastores,
         reports: input.manifest.reports,
+        ...(input.manifest.include.length > 0
+          ? { include: input.manifest.include }
+          : {}),
         additionalFiles: input.manifest.additionalFiles,
         ...(input.manifest.platforms.length > 0
           ? { platforms: input.manifest.platforms }
@@ -937,6 +958,14 @@ async function createArchive(
       const destPath = join(extDir, "models", relPath);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.copyFile(modelFile, destPath);
+    }
+
+    // Copy include files (alongside model sources, not bundled)
+    for (const incFile of input.includeFilePaths) {
+      const relPath = relative(input.modelsDir, incFile);
+      const destPath = join(extDir, "models", relPath);
+      await Deno.mkdir(dirname(destPath), { recursive: true });
+      await Deno.copyFile(incFile, destPath);
     }
 
     // Write compiled model bundles

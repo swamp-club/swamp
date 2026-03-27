@@ -256,6 +256,55 @@ Deno.test("createFileWriterFactory: runtime tags override definition tags", asyn
   assertEquals(handle.tags["env"], "prod");
 });
 
+Deno.test("createResourceWriter: rejects reserved data name 'latest'", async () => {
+  const repo = createMockRepo();
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+  );
+
+  await assertRejects(
+    () => writeResource("item", "latest", { value: "hello" }),
+    Error,
+    "reserved for internal use",
+  );
+});
+
+Deno.test("createResourceWriter: rejects reserved data name case-insensitively", async () => {
+  const repo = createMockRepo();
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+  );
+
+  await assertRejects(
+    () => writeResource("item", "LATEST", { value: "hello" }),
+    Error,
+    "reserved for internal use",
+  );
+});
+
+Deno.test("createFileWriterFactory: rejects reserved data name 'latest'", () => {
+  const repo = createMockRepo();
+  const { createFileWriter } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+  );
+
+  try {
+    createFileWriter("log", "latest");
+    throw new Error("Expected reserved name error");
+  } catch (e) {
+    assertStringIncludes((e as Error).message, "reserved for internal use");
+  }
+});
+
 Deno.test("createResourceWriter: resolvedVarySuffix modifies instance name", async () => {
   const repo = createMockRepo();
   const dataOutputOverrides = [{

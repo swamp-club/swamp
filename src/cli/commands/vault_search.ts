@@ -23,8 +23,10 @@ import {
   createLibSwampContext,
   createVaultDescribeDeps,
   vaultDescribe,
+  type VaultDescribeData,
   vaultSearch,
   type VaultSearchDeps,
+  type VaultSearchItem,
 } from "../../libswamp/mod.ts";
 import { createVaultSearchRenderer } from "../../presentation/renderers/vault_search.tsx";
 import { createVaultDescribeRenderer } from "../../presentation/renderers/vault_describe.ts";
@@ -37,6 +39,33 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Creates a fetchPreview closure that fetches full vault detail data.
+ * This bridges the presentation layer to the libswamp vaultDescribe application
+ * service, capturing the repoDir dependency.
+ */
+function createVaultFetchPreview(
+  repoDir: string,
+): (item: VaultSearchItem) => Promise<VaultDescribeData> {
+  const libCtx = createLibSwampContext();
+  const describeDeps = createVaultDescribeDeps(repoDir);
+
+  return async (item: VaultSearchItem): Promise<VaultDescribeData> => {
+    let result: VaultDescribeData | undefined;
+    await consumeStream(vaultDescribe(libCtx, describeDeps, item.name), {
+      resolving: () => {},
+      completed: (e) => {
+        result = e.data;
+      },
+      error: () => {},
+    });
+    if (!result) {
+      throw new Error(`Vault not found: ${item.name}`);
+    }
+    return result;
+  };
+}
 
 export const vaultSearchCommand = new Command()
   .name("search")
@@ -58,7 +87,12 @@ export const vaultSearchCommand = new Command()
       findAllVaults: () => repoContext.vaultConfigRepo.findAll(),
     };
 
-    const renderer = createVaultSearchRenderer(effectiveMode);
+    const repoDir = options.repoDir ?? ".";
+    const fetchPreview = effectiveMode === "log"
+      ? createVaultFetchPreview(repoDir)
+      : undefined;
+
+    const renderer = createVaultSearchRenderer(effectiveMode, fetchPreview);
     await consumeStream(
       vaultSearch(libCtx, deps, { query }),
       renderer.handlers(),
@@ -67,12 +101,17 @@ export const vaultSearchCommand = new Command()
     const selected = renderer.selectedItem();
     if (selected) {
       ctx.logger.debug`Selected vault: ${selected.name}`;
-      const describeRenderer = createVaultDescribeRenderer(effectiveMode);
-      const describeDeps = createVaultDescribeDeps(options.repoDir ?? ".");
-      await consumeStream(
-        vaultDescribe(libCtx, describeDeps, selected.name),
-        describeRenderer.handlers(),
-      );
+      // In JSON mode, still display the full vault describe output after auto-select
+      if (effectiveMode === "json") {
+        const describeRenderer = createVaultDescribeRenderer(effectiveMode);
+        const describeDeps = createVaultDescribeDeps(repoDir);
+        await consumeStream(
+          vaultDescribe(libCtx, describeDeps, selected.name),
+          describeRenderer.handlers(),
+        );
+      }
+      // In interactive mode, the scrollback from the picker already contains
+      // the vault detail, so no additional vaultDescribe call is needed.
     } else {
       ctx.logger.debug`Search cancelled`;
     }

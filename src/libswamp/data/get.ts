@@ -31,6 +31,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the data get output.
  */
@@ -209,42 +210,48 @@ export async function* dataGet(
   deps: DataGetDeps,
   input: DataGetInput,
 ): AsyncIterable<DataGetEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.data.get",
+    { "data.name": input.dataName },
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const { workflowName, modelIdOrName, dataName, version, repoDir } = input;
+      const { workflowName, modelIdOrName, dataName, version, repoDir } = input;
 
-  // Validate arguments
-  if (workflowName && modelIdOrName && dataName) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        "Too many arguments. Usage: swamp data get --workflow <name> <data_name>",
-      ),
-    };
-    return;
-  }
-  if (!modelIdOrName && !workflowName) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        "Either a model name or --workflow is required.",
-      ),
-    };
-    return;
-  }
+      // Validate arguments
+      if (workflowName && modelIdOrName && dataName) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            "Too many arguments. Usage: swamp data get --workflow <name> <data_name>",
+          ),
+        };
+        return;
+      }
+      if (!modelIdOrName && !workflowName) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            "Either a model name or --workflow is required.",
+          ),
+        };
+        return;
+      }
 
-  if (workflowName) {
-    yield* workflowScopedGet(deps, input, workflowName, repoDir, version);
-  } else {
-    yield* modelScopedGet(
-      deps,
-      modelIdOrName!,
-      dataName,
-      version,
-      repoDir,
-      input.includeContent,
-    );
-  }
+      if (workflowName) {
+        yield* workflowScopedGet(deps, input, workflowName, repoDir, version);
+      } else {
+        yield* modelScopedGet(
+          deps,
+          modelIdOrName!,
+          dataName,
+          version,
+          repoDir,
+          input.includeContent,
+        );
+      }
+    })(),
+  );
 }
 
 async function* workflowScopedGet(

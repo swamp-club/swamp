@@ -51,6 +51,7 @@ import {
   executeReports,
 } from "../../domain/reports/report_execution_service.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { BUILTIN_WORKFLOW_REPORTS } from "../../domain/reports/builtin/mod.ts";
 import type {
   WorkflowReportContext,
 } from "../../domain/reports/report_context.ts";
@@ -61,15 +62,31 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
-import { buildReportDataHandles } from "../../domain/reports/report_data_handles.ts";
+import type { DataHandle } from "../../domain/models/model.ts";
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 /**
  * Events emitted by the libswamp workflow run generator.
  */
+/**
+ * Lightweight job metadata included in the `started` event so renderers
+ * can display the full tree skeleton before any jobs begin executing.
+ */
+export interface WorkflowRunJobInfo {
+  id: string;
+  stepCount: number;
+  dependsOn: string[];
+}
+
 export type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
-  | { kind: "started"; runId: string; workflowName: string }
+  | {
+    kind: "started";
+    runId: string;
+    workflowName: string;
+    jobs: WorkflowRunJobInfo[];
+  }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
@@ -119,6 +136,8 @@ export type WorkflowRunEvent =
     kind: "report_started";
     reportName: string;
     scope: string;
+    jobId?: string;
+    stepId?: string;
   }
   | {
     kind: "report_completed";
@@ -126,12 +145,16 @@ export type WorkflowRunEvent =
     scope: string;
     markdown: string;
     json: Record<string, unknown>;
+    jobId?: string;
+    stepId?: string;
   }
   | {
     kind: "report_failed";
     reportName: string;
     scope: string;
     error: string;
+    jobId?: string;
+    stepId?: string;
   }
   | { kind: "completed"; run: WorkflowRunView }
   | { kind: "error"; error: SwampError };
@@ -290,6 +313,11 @@ function mapEvent(
         kind: "started",
         runId: event.runId,
         workflowName: event.workflowName,
+        jobs: event.jobs.map((j) => ({
+          id: j.id,
+          stepCount: j.stepCount,
+          dependsOn: j.dependsOn,
+        })),
       };
     case "completed": {
       const path = deps.runRepo.getPath(
@@ -329,174 +357,192 @@ export async function* workflowRun(
   deps: WorkflowRunDeps,
   input: WorkflowRunInput,
 ): AsyncGenerator<WorkflowRunEvent> {
-  let resolvedInput = input;
+  yield* withGeneratorSpan(
+    "swamp.workflow.run.command",
+    { "workflow.id_or_name": input.workflowIdOrName },
+    (async function* () {
+      let resolvedInput = input;
 
-  yield { kind: "validating_inputs" };
+      yield { kind: "validating_inputs" };
 
-  // Look up workflow
-  const workflow = await deps.lookupWorkflow(
-    deps.workflowRepo,
-    input.workflowIdOrName,
-  );
-  if (!workflow) {
-    yield {
-      kind: "error",
-      error: workflowNotFound(input.workflowIdOrName),
-    };
-    return;
-  }
-
-  // Coerce and validate inputs
-  if (workflow.inputs && !input.lastEvaluated) {
-    const coercedInputs = coerceInputTypes(
-      input.inputs ?? {},
-      workflow.inputs,
-    );
-    const validationService = new InputValidationService();
-    const inputsWithDefaults = validationService.applyDefaults(
-      coercedInputs,
-      workflow.inputs,
-    );
-    const result = validationService.validate(
-      inputsWithDefaults,
-      workflow.inputs,
-    );
-    if (!result.valid) {
-      yield { kind: "error", error: inputValidationFailed(result.errors) };
-      return;
-    }
-    resolvedInput = { ...input, inputs: inputsWithDefaults };
-  } else if (workflow.inputs) {
-    // lastEvaluated: still coerce types but skip validation
-    resolvedInput = {
-      ...input,
-      inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
-    };
-  }
-
-  yield { kind: "evaluating_workflow" };
-
-  const service = deps.createExecutionService(
-    deps.workflowRepo,
-    deps.runRepo,
-    deps.repoDir,
-  );
-
-  // Track model info from events for post-run reports
-  const modelInfoByStep = new Map<
-    string,
-    { modelName: string; modelType: string; methodName: string }
-  >();
-  // Track step statuses from events
-  const stepStatuses = new Map<string, "succeeded" | "failed" | "skipped">();
-  // Track step job names
-  const stepJobNames = new Map<string, string>();
-
-  try {
-    let completedEvent: WorkflowRunEvent | undefined;
-
-    // Collect per-step report results from execution service events
-    const perStepReportResults: ReportResultView[] = [];
-
-    for await (
-      const event of service.run(resolvedInput.workflowIdOrName, {
-        lastEvaluated: resolvedInput.lastEvaluated,
-        inputs: resolvedInput.inputs,
-        runtimeTags: resolvedInput.runtimeTags,
-        signal: ctx.signal,
-        driver: resolvedInput.driver,
-        reportFilterOptions: {
-          skipAllReports: resolvedInput.skipAllReports,
-          skipReportNames: resolvedInput.skipReportNames,
-          skipReportLabels: resolvedInput.skipReportLabels,
-          reportNames: resolvedInput.reportNames,
-          reportLabels: resolvedInput.reportLabels,
-        },
-      })
-    ) {
-      // Track model_resolved events for report context
-      if (event.kind === "model_resolved") {
-        const key = `${event.jobId}:${event.stepId}`;
-        modelInfoByStep.set(key, {
-          modelName: event.modelName,
-          modelType: event.modelType,
-          methodName: event.methodName,
-        });
-        stepJobNames.set(key, event.jobId);
-      }
-      if (event.kind === "step_completed") {
-        stepStatuses.set(`${event.jobId}:${event.stepId}`, "succeeded");
-      }
-      if (event.kind === "step_failed") {
-        stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
-      }
-      if (event.kind === "step_skipped") {
-        stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
-      }
-
-      // Collect per-step report results from execution service events
-      if (event.kind === "report_completed") {
-        perStepReportResults.push({
-          name: event.reportName,
-          scope: event.scope,
-          success: true,
-          markdown: event.markdown,
-          json: event.json,
-        });
-      }
-      if (event.kind === "report_failed") {
-        perStepReportResults.push({
-          name: event.reportName,
-          scope: event.scope,
-          success: false,
-          error: event.error,
-        });
-      }
-
-      const mapped = mapEvent(event, deps, resolvedInput);
-
-      // Intercept the completed event to run reports first
-      if (mapped.kind === "completed") {
-        completedEvent = mapped;
-        continue;
-      }
-
-      yield mapped;
-    }
-
-    // Execute post-run reports (workflow-scope only) before yielding the completed event
-    if (completedEvent && completedEvent.kind === "completed") {
-      const reportResults: ReportResultView[] = [...perStepReportResults];
-      yield* executePostRunReports(
-        deps,
-        resolvedInput,
-        workflow,
-        completedEvent.run,
-        modelInfoByStep,
-        stepStatuses,
-        stepJobNames,
-        reportResults,
+      // Look up workflow
+      const workflow = await deps.lookupWorkflow(
+        deps.workflowRepo,
+        input.workflowIdOrName,
       );
-      if (reportResults.length > 0) {
-        completedEvent = {
-          ...completedEvent,
-          run: { ...completedEvent.run, reports: reportResults },
+      if (!workflow) {
+        yield {
+          kind: "error",
+          error: workflowNotFound(input.workflowIdOrName),
+        };
+        return;
+      }
+
+      // Coerce and validate inputs
+      if (workflow.inputs && !input.lastEvaluated) {
+        const coercedInputs = coerceInputTypes(
+          input.inputs ?? {},
+          workflow.inputs,
+        );
+        const validationService = new InputValidationService();
+        const inputsWithDefaults = validationService.applyDefaults(
+          coercedInputs,
+          workflow.inputs,
+        );
+        const result = validationService.validate(
+          inputsWithDefaults,
+          workflow.inputs,
+        );
+        if (!result.valid) {
+          yield { kind: "error", error: inputValidationFailed(result.errors) };
+          return;
+        }
+        resolvedInput = { ...input, inputs: inputsWithDefaults };
+      } else if (workflow.inputs) {
+        // lastEvaluated: still coerce types but skip validation
+        resolvedInput = {
+          ...input,
+          inputs: coerceInputTypes(input.inputs ?? {}, workflow.inputs),
         };
       }
-      yield completedEvent;
-    }
-  } catch (error) {
-    if (
-      error instanceof DOMException && error.name === "AbortError"
-    ) {
-      yield { kind: "error", error: cancelled(error) };
-      return;
-    }
-    yield {
-      kind: "error",
-      error: workflowExecutionFailed(error),
-    };
-  }
+
+      yield { kind: "evaluating_workflow" };
+
+      const service = deps.createExecutionService(
+        deps.workflowRepo,
+        deps.runRepo,
+        deps.repoDir,
+      );
+
+      // Track model info from events for post-run reports
+      const modelInfoByStep = new Map<
+        string,
+        { modelName: string; modelType: string; methodName: string }
+      >();
+      // Track step statuses from events
+      const stepStatuses = new Map<
+        string,
+        "succeeded" | "failed" | "skipped"
+      >();
+      // Track step job names
+      const stepJobNames = new Map<string, string>();
+      // Track per-step data handles from step_completed events
+      const dataHandlesByStep = new Map<string, DataHandle[]>();
+
+      try {
+        let completedEvent: WorkflowRunEvent | undefined;
+
+        // Collect per-step report results from execution service events
+        const perStepReportResults: ReportResultView[] = [];
+
+        for await (
+          const event of service.run(resolvedInput.workflowIdOrName, {
+            lastEvaluated: resolvedInput.lastEvaluated,
+            inputs: resolvedInput.inputs,
+            runtimeTags: resolvedInput.runtimeTags,
+            signal: ctx.signal,
+            driver: resolvedInput.driver,
+            reportFilterOptions: {
+              skipAllReports: resolvedInput.skipAllReports,
+              skipReportNames: resolvedInput.skipReportNames,
+              skipReportLabels: resolvedInput.skipReportLabels,
+              reportNames: resolvedInput.reportNames,
+              reportLabels: resolvedInput.reportLabels,
+            },
+          })
+        ) {
+          // Track model_resolved events for report context
+          if (event.kind === "model_resolved") {
+            const key = `${event.jobId}:${event.stepId}`;
+            modelInfoByStep.set(key, {
+              modelName: event.modelName,
+              modelType: event.modelType,
+              methodName: event.methodName,
+            });
+            stepJobNames.set(key, event.jobId);
+          }
+          if (event.kind === "step_completed") {
+            stepStatuses.set(`${event.jobId}:${event.stepId}`, "succeeded");
+            if (event.dataHandles) {
+              dataHandlesByStep.set(
+                `${event.jobId}:${event.stepId}`,
+                event.dataHandles,
+              );
+            }
+          }
+          if (event.kind === "step_failed") {
+            stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
+          }
+          if (event.kind === "step_skipped") {
+            stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
+          }
+
+          // Collect per-step report results from execution service events
+          if (event.kind === "report_completed") {
+            perStepReportResults.push({
+              name: event.reportName,
+              scope: event.scope,
+              success: true,
+              markdown: event.markdown,
+              json: event.json,
+            });
+          }
+          if (event.kind === "report_failed") {
+            perStepReportResults.push({
+              name: event.reportName,
+              scope: event.scope,
+              success: false,
+              error: event.error,
+            });
+          }
+
+          const mapped = mapEvent(event, deps, resolvedInput);
+
+          // Intercept the completed event to run reports first
+          if (mapped.kind === "completed") {
+            completedEvent = mapped;
+            continue;
+          }
+
+          yield mapped;
+        }
+
+        // Execute post-run reports (workflow-scope only) before yielding the completed event
+        if (completedEvent && completedEvent.kind === "completed") {
+          const reportResults: ReportResultView[] = [...perStepReportResults];
+          yield* executePostRunReports(
+            deps,
+            resolvedInput,
+            workflow,
+            completedEvent.run,
+            modelInfoByStep,
+            stepStatuses,
+            stepJobNames,
+            reportResults,
+            dataHandlesByStep,
+          );
+          if (reportResults.length > 0) {
+            completedEvent = {
+              ...completedEvent,
+              run: { ...completedEvent.run, reports: reportResults },
+            };
+          }
+          yield completedEvent;
+        }
+      } catch (error) {
+        if (
+          error instanceof DOMException && error.name === "AbortError"
+        ) {
+          yield { kind: "error", error: cancelled(error) };
+          return;
+        }
+        yield {
+          kind: "error",
+          error: workflowExecutionFailed(error),
+        };
+      }
+    })(),
+  );
 }
 
 /**
@@ -518,6 +564,7 @@ async function* executePostRunReports(
   stepStatuses: Map<string, "succeeded" | "failed" | "skipped">,
   stepJobNames: Map<string, string>,
   reportResults: ReportResultView[],
+  dataHandlesByStep: Map<string, DataHandle[]>,
 ): AsyncGenerator<WorkflowRunEvent> {
   // Reports require dataRepo and definitionRepo; skip if not provided
   if (!deps.dataRepo || !deps.definitionRepo) {
@@ -579,14 +626,10 @@ async function* executePostRunReports(
       continue;
     }
 
-    const { definition, type: modelType } = lookupResult;
+    const { definition } = lookupResult;
 
-    // Build data handles from persisted data repository
-    const stepDataHandles = await buildReportDataHandles(
-      deps.dataRepo,
-      modelType,
-      definition.id,
-    );
+    // Use data handles tracked from step_completed events (current-run only)
+    const stepDataHandles = dataHandlesByStep.get(key) ?? [];
 
     stepExecutions.push({
       jobName,
@@ -624,6 +667,8 @@ async function* executePostRunReports(
     workflow.reportSelection,
     filterOptions,
     noopEvents,
+    undefined, // methodName
+    BUILTIN_WORKFLOW_REPORTS,
   );
 
   for (const result of wfSummary.results) {

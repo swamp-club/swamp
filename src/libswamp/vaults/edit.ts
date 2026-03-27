@@ -27,6 +27,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Minimal vault config shape needed by the generator. */
 export interface VaultEditConfigInfo {
   id: string;
@@ -103,74 +104,80 @@ export async function* vaultEdit(
   deps: VaultEditDeps,
   input: VaultEditInput,
 ): AsyncIterable<VaultEditEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.vault.edit",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const { vaultNameOrId, vaultType } = input;
+      const { vaultNameOrId, vaultType } = input;
 
-  ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
+      ctx.logger.debug`Looking up vault: ${vaultNameOrId}`;
 
-  // Try to find by name first
-  let config = await deps.findByName(vaultNameOrId);
+      // Try to find by name first
+      let config = await deps.findByName(vaultNameOrId);
 
-  // If not found by name, try to find by ID
-  if (!config) {
-    if (vaultType) {
-      config = await deps.findById(vaultType, vaultNameOrId);
-    } else {
-      const allVaults = await deps.findAll();
-      config = allVaults.find((v) => v.id === vaultNameOrId) ?? null;
-    }
-  }
+      // If not found by name, try to find by ID
+      if (!config) {
+        if (vaultType) {
+          config = await deps.findById(vaultType, vaultNameOrId);
+        } else {
+          const allVaults = await deps.findAll();
+          config = allVaults.find((v) => v.id === vaultNameOrId) ?? null;
+        }
+      }
 
-  // If type was specified, verify it matches
-  if (config && vaultType && config.type !== vaultType) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
-      ),
-    };
-    return;
-  }
+      // If type was specified, verify it matches
+      if (config && vaultType && config.type !== vaultType) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Vault '${vaultNameOrId}' found but has type '${config.type}', not '${vaultType}'`,
+          ),
+        };
+        return;
+      }
 
-  if (!config) {
-    const typeHint = vaultType ? ` of type '${vaultType}'` : "";
-    yield {
-      kind: "error",
-      error: notFound("Vault", `${vaultNameOrId}${typeHint}`),
-    };
-    return;
-  }
+      if (!config) {
+        const typeHint = vaultType ? ` of type '${vaultType}'` : "";
+        yield {
+          kind: "error",
+          error: notFound("Vault", `${vaultNameOrId}${typeHint}`),
+        };
+        return;
+      }
 
-  ctx.logger
-    .debug`Found vault: id=${config.id}, name=${config.name}, type=${config.type}`;
+      ctx.logger
+        .debug`Found vault: id=${config.id}, name=${config.name}, type=${config.type}`;
 
-  const filePath = deps.getVaultPath(config);
+      const filePath = deps.getVaultPath(config);
 
-  // Check if file exists
-  const exists = await deps.fileExists(filePath);
-  if (!exists) {
-    yield {
-      kind: "error",
-      error: notFound(
-        "Vault configuration file",
-        filePath,
-      ),
-    };
-    return;
-  }
+      // Check if file exists
+      const exists = await deps.fileExists(filePath);
+      if (!exists) {
+        yield {
+          kind: "error",
+          error: notFound(
+            "Vault configuration file",
+            filePath,
+          ),
+        };
+        return;
+      }
 
-  ctx.logger.debug`Opening file: ${filePath}`;
-  const result = await deps.openEditor(filePath);
+      ctx.logger.debug`Opening file: ${filePath}`;
+      const result = await deps.openEditor(filePath);
 
-  yield {
-    kind: "completed",
-    data: {
-      path: filePath,
-      editor: result.editor,
-      status: "opened",
-      name: config.name,
-      type: config.type,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          path: filePath,
+          editor: result.editor,
+          status: "opened",
+          name: config.name,
+          type: config.type,
+        },
+      };
+    })(),
+  );
 }

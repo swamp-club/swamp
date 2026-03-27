@@ -20,6 +20,7 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single workflow search result item.
  */
@@ -75,21 +76,27 @@ export async function* workflowSearch(
   deps: WorkflowSearchDeps,
   input: WorkflowSearchInput,
 ): AsyncGenerator<WorkflowSearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.workflow.search",
+    { "search.query": input.query ?? "" },
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const allWorkflows = await deps.findAllWorkflows();
-  const results: WorkflowSearchItem[] = allWorkflows.map((w) => ({
-    id: w.id,
-    name: w.name,
-    description: w.description,
-    jobCount: w.jobs.length,
-  }));
+      const allWorkflows = await deps.findAllWorkflows();
+      const results: WorkflowSearchItem[] = allWorkflows.map((w) => ({
+        id: w.id,
+        name: w.name,
+        description: w.description,
+        jobCount: w.jobs.length,
+      }));
 
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      results,
-    },
-  };
+      yield {
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          results,
+        },
+      };
+    })(),
+  );
 }

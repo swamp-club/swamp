@@ -18,22 +18,20 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { resolve } from "@std/path";
+import { join, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
-import { resolveDriversDir } from "../resolve_drivers_dir.ts";
-import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
-import { resolveReportsDir } from "../resolve_reports_dir.ts";
-import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import {
-  type InstallContext,
+  createInstallContext,
   installExtension,
   parseExtensionRef,
 } from "./extension_pull.ts";
@@ -42,6 +40,7 @@ import {
   createExtensionUpdateDeps,
   createLibSwampContext,
   extensionUpdate,
+  requireCurrentExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { createExtensionUpdateRenderer } from "../../presentation/renderers/extension_update.ts";
 
@@ -81,14 +80,27 @@ export const extensionUpdateCommand = new Command()
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
     const modelsDir = resolveModelsDir(marker);
-    const workflowsDir = resolveWorkflowsDir(marker);
-    const vaultsDir = resolveVaultsDir(marker);
-    const driversDir = resolveDriversDir(marker);
-    const datastoresDir = resolveDatastoresDir(marker);
-    const reportsDir = resolveReportsDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // 3. Parse extension name if given
+    // Pulled-extension dirs for install
+    const pulledModelsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
+    const pulledWorkflowsDir = swampPath(
+      repoDir,
+      SWAMP_SUBDIRS.pulledWorkflows,
+    );
+    const pulledVaultsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
+    const pulledDriversDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
+    const pulledDatastoresDir = swampPath(
+      repoDir,
+      SWAMP_SUBDIRS.pulledDatastores,
+    );
+    const pulledReportsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
+
+    // 3. Check for legacy extension layout
+    await requireCurrentExtensionLayout(lockfilePath);
+
+    // 4. Parse extension name if given
     let extensionName: string | undefined;
     if (extensionArg) {
       const ref = parseExtensionRef(extensionArg);
@@ -97,27 +109,24 @@ export const extensionUpdateCommand = new Command()
 
     // 4. Wire deps — inject installExtension from CLI layer
     const serverUrl = resolveServerUrl();
-    const extensionClient = new ExtensionApiClient(serverUrl);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createExtensionUpdateDeps({
-      absoluteModelsDir,
+      lockfilePath,
       serverUrl,
       installExtension: async (name: string, version: string) => {
-        const installCtx: InstallContext = {
-          extensionClient,
+        const installCtx = createInstallContext(serverUrl, {
           logger: cliCtx.logger,
-          modelsDir,
-          workflowsDir,
-          vaultsDir,
-          driversDir,
-          datastoresDir,
-          reportsDir,
+          lockfilePath,
+          modelsDir: pulledModelsDir,
+          workflowsDir: pulledWorkflowsDir,
+          vaultsDir: pulledVaultsDir,
+          driversDir: pulledDriversDir,
+          datastoresDir: pulledDatastoresDir,
+          reportsDir: pulledReportsDir,
           repoDir,
           force: true,
-          alreadyPulled: new Set(),
-          depth: 0,
-        };
+        });
         await installExtension({ name, version }, installCtx);
       },
     });

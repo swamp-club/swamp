@@ -25,11 +25,38 @@ import type {
   WorkflowHistorySearchData,
   WorkflowHistorySearchEvent,
   WorkflowHistorySearchItem,
+  WorkflowRunView,
 } from "../../libswamp/mod.ts";
 import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
-import { renderInteractiveSearch } from "./components/search_tui.tsx";
+import { renderInteractivePicker } from "./components/search_picker.tsx";
+
+const STATUS_COLORS: Record<string, string> = {
+  pending: "gray",
+  running: "yellow",
+  succeeded: "green",
+  failed: "red",
+};
+
+const STATUS_ICONS: Record<string, string> = {
+  succeeded: "\u2713",
+  failed: "\u2717",
+  running: "\u25CB",
+  pending: "\u25CB",
+  skipped: "\u2014",
+};
+
+function formatDurationSec(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
+ * Callback type for fetching history run detail data for the preview pane.
+ */
+export type HistoryPreviewFetcher = (
+  item: WorkflowHistorySearchItem,
+) => Promise<WorkflowRunView>;
 
 /**
  * Filters runs by a query string (case-insensitive match on workflowName, runId, or status).
@@ -82,6 +109,11 @@ class JsonWorkflowHistorySearchRenderer
 class InkWorkflowHistorySearchRenderer
   implements WorkflowHistorySearchRenderer {
   private _selected: WorkflowHistorySearchItem | undefined;
+  private readonly fetchPreview: HistoryPreviewFetcher | undefined;
+
+  constructor(fetchPreview?: HistoryPreviewFetcher) {
+    this.fetchPreview = fetchPreview;
+  }
 
   selectedItem(): WorkflowHistorySearchItem | undefined {
     return this._selected;
@@ -91,8 +123,9 @@ class InkWorkflowHistorySearchRenderer
     return {
       resolving: () => {},
       completed: async (e) => {
-        this._selected = await renderInteractiveSearch<
-          WorkflowHistorySearchItem
+        const result = await renderInteractivePicker<
+          WorkflowHistorySearchItem,
+          WorkflowRunView
         >(
           e.data.results,
           e.data.query,
@@ -105,56 +138,18 @@ class InkWorkflowHistorySearchRenderer
             return `${item.workflowName} ${item.runId} ${item.status} ${tagStr}`
               .trim();
           },
-          (item, isSelected) => {
-            const statusColors: Record<string, string> = {
-              pending: "gray",
-              running: "yellow",
-              succeeded: "green",
-              failed: "red",
-            };
-            const statusColor = statusColors[item.status] ?? "white";
-            const dateStr = item.startedAt
-              ? new Date(item.startedAt).toLocaleString()
-              : "not started";
-            const durationStr = item.duration !== undefined
-              ? `${(item.duration / 1000).toFixed(1)}s`
-              : "";
-            const tagStr = item.tags && Object.keys(item.tags).length > 0
-              ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(
-                ", ",
-              )
-              : "";
-
-            return (
-              <Box>
-                <Text
-                  color={isSelected ? "green" : undefined}
-                  bold={isSelected}
-                >
-                  {isSelected ? "\u25B6 " : "  "}
-                  {item.workflowName}
-                </Text>
-                <Text></Text>
-                <Text color={statusColor}>[{item.status}]</Text>
-                <Text></Text>
-                <Text dimColor>{dateStr}</Text>
-                {durationStr && (
-                  <>
-                    <Text></Text>
-                    <Text dimColor>{durationStr}</Text>
-                  </>
-                )}
-                {tagStr && (
-                  <>
-                    <Text></Text>
-                    <Text color="cyan">[{tagStr}]</Text>
-                  </>
-                )}
-              </Box>
-            );
-          },
+          renderHistoryResultLine,
+          renderHistoryPreview,
+          renderHistoryScrollback,
           "runs",
+          {
+            fetchPreview: this.fetchPreview,
+            previewKeyFn: (item) => item.runId,
+          },
         );
+        if (result) {
+          this._selected = result.item;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -165,11 +160,207 @@ class InkWorkflowHistorySearchRenderer
 
 export function createWorkflowHistorySearchRenderer(
   mode: OutputMode,
+  fetchPreview?: HistoryPreviewFetcher,
 ): WorkflowHistorySearchRenderer {
   switch (mode) {
     case "json":
       return new JsonWorkflowHistorySearchRenderer();
     case "log":
-      return new InkWorkflowHistorySearchRenderer();
+      return new InkWorkflowHistorySearchRenderer(fetchPreview);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering callbacks for the SearchPicker
+// ---------------------------------------------------------------------------
+
+/** Single-line result for the results list. */
+function renderHistoryResultLine(
+  item: WorkflowHistorySearchItem,
+): React.ReactElement {
+  const statusColor = STATUS_COLORS[item.status] ?? "white";
+  const dateStr = item.startedAt
+    ? new Date(item.startedAt).toLocaleString()
+    : "not started";
+  const durationStr = item.duration !== undefined
+    ? `${(item.duration / 1000).toFixed(1)}s`
+    : "";
+  const tagStr = item.tags && Object.keys(item.tags).length > 0
+    ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
+    : "";
+
+  return (
+    <Text>
+      {`${item.workflowName} `}
+      <Text color={statusColor}>{`[${item.status}]`}</Text>
+      {` ${dateStr}`}
+      {durationStr ? ` ${durationStr}` : ""}
+      {tagStr ? <Text color="cyan">{` [${tagStr}]`}</Text> : null}
+    </Text>
+  );
+}
+
+/** Preview content for a workflow history run. */
+function renderHistoryPreview(
+  item: WorkflowHistorySearchItem,
+  detail: WorkflowRunView | undefined,
+  _width: number,
+  _height: number,
+): React.ReactElement {
+  if (!detail) {
+    // Immediate content from the search item
+    const statusColor = STATUS_COLORS[item.status] ?? "white";
+    const dateStr = item.startedAt
+      ? new Date(item.startedAt).toLocaleString()
+      : "not started";
+    const completedStr = item.completedAt
+      ? new Date(item.completedAt).toLocaleString()
+      : "";
+    const durationStr = item.duration !== undefined
+      ? `${(item.duration / 1000).toFixed(1)}s`
+      : "";
+    const tagStr = item.tags && Object.keys(item.tags).length > 0
+      ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
+      : "";
+
+    return (
+      <Box flexDirection="column" paddingLeft={1}>
+        <Text bold>{item.workflowName}</Text>
+        <Text dimColor>run: {item.runId}</Text>
+        <Text>
+          status: <Text color={statusColor}>{item.status}</Text>
+        </Text>
+        <Text dimColor>started: {dateStr}</Text>
+        {completedStr && <Text dimColor>completed: {completedStr}</Text>}
+        {durationStr && <Text dimColor>duration: {durationStr}</Text>}
+        {tagStr && <Text dimColor>tags: {tagStr}</Text>}
+      </Box>
+    );
+  }
+
+  // Full detail from fetchPreview
+  const statusColor = STATUS_COLORS[detail.status] ?? "white";
+  const durationStr = detail.duration !== undefined
+    ? formatDurationSec(detail.duration)
+    : "";
+
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      <Text bold>{detail.workflowName}</Text>
+      <Text dimColor>run: {detail.id}</Text>
+      <Text>
+        status: <Text color={statusColor}>{detail.status}</Text>
+      </Text>
+      {durationStr && <Text dimColor>duration: {durationStr}</Text>}
+
+      {detail.jobs.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color="cyan" bold>Jobs:</Text>
+          {detail.jobs.map((job) => {
+            const jobIcon = STATUS_ICONS[job.status] ?? " ";
+            const jobColor = STATUS_COLORS[job.status] ?? "white";
+            const jobDur = job.duration !== undefined
+              ? ` (${formatDurationSec(job.duration)})`
+              : "";
+            return (
+              <Box key={job.name} flexDirection="column" marginLeft={1}>
+                <Text>
+                  <Text color={jobColor}>{jobIcon}</Text>{" "}
+                  <Text bold>{job.name}</Text>
+                  <Text dimColor>{jobDur}</Text>
+                </Text>
+                {job.steps.map((step) => {
+                  const stepIcon = STATUS_ICONS[step.status] ?? " ";
+                  const stepColor = STATUS_COLORS[step.status] ?? "white";
+                  const stepDur = step.duration !== undefined
+                    ? ` (${formatDurationSec(step.duration)})`
+                    : "";
+                  return (
+                    <Box key={step.name} marginLeft={2}>
+                      <Text>
+                        <Text color={stepColor}>{stepIcon}</Text> {step.name}
+                        <Text dimColor>{stepDur}</Text>
+                        {step.error && <Text color="red">- {step.error}</Text>}
+                      </Text>
+                    </Box>
+                  );
+                })}
+              </Box>
+            );
+          })}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+/** Plain-text scrollback output for a selected workflow history run. */
+function renderHistoryScrollback(
+  item: WorkflowHistorySearchItem,
+  detail: WorkflowRunView | undefined,
+): string {
+  if (!detail) {
+    const dateStr = item.startedAt
+      ? new Date(item.startedAt).toLocaleString()
+      : "not started";
+    const durationStr = item.duration !== undefined
+      ? `${(item.duration / 1000).toFixed(1)}s`
+      : "";
+    const tagStr = item.tags && Object.keys(item.tags).length > 0
+      ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
+      : "";
+
+    const lines: string[] = [
+      `${item.workflowName} [${item.status}]`,
+      `run: ${item.runId}`,
+      `started: ${dateStr}`,
+    ];
+
+    if (item.completedAt) {
+      lines.push(`completed: ${new Date(item.completedAt).toLocaleString()}`);
+    }
+    if (durationStr) {
+      lines.push(`duration: ${durationStr}`);
+    }
+    if (tagStr) {
+      lines.push(`tags: ${tagStr}`);
+    }
+
+    return lines.join("\n");
+  }
+
+  const durationStr = detail.duration !== undefined
+    ? formatDurationSec(detail.duration)
+    : "";
+
+  const lines: string[] = [
+    `${detail.workflowName} [${detail.status}]`,
+    `run: ${detail.id}`,
+  ];
+
+  if (durationStr) {
+    lines.push(`duration: ${durationStr}`);
+  }
+
+  if (detail.jobs.length > 0) {
+    lines.push("");
+    lines.push("Jobs:");
+    for (const job of detail.jobs) {
+      const jobIcon = STATUS_ICONS[job.status] ?? " ";
+      const jobDur = job.duration !== undefined
+        ? ` (${formatDurationSec(job.duration)})`
+        : "";
+      lines.push(`  ${jobIcon} ${job.name}${jobDur}`);
+      for (const step of job.steps) {
+        const stepIcon = STATUS_ICONS[step.status] ?? " ";
+        const stepDur = step.duration !== undefined
+          ? ` (${formatDurationSec(step.duration)})`
+          : "";
+        const stepErr = step.error ? ` - ${step.error}` : "";
+        lines.push(`    ${stepIcon} ${step.name}${stepDur}${stepErr}`);
+      }
+    }
+  }
+
+  return lines.join("\n");
 }

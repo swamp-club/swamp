@@ -23,13 +23,10 @@ import {
   createLibSwampContext,
   createVaultEditDeps,
   vaultEdit,
+  vaultSearch,
+  type VaultSearchDeps,
 } from "../../libswamp/mod.ts";
-import {
-  renderVaultSearch,
-  toVaultSearchItem,
-  type VaultSearchData,
-  type VaultSearchItem,
-} from "../../presentation/output/vault_search_output.tsx";
+import { createVaultSearchRenderer } from "../../presentation/renderers/vault_search.tsx";
 import { createVaultEditRenderer } from "../../presentation/renderers/vault_edit.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
@@ -53,6 +50,7 @@ export const vaultEditCommand = new Command()
       outputMode: cliCtx.outputMode,
     });
     const vaultType = options.type as string | undefined;
+    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
 
     // Interactive search mode when no argument provided
     if (!vaultNameOrId) {
@@ -62,21 +60,17 @@ export const vaultEditCommand = new Command()
         );
       }
 
-      const repo = repoContext.vaultConfigRepo;
-      const allVaults = await repo.findAll();
-
-      if (allVaults.length === 0) {
-        throw new UserError("No vaults found in repository");
-      }
-
-      const searchItems: VaultSearchItem[] = allVaults.map(toVaultSearchItem);
-      const searchData: VaultSearchData = {
-        query: "",
-        results: searchItems,
+      const searchDeps: VaultSearchDeps = {
+        findAllVaults: () => repoContext.vaultConfigRepo.findAll(),
       };
 
-      const selected = await renderVaultSearch(searchData, cliCtx.outputMode);
+      const searchRenderer = createVaultSearchRenderer(cliCtx.outputMode);
+      await consumeStream(
+        vaultSearch(libCtx, searchDeps, { query: undefined }),
+        searchRenderer.handlers(),
+      );
 
+      const selected = searchRenderer.selectedItem();
       if (!selected) {
         cliCtx.logger.debug`Search cancelled`;
         return;
@@ -85,13 +79,11 @@ export const vaultEditCommand = new Command()
       cliCtx.logger.debug`Selected vault: ${selected.name} (${selected.id})`;
       vaultNameOrId = selected.name;
     }
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createVaultEditDeps(repoDir);
 
     const renderer = createVaultEditRenderer(cliCtx.outputMode);
     await consumeStream(
-      vaultEdit(ctx, deps, {
+      vaultEdit(libCtx, deps, {
         vaultNameOrId,
         vaultType,
       }),

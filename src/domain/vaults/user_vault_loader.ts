@@ -26,7 +26,6 @@ import {
   installZodGlobal,
   rewriteZodImports,
   sanitizeDataUrlError,
-  sourceHasBareSpecifiers,
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
@@ -106,33 +105,52 @@ export class UserVaultLoader {
    */
   async loadVaults(
     vaultsDir: string,
-    options?: { skipAlreadyRegistered?: boolean },
+    options?: {
+      skipAlreadyRegistered?: boolean;
+      /** Additional directories to scan (e.g. pulled extensions). */
+      additionalDirs?: string[];
+    },
   ): Promise<VaultLoadResult> {
     const result: VaultLoadResult = { loaded: [], failed: [] };
 
     // Ensure swamp's Zod is available on globalThis before importing bundles.
     installZodGlobal();
 
-    // Check if directory exists
-    try {
-      await Deno.stat(vaultsDir);
-    } catch {
-      return result; // No user vaults directory - not an error
-    }
-
     // Ensure deno is available before bundling
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    const files = await this.discoverFiles(vaultsDir);
-
-    for (const file of files) {
+    // Discover files from primary dir and any additional dirs
+    const allFiles: Array<{ file: string; baseDir: string }> = [];
+    for (
+      const dir of [vaultsDir, ...(options?.additionalDirs ?? [])]
+    ) {
       try {
-        const absolutePath = resolve(vaultsDir, file);
+        await Deno.stat(dir);
+      } catch {
+        continue;
+      }
+      const files = await this.discoverFiles(dir);
+      for (const file of files) {
+        allFiles.push({ file, baseDir: dir });
+      }
+    }
+
+    for (const { file, baseDir } of allFiles) {
+      try {
+        const absolutePath = resolve(baseDir, file);
+
+        // Pre-check: only bundle files that declare a vault export.
+        const source = await Deno.readTextFile(absolutePath);
+        if (!/export\s+const\s+vault\s*[=:]/.test(source)) {
+          logger.debug`Skipping ${file} (no vault export found)`;
+          continue;
+        }
+
         const js = await this.bundleWithCache(
           absolutePath,
           file,
           denoPath,
-          vaultsDir,
+          baseDir,
         );
         const module = await this.importBundle(js, file);
 
@@ -231,33 +249,42 @@ export class UserVaultLoader {
           }
         }
       } catch {
+        // Freshness check failed (e.g. missing dependency file).
+        // Fall through to attempt a rebundle rather than using a
+        // potentially stale cache.
+      }
+
+      // Try to rebundle from source. If bundling fails (e.g. bare specifiers
+      // without a deno.json import map) and a cached bundle exists, fall back
+      // to the cache. The old bundle file is untouched on failure since
+      // bundleExtension returns the JS string in memory before we write.
+      try {
+        const js = await bundleExtension(absolutePath, denoPath);
+        const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
+        await assertSafePath(bundlePath, bundleBoundary);
+        await Deno.mkdir(dirname(bundlePath), { recursive: true });
+        await Deno.writeTextFile(bundlePath, js);
+        logger.debug`Wrote vault bundle cache: ${bundlePath}`;
+        return js;
+      } catch (bundleError) {
         if (bundleExists) {
-          logger
-            .debug`Using cached vault bundle for ${relativePath} (freshness check failed — missing dependency)`;
-          return await Deno.readTextFile(bundlePath);
+          try {
+            const cached = await Deno.readTextFile(bundlePath);
+            logger
+              .warn`Rebundle failed for ${relativePath}, using cached bundle: ${bundleError}`;
+            // Touch the cache mtime so subsequent loads see it as fresh,
+            // avoiding repeated failed rebundle attempts on every cold start.
+            try {
+              const now = new Date();
+              await Deno.utime(bundlePath, now, now);
+            } catch { /* ignore — worst case we retry next load */ }
+            return cached;
+          } catch {
+            // Cache file was removed between stat and read — treat as no cache.
+          }
         }
+        throw bundleError;
       }
-
-      // If the source uses bare specifiers (e.g., from "zod" instead of
-      // from "npm:zod@4") and a cached bundle exists, use it — re-bundling
-      // would fail without a deno.json import map to resolve the specifiers.
-      if (bundleExists) {
-        const source = await Deno.readTextFile(absolutePath);
-        if (sourceHasBareSpecifiers(source)) {
-          logger
-            .debug`Using cached vault bundle for ${relativePath} (source has bare specifiers)`;
-          return await Deno.readTextFile(bundlePath);
-        }
-      }
-
-      // Bundle and write to cache
-      const js = await bundleExtension(absolutePath, denoPath);
-      const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
-      await assertSafePath(bundlePath, bundleBoundary);
-      await Deno.mkdir(dirname(bundlePath), { recursive: true });
-      await Deno.writeTextFile(bundlePath, js);
-      logger.debug`Wrote vault bundle cache: ${bundlePath}`;
-      return js;
     }
 
     // No repo dir — just bundle without caching

@@ -22,6 +22,7 @@ import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { UserError } from "../../domain/errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single data search result item.
  */
@@ -256,74 +257,81 @@ export async function* dataSearch(
   deps: DataSearchDeps,
   input: DataSearchInput,
 ): AsyncGenerator<DataSearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.data.search",
+    { "search.query": input.query ?? "" },
+    (async function* () {
+      yield { kind: "resolving" };
 
-  // Validate model if provided
-  if (input.model) {
-    const modelResult = await deps.findDefinitionByIdOrName(input.model);
-    if (!modelResult) {
+      // Validate model if provided
+      if (input.model) {
+        const modelResult = await deps.findDefinitionByIdOrName(input.model);
+        if (!modelResult) {
+          yield {
+            kind: "error",
+            error: validationFailed(`Model not found: ${input.model}`),
+          };
+          return;
+        }
+      }
+
+      // Fetch and convert all data
+      const allResults = await deps.findAllGlobal();
+      const items: DataSearchItem[] = [];
+
+      for (const { data, modelType, modelId } of allResults) {
+        let modelName = modelId;
+        const definition = await deps.findDefinitionById(modelType, modelId);
+        if (definition) {
+          modelName = definition.name;
+        }
+
+        items.push({
+          id: data.id,
+          name: data.name,
+          version: data.version,
+          contentType: data.contentType,
+          type: data.type,
+          lifetime: data.lifetime,
+          ownerType: data.ownerDefinition.ownerType,
+          ownerRef: data.ownerDefinition.ownerRef,
+          modelId,
+          modelName,
+          modelType: modelType.normalized,
+          streaming: data.streaming,
+          size: data.size ?? 0,
+          createdAt: data.createdAt.toISOString(),
+          tags: data.tags,
+          workflowTag: data.tags.workflow,
+          stepTag: data.tags.step,
+        });
+      }
+
+      // Apply filters
+      const filtered = filterData(items, input);
+
+      // Sort by createdAt descending
+      filtered.sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
+
+      // Apply limit
+      const limit = input.limit ?? 50;
+      const total = filtered.length;
+      const limited = total > limit;
+      const results = filtered.slice(0, limit);
+
       yield {
-        kind: "error",
-        error: validationFailed(`Model not found: ${input.model}`),
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          filters: buildFilters(input),
+          results,
+          total,
+          limited,
+        },
       };
-      return;
-    }
-  }
-
-  // Fetch and convert all data
-  const allResults = await deps.findAllGlobal();
-  const items: DataSearchItem[] = [];
-
-  for (const { data, modelType, modelId } of allResults) {
-    let modelName = modelId;
-    const definition = await deps.findDefinitionById(modelType, modelId);
-    if (definition) {
-      modelName = definition.name;
-    }
-
-    items.push({
-      id: data.id,
-      name: data.name,
-      version: data.version,
-      contentType: data.contentType,
-      type: data.type,
-      lifetime: data.lifetime,
-      ownerType: data.ownerDefinition.ownerType,
-      ownerRef: data.ownerDefinition.ownerRef,
-      modelId,
-      modelName,
-      modelType: modelType.normalized,
-      streaming: data.streaming,
-      size: data.size ?? 0,
-      createdAt: data.createdAt.toISOString(),
-      tags: data.tags,
-      workflowTag: data.tags.workflow,
-      stepTag: data.tags.step,
-    });
-  }
-
-  // Apply filters
-  const filtered = filterData(items, input);
-
-  // Sort by createdAt descending
-  filtered.sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    })(),
   );
-
-  // Apply limit
-  const limit = input.limit ?? 50;
-  const total = filtered.length;
-  const limited = total > limit;
-  const results = filtered.slice(0, limit);
-
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      filters: buildFilters(input),
-      results,
-      total,
-      limited,
-    },
-  };
 }

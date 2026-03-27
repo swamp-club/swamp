@@ -29,6 +29,7 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the datastore status output.
  */
@@ -100,34 +101,40 @@ export async function* datastoreStatus(
   ctx: LibSwampContext,
   deps: DatastoreStatusDeps,
 ): AsyncIterable<DatastoreStatusEvent> {
-  ctx.logger.debug`Executing datastore status`;
+  yield* withGeneratorSpan(
+    "swamp.datastore.status",
+    {},
+    (async function* () {
+      ctx.logger.debug`Executing datastore status`;
 
-  const config = deps.loadConfig();
-  const directories = deps.getDirectories(config);
-  const { healthy, message, latencyMs } = await deps.verifyHealth(config);
+      const config = deps.loadConfig();
+      const directories = deps.getDirectories(config);
+      const { healthy, message, latencyMs } = await deps.verifyHealth(config);
 
-  const data: DatastoreStatusData = {
-    type: config.type,
-    path: !isCustomDatastoreConfig(config) && config.type === "filesystem"
-      ? config.path
-      : undefined,
-    bucket: !isCustomDatastoreConfig(config) && config.type === "s3"
-      ? config.bucket
-      : undefined,
-    prefix: !isCustomDatastoreConfig(config) && config.type === "s3"
-      ? config.prefix
-      : undefined,
-    region: !isCustomDatastoreConfig(config) && config.type === "s3"
-      ? config.region
-      : undefined,
-    healthy,
-    message,
-    latencyMs,
-    directories,
-    exclude: config.exclude,
-  };
+      const data: DatastoreStatusData = {
+        type: config.type,
+        path: !isCustomDatastoreConfig(config) && config.type === "filesystem"
+          ? config.path
+          : undefined,
+        bucket: !isCustomDatastoreConfig(config) && config.type === "s3"
+          ? config.bucket
+          : undefined,
+        prefix: !isCustomDatastoreConfig(config) && config.type === "s3"
+          ? config.prefix
+          : undefined,
+        region: !isCustomDatastoreConfig(config) && config.type === "s3"
+          ? config.region
+          : undefined,
+        healthy,
+        message,
+        latencyMs,
+        directories,
+        exclude: config.exclude,
+      };
 
-  ctx.logger.debug`Datastore status complete`;
+      ctx.logger.debug`Datastore status complete`;
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }

@@ -31,6 +31,7 @@ import {
   toMethodDescribeData,
 } from "../types/schema_helpers.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the model method describe output.
  */
@@ -75,54 +76,60 @@ export async function* modelMethodDescribe(
   modelIdOrName: string,
   methodName: string,
 ): AsyncIterable<ModelMethodDescribeEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.method.describe",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const result = await deps.lookupDefinition(modelIdOrName);
-  if (!result) {
-    yield { kind: "error", error: notFound("Model", modelIdOrName) };
-    return;
-  }
+      const result = await deps.lookupDefinition(modelIdOrName);
+      if (!result) {
+        yield { kind: "error", error: notFound("Model", modelIdOrName) };
+        return;
+      }
 
-  const { definition, type: modelType } = result;
-  const modelDef = await deps.resolveModelType(modelType);
-  if (!modelDef) {
-    yield {
-      kind: "error",
-      error: notFound("Model type", modelType.normalized),
-    };
-    return;
-  }
+      const { definition, type: modelType } = result;
+      const modelDef = await deps.resolveModelType(modelType);
+      if (!modelDef) {
+        yield {
+          kind: "error",
+          error: notFound("Model type", modelType.normalized),
+        };
+        return;
+      }
 
-  const method = modelDef.methods[methodName];
-  if (!method) {
-    const availableMethods = Object.keys(modelDef.methods).join(", ");
-    yield {
-      kind: "error",
-      error: {
-        code: "unknown_method",
-        message:
-          `Unknown method '${methodName}' for type '${modelType.normalized}'. Available methods: ${
-            availableMethods || "none"
-          }`,
-      },
-    };
-    return;
-  }
+      const method = modelDef.methods[methodName];
+      if (!method) {
+        const availableMethods = Object.keys(modelDef.methods).join(", ");
+        yield {
+          kind: "error",
+          error: {
+            code: "unknown_method",
+            message:
+              `Unknown method '${methodName}' for type '${modelType.normalized}'. Available methods: ${
+                availableMethods || "none"
+              }`,
+          },
+        };
+        return;
+      }
 
-  const methodData = toMethodDescribeData(
-    methodName,
-    method,
-    modelDef.resources,
-    modelDef.files,
+      const methodData = toMethodDescribeData(
+        methodName,
+        method,
+        modelDef.resources,
+        modelDef.files,
+      );
+
+      yield {
+        kind: "completed",
+        data: {
+          modelName: definition.name,
+          modelType: modelType.normalized,
+          version: modelDef.version,
+          method: methodData,
+        },
+      };
+    })(),
   );
-
-  yield {
-    kind: "completed",
-    data: {
-      modelName: definition.name,
-      modelType: modelType.normalized,
-      version: modelDef.version,
-      method: methodData,
-    },
-  };
 }

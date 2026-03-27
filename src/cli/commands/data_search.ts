@@ -27,7 +27,10 @@ import {
   type DataSearchItem,
   parseTags,
 } from "../../libswamp/mod.ts";
-import { createDataSearchRenderer } from "../../presentation/renderers/data_search.tsx";
+import {
+  createDataSearchRenderer,
+  type DataPreviewDetail,
+} from "../../presentation/renderers/data_search.tsx";
 import { renderDataGet } from "../../presentation/renderers/data_get.ts";
 import {
   createContext,
@@ -45,6 +48,53 @@ import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persi
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Creates a fetchPreview closure for the data search picker.
+ * Reads data content from disk for display in the preview pane.
+ */
+function createDataFetchPreview(
+  dataRepo: FileSystemUnifiedDataRepository,
+  repoDir: string,
+): (item: DataSearchItem) => Promise<DataPreviewDetail> {
+  return async (item: DataSearchItem): Promise<DataPreviewDetail> => {
+    const modelType = ModelType.create(item.modelType);
+    const absoluteContentPath = dataRepo.getContentPath(
+      modelType,
+      item.modelId,
+      item.name,
+      item.version,
+    );
+    const contentPath = toRelativePath(repoDir, absoluteContentPath);
+
+    // Only read text content for preview
+    const isText = item.contentType.startsWith("text/") ||
+      item.contentType === "application/json" ||
+      item.contentType === "application/yaml" ||
+      item.contentType === "application/x-yaml";
+
+    if (!isText) {
+      return { content: undefined, contentPath };
+    }
+
+    try {
+      const rawContent = await dataRepo.getContent(
+        modelType,
+        item.modelId,
+        item.name,
+        item.version,
+      );
+      if (rawContent) {
+        const content = new TextDecoder().decode(rawContent);
+        return { content, contentPath };
+      }
+    } catch {
+      // Silently handle read errors
+    }
+
+    return { content: undefined, contentPath };
+  };
+}
 
 /**
  * Fetches and displays full data details after selection from interactive search.
@@ -185,7 +235,12 @@ export const dataSearchCommand = new Command()
         findDefinitionByIdOrName(definitionRepo, idOrName),
     };
 
-    const renderer = createDataSearchRenderer(effectiveMode);
+    const repoDir = options.repoDir ?? ".";
+    const fetchPreview = effectiveMode === "log"
+      ? createDataFetchPreview(dataRepo, repoDir)
+      : undefined;
+
+    const renderer = createDataSearchRenderer(effectiveMode, fetchPreview);
     await consumeStream(
       dataSearch(libCtx, deps, {
         query,
@@ -207,8 +262,11 @@ export const dataSearchCommand = new Command()
 
     const selected = renderer.selectedItem();
     if (selected) {
-      const repoDir = options.repoDir ?? ".";
-      await displayDataDetail(selected, dataRepo, repoDir, effectiveMode);
+      // In JSON mode, display full data detail after selection
+      if (effectiveMode === "json") {
+        await displayDataDetail(selected, dataRepo, repoDir, effectiveMode);
+      }
+      // In interactive mode, scrollback from the picker already has the detail
     }
 
     ctx.logger.debug("Data search command completed");

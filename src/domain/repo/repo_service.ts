@@ -17,9 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
+import {
+  readUpstreamExtensions,
+} from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { RepoPath } from "./repo_path.ts";
 import {
   SWAMP_SUBDIRS,
@@ -339,6 +342,9 @@ export class RepoService {
 
     // Migrate from symlink-based layout to datastore layout
     await this.migrateFromSymlinks(repoPath);
+
+    // Migrate pulled extensions from extensions/ to .swamp/pulled-extensions/
+    await this.migrateExtensionLayout(repoPath);
 
     await this.markerRepo.write(repoPath, updatedMarker);
 
@@ -1508,6 +1514,144 @@ export const SwampAudit: Plugin = async ({ directory }) => {
 
     for (const subdir of runtimeSubdirs) {
       await ensureDir(swampPath(repoPath.value, subdir));
+    }
+  }
+
+  /**
+   * Migrates pulled extension files from extensions/{type}/ to
+   * .swamp/pulled-extensions/{type}/. Reads upstream_extensions.json
+   * to find tracked files, moves them, and updates the lockfile paths.
+   */
+  private async migrateExtensionLayout(repoPath: RepoPath): Promise<void> {
+    // Find the lockfile — use marker's modelsDir or default
+    const marker = await this.markerRepo.read(repoPath);
+    const modelsDir = marker?.modelsDir ?? "extensions/models";
+    const absoluteModelsDir = resolve(repoPath.value, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+    const upstream = await readUpstreamExtensions(lockfilePath);
+    if (Object.keys(upstream).length === 0) {
+      return; // No extensions to migrate
+    }
+
+    // Check if any files use the old layout (not in .swamp/)
+    const swampPrefix = ".swamp/";
+    let hasLegacyFiles = false;
+    for (const entry of Object.values(upstream)) {
+      if (entry.files?.some((f) => !f.startsWith(swampPrefix))) {
+        hasLegacyFiles = true;
+        break;
+      }
+    }
+
+    if (!hasLegacyFiles) {
+      return; // Already on new layout
+    }
+
+    // Mapping from old extension dir prefixes to new pulled-extension subdirs
+    const dirMapping: Record<string, string> = {
+      "extensions/models/": SWAMP_SUBDIRS.pulledModels + "/",
+      "extensions/vaults/": SWAMP_SUBDIRS.pulledVaults + "/",
+      "extensions/workflows/": SWAMP_SUBDIRS.pulledWorkflows + "/",
+      "extensions/drivers/": SWAMP_SUBDIRS.pulledDrivers + "/",
+      "extensions/datastores/": SWAMP_SUBDIRS.pulledDatastores + "/",
+      "extensions/reports/": SWAMP_SUBDIRS.pulledReports + "/",
+    };
+
+    const gitTrackedFiles: string[] = [];
+
+    // Move files and update paths
+    for (const [name, entry] of Object.entries(upstream)) {
+      if (!entry.files) continue;
+
+      const updatedFiles: string[] = [];
+      for (const file of entry.files) {
+        if (file.startsWith(swampPrefix)) {
+          // Already in .swamp/ — keep as-is (bundles, etc.)
+          updatedFiles.push(file);
+          continue;
+        }
+
+        // Find matching dir prefix and compute new path
+        let newPath: string | null = null;
+        for (const [oldPrefix, newPrefix] of Object.entries(dirMapping)) {
+          if (file.startsWith(oldPrefix)) {
+            const relativePart = file.slice(oldPrefix.length);
+            newPath = swampPrefix + newPrefix + relativePart;
+            break;
+          }
+        }
+
+        if (!newPath) {
+          // Unknown prefix — keep as-is but note it
+          updatedFiles.push(file);
+          continue;
+        }
+
+        // Move the file
+        const srcAbsolute = join(repoPath.value, file);
+        const destAbsolute = join(repoPath.value, newPath);
+
+        try {
+          await ensureDir(dirname(destAbsolute));
+          await Deno.rename(srcAbsolute, destAbsolute);
+          gitTrackedFiles.push(file);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) {
+            // Source file missing — already removed or never committed
+          } else {
+            throw error;
+          }
+        }
+
+        updatedFiles.push(newPath);
+      }
+
+      upstream[name] = { ...entry, files: updatedFiles };
+    }
+
+    // Write updated lockfile
+    await atomicWriteTextFile(
+      lockfilePath,
+      JSON.stringify(upstream, null, 2) + "\n",
+    );
+
+    // Prune empty directories left behind
+    for (const oldPrefix of Object.keys(dirMapping)) {
+      const dirPath = join(repoPath.value, oldPrefix);
+      try {
+        await this.pruneEmptyDirsUp(dirPath, repoPath.value);
+      } catch {
+        // Non-fatal
+      }
+    }
+  }
+
+  /**
+   * Removes empty directories walking upward until reaching stopDir
+   * or a non-empty directory.
+   */
+  private async pruneEmptyDirsUp(
+    dir: string,
+    stopDir: string,
+  ): Promise<void> {
+    let current = dir;
+    const resolvedStop = resolve(stopDir);
+    while (resolve(current) !== resolvedStop) {
+      try {
+        const entries: Deno.DirEntry[] = [];
+        for await (const entry of Deno.readDir(current)) {
+          entries.push(entry);
+        }
+        if (entries.length === 0) {
+          await Deno.remove(current);
+          current = dirname(current);
+        } else {
+          break;
+        }
+      } catch {
+        break;
+      }
     }
   }
 

@@ -264,6 +264,7 @@ export async function checkExtensionQuality(
       : ["fmt", "--check", "--no-config", ...tsFiles],
     stdout: "piped",
     stderr: "piped",
+    env: { ...Deno.env.toObject(), NO_COLOR: "1" },
   });
   const fmtOutput = await fmtCommand.output();
   if (!fmtOutput.success) {
@@ -280,6 +281,7 @@ export async function checkExtensionQuality(
       : ["lint", "--no-config", ...tsFiles],
     stdout: "piped",
     stderr: "piped",
+    env: { ...Deno.env.toObject(), NO_COLOR: "1" },
   });
   const lintOutput = await lintCommand.output();
   if (!lintOutput.success) {

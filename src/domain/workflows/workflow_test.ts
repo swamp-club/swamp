@@ -439,6 +439,33 @@ Deno.test("Workflow.create rejects path traversal even without jobs", () => {
   );
 });
 
+// Scoped @collective/name tests
+
+Deno.test("Workflow.create accepts scoped @collective/name", () => {
+  const workflow = Workflow.create({ name: "@john/pod-inventory" });
+  assertEquals(workflow.name, "@john/pod-inventory");
+});
+
+Deno.test("Workflow.create accepts scoped name with multiple segments", () => {
+  const workflow = Workflow.create({ name: "@swamp/aws/ec2" });
+  assertEquals(workflow.name, "@swamp/aws/ec2");
+});
+
+Deno.test("Workflow.create rejects malformed scoped names", () => {
+  assertThrows(
+    () => Workflow.create({ name: "@/" }),
+    Error,
+  );
+  assertThrows(
+    () => Workflow.create({ name: "@scope/" }),
+    Error,
+  );
+  assertThrows(
+    () => Workflow.create({ name: "@UPPER/case" }),
+    Error,
+  );
+});
+
 // Driver field tests
 
 Deno.test("Workflow.create defaults driver to undefined", () => {

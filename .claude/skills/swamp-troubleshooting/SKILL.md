@@ -6,7 +6,8 @@ description: >
   --help is insufficient. Use this skill whenever something is broken
   ("error", "failing", "not working", "crash", "timeout", "bug", "fix",
   "debug", "troubleshoot", "root cause", "stack trace", "isn't being found",
-  "giving me an error") OR when you need to understand how swamp works
+  "giving me an error", "slow", "performance", "latency") OR when you need
+  to understand how swamp works
   internally ("how does", "what happens when", "where is", "internals",
   "under the hood"). Applies even when the query mentions a specific domain
   (e.g., "vault expressions aren't resolving" or "how does extension push
@@ -132,7 +133,25 @@ Read ~/.swamp/source/src/cli/mod.ts
 Read ~/.swamp/source/src/domain/models/model_service.ts
 ```
 
-### 4. Diagnose the Issue
+### 4. Enable Tracing (Performance Issues)
+
+If the issue is about slowness, timeouts, or understanding execution flow,
+enable OpenTelemetry tracing:
+
+```bash
+# Quick: print spans to stderr
+OTEL_TRACES_EXPORTER=console swamp workflow run my-workflow
+
+# Visual: send to local Jaeger (docker run -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 swamp workflow run my-workflow
+```
+
+Traces show the full execution hierarchy with timing for every operation — CLI
+command → workflow → job → step → method → driver. See
+[references/tracing.md](references/tracing.md) for setup, span names, and
+diagnosing common issues.
+
+### 5. Diagnose the Issue
 
 Based on the error message or symptoms:
 
@@ -145,8 +164,10 @@ Based on the error message or symptoms:
 7. **Pre-flight check failures**: See
    [references/checks.md](references/checks.md) for skip flags, check selection
    errors, extension conflicts, and required check behavior
+8. **Slow operations**: Enable tracing — see
+   [references/tracing.md](references/tracing.md)
 
-### 5. Explain and Suggest Fixes
+### 6. Explain and Suggest Fixes
 
 After diagnosing:
 
@@ -174,6 +195,7 @@ After diagnosing:
 │   ├── infrastructure/
 │   │   ├── persistence/     # File-based storage
 │   │   ├── logging/         # LogTape configuration
+│   │   ├── tracing/         # OpenTelemetry tracing
 │   │   └── update/          # Self-update mechanism
 │   └── presentation/
 │       └── output/          # Terminal output rendering

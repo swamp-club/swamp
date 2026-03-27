@@ -23,33 +23,18 @@ import {
   createLibSwampContext,
   createWorkflowEditDeps,
   workflowEdit,
+  workflowSearch,
+  type WorkflowSearchDeps,
 } from "../../libswamp/mod.ts";
-import {
-  renderWorkflowSearch,
-  type WorkflowSearchData,
-  type WorkflowSearchItem,
-} from "../../presentation/output/workflow_search_output.tsx";
+import { createWorkflowSearchRenderer } from "../../presentation/renderers/workflow_search.tsx";
 import { createWorkflowEditRenderer } from "../../presentation/renderers/workflow_edit.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import type { Workflow } from "../../domain/workflows/workflow.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Converts a Workflow to WorkflowSearchItem.
- */
-function toSearchItem(workflow: Workflow): WorkflowSearchItem {
-  return {
-    id: workflow.id,
-    name: workflow.name,
-    description: workflow.description,
-    jobCount: workflow.jobs.length,
-  };
-}
 
 export const workflowEditCommand = new Command()
   .name("edit")
@@ -70,6 +55,8 @@ export const workflowEditCommand = new Command()
       outputMode: cliCtx.outputMode,
     });
 
+    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+
     // Interactive search mode when no argument provided
     if (!workflowIdOrName) {
       if (cliCtx.outputMode === "json") {
@@ -78,24 +65,17 @@ export const workflowEditCommand = new Command()
         );
       }
 
-      const repo = repoContext.workflowRepo;
-      const allWorkflows = await repo.findAll();
-
-      if (allWorkflows.length === 0) {
-        throw new UserError("No workflows found in repository");
-      }
-
-      const searchItems = allWorkflows.map(toSearchItem);
-      const searchData: WorkflowSearchData = {
-        query: "",
-        results: searchItems,
+      const searchDeps: WorkflowSearchDeps = {
+        findAllWorkflows: () => repoContext.workflowRepo.findAll(),
       };
 
-      const selected = await renderWorkflowSearch(
-        searchData,
-        cliCtx.outputMode,
+      const searchRenderer = createWorkflowSearchRenderer(cliCtx.outputMode);
+      await consumeStream(
+        workflowSearch(libCtx, searchDeps, { query: undefined }),
+        searchRenderer.handlers(),
       );
 
+      const selected = searchRenderer.selectedItem();
       if (!selected) {
         cliCtx.logger.debug`Search cancelled`;
         return;
@@ -107,13 +87,11 @@ export const workflowEditCommand = new Command()
     }
 
     const stdinContent = await readStdin();
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createWorkflowEditDeps(repoDir);
 
     const renderer = createWorkflowEditRenderer(cliCtx.outputMode);
     await consumeStream(
-      workflowEdit(ctx, deps, {
+      workflowEdit(libCtx, deps, {
         workflowIdOrName,
         stdinContent,
       }),

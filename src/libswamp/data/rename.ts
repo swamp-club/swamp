@@ -27,6 +27,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the data rename output.
  */
@@ -79,51 +80,57 @@ export async function* dataRename(
   deps: DataRenameDeps,
   input: DataRenameInput,
 ): AsyncIterable<DataRenameEvent> {
-  yield { kind: "renaming" };
+  yield* withGeneratorSpan(
+    "swamp.data.rename",
+    { "data.old_name": input.oldName, "data.new_name": input.newName },
+    (async function* () {
+      yield { kind: "renaming" };
 
-  ctx.logger
-    .debug`Renaming data: model=${input.modelIdOrName}, ${input.oldName} -> ${input.newName}`;
+      ctx.logger
+        .debug`Renaming data: model=${input.modelIdOrName}, ${input.oldName} -> ${input.newName}`;
 
-  // Validate names are different
-  if (input.oldName === input.newName) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        "Old name and new name must be different.",
-      ),
-    };
-    return;
-  }
+      // Validate names are different
+      if (input.oldName === input.newName) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            "Old name and new name must be different.",
+          ),
+        };
+        return;
+      }
 
-  let result: RenameResult;
-  try {
-    result = await deps.rename(
-      input.modelIdOrName,
-      input.oldName,
-      input.newName,
-    );
-  } catch (error) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        error instanceof Error ? error.message : String(error),
-      ),
-    };
-    return;
-  }
+      let result: RenameResult;
+      try {
+        result = await deps.rename(
+          input.modelIdOrName,
+          input.oldName,
+          input.newName,
+        );
+      } catch (error) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
 
-  const data: DataRenameData = {
-    oldName: result.oldName,
-    newName: result.newName,
-    modelId: result.modelId,
-    modelName: result.modelName,
-    modelType: result.modelType,
-    copiedVersion: result.copiedVersion,
-    newVersion: result.newVersion,
-    warning:
-      `Any workflows or models that produce data under "${result.oldName}" ` +
-      `will overwrite the forward reference. Update them to use "${result.newName}" instead.`,
-  };
+      const data: DataRenameData = {
+        oldName: result.oldName,
+        newName: result.newName,
+        modelId: result.modelId,
+        modelName: result.modelName,
+        modelType: result.modelType,
+        copiedVersion: result.copiedVersion,
+        newVersion: result.newVersion,
+        warning:
+          `Any workflows or models that produce data under "${result.oldName}" ` +
+          `will overwrite the forward reference. Update them to use "${result.newName}" instead.`,
+      };
 
-  yield { kind: "completed", data };
+      yield { kind: "completed", data };
+    })(),
+  );
 }

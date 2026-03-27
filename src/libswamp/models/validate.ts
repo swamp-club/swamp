@@ -32,6 +32,7 @@ import type { ModelType } from "../../domain/models/model_type.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Validation result for a single check. */
 export interface ValidationItemData {
   name: string;
@@ -285,11 +286,17 @@ export async function* modelValidate(
   deps: ModelValidateDeps,
   input: ModelValidateInput,
 ): AsyncIterable<ModelValidateEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.validate",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  if (!input.modelIdOrName) {
-    yield* validateAll(deps);
-  } else {
-    yield* validateSingle(deps, input.modelIdOrName);
-  }
+      if (!input.modelIdOrName) {
+        yield* validateAll(deps);
+      } else {
+        yield* validateSingle(deps, input.modelIdOrName);
+      }
+    })(),
+  );
 }

@@ -41,9 +41,14 @@ const logger = getLogger(["extension-workflow-repo"]);
  * Any `*.yaml` file in the directory tree is treated as a workflow definition.
  */
 export class ExtensionWorkflowRepository implements WorkflowRepository {
+  private readonly workflowsDirs: string[];
+
   constructor(
-    private readonly workflowsDir: string,
-  ) {}
+    workflowsDir: string,
+    additionalDirs?: string[],
+  ) {
+    this.workflowsDirs = [workflowsDir, ...(additionalDirs ?? [])];
+  }
 
   async findById(id: WorkflowId): Promise<Workflow | null> {
     const workflows = await this.findAll();
@@ -57,31 +62,39 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
 
   async findAll(): Promise<Workflow[]> {
     const workflows: Workflow[] = [];
+    const seenNames = new Set<string>();
 
-    try {
-      for await (
-        const entry of walk(this.workflowsDir, {
-          exts: [".yaml"],
-          includeDirs: false,
-        })
-      ) {
-        try {
-          const content = await Deno.readTextFile(entry.path);
-          const data = parseYaml(content) as WorkflowData;
-          workflows.push(Workflow.fromData(data));
-        } catch (parseError) {
-          const errorMsg = parseError instanceof Error
-            ? parseError.message
-            : String(parseError);
-          logger
-            .warn`Skipping broken extension workflow "${entry.path}": ${errorMsg}`;
+    for (const dir of this.workflowsDirs) {
+      try {
+        for await (
+          const entry of walk(dir, {
+            exts: [".yaml"],
+            includeDirs: false,
+          })
+        ) {
+          try {
+            const content = await Deno.readTextFile(entry.path);
+            const data = parseYaml(content) as WorkflowData;
+            const workflow = Workflow.fromData(data);
+            // Deduplicate: first directory wins (user dir before pulled dir)
+            if (!seenNames.has(workflow.name)) {
+              seenNames.add(workflow.name);
+              workflows.push(workflow);
+            }
+          } catch (parseError) {
+            const errorMsg = parseError instanceof Error
+              ? parseError.message
+              : String(parseError);
+            logger
+              .warn`Skipping broken extension workflow "${entry.path}": ${errorMsg}`;
+          }
         }
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) {
+          continue; // Directory doesn't exist — skip
+        }
+        throw error;
       }
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        return [];
-      }
-      throw error;
     }
 
     return workflows;
@@ -110,7 +123,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   getPath(id: WorkflowId): string {
     // Scan the directory to find the file for a given workflow ID
     // This is a synchronous fallback — for display purposes only
-    return `${this.workflowsDir}/workflow-${id}.yaml`;
+    return `${this.workflowsDirs[0]}/workflow-${id}.yaml`;
   }
 
   /**
@@ -118,25 +131,27 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
    * Returns null if not found.
    */
   async findPath(id: WorkflowId): Promise<string | null> {
-    try {
-      for await (
-        const entry of walk(this.workflowsDir, {
-          exts: [".yaml"],
-          includeDirs: false,
-        })
-      ) {
-        try {
-          const content = await Deno.readTextFile(entry.path);
-          const data = parseYaml(content) as WorkflowData;
-          if (data.id === id) {
-            return entry.path;
+    for (const dir of this.workflowsDirs) {
+      try {
+        for await (
+          const entry of walk(dir, {
+            exts: [".yaml"],
+            includeDirs: false,
+          })
+        ) {
+          try {
+            const content = await Deno.readTextFile(entry.path);
+            const data = parseYaml(content) as WorkflowData;
+            if (data.id === id) {
+              return entry.path;
+            }
+          } catch {
+            // Skip broken files
           }
-        } catch {
-          // Skip broken files
         }
+      } catch {
+        // Directory doesn't exist
       }
-    } catch {
-      // Directory doesn't exist
     }
     return null;
   }

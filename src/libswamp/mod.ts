@@ -59,6 +59,7 @@ export {
   type WorkflowRunDeps,
   type WorkflowRunEvent,
   type WorkflowRunInput,
+  type WorkflowRunJobInfo,
 } from "./workflows/run.ts";
 export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
 export {
@@ -350,6 +351,18 @@ export {
   type WorkflowValidateInput,
 } from "./workflows/validate.ts";
 
+// Workflow evaluate operations
+export {
+  createWorkflowEvaluateDeps,
+  isWorkflowEvaluateAllData,
+  workflowEvaluate,
+  type WorkflowEvaluateAllData,
+  type WorkflowEvaluateDeps,
+  type WorkflowEvaluateEvent,
+  type WorkflowEvaluateInput,
+  type WorkflowEvaluateItemData,
+} from "./workflows/evaluate.ts";
+
 // Workflow history logs operations
 export {
   createWorkflowHistoryLogsDeps,
@@ -372,6 +385,18 @@ export {
   type ValidationItemData as ModelValidationItemData,
   type ValidationWarningData as ModelValidationWarningData,
 } from "./models/validate.ts";
+
+// Model evaluate operations
+export {
+  createModelEvaluateDeps,
+  isModelEvaluateAllData,
+  modelEvaluate,
+  type ModelEvaluateAllData,
+  type ModelEvaluateDeps,
+  type ModelEvaluateEvent,
+  type ModelEvaluateInput,
+  type ModelEvaluateItemData,
+} from "./models/evaluate.ts";
 
 // Model method history logs operations
 export {
@@ -480,6 +505,52 @@ export {
   type ResolvedReportEntry,
   type ResolvedVaultEntry,
 } from "./extensions/push.ts";
+export {
+  ConflictError,
+  createExtensionPullDeps,
+  createInstallContext,
+  detectConflicts,
+  extensionPull,
+  type ExtensionPullDeps,
+  type ExtensionPullEvent,
+  type ExtensionPullInput,
+  type ExtensionRef,
+  type ExtensionRegistryInfo,
+  type ExtensionSafetyWarning,
+  type InstallContext,
+  installExtension,
+  type InstallResult,
+  parseExtensionRef,
+  resolveServerUrl,
+  updateUpstreamExtensions,
+  validateExtensionName,
+} from "./extensions/pull.ts";
+export {
+  createExtensionRmDeps,
+  extensionRm,
+  type ExtensionRmData,
+  type ExtensionRmDeps,
+  type ExtensionRmEvent,
+  type ExtensionRmInput,
+  type ExtensionRmPreview,
+  extensionRmPreview,
+  removeUpstreamExtension,
+} from "./extensions/rm.ts";
+
+// Extension layout detection
+export {
+  detectLegacyExtensionLayout,
+  requireCurrentExtensionLayout,
+} from "./extensions/layout.ts";
+
+// Extension install (restore from lockfile)
+export {
+  extensionInstall,
+  type ExtensionInstallData,
+  type ExtensionInstallDeps,
+  type ExtensionInstallEntry,
+  type ExtensionInstallEvent,
+} from "./extensions/install.ts";
 
 // Model edit operations
 export {

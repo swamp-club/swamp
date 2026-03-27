@@ -25,6 +25,7 @@ import { S3Client } from "../../infrastructure/persistence/s3_client.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the datastore sync output.
  */
@@ -174,45 +175,51 @@ export async function* datastoreSync(
   deps: DatastoreSyncDeps,
   input: DatastoreSyncInput,
 ): AsyncIterable<DatastoreSyncEvent> {
-  ctx.logger.debug`Executing datastore sync in ${input.mode} mode`;
+  yield* withGeneratorSpan(
+    "swamp.datastore.sync.command",
+    {},
+    (async function* () {
+      ctx.logger.debug`Executing datastore sync in ${input.mode} mode`;
 
-  const validation = await deps.validateSyncSupport();
-  if (!validation.supported) {
-    yield {
-      kind: "error",
-      error: {
-        code: "sync_not_supported",
-        message: validation.errorMessage ??
-          `Datastore type "${validation.type}" does not support sync.`,
-      },
-    };
-    return;
-  }
+      const validation = await deps.validateSyncSupport();
+      if (!validation.supported) {
+        yield {
+          kind: "error",
+          error: {
+            code: "sync_not_supported",
+            message: validation.errorMessage ??
+              `Datastore type "${validation.type}" does not support sync.`,
+          },
+        };
+        return;
+      }
 
-  yield { kind: "syncing", mode: input.mode };
+      yield { kind: "syncing", mode: input.mode };
 
-  if (input.mode === "push") {
-    const result = await deps.pushSync();
-    yield {
-      kind: "completed",
-      data: { mode: "push", filesPushed: result.filesPushed },
-    };
-  } else if (input.mode === "pull") {
-    const result = await deps.pullSync();
-    yield {
-      kind: "completed",
-      data: { mode: "pull", filesPulled: result.filesPulled },
-    };
-  } else {
-    const result = await deps.fullSync();
-    yield {
-      kind: "completed",
-      data: {
-        mode: "sync",
-        filesPulled: result.filesPulled,
-        filesPushed: result.filesPushed,
-        errors: result.errors,
-      },
-    };
-  }
+      if (input.mode === "push") {
+        const result = await deps.pushSync();
+        yield {
+          kind: "completed",
+          data: { mode: "push", filesPushed: result.filesPushed },
+        };
+      } else if (input.mode === "pull") {
+        const result = await deps.pullSync();
+        yield {
+          kind: "completed",
+          data: { mode: "pull", filesPulled: result.filesPulled },
+        };
+      } else {
+        const result = await deps.fullSync();
+        yield {
+          kind: "completed",
+          data: {
+            mode: "sync",
+            filesPulled: result.filesPulled,
+            filesPushed: result.filesPushed,
+            errors: result.errors,
+          },
+        };
+      }
+    })(),
+  );
 }

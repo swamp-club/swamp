@@ -23,6 +23,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
@@ -128,31 +129,37 @@ export async function* extensionYank(
   deps: ExtensionYankDeps,
   input: ExtensionYankInput,
 ): AsyncIterable<ExtensionYankEvent> {
-  ctx.logger.debug`Executing extension yank`;
+  yield* withGeneratorSpan(
+    "swamp.extension.yank",
+    {},
+    (async function* () {
+      ctx.logger.debug`Executing extension yank`;
 
-  // Re-validate credentials (self-contained)
-  const credentials = await deps.loadCredentials();
-  if (!credentials) {
-    yield { kind: "error", error: notAuthenticated() };
-    return;
-  }
+      // Re-validate credentials (self-contained)
+      const credentials = await deps.loadCredentials();
+      if (!credentials) {
+        yield { kind: "error", error: notAuthenticated() };
+        return;
+      }
 
-  await deps.yankExtension(
-    credentials.serverUrl,
-    input.extensionName,
-    input.version,
-    input.reason,
-    credentials.apiKey,
+      await deps.yankExtension(
+        credentials.serverUrl,
+        input.extensionName,
+        input.version,
+        input.reason,
+        credentials.apiKey,
+      );
+
+      ctx.logger.debug`Yanked extension ${input.extensionName}`;
+
+      yield {
+        kind: "completed",
+        data: {
+          name: input.extensionName,
+          version: input.version,
+          reason: input.reason,
+        },
+      };
+    })(),
   );
-
-  ctx.logger.debug`Yanked extension ${input.extensionName}`;
-
-  yield {
-    kind: "completed",
-    data: {
-      name: input.extensionName,
-      version: input.version,
-      reason: input.reason,
-    },
-  };
 }

@@ -20,6 +20,27 @@ bugs, or API validation quirks that only surface with real HTTP calls.
 4. Verify vault credentials are configured:
    `swamp vault get <vault-name> --json`
 
+### Phase 0.5: API Contract Verification
+
+Before running any methods, verify the model's API calls against the provider's
+official REST API reference documentation. Mocked unit tests validate internal
+logic but cannot catch contract mismatches that only surface with real HTTP
+calls.
+
+For each endpoint the model calls, verify:
+
+1. **Endpoint URL pattern** — does the URL match the provider's documented path?
+2. **HTTP method** — does the model use the correct verb (GET vs POST vs PUT vs
+   PATCH vs DELETE)?
+3. **Request body** — does the body schema match what the API expects? Some
+   endpoints require an empty body, others require specific wrapper fields
+4. **Response schema** — does the model parse the fields the API actually
+   returns?
+5. **Field naming conventions** — does the model match the provider's convention
+   (camelCase vs snake_case vs PascalCase)?
+
+If any mismatch is found, fix the model source **before** proceeding to Phase 1.
+
 ### Phase 1: List methods (safe reads)
 
 - Run all `list`-kind methods — read-only, no side effects
@@ -123,6 +144,25 @@ Produce a summary table:
 
 These are the most frequent bugs caught by smoke testing (from real extension
 model development):
+
+### API contract mismatches
+
+**Symptom:** API returns unexpected errors (400, 404, 405) or silently ignores
+fields. Mocked unit tests pass but real API calls fail.
+
+**Cause:** The model's HTTP calls don't match the provider's actual REST API
+contract. Common examples:
+
+- Using POST when the API expects GET (or vice versa)
+- Sending a JSON body to an endpoint that requires an empty body
+- Using camelCase field names when the API expects snake_case
+- Missing required wrapper fields in the request body
+- Parsing response fields that don't exist or have different names
+
+**Fix:** Open the provider's official REST API reference documentation and
+cross-reference each endpoint the model calls. Verify the HTTP method, request
+body schema, and response schema match exactly. See Phase 0.5 in the protocol
+above for the full checklist.
 
 ### Content-Type mismatches (HTTP 415)
 

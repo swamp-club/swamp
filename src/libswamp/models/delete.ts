@@ -31,6 +31,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Preview data returned before confirmation. */
 export interface ModelDeletePreview {
   id: string;
@@ -188,85 +189,91 @@ export async function* modelDelete(
   deps: ModelDeleteDeps,
   input: ModelDeleteInput,
 ): AsyncIterable<ModelDeleteEvent> {
-  yield { kind: "deleting" };
+  yield* withGeneratorSpan(
+    "swamp.model.delete",
+    { "model.id_or_name": input.modelIdOrName },
+    (async function* () {
+      yield { kind: "deleting" };
 
-  const result = await deps.lookupDefinition(input.modelIdOrName);
-  if (!result) {
-    yield { kind: "error", error: notFound("Model", input.modelIdOrName) };
-    return;
-  }
-  const { definition, type: modelType } = result;
+      const result = await deps.lookupDefinition(input.modelIdOrName);
+      if (!result) {
+        yield { kind: "error", error: notFound("Model", input.modelIdOrName) };
+        return;
+      }
+      const { definition, type: modelType } = result;
 
-  // Check workflow references
-  const allWorkflows = await deps.findAllWorkflows();
-  const referencingWorkflows = findWorkflowsReferencingModel(
-    allWorkflows,
-    definition.id,
-    definition.name,
+      // Check workflow references
+      const allWorkflows = await deps.findAllWorkflows();
+      const referencingWorkflows = findWorkflowsReferencingModel(
+        allWorkflows,
+        definition.id,
+        definition.name,
+      );
+      if (referencingWorkflows.length > 0) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Model '${definition.name}' is referenced by workflow(s): ${
+              referencingWorkflows.join(", ")
+            }. ` +
+              `Remove the model from these workflows before deleting.`,
+          ),
+        };
+        return;
+      }
+
+      // Check data artifacts
+      const dataArtifacts = await deps.findDataArtifacts(
+        modelType,
+        definition.id,
+      );
+      if (dataArtifacts.length > 0 && !input.force) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Model '${definition.name}' has ${dataArtifacts.length} associated data artifact(s). ` +
+              `Delete the data first, or use --force to delete all.`,
+          ),
+        };
+        return;
+      }
+
+      const definitionPath = deps.getDefinitionPath(modelType, definition.id);
+
+      // Delete outputs
+      const outputs = await deps.findOutputs(modelType, definition.id);
+      let outputsDeleted = 0;
+      for (const output of outputs) {
+        ctx.logger.debug`Deleting output: ${output.id}`;
+        await deps.deleteOutput(modelType, output.methodName, output.id);
+        outputsDeleted++;
+      }
+
+      // Delete data artifacts
+      let dataDeleted = false;
+      for (const data of dataArtifacts) {
+        ctx.logger.debug`Deleting data artifact: ${data.name}`;
+        await deps.deleteData(modelType, definition.id, data.name);
+        dataDeleted = true;
+      }
+
+      // Delete definition
+      ctx.logger.debug`Deleting definition: ${definition.id}`;
+      await deps.deleteDefinition(modelType, definition.id);
+
+      yield {
+        kind: "completed",
+        data: {
+          id: definition.id,
+          name: definition.name,
+          type: modelType.normalized,
+          inputPath: definitionPath,
+          resourceDeleted: false,
+          outputsDeleted,
+          evaluatedInputDeleted: false,
+          dataDeleted,
+        },
+      };
+    })(),
   );
-  if (referencingWorkflows.length > 0) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Model '${definition.name}' is referenced by workflow(s): ${
-          referencingWorkflows.join(", ")
-        }. ` +
-          `Remove the model from these workflows before deleting.`,
-      ),
-    };
-    return;
-  }
-
-  // Check data artifacts
-  const dataArtifacts = await deps.findDataArtifacts(
-    modelType,
-    definition.id,
-  );
-  if (dataArtifacts.length > 0 && !input.force) {
-    yield {
-      kind: "error",
-      error: validationFailed(
-        `Model '${definition.name}' has ${dataArtifacts.length} associated data artifact(s). ` +
-          `Delete the data first, or use --force to delete all.`,
-      ),
-    };
-    return;
-  }
-
-  const definitionPath = deps.getDefinitionPath(modelType, definition.id);
-
-  // Delete outputs
-  const outputs = await deps.findOutputs(modelType, definition.id);
-  let outputsDeleted = 0;
-  for (const output of outputs) {
-    ctx.logger.debug`Deleting output: ${output.id}`;
-    await deps.deleteOutput(modelType, output.methodName, output.id);
-    outputsDeleted++;
-  }
-
-  // Delete data artifacts
-  let dataDeleted = false;
-  for (const data of dataArtifacts) {
-    ctx.logger.debug`Deleting data artifact: ${data.name}`;
-    await deps.deleteData(modelType, definition.id, data.name);
-    dataDeleted = true;
-  }
-
-  // Delete definition
-  ctx.logger.debug`Deleting definition: ${definition.id}`;
-  await deps.deleteDefinition(modelType, definition.id);
-
-  yield {
-    kind: "completed",
-    data: {
-      id: definition.id,
-      name: definition.name,
-      type: modelType.normalized,
-      inputPath: definitionPath,
-      resourceDeleted: false,
-      outputsDeleted,
-      evaluatedInputDeleted: false,
-      dataDeleted,
-    },
-  };
 }

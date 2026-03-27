@@ -26,9 +26,6 @@ import {
 } from "../../libswamp/mod.ts";
 import { createVaultTypeSearchRenderer } from "../../presentation/renderers/vault_type_search.tsx";
 import {
-  renderVaultTypeDescribe,
-} from "../../presentation/output/vault_type_describe_output.ts";
-import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
@@ -63,7 +60,8 @@ export async function vaultTypeSearchAction(
   const selected = renderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected vault type: ${selected.type}`;
-    renderVaultTypeDescribe(selected, effectiveMode);
+    // Both log and json modes output the vault type as JSON
+    console.log(JSON.stringify(selected, null, 2));
   } else {
     ctx.logger.debug`Search cancelled`;
   }

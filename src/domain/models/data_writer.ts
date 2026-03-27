@@ -19,7 +19,7 @@
 
 import { z } from "zod";
 import { getLogger } from "@logtape/logtape";
-import { Data } from "../data/mod.ts";
+import { Data, isReservedDataName } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { ModelType } from "./model_type.ts";
@@ -492,6 +492,14 @@ export function createResourceWriter(
       );
     }
 
+    // Validate name is not reserved for internal use
+    if (isReservedDataName(name)) {
+      throw new Error(
+        `Data name '${name}' is reserved for internal use in model '${modelType.normalized}'. ` +
+          `Use a different name.`,
+      );
+    }
+
     let instanceName = name;
 
     // Resolve tags with full resolution chain:
@@ -769,6 +777,14 @@ export function createFileWriterFactory(
       throw new Error(
         `File name must be a non-empty string for spec '${specName}' ` +
           `in model '${modelType.normalized}'`,
+      );
+    }
+
+    // Validate name is not reserved for internal use
+    if (isReservedDataName(name)) {
+      throw new Error(
+        `Data name '${name}' is reserved for internal use in model '${modelType.normalized}'. ` +
+          `Use a different name.`,
       );
     }
 

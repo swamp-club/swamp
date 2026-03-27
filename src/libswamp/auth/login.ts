@@ -31,6 +31,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Data returned on successful authentication. */
 export interface AuthLoginData {
   username: string;
@@ -197,90 +198,96 @@ export async function* authLogin(
   deps: AuthLoginDeps,
   input: AuthLoginInput,
 ): AsyncIterable<AuthLoginEvent> {
-  ctx.logger.debug`Executing auth login`;
+  yield* withGeneratorSpan(
+    "swamp.auth.login",
+    {},
+    (async function* () {
+      ctx.logger.debug`Executing auth login`;
 
-  let sessionToken: string;
-  let knownUsername: string | undefined;
+      let sessionToken: string;
+      let knownUsername: string | undefined;
 
-  if (input.useBrowserFlow) {
-    // Browser flow
-    const state = crypto.randomUUID();
-    const deviceCode = deps.generateDeviceCode();
-    const server = deps.startCallbackServer(state, input.serverUrl);
+      if (input.useBrowserFlow) {
+        // Browser flow
+        const state = crypto.randomUUID();
+        const deviceCode = deps.generateDeviceCode();
+        const server = deps.startCallbackServer(state, input.serverUrl);
 
-    const callbackUrl = `http://localhost:${server.port}/callback`;
-    const loginUrl = `${input.serverUrl}/login?cli_callback=${
-      encodeURIComponent(callbackUrl)
-    }&state=${encodeURIComponent(state)}&device_code=${
-      encodeURIComponent(deviceCode)
-    }`;
+        const callbackUrl = `http://localhost:${server.port}/callback`;
+        const loginUrl = `${input.serverUrl}/login?cli_callback=${
+          encodeURIComponent(callbackUrl)
+        }&state=${encodeURIComponent(state)}&device_code=${
+          encodeURIComponent(deviceCode)
+        }`;
 
-    yield { kind: "opening_browser" };
-    const browserError = await deps.openBrowser(loginUrl);
-    if (browserError) {
-      yield { kind: "browser_open_failed", message: browserError };
-    }
+        yield { kind: "opening_browser" };
+        const browserError = await deps.openBrowser(loginUrl);
+        if (browserError) {
+          yield { kind: "browser_open_failed", message: browserError };
+        }
 
-    yield { kind: "device_verification", deviceCode };
-    yield { kind: "waiting_for_auth" };
+        yield { kind: "device_verification", deviceCode };
+        yield { kind: "waiting_for_auth" };
 
-    try {
-      sessionToken = await server.token;
-    } finally {
-      await server.shutdown();
-    }
-  } else {
-    // Stdin flow
-    let username = input.username;
-    let password = input.password;
-    if (!username || !password) {
-      const creds = await deps.readCredentials();
-      username = username ?? creds.username;
-      password = password ?? creds.password;
-    }
+        try {
+          sessionToken = await server.token;
+        } finally {
+          await server.shutdown();
+        }
+      } else {
+        // Stdin flow
+        let username = input.username;
+        let password = input.password;
+        if (!username || !password) {
+          const creds = await deps.readCredentials();
+          username = username ?? creds.username;
+          password = password ?? creds.password;
+        }
 
-    if (!username || !password) {
+        if (!username || !password) {
+          yield {
+            kind: "error",
+            error: validationFailed("Username and password are required."),
+          };
+          return;
+        }
+
+        const result = await deps.signIn(input.serverUrl, username, password);
+        sessionToken = result.token;
+        knownUsername = result.username;
+      }
+
+      yield { kind: "securing_session" };
+
+      const host = deps.getHostname().slice(0, 14);
+      const keyName = `cli-${host}-${Date.now()}`;
+      ctx.logger.debug`Creating API key: ${keyName}`;
+      const apiKey = await deps.createApiKey(
+        input.serverUrl,
+        sessionToken,
+        keyName,
+      );
+      const identity = await deps.whoami(input.serverUrl, apiKey.key);
+      const username = identity.username ?? knownUsername ?? "unknown";
+
+      await deps.saveCredentials({
+        serverUrl: input.serverUrl,
+        apiKey: apiKey.key,
+        apiKeyId: apiKey.id,
+        username,
+        ...(identity.collectives ? { collectives: identity.collectives } : {}),
+      });
+
       yield {
-        kind: "error",
-        error: validationFailed("Username and password are required."),
+        kind: "completed",
+        data: {
+          username,
+          email: identity.email,
+          name: identity.name,
+          serverUrl: input.serverUrl,
+          apiKey: apiKey.key,
+        },
       };
-      return;
-    }
-
-    const result = await deps.signIn(input.serverUrl, username, password);
-    sessionToken = result.token;
-    knownUsername = result.username;
-  }
-
-  yield { kind: "securing_session" };
-
-  const host = deps.getHostname().slice(0, 14);
-  const keyName = `cli-${host}-${Date.now()}`;
-  ctx.logger.debug`Creating API key: ${keyName}`;
-  const apiKey = await deps.createApiKey(
-    input.serverUrl,
-    sessionToken,
-    keyName,
+    })(),
   );
-  const identity = await deps.whoami(input.serverUrl, apiKey.key);
-  const username = identity.username ?? knownUsername ?? "unknown";
-
-  await deps.saveCredentials({
-    serverUrl: input.serverUrl,
-    apiKey: apiKey.key,
-    apiKeyId: apiKey.id,
-    username,
-    ...(identity.collectives ? { collectives: identity.collectives } : {}),
-  });
-
-  yield {
-    kind: "completed",
-    data: {
-      username,
-      email: identity.email,
-      name: identity.name,
-      serverUrl: input.serverUrl,
-      apiKey: apiKey.key,
-    },
-  };
 }

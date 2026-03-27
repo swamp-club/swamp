@@ -23,34 +23,18 @@ import {
   createLibSwampContext,
   createModelEditDeps,
   modelEdit,
+  modelSearch,
+  type ModelSearchDeps,
 } from "../../libswamp/mod.ts";
-import {
-  type ModelSearchData,
-  type ModelSearchItem,
-  renderModelSearch,
-} from "../../presentation/output/model_search_output.tsx";
+import { createModelSearchRenderer } from "../../presentation/renderers/model_search.tsx";
 import { createModelEditRenderer } from "../../presentation/renderers/model_edit.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-/**
- * Converts repository results to ModelSearchItem array.
- */
-function toModelSearchItems(
-  results: Awaited<ReturnType<YamlDefinitionRepository["findAllGlobal"]>>,
-): ModelSearchItem[] {
-  return results.map(({ definition, type }) => ({
-    id: definition.id,
-    name: definition.name,
-    type: type.normalized,
-  }));
-}
 
 export const modelEditCommand = new Command()
   .name("edit")
@@ -67,6 +51,8 @@ export const modelEditCommand = new Command()
       outputMode: cliCtx.outputMode,
     });
 
+    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+
     // Interactive search mode when no argument provided
     if (!modelIdOrName) {
       if (cliCtx.outputMode === "json") {
@@ -75,21 +61,17 @@ export const modelEditCommand = new Command()
         );
       }
 
-      const definitionRepo = repoContext.definitionRepo;
-      const allResults = await definitionRepo.findAllGlobal();
-      const allModels = toModelSearchItems(allResults);
-
-      if (allModels.length === 0) {
-        throw new UserError("No models found in repository");
-      }
-
-      const searchData: ModelSearchData = {
-        query: "",
-        results: allModels,
+      const searchDeps: ModelSearchDeps = {
+        findAllGlobal: () => repoContext.definitionRepo.findAllGlobal(),
       };
 
-      const selected = await renderModelSearch(searchData, cliCtx.outputMode);
+      const searchRenderer = createModelSearchRenderer(cliCtx.outputMode);
+      await consumeStream(
+        modelSearch(libCtx, searchDeps, { query: undefined }),
+        searchRenderer.handlers(),
+      );
 
+      const selected = searchRenderer.selectedItem();
       if (!selected) {
         cliCtx.logger.debug`Search cancelled`;
         return;
@@ -100,13 +82,11 @@ export const modelEditCommand = new Command()
     }
 
     const stdinContent = await readStdin();
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createModelEditDeps(repoDir);
 
     const renderer = createModelEditRenderer(cliCtx.outputMode);
     await consumeStream(
-      modelEdit(ctx, deps, {
+      modelEdit(libCtx, deps, {
         modelIdOrName,
         stdinContent,
       }),

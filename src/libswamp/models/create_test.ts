@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { z } from "zod";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -25,6 +26,7 @@ import {
   type ModelCreateDeps,
   type ModelCreateEvent,
 } from "./create.ts";
+import type { ModelDefinition } from "../../domain/models/model.ts";
 
 function makeDeps(overrides: Partial<ModelCreateDeps> = {}): ModelCreateDeps {
   return {
@@ -91,6 +93,51 @@ Deno.test("modelCreate: yields error for unknown model type", async () => {
   const last = events[1] as Extract<ModelCreateEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "validation_failed");
+});
+
+Deno.test("modelCreate: coerces string global arguments to match schema types", async () => {
+  const globalArgsSchema = z.object({
+    repo: z.string(),
+    issueNumber: z.number(),
+  });
+
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/typed-args" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: (_type, _name, _version, globalArguments) => {
+      // Verify the number was coerced from string "428" to number 428
+      assertEquals(
+        (globalArguments as Record<string, unknown>)?.issueNumber,
+        428,
+      );
+      return Promise.resolve({
+        id: "def-1",
+        name: "my-model",
+      } as unknown as Awaited<
+        ReturnType<ModelCreateDeps["createAndSave"]>
+      >);
+    },
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/typed-args",
+      name: "my-model",
+      // CLI passes all values as strings from --global-arg key=value
+      globalArguments: { repo: "owner/repo", issueNumber: "428" },
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
 });
 
 Deno.test("modelCreate: yields error when name already exists", async () => {

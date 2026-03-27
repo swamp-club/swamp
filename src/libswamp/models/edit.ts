@@ -33,6 +33,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the model edit output.
  */
@@ -107,100 +108,106 @@ export async function* modelEdit(
   deps: ModelEditDeps,
   input: ModelEditInput,
 ): AsyncIterable<ModelEditEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.edit",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const { modelIdOrName, stdinContent } = input;
+      const { modelIdOrName, stdinContent } = input;
 
-  // Look up the model definition
-  let definition: Definition | null = null;
-  let modelType: ModelType | null = null;
-  let filePath: string | null = null;
+      // Look up the model definition
+      let definition: Definition | null = null;
+      let modelType: ModelType | null = null;
+      let filePath: string | null = null;
 
-  ctx.logger.debug`Looking up model: ${modelIdOrName}`;
-  try {
-    const result = await deps.lookupDefinition(modelIdOrName);
-    if (result) {
-      definition = result.definition;
-      modelType = result.type;
-      filePath = deps.getDefinitionPath(modelType, definition.id);
-    }
-  } catch (error) {
-    ctx.logger
-      .debug`Model lookup failed, will try symlink fallback: ${error}`;
-  }
+      ctx.logger.debug`Looking up model: ${modelIdOrName}`;
+      try {
+        const result = await deps.lookupDefinition(modelIdOrName);
+        if (result) {
+          definition = result.definition;
+          modelType = result.type;
+          filePath = deps.getDefinitionPath(modelType, definition.id);
+        }
+      } catch (error) {
+        ctx.logger
+          .debug`Model lookup failed, will try symlink fallback: ${error}`;
+      }
 
-  // If normal lookup didn't find the model, try symlink fallback
-  if (!filePath) {
-    const resolvedPath = await deps.resolveSymlink(modelIdOrName);
-    if (resolvedPath) {
-      ctx.logger
-        .debug`Using symlink fallback for broken model: ${resolvedPath}`;
-      filePath = resolvedPath;
-    } else {
-      yield { kind: "error", error: notFound("Model", modelIdOrName) };
-      return;
-    }
-  }
+      // If normal lookup didn't find the model, try symlink fallback
+      if (!filePath) {
+        const resolvedPath = await deps.resolveSymlink(modelIdOrName);
+        if (resolvedPath) {
+          ctx.logger
+            .debug`Using symlink fallback for broken model: ${resolvedPath}`;
+          filePath = resolvedPath;
+        } else {
+          yield { kind: "error", error: notFound("Model", modelIdOrName) };
+          return;
+        }
+      }
 
-  ctx.logger.debug`Using file path: ${filePath}`;
+      ctx.logger.debug`Using file path: ${filePath}`;
 
-  // Stdin update mode
-  if (stdinContent !== undefined && stdinContent !== null) {
-    ctx.logger.debug`Reading model content from stdin`;
+      // Stdin update mode
+      if (stdinContent !== undefined && stdinContent !== null) {
+        ctx.logger.debug`Reading model content from stdin`;
 
-    if (!definition || !modelType) {
-      yield {
-        kind: "error",
-        error: validationFailed(
-          "Cannot update model from stdin: the model's YAML is broken and must be fixed in an editor first",
-        ),
-      };
-      return;
-    }
+        if (!definition || !modelType) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              "Cannot update model from stdin: the model's YAML is broken and must be fixed in an editor first",
+            ),
+          };
+          return;
+        }
 
-    try {
-      const updated = await deps.updateFromStdin(
-        definition,
-        modelType,
-        stdinContent,
-      );
+        try {
+          const updated = await deps.updateFromStdin(
+            definition,
+            modelType,
+            stdinContent,
+          );
+
+          yield {
+            kind: "completed",
+            data: {
+              path: filePath,
+              status: "updated",
+              name: updated.name,
+              type: modelType.normalized,
+              editType: "definition",
+            },
+          };
+        } catch (error) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Invalid model YAML from stdin: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            ),
+          };
+        }
+        return;
+      }
+
+      // Editor mode
+      ctx.logger.debug`Opening file: ${filePath}`;
+      const result = await deps.openEditor(filePath);
 
       yield {
         kind: "completed",
         data: {
           path: filePath,
-          status: "updated",
-          name: updated.name,
-          type: modelType.normalized,
+          editor: result.editor,
+          status: "opened",
+          name: definition?.name ?? modelIdOrName,
+          type: modelType?.normalized ?? "unknown",
           editType: "definition",
         },
       };
-    } catch (error) {
-      yield {
-        kind: "error",
-        error: validationFailed(
-          `Invalid model YAML from stdin: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        ),
-      };
-    }
-    return;
-  }
-
-  // Editor mode
-  ctx.logger.debug`Opening file: ${filePath}`;
-  const result = await deps.openEditor(filePath);
-
-  yield {
-    kind: "completed",
-    data: {
-      path: filePath,
-      editor: result.editor,
-      status: "opened",
-      name: definition?.name ?? modelIdOrName,
-      type: modelType?.normalized ?? "unknown",
-      editType: "definition",
-    },
-  };
+    })(),
+  );
 }

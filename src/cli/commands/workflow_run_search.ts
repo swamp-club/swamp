@@ -19,19 +19,19 @@
 
 import { Command } from "@cliffy/command";
 import {
-  type JobRunData,
-  renderWorkflowRun,
-  type StepRunData,
-  type WorkflowRunData,
-} from "../../presentation/output/workflow_run_output.ts";
-import {
   consumeStream,
   createLibSwampContext,
+  type JobRunView,
   parseTags,
+  type StepRunView,
   workflowRunSearch,
   type WorkflowRunSearchDeps,
+  type WorkflowRunSearchItem,
+  type WorkflowRunView,
 } from "../../libswamp/mod.ts";
+import { renderWorkflowRunDisplay } from "../../presentation/renderers/workflow_run_display.ts";
 import { createWorkflowRunSearchRenderer } from "../../presentation/renderers/workflow_run_search.tsx";
+import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -50,7 +50,7 @@ type AnyOptions = any;
 /**
  * Converts a WorkflowRun to WorkflowRunData for presentation.
  */
-function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
+function toRunData(run: WorkflowRun, path?: string): WorkflowRunView {
   const startTime = run.startedAt?.getTime();
   const endTime = run.completedAt?.getTime();
 
@@ -59,18 +59,18 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
     workflowId: run.workflowId,
     workflowName: run.workflowName,
     status: run.status,
-    jobs: run.jobs.map((job): JobRunData => {
+    jobs: run.jobs.map((job): JobRunView => {
       const jobStart = job.startedAt?.getTime();
       const jobEnd = job.completedAt?.getTime();
 
       return {
         name: job.jobName,
         status: job.status,
-        steps: job.steps.map((step): StepRunData => {
+        steps: job.steps.map((step): StepRunView => {
           const stepStart = step.startedAt?.getTime();
           const stepEnd = step.completedAt?.getTime();
 
-          const stepData: StepRunData = {
+          const stepData: StepRunView = {
             name: step.stepName,
             status: step.status,
             error: step.error,
@@ -86,6 +86,30 @@ function toRunData(run: WorkflowRun, path?: string): WorkflowRunData {
     }),
     duration: startTime && endTime ? endTime - startTime : undefined,
     path,
+  };
+}
+
+/**
+ * Creates a fetchPreview closure that fetches full workflow run detail data.
+ * This bridges the presentation layer to the run repository, converting
+ * WorkflowRun to WorkflowRunView.
+ */
+function createRunFetchPreview(
+  runRepo: YamlWorkflowRunRepository,
+): (item: WorkflowRunSearchItem) => Promise<WorkflowRunView> {
+  return async (item: WorkflowRunSearchItem): Promise<WorkflowRunView> => {
+    const run = await runRepo.findById(
+      createWorkflowId(item.workflowId),
+      createWorkflowRunId(item.runId),
+    );
+    if (!run) {
+      throw new Error(`Run not found: ${item.runId}`);
+    }
+    const path = runRepo.getPath(
+      createWorkflowId(item.workflowId),
+      createWorkflowRunId(item.runId),
+    );
+    return toRunData(run, path);
   };
 }
 
@@ -119,7 +143,14 @@ export async function workflowRunSearchAction(
       runRepo.findAllByWorkflowId(createWorkflowId(id)),
   };
 
-  const renderer = createWorkflowRunSearchRenderer(effectiveMode);
+  const fetchPreview = effectiveMode === "log"
+    ? createRunFetchPreview(runRepo)
+    : undefined;
+
+  const renderer = createWorkflowRunSearchRenderer(
+    effectiveMode,
+    fetchPreview,
+  );
   await consumeStream(
     workflowRunSearch(libCtx, deps, {
       query,
@@ -135,19 +166,23 @@ export async function workflowRunSearchAction(
   const selected = renderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected run: ${selected.runId}`;
-    // Display the run details
-    const run = await runRepo.findById(
-      createWorkflowId(selected.workflowId),
-      createWorkflowRunId(selected.runId),
-    );
-    if (run) {
-      const path = runRepo.getPath(
+    // In JSON mode, still display the full run details after auto-select
+    if (effectiveMode === "json") {
+      const run = await runRepo.findById(
         createWorkflowId(selected.workflowId),
         createWorkflowRunId(selected.runId),
       );
-      const runData = toRunData(run, path);
-      renderWorkflowRun(runData, effectiveMode);
+      if (run) {
+        const path = runRepo.getPath(
+          createWorkflowId(selected.workflowId),
+          createWorkflowRunId(selected.runId),
+        );
+        const runData = toRunData(run, path);
+        renderWorkflowRunDisplay(runData, effectiveMode);
+      }
     }
+    // In interactive mode, the scrollback from the picker already contains
+    // the run detail, so no additional findById+render call is needed.
   } else {
     ctx.logger.debug`Search cancelled`;
   }

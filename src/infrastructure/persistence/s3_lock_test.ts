@@ -247,3 +247,106 @@ Deno.test("S3Lock - custom lock key", async () => {
 
   await lock.release();
 });
+
+Deno.test("S3Lock - times out when stale lock cannot be deleted", async () => {
+  const mock = createMockS3Client();
+
+  // Place a stale lock
+  const staleLock: LockInfo = {
+    holder: "stale@host",
+    hostname: "host",
+    pid: 99999,
+    acquiredAt: new Date(Date.now() - 120_000).toISOString(),
+    ttlMs: 5000,
+  };
+  const body = new TextEncoder().encode(JSON.stringify(staleLock, null, 2));
+  mock.storage.set(".datastore.lock", body);
+
+  // Override headObject to return stale lastModified
+  const originalHead = mock.headObject.bind(mock);
+  (mock as unknown as Record<string, unknown>).headObject = (key: string) => {
+    if (key === ".datastore.lock") {
+      return Promise.resolve({
+        exists: true,
+        size: body.length,
+        lastModified: new Date(Date.now() - 120_000),
+      });
+    }
+    return originalHead(key);
+  };
+
+  // Override deleteObject to always fail — simulates persistent S3 delete failure
+  (mock as unknown as Record<string, unknown>).deleteObject = () => {
+    return Promise.reject(new Error("Simulated S3 delete failure"));
+  };
+
+  const lock = new S3Lock(mock, {
+    ttlMs: 5000,
+    retryIntervalMs: 10,
+    maxWaitMs: 200,
+  });
+
+  await assertRejects(
+    () => lock.acquire(),
+    LockTimeoutError,
+  );
+});
+
+Deno.test("S3Lock - timeout check fires even during stale lock retry loop", async () => {
+  const mock = createMockS3Client();
+
+  // Place a stale lock
+  const staleLock: LockInfo = {
+    holder: "stale@host",
+    hostname: "host",
+    pid: 99999,
+    acquiredAt: new Date(Date.now() - 120_000).toISOString(),
+    ttlMs: 100,
+  };
+  const body = new TextEncoder().encode(JSON.stringify(staleLock, null, 2));
+  mock.storage.set(".datastore.lock", body);
+
+  // Override headObject to return stale lastModified
+  (mock as unknown as Record<string, unknown>).headObject = (key: string) => {
+    if (key === ".datastore.lock") {
+      return Promise.resolve({
+        exists: true,
+        size: body.length,
+        lastModified: new Date(Date.now() - 120_000),
+      });
+    }
+    return Promise.resolve({ exists: false });
+  };
+
+  // deleteObject "succeeds" but lock reappears (simulates S3 versioning issue)
+  (mock as unknown as Record<string, unknown>).deleteObject = () => {
+    // Don't actually remove from storage — simulates delete marker not
+    // preventing conditional put from failing
+    return Promise.resolve();
+  };
+
+  // putObjectConditional always fails (lock "still exists" due to versioning)
+  (mock as unknown as Record<string, unknown>).putObjectConditional = () => {
+    return Promise.resolve(false);
+  };
+
+  const lock = new S3Lock(mock, {
+    ttlMs: 100,
+    retryIntervalMs: 10,
+    maxWaitMs: 200,
+  });
+
+  const start = Date.now();
+  await assertRejects(
+    () => lock.acquire(),
+    LockTimeoutError,
+  );
+  const elapsed = Date.now() - start;
+
+  // Should timeout within a reasonable margin of maxWaitMs, not hang forever
+  assertEquals(
+    elapsed < 1000,
+    true,
+    `Expected timeout within 1s, took ${elapsed}ms`,
+  );
+});

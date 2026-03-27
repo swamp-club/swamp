@@ -325,19 +325,45 @@ function extractVaultFromSource(
 
 /**
  * Extracts method definitions from the source.
- * Matches the `methods: { name: { description: "..." } }` pattern.
+ * Handles three patterns:
+ *   1. Inline: `methods: { name: { description: "..." } }`
+ *   2. Shorthand property: `methods,` (references a variable named `methods`)
+ *   3. Variable reference: `methods: someVar` (references a named variable)
  */
 function extractMethods(content: string): ExtractedMethod[] {
+  // Try inline methods block first: methods: { ... }
+  const inlineMethods = extractMethodsFromBlock(content, content);
+  if (inlineMethods.length > 0) return inlineMethods;
+
+  // Try variable reference: methods: someVar or shorthand methods,
+  const refName = resolveMethodsReference(content);
+  if (!refName) return [];
+
+  // Look up the referenced variable in the same file
+  const varBlock = findVariableObjectBody(content, refName);
+  if (varBlock) {
+    return extractMethodsFromBlock(varBlock, content);
+  }
+
+  return [];
+}
+
+/**
+ * Extracts methods from an inline `methods: { ... }` block within the content.
+ */
+function extractMethodsFromBlock(
+  searchContent: string,
+  fullContent: string,
+): ExtractedMethod[] {
   const methods: ExtractedMethod[] = [];
 
-  // Find the methods block
-  const methodsBlockMatch = content.match(/methods:\s*\{/);
+  const methodsBlockMatch = searchContent.match(/methods:\s*\{/);
   if (!methodsBlockMatch || methodsBlockMatch.index === undefined) {
     return methods;
   }
 
   const methodsStart = methodsBlockMatch.index + methodsBlockMatch[0].length;
-  const methodsBlock = extractBalancedBraces(content, methodsStart);
+  const methodsBlock = extractBalancedBraces(searchContent, methodsStart);
   if (!methodsBlock) return methods;
 
   // Match individual method entries: methodName: { description: "..." }
@@ -351,13 +377,68 @@ function extractMethods(content: string): ExtractedMethod[] {
     // Try to extract arguments for this method
     const methodEntry = extractMethodEntry(methodsBlock, name);
     const args = methodEntry
-      ? extractMethodArguments(methodEntry, content)
+      ? extractMethodArguments(methodEntry, fullContent)
       : [];
 
     methods.push({ name, description, arguments: args });
   }
 
   return methods;
+}
+
+/**
+ * Resolves the variable name referenced by the `methods` property.
+ * Returns the variable name for `methods: someVar` or `methods` (shorthand).
+ * Returns null if methods are defined inline or not found.
+ */
+function resolveMethodsReference(content: string): string | null {
+  // Match shorthand property: methods, or methods } (end of object)
+  // This pattern appears when an imported variable named `methods` is used
+  // as a shorthand property in the model object literal.
+  const shorthandMatch = content.match(
+    /(?:export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?)(?<![.\w])methods\s*[,}]/,
+  );
+  if (shorthandMatch) {
+    // Verify it's not `methods: {` (inline) or `methods: someRef` (reference)
+    const beforeMethods = content.slice(
+      0,
+      (shorthandMatch.index ?? 0) + shorthandMatch[0].length,
+    );
+    if (!beforeMethods.match(/methods\s*:\s*[{\w]/)) {
+      return "methods";
+    }
+  }
+
+  // Match reference: methods: someVar (not followed by { which is inline)
+  const refMatch = content.match(/methods:\s*(\w+)\s*[,}\n]/);
+  if (refMatch && refMatch[1] !== "{") {
+    return refMatch[1];
+  }
+
+  return null;
+}
+
+/**
+ * Finds the body of a `const varName = { ... }` or `export const varName = { ... }`
+ * declaration and returns the full declaration text including `varName: { ... }` wrapper
+ * so that extractMethodsFromBlock can find `methodName: { description: ... }` entries.
+ */
+function findVariableObjectBody(
+  content: string,
+  varName: string,
+): string | null {
+  const pattern = new RegExp(
+    `(?:export\\s+)?(?:const|let)\\s+${varName}\\s*=\\s*\\{`,
+  );
+  const match = content.match(pattern);
+  if (!match || match.index === undefined) return null;
+
+  const start = match.index + match[0].length;
+  const body = extractBalancedBraces(content, start);
+  if (!body) return null;
+
+  // Wrap as `methods: { <body> }` so the method extraction regex works
+  return `methods: {${body}}`;
 }
 
 /**

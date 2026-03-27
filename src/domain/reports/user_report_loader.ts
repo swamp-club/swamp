@@ -103,32 +103,54 @@ export class UserReportLoader {
    * @param reportsDir - The directory containing user report files
    * @returns Result containing lists of loaded and failed files
    */
-  async loadReports(reportsDir: string): Promise<ReportLoadResult> {
+  async loadReports(
+    reportsDir: string,
+    options?: {
+      skipAlreadyRegistered?: boolean;
+      /** Additional directories to scan (e.g. pulled extensions). */
+      additionalDirs?: string[];
+    },
+  ): Promise<ReportLoadResult> {
     const result: ReportLoadResult = { loaded: [], failed: [] };
 
     // Ensure swamp's Zod is available on globalThis before importing bundles.
     installZodGlobal();
 
-    // Check if directory exists
-    try {
-      await Deno.stat(reportsDir);
-    } catch {
-      return result; // No user reports directory - not an error
-    }
-
     // Ensure deno is available before bundling
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    const files = await this.discoverFiles(reportsDir);
-
-    for (const file of files) {
+    // Discover files from primary dir and any additional dirs
+    const allFiles: Array<{ file: string; baseDir: string }> = [];
+    for (
+      const dir of [reportsDir, ...(options?.additionalDirs ?? [])]
+    ) {
       try {
-        const absolutePath = resolve(reportsDir, file);
+        await Deno.stat(dir);
+      } catch {
+        continue;
+      }
+      const files = await this.discoverFiles(dir);
+      for (const file of files) {
+        allFiles.push({ file, baseDir: dir });
+      }
+    }
+
+    for (const { file, baseDir } of allFiles) {
+      try {
+        const absolutePath = resolve(baseDir, file);
+
+        // Pre-check: only bundle files that declare a report export.
+        const source = await Deno.readTextFile(absolutePath);
+        if (!/export\s+const\s+report\s*[=:]/.test(source)) {
+          logger.debug`Skipping ${file} (no report export found)`;
+          continue;
+        }
+
         const js = await this.bundleWithCache(
           absolutePath,
           file,
           denoPath,
-          reportsDir,
+          baseDir,
         );
         const module = await this.importBundle(js, file);
 
@@ -150,6 +172,9 @@ export class UserReportLoader {
 
         // Register with the report registry
         if (reportRegistry.has(userReport.name)) {
+          if (options?.skipAlreadyRegistered) {
+            continue;
+          }
           result.failed.push({
             file,
             error: `Report name '${userReport.name}' is already registered`,

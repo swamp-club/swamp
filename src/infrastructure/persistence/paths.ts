@@ -78,6 +78,18 @@ export const SWAMP_SUBDIRS = {
   audit: "audit",
   /** Legacy: resource definitions */
   resources: "resources",
+  /** Pulled extension source: models */
+  pulledModels: "pulled-extensions/models",
+  /** Pulled extension source: vaults */
+  pulledVaults: "pulled-extensions/vaults",
+  /** Pulled extension source: workflows */
+  pulledWorkflows: "pulled-extensions/workflows",
+  /** Pulled extension source: drivers */
+  pulledDrivers: "pulled-extensions/drivers",
+  /** Pulled extension source: datastores */
+  pulledDatastores: "pulled-extensions/datastores",
+  /** Pulled extension source: reports */
+  pulledReports: "pulled-extensions/reports",
 } as const;
 
 /**

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { resolve } from "@std/path";
+import { join, resolve } from "@std/path";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   RepoMarkerRepository,
@@ -26,6 +26,7 @@ import { readUpstreamExtensions } from "../../infrastructure/persistence/upstrea
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** A single extension entry for list output. */
 export interface ExtensionListEntry {
   name: string;
@@ -66,8 +67,9 @@ export async function createExtensionListDeps(
   const envModelsDir = Deno.env.get("SWAMP_MODELS_DIR");
   const modelsDir = envModelsDir ?? marker?.modelsDir ?? "extensions/models";
   const absoluteModelsDir = resolve(repoDir, modelsDir);
+  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
   return {
-    readUpstreamExtensions: () => readUpstreamExtensions(absoluteModelsDir),
+    readUpstreamExtensions: () => readUpstreamExtensions(lockfilePath),
   };
 }
 
@@ -76,18 +78,24 @@ export async function* extensionList(
   _ctx: LibSwampContext,
   deps: ExtensionListDeps,
 ): AsyncIterable<ExtensionListEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.extension.list",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const upstreamData = await deps.readUpstreamExtensions();
+      const upstreamData = await deps.readUpstreamExtensions();
 
-  const entries: ExtensionListEntry[] = Object.entries(upstreamData)
-    .map(([name, entry]) => ({
-      name,
-      version: entry.version,
-      pulledAt: entry.pulledAt ?? "",
-      files: entry.files ?? [],
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+      const entries: ExtensionListEntry[] = Object.entries(upstreamData)
+        .map(([name, entry]) => ({
+          name,
+          version: entry.version,
+          pulledAt: entry.pulledAt ?? "",
+          files: entry.files ?? [],
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
 
-  yield { kind: "completed", data: { extensions: entries } };
+      yield { kind: "completed", data: { extensions: entries } };
+    })(),
+  );
 }

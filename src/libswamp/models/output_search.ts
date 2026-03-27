@@ -20,6 +20,7 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * A single model output search result item.
  */
@@ -88,40 +89,50 @@ export async function* modelOutputSearch(
   deps: ModelOutputSearchDeps,
   input: ModelOutputSearchInput,
 ): AsyncGenerator<ModelOutputSearchEvent> {
-  yield { kind: "resolving" };
+  yield* withGeneratorSpan(
+    "swamp.model.output.search",
+    {},
+    (async function* () {
+      yield { kind: "resolving" };
 
-  const allResults = await deps.findAllOutputsGlobal();
-  const items: ModelOutputSearchItem[] = [];
+      const allResults = await deps.findAllOutputsGlobal();
+      const items: ModelOutputSearchItem[] = [];
 
-  for (const { output, type } of allResults) {
-    let modelName: string | undefined;
-    const definition = await deps.findDefinitionById(type, output.definitionId);
-    if (definition) {
-      modelName = definition.name;
-    }
+      for (const { output, type } of allResults) {
+        let modelName: string | undefined;
+        const definition = await deps.findDefinitionById(
+          type,
+          output.definitionId,
+        );
+        if (definition) {
+          modelName = definition.name;
+        }
 
-    items.push({
-      id: output.id,
-      definitionId: output.definitionId,
-      modelName,
-      type: type.normalized,
-      methodName: output.methodName,
-      status: output.status,
-      startedAt: output.startedAt.toISOString(),
-      durationMs: output.durationMs,
-    });
-  }
+        items.push({
+          id: output.id,
+          definitionId: output.definitionId,
+          modelName,
+          type: type.normalized,
+          methodName: output.methodName,
+          status: output.status,
+          startedAt: output.startedAt.toISOString(),
+          durationMs: output.durationMs,
+        });
+      }
 
-  // Sort by startedAt descending (most recent first)
-  items.sort(
-    (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+      // Sort by startedAt descending (most recent first)
+      items.sort(
+        (a, b) =>
+          new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+      );
+
+      yield {
+        kind: "completed",
+        data: {
+          query: input.query ?? "",
+          results: items,
+        },
+      };
+    })(),
   );
-
-  yield {
-    kind: "completed",
-    data: {
-      query: input.query ?? "",
-      results: items,
-    },
-  };
 }

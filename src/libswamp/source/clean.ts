@@ -24,6 +24,7 @@ import { JsonSourceMetadataRepository } from "../../infrastructure/source/json_s
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the source clean output.
  */
@@ -53,9 +54,15 @@ export async function* sourceClean(
   ctx: LibSwampContext,
   deps: SourceCleanDeps,
 ): AsyncIterable<SourceCleanEvent> {
-  ctx.logger.debug`Cleaning source`;
+  yield* withGeneratorSpan(
+    "swamp.source.clean",
+    {},
+    (async function* () {
+      ctx.logger.debug`Cleaning source`;
 
-  const result = await deps.clean();
+      const result = await deps.clean();
 
-  yield { kind: "completed", data: result };
+      yield { kind: "completed", data: result };
+    })(),
+  );
 }

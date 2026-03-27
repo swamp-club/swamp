@@ -138,14 +138,14 @@ Deno.test("extension list shows installed extensions", async () => {
       "@test/beta": {
         version: "2026.01.01.1",
         pulledAt: "2026-01-01T00:00:00.000Z",
-        files: ["extensions/models/beta/model.yaml"],
+        files: [".swamp/pulled-extensions/models/beta/model.yaml"],
       },
       "@test/alpha": {
         version: "2026.02.01.1",
         pulledAt: "2026-02-01T00:00:00.000Z",
         files: [
-          "extensions/models/alpha/model.yaml",
-          "extensions/models/alpha/handler.ts",
+          ".swamp/pulled-extensions/models/alpha/model.yaml",
+          ".swamp/pulled-extensions/models/alpha/handler.ts",
         ],
       },
     });
@@ -176,7 +176,7 @@ Deno.test("extension list --json shows installed extensions", async () => {
       "@test/one": {
         version: "2026.01.15.1",
         pulledAt: "2026-01-15T12:00:00.000Z",
-        files: ["extensions/models/one/model.yaml"],
+        files: [".swamp/pulled-extensions/models/one/model.yaml"],
       },
     });
 
@@ -207,8 +207,8 @@ Deno.test("extension list --verbose shows individual files", async () => {
         version: "2026.01.01.1",
         pulledAt: "2026-01-01T00:00:00.000Z",
         files: [
-          "extensions/models/verbose-ext/model.yaml",
-          "extensions/models/verbose-ext/handler.ts",
+          ".swamp/pulled-extensions/models/verbose-ext/model.yaml",
+          ".swamp/pulled-extensions/models/verbose-ext/handler.ts",
         ],
       },
     });

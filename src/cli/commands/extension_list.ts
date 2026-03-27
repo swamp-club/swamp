@@ -20,12 +20,19 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { join, resolve } from "@std/path";
 import {
   consumeStream,
   createExtensionListDeps,
   createLibSwampContext,
   extensionList,
+  requireCurrentExtensionLayout,
 } from "../../libswamp/mod.ts";
+import { resolveModelsDir } from "../resolve_models_dir.ts";
+import {
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { createExtensionListRenderer } from "../../presentation/renderers/extension_list.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -48,6 +55,15 @@ export const extensionListCommand = new Command()
       repoDir,
       outputMode: cliCtx.outputMode,
     });
+
+    // Check for legacy extension layout
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    await requireCurrentExtensionLayout(lockfilePath);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createExtensionListDeps(repoDir);
