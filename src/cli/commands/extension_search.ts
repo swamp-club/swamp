@@ -44,6 +44,7 @@ import {
   createLibSwampContext,
   extensionSearch,
   type ExtensionSearchDeps,
+  requireCurrentExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
 
@@ -199,6 +200,9 @@ export const extensionSearchCommand = new Command()
         absoluteModelsDir,
         "upstream_extensions.json",
       );
+
+      // Check for legacy extension layout before pulling
+      await requireCurrentExtensionLayout(lockfilePath);
 
       const pullCtx: PullContext = {
         getExtension: (name) => client.getExtension(name),

@@ -223,6 +223,7 @@ async function loadUserModels(
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
     const result = await loader.loadModels(absoluteModelsDir, {
       additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
     });
 
     // Collect failures for deferred logging (logging not yet initialized)
@@ -257,6 +258,7 @@ async function loadUserVaults(
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
     const result = await loader.loadVaults(absoluteVaultsDir, {
       additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
     });
 
     for (const failure of result.failed) {
@@ -287,6 +289,7 @@ async function loadUserDrivers(
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
     const result = await loader.loadDrivers(absoluteDriversDir, {
       additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
     });
 
     for (const failure of result.failed) {
@@ -317,6 +320,7 @@ async function loadUserDatastores(
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores);
     const result = await loader.loadDatastores(absoluteDatastoresDir, {
       additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
     });
 
     for (const failure of result.failed) {
@@ -347,6 +351,7 @@ async function loadUserReports(
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
     const result = await loader.loadReports(absoluteReportsDir, {
       additionalDirs: [pulledDir],
+      skipAlreadyRegistered: true,
     });
 
     for (const failure of result.failed) {

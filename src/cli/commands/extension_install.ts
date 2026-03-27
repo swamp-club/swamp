@@ -34,8 +34,10 @@ import {
   consumeStream,
   createLibSwampContext,
   extensionInstall,
+  requireCurrentExtensionLayout,
   resolveServerUrl,
 } from "../../libswamp/mod.ts";
+import { UserError } from "../../domain/errors.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { createExtensionInstallRenderer } from "../../presentation/renderers/extension_install.ts";
 
@@ -45,10 +47,18 @@ type AnyOptions = any;
 export const extensionInstallCommand = new Command()
   .name("install")
   .description(
-    "Restore pulled extensions from the lockfile.\n\nReads upstream_extensions.json and re-pulls any extensions whose source\nfiles are missing. Use after cloning a repo or in CI.\n\nExamples:\n  swamp extension install",
+    "Restore pulled extensions from the lockfile.\n\nReads upstream_extensions.json and re-pulls any extensions whose source\nfiles are missing. Use after cloning a repo or in CI.\nTo add a new extension, use 'swamp extension pull <name>' instead.\n\nExamples:\n  swamp extension install",
   )
+  .arguments("[unexpected:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .action(async function (options: AnyOptions) {
+  .action(async function (options: AnyOptions, unexpected?: string) {
+    if (unexpected) {
+      throw new UserError(
+        `'swamp extension install' takes no arguments.\n` +
+          `To add a new extension, use: swamp extension pull ${unexpected}`,
+      );
+    }
+
     const cliCtx = createContext(options as GlobalOptions, [
       "extension",
       "install",
@@ -70,7 +80,10 @@ export const extensionInstallCommand = new Command()
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // 3. Resolve pulled-extension dirs
+    // 3. Check for legacy extension layout
+    await requireCurrentExtensionLayout(lockfilePath);
+
+    // 4. Resolve pulled-extension dirs
     const pulledModelsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
     const pulledWorkflowsDir = swampPath(
       repoDir,

@@ -210,7 +210,7 @@ export const extensionPullCommand = new Command()
     );
     const pulledReportsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
 
-    // 6. Create deps via factory and pull
+    // 7. Create deps via factory and pull
     const serverUrl = resolveServerUrl();
     const deps = createExtensionPullDeps(
       serverUrl,

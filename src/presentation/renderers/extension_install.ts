@@ -42,6 +42,10 @@ class LogExtensionInstallRenderer implements Renderer<ExtensionInstallEvent> {
       },
       completed: (e) => {
         const { installed, upToDate, failed } = e.data;
+        if (e.data.entries.length === 0) {
+          logger.info("No extensions in lockfile.");
+          return;
+        }
         if (installed === 0 && failed === 0) {
           logger.info("All extensions up to date.");
           return;
