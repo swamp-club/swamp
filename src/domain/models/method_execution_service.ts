@@ -650,7 +650,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           "model.type": context.modelType.normalized,
         }, () =>
           driver.execute(executionRequest, {
-            onLog: (line) => context.logger?.info(line),
+            onLog: (line) => {
+              context.logger?.info(line);
+              context.onEvent?.({
+                type: "output",
+                stream: "stdout",
+                line,
+              });
+            },
           }));
 
         if (driverResult.status === "error") {
