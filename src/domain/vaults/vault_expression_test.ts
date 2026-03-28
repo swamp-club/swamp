@@ -93,6 +93,18 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
     return new ModelResolver(definitionRepo, { vaultService });
   }
 
+  // Helper to create a ModelResolver with multiple named vaults
+  function createResolverWithNamedVaults(
+    vaults: Record<string, Record<string, string>>,
+  ): ModelResolver {
+    const vaultService = new VaultService();
+    for (const [name, secrets] of Object.entries(vaults)) {
+      vaultService.registerVault({ name, type: "mock", config: secrets });
+    }
+    const definitionRepo = new YamlDefinitionRepository(tempDir);
+    return new ModelResolver(definitionRepo, { vaultService });
+  }
+
   await t.step("should resolve basic vault expression", async () => {
     const resolver = createResolverWithMockVault({ "api-key": "secret123" });
     const result = await resolver.resolveVaultExpressions(
@@ -362,6 +374,88 @@ Deno.test("ModelResolver.resolveVaultExpressions", async (t) => {
         "vault.get(test-vault, backtick-cmd)",
       );
       assertEquals(result, '"`echo injected`"');
+    },
+  );
+
+  // ========================================================================
+  // Spaces in quoted vault names and secret keys (#902)
+  // ========================================================================
+
+  await t.step(
+    "should resolve vault expression with spaces in double-quoted key",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "Client ID": "my-client-id",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        'vault.get("test-vault", "Client ID")',
+      );
+      assertEquals(result, '"my-client-id"');
+    },
+  );
+
+  await t.step(
+    "should resolve vault expression with spaces in single-quoted key",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "Client Secret": "super-secret",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        "vault.get('test-vault', 'Client Secret')",
+      );
+      assertEquals(result, '"super-secret"');
+    },
+  );
+
+  await t.step(
+    "should resolve vault expression with 1Password-style path containing spaces",
+    async () => {
+      const resolver = createResolverWithMockVault({
+        "Tailscale K8s Operator/Client ID": "ts-client-id-123",
+      });
+      const result = await resolver.resolveVaultExpressions(
+        'vault.get("test-vault", "Tailscale K8s Operator/Client ID")',
+      );
+      assertEquals(result, '"ts-client-id-123"');
+    },
+  );
+
+  await t.step(
+    "should resolve vault expression with spaces in quoted vault name",
+    async () => {
+      const resolver = createResolverWithNamedVaults({
+        "my infra vault": { "api-key": "infra-key-456" },
+      });
+      const result = await resolver.resolveVaultExpressions(
+        'vault.get("my infra vault", "api-key")',
+      );
+      assertEquals(result, '"infra-key-456"');
+    },
+  );
+
+  await t.step(
+    "should resolve vault expression with spaces in both vault name and key",
+    async () => {
+      const resolver = createResolverWithNamedVaults({
+        "my infra vault": { "Client Secret": "both-spaces-val" },
+      });
+      const result = await resolver.resolveVaultExpressions(
+        'vault.get("my infra vault", "Client Secret")',
+      );
+      assertEquals(result, '"both-spaces-val"');
+    },
+  );
+
+  await t.step(
+    "should resolve mixed quoted vault name with unquoted key",
+    async () => {
+      const resolver = createResolverWithNamedVaults({
+        "my infra vault": { "api-key": "mixed-val" },
+      });
+      const result = await resolver.resolveVaultExpressions(
+        'vault.get("my infra vault", api-key)',
+      );
+      assertEquals(result, '"mixed-val"');
     },
   );
 

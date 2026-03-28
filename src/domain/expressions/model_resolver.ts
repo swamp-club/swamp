@@ -825,10 +825,14 @@ export class ModelResolver {
     redactor?: SecretRedactor,
     secretBag?: VaultSecretBag,
   ): Promise<string> {
-    // Pattern to match vault.get(vaultName, secretKey) expressions
-    // Handles both quoted and unquoted arguments
+    // Pattern to match vault.get(vaultName, secretKey) expressions.
+    // Handles both quoted and unquoted arguments. Quoted arguments may
+    // contain spaces (e.g. vault.get("infra", "Client ID")).
+    // Each argument uses alternation:
+    //   (['"`])(.+?)\1  — quoted: any chars up to the matching close quote
+    //   ([^\s,)]+)      — unquoted: non-whitespace, non-comma, non-paren
     const vaultPattern =
-      /vault\.get\(\s*(['"`]?)([^'"`\s,]+)\1\s*,\s*(['"`]?)([^'"`\s,]+)\3\s*\)/g;
+      /vault\.get\(\s*(?:(['"`])(.+?)\1|([^\s,)]+))\s*,\s*(?:(['"`])(.+?)\4|([^\s,)]+))\s*\)/g;
 
     let resolvedValue = value;
     const matches = Array.from(value.matchAll(vaultPattern));
@@ -841,7 +845,11 @@ export class ModelResolver {
     const vaultService = await this.getVaultService();
 
     for (const match of matches) {
-      const [fullMatch, , vaultName, , secretKey] = match;
+      // Groups: [1]=quote1, [2]=quoted vault, [3]=unquoted vault,
+      //         [4]=quote2, [5]=quoted key,   [6]=unquoted key
+      const fullMatch = match[0];
+      const vaultName = match[2] ?? match[3];
+      const secretKey = match[5] ?? match[6];
       try {
         const secretValue = await vaultService.get(vaultName, secretKey);
         redactor?.addSecret(secretValue);

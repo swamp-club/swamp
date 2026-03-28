@@ -77,6 +77,19 @@ Deno.test("containsVaultExpression returns false for vault-like but not vault.ge
   assertEquals(containsVaultExpression("vault_get(foo)"), false);
 });
 
+Deno.test("containsVaultExpression returns true for quoted args with spaces", () => {
+  assertEquals(
+    containsVaultExpression('vault.get("infra", "Client ID")'),
+    true,
+  );
+  assertEquals(
+    containsVaultExpression(
+      'vault.get("infra", "Tailscale K8s Operator/Client ID")',
+    ),
+    true,
+  );
+});
+
 // ============================================================================
 // containsEnvExpression
 // ============================================================================
