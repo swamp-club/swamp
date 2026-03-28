@@ -161,7 +161,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-5-20251101
-            --allowedTools Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh api --method POST:*/reactions),Bash(gh api --method PATCH:*/comments/*)
+            --allowedTools 'Read,Glob,Grep,Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh api --method POST:*/reactions),Bash(gh api --method PATCH:*/comments/*)'
 
       - name: Add completion reaction
         if: success()
