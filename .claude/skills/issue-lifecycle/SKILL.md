@@ -88,7 +88,14 @@ systeminit/swamp#850":
      --input-file /tmp/plan.yaml --json
    ```
 
-6. **Show the plan to the human**, then **run adversarial review** (see below).
+6. **Check for documentation impact.** Before presenting the plan, evaluate
+   whether the change affects anything described in `design/*.md` or
+   `.claude/skills/`. If so, include explicit plan steps to update those files.
+   Common triggers: new domain concepts, changed CLI commands or flags, new
+   extension patterns, modified architectural decisions, renamed types or
+   methods referenced in skill examples.
+
+7. **Show the plan to the human**, then **run adversarial review** (see below).
 
 ## Adversarial Plan Review
 
@@ -111,6 +118,12 @@ Re-read the plan, then critically evaluate it across these dimensions:
   unnecessary abstractions or indirections?
 - **Correctness**: Will this actually solve the problem? Are there logical gaps?
   Does the approach match established patterns in the codebase?
+- **Documentation**: Does this change introduce or modify domain concepts, CLI
+  commands, extension patterns, or architectural decisions that should be
+  reflected in `design/*.md` or `.claude/skills/`? If a design doc describes
+  behavior this plan changes, the plan must include a step to update it. If a
+  skill references CLI commands or examples affected by this change, the plan
+  must include a step to update the skill. Flag any gaps as findings.
 
 ### Step 2: Verify against the codebase
 
@@ -122,6 +135,10 @@ For each plan step, **read the actual code**:
 - Check for conflicts with existing patterns or naming conventions
 - Verify that proposed test paths and test patterns match the codebase
 - Look for code that already does what a step proposes (duplication risk)
+- Check if design docs in `design/` describe behavior being changed — flag stale
+  docs
+- Check if skills in `.claude/skills/` reference commands, flags, or examples
+  affected by the plan — flag stale skills
 
 ### Step 3: Record findings
 
@@ -152,7 +169,8 @@ Each finding must have:
 
 - `id`: Sequential identifier (ADV-1, ADV-2, ...)
 - `severity`: critical, high, medium, or low
-- `category`: architecture, scope, risk, testing, complexity, or correctness
+- `category`: architecture, scope, risk, testing, complexity, correctness, or
+  documentation
 - `description`: Clear explanation of the concern
 
 **Critical/high findings block approval.** Medium/low are shown as warnings.
