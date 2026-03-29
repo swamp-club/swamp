@@ -69,11 +69,12 @@ export interface FilesystemDatastoreConfig {
 }
 
 /**
- * S3-based datastore configuration.
- * Data is cached locally and synced to S3.
+ * Value object: S3 connection parameters.
+ *
+ * Centralizes the fields needed to connect to an S3-compatible object store
+ * so that adding a new connection parameter requires updating only this type.
  */
-export interface S3DatastoreConfig {
-  readonly type: "s3";
+export interface S3ConnectionConfig {
   /** S3 bucket name */
   readonly bucket: string;
   /** Key prefix within the bucket */
@@ -84,6 +85,14 @@ export interface S3DatastoreConfig {
   readonly endpoint?: string;
   /** Use path-style addressing (bucket in path, not subdomain). Default: false. */
   readonly forcePathStyle?: boolean;
+}
+
+/**
+ * S3-based datastore configuration.
+ * Data is cached locally and synced to S3.
+ */
+export interface S3DatastoreConfig extends S3ConnectionConfig {
+  readonly type: "s3";
   /** Local cache directory path (defaults to ~/.swamp/repos/{repoId}/) */
   readonly cachePath: string;
   /** Which subdirectories belong to the datastore (defaults to DEFAULT_DATASTORE_SUBDIRS) */

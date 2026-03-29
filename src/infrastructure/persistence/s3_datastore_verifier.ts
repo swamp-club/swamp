@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { S3ConnectionConfig } from "../../domain/datastore/datastore_config.ts";
 import type {
   DatastoreHealthResult,
   DatastoreVerifier,
@@ -33,21 +34,9 @@ export class S3DatastoreVerifier implements DatastoreVerifier {
   private readonly s3: S3Client;
   private readonly bucket: string;
 
-  constructor(
-    bucket: string,
-    prefix?: string,
-    region?: string,
-    endpoint?: string,
-    forcePathStyle?: boolean,
-  ) {
-    this.bucket = bucket;
-    this.s3 = new S3Client({
-      bucket,
-      prefix,
-      region,
-      endpoint,
-      forcePathStyle,
-    });
+  constructor(config: S3ConnectionConfig) {
+    this.bucket = config.bucket;
+    this.s3 = new S3Client(config);
   }
 
   async verify(): Promise<DatastoreHealthResult> {

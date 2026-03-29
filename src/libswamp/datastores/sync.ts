@@ -118,13 +118,7 @@ export function createDatastoreSyncDeps(
     );
   }
 
-  const s3 = new S3Client({
-    bucket: config.bucket,
-    prefix: config.prefix,
-    region: config.region,
-    endpoint: config.endpoint,
-    forcePathStyle: config.forcePathStyle,
-  });
+  const s3 = new S3Client(config);
   const syncService = new S3CacheSyncService(s3, config.cachePath);
 
   return {

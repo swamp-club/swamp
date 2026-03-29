@@ -83,13 +83,7 @@ export function createDatastoreStatusDeps(
         const verifier = new FilesystemDatastoreVerifier(config.path);
         return await verifier.verify();
       } else {
-        const verifier = new S3DatastoreVerifier(
-          config.bucket,
-          config.prefix,
-          config.region,
-          config.endpoint,
-          config.forcePathStyle,
-        );
+        const verifier = new S3DatastoreVerifier(config);
         return await verifier.verify();
       }
     },

@@ -330,13 +330,7 @@ export function requireInitializedRepo(
       await ensureDir(datastoreConfig.cachePath);
 
       // Share a single S3Client for both lock and sync service
-      const s3 = new S3Client({
-        bucket: datastoreConfig.bucket,
-        prefix: datastoreConfig.prefix,
-        region: datastoreConfig.region,
-        endpoint: datastoreConfig.endpoint,
-        forcePathStyle: datastoreConfig.forcePathStyle,
-      });
+      const s3 = new S3Client(datastoreConfig);
 
       const lock = new S3Lock(s3);
       const syncService = new S3CacheSyncService(s3, datastoreConfig.cachePath);
@@ -475,11 +469,7 @@ export function createModelLock(
     return provider.createLock(config.datastorePath, { lockKey });
   }
   if (config.type === "s3") {
-    const s3 = new S3Client({
-      bucket: config.bucket,
-      prefix: config.prefix,
-      region: config.region,
-    });
+    const s3 = new S3Client(config);
     return new S3Lock(s3, { lockKey });
   }
   return new FileLock(config.path, { lockKey });
@@ -649,11 +639,7 @@ export async function acquireModelLocks(
   // For S3 datastores, create a shared sync service for model-scoped pulls
   let s3SyncService: S3CacheSyncService | undefined;
   if (!isCustomDatastoreConfig(config) && config.type === "s3") {
-    const s3 = new S3Client({
-      bucket: config.bucket,
-      prefix: config.prefix,
-      region: config.region,
-    });
+    const s3 = new S3Client(config);
     s3SyncService = new S3CacheSyncService(s3, config.cachePath);
   }
 
@@ -836,11 +822,7 @@ export function createDatastoreLock(config: DatastoreConfig): DistributedLock {
     return provider.createLock(config.datastorePath);
   }
   if (config.type === "s3") {
-    const s3 = new S3Client({
-      bucket: config.bucket,
-      prefix: config.prefix,
-      region: config.region,
-    });
+    const s3 = new S3Client(config);
     return new S3Lock(s3);
   }
   return new FileLock(config.path);

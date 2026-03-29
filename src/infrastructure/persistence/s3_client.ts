@@ -30,16 +30,7 @@ import {
   PutObjectCommand,
   S3Client as AwsS3Client,
 } from "@aws-sdk/client-s3";
-
-export interface S3ClientConfig {
-  bucket: string;
-  prefix?: string;
-  region?: string;
-  /** Custom S3-compatible endpoint URL (e.g., https://nyc3.digitaloceanspaces.com) */
-  endpoint?: string;
-  /** Use path-style addressing (bucket in path, not subdomain). Default: false. */
-  forcePathStyle?: boolean;
-}
+import type { S3ConnectionConfig } from "../../domain/datastore/datastore_config.ts";
 
 export interface S3ListResult {
   keys: string[];
@@ -55,7 +46,7 @@ export class S3Client {
   private readonly bucket: string;
   private readonly prefix: string;
 
-  constructor(config: S3ClientConfig) {
+  constructor(config: S3ConnectionConfig) {
     this.client = new AwsS3Client({
       region: config.region,
       ...(config.endpoint ? { endpoint: config.endpoint } : {}),

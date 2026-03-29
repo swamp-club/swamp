@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import {
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
+  type S3ConnectionConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import {
   migrateDatastore,
@@ -85,18 +86,10 @@ export interface DatastoreSetupDeps {
     path: string,
   ) => Promise<{ healthy: boolean; message: string }>;
   verifyS3: (
-    bucket: string,
-    prefix?: string,
-    region?: string,
-    endpoint?: string,
-    forcePathStyle?: boolean,
+    config: S3ConnectionConfig,
   ) => Promise<{ healthy: boolean; message: string }>;
   checkS3DatastoreExists: (
-    bucket: string,
-    prefix?: string,
-    region?: string,
-    endpoint?: string,
-    forcePathStyle?: boolean,
+    config: S3ConnectionConfig,
   ) => Promise<boolean>;
   ensureDir: (path: string) => Promise<void>;
   getDatastoreDirectories: (config: {
@@ -124,12 +117,8 @@ export interface DatastoreSetupDeps {
     datastoreConfig: Record<string, unknown>,
   ) => Promise<void>;
   pushAllToS3: (
-    bucket: string,
-    prefix: string | undefined,
-    region: string | undefined,
+    config: S3ConnectionConfig,
     cachePath: string,
-    endpoint?: string,
-    forcePathStyle?: boolean,
   ) => Promise<number>;
   getSwampDataDir: () => string;
   getCachePath: (repoId: string) => string;
@@ -274,14 +263,17 @@ export async function* datastoreSetupS3(
         return;
       }
 
+      // Build connection config once from input
+      const s3Conn: S3ConnectionConfig = {
+        bucket: input.bucket,
+        prefix: input.prefix,
+        region: input.region,
+        endpoint: input.endpoint,
+        forcePathStyle: input.forcePathStyle,
+      };
+
       // Verify S3 bucket is accessible
-      const health = await deps.verifyS3(
-        input.bucket,
-        input.prefix,
-        input.region,
-        input.endpoint,
-        input.forcePathStyle,
-      );
+      const health = await deps.verifyS3(s3Conn);
       if (!health.healthy) {
         yield {
           kind: "error",
@@ -294,13 +286,7 @@ export async function* datastoreSetupS3(
       }
 
       // Check if this S3 location already has datastore data
-      const exists = await deps.checkS3DatastoreExists(
-        input.bucket,
-        input.prefix,
-        input.region,
-        input.endpoint,
-        input.forcePathStyle,
-      );
+      const exists = await deps.checkS3DatastoreExists(s3Conn);
       if (exists) {
         const prefixStr = input.prefix ?? "";
         yield {
@@ -354,14 +340,7 @@ export async function* datastoreSetupS3(
         // Push cache to S3
         ctx.logger.debug`Pushing data to S3...`;
         try {
-          filesPushed = await deps.pushAllToS3(
-            input.bucket,
-            input.prefix,
-            input.region,
-            cachePath,
-            input.endpoint,
-            input.forcePathStyle,
-          );
+          filesPushed = await deps.pushAllToS3(s3Conn, cachePath);
           ctx.logger.debug`Pushed ${filesPushed} file(s) to S3`;
         } catch (error) {
           errors.push(
@@ -455,36 +434,12 @@ export function createDatastoreSetupDeps(
       const verifier = new FilesystemDatastoreVerifier(path);
       return await verifier.verify();
     },
-    verifyS3: async (
-      bucket: string,
-      prefix?: string,
-      region?: string,
-      endpoint?: string,
-      forcePathStyle?: boolean,
-    ) => {
-      const verifier = new S3DatastoreVerifier(
-        bucket,
-        prefix,
-        region,
-        endpoint,
-        forcePathStyle,
-      );
+    verifyS3: async (config) => {
+      const verifier = new S3DatastoreVerifier(config);
       return await verifier.verify();
     },
-    checkS3DatastoreExists: async (
-      bucket: string,
-      prefix?: string,
-      region?: string,
-      endpoint?: string,
-      forcePathStyle?: boolean,
-    ) => {
-      const s3 = new S3Client({
-        bucket,
-        prefix,
-        region,
-        endpoint,
-        forcePathStyle,
-      });
+    checkS3DatastoreExists: async (config) => {
+      const s3 = new S3Client(config);
       try {
         await s3.getObject(".datastore-index.json");
         return true;
@@ -529,21 +484,8 @@ export function createDatastoreSetupDeps(
         await markerRepo.write(repoPath, marker);
       }
     },
-    pushAllToS3: async (
-      bucket: string,
-      prefix: string | undefined,
-      region: string | undefined,
-      cachePath: string,
-      endpoint?: string,
-      forcePathStyle?: boolean,
-    ) => {
-      const s3 = new S3Client({
-        bucket,
-        prefix,
-        region,
-        endpoint,
-        forcePathStyle,
-      });
+    pushAllToS3: async (config, cachePath) => {
+      const s3 = new S3Client(config);
       const syncService = new S3CacheSyncService(s3, cachePath);
       return await syncService.pushAll();
     },
