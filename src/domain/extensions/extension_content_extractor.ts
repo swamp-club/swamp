@@ -177,6 +177,10 @@ function extractModelFromSource(
 /**
  * Extracts the model type string.
  * Matches `ModelType.create("...")` or `type: "..."` patterns.
+ *
+ * Scopes the `type:` literal search to the `export const model = { ... }`
+ * object body to avoid false positives from string literals elsewhere in
+ * the file (e.g. embedded LLM prompts containing `type: "anime"`).
  */
 function extractModelType(content: string): string | null {
   // Match ModelType.create("type-name") or ModelType.create('type-name')
@@ -185,10 +189,16 @@ function extractModelType(content: string): string | null {
   );
   if (modelTypeMatch) return modelTypeMatch[1];
 
-  // Match type: "type-name" or type: 'type-name' in object literal
-  const typeLiteralMatch = content.match(
-    /type:\s*["']([^"']+)["']/,
-  );
+  // Scope the type: search to the model export object body to avoid matching
+  // type: patterns inside string literals elsewhere in the file.
+  const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
+  if (!modelExportMatch || modelExportMatch.index === undefined) return null;
+
+  const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
+  const body = extractBalancedBraces(content, bodyStart);
+  if (!body) return null;
+
+  const typeLiteralMatch = body.match(/type:\s*["']([^"']+)["']/);
   if (typeLiteralMatch) return typeLiteralMatch[1];
 
   return null;

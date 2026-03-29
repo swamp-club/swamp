@@ -1471,3 +1471,80 @@ Deno.test("extractContentMetadata: extracts methods from variable reference", as
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("extractContentMetadata: ignores type: inside string literal before model export", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "organizer.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "",
+        "// A const string that contains type: before the model export",
+        'const PROMPT = "For Anime (type: \\"anime\\"):\\n" +',
+        '  "List episodes by season.";',
+        "",
+        "export const model = {",
+        '  type: "@keeb/mms/organizer",',
+        '  version: "2026.03.01.1",',
+        "  methods: {",
+        "    organize: {",
+        '      description: "Organize media",',
+        "      arguments: z.object({}),",
+        "      execute: async () => ({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    assertEquals(result.models.length, 1);
+    assertEquals(result.models[0].type, "@keeb/mms/organizer");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("extractContentMetadata: ignores type: inside template literal in method", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "organizer2.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'import { z } from "npm:zod@4";',
+        "",
+        "export const model = {",
+        '  type: "@keeb/mms/organizer",',
+        '  version: "2026.03.01.1",',
+        "  methods: {",
+        "    organize: {",
+        '      description: "Organize media",',
+        "      arguments: z.object({}),",
+        "      execute: async () => {",
+        "        const prompt = `",
+        '**For Anime (type: "anime"):**',
+        "List episodes by season.`,",
+        "        return { dataHandles: [] };",
+        "      },",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    assertEquals(result.models.length, 1);
+    assertEquals(result.models[0].type, "@keeb/mms/organizer");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
