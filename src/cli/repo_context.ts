@@ -133,7 +133,7 @@ export async function resolveDatastoreForRepo(
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
 
-  const datastoreConfig = resolveDatastoreConfig(
+  const datastoreConfig = await resolveDatastoreConfig(
     marker,
     undefined,
     repoPath.value,

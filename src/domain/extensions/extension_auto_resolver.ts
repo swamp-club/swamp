@@ -21,6 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import { ModelType } from "../models/model_type.ts";
 import { type ModelDefinition, modelRegistry } from "../models/model.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
+import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
@@ -68,6 +69,7 @@ export interface ExtensionInstallerPort {
   install(extensionName: string): Promise<ExtensionInstallResultInfo | null>;
   hotLoadModels(): Promise<number>;
   hotLoadVaults(): Promise<void>;
+  hotLoadDatastores(): Promise<void>;
 }
 
 /**
@@ -312,9 +314,10 @@ export class ExtensionAutoResolver {
 
     if (!installResult) return false;
 
-    // Hot-load newly installed models and vaults
+    // Hot-load newly installed models, vaults, and datastores
     const newModelsCount = await extensionInstaller.hotLoadModels();
     await extensionInstaller.hotLoadVaults();
+    await extensionInstaller.hotLoadDatastores();
 
     output.installed(extensionName, installResult.version, newModelsCount);
 
@@ -374,6 +377,23 @@ export async function resolveVaultType(
   resolver: ExtensionAutoResolver | null,
 ): Promise<boolean> {
   if (vaultTypeRegistry.has(type)) return true;
+  if (!resolver) return false;
+  if (!type.startsWith("@")) return false;
+
+  return await resolver.resolve(type);
+}
+
+/**
+ * Standalone helper function for resolving datastore types at choke points.
+ *
+ * Checks the datastore type registry first (sync fast path), then falls back
+ * to auto-resolution if a resolver is available.
+ */
+export async function resolveDatastoreType(
+  type: string,
+  resolver: ExtensionAutoResolver | null,
+): Promise<boolean> {
+  if (datastoreTypeRegistry.has(type)) return true;
   if (!resolver) return false;
   if (!type.startsWith("@")) return false;
 

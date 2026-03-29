@@ -23,12 +23,14 @@ import {
   ExtensionAutoResolver,
   type ExtensionInstallerPort,
   type ExtensionLookupPort,
+  resolveDatastoreType,
   resolveModelType,
   resolveVaultType,
 } from "./extension_auto_resolver.ts";
 import { modelRegistry } from "../models/model.ts";
 import { ModelType } from "../models/model_type.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
+import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import { z } from "zod";
 
 /** Creates a no-op output port that records calls for assertions. */
@@ -97,6 +99,9 @@ function createMockInstaller(
       return Promise.resolve(3);
     },
     hotLoadVaults() {
+      return Promise.resolve();
+    },
+    hotLoadDatastores() {
       return Promise.resolve();
     },
   };
@@ -365,5 +370,36 @@ Deno.test("resolveVaultType - skips non-@ types", async () => {
   });
 
   const result = await resolveVaultType("plain-type", resolver);
+  assertEquals(result, false);
+});
+
+Deno.test("resolveDatastoreType - returns true for existing datastore type", async () => {
+  if (!datastoreTypeRegistry.has("test-resolve-datastore")) {
+    datastoreTypeRegistry.register({
+      type: "test-resolve-datastore",
+      name: "Test Datastore",
+      description: "For testing",
+      isBuiltIn: true,
+    });
+  }
+
+  const result = await resolveDatastoreType("test-resolve-datastore", null);
+  assertEquals(result, true);
+});
+
+Deno.test("resolveDatastoreType - returns false for unknown type without resolver", async () => {
+  const result = await resolveDatastoreType("@unknown/datastore", null);
+  assertEquals(result, false);
+});
+
+Deno.test("resolveDatastoreType - skips non-@ types", async () => {
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(),
+    extensionInstaller: createMockInstaller(),
+    output: createMockOutput(),
+  });
+
+  const result = await resolveDatastoreType("plain-type", resolver);
   assertEquals(result, false);
 });
