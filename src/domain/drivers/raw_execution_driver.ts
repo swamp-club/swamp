@@ -88,6 +88,7 @@ export class RawExecutionDriver implements ExecutionDriver {
 
     const {
       writeResource,
+      getHandles: getResourceHandles,
     } = createResourceWriter(
       this.context.dataRepository,
       this.context.modelType,
@@ -105,6 +106,7 @@ export class RawExecutionDriver implements ExecutionDriver {
 
     const {
       createFileWriter,
+      getHandles: getFileHandles,
     } = createFileWriterFactory(
       this.context.dataRepository,
       this.context.modelType,
@@ -141,7 +143,14 @@ export class RawExecutionDriver implements ExecutionDriver {
     );
 
     const durationMs = performance.now() - start;
-    const outputs = (result.dataHandles ?? []).map((handle) => ({
+    const writerHandles = [
+      ...getResourceHandles(),
+      ...getFileHandles(),
+    ];
+    const handles = result.dataHandles?.length
+      ? result.dataHandles
+      : writerHandles;
+    const outputs = handles.map((handle) => ({
       kind: "persisted" as const,
       handle,
     }));
