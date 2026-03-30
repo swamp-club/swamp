@@ -56,12 +56,16 @@ interface EvalQuery {
   note?: string;
 }
 
+/** Outcome of a single claude -p invocation */
+type QueryOutcome = "triggered" | "not_triggered" | "error";
+
 /** Result for a single query (aggregated across runs) */
 interface QueryResult {
   query: string;
   should_trigger: boolean;
   trigger_rate: number;
   triggers: number;
+  errors: number;
   runs: number;
   pass: boolean;
 }
@@ -72,6 +76,7 @@ interface SkillEvalScore {
   total: number;
   passed: number;
   failed: number;
+  errors: number;
   passRate: number;
   positiveResults: QueryResult[];
   negativeResults: QueryResult[];
@@ -246,7 +251,7 @@ async function runSingleQuery(
   projectRoot: string,
   model: string | undefined,
   debug: boolean = false,
-): Promise<boolean> {
+): Promise<QueryOutcome> {
   if (debug) {
     console.error(`  [debug] query: "${query.slice(0, 80)}"`);
     console.error(`  [debug] skillName: ${skillName}`);
@@ -275,15 +280,36 @@ async function runSingleQuery(
     }
   }
 
-  const command = new Deno.Command("claude", {
-    args,
-    stdout: "piped",
-    stderr: "null",
-    cwd: projectRoot,
-    env,
-  });
+  let process: Deno.ChildProcess;
+  try {
+    const command = new Deno.Command("claude", {
+      args,
+      stdout: "piped",
+      stderr: "piped",
+      cwd: projectRoot,
+      env,
+    });
+    process = command.spawn();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (debug) console.error(`  [debug] spawn error: ${msg}`);
+    return "error";
+  }
 
-  const process = command.spawn();
+  // Drain stderr in the background to detect errors
+  const stderrChunks: Uint8Array[] = [];
+  const stderrDrain = (async () => {
+    const r = process.stderr.getReader();
+    try {
+      while (true) {
+        const { done, value } = await r.read();
+        if (done) break;
+        stderrChunks.push(value);
+      }
+    } finally {
+      r.releaseLock();
+    }
+  })();
 
   // Read stdout as a stream and parse line-by-line
   const reader = process.stdout.getReader();
@@ -403,7 +429,7 @@ async function runSingleQuery(
                 accumulatedJson = "";
               } else {
                 // Claude called a different tool first — not our skill
-                return false;
+                return "not_triggered";
               }
             }
           } else if (seType === "content_block_delta" && pendingToolName) {
@@ -411,17 +437,19 @@ async function runSingleQuery(
             if (delta?.type === "input_json_delta") {
               accumulatedJson += (delta.partial_json as string) ?? "";
               if (matchesSkill(accumulatedJson)) {
-                return true;
+                return "triggered";
               }
             }
           } else if (
             seType === "content_block_stop" || seType === "message_stop"
           ) {
             if (pendingToolName) {
-              return matchesSkill(accumulatedJson);
+              return matchesSkill(accumulatedJson)
+                ? "triggered"
+                : "not_triggered";
             }
             if (seType === "message_stop") {
-              return false;
+              return "not_triggered";
             }
           }
         }
@@ -443,7 +471,7 @@ async function runSingleQuery(
               toolName === "Skill" &&
               (toolInput.skill as string ?? "").includes(skillName)
             ) {
-              return true;
+              return "triggered";
             }
             if (
               toolName === "Read" &&
@@ -451,14 +479,14 @@ async function runSingleQuery(
                 `/${skillName}/`,
               )
             ) {
-              return true;
+              return "triggered";
             }
-            return false;
+            return "not_triggered";
           }
         }
 
         if (event.type === "result") {
-          return false;
+          return "not_triggered";
         }
       }
     }
@@ -469,9 +497,62 @@ async function runSingleQuery(
     try {
       process.kill();
     } catch { /* already exited */ }
+    // Wait for stderr drain to complete
+    await stderrDrain.catch(() => {});
   }
 
-  return false;
+  // If we got here, we timed out or got no useful events.
+  // Check stderr for error indicators.
+  const stderrText = new TextDecoder().decode(
+    mergeUint8Arrays(stderrChunks),
+  );
+  if (stderrText.length > 0) {
+    const lower = stderrText.toLowerCase();
+    if (
+      lower.includes("rate limit") ||
+      lower.includes("overloaded") ||
+      lower.includes("429") ||
+      lower.includes("529") ||
+      lower.includes("error") ||
+      lower.includes("econnreset") ||
+      lower.includes("timeout") ||
+      lower.includes("econnrefused")
+    ) {
+      if (debug) {
+        console.error(
+          `  [debug] error detected in stderr: ${stderrText.slice(0, 200)}`,
+        );
+      }
+      return "error";
+    }
+  }
+
+  // Check if process exited with non-zero
+  try {
+    const status = await process.status;
+    if (!status.success) {
+      if (debug) {
+        console.error(
+          `  [debug] process exited with code ${status.code}`,
+        );
+      }
+      return "error";
+    }
+  } catch { /* process already killed */ }
+
+  return "not_triggered";
+}
+
+/** Merge an array of Uint8Arrays into a single Uint8Array. */
+function mergeUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
 }
 
 // ─── Concurrency pool ────────────────────────────────────────────────────────
@@ -509,22 +590,51 @@ function buildSummaryTable(
 ): string {
   const lines: string[] = ["## Skill Trigger Eval Results\n"];
 
-  lines.push("| Skill | Queries | Passed | Failed | Pass Rate | Status |");
-  lines.push("|-------|---------|--------|--------|-----------|--------|");
+  lines.push(
+    "| Skill | Queries | Passed | Failed | Errors | Pass Rate | Status |",
+  );
+  lines.push(
+    "|-------|---------|--------|--------|--------|-----------|--------|",
+  );
+
+  const totalErrors = scores.reduce((sum, s) => sum + s.errors, 0);
 
   for (const score of scores) {
     const rate = `${(score.passRate * 100).toFixed(0)}%`;
     const status = score.error
       ? "Error"
+      : score.errors > 0 && score.errors > score.total * 0.3
+      ? "Infra Issue"
       : score.passRate >= 0.8
       ? "Pass"
       : "Fail";
     lines.push(
-      `| ${score.name} | ${score.total} | ${score.passed} | ${score.failed} | ${rate} | ${status} |`,
+      `| ${score.name} | ${score.total} | ${score.passed} | ${score.failed} | ${score.errors} | ${rate} | ${status} |`,
     );
   }
 
   lines.push("");
+
+  // Infrastructure health summary
+  if (totalErrors > 0) {
+    const totalRuns = scores.reduce(
+      (sum, s) =>
+        sum +
+        s.positiveResults.reduce((rs, r) => rs + r.runs, 0) +
+        s.negativeResults.reduce((rs, r) => rs + r.runs, 0),
+      0,
+    );
+    const errorRate = totalRuns > 0
+      ? (totalErrors / totalRuns * 100).toFixed(0)
+      : "0";
+    lines.push(
+      `**Infrastructure health:** ${totalErrors}/${totalRuns} query runs errored (${errorRate}%)${
+        parseInt(errorRate) > 30
+          ? " — results unreliable, likely rate limiting or API issues"
+          : ""
+      }\n`,
+    );
+  }
 
   if (allPassed) {
     lines.push("All skills pass the trigger eval threshold.");
@@ -548,14 +658,20 @@ function buildSummaryTable(
       if (failedPositives.length > 0) {
         lines.push(`**${score.name}** — missed triggers:`);
         for (const r of failedPositives) {
-          lines.push(`- "${r.query}" (triggered ${r.triggers}/${r.runs})`);
+          const errInfo = r.errors > 0 ? ` [${r.errors} errors]` : "";
+          lines.push(
+            `- "${r.query}" (triggered ${r.triggers}/${r.runs})${errInfo}`,
+          );
         }
         lines.push("");
       }
       if (failedNegatives.length > 0) {
         lines.push(`**${score.name}** — false triggers:`);
         for (const r of failedNegatives) {
-          lines.push(`- "${r.query}" (triggered ${r.triggers}/${r.runs})`);
+          const errInfo = r.errors > 0 ? ` [${r.errors} errors]` : "";
+          lines.push(
+            `- "${r.query}" (triggered ${r.triggers}/${r.runs})${errInfo}`,
+          );
         }
         lines.push("");
       }
@@ -625,6 +741,7 @@ async function main(): Promise<void> {
         total: 0,
         passed: 0,
         failed: 0,
+        errors: 0,
         passRate: 0,
         positiveResults: [],
         negativeResults: [],
@@ -645,6 +762,7 @@ async function main(): Promise<void> {
         total: 0,
         passed: 0,
         failed: 0,
+        errors: 0,
         passRate: 0,
         positiveResults: [],
         negativeResults: [],
@@ -663,7 +781,7 @@ async function main(): Promise<void> {
   }
 
   const taskInfos: TaskInfo[] = [];
-  const tasks: (() => Promise<boolean>)[] = [];
+  const tasks: (() => Promise<QueryOutcome>)[] = [];
 
   for (const plan of plans) {
     for (const item of plan.evalSet) {
@@ -699,38 +817,49 @@ async function main(): Promise<void> {
   // ── Phase 3: Aggregate results back per-skill ─────────────────────────────
 
   // Group results by skill → query
-  const skillQueryTriggers = new Map<
+  const skillQueryOutcomes = new Map<
     string,
-    Map<string, { triggers: boolean[]; should_trigger: boolean }>
+    Map<string, { outcomes: QueryOutcome[]; should_trigger: boolean }>
   >();
 
   for (let i = 0; i < taskInfos.length; i++) {
     const info = taskInfos[i];
-    if (!skillQueryTriggers.has(info.skillName)) {
-      skillQueryTriggers.set(info.skillName, new Map());
+    if (!skillQueryOutcomes.has(info.skillName)) {
+      skillQueryOutcomes.set(info.skillName, new Map());
     }
-    const queryMap = skillQueryTriggers.get(info.skillName)!;
+    const queryMap = skillQueryOutcomes.get(info.skillName)!;
     if (!queryMap.has(info.query)) {
       queryMap.set(info.query, {
-        triggers: [],
+        outcomes: [],
         should_trigger: info.should_trigger,
       });
     }
-    queryMap.get(info.query)!.triggers.push(allResults[i]);
+    queryMap.get(info.query)!.outcomes.push(allResults[i]);
   }
 
   // Build scores from aggregated results
   const scores: SkillEvalScore[] = [...errorScores];
+  let totalErrors = 0;
+  let totalQueries = 0;
 
   for (const plan of plans) {
-    const queryMap = skillQueryTriggers.get(plan.name);
+    const queryMap = skillQueryOutcomes.get(plan.name);
     if (!queryMap) continue;
 
     const results: QueryResult[] = [];
+    let skillErrors = 0;
     for (const [query, data] of queryMap) {
-      const triggerCount = data.triggers.filter(Boolean).length;
-      const triggerRate = triggerCount / data.triggers.length;
-      const didPass = data.should_trigger
+      const triggerCount = data.outcomes.filter((o) => o === "triggered")
+        .length;
+      const errorCount = data.outcomes.filter((o) => o === "error").length;
+      const validRuns = data.outcomes.length - errorCount;
+      skillErrors += errorCount;
+
+      // Compute trigger rate excluding errors — errors are not "didn't trigger"
+      const triggerRate = validRuns > 0 ? triggerCount / validRuns : 0;
+      const didPass = validRuns === 0
+        ? false // all runs errored — can't assess
+        : data.should_trigger
         ? triggerRate >= config.triggerThreshold
         : triggerRate < config.triggerThreshold;
 
@@ -739,10 +868,14 @@ async function main(): Promise<void> {
         should_trigger: data.should_trigger,
         trigger_rate: triggerRate,
         triggers: triggerCount,
-        runs: data.triggers.length,
+        errors: errorCount,
+        runs: data.outcomes.length,
         pass: didPass,
       });
     }
+
+    totalErrors += skillErrors;
+    totalQueries += results.length * config.runsPerQuery;
 
     const passed = results.filter((r) => r.pass).length;
     const total = results.length;
@@ -756,6 +889,7 @@ async function main(): Promise<void> {
       total,
       passed,
       failed: total - passed,
+      errors: skillErrors,
       passRate,
       positiveResults,
       negativeResults,
@@ -771,18 +905,37 @@ async function main(): Promise<void> {
       const expected = r.should_trigger
         ? "should trigger"
         : "should NOT trigger";
+      const errorSuffix = r.errors > 0 ? ` [${r.errors} errors]` : "";
       console.log(
         `    [${status}] ${r.triggers}/${r.runs} (${expected}): ${
           r.query.slice(0, 70)
-        }`,
+        }${errorSuffix}`,
       );
     }
 
+    const errorSuffix = skillErrors > 0
+      ? ` (${skillErrors} query errors)`
+      : "";
     console.log(
       `    ${plan.name}: ${passed}/${total} passed (${
         (passRate * 100).toFixed(0)
+      }%)${errorSuffix}`,
+    );
+  }
+
+  // Report infrastructure health
+  const errorRate = totalQueries > 0 ? totalErrors / totalQueries : 0;
+  if (totalErrors > 0) {
+    console.log(
+      `\n  Infrastructure health: ${totalErrors}/${totalQueries} query runs errored (${
+        (errorRate * 100).toFixed(0)
       }%)`,
     );
+    if (errorRate > 0.3) {
+      console.log(
+        "  WARNING: >30% error rate — results may be unreliable (likely rate limiting or API issues)",
+      );
+    }
   }
 
   // Write GitHub Actions summary
