@@ -306,6 +306,54 @@ Deno.test("methodSummaryReport: multiple data handles grouped by specName", asyn
   assertEquals(items[2].specName, "logs");
 });
 
+Deno.test("methodSummaryReport: both args empty shows 'No arguments.'", async () => {
+  const ctx = makeMethodContext({
+    globalArgs: {},
+    methodArgs: {},
+    dataHandles: [],
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  assertStringIncludes(result.markdown, "## Arguments");
+  assertStringIncludes(result.markdown, "No arguments.");
+  assertEquals(result.markdown.includes("**Global Arguments**"), false);
+  assertEquals(result.markdown.includes("**Method Arguments**"), false);
+  assertEquals(result.markdown.includes("```json\n{}"), false);
+
+  // JSON still contains both fields
+  assertEquals(result.json.globalArgs, {});
+  assertEquals(result.json.methodArgs, {});
+});
+
+Deno.test("methodSummaryReport: only globalArgs populated omits method args section", async () => {
+  const ctx = makeMethodContext({
+    globalArgs: { region: "us-west-2" },
+    methodArgs: {},
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  assertStringIncludes(result.markdown, "**Global Arguments**");
+  assertStringIncludes(result.markdown, '"region": "us-west-2"');
+  assertEquals(result.markdown.includes("**Method Arguments**"), false);
+  assertEquals(result.markdown.includes("No arguments."), false);
+});
+
+Deno.test("methodSummaryReport: only methodArgs populated omits global args section", async () => {
+  const ctx = makeMethodContext({
+    globalArgs: {},
+    methodArgs: { force: true },
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  assertStringIncludes(result.markdown, "**Method Arguments**");
+  assertStringIncludes(result.markdown, '"force": true');
+  assertEquals(result.markdown.includes("**Global Arguments**"), false);
+  assertEquals(result.markdown.includes("No arguments."), false);
+});
+
 Deno.test("methodSummaryReport: JSON output structure matches expected shape", async () => {
   const ctx = makeMethodContext({
     dataHandles: [

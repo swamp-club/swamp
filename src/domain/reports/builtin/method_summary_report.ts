@@ -147,11 +147,32 @@ export const methodSummaryReport: ReportDefinition = {
       ? redactSensitiveArgs(methodArgs, "method")
       : methodArgs;
 
-    lines.push("## Arguments", "");
-    lines.push("**Global Arguments**", "");
-    lines.push("```json", JSON.stringify(redactedGlobal, null, 2), "```", "");
-    lines.push("**Method Arguments**", "");
-    lines.push("```json", JSON.stringify(redactedMethod, null, 2), "```", "");
+    const globalEmpty = Object.keys(redactedGlobal).length === 0;
+    const methodEmpty = Object.keys(redactedMethod).length === 0;
+
+    if (globalEmpty && methodEmpty) {
+      lines.push("## Arguments", "", "No arguments.", "");
+    } else {
+      lines.push("## Arguments", "");
+      if (!globalEmpty) {
+        lines.push("**Global Arguments**", "");
+        lines.push(
+          "```json",
+          JSON.stringify(redactedGlobal, null, 2),
+          "```",
+          "",
+        );
+      }
+      if (!methodEmpty) {
+        lines.push("**Method Arguments**", "");
+        lines.push(
+          "```json",
+          JSON.stringify(redactedMethod, null, 2),
+          "```",
+          "",
+        );
+      }
+    }
 
     if (dataHandles.length > 0) {
       lines.push(...renderPointersMarkdown(definition.name, dataHandles));
