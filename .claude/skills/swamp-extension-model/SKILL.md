@@ -138,25 +138,10 @@ Upgrades run lazily at method execution time and persist after first run.
 
 See [references/upgrades.md](references/upgrades.md) for patterns and examples.
 
-## Supported Zod Types
+## Zod Types
 
-All standard Zod types work in `globalArguments`, method `arguments`, and
-resource `schema` definitions:
-
-| Zod Type                            | JSON Schema Output                             | Use Case        |
-| ----------------------------------- | ---------------------------------------------- | --------------- |
-| `z.string()`                        | `{ type: "string" }`                           | Text fields     |
-| `z.number()`                        | `{ type: "number" }`                           | Numeric values  |
-| `z.boolean()`                       | `{ type: "boolean" }`                          | Flags           |
-| `z.uuid()`                          | `{ type: "string", format: "uuid" }`           | Resource IDs    |
-| `z.iso.datetime()`                  | `{ type: "string", format: "date-time" }`      | Timestamps      |
-| `z.enum(["a", "b"])`                | `{ type: "string", enum: [...] }`              | Fixed choices   |
-| `z.object({ ... })`                 | `{ type: "object", ... }`                      | Structured data |
-| `z.array(z.string())`               | `{ type: "array", items: ... }`                | Lists           |
-| `z.record(z.string(), z.unknown())` | `{ type: "object", additionalProperties: {} }` | Key-value maps  |
-
-All types support `.optional()`, `.default()`, `.describe()`, and
-`.meta({ sensitive: true })` modifiers.
+All standard Zod types work in schemas. Swamp-specific modifiers:
+`.meta({ sensitive: true })` marks fields for vault storage.
 
 ## Resources & Files
 
