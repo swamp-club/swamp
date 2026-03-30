@@ -441,6 +441,52 @@ Follow the smoke-test protocol in
 test your model's methods against the real API. Start with safe read-only
 methods (list, get), then run the full CRUD lifecycle.
 
+## Unit Testing
+
+Use the `@systeminit/swamp-testing` package to unit test `execute` functions
+without real infrastructure:
+
+```typescript
+import { createModelTestContext } from "@systeminit/swamp-testing";
+import { assertEquals } from "@std/assert";
+import { model } from "./my_model.ts";
+
+Deno.test("run method writes expected resource", async () => {
+  const { context, getWrittenResources } = createModelTestContext({
+    globalArgs: { message: "hello" },
+  });
+
+  await model.methods.run.execute({}, context);
+
+  const resources = getWrittenResources();
+  assertEquals(resources.length, 1);
+  assertEquals(resources[0].data.message, "HELLO");
+});
+```
+
+For CRUD models, seed stored resources to test methods that read existing state:
+
+```typescript
+const { context } = createModelTestContext({
+  storedResources: { "main": { instanceId: "i-abc123" } },
+});
+await model.methods.sync.execute({}, context);
+```
+
+For models calling external APIs, use the injectable client pattern — accept an
+optional client parameter so tests can pass a stub:
+
+```typescript
+execute: (async (args, context) => {
+  const s3 = args._s3Client ??
+    new S3Client({ region: context.globalArgs.region });
+  // ...
+});
+```
+
+See [references/testing.md](references/testing.md) for the full guide including
+injectable client examples, log assertions, and cancellation testing.
+
 ## Publishing Extensions
 
 Extensions are published to the swamp registry via a `manifest.yaml` and the
@@ -551,6 +597,8 @@ swamp model type describe @myorg/my-model --json  # Check schema
 - **Smoke Testing**: See
   [references/smoke_testing.md](references/smoke_testing.md) for the pre-push
   smoke-test protocol, CRUD lifecycle testing, and common failure patterns
+- **Unit Testing**: See [references/testing.md](references/testing.md) for
+  `createModelTestContext`, injectable client patterns, and test examples
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md)
 - **Version Upgrades**: See [references/upgrades.md](references/upgrades.md) for
