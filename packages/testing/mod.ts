@@ -20,9 +20,11 @@
 /**
  * @systeminit/swamp-testing — Test utilities for swamp extensions.
  *
- * Provides test factories for all extension types: models, vaults, datastores,
- * execution drivers, and reports. Each factory creates in-memory fakes with
- * inspection helpers for unit testing without real infrastructure.
+ * Provides test factories and conformance suites for all extension types:
+ * models, vaults, datastores, execution drivers, and reports.
+ *
+ * - **Factories** create in-memory fakes for unit testing without infrastructure
+ * - **Conformance suites** verify that real implementations satisfy their contracts
  *
  * @module
  */
@@ -65,6 +67,17 @@ export type {
 
 export type { VaultProvider } from "./vault_types.ts";
 
+export {
+  assertVaultConformance,
+  assertVaultExportConformance,
+} from "./vault_conformance.ts";
+
+export type {
+  VaultConformanceOptions,
+  VaultExport,
+  VaultExportConformanceOptions,
+} from "./vault_conformance.ts";
+
 // --- Datastores ---
 
 export { createDatastoreTestContext } from "./datastore_test_context.ts";
@@ -85,6 +98,17 @@ export type {
   LockInfo,
   LockOptions,
 } from "./datastore_types.ts";
+
+export {
+  assertDatastoreExportConformance,
+  assertLockConformance,
+  assertVerifierConformance,
+} from "./datastore_conformance.ts";
+
+export type {
+  DatastoreExport,
+  DatastoreExportConformanceOptions,
+} from "./datastore_conformance.ts";
 
 // --- Drivers ---
 

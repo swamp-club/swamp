@@ -7,6 +7,7 @@
     "jsr:@cliffy/table@1.0.0": "1.0.0",
     "jsr:@logtape/logtape@^2.0.2": "2.0.4",
     "jsr:@logtape/pretty@^2.0.2": "2.0.2",
+    "jsr:@std/assert@1.0.19": "1.0.19",
     "jsr:@std/assert@^1.0.18": "1.0.19",
     "jsr:@std/cli@^1.0.27": "1.0.27",
     "jsr:@std/fmt@^1.0.9": "1.0.9",
@@ -1518,6 +1519,13 @@
       "npm:marked@14",
       "npm:react@^19.1.0",
       "npm:zod@^4.3.6"
-    ]
+    ],
+    "members": {
+      "packages/testing": {
+        "dependencies": [
+          "jsr:@std/assert@1.0.19"
+        ]
+      }
+    }
   }
 }
