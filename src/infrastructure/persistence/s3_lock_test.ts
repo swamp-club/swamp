@@ -248,6 +248,23 @@ Deno.test("S3Lock - custom lock key", async () => {
   await lock.release();
 });
 
+Deno.test("S3Lock - release cleans up lock even during heartbeat", async () => {
+  const mock = createMockS3Client();
+  const lock = new S3Lock(mock, { ttlMs: 5000 });
+
+  await lock.acquire();
+  assertEquals(mock.storage.has(".datastore.lock"), true);
+
+  // Release should clean up — the releasing flag prevents extend() from
+  // recreating the lock after release() deletes it
+  await lock.release();
+  assertEquals(mock.storage.has(".datastore.lock"), false);
+
+  // Wait briefly to ensure no heartbeat recreates the lock
+  await new Promise((r) => setTimeout(r, 100));
+  assertEquals(mock.storage.has(".datastore.lock"), false);
+});
+
 Deno.test("S3Lock - times out when stale lock cannot be deleted", async () => {
   const mock = createMockS3Client();
 

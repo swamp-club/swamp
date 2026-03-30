@@ -80,6 +80,7 @@ export class S3Lock implements DistributedLock {
   private readonly maxWaitMs: number;
   private heartbeatId: number | undefined;
   private held = false;
+  private releasing = false;
   private nonce: string | undefined;
 
   constructor(s3: S3Client, options?: LockOptions) {
@@ -93,6 +94,7 @@ export class S3Lock implements DistributedLock {
 
   async acquire(): Promise<void> {
     const startTime = Date.now();
+    this.releasing = false;
 
     const nonce = crypto.randomUUID();
 
@@ -141,6 +143,9 @@ export class S3Lock implements DistributedLock {
   }
 
   async release(): Promise<void> {
+    // Set releasing flag BEFORE stopping heartbeat so any in-flight
+    // extend() sees it and skips writing — prevents orphaned lock files.
+    this.releasing = true;
     this.stopHeartbeat();
 
     if (!this.held) return;
@@ -185,7 +190,7 @@ export class S3Lock implements DistributedLock {
   }
 
   private async extend(): Promise<void> {
-    if (!this.held || !this.nonce) return;
+    if (!this.held || !this.nonce || this.releasing) return;
 
     // Verify we still own the lock before extending (fencing).
     // If another process acquired the lock (e.g., after we were paused
@@ -196,6 +201,10 @@ export class S3Lock implements DistributedLock {
       this.stopHeartbeat();
       return;
     }
+
+    // Re-check releasing flag after the async read — release() may have
+    // been called while we were reading the lock.
+    if (this.releasing) return;
 
     const info = buildLockInfo(this.ttlMs, this.nonce);
     const body = encodeLockInfo(info);
