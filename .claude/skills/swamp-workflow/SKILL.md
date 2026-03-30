@@ -5,42 +5,43 @@ description: Work with swamp workflows for AI-native automation — define jobs 
 
 # Swamp Workflow Skill
 
-Work with swamp workflows through the CLI.
+Work with swamp workflows through the CLI. All commands support `--json` for
+machine-readable output.
 
 ## CRITICAL: Workflow Creation Rules
 
 - **Never generate workflow IDs** — no `uuidgen`, `crypto.randomUUID()`, or
   manual UUIDs. Swamp assigns IDs automatically via `swamp workflow create`.
 - **Never write a workflow YAML file from scratch** — always use
-  `swamp workflow create <name>` first, then edit the scaffold at the
+  `swamp workflow create <name> --json` first, then edit the scaffold at the
   returned `path`, preserving the assigned `id`.
 - **Never modify the `id` field** in an existing workflow file.
 - **Verify CLI syntax**: If unsure about exact flags or subcommands, run
   `swamp help workflow` for the complete, up-to-date CLI schema.
 
-Correct flow: `swamp workflow create <name>` → edit the YAML → validate →
+Correct flow: `swamp workflow create <name> --json` → edit the YAML → validate →
 run.
 
 ## Quick Reference
 
-| Task               | Command                                                  |
-| ------------------ | -------------------------------------------------------- |
-| Get schema         | `swamp workflow schema get`                              |
-| Search workflows   | `swamp workflow search [query]`                          |
-| Get a workflow     | `swamp workflow get <id_or_name>`                        |
-| Create a workflow  | `swamp workflow create <name>`                           |
-| Edit a workflow    | `swamp workflow edit [id_or_name]`                       |
-| Delete a workflow  | `swamp workflow delete <id_or_name>`                     |
-| Validate workflow  | `swamp workflow validate [id_or_name]`                   |
-| Evaluate workflow  | `swamp workflow evaluate <id_or_name>`                   |
-| Run a workflow     | `swamp workflow run <id_or_name>`                        |
-| Run with inputs    | `swamp workflow run <id_or_name> --input key=value`      |
-| View run history   | `swamp workflow history search`                          |
-| Get latest run     | `swamp workflow history get <workflow>`                   |
-| View run logs      | `swamp workflow history logs <run_or_workflow>`           |
-| List workflow data | `swamp data list --workflow <name>`                      |
-| Search wf data     | `swamp data search --workflow <name>`                    |
-| Get workflow data  | `swamp data get --workflow <name> <data_name>`           |
+| Task               | Command                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| Get schema         | `swamp workflow schema get --json`                         |
+| Search workflows   | `swamp workflow search [query] --json`                     |
+| Get a workflow     | `swamp workflow get <id_or_name> --json`                   |
+| Create a workflow  | `swamp workflow create <name> --json`                      |
+| Edit a workflow    | `swamp workflow edit [id_or_name]`                         |
+| Delete a workflow  | `swamp workflow delete <id_or_name> --json`                |
+| Validate workflow  | `swamp workflow validate [id_or_name] --json`              |
+| Evaluate workflow  | `swamp workflow evaluate <id_or_name> --json`              |
+| Run a workflow     | `swamp workflow run <id_or_name> --json`                   |
+| Run with inputs    | `swamp workflow run <id_or_name> --input key=value --json` |
+| View run history   | `swamp workflow history search --json`                     |
+| Get latest run     | `swamp workflow history get <workflow> --json`             |
+| View run logs      | `swamp workflow history logs <run_or_workflow> --json`     |
+| List workflow data | `swamp data list --workflow <name> --json`                 |
+| Search wf data     | `swamp data search --workflow <name> --json`               |
+| Get workflow data  | `swamp data get --workflow <name> <data_name> --json`      |
 
 ## Repository Structure
 
@@ -65,16 +66,37 @@ Use `swamp repo index` to rebuild if symlinks become out of sync.
 Before creating or editing a workflow file, ALWAYS get the schema first:
 
 ```bash
-swamp workflow schema get
+swamp workflow schema get --json
 ```
 
-The output shows JSON Schemas for the workflow, job, step, dependency, and task
-objects.
+**Output shape:**
+
+```json
+{
+  "workflow": {/* JSON Schema for top-level workflow */},
+  "job": {/* JSON Schema for job objects */},
+  "jobDependency": {/* JSON Schema for job dependency with condition */},
+  "step": {/* JSON Schema for step objects */},
+  "stepDependency": {/* JSON Schema for step dependency with condition */},
+  "stepTask": {/* JSON Schema for task (model_method or workflow) */},
+  "triggerCondition": {/* JSON Schema for dependency conditions */}
+}
+```
 
 ## Create a Workflow
 
 ```bash
-swamp workflow create my-deploy-workflow
+swamp workflow create my-deploy-workflow --json
+```
+
+**Output shape:**
+
+```json
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "name": "my-deploy-workflow",
+  "path": "workflows/workflow-3fa85f64-5717-4562-b3fc-2c963f66afa6.yaml"
+}
 ```
 
 The `id` is auto-assigned and **must not be changed**. Edit the YAML file at the
@@ -126,14 +148,14 @@ jobs:
 
 ## Edit a Workflow
 
-**Recommended:** Use `swamp workflow get <name>` to get the file path,
+**Recommended:** Use `swamp workflow get <name> --json` to get the file path,
 then edit directly with the Edit tool, then validate with
-`swamp workflow validate <name>`.
+`swamp workflow validate <name> --json`.
 
 **Alternative methods:**
 
 - Interactive: `swamp workflow edit my-workflow` (opens in system editor)
-- Stdin: `cat updated.yaml | swamp workflow edit my-workflow`
+- Stdin: `cat updated.yaml | swamp workflow edit my-workflow --json`
 
 Run `swamp repo index` if search results seem stale after editing.
 
@@ -142,7 +164,18 @@ Run `swamp repo index` if search results seem stale after editing.
 Delete a workflow and all its run history.
 
 ```bash
-swamp workflow delete my-workflow
+swamp workflow delete my-workflow --json
+```
+
+**Output shape:**
+
+```json
+{
+  "deleted": true,
+  "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "workflowName": "my-workflow",
+  "runsDeleted": 5
+}
 ```
 
 ## Validate Workflows
@@ -150,19 +183,35 @@ swamp workflow delete my-workflow
 Validate against schema and check for errors.
 
 ```bash
-swamp workflow validate my-workflow
-swamp workflow validate  # Validate all
+swamp workflow validate my-workflow --json
+swamp workflow validate --json  # Validate all
+```
+
+**Output shape (single):**
+
+```json
+{
+  "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "workflowName": "my-workflow",
+  "validations": [
+    { "name": "Schema validation", "passed": true },
+    { "name": "Unique job names", "passed": true },
+    { "name": "Valid job dependency references", "passed": true },
+    { "name": "No cyclic job dependencies", "passed": true }
+  ],
+  "passed": true
+}
 ```
 
 ## Run a Workflow
 
 ```bash
-swamp workflow run my-workflow
-swamp workflow run my-workflow --input environment=production
-swamp workflow run my-workflow --input environment=production --input replicas=3
-swamp workflow run my-workflow --input '{"environment": "production"}'  # JSON also supported
-swamp workflow run my-workflow --input-file inputs.yaml
-swamp workflow run my-workflow --last-evaluated  # Use pre-evaluated workflow
+swamp workflow run my-workflow --json
+swamp workflow run my-workflow --input environment=production --json
+swamp workflow run my-workflow --input environment=production --input replicas=3 --json
+swamp workflow run my-workflow --input '{"environment": "production"}' --json  # JSON also supported
+swamp workflow run my-workflow --input-file inputs.yaml --json
+swamp workflow run my-workflow --last-evaluated --json  # Use pre-evaluated workflow
 ```
 
 **Options:**
@@ -174,30 +223,104 @@ swamp workflow run my-workflow --last-evaluated  # Use pre-evaluated workflow
 | `--last-evaluated`  | Use previously evaluated workflow (skip eval and input validation) |
 | `--driver <driver>` | Override execution driver for all steps (e.g. `raw`, `docker`)     |
 
-After execution, use `swamp data list --workflow <name>` to see produced data
-and `swamp data get --workflow <name> <data_name>` to read specific items.
+**Output shape:**
+
+```json
+{
+  "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "workflowName": "my-workflow",
+  "status": "succeeded",
+  "jobs": [
+    {
+      "name": "main",
+      "status": "succeeded",
+      "steps": [
+        {
+          "name": "example",
+          "status": "succeeded",
+          "duration": 2,
+          "dataArtifacts": [
+            {
+              "dataId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+              "name": "output",
+              "version": 1
+            }
+          ]
+        }
+      ],
+      "duration": 2
+    }
+  ],
+  "duration": 5,
+  "path": "workflows/workflow-3fa85f64-5717-4562-b3fc-2c963f66afa6/workflow-7c9e6679-7425-40de-944b-e07fc1f90ae7-timestamp.yaml"
+}
+```
 
 ## Workflow History
 
 ### Search Run History
 
 ```bash
-swamp workflow history search
-swamp workflow history search "deploy"
+swamp workflow history search --json
+swamp workflow history search "deploy" --json
+```
+
+**Output shape:**
+
+```json
+{
+  "query": "",
+  "results": [
+    {
+      "runId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "workflowName": "my-workflow",
+      "status": "succeeded",
+      "startedAt": "2025-01-15T10:30:00Z",
+      "duration": 5
+    }
+  ]
+}
 ```
 
 ### Get Latest Run
 
 ```bash
-swamp workflow history get my-workflow
+swamp workflow history get my-workflow --json
+```
+
+**Output shape:**
+
+```json
+{
+  "runId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "workflowId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "workflowName": "my-workflow",
+  "status": "succeeded",
+  "startedAt": "2025-01-15T10:30:00Z",
+  "completedAt": "2025-01-15T10:30:05Z",
+  "jobs": [/* job execution details */]
+}
 ```
 
 ### View Run Logs
 
 ```bash
-swamp workflow history logs my-workflow        # Latest run logs
-swamp workflow history logs <run_id>           # Specific run logs
-swamp workflow history logs <run_id> build.compile  # Specific step logs
+swamp workflow history logs my-workflow --json        # Latest run logs
+swamp workflow history logs 7c9e6679-7425-40de-944b-e07fc1f90ae7 --json            # Specific run logs
+swamp workflow history logs 7c9e6679-7425-40de-944b-e07fc1f90ae7 build.compile --json  # Specific step logs
+```
+
+**Output shape:**
+
+```json
+{
+  "runId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "step": "build.compile",
+  "logs": "Building application...\nCompilation complete.",
+  "exitCode": 0
+}
 ```
 
 ## Workflow Inputs
@@ -252,9 +375,9 @@ Evaluate expressions without executing. CEL expressions are resolved; vault
 expressions remain raw for runtime resolution.
 
 ```bash
-swamp workflow evaluate my-workflow
-swamp workflow evaluate my-workflow --input environment=dev
-swamp workflow evaluate --all
+swamp workflow evaluate my-workflow --json
+swamp workflow evaluate my-workflow --input environment=dev --json
+swamp workflow evaluate --all --json
 ```
 
 **Key behaviors:**
@@ -325,12 +448,12 @@ dbPassword: ${{ vault.get(prod-secrets, DB_PASSWORD) }}
 
 End-to-end workflow creation:
 
-1. **Get schema**: `swamp workflow schema get`
-2. **Create**: `swamp workflow create my-task`
+1. **Get schema**: `swamp workflow schema get --json`
+2. **Create**: `swamp workflow create my-task --json`
 3. **Edit**: Add jobs and steps to the YAML file
-4. **Validate**: `swamp workflow validate my-task`
+4. **Validate**: `swamp workflow validate my-task --json`
 5. **Fix** any errors and re-validate
-6. **Run**: `swamp workflow run my-task`
+6. **Run**: `swamp workflow run my-task --json`
 
 ## When to Use Other Skills
 

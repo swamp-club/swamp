@@ -5,29 +5,30 @@ description: List model data, view version history, delete expired versions, and
 
 # Swamp Data Skill
 
-Manage model data lifecycle through the CLI.
+Manage model data lifecycle through the CLI. All commands support `--json` for
+machine-readable output.
 
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
 `swamp help data` for the complete, up-to-date CLI schema.
 
 ## Quick Reference
 
-| Task                   | Command                                        |
-| ---------------------- | ---------------------------------------------- |
-| Search all data        | `swamp data search`                            |
-| Search with filters    | `swamp data search --type output --since 1d`   |
-| Search by workflow     | `swamp data search --workflow my-workflow`     |
-| Search by model        | `swamp data search --model my-model`           |
-| Free-text search       | `swamp data search vpc`                        |
-| List model data        | `swamp data list <model>`                      |
-| List workflow data     | `swamp data list --workflow <name>`            |
-| Get specific data      | `swamp data get <model> <name>`                |
-| Get metadata only      | `swamp data get <model> <name> --no-content`   |
-| Get data via workflow  | `swamp data get --workflow <name> <data_name>` |
-| View version history   | `swamp data versions <model> <name>`           |
-| Run garbage collection | `swamp data gc`                                |
-| Rename data instance   | `swamp data rename <model> <old> <new>`        |
-| Preview GC (dry run)   | `swamp data gc --dry-run`                      |
+| Task                   | Command                                               |
+| ---------------------- | ----------------------------------------------------- |
+| Search all data        | `swamp data search --json`                            |
+| Search with filters    | `swamp data search --type output --since 1d --json`   |
+| Search by workflow     | `swamp data search --workflow my-workflow --json`     |
+| Search by model        | `swamp data search --model my-model --json`           |
+| Free-text search       | `swamp data search vpc --json`                        |
+| List model data        | `swamp data list <model> --json`                      |
+| List workflow data     | `swamp data list --workflow <name> --json`            |
+| Get specific data      | `swamp data get <model> <name> --json`                |
+| Get metadata only      | `swamp data get <model> <name> --no-content --json`   |
+| Get data via workflow  | `swamp data get --workflow <name> <data_name> --json` |
+| View version history   | `swamp data versions <model> <name> --json`           |
+| Run garbage collection | `swamp data gc --json`                                |
+| Rename data instance   | `swamp data rename <model> <old> <new>`               |
+| Preview GC (dry run)   | `swamp data gc --dry-run --json`                      |
 
 ## Data Concepts
 
@@ -80,43 +81,43 @@ Search across all models with extensive filtering options.
 
 ```bash
 # All data in the repo
-swamp data search
+swamp data search --json
 
 # Filter by type tag
-swamp data search --type resource
+swamp data search --type resource --json
 
 # Data from last hour
-swamp data search --since 1h
+swamp data search --since 1h --json
 
 # Workflow-produced data
-swamp data search --workflow test-data-fetch
+swamp data search --workflow test-data-fetch --json
 
 # Model-specific data
-swamp data search --model my-processor
+swamp data search --model my-processor --json
 
 # By content type
-swamp data search --content-type application/json
+swamp data search --content-type application/json --json
 
 # By owner type
-swamp data search --owner-type workflow-step
+swamp data search --owner-type workflow-step --json
 
 # Free-text search
-swamp data search vpc
+swamp data search vpc --json
 
 # Filter by arbitrary tag
-swamp data search --tag env=prod
+swamp data search --tag env=prod --json
 
 # Multiple tags (AND logic)
-swamp data search --tag env=prod --tag team=platform
+swamp data search --tag env=prod --tag team=platform --json
 
 # Combined filters (AND logic)
-swamp data search --type resource --since 1d --workflow deploy
+swamp data search --type resource --since 1d --workflow deploy --json
 
 # Tags with other filters
-swamp data search --tag env=staging --type resource --since 1d
+swamp data search --tag env=staging --type resource --since 1d --json
 
 # Limit results
-swamp data search --limit 10
+swamp data search --limit 10 --json
 ```
 
 **Search filters:**
@@ -141,7 +142,50 @@ swamp data search --limit 10
 View all data items for a model, grouped by tag type.
 
 ```bash
-swamp data list my-model
+swamp data list my-model --json
+```
+
+**Output shape:**
+
+```json
+{
+  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "modelName": "my-model",
+  "modelType": "my-type",
+  "groups": [
+    {
+      "type": "log",
+      "items": [
+        {
+          "id": "uuid",
+          "name": "execution-log",
+          "version": 5,
+          "contentType": "text/plain",
+          "type": "log",
+          "streaming": false,
+          "size": 1024,
+          "createdAt": "2025-01-15T10:30:00Z"
+        }
+      ]
+    },
+    {
+      "type": "resource",
+      "items": [
+        {
+          "id": "uuid",
+          "name": "state",
+          "version": 3,
+          "contentType": "application/json",
+          "type": "resource",
+          "streaming": false,
+          "size": 512,
+          "createdAt": "2025-01-15T10:30:00Z"
+        }
+      ]
+    }
+  ],
+  "total": 2
+}
 ```
 
 ## Get Specific Data
@@ -149,10 +193,38 @@ swamp data list my-model
 Retrieve the latest version of a specific data item.
 
 ```bash
-swamp data get my-model execution-log
+swamp data get my-model execution-log --json
 
 # Metadata only (no content)
-swamp data get my-model execution-log --no-content
+swamp data get my-model execution-log --no-content --json
+```
+
+**Output shape:**
+
+```json
+{
+  "id": "uuid",
+  "name": "execution-log",
+  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "modelName": "my-model",
+  "modelType": "my-type",
+  "version": 5,
+  "contentType": "text/plain",
+  "lifetime": "7d",
+  "garbageCollection": "infinite",
+  "streaming": false,
+  "tags": { "type": "resource" },
+  "ownerDefinition": {
+    "ownerType": "model-method",
+    "ownerRef": "my-model:create",
+    "definitionHash": "abc123..."
+  },
+  "createdAt": "2025-01-15T10:30:00Z",
+  "size": 1024,
+  "checksum": "sha256:...",
+  "contentPath": ".swamp/data/my-type/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/execution-log/5/raw",
+  "content": "..."
+}
 ```
 
 ## Workflow-Scoped Data Access
@@ -161,16 +233,16 @@ List or get data produced by a workflow run instead of specifying a model.
 
 ```bash
 # List all data from the latest run of a workflow
-swamp data list --workflow test-data-fetch
+swamp data list --workflow test-data-fetch --json
 
 # List data from a specific run
-swamp data list --workflow test-data-fetch --run <run_id>
+swamp data list --workflow test-data-fetch --run <run_id> --json
 
 # Get specific data by name from a workflow run
-swamp data get --workflow test-data-fetch output
+swamp data get --workflow test-data-fetch output --json
 
 # Get with specific version
-swamp data get --workflow test-data-fetch output --version 2
+swamp data get --workflow test-data-fetch output --version 2 --json
 ```
 
 ## View Version History
@@ -178,7 +250,42 @@ swamp data get --workflow test-data-fetch output --version 2
 See all versions of a specific data item.
 
 ```bash
-swamp data versions my-model state
+swamp data versions my-model state --json
+```
+
+**Output shape:**
+
+```json
+{
+  "dataName": "state",
+  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "modelName": "my-model",
+  "modelType": "my-type",
+  "versions": [
+    {
+      "version": 3,
+      "createdAt": "2025-01-15T10:30:00Z",
+      "size": 1024,
+      "checksum": "sha256:...",
+      "isLatest": true
+    },
+    {
+      "version": 2,
+      "createdAt": "2025-01-14T09:00:00Z",
+      "size": 980,
+      "checksum": "sha256:...",
+      "isLatest": false
+    },
+    {
+      "version": 1,
+      "createdAt": "2025-01-13T08:00:00Z",
+      "size": 512,
+      "checksum": "sha256:...",
+      "isLatest": false
+    }
+  ],
+  "total": 3
+}
 ```
 
 ## Rename Data
@@ -199,7 +306,7 @@ transparently resolves to the new name.
 
 1. **Verify** the new name doesn't already exist:
    ```bash
-   swamp data get my-model new-name --no-content
+   swamp data get my-model new-name --no-content --json
    ```
    This should return an error (not found). If it succeeds, the name is taken.
 2. **Rename** the data instance:
@@ -208,7 +315,7 @@ transparently resolves to the new name.
    ```
 3. **Confirm** the forward reference works:
    ```bash
-   swamp data get my-model old-name --no-content
+   swamp data get my-model old-name --no-content --json
    ```
    Should resolve to `new-name` via the forward reference.
 
@@ -241,14 +348,42 @@ workflow:
 
 1. **Preview** what will be deleted:
    ```bash
-   swamp data gc --dry-run
+   swamp data gc --dry-run --json
    ```
 2. **Review** the output — verify only expected items appear
 3. **Run** the actual GC only after confirming the dry-run output:
    ```bash
-   swamp data gc
-   swamp data gc -f  # Skip confirmation prompt
+   swamp data gc --json
+   swamp data gc -f --json  # Skip confirmation prompt
    ```
+
+**Dry-run output shape:**
+
+```json
+{
+  "expiredDataCount": 2,
+  "expiredData": [
+    {
+      "type": "my-type",
+      "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "dataName": "cache",
+      "reason": "lifetime:ephemeral"
+    }
+  ]
+}
+```
+
+**GC output shape:**
+
+```json
+{
+  "dataEntriesExpired": 2,
+  "versionsDeleted": 2,
+  "bytesReclaimed": 15900000,
+  "dryRun": false,
+  "expiredEntries": [...]
+}
+```
 
 ## Accessing Data in Expressions
 
