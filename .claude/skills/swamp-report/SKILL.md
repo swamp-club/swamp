@@ -12,15 +12,8 @@ commands support `--json` for machine-readable output.
 ## When to Create a Report
 
 Create a report extension when you need a **repeatable pipeline** to transform,
-aggregate, or analyze model output — security reports, cost analysis, compliance
-checks, execution summaries, etc.
-
-Reports are the right choice when:
-
-- The analysis will be run more than once
-- The output should be stored and versioned alongside model data
-- Multiple models or workflows need the same analysis
-- The user asks for a "report", "analysis", "summary", or "audit"
+aggregate, or analyze model output. If the analysis will be run more than once
+or should be stored alongside model data, a report is the right choice.
 
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
 `swamp help model report` or `swamp help model method run` for the complete,
@@ -41,6 +34,21 @@ up-to-date CLI schema.
 | Run only labeled reports | `swamp model method run <model> <method> --report-label <l> -j`      |
 | Workflow with reports    | `swamp workflow run <workflow> --json`                               |
 | Workflow skip reports    | `swamp workflow run <workflow> --skip-reports --json`                |
+
+## End-to-End Workflow
+
+1. **Create the report file** in `extensions/reports/` — export a `report`
+   object with `name`, `description`, `scope`, optional `labels`, and `execute`.
+2. **Register in manifest** — add the filename to the `reports:` list in
+   `manifest.yaml`. Verify with `swamp model get <model> --json` to confirm the
+   report appears in the resolved report set.
+3. **Configure in definition YAML** — add the report name to `reports.require:`
+   in the model or workflow definition if it should run beyond the model-type
+   defaults. Use `reports.skip:` to exclude reports you don't need.
+4. **Run and verify** — execute `swamp model report <model> --json` to confirm
+   the report produces valid markdown and JSON output without errors.
+5. **Check stored output** — run `swamp data search --tag type=report --json` to
+   verify the report artifact was persisted correctly.
 
 ## Creating a Standalone Report Extension
 

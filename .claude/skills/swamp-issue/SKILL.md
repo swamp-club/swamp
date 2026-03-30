@@ -42,11 +42,16 @@ swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 **Verify submission:** Check the returned `url` or run `gh issue view <number>`
 to confirm the issue was created.
 
+## Workflow
+
+1. Gather details from the user (bug reproduction steps or feature context)
+2. Verify syntax with `swamp help issue`
+3. Run the appropriate command (`swamp issue bug` or `swamp issue feature`)
+4. Verify with the returned URL
+
 ## Requirements
 
-- **GitHub CLI (`gh`)**: Must be installed and authenticated
-  - Install: https://cli.github.com/
-  - Authenticate: `gh auth login`
+Requires authenticated `gh` CLI.
 
 ## For AI Agents: Formatting Issue Content
 
@@ -88,12 +93,6 @@ Provide a summary of the implementation plan:
 > the planned actions without making external calls.
 
 ## Troubleshooting
-
-**"GitHub CLI (gh) is not installed"** Install the GitHub CLI from
-https://cli.github.com/
-
-**"GitHub CLI is not authenticated"** Run `gh auth login` and follow the prompts
-to authenticate.
 
 **Editor doesn't wait for input (GUI editors)** The CLI auto-detects terminal vs
 GUI editors. For GUI editors like VS Code, the `--wait` flag is automatically

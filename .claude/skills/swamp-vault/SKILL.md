@@ -1,6 +1,6 @@
 ---
 name: swamp-vault
-description: Manage swamp vaults for secure secret storage. Use when creating vaults, storing secrets, retrieving secrets, listing vault keys, or working with vault expressions in workflows. Triggers on "vault", "secret", "secrets", "credentials", "api key storage", "secure storage", "password", "token", "key management", "sensitive data", "encrypt", "aws secrets manager", "store secret", "put secret", "get secret", "credential storage", "user-defined vault", "custom vault", "vault implementation", "extensions/vaults", "vault provider", or vault-related CLI commands.
+description: Manage swamp vaults for secure secret storage. Use when creating vaults, storing secrets, retrieving secrets, listing vault keys, or working with vault expressions in workflows. Triggers on "vault", "secret", "secrets", "swamp vault", "store secret", "get secret", "vault expression", "aws secrets manager", "credential storage", "user-defined vault", "custom vault", "vault implementation", "extensions/vaults", "vault provider", or vault-related CLI commands.
 ---
 
 # Swamp Vault Skill
@@ -132,12 +132,9 @@ swamp vault put dev-secrets API_KEY
 # Enter value for API_KEY: ********
 ```
 
-When run interactively (TTY, no `=`, no piped stdin), the user is prompted to
-enter the value with echo suppressed. This keeps secrets out of both shell
-history and the visible terminal. Not available in `--json` mode.
-
-When no `=` is present and stdin is piped, the value is read from stdin. A
-single trailing newline is stripped automatically.
+Interactive mode (TTY, no `=`, no pipe) prompts with echo suppressed; piped
+stdin reads the value and strips one trailing newline. Not available in `--json`
+mode.
 
 **IMPORTANT — agent security:** Never ask the user to paste or type a secret
 value into conversation. Instead, instruct them to run `vault put` directly in
@@ -261,10 +258,7 @@ See the **swamp-extension-model** skill for full schema examples.
 
 ## Security Best Practices
 
-1. **Environment separation**: Use different vaults for dev/staging/prod
-2. **Never hardcode**: Always use vault expressions for secrets
-3. **Audit access**: Monitor vault operations through logs
-4. **Key rotation**: Rotate secrets and encryption keys regularly
+Use separate vaults for dev/staging/prod to enforce environment separation.
 
 ## When to Use Other Skills
 
