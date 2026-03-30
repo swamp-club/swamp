@@ -63,6 +63,7 @@ export interface MethodReportContext extends BaseReportContext {
   methodArgs: Record<string, unknown>;
   methodName: string;
   executionStatus: "succeeded" | "failed";
+  errorMessage?: string;
   dataHandles: DataHandle[];
 }
 
@@ -83,6 +84,7 @@ export interface ModelReportContext extends BaseReportContext {
   methodArgs: Record<string, unknown>;
   methodName: string;
   executionStatus: "succeeded" | "failed";
+  errorMessage?: string;
   dataHandles: DataHandle[];
 }
 

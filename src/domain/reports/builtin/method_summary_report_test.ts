@@ -118,6 +118,39 @@ Deno.test("methodSummaryReport: failed method status", async () => {
   assertEquals(result.json.status, "failed");
 });
 
+Deno.test("methodSummaryReport: failed method with error message", async () => {
+  const ctx = makeMethodContext({
+    executionStatus: "failed",
+    errorMessage: "Connection refused: could not reach server at 10.0.0.1:8080",
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  assertStringIncludes(
+    result.markdown,
+    "# my-server (server) \u2192 deploy: failed",
+  );
+  assertStringIncludes(result.markdown, "## Error");
+  assertStringIncludes(
+    result.markdown,
+    "Connection refused: could not reach server at 10.0.0.1:8080",
+  );
+  assertEquals(result.json.status, "failed");
+  assertEquals(
+    result.json.error,
+    "Connection refused: could not reach server at 10.0.0.1:8080",
+  );
+});
+
+Deno.test("methodSummaryReport: succeeded method has no error section", async () => {
+  const ctx = makeMethodContext({ executionStatus: "succeeded" });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  assertEquals(result.markdown.includes("## Error"), false);
+  assertEquals(result.json.error, undefined);
+});
+
 Deno.test("methodSummaryReport: both args empty shows no arguments", async () => {
   const ctx = makeMethodContext({ globalArgs: {}, methodArgs: {} });
 

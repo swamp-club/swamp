@@ -44,6 +44,7 @@ export const methodSummaryReport: ReportDefinition = {
 
     const {
       executionStatus,
+      errorMessage,
       definition,
       modelType,
       methodName,
@@ -83,6 +84,10 @@ export const methodSummaryReport: ReportDefinition = {
       }
     }
 
+    if (errorMessage) {
+      lines.push("", "## Error", "", errorMessage);
+    }
+
     lines.push("", "## Data Output", "");
 
     if (dataHandles.length === 0) {
@@ -103,6 +108,7 @@ export const methodSummaryReport: ReportDefinition = {
     // Build JSON
     const json: Record<string, unknown> = {
       status: executionStatus,
+      ...(errorMessage ? { error: errorMessage } : {}),
       modelId: definition.id,
       modelName: definition.name,
       modelType: modelType.normalized,
