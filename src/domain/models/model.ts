@@ -38,6 +38,7 @@ import {
 } from "../data/mod.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { OutputRepository } from "./repositories.ts";
+import type { DataRecord } from "../data/data_record.ts";
 
 /**
  * Specification for a resource data output (JSON with Zod schema).
@@ -230,6 +231,17 @@ export interface MethodContext {
     instanceName: string,
     version?: number,
   ) => Promise<Record<string, unknown> | null>;
+
+  /**
+   * Read data from another model by name.
+   * Resolves the model name, reads all data (optionally filtered by spec name),
+   * parses JSON content, and resolves vault references.
+   * Returns an empty array if the model doesn't exist or has no data.
+   */
+  readModelData?: (
+    modelName: string,
+    specName?: string,
+  ) => Promise<DataRecord[]>;
 
   /**
    * Create a file writer — returns DataWriter for binary/streaming content.

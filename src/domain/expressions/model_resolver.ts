@@ -24,6 +24,7 @@ import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { Data } from "../data/data.ts";
+import type { DataRecord } from "../data/data_record.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
@@ -47,18 +48,8 @@ export function buildEnvContext(): Record<string, string> {
   return { ...Deno.env.toObject() };
 }
 
-/**
- * Record returned by data functions in CEL expressions.
- * Represents a single version of a named data item.
- */
-export interface DataRecord {
-  id: string;
-  name: string;
-  version: number;
-  createdAt: string;
-  attributes: Record<string, unknown>;
-  tags: Record<string, string>;
-}
+// Re-export DataRecord from its canonical location for backwards compatibility.
+export type { DataRecord } from "../data/data_record.ts";
 
 /**
  * File metadata record for CEL expressions.

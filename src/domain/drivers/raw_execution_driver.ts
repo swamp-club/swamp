@@ -35,6 +35,7 @@ import {
   createResourceReader,
   createResourceWriter,
 } from "../models/data_writer.ts";
+import { DataAccessService } from "../data/data_access_service.ts";
 
 /**
  * Interface for the execute method of MethodExecutionService.
@@ -128,11 +129,21 @@ export class RawExecutionDriver implements ExecutionDriver {
       this.context.redactor,
     );
 
+    const dataAccessService = new DataAccessService(
+      this.context.definitionRepository,
+      this.context.dataRepository,
+      this.context.vaultService,
+      this.context.redactor,
+    );
+    const readModelData = (modelName: string, specName?: string) =>
+      dataAccessService.readModelData(modelName, specName);
+
     this.contextWithWriters = {
       ...this.context,
       methodName: this.methodName,
       writeResource,
       readResource,
+      readModelData,
       createFileWriter,
     };
 
