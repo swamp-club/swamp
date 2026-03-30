@@ -5,37 +5,36 @@ description: Manage swamp vaults for secure secret storage. Use when creating va
 
 # Swamp Vault Skill
 
-Manage secure secret storage through swamp vaults. All commands support `--json`
-for machine-readable output.
+Manage secure secret storage through swamp vaults.
 
 ## CRITICAL: Vault Creation Rules
 
 - **Never generate vault IDs** — no `uuidgen`, `crypto.randomUUID()`, or manual
   UUIDs. Swamp assigns IDs automatically via `swamp vault create`.
 - **Never write a vault YAML file from scratch** — always use
-  `swamp vault create <type> <name> --json` first, then edit the scaffold at the
+  `swamp vault create <type> <name>` first, then edit the scaffold at the
   returned `path`, preserving the assigned `id`.
 - **Never modify the `id` field** in an existing vault file.
 - **Verify CLI syntax**: If unsure about exact flags or subcommands, run
   `swamp help vault` for the complete, up-to-date CLI schema.
 
-Correct flow: `swamp vault create <type> <name> --json` → edit config if needed
+Correct flow: `swamp vault create <type> <name>` → edit config if needed
 → store secrets.
 
 ## Quick Reference
 
 | Task              | Command                                            |
 | ----------------- | -------------------------------------------------- |
-| List vault types  | `swamp vault type search --json`                   |
-| Create a vault    | `swamp vault create <type> <name> --json`          |
-| Search vaults     | `swamp vault search [query] --json`                |
-| Get vault details | `swamp vault get <name_or_id> --json`              |
+| List vault types  | `swamp vault type search`                          |
+| Create a vault    | `swamp vault create <type> <name>`                 |
+| Search vaults     | `swamp vault search [query]`                       |
+| Get vault details | `swamp vault get <name_or_id>`                     |
 | Edit vault config | `swamp vault edit <name_or_id>`                    |
-| Store a secret    | `swamp vault put <vault> KEY=VALUE --json`         |
-| Store from stdin  | `echo "val" \| swamp vault put <vault> KEY --json` |
+| Store a secret    | `swamp vault put <vault> KEY=VALUE`                |
+| Store from stdin  | `echo "val" \| swamp vault put <vault> KEY`        |
 | Store interactive | `swamp vault put <vault> KEY` (prompts for value)  |
-| Get a secret      | `swamp vault get <vault> <key> --json`             |
-| List secret keys  | `swamp vault list-keys <vault> --json`             |
+| Get a secret      | `swamp vault get <vault> <key>`                    |
+| List secret keys  | `swamp vault list-keys <vault>`                    |
 
 ## Repository Structure
 
@@ -81,24 +80,13 @@ referenced in vault configurations — no manual `extension pull` needed. Use
 
 ```bash
 # Built-in types
-swamp vault create local_encryption dev-secrets --json
-swamp vault create aws-sm prod-secrets --region us-east-1 --json
-swamp vault create azure-kv azure-secrets --vault-url https://myvault.vault.azure.net/ --json
-swamp vault create 1password op-secrets --op-vault "my-vault" --json
+swamp vault create local_encryption dev-secrets
+swamp vault create aws-sm prod-secrets --region us-east-1
+swamp vault create azure-kv azure-secrets --vault-url https://myvault.vault.azure.net/
+swamp vault create 1password op-secrets --op-vault "my-vault"
 
 # User-defined types (pass config as JSON)
-swamp vault create @hashicorp/vault my-hcv --config '{"address": "https://vault.example.com:8200"}' --json
-```
-
-**Output shape:**
-
-```json
-{
-  "id": "8f4e2d1c-9a3b-4c5d-ae7f-0a1b2c3d4e5f",
-  "name": "dev-secrets",
-  "type": "local_encryption",
-  "path": ".swamp/vault/local_encryption/8f4e2d1c-9a3b-4c5d-ae7f-0a1b2c3d4e5f.yaml"
-}
+swamp vault create @hashicorp/vault my-hcv --config '{"address": "https://vault.example.com:8200"}'
 ```
 
 After creation, edit the config if needed:
@@ -112,17 +100,17 @@ swamp vault edit dev-secrets
 **Inline value (appears in shell history):**
 
 ```bash
-swamp vault put dev-secrets API_KEY=sk-1234567890 --json
-swamp vault put prod-secrets DB_PASSWORD=secret123 -f --json  # Skip confirmation
+swamp vault put dev-secrets API_KEY=sk-1234567890
+swamp vault put prod-secrets DB_PASSWORD=secret123 -f  # Skip confirmation
 ```
 
 **Piped value (recommended for scripts/CI — keeps secrets out of shell
 history):**
 
 ```bash
-echo "$API_KEY" | swamp vault put dev-secrets API_KEY --json
-cat ~/secrets/token.txt | swamp vault put dev-secrets TOKEN --json
-op read "op://vault/item/field" | swamp vault put dev-secrets SECRET --json
+echo "$API_KEY" | swamp vault put dev-secrets API_KEY
+cat ~/secrets/token.txt | swamp vault put dev-secrets TOKEN
+op read "op://vault/item/field" | swamp vault put dev-secrets SECRET
 ```
 
 **Interactive prompt (recommended for humans — value is hidden):**
@@ -134,7 +122,7 @@ swamp vault put dev-secrets API_KEY
 
 When run interactively (TTY, no `=`, no piped stdin), the user is prompted to
 enter the value with echo suppressed. This keeps secrets out of both shell
-history and the visible terminal. Not available in `--json` mode.
+history and the visible terminal.
 
 When no `=` is present and stdin is piped, the value is read from stdin. A
 single trailing newline is stripped automatically.
@@ -144,32 +132,12 @@ value into conversation. Instead, instruct them to run `vault put` directly in
 their terminal using piped input. This prevents secrets from being logged in
 agent context or chat history.
 
-**Output shape:**
-
-```json
-{
-  "vault": "dev-secrets",
-  "key": "API_KEY",
-  "status": "stored"
-}
-```
-
 ## Get a Secret
 
 Retrieve a specific secret value from a vault.
 
 ```bash
-swamp vault get dev-secrets API_KEY --json
-```
-
-**Output shape:**
-
-```json
-{
-  "vault": "dev-secrets",
-  "key": "API_KEY",
-  "value": "sk-1234567890"
-}
+swamp vault get dev-secrets API_KEY
 ```
 
 **Note:** Use with caution. Secret values are sensitive and should not be logged
@@ -180,16 +148,7 @@ or displayed unnecessarily.
 Returns key names only (never values):
 
 ```bash
-swamp vault list-keys dev-secrets --json
-```
-
-**Output shape:**
-
-```json
-{
-  "vault": "dev-secrets",
-  "keys": ["API_KEY", "DB_PASSWORD"]
-}
+swamp vault list-keys dev-secrets
 ```
 
 ## Vault Expressions

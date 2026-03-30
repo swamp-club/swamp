@@ -209,3 +209,45 @@ Deno.test("cross-model data access: model with no data returns empty array", asy
     assertEquals(records, []);
   });
 });
+
+Deno.test("cross-model data access: orphan recovery reads content from old UUID path", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const sourceType = ModelType.create("test/orphan");
+
+    // Step 1: Create original model and write data
+    const originalDef = Definition.create({
+      name: "orphan-test",
+      globalArguments: {},
+    });
+    await defRepo.save(sourceType, originalDef);
+    await writeData(
+      dataRepo,
+      sourceType,
+      originalDef.id,
+      "important-data",
+      { value: "from-old-uuid" },
+      { specName: "result", modelName: "orphan-test" },
+    );
+
+    // Step 2: Delete original definition and create a new one (new UUID)
+    await defRepo.delete(sourceType, originalDef.id);
+    const newDef = Definition.create({
+      name: "orphan-test",
+      globalArguments: {},
+    });
+    await defRepo.save(sourceType, newDef);
+
+    // Data is still on disk under originalDef.id, but the definition now
+    // has newDef.id. DataAccessService should find the orphan data.
+    const service = new DataAccessService(defRepo, dataRepo);
+    const records = await service.readModelData("orphan-test");
+
+    assertEquals(records.length, 1);
+    assertEquals(records[0].name, "important-data");
+    assertEquals(records[0].attributes, { value: "from-old-uuid" });
+  });
+});

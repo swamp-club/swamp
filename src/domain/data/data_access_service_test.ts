@@ -101,10 +101,15 @@ function createMockDataRepo(
     },
     getContent: (
       _type: ModelType,
-      _modelId: string,
+      modelId: string,
       dataName: string,
     ) => {
-      return Promise.resolve(contentMap.get(dataName) ?? null);
+      // Key on (modelId, dataName) to catch bugs where wrong modelId is used
+      return Promise.resolve(
+        contentMap.get(`${modelId}:${dataName}`) ??
+          contentMap.get(dataName) ??
+          null,
+      );
     },
     findAllGlobal: () => Promise.resolve(globalData),
   } as unknown as UnifiedDataRepository;
@@ -339,7 +344,9 @@ Deno.test("DataAccessService.readModelData: recovers orphan data via modelName t
   ]);
   const dataRepo = createMockDataRepo(
     new Map([[currentId, []]]),
-    new Map([["orphan-episode", orphanContent]]),
+    // Content keyed on oldId — verifies DataAccessService uses the orphan's
+    // modelId (not the current definition's ID) for content lookup
+    new Map([[`${oldId}:orphan-episode`, orphanContent]]),
     // Global data includes orphan under old UUID
     [{ data: orphanData, modelType: TEST_MODEL_TYPE, modelId: oldId }],
   );

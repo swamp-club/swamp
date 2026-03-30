@@ -16,48 +16,53 @@ description: >
 
 # Swamp Model Skill
 
-Work with swamp models through the CLI. All commands support `--json` for
-machine-readable output.
+Work with swamp models through the CLI.
 
 ## CRITICAL: Model Creation Rules
 
 - **Never generate model IDs** — no `uuidgen`, `crypto.randomUUID()`, or manual
   UUIDs. Swamp assigns IDs automatically via `swamp model create`.
 - **Never write a model YAML file from scratch** — always use
-  `swamp model create <type> <name> --json` first, then edit the scaffold at the
+  `swamp model create <type> <name>` first, then edit the scaffold at the
   returned `path`, preserving the assigned `id`.
 - **Never modify the `id` field** in an existing model file.
 - **Verify CLI syntax**: If unsure about exact flags or subcommands, run
   `swamp help model` for the complete, up-to-date CLI schema.
 
-Correct flow: `swamp model create <type> <name> --json` → set global args with
+Correct flow: `swamp model create <type> <name>` → set global args with
 `--global-arg` or edit the YAML → validate → run.
 
 ## Quick Reference
 
-| Task                | Command                                                            |
-| ------------------- | ------------------------------------------------------------------ |
-| Search model types  | `swamp model type search [query] --json`                           |
-| Describe a type     | `swamp model type describe <type> --json`                          |
-| Create model input  | `swamp model create <type> <name> --json`                          |
-| Create with args    | `swamp model create <type> <name> --global-arg key=value --json`   |
-| Search models       | `swamp model search [query] --json`                                |
-| Get model details   | `swamp model get <id_or_name> --json`                              |
-| Edit model input    | `swamp model edit [id_or_name]`                                    |
-| Delete a model      | `swamp model delete <id_or_name> --json`                           |
-| Validate model      | `swamp model validate [id_or_name] --json`                         |
-| Validate by label   | `swamp model validate [id_or_name] --label policy --json`          |
-| Validate by method  | `swamp model validate [id_or_name] --method create --json`         |
-| Evaluate input(s)   | `swamp model evaluate [id_or_name] --json`                         |
-| Run a method        | `swamp model method run <id_or_name> <method> --json`              |
-| Run with inputs     | `swamp model method run <name> <method> --input key=value -j`      |
-| Skip all checks     | `swamp model method run <name> <method> --skip-checks -j`          |
-| Skip check by name  | `swamp model method run <name> <method> --skip-check <n> -j`       |
-| Skip check by label | `swamp model method run <name> <method> --skip-check-label <l> -j` |
-| Search outputs      | `swamp model output search [query] --json`                         |
-| Get output details  | `swamp model output get <output_or_model> --json`                  |
-| View output logs    | `swamp model output logs <output_id> --json`                       |
-| View output data    | `swamp model output data <output_id> --json`                       |
+| Task                | Command                                                         |
+| ------------------- | --------------------------------------------------------------- |
+| Search model types  | `swamp model type search [query]`                               |
+| Describe a type     | `swamp model type describe <type>`                              |
+| Create model input  | `swamp model create <type> <name>`                              |
+| Create with args    | `swamp model create <type> <name> --global-arg key=value`       |
+| Search models       | `swamp model search [query]`                                    |
+| Get model details   | `swamp model get <id_or_name>`                                  |
+| Edit model input    | `swamp model edit [id_or_name]`                                 |
+| Delete a model      | `swamp model delete <id_or_name>`                               |
+| Validate model      | `swamp model validate [id_or_name]`                             |
+| Validate by label   | `swamp model validate [id_or_name] --label policy`              |
+| Validate by method  | `swamp model validate [id_or_name] --method create`             |
+| Evaluate input(s)   | `swamp model evaluate [id_or_name]`                             |
+| Run a method        | `swamp model method run <id_or_name> <method>`                  |
+| Run with inputs     | `swamp model method run <name> <method> --input key=value`      |
+| Skip all checks     | `swamp model method run <name> <method> --skip-checks`          |
+| Skip check by name  | `swamp model method run <name> <method> --skip-check <n>`       |
+| Skip check by label | `swamp model method run <name> <method> --skip-check-label <l>` |
+| Search outputs      | `swamp model output search [query]`                             |
+| Get output details  | `swamp model output get <output_or_model>`                      |
+| View output logs    | `swamp model output logs <output_id>`                           |
+| View output data    | `swamp model output data <output_id>`                           |
+
+## Accessing Structured Data
+
+Use `swamp data get` to read model data (resources, files, outputs) in
+structured form. Use reports for structured analysis of method executions. See
+the `swamp-data` and `swamp-report` skills.
 
 ## Repository Structure
 
@@ -81,19 +86,8 @@ Use `swamp repo index` to rebuild if symlinks become out of sync.
 Find available model types in the system.
 
 ```bash
-swamp model type search --json
-swamp model type search "echo" --json
-```
-
-**Output shape:**
-
-```json
-{
-  "query": "",
-  "results": [
-    { "raw": "command/shell", "normalized": "command/shell" }
-  ]
-}
+swamp model type search
+swamp model type search "echo"
 ```
 
 ## Describe Model Types
@@ -101,36 +95,16 @@ swamp model type search "echo" --json
 Get the full schema and available methods for a type.
 
 ```bash
-swamp model type describe command/shell --json
+swamp model type describe command/shell
 ```
 
-**Output shape:**
-
-```json
-{
-  "type": { "raw": "command/shell", "normalized": "command/shell" },
-  "version": "2026.02.09.1",
-  "globalArguments": {/* JSON Schema */},
-  "resourceAttributesSchema": {/* JSON Schema */},
-  "methods": [
-    {
-      "name": "execute",
-      "description": "Execute a shell command and capture output",
-      "arguments": {/* JSON Schema */}
-    }
-  ]
-}
-```
-
-**Key fields:**
-
-- `globalArguments` - JSON Schema for input YAML `globalArguments` section
-- `methods` - Available operations with their per-method `arguments` schemas
+The output shows the type name, version, global arguments schema, resource
+attributes schema, and available methods with their argument schemas.
 
 ## Create Model Inputs
 
 ```bash
-swamp model create command/shell my-shell --json
+swamp model create command/shell my-shell
 ```
 
 Set globalArguments at creation time with `--global-arg` (repeatable):
@@ -138,8 +112,7 @@ Set globalArguments at creation time with `--global-arg` (repeatable):
 ```bash
 swamp model create aws/ec2/vpc my-vpc \
   --global-arg region=us-east-1 \
-  --global-arg cidrBlock=10.0.0.0/16 \
-  --json
+  --global-arg cidrBlock=10.0.0.0/16
 ```
 
 Dot notation creates nested objects:
@@ -147,16 +120,6 @@ Dot notation creates nested objects:
 ```bash
 --global-arg config.db.host=localhost --global-arg config.db.port=5432
 # → globalArguments: { config: { db: { host: "localhost", port: "5432" } } }
-```
-
-**Output shape:**
-
-```json
-{
-  "path": "definitions/command/shell/my-shell.yaml",
-  "type": "command/shell",
-  "name": "my-shell"
-}
 ```
 
 After creation, edit the YAML file to set per-method `arguments` in the
@@ -242,14 +205,13 @@ definition — see
 
 ## Edit a Model
 
-**Recommended:** Use `swamp model get <name> --json` to get the file path, then
-edit directly with the Edit tool, then validate with
-`swamp model validate <name> --json`.
+**Recommended:** Use `swamp model get <name>` to get the file path, then edit
+directly with the Edit tool, then validate with `swamp model validate <name>`.
 
 **Alternative methods:**
 
 - Interactive: `swamp model edit my-shell` (opens in system editor)
-- Stdin: `cat updated.yaml | swamp model edit my-shell --json`
+- Stdin: `cat updated.yaml | swamp model edit my-shell`
 
 Run `swamp repo index` if search results seem stale after editing.
 
@@ -258,21 +220,7 @@ Run `swamp repo index` if search results seem stale after editing.
 Delete a model and all related artifacts (data, outputs, logs).
 
 ```bash
-swamp model delete my-shell --json
-```
-
-**Output shape:**
-
-```json
-{
-  "deleted": true,
-  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "modelName": "my-shell",
-  "artifactsDeleted": {
-    "outputs": 5,
-    "dataItems": 3
-  }
-}
+swamp model delete my-shell
 ```
 
 ## Validate Model Inputs
@@ -282,49 +230,10 @@ checks with a specific label, and `--method` to simulate validation for a
 specific method context.
 
 ```bash
-swamp model validate my-shell --json
-swamp model validate --json                          # Validate all models
-swamp model validate my-shell --label policy --json  # Only checks with label "policy"
-swamp model validate my-shell --method create --json # Validate for a specific method
-```
-
-**Output shape (single):**
-
-```json
-{
-  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "modelName": "my-shell",
-  "type": "command/shell",
-  "validations": [
-    { "name": "Definition schema", "passed": true },
-    { "name": "Global arguments", "passed": true },
-    { "name": "Expression paths", "passed": true }
-  ],
-  "warnings": [
-    {
-      "name": "Environment variables detected",
-      "message": "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
-      "envVars": [
-        { "path": "globalArguments.baseUrl", "envVar": "JENKINS_BASE_URL" }
-      ]
-    }
-  ],
-  "passed": true
-}
-```
-
-**Output shape (all):**
-
-```json
-{
-  "models": [
-    { "modelId": "...", "modelName": "my-shell", "validations": [...], "warnings": [...], "passed": true }
-  ],
-  "totalPassed": 5,
-  "totalFailed": 1,
-  "totalWarnings": 1,
-  "passed": false
-}
+swamp model validate my-shell
+swamp model validate                          # Validate all models
+swamp model validate my-shell --label policy  # Only checks with label "policy"
+swamp model validate my-shell --method create # Validate for a specific method
 ```
 
 ### IMPORTANT: Handling Validation Warnings
@@ -353,22 +262,8 @@ Reference types, data versioning functions, and examples are in
 Evaluate expressions and write results to `inputs-evaluated/`.
 
 ```bash
-swamp model evaluate my-subnet --json
-swamp model evaluate --all --json
-```
-
-**Output shape:**
-
-```json
-{
-  "evaluatedInputs": [
-    {
-      "name": "my-subnet",
-      "type": "aws/subnet",
-      "path": "inputs-evaluated/aws/subnet/my-subnet.yaml"
-    }
-  ]
-}
+swamp model evaluate my-subnet
+swamp model evaluate --all
 ```
 
 ## Run Methods
@@ -376,16 +271,16 @@ swamp model evaluate --all --json
 Execute a method on a model input.
 
 ```bash
-swamp model method run my-shell execute --json
-swamp model method run my-deploy create --input environment=prod --json
-swamp model method run my-deploy create --input environment=prod --input replicas=3 --json
-swamp model method run my-deploy create --input config.timeout=30 --json  # dot notation for nesting
-swamp model method run my-deploy create --input '{"environment": "prod"}' --json  # JSON also supported
-swamp model method run my-deploy create --input-file inputs.yaml --json
-swamp model method run my-deploy create --last-evaluated --json
-swamp model method run my-deploy create --skip-checks --json
-swamp model method run my-deploy create --skip-check valid-region --json
-swamp model method run my-deploy create --skip-check-label live --json
+swamp model method run my-shell execute
+swamp model method run my-deploy create --input environment=prod
+swamp model method run my-deploy create --input environment=prod --input replicas=3
+swamp model method run my-deploy create --input config.timeout=30  # dot notation for nesting
+swamp model method run my-deploy create --input '{"environment": "prod"}'  # JSON also supported
+swamp model method run my-deploy create --input-file inputs.yaml
+swamp model method run my-deploy create --last-evaluated
+swamp model method run my-deploy create --skip-checks
+swamp model method run my-deploy create --skip-check valid-region
+swamp model method run my-deploy create --skip-check-label live
 ```
 
 Pre-flight checks run automatically before mutating methods (`create`, `update`,
@@ -410,45 +305,31 @@ variables are correct for the intended target. See
 | `--skip-check-label <label>` | Skip all checks with a given label (repeatable)  |
 | `--driver <driver>`          | Override execution driver (e.g. `raw`, `docker`) |
 
-**Output shape:**
-
-```json
-{
-  "outputId": "d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5",
-  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "modelName": "my-shell",
-  "method": "execute",
-  "status": "succeeded",
-  "duration": 150,
-  "artifacts": {
-    "resource": ".swamp/data/command/shell/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/result/1/raw"
-  }
-}
-```
+After execution, use `swamp data list <model>` to see produced data and
+`swamp data get <model> <name>` to read specific data items.
 
 ## Model Outputs
 
 Use `swamp model output search`, `output get`, `output logs`, and `output data`
 to inspect method execution results. See
-[references/outputs.md](references/outputs.md) for commands and output shapes.
+[references/outputs.md](references/outputs.md) for commands.
 
 ## Workflow Example
 
-1. **Search** for the right type: `swamp model type search "shell" --json`
-2. **Search community** if no local type:
-   `swamp extension search <query> --json` — if a matching extension exists,
-   install it with `swamp extension pull <package>` instead of building from
-   scratch
+1. **Search** for the right type: `swamp model type search "shell"`
+2. **Search community** if no local type: `swamp extension search <query>` — if
+   a matching extension exists, install it with `swamp extension pull <package>`
+   instead of building from scratch
 3. **Describe** to understand the schema:
-   `swamp model type describe command/shell --json`
-4. **Create** an input file: `swamp model create command/shell my-shell --json`
+   `swamp model type describe command/shell`
+4. **Create** an input file: `swamp model create command/shell my-shell`
 5. **Edit** the YAML file to set `methods.execute.arguments.run`
-6. **Validate** the model: `swamp model validate my-shell --json`
+6. **Validate** the model: `swamp model validate my-shell`
 7. **Check warnings** — if the validation output has non-empty `warnings`, stop
    and ask the user before proceeding (see
    [Handling Validation Warnings](#important-handling-validation-warnings))
-8. **Run** the method: `swamp model method run my-shell execute --json`
-9. **View** the output: `swamp model output get my-shell --json`
+8. **Run** the method: `swamp model method run my-shell execute`
+9. **View** the output: `swamp model output get my-shell`
 
 ## Data Ownership
 
@@ -480,7 +361,7 @@ validation.
 ## References
 
 - **Outputs**: See [references/outputs.md](references/outputs.md) for output
-  search, get, logs, and data commands with output shapes
+  search, get, logs, and data commands
 - **Examples**: See [references/examples.md](references/examples.md) for
   complete model workflows and CEL expression reference
 - **Troubleshooting**: See

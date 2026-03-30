@@ -73,6 +73,16 @@ After completing work, run these checks:
 - Every command _must_ support both `"log"` and `"json"` output modes
 - You can read the files in `design/*.md` to understand elements of the design
 
+### Output Modes for Agents
+
+When working with swamp as an AI agent, **do not append `--json` to every
+command**. The default log-mode output is clean, readable text that agents can
+parse natively. Use `swamp data get` to read structured model data, and reports
+for structured analysis of method executions.
+
+Reserve `--json` for shell scripts, CI pipelines, and programmatic consumers
+that need to `jq` specific fields — not for LLM agent workflows.
+
 IMPORTANT: CLI commands and presentation renderers must import libswamp types
 and functions from `src/libswamp/mod.ts` — never from internal module paths like
 `src/libswamp/data/get.ts`. Only libswamp-internal code (other generators, tests

@@ -22,8 +22,20 @@ import type { ModelType } from "../models/model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
+import type { Data } from "./data.ts";
 import type { DataRecord } from "./data_record.ts";
 import { resolveVaultRefsInData } from "../models/data_writer.ts";
+
+/**
+ * A data item with its origin model coordinates, used to track
+ * where data lives on disk (which may differ from the current definition UUID
+ * for orphan-recovered data).
+ */
+interface LocatedData {
+  data: Data;
+  modelType: ModelType;
+  modelId: string;
+}
 
 /**
  * Result of resolving a model by name.
@@ -95,10 +107,16 @@ export class DataAccessService {
     }
 
     // Find data under the current definition ID
-    const currentData = await this.dataRepo.findAllForModel(
-      resolved.modelType,
-      resolved.modelId,
-    );
+    const currentData = (
+      await this.dataRepo.findAllForModel(
+        resolved.modelType,
+        resolved.modelId,
+      )
+    ).map((data): LocatedData => ({
+      data,
+      modelType: resolved.modelType,
+      modelId: resolved.modelId,
+    }));
 
     // Attempt orphan recovery: find data under previous UUIDs for this type
     const orphanData = await this.findOrphanData(
@@ -107,7 +125,7 @@ export class DataAccessService {
       modelName,
     );
 
-    const allData = [...currentData, ...orphanData];
+    const allData: LocatedData[] = [...currentData, ...orphanData];
 
     if (allData.length === 0) {
       return [];
@@ -115,19 +133,22 @@ export class DataAccessService {
 
     // Filter by specName if provided
     const filtered = specName
-      ? allData.filter((d) => d.tags["specName"] === specName)
+      ? allData.filter((d) => d.data.tags["specName"] === specName)
       : allData;
 
     // Filter out renamed/deleted entries
-    const active = filtered.filter((d) => !d.isRenamed && !d.isDeleted);
+    const active = filtered.filter(
+      (d) => !d.data.isRenamed && !d.data.isDeleted,
+    );
 
-    // Convert to DataRecords with parsed content
+    // Convert to DataRecords with parsed content, using the correct modelId
+    // for each item (orphan data lives under the old UUID on disk)
     const records: DataRecord[] = [];
-    for (const data of active) {
+    for (const located of active) {
       const record = await this.dataToRecord(
-        data,
-        resolved.modelType,
-        resolved.modelId,
+        located.data,
+        located.modelType,
+        located.modelId,
       );
       if (record) {
         records.push(record);
@@ -142,6 +163,9 @@ export class DataAccessService {
    * type and name. This handles the delete/recreate cycle where data persists
    * under the old UUID.
    *
+   * Returns LocatedData items with the original modelId so that content can
+   * be read from the correct disk path.
+   *
    * Uses a two-tier matching strategy:
    * 1. modelName tag match: data tagged with the model name under a different UUID
    * 2. Single-definition heuristic: if only one definition exists for the type,
@@ -151,11 +175,7 @@ export class DataAccessService {
     modelType: ModelType,
     currentModelId: string,
     modelName: string,
-  ): Promise<
-    Array<
-      import("./data.ts").Data & { _orphanModelId?: string }
-    >
-  > {
+  ): Promise<LocatedData[]> {
     const allGlobal = await this.dataRepo.findAllGlobal();
 
     // Find data items of the same type but under a different model ID
@@ -172,7 +192,7 @@ export class DataAccessService {
     // Group by modelId
     const byModelId = new Map<
       string,
-      Array<{ data: import("./data.ts").Data; modelId: string }>
+      Array<{ data: Data; modelType: ModelType; modelId: string }>
     >();
     for (const item of orphanCandidates) {
       if (!byModelId.has(item.modelId)) {
@@ -181,7 +201,10 @@ export class DataAccessService {
       byModelId.get(item.modelId)!.push(item);
     }
 
-    const results: Array<import("./data.ts").Data> = [];
+    // Hoist findAll outside the loop — result is the same for all iterations
+    const allDefsOfType = await this.definitionRepo.findAll(modelType);
+
+    const results: LocatedData[] = [];
 
     for (const [, items] of byModelId) {
       // Tier 1: modelName tag match
@@ -189,15 +212,26 @@ export class DataAccessService {
         (item) => item.data.tags["modelName"] === modelName,
       );
       if (hasNameTag) {
-        results.push(...items.map((item) => item.data));
+        results.push(
+          ...items.map((item) => ({
+            data: item.data,
+            modelType: item.modelType,
+            modelId: item.modelId,
+          })),
+        );
         continue;
       }
 
       // Tier 2: single-definition heuristic — only if this is the sole
       // definition of this type
-      const allDefsOfType = await this.definitionRepo.findAll(modelType);
       if (allDefsOfType.length === 1) {
-        results.push(...items.map((item) => item.data));
+        results.push(
+          ...items.map((item) => ({
+            data: item.data,
+            modelType: item.modelType,
+            modelId: item.modelId,
+          })),
+        );
       }
     }
 
@@ -208,7 +242,7 @@ export class DataAccessService {
    * Converts a Data entity to a DataRecord by reading and parsing its content.
    */
   private async dataToRecord(
-    data: import("./data.ts").Data,
+    data: Data,
     modelType: ModelType,
     modelId: string,
   ): Promise<DataRecord | null> {

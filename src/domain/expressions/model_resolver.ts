@@ -48,7 +48,7 @@ export function buildEnvContext(): Record<string, string> {
   return { ...Deno.env.toObject() };
 }
 
-// Re-export DataRecord from its canonical location for backwards compatibility.
+// Re-export DataRecord from its canonical location.
 export type { DataRecord } from "../data/data_record.ts";
 
 /**
