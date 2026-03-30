@@ -176,6 +176,8 @@ export const methodSummaryReport: ReportDefinition = {
         kind: h.kind,
         specName: h.specName,
         version: h.version,
+        retrievalCommand:
+          `swamp data get ${definition.name} ${h.name} --version ${h.version}`,
       })),
     };
 
