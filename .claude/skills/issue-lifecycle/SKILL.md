@@ -52,6 +52,16 @@ systeminit/swamp#850":
      --input reasoning="<your analysis>"
    ```
 
+   **Classification guidance:**
+   - `bug` — something is broken or behaving incorrectly
+   - `feature` — a request for new functionality or enhancement
+   - `regression` — a bug where something **previously worked** but is now
+     broken. Look for signals like: "this used to work", "stopped working
+     after", "worked in version X", references to recent changes that broke
+     existing behavior, or git history showing the affected code was recently
+     modified. Regressions get both `bug` and `regression` labels.
+   - `unclear` — not enough information to classify confidently
+
 5. **Generate an implementation plan**:
 
    First, write a single YAML file (e.g. `/tmp/plan.yaml`) containing both
