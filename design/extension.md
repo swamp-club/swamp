@@ -30,6 +30,11 @@ This is the same versioning scheme used by models (see [./models.md]).
 The registry enforces unique name+version tuples. If a version conflict occurs
 during push, the CLI offers to bump the version automatically.
 
+Use `swamp extension version <name>` to query the registry for the latest
+published version and compute the next CalVer version. Accepts an extension
+name directly or `--manifest <path>` to read the name from a manifest file.
+Does not require a swamp repository — works from any directory.
+
 ## Manifest
 
 Every extension is defined by a `manifest.yaml` file. The manifest declares
@@ -42,6 +47,14 @@ what the extension contains and how it should be packaged.
 - `version`: CalVer version string.
 - At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`, or
   `reports` must be present.
+
+### Path Safety
+
+All file paths in the manifest must be **relative and downward-only**. Paths
+containing `..` components (e.g., `../../workflows/file.yaml`) or starting with
+`/` (absolute paths) are rejected during push. This prevents archive entries
+that would fail the pull-side safety validator, which rejects any tar entry
+containing `..` or starting with `/`.
 
 ### Optional Fields
 

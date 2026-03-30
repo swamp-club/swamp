@@ -15,12 +15,18 @@
 When bumping a model's `version`, **always prompt the user** before writing the
 upgrade. Claude cannot reliably determine whether or how the schema changed.
 
-1. Ask: "Did the `globalArguments` schema change between versions?"
-2. If **yes**: ask what fields were added, renamed, removed, or changed type —
+1. Run `swamp extension version @collective/name --json` to get the current
+   published version (`currentPublished`) and the next version (`nextVersion`)
+2. Ask: "Did the `globalArguments` schema change between versions?"
+3. If **yes**: ask what fields were added, renamed, removed, or changed type —
    and what default values to use for new/changed fields
-3. If **no**: add a no-op upgrade (see below) — still required to bump
+4. If **no**: add a no-op upgrade (see below) — still required to bump
    `typeVersion` on existing instances
-4. Write the `upgrades` entry based on the user's answers
+5. Set the model's `version` to `nextVersion` from the CLI output
+6. Set the upgrade's `toVersion` to the same `nextVersion`
+7. The `fromVersion` baseline for the upgrade chain is `currentPublished` — this
+   is the **published registry version**, not the version in the local source
+   file on the current branch
 
 ## How Upgrades Work
 
