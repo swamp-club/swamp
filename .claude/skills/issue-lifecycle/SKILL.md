@@ -43,6 +43,10 @@ systeminit/swamp#850":
    - Read relevant skills (especially `ddd/SKILL.md`)
    - Explore source files related to the issue
    - Trace code paths to understand the problem
+   - **Check for regression signals**: If the issue describes a bug, use
+     `git log` on the affected files to see if they were recently changed. Check
+     if the described behavior worked in a prior version. This informs whether
+     to classify as `bug` or `regression`.
 
 4. **Classify the issue** based on your analysis:
    ```
