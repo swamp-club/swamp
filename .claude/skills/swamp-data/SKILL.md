@@ -1,6 +1,6 @@
 ---
 name: swamp-data
-description: List model data, view version history, delete expired versions, and run garbage collection. Use when listing data, viewing versions, cleaning up old data, or configuring data retention. Triggers on "swamp data", "model data", "data list", "data get", "data versions", "garbage collection", "gc", "data gc", "clean up data", "old data", "data retention", "data lifecycle", "version history", "data cleanup", "prune data", "expire data", "ephemeral data".
+description: Manage swamp model data — list data artifacts, view version history, delete expired versions, and run garbage collection. Use when working with swamp model data lifecycle, retention policies, or version cleanup. Triggers on "swamp data", "model data", "data list", "data get", "data versions", "garbage collection", "gc", "data gc", "data retention", "data lifecycle", "version history", "data cleanup", "prune data", "expire data", "ephemeral data".
 ---
 
 # Swamp Data Skill
@@ -44,38 +44,8 @@ swamp data search --json
 # Filter by type tag
 swamp data search --type resource --json
 
-# Data from last hour
-swamp data search --since 1h --json
-
-# Workflow-produced data
-swamp data search --workflow test-data-fetch --json
-
-# Model-specific data
-swamp data search --model my-processor --json
-
-# By content type
-swamp data search --content-type application/json --json
-
-# By owner type
-swamp data search --owner-type workflow-step --json
-
-# Free-text search
-swamp data search vpc --json
-
-# Filter by arbitrary tag
-swamp data search --tag env=prod --json
-
-# Multiple tags (AND logic)
-swamp data search --tag env=prod --tag team=platform --json
-
-# Combined filters (AND logic)
-swamp data search --type resource --since 1d --workflow deploy --json
-
-# Tags with other filters
-swamp data search --tag env=staging --type resource --since 1d --json
-
-# Limit results
-swamp data search --limit 10 --json
+# Combined filters (AND logic) — all filters can be combined freely
+swamp data search --type resource --since 1d --workflow deploy --tag env=prod --json
 ```
 
 **Search filters:**
@@ -103,48 +73,11 @@ View all data items for a model, grouped by tag type.
 swamp data list my-model --json
 ```
 
-**Output shape:**
-
-```json
-{
-  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "modelName": "my-model",
-  "modelType": "my-type",
-  "groups": [
-    {
-      "type": "log",
-      "items": [
-        {
-          "id": "uuid",
-          "name": "execution-log",
-          "version": 5,
-          "contentType": "text/plain",
-          "type": "log",
-          "streaming": false,
-          "size": 1024,
-          "createdAt": "2025-01-15T10:30:00Z"
-        }
-      ]
-    },
-    {
-      "type": "resource",
-      "items": [
-        {
-          "id": "uuid",
-          "name": "state",
-          "version": 3,
-          "contentType": "application/json",
-          "type": "resource",
-          "streaming": false,
-          "size": 512,
-          "createdAt": "2025-01-15T10:30:00Z"
-        }
-      ]
-    }
-  ],
-  "total": 2
-}
-```
+**Output shape:** Returns `modelId`, `modelName`, `modelType`, `groups` (items
+grouped by type tag, each with `id`, `name`, `version`, `size`, `createdAt`),
+and `total`. See
+[references/output-shapes.md](references/output-shapes.md#list-data) for the
+full output shape.
 
 ## Get Specific Data
 
@@ -157,33 +90,10 @@ swamp data get my-model execution-log --json
 swamp data get my-model execution-log --no-content --json
 ```
 
-**Output shape:**
-
-```json
-{
-  "id": "uuid",
-  "name": "execution-log",
-  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "modelName": "my-model",
-  "modelType": "my-type",
-  "version": 5,
-  "contentType": "text/plain",
-  "lifetime": "7d",
-  "garbageCollection": "infinite",
-  "streaming": false,
-  "tags": { "type": "resource" },
-  "ownerDefinition": {
-    "ownerType": "model-method",
-    "ownerRef": "my-model:create",
-    "definitionHash": "abc123..."
-  },
-  "createdAt": "2025-01-15T10:30:00Z",
-  "size": 1024,
-  "checksum": "sha256:...",
-  "contentPath": ".swamp/data/my-type/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/execution-log/5/raw",
-  "content": "..."
-}
-```
+**Output shape:** Returns `id`, `name`, `modelId`, `version`, `contentType`,
+`lifetime`, `tags`, `ownerDefinition`, `size`, `checksum`, and `content`. See
+[references/output-shapes.md](references/output-shapes.md#get-data) for the full
+output shape.
 
 ## Workflow-Scoped Data Access
 
@@ -211,40 +121,10 @@ See all versions of a specific data item.
 swamp data versions my-model state --json
 ```
 
-**Output shape:**
-
-```json
-{
-  "dataName": "state",
-  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "modelName": "my-model",
-  "modelType": "my-type",
-  "versions": [
-    {
-      "version": 3,
-      "createdAt": "2025-01-15T10:30:00Z",
-      "size": 1024,
-      "checksum": "sha256:...",
-      "isLatest": true
-    },
-    {
-      "version": 2,
-      "createdAt": "2025-01-14T09:00:00Z",
-      "size": 980,
-      "checksum": "sha256:...",
-      "isLatest": false
-    },
-    {
-      "version": 1,
-      "createdAt": "2025-01-13T08:00:00Z",
-      "size": 512,
-      "checksum": "sha256:...",
-      "isLatest": false
-    }
-  ],
-  "total": 3
-}
-```
+**Output shape:** Returns `dataName`, `modelId`, `modelName`, `versions` (each
+with `version`, `createdAt`, `size`, `checksum`, `isLatest`), and `total`. See
+[references/output-shapes.md](references/output-shapes.md#versions) for the full
+output shape.
 
 ## Rename Data
 
@@ -315,33 +195,15 @@ workflow:
    swamp data gc -f --json  # Skip confirmation prompt
    ```
 
-**Dry-run output shape:**
+**Dry-run output shape:** Returns `expiredDataCount` and `expiredData` (each
+with `type`, `modelId`, `dataName`, `reason`). See
+[references/output-shapes.md](references/output-shapes.md#gc-dry-run) for the
+full output shape.
 
-```json
-{
-  "expiredDataCount": 2,
-  "expiredData": [
-    {
-      "type": "my-type",
-      "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-      "dataName": "cache",
-      "reason": "lifetime:ephemeral"
-    }
-  ]
-}
-```
-
-**GC output shape:**
-
-```json
-{
-  "dataEntriesExpired": 2,
-  "versionsDeleted": 2,
-  "bytesReclaimed": 15900000,
-  "dryRun": false,
-  "expiredEntries": [...]
-}
-```
+**GC output shape:** Returns `dataEntriesExpired`, `versionsDeleted`,
+`bytesReclaimed`, and `expiredEntries`. See
+[references/output-shapes.md](references/output-shapes.md#gc-run) for the full
+output shape.
 
 ## Accessing Data in Expressions
 
@@ -383,6 +245,9 @@ Data is stored in the `.swamp/data/` directory:
 
 ## References
 
+- **Output shapes**: See
+  [references/output-shapes.md](references/output-shapes.md) for JSON output
+  examples from all data commands
 - **Examples**: See [references/examples.md](references/examples.md) for data
   query patterns, CEL expressions, and GC scenarios
 - **Troubleshooting**: See
