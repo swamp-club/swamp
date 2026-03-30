@@ -41,8 +41,8 @@ import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 
 const logger = getLogger(["swamp", "reports", "loader"]);
 
-/** Pattern for valid user report name: @collective/name or collective/name */
-const USER_REPORT_NAME_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
+/** Pattern for valid user report name: @collective/name[/subname/...] or collective/name[/subname/...] */
+const USER_REPORT_NAME_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
 /**
  * Schema for validating user report exports.
@@ -52,7 +52,7 @@ const UserReportSchema = z.object({
     (n) => USER_REPORT_NAME_PATTERN.test(n),
     {
       message:
-        "Report name must match @collective/name or collective/name (e.g., @myorg/cost-report or myorg/cost-report)",
+        "Report name must match @collective/name or collective/name with optional nested segments (e.g., @myorg/cost-report or @myorg/aws/cost-report)",
     },
   ),
   description: z.string(),

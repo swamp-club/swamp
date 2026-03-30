@@ -79,9 +79,9 @@ export const report = {
 
 ### Name Conventions
 
-Report names must follow the `@collective/name` pattern (e.g.,
-`@myorg/cost-report`). This matches the same collective conventions used by
-models, drivers, vaults, and datastores.
+Report names follow the `@collective/name` pattern with optional nested path
+segments (e.g., `@myorg/cost-report` or `@myorg/aws/cost-report`). This matches
+the same naming convention used by models, drivers, vaults, and datastores.
 
 ### Report Scopes
 

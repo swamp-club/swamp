@@ -420,6 +420,13 @@ Deno.test("sanitizeReportNameForData - passes through simple names unchanged", (
   );
 });
 
+Deno.test("sanitizeReportNameForData - handles nested path report names", () => {
+  assertEquals(
+    sanitizeReportNameForData("@webframp/aws/cost-report"),
+    "webframp-aws-cost-report",
+  );
+});
+
 // --- executeReports with varySuffix tests ---
 
 /**

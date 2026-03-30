@@ -116,9 +116,11 @@ export const report = {
 
 ### Name Convention
 
-Report names follow the `@collective/name` pattern (e.g.,
-`@myorg/cost-report`). The collective must match the extension's collective
-when distributed via `extension push`.
+Report names follow the `@collective/name` pattern with optional nested path
+segments (e.g., `@myorg/cost-report` or `@myorg/aws/cost-report`). This matches
+the same naming convention used by models and other extension types. The
+collective must match the extension's collective when distributed via
+`extension push`.
 
 ### Loader Validation
 
@@ -126,7 +128,7 @@ when distributed via `extension push`.
 (excluding `_test.ts`), bundles each with Deno (zod externalized), and
 validates the export against a Zod schema requiring:
 
-- `name` — matches `@collective/name` or `collective/name`
+- `name` — matches `@collective/name[/subname/...]` or `collective/name[/subname/...]`
 - `description` — non-empty string
 - `scope` — one of `"method"`, `"model"`, `"workflow"`
 - `labels` — optional `string[]`
