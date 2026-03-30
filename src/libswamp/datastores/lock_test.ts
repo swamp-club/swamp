@@ -140,7 +140,7 @@ Deno.test("datastoreLockStatus: skips model lock scan for non-filesystem", async
   // Should only have the global lock status, no model locks
   await assertCompletes<DatastoreLockStatusEvent>(
     datastoreLockStatus(createLibSwampContext(), deps, {
-      datastoreType: "s3",
+      datastoreType: "custom",
       isFilesystemDatastore: false,
     }),
     {
@@ -148,7 +148,7 @@ Deno.test("datastoreLockStatus: skips model lock scan for non-filesystem", async
       data: {
         held: false,
         info: undefined,
-        datastoreType: "s3",
+        datastoreType: "custom",
       },
     },
   );

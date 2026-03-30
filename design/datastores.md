@@ -11,7 +11,8 @@ datastore.
 
 ## Backends
 
-Swamp supports two datastore backends:
+Swamp has one built-in datastore backend (filesystem) and supports extension
+backends via the datastore extension system.
 
 ### Filesystem
 
@@ -28,7 +29,7 @@ datastore:
 An external filesystem path is useful for shared NFS mounts or keeping runtime
 data out of the git repository.
 
-### S3
+### S3 (via `@swamp/s3-datastore` extension)
 
 Stores runtime data in an S3 bucket with a local cache at
 `~/.swamp/repos/{repoId}/`. All reads and writes hit the local cache;
@@ -37,11 +38,16 @@ synchronization with S3 happens automatically before and after each CLI command.
 ```yaml
 # .swamp.yaml
 datastore:
-  type: s3
-  bucket: my-swamp-bucket
-  prefix: project-name
-  region: us-east-1
+  type: "@swamp/s3-datastore"
+  config:
+    bucket: my-swamp-bucket
+    prefix: project-name
+    region: us-east-1
 ```
+
+Legacy `type: s3` configs are automatically remapped to `@swamp/s3-datastore`
+with a deprecation warning. The extension is auto-installed on first use for
+logged-in users.
 
 The local cache is fully disposable. Deleting it or cloning the repo on a new
 machine repopulates the cache from S3 on the next command.
@@ -56,9 +62,10 @@ ship with.
 ### Type Registry
 
 The `DatastoreTypeRegistry` is a Map-backed singleton
-(`datastoreTypeRegistry`). Built-in types (filesystem, s3) are registered at
-startup. User-defined types are loaded from `extensions/datastores/` via
-`UserDatastoreLoader`. Types must follow the `@collective/name` or
+(`datastoreTypeRegistry`). The built-in type (filesystem) is registered at
+startup. Extension types (e.g., `@swamp/s3-datastore`) are loaded from
+`extensions/datastores/` via `UserDatastoreLoader` or auto-resolved from the
+registry on first use. Types must follow the `@collective/name` or
 `collective/name` pattern (e.g., `@myorg/redis-store`). Duplicate type
 registrations are rejected with an error.
 
@@ -130,8 +137,11 @@ The environment variable format is `type:value`:
 
 ```bash
 export SWAMP_DATASTORE=filesystem:/path/to/dir
-export SWAMP_DATASTORE=s3:bucket-name/prefix
+export SWAMP_DATASTORE=@swamp/s3-datastore:{"bucket":"my-bucket","region":"us-east-1"}
 ```
+
+Legacy `s3:bucket-name/prefix` format is auto-remapped to the
+`@swamp/s3-datastore` extension.
 
 ### Fine-Grained Control
 
@@ -164,14 +174,15 @@ a path belongs to the local tier or the datastore tier:
 DatastorePathResolver.resolvePath(subdir, ...rest) → string
 ```
 
-For filesystem datastores, this returns `{config.path}/{subdir}/...`. For S3
-datastores, this returns `{cachePath}/{subdir}/...` (the local cache path). The
-`DefaultDatastorePathResolver` pre-compiles exclude patterns at construction
-time.
+For filesystem datastores, this returns `{config.path}/{subdir}/...`. For
+extension datastores (e.g., S3), this returns `{datastorePath}/{subdir}/...`
+(typically the local cache path). The `DefaultDatastorePathResolver`
+pre-compiles exclude patterns at construction time.
 
-## S3 Sync
+## Remote Datastore Sync
 
-When an S3 datastore is configured, synchronization happens automatically:
+When a remote datastore (e.g., S3 via `@swamp/s3-datastore`) is configured,
+synchronization happens automatically:
 
 ```
 Write commands (create, edit, delete, run, gc, etc.):
@@ -269,13 +280,12 @@ Lock metadata (`LockInfo`) is stored as JSON:
 }
 ```
 
-### S3Lock
+### Extension Locks
 
-Uses S3 conditional writes (`PutObject` with `If-None-Match: *`) for atomic
-lock acquisition. The lock is an S3 object at `.datastore.lock`. A background
-heartbeat extends the lock every TTL/3 by overwriting the object with a fresh
-timestamp. Stale locks (where `LastModified + ttlMs < now`) are force-acquired
-by deleting and retrying.
+Extension datastores provide their own `DistributedLock` implementation via the
+`DatastoreProvider.createLock()` method. For example, the `@swamp/s3-datastore`
+extension uses S3 conditional writes (`PutObject` with `If-None-Match: *`) for
+atomic lock acquisition with background heartbeat.
 
 ### FileLock
 
@@ -318,7 +328,8 @@ a different backend, run `swamp datastore setup` after init:
 
 ```bash
 swamp datastore setup filesystem --path /mnt/shared/swamp-data
-swamp datastore setup s3 --bucket my-bucket --prefix my-project --region us-east-1
+swamp datastore setup extension @swamp/s3-datastore \
+  --config '{"bucket":"my-bucket","prefix":"my-project","region":"us-east-1"}'
 ```
 
 Each setup command:
@@ -341,8 +352,8 @@ migrates data from the current location to the new one.
 datastore is accessible before every command:
 
 - **Filesystem**: checks the directory exists, is a directory, and is writable
-- **S3**: ensures the local cache directory exists (write commands additionally
-  issue a `HeadBucket` request and pull changed files)
+- **Extension datastores**: delegates to the provider's `createVerifier()` for
+  health checks and `createSyncService()` for pull/push operations
 
 `swamp datastore status` shows the current config, health, latency, directories,
 and exclude patterns.
@@ -366,11 +377,7 @@ and exclude patterns.
 |------|---------|
 | `src/infrastructure/persistence/default_datastore_path_resolver.ts` | Path resolver with compiled patterns |
 | `src/infrastructure/persistence/filesystem_datastore_verifier.ts` | Filesystem health check |
-| `src/infrastructure/persistence/s3_datastore_verifier.ts` | S3 health check (`HeadBucket`) |
-| `src/infrastructure/persistence/s3_client.ts` | AWS S3 SDK wrapper |
-| `src/infrastructure/persistence/s3_cache_sync.ts` | S3 cache with index, push queue, sync methods |
 | `src/infrastructure/persistence/datastore_sync_coordinator.ts` | Global sync lifecycle (lock + pull/push) |
-| `src/infrastructure/persistence/s3_lock.ts` | S3 distributed lock (conditional writes) |
 | `src/infrastructure/persistence/file_lock.ts` | File-based distributed lock (advisory lockfile) |
 
 ### CLI Layer
@@ -381,7 +388,7 @@ and exclude patterns.
 | `src/cli/repo_context.ts` | Wires datastore into repo lifecycle, `createDatastoreLock()` factory |
 | `src/cli/commands/datastore.ts` | `swamp datastore` command group |
 | `src/cli/commands/datastore_status.ts` | `swamp datastore status` |
-| `src/cli/commands/datastore_setup.ts` | `swamp datastore setup` (filesystem + S3) |
+| `src/cli/commands/datastore_setup.ts` | `swamp datastore setup` (filesystem + extension) |
 | `src/cli/commands/datastore_sync.ts` | `swamp datastore sync` (manual) |
 | `src/cli/commands/datastore_lock.ts` | `swamp datastore lock` (status + release) |
 | `src/presentation/output/datastore_output.ts` | Datastore command rendering (log + json) |

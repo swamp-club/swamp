@@ -17,17 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { z } from "zod";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   type DatastoreSetupDeps,
   type DatastoreSetupEvent,
+  datastoreSetupExtension,
+  type DatastoreSetupExtensionInput,
   datastoreSetupFilesystem,
   type DatastoreSetupFilesystemInput,
-  datastoreSetupS3,
-  type DatastoreSetupS3Input,
 } from "./setup.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 
 function makeDeps(
   overrides: Partial<DatastoreSetupDeps> = {},
@@ -35,8 +38,6 @@ function makeDeps(
   return {
     requireUpgradedRepo: () => Promise.resolve(),
     verifyPath: () => Promise.resolve({ healthy: true, message: "ok" }),
-    verifyS3: () => Promise.resolve({ healthy: true, message: "ok" }),
-    checkS3DatastoreExists: () => Promise.resolve(false),
     ensureDir: () => Promise.resolve(),
     getDatastoreDirectories: () => ["data", "outputs"],
     migrateData: () =>
@@ -50,9 +51,6 @@ function makeDeps(
       Promise.resolve({ valid: true, sourceCount: 5, destCount: 5 }),
     cleanupSourceDirs: () => Promise.resolve(),
     updateRepoConfig: () => Promise.resolve(),
-    pushAllToS3: () => Promise.resolve(3),
-    getSwampDataDir: () => "/home/user/.swamp",
-    getCachePath: (repoId: string) => `/home/user/.swamp/repos/${repoId}`,
     collapseEnvVars: (path: string) => path,
     ...overrides,
   };
@@ -64,18 +62,6 @@ function makeFilesystemInput(
   return {
     datastorePath: "/tmp/datastore",
     repoDir: "/tmp/repo",
-    skipMigration: false,
-    ...overrides,
-  };
-}
-
-function makeS3Input(
-  overrides: Partial<DatastoreSetupS3Input> = {},
-): DatastoreSetupS3Input {
-  return {
-    bucket: "my-bucket",
-    repoDir: "/tmp/repo",
-    repoId: "test-repo-id",
     skipMigration: false,
     ...overrides,
   };
@@ -161,12 +147,97 @@ Deno.test("datastoreSetupFilesystem: errors on non-upgraded repo", async () => {
   assertEquals(error.error.code, "validation_failed");
 });
 
-Deno.test("datastoreSetupS3: completes with migration", async () => {
+// ============================================================================
+// Extension datastore setup tests
+// ============================================================================
+
+/** Creates a stub DatastoreProvider for testing. */
+function createStubProvider(
+  overrides?: {
+    healthy?: boolean;
+    message?: string;
+    hasSyncService?: boolean;
+  },
+): DatastoreProvider {
+  const healthy = overrides?.healthy ?? true;
+  const message = overrides?.message ?? "ok";
+  return {
+    createLock: () => ({
+      acquire: () => Promise.resolve(),
+      release: () => Promise.resolve(),
+      withLock: <T>(fn: () => Promise<T>) => fn(),
+      inspect: () => Promise.resolve(null),
+      forceRelease: () => Promise.resolve(true),
+    }),
+    createVerifier: () => ({
+      verify: () =>
+        Promise.resolve({
+          healthy,
+          message,
+          latencyMs: 1,
+          datastoreType: "test",
+        }),
+    }),
+    resolveDatastorePath: (repoDir: string) => `${repoDir}/.custom-store`,
+    resolveCachePath: (repoDir: string) => `${repoDir}/.custom-cache`,
+    ...(overrides?.hasSyncService !== false
+      ? {
+        createSyncService: () => ({
+          pullChanged: () => Promise.resolve(),
+          pushChanged: () => Promise.resolve(),
+        }),
+      }
+      : {}),
+  };
+}
+
+/** Registers a test extension datastore type if not already registered. */
+function ensureTestExtensionType(
+  type: string,
+  opts?: {
+    configSchema?: z.ZodTypeAny;
+    healthy?: boolean;
+    message?: string;
+    hasSyncService?: boolean;
+  },
+): void {
+  if (!datastoreTypeRegistry.has(type)) {
+    datastoreTypeRegistry.register({
+      type,
+      name: `Test ${type}`,
+      description: `Test extension datastore: ${type}`,
+      isBuiltIn: false,
+      configSchema: opts?.configSchema,
+      createProvider: () =>
+        createStubProvider({
+          healthy: opts?.healthy,
+          message: opts?.message,
+          hasSyncService: opts?.hasSyncService,
+        }),
+    });
+  }
+}
+
+function makeExtensionInput(
+  overrides: Partial<DatastoreSetupExtensionInput> = {},
+): DatastoreSetupExtensionInput {
+  return {
+    type: "test-ext-setup",
+    config: { bucket: "my-bucket" },
+    repoDir: "/tmp/repo",
+    repoId: "test-repo",
+    skipMigration: false,
+    ...overrides,
+  };
+}
+
+Deno.test("datastoreSetupExtension: completes with valid config", async () => {
+  ensureTestExtensionType("test-ext-setup");
   const deps = makeDeps();
-  const input = makeS3Input();
+  const input = makeExtensionInput();
 
   const events = await collect<DatastoreSetupEvent>(
-    datastoreSetupS3(createLibSwampContext(), deps, input),
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
   assertEquals(events.length, 3);
@@ -177,37 +248,99 @@ Deno.test("datastoreSetupS3: completes with migration", async () => {
     { kind: "completed" }
   >;
   assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.type, "s3");
-  assertEquals(completed.data.bucket, "my-bucket");
-  assertEquals(completed.data.filesCopied, 3);
+  assertEquals(completed.data.type, "test-ext-setup");
 });
 
-Deno.test("datastoreSetupS3: errors on existing datastore", async () => {
-  const deps = makeDeps({
-    checkS3DatastoreExists: () => Promise.resolve(true),
+Deno.test("datastoreSetupExtension: completes with skip migration", async () => {
+  ensureTestExtensionType("test-ext-skip-migrate");
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-skip-migrate",
+    skipMigration: true,
   });
-  const input = makeS3Input();
 
   const events = await collect<DatastoreSetupEvent>(
-    datastoreSetupS3(createLibSwampContext(), deps, input),
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0].kind, "validating");
+  const completed = events[1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.filesCopied, 0);
+});
+
+Deno.test("datastoreSetupExtension: errors on unregistered type", async () => {
+  const deps = makeDeps();
+  const input = makeExtensionInput({ type: "@unknown/nonexistent" });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
   assertEquals(events.length, 2);
   assertEquals(events[0].kind, "validating");
   const error = events[1] as Extract<DatastoreSetupEvent, { kind: "error" }>;
   assertEquals(error.kind, "error");
-  assertEquals(error.error.code, "already_exists");
+  assertEquals(error.error.code, "validation_failed");
+  assertStringIncludes(error.error.message, "not registered");
 });
 
-Deno.test("datastoreSetupS3: errors on unhealthy bucket", async () => {
-  const deps = makeDeps({
-    verifyS3: () =>
-      Promise.resolve({ healthy: false, message: "access denied" }),
+Deno.test("datastoreSetupExtension: errors on invalid config schema", async () => {
+  const schema = z.object({ endpoint: z.string() });
+  ensureTestExtensionType("test-ext-bad-config", { configSchema: schema });
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-bad-config",
+    config: {},
   });
-  const input = makeS3Input();
 
   const events = await collect<DatastoreSetupEvent>(
-    datastoreSetupS3(createLibSwampContext(), deps, input),
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0].kind, "validating");
+  const error = events[1] as Extract<DatastoreSetupEvent, { kind: "error" }>;
+  assertEquals(error.kind, "error");
+  assertEquals(error.error.code, "validation_failed");
+  assertStringIncludes(error.error.message, "Invalid config");
+});
+
+Deno.test("datastoreSetupExtension: errors on unhealthy backend", async () => {
+  ensureTestExtensionType("test-ext-unhealthy", {
+    healthy: false,
+    message: "bucket not found",
+  });
+  const deps = makeDeps();
+  const input = makeExtensionInput({ type: "test-ext-unhealthy" });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0].kind, "validating");
+  const error = events[1] as Extract<DatastoreSetupEvent, { kind: "error" }>;
+  assertEquals(error.kind, "error");
+  assertEquals(error.error.code, "validation_failed");
+  assertStringIncludes(error.error.message, "not accessible");
+});
+
+Deno.test("datastoreSetupExtension: errors on non-upgraded repo", async () => {
+  ensureTestExtensionType("test-ext-upgrade");
+  const deps = makeDeps({
+    requireUpgradedRepo: () => {
+      throw new Error("Run 'swamp repo upgrade' first");
+    },
+  });
+  const input = makeExtensionInput({ type: "test-ext-upgrade" });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
   assertEquals(events.length, 2);

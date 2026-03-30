@@ -27,7 +27,6 @@ export {
   getDatastoreDirectories,
   isAlwaysLocal,
   isCustomDatastoreConfig,
-  type S3DatastoreConfig,
 } from "./datastore_config.ts";
 
 export {

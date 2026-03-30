@@ -200,10 +200,12 @@ processes.
 
 ### Setting up an S3 datastore
 
-Store runtime data in S3 for team collaboration:
+Store runtime data in S3 for team collaboration using the `@swamp/s3-datastore`
+extension:
 
 ```bash
-swamp datastore setup s3 --bucket my-swamp-bucket --prefix my-project --region us-east-1
+swamp datastore setup extension @swamp/s3-datastore \
+  --config '{"bucket":"my-swamp-bucket","prefix":"my-project","region":"us-east-1"}'
 ```
 
 This pushes existing local data to S3 and updates `.swamp.yaml`. Subsequent
@@ -219,7 +221,8 @@ Run `swamp datastore setup` again with the new backend. For example, to move
 from a filesystem datastore to S3:
 
 ```bash
-swamp datastore setup s3 --bucket my-bucket
+swamp datastore setup extension @swamp/s3-datastore \
+  --config '{"bucket":"my-bucket","region":"us-east-1"}'
 ```
 
 Or from S3 back to local filesystem:

@@ -816,10 +816,10 @@ export {
   type DatastoreSetupData,
   type DatastoreSetupDeps,
   type DatastoreSetupEvent,
+  datastoreSetupExtension,
+  type DatastoreSetupExtensionInput,
   datastoreSetupFilesystem,
   type DatastoreSetupFilesystemInput,
-  datastoreSetupS3,
-  type DatastoreSetupS3Input,
 } from "./datastores/setup.ts";
 export {
   createDatastoreLockReleaseDeps,

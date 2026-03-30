@@ -42,10 +42,11 @@ Deno.test("DefaultDatastorePathResolver - datastorePath uses configured path", (
   assertEquals(resolver.datastorePath("data", "foo"), "/data/store/data/foo");
 });
 
-Deno.test("DefaultDatastorePathResolver - S3 datastorePath uses cachePath", () => {
+Deno.test("DefaultDatastorePathResolver - custom datastorePath uses datastorePath", () => {
   const config: DatastoreConfig = {
     type: "s3",
-    bucket: "my-bucket",
+    config: { bucket: "my-bucket" },
+    datastorePath: "/home/user/.swamp/repos/abc",
     cachePath: "/home/user/.swamp/repos/abc",
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);

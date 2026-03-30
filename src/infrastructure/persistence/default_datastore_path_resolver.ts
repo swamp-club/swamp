@@ -54,11 +54,8 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
     if (isCustomDatastoreConfig(datastoreConfig)) {
       // Custom: path was eagerly resolved during config resolution
       this.datastoreBasePath = datastoreConfig.datastorePath;
-    } else if (datastoreConfig.type === "filesystem") {
-      this.datastoreBasePath = datastoreConfig.path;
     } else {
-      // S3: use local cache path
-      this.datastoreBasePath = datastoreConfig.cachePath;
+      this.datastoreBasePath = datastoreConfig.path;
     }
   }
 

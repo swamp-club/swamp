@@ -52,48 +52,9 @@ Deno.test("datastoreStatus: healthy filesystem datastore", async () => {
       data: {
         type: "filesystem",
         path: "/tmp/swamp-data",
-        bucket: undefined,
-        prefix: undefined,
-        region: undefined,
-        endpoint: undefined,
         healthy: true,
         message: "OK",
         latencyMs: 5,
-        directories: ["data", "outputs", "workflow-runs"],
-        exclude: undefined,
-      },
-    },
-  );
-});
-
-Deno.test("datastoreStatus: healthy S3 datastore", async () => {
-  const s3Config: DatastoreConfig = {
-    type: "s3",
-    bucket: "my-bucket",
-    prefix: "swamp/",
-    region: "us-east-1",
-    cachePath: "/tmp/cache",
-  };
-  const deps = makeDeps({
-    loadConfig: () => s3Config,
-    verifyHealth: () =>
-      Promise.resolve({ healthy: true, message: "OK", latencyMs: 120 }),
-  });
-
-  await assertCompletes<DatastoreStatusEvent>(
-    datastoreStatus(createLibSwampContext(), deps),
-    {
-      kind: "completed",
-      data: {
-        type: "s3",
-        path: undefined,
-        bucket: "my-bucket",
-        prefix: "swamp/",
-        region: "us-east-1",
-        endpoint: undefined,
-        healthy: true,
-        message: "OK",
-        latencyMs: 120,
         directories: ["data", "outputs", "workflow-runs"],
         exclude: undefined,
       },
@@ -118,10 +79,6 @@ Deno.test("datastoreStatus: unhealthy datastore", async () => {
       data: {
         type: "filesystem",
         path: "/tmp/swamp-data",
-        bucket: undefined,
-        prefix: undefined,
-        region: undefined,
-        endpoint: undefined,
         healthy: false,
         message: "Connection refused",
         latencyMs: 0,
@@ -149,10 +106,6 @@ Deno.test("datastoreStatus: includes exclude patterns", async () => {
       data: {
         type: "filesystem",
         path: "/tmp/swamp-data",
-        bucket: undefined,
-        prefix: undefined,
-        region: undefined,
-        endpoint: undefined,
         healthy: true,
         message: "OK",
         latencyMs: 5,

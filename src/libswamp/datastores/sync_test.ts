@@ -30,7 +30,8 @@ function makeDeps(
   overrides: Partial<DatastoreSyncDeps> = {},
 ): DatastoreSyncDeps {
   return {
-    validateSyncSupport: () => Promise.resolve({ supported: true, type: "s3" }),
+    validateSyncSupport: () =>
+      Promise.resolve({ supported: true, type: "custom" }),
     pushSync: () => Promise.resolve({ filesPushed: 5 }),
     pullSync: () => Promise.resolve({ filesPulled: 3 }),
     fullSync: () =>
@@ -103,7 +104,8 @@ Deno.test("datastoreSync: unsupported datastore type yields error", async () => 
       Promise.resolve({
         supported: false,
         type: "filesystem",
-        errorMessage: "Datastore sync is only available for S3 datastores.",
+        errorMessage:
+          "Datastore sync is only available for sync-capable custom datastores.",
       }),
   });
 
@@ -113,6 +115,6 @@ Deno.test("datastoreSync: unsupported datastore type yields error", async () => 
   );
   assertEquals(
     error.message,
-    "Datastore sync is only available for S3 datastores.",
+    "Datastore sync is only available for sync-capable custom datastores.",
   );
 });
