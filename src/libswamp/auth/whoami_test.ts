@@ -22,7 +22,12 @@ import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 import type { WhoamiResponse } from "../../infrastructure/http/swamp_club_client.ts";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
-import { type AuthDeps, type AuthWhoamiEvent, whoami } from "./whoami.ts";
+import {
+  type AuthDeps,
+  type AuthWhoamiEvent,
+  createAuthDeps,
+  whoami,
+} from "./whoami.ts";
 
 function makeDeps(overrides: {
   credentials?: AuthCredentials | null;
@@ -226,4 +231,54 @@ Deno.test("whoami does not persist credentials when saveCredentials is a no-op",
   >;
   assertEquals(completed.kind, "completed");
   assertEquals(saveCalled, false);
+});
+
+Deno.test("createAuthDeps: saveCredentials is a no-op when SWAMP_API_KEY is set", async () => {
+  const originalKey = Deno.env.get("SWAMP_API_KEY");
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    Deno.env.set("SWAMP_API_KEY", "swamp_test_env_key");
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
+    const deps = createAuthDeps();
+
+    // saveCredentials should be a no-op — no file should be written
+    await deps.saveCredentials(testCredentials);
+    const files = [];
+    try {
+      for await (const entry of Deno.readDir(`${tmpDir}/swamp`)) {
+        files.push(entry.name);
+      }
+    } catch {
+      // Directory doesn't exist — expected, since save was a no-op
+    }
+    assertEquals(files.includes("auth.json"), false);
+  } finally {
+    if (originalKey) Deno.env.set("SWAMP_API_KEY", originalKey);
+    else Deno.env.delete("SWAMP_API_KEY");
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("createAuthDeps: saveCredentials writes file when SWAMP_API_KEY is not set", async () => {
+  const originalKey = Deno.env.get("SWAMP_API_KEY");
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    Deno.env.delete("SWAMP_API_KEY");
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
+    const deps = createAuthDeps();
+
+    await deps.saveCredentials(testCredentials);
+    const stat = await Deno.stat(`${tmpDir}/swamp/auth.json`);
+    assertEquals(stat.isFile, true);
+  } finally {
+    if (originalKey) Deno.env.set("SWAMP_API_KEY", originalKey);
+    else Deno.env.delete("SWAMP_API_KEY");
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });

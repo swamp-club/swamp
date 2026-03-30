@@ -24,6 +24,7 @@ import {
   authLogout,
   type AuthLogoutDeps,
   type AuthLogoutEvent,
+  createAuthLogoutDeps,
 } from "./logout.ts";
 
 function makeDeps(overrides: Partial<AuthLogoutDeps> = {}): AuthLogoutDeps {
@@ -82,23 +83,24 @@ Deno.test("authLogout: yields completed with loggedOut false when not authentica
   assertEquals(completed.data.reason, "not authenticated");
 });
 
-Deno.test("authLogout: reports not authenticated when env var auth is active", async () => {
-  // Simulates createAuthLogoutDeps behavior when SWAMP_API_KEY is set:
-  // loadCredentials returns null since env-var creds can't be logged out
-  const deps = makeDeps({
-    loadCredentials: () => Promise.resolve(null),
-  });
-
-  const events = await collect<AuthLogoutEvent>(
-    authLogout(createLibSwampContext(), deps),
-  );
-
-  assertEquals(events.length, 1);
-  const completed = events[0] as Extract<
-    AuthLogoutEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.loggedOut, false);
-  assertEquals(completed.data.reason, "not authenticated");
+Deno.test("createAuthLogoutDeps: loadCredentials returns env-var creds when SWAMP_API_KEY is set", async () => {
+  const originalKey = Deno.env.get("SWAMP_API_KEY");
+  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    Deno.env.set("SWAMP_API_KEY", "swamp_test_env_key");
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
+    const deps = createAuthLogoutDeps();
+    const creds = await deps.loadCredentials();
+    // With SWAMP_API_KEY set, loadCredentials returns env-var creds
+    // (username is empty since env var doesn't provide it)
+    assertEquals(creds !== null, true);
+    assertEquals(creds!.username, "");
+  } finally {
+    if (originalKey) Deno.env.set("SWAMP_API_KEY", originalKey);
+    else Deno.env.delete("SWAMP_API_KEY");
+    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
+    else Deno.env.delete("XDG_CONFIG_HOME");
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });

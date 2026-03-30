@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** Default swamp-club server URL, used when no override is configured. */
+export const DEFAULT_SWAMP_CLUB_URL = "https://swamp.club";
+
 /** Stored authentication credentials for swamp-club API access. */
 export interface AuthCredentials {
   /** The swamp-club server URL (e.g., "https://swamp.club") */

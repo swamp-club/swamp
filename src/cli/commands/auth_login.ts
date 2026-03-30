@@ -28,12 +28,11 @@ import type { AuthLoginInput } from "../../libswamp/mod.ts";
 import { createAuthLoginRenderer } from "../../presentation/renderers/auth_login.ts";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
-
-const DEFAULT_SERVER_URL = "https://swamp.club";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 /** Resolve server URL: env var > default */
 function resolveServerUrl(): string {
-  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL;
+  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
 // deno-lint-ignore no-explicit-any

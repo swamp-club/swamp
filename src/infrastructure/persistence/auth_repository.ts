@@ -20,10 +20,12 @@
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampConfigDir } from "./paths.ts";
-import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
+import {
+  type AuthCredentials,
+  DEFAULT_SWAMP_CLUB_URL,
+} from "../../domain/auth/auth_credentials.ts";
 
 const AUTH_FILE = "auth.json";
-const DEFAULT_SERVER_URL = "https://swamp.club";
 
 /**
  * Repository for managing swamp-club authentication credentials.
@@ -40,12 +42,18 @@ export class AuthRepository {
   /**
    * Read auth credentials. Checks SWAMP_API_KEY env var first,
    * then falls back to auth.json file. Returns null if neither exists.
+   *
+   * Note: SWAMP_API_KEY is also checked in two other places that need
+   * different behavior for env-var auth:
+   * - src/libswamp/auth/whoami.ts createAuthDeps() — skips saveCredentials
+   * - src/cli/commands/auth_login.ts / auth_logout.ts — bail early with
+   *   a UserError since login/logout don't apply to env-var auth
    */
   async load(): Promise<AuthCredentials | null> {
     const envApiKey = Deno.env.get("SWAMP_API_KEY");
     if (envApiKey) {
       return {
-        serverUrl: Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL,
+        serverUrl: Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL,
         apiKey: envApiKey,
         apiKeyId: "",
         username: "",
