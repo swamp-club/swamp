@@ -45,6 +45,11 @@ import { maybeAutoUpdateDatastoreExtension } from "../libswamp/extensions/datast
 import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
 import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
+import { installExtension } from "../libswamp/mod.ts";
+import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
+import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
+import { swampPath } from "../infrastructure/persistence/paths.ts";
+import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
 
 const logger = getLogger(["swamp", "datastore", "resolve"]);
 
@@ -93,12 +98,50 @@ async function maybeAutoUpdateSwampDatastore(
           return null;
         }
       },
-      pullExtension: async (name, _version) => {
-        // Use the auto-resolver's install path which handles pull + hot-reload
-        const resolver = getAutoResolver();
-        if (resolver) {
-          await resolver.resolve(name);
-        }
+      pullExtension: async (name, version) => {
+        const resolvedRepoDir = resolve(repoDir);
+        const datastoresDir = swampPath(
+          resolvedRepoDir,
+          SWAMP_SUBDIRS.pulledDatastores,
+        );
+
+        // Pull the extension with the specific version
+        await installExtension(
+          { name, version },
+          {
+            getExtension: (n) => extensionClient.getExtension(n),
+            downloadArchive: (n, v) => extensionClient.downloadArchive(n, v),
+            getChecksum: (n, v) => extensionClient.getChecksum(n, v),
+            logger,
+            lockfilePath,
+            modelsDir: swampPath(resolvedRepoDir, SWAMP_SUBDIRS.pulledModels),
+            workflowsDir: swampPath(
+              resolvedRepoDir,
+              SWAMP_SUBDIRS.pulledWorkflows,
+            ),
+            vaultsDir: swampPath(resolvedRepoDir, SWAMP_SUBDIRS.pulledVaults),
+            driversDir: swampPath(
+              resolvedRepoDir,
+              SWAMP_SUBDIRS.pulledDrivers,
+            ),
+            datastoresDir,
+            reportsDir: swampPath(
+              resolvedRepoDir,
+              SWAMP_SUBDIRS.pulledReports,
+            ),
+            repoDir: resolvedRepoDir,
+            force: true,
+            alreadyPulled: new Set(),
+            depth: 0,
+          },
+        );
+
+        // Hot-reload the datastore type from the updated extension
+        const denoRuntime = new EmbeddedDenoRuntime();
+        const loader = new UserDatastoreLoader(denoRuntime, resolvedRepoDir);
+        await loader.loadDatastores(datastoresDir, {
+          skipAlreadyRegistered: false,
+        });
       },
       cacheRepository,
     });
