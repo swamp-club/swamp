@@ -48,6 +48,15 @@ Reports with `scope: "method"` or `scope: "model"` run in the context of a
 specific model instance and method invocation. Reports with `scope: "workflow"`
 run after all workflow steps complete and receive summary data about every step.
 
+### Execution Path Parity
+
+Method-scope and model-scope reports run with identical context fields regardless
+of whether the method was invoked directly via `swamp model method run` or
+triggered by a workflow step. Both paths populate `swampSha`, `outputSpecs`,
+`executionStatus`, and all other `MethodReportContext` fields. Reports also run
+on failed executions in both paths, with `executionStatus: "failed"` and the
+`errorMessage` field set.
+
 ## Report Context
 
 The three context variants share a base set of fields and diverge based on

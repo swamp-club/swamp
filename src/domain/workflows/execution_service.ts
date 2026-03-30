@@ -42,6 +42,7 @@ import { BUILTIN_METHOD_REPORTS } from "../reports/builtin/mod.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
+import { buildOutputSpecs } from "../models/output_spec_builder.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
@@ -127,6 +128,14 @@ export interface StepExecutionContext {
   driverConfig?: Record<string, unknown>;
   /** Report filter options for per-step report execution */
   reportFilterOptions?: ReportFilterOptions;
+  /** The git commit sha of the swamp repo at execution time */
+  swampSha?: string;
+  /** Check names to skip during pre-flight checks */
+  skipCheckNames?: string[];
+  /** Skip checks that have any of these labels */
+  skipCheckLabels?: string[];
+  /** Skip all pre-flight checks */
+  skipAllChecks?: boolean;
 }
 
 /**
@@ -464,6 +473,9 @@ export class DefaultStepExecutor implements StepExecutor {
           vaultSecrets: secretBag,
           driver: ctx.driver ?? evaluatedDefinition.driver,
           driverConfig: ctx.driverConfig ?? evaluatedDefinition.driverConfig,
+          skipCheckNames: ctx.skipCheckNames,
+          skipCheckLabels: ctx.skipCheckLabels,
+          skipAllChecks: ctx.skipAllChecks,
           onEvent: ctx.emitEvent
             ? (event: MethodExecutionEvent) => {
               if (event.type === "output") {
@@ -668,6 +680,7 @@ export class DefaultStepExecutor implements StepExecutor {
           logger: runLogger,
           dataRepository: unifiedDataRepo,
           definitionRepository: definitionRepo,
+          swampSha: ctx.swampSha,
           modelType,
           modelId: evaluatedDefinition.id,
           definition: {
@@ -681,6 +694,7 @@ export class DefaultStepExecutor implements StepExecutor {
           methodName: task.methodName,
           executionStatus: "succeeded",
           dataHandles,
+          outputSpecs: buildOutputSpecs(modelDef),
         };
 
         await executeReports(
@@ -734,6 +748,104 @@ export class DefaultStepExecutor implements StepExecutor {
         model: originalDefinition.name,
         error: errorMessage,
       });
+
+      // Run method-summary report for failed executions so report consumers
+      // see structured error output (matching modelMethodRun failure behavior).
+      try {
+        if (
+          reportRegistry.getAll().length > 0 && ctx.reportFilterOptions
+        ) {
+          const failedMethodContext: MethodReportContext = {
+            scope: "method",
+            repoDir: ctx.repoDir,
+            logger: runLogger,
+            dataRepository: unifiedDataRepo,
+            definitionRepository: definitionRepo,
+            swampSha: ctx.swampSha,
+            modelType,
+            modelId: evaluatedDefinition.id,
+            definition: {
+              id: evaluatedDefinition.id,
+              name: evaluatedDefinition.name,
+              version: evaluatedDefinition.version,
+              tags: evaluatedDefinition.tags,
+            },
+            globalArgs: reportGlobalArgs,
+            methodArgs: reportMethodArgs,
+            methodName: task.methodName,
+            executionStatus: "failed",
+            errorMessage,
+            dataHandles: [],
+            outputSpecs: buildOutputSpecs(modelDef),
+          };
+
+          const stepModelDef = modelRegistry.get(modelType);
+          const stepModelTypeReports = [
+            ...BUILTIN_METHOD_REPORTS,
+            ...(stepModelDef?.reports ?? []),
+          ];
+
+          const reportEventCallbacks: ReportEventCallback = {
+            onReportStarted: (name, scope) => {
+              ctx.emitEvent?.({
+                kind: "report_started",
+                reportName: name,
+                scope,
+                jobId: ctx.jobName,
+                stepId: ctx.stepName,
+              });
+            },
+            onReportCompleted: (
+              name,
+              scope,
+              markdown,
+              json,
+            ) => {
+              ctx.emitEvent?.({
+                kind: "report_completed",
+                reportName: name,
+                scope,
+                markdown,
+                json,
+                jobId: ctx.jobName,
+                stepId: ctx.stepName,
+              });
+            },
+            onReportFailed: (name, scope, reportError) => {
+              ctx.emitEvent?.({
+                kind: "report_failed",
+                reportName: name,
+                scope,
+                error: reportError,
+                jobId: ctx.jobName,
+                stepId: ctx.stepName,
+              });
+            },
+          };
+
+          await executeReports(
+            reportRegistry,
+            failedMethodContext,
+            modelType,
+            evaluatedDefinition.id,
+            originalDefinition.reportSelection,
+            ctx.reportFilterOptions,
+            reportEventCallbacks,
+            task.methodName,
+            stepModelTypeReports,
+          );
+        }
+      } catch (reportError) {
+        // Don't mask the original execution error with a report error
+        runLogger.debug(
+          "Failed to run reports for failed method: {error}",
+          {
+            error: reportError instanceof Error
+              ? reportError.message
+              : String(reportError),
+          },
+        );
+      }
 
       throw error;
     }
@@ -828,6 +940,14 @@ interface StepOptions {
   signal?: AbortSignal;
   driver?: string;
   reportFilterOptions?: ReportFilterOptions;
+  /** The git commit sha of the swamp repo at execution time */
+  swampSha?: string;
+  /** Check names to skip during pre-flight checks */
+  skipCheckNames?: string[];
+  /** Skip checks that have any of these labels */
+  skipCheckLabels?: string[];
+  /** Skip all pre-flight checks */
+  skipAllChecks?: boolean;
 }
 
 /**
@@ -871,6 +991,14 @@ export class WorkflowExecutionService {
       signal?: AbortSignal;
       /** Report filter options for per-step report execution */
       reportFilterOptions?: ReportFilterOptions;
+      /** The git commit sha of the swamp repo at execution time */
+      swampSha?: string;
+      /** Check names to skip during pre-flight checks */
+      skipCheckNames?: string[];
+      /** Skip checks that have any of these labels */
+      skipCheckLabels?: string[];
+      /** Skip all pre-flight checks */
+      skipAllChecks?: boolean;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const tracer = getTracer();
@@ -990,6 +1118,10 @@ export class WorkflowExecutionService {
         signal: options?.signal,
         driver: options?.driver,
         reportFilterOptions: options?.reportFilterOptions,
+        swampSha: options?.swampSha,
+        skipCheckNames: options?.skipCheckNames,
+        skipCheckLabels: options?.skipCheckLabels,
+        skipAllChecks: options?.skipAllChecks,
       };
 
       // Sort jobs topologically
@@ -1469,6 +1601,10 @@ export class WorkflowExecutionService {
           ),
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,
+          swampSha: options.swampSha,
+          skipCheckNames: options.skipCheckNames,
+          skipCheckLabels: options.skipCheckLabels,
+          skipAllChecks: options.skipAllChecks,
         };
         return this.executor.execute(step, ctx);
       });

@@ -1882,3 +1882,61 @@ Deno.test("mix of allowFailure and regular failing steps causes job failure", as
     );
   });
 });
+
+// Issue #947: Check skip options and swampSha propagation through StepExecutionContext
+Deno.test("check skip options and swampSha are threaded to step context", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    class ContextCapturingExecutor implements StepExecutor {
+      capturedContexts: StepExecutionContext[] = [];
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new ContextCapturingExecutor();
+
+    const workflow = Workflow.create({
+      name: "skip-options-test",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    for await (
+      const _event of service.run(workflow.name, {
+        skipCheckNames: ["policy-check"],
+        skipCheckLabels: ["live"],
+        skipAllChecks: false,
+        swampSha: "abc123",
+      })
+    ) {
+      // Drain events
+    }
+
+    assertEquals(executor.capturedContexts.length, 1);
+    const ctx = executor.capturedContexts[0];
+    assertEquals(ctx.skipCheckNames, ["policy-check"]);
+    assertEquals(ctx.skipCheckLabels, ["live"]);
+    assertEquals(ctx.skipAllChecks, false);
+    assertEquals(ctx.swampSha, "abc123");
+  });
+});

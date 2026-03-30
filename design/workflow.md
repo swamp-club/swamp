@@ -184,6 +184,21 @@ inputs:
 
 See [Expressions](./expressions.md) for the full vary dimensions syntax.
 
+## Pre-flight Check Control
+
+Workflow runs support the same pre-flight check skip options as direct model
+method invocations. These flags apply to all model method steps in the workflow:
+
+| Flag                         | Behavior                                   |
+| ---------------------------- | ------------------------------------------ |
+| `--skip-checks`              | Skip all pre-flight checks                 |
+| `--skip-check <name>`        | Skip a specific check by name (repeatable) |
+| `--skip-check-label <label>` | Skip all checks with a label (repeatable)  |
+
+Check skip options are threaded from the CLI through `WorkflowRunInput` →
+`StepExecutionContext` → `MethodContext`, ensuring consistent behavior with
+`swamp model method run`.
+
 ## Workflow Runs
 
 When a workflow is run, it executes the jobs and steps in the correct order. The

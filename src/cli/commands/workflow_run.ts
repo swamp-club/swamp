@@ -31,6 +31,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { parseInputs } from "../input_parser.ts";
+import { GIT_SHA } from "./version.ts";
 import { parseTags } from "../../libswamp/mod.ts";
 import { workflowRunSearchCommand } from "./workflow_run_search.ts";
 import {
@@ -86,6 +87,17 @@ export const workflowRunCommand = new Command()
   .option(
     "--report-label <label:string>",
     "Run only reports with this label (inclusion filter)",
+    { collect: true },
+  )
+  .option("--skip-checks", "Skip all pre-flight checks", { default: false })
+  .option(
+    "--skip-check <name:string>",
+    "Skip a specific pre-flight check by name",
+    { collect: true },
+  )
+  .option(
+    "--skip-check-label <label:string>",
+    "Skip pre-flight checks with this label",
     { collect: true },
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
@@ -213,6 +225,10 @@ export const workflowRunCommand = new Command()
           skipReportLabels: options.skipReportLabel as string[] | undefined,
           reportNames: options.report as string[] | undefined,
           reportLabels: options.reportLabel as string[] | undefined,
+          swampSha: GIT_SHA || undefined,
+          skipAllChecks: options.skipChecks as boolean | undefined,
+          skipCheckNames: options.skipCheck as string[] | undefined,
+          skipCheckLabels: options.skipCheckLabel as string[] | undefined,
         }),
         renderer.handlers(),
       );
