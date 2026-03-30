@@ -736,3 +736,344 @@ Deno.test("executeReports - events include varySuffix data handles", async () =>
   assertStringIncludes(handles[0].name, "host-a");
   assertStringIncludes(handles[1].name, "host-a");
 });
+
+// --- buildRedactSensitiveArgs tests (via executeReports) ---
+
+import type { WorkflowReportContext } from "./report_context.ts";
+import { modelRegistry } from "../models/model.ts";
+import { z } from "zod";
+
+/**
+ * Creates a report that captures the redactSensitiveArgs function from its
+ * context and applies it to the provided args, returning the results.
+ */
+function makeRedactionCapturingReport(
+  globalArgs: Record<string, unknown>,
+  methodArgs: Record<string, unknown>,
+): {
+  report: ReportDefinition;
+  getResults: () => {
+    redactedGlobal: Record<string, unknown>;
+    redactedMethod: Record<string, unknown>;
+  } | null;
+} {
+  let capturedResults: {
+    redactedGlobal: Record<string, unknown>;
+    redactedMethod: Record<string, unknown>;
+  } | null = null;
+
+  const report: ReportDefinition = {
+    description: "Captures redactSensitiveArgs behavior",
+    scope: "method",
+    execute(context: ReportContext) {
+      if (context.scope !== "method") {
+        throw new Error("Expected method context");
+      }
+      const redact = context.redactSensitiveArgs;
+      capturedResults = {
+        redactedGlobal: redact ? redact(globalArgs, "global") : globalArgs,
+        redactedMethod: redact ? redact(methodArgs, "method") : methodArgs,
+      };
+      return Promise.resolve({
+        markdown: "# Redaction Test",
+        json: capturedResults,
+      });
+    },
+  };
+
+  return { report, getResults: () => capturedResults };
+}
+
+/**
+ * Registers a temporary model type with sensitive fields for testing.
+ * Uses a unique type name to avoid conflicts with other tests.
+ */
+function registerSensitiveModel(suffix: string): ModelType {
+  const typeName = `@test-redact/sensitive-${suffix}`;
+  const modelType = ModelType.create(typeName);
+  if (!modelRegistry.has(modelType)) {
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({
+        region: z.string(),
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+      methods: {
+        deploy: {
+          description: "test deploy",
+          arguments: z.object({
+            target: z.string(),
+            password: z.string().meta({ sensitive: true }),
+          }),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+  }
+  return modelType;
+}
+
+Deno.test("buildRedactSensitiveArgs: redacts sensitive global args", async () => {
+  const modelType = registerSensitiveModel("global");
+  const globalArgs = { region: "us-east-1", apiKey: "sk-secret-12345" };
+  const methodArgs = { target: "prod", password: "hunter2" };
+  const { report, getResults } = makeRedactionCapturingReport(
+    globalArgs,
+    methodArgs,
+  );
+
+  const registry = new ReportRegistry();
+  registry.register("redaction-test-global", report);
+
+  const { repo } = createInMemoryDataRepo();
+
+  const context: MethodReportContext = {
+    scope: "method",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as MethodReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    modelType,
+    modelId: "test-id",
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    globalArgs,
+    methodArgs,
+    methodName: "deploy",
+    executionStatus: "succeeded",
+    dataHandles: [],
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["redaction-test-global"] },
+    {},
+    undefined,
+    "deploy",
+  );
+
+  const results = getResults();
+  assertEquals(results !== null, true);
+  assertEquals(results!.redactedGlobal.apiKey, "***");
+  assertEquals(results!.redactedGlobal.region, "us-east-1");
+});
+
+Deno.test("buildRedactSensitiveArgs: redacts sensitive method args", async () => {
+  const modelType = registerSensitiveModel("method");
+  const globalArgs = { region: "us-east-1", apiKey: "sk-secret-12345" };
+  const methodArgs = { target: "prod", password: "hunter2" };
+  const { report, getResults } = makeRedactionCapturingReport(
+    globalArgs,
+    methodArgs,
+  );
+
+  const registry = new ReportRegistry();
+  registry.register("redaction-test-method", report);
+
+  const { repo } = createInMemoryDataRepo();
+
+  const context: MethodReportContext = {
+    scope: "method",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as MethodReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    modelType,
+    modelId: "test-id",
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    globalArgs,
+    methodArgs,
+    methodName: "deploy",
+    executionStatus: "succeeded",
+    dataHandles: [],
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["redaction-test-method"] },
+    {},
+    undefined,
+    "deploy",
+  );
+
+  const results = getResults();
+  assertEquals(results !== null, true);
+  assertEquals(results!.redactedMethod.password, "***");
+  assertEquals(results!.redactedMethod.target, "prod");
+});
+
+Deno.test("buildRedactSensitiveArgs: returns args unchanged for model without sensitive fields", async () => {
+  const typeName = "@test-redact/no-sensitive";
+  const modelType = ModelType.create(typeName);
+  if (!modelRegistry.has(modelType)) {
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({
+        region: z.string(),
+      }),
+      methods: {
+        run: {
+          description: "test run",
+          arguments: z.object({
+            target: z.string(),
+          }),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+  }
+
+  const globalArgs = { region: "us-east-1" };
+  const methodArgs = { target: "prod" };
+  const { report, getResults } = makeRedactionCapturingReport(
+    globalArgs,
+    methodArgs,
+  );
+
+  const registry = new ReportRegistry();
+  registry.register("redaction-test-none", report);
+
+  const { repo } = createInMemoryDataRepo();
+
+  const context: MethodReportContext = {
+    scope: "method",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as MethodReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    modelType,
+    modelId: "test-id",
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    globalArgs,
+    methodArgs,
+    methodName: "run",
+    executionStatus: "succeeded",
+    dataHandles: [],
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["redaction-test-none"] },
+    {},
+    undefined,
+    "run",
+  );
+
+  const results = getResults();
+  assertEquals(results !== null, true);
+  assertEquals(results!.redactedGlobal.region, "us-east-1");
+  assertEquals(results!.redactedMethod.target, "prod");
+});
+
+Deno.test("buildRedactSensitiveArgs: returns args unchanged for workflow scope", async () => {
+  const typeName = "@test-redact/workflow-scope";
+  const modelType = ModelType.create(typeName);
+  if (!modelRegistry.has(modelType)) {
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+      }),
+      methods: {
+        run: {
+          description: "test",
+          arguments: z.object({}),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+  }
+
+  const globalArgs = { apiKey: "sk-secret" };
+  let capturedResult: Record<string, unknown> | null = null;
+
+  const workflowReport: ReportDefinition = {
+    description: "Workflow scope redaction test",
+    scope: "workflow",
+    execute(context: ReportContext) {
+      const redact = context.redactSensitiveArgs;
+      capturedResult = redact ? redact(globalArgs, "global") : globalArgs;
+      return Promise.resolve({
+        markdown: "# Test",
+        json: capturedResult,
+      });
+    },
+  };
+
+  const registry = new ReportRegistry();
+  registry.register("wf-redact-test", workflowReport);
+
+  const { repo } = createInMemoryDataRepo();
+
+  const context: WorkflowReportContext = {
+    scope: "workflow",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as WorkflowReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    workflowId: "wf-1",
+    workflowRunId: "run-1",
+    workflowName: "test-workflow",
+    workflowStatus: "succeeded",
+    stepExecutions: [],
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["wf-redact-test"] },
+    {},
+    undefined,
+    undefined,
+    undefined,
+  );
+
+  // Workflow scope should return args unchanged (no redaction)
+  assertEquals(capturedResult !== null, true);
+  assertEquals(capturedResult!.apiKey, "sk-secret");
+});
