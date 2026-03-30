@@ -1,12 +1,34 @@
-# Unit Testing Report Extensions
+# Testing Report Extensions
 
-The `@systeminit/swamp-testing` package provides `createReportTestContext()` for
-unit testing report `execute` functions without running real model methods or
-accessing real data repositories.
+The `@systeminit/swamp-testing` package provides `createReportTestContext()` and
+mock primitives for unit testing report `execute` functions without running real
+model methods or accessing real data repositories.
 
 Install: `deno add jsr:@systeminit/swamp-testing`
 
-## createReportTestContext Options
+## createReportTestContext
+
+Creates a fake `ReportContext` with pre-seeded data and definition repositories:
+
+```typescript
+import { createReportTestContext } from "@systeminit/swamp-testing";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { report } from "./my_report.ts";
+
+Deno.test("report generates cost summary", async () => {
+  const { context } = createReportTestContext({
+    scope: "method",
+    modelType: "aws/ec2-instance",
+    methodName: "create",
+    executionStatus: "succeeded",
+    dataHandles: [],
+  });
+
+  const result = await report.execute(context);
+  assertStringIncludes(result.markdown, "## Cost");
+  assertEquals(typeof result.json.estimatedCost, "number");
+});
+```
 
 All scopes share these base options:
 
@@ -31,28 +53,6 @@ const {
   getLogs, // () => CapturedReportLog[]
   getLogsByLevel, // (level) => CapturedReportLog[]
 } = createReportTestContext({ scope: "method" });
-```
-
-## Testing a Method-Scope Report
-
-```typescript
-import { createReportTestContext } from "@systeminit/swamp-testing";
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { report } from "./my_report.ts";
-
-Deno.test("report generates cost summary", async () => {
-  const { context } = createReportTestContext({
-    scope: "method",
-    modelType: "aws/ec2-instance",
-    methodName: "create",
-    executionStatus: "succeeded",
-    dataHandles: [],
-  });
-
-  const result = await report.execute(context);
-  assertStringIncludes(result.markdown, "## Cost");
-  assertEquals(typeof result.json.estimatedCost, "number");
-});
 ```
 
 ## Pre-Seeding Data for Reports
@@ -91,6 +91,64 @@ Deno.test("report reads model data", async () => {
 });
 ```
 
+## Mocking External Calls
+
+Reports that call external APIs (e.g., pricing APIs, cost calculators) can use
+mock primitives to test without real infrastructure.
+
+### Reports that call `fetch()`
+
+```typescript
+import {
+  createReportTestContext,
+  withMockedFetch,
+} from "@systeminit/swamp-testing";
+
+Deno.test("report fetches pricing data", async () => {
+  const { calls } = await withMockedFetch((req) => {
+    if (req.url.includes("/pricing")) {
+      return Response.json({ hourlyRate: 0.023 });
+    }
+    return Response.json({}, { status: 404 });
+  }, async () => {
+    const { context } = createReportTestContext({
+      scope: "method",
+      modelType: "aws/ec2",
+      methodName: "create",
+      executionStatus: "succeeded",
+      dataHandles: [],
+    });
+
+    const result = await report.execute(context);
+    assertStringIncludes(result.markdown, "0.023");
+  });
+
+  assertEquals(calls.length, 1);
+});
+```
+
+### Reports that shell out to CLI tools
+
+```typescript
+import {
+  createReportTestContext,
+  withMockedCommand,
+} from "@systeminit/swamp-testing";
+
+Deno.test("report runs cost calculator CLI", async () => {
+  await withMockedCommand((cmd, args) => {
+    if (cmd === "infracost" && args.includes("--format")) {
+      return { stdout: '{"totalMonthlyCost":"42.00"}', code: 0 };
+    }
+    return { stdout: "", stderr: "unknown", code: 1 };
+  }, async () => {
+    const { context } = createReportTestContext({ scope: "method" });
+    const result = await report.execute(context);
+    assertStringIncludes(result.json.monthlyCost, "42.00");
+  });
+});
+```
+
 ## Testing Workflow-Scope Reports
 
 ```typescript
@@ -125,5 +183,8 @@ Deno.test("workflow report summarizes steps", async () => {
 Import directly from the testing package source:
 
 ```typescript
-import { createReportTestContext } from "../../packages/testing/mod.ts";
+import {
+  createReportTestContext,
+  withMockedFetch,
+} from "../../packages/testing/mod.ts";
 ```
