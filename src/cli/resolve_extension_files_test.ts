@@ -293,3 +293,57 @@ Deno.test("resolveExtensionFiles returns empty vault arrays when no vaults in ma
     assertEquals(result.allVaultFiles, []);
   });
 });
+
+Deno.test("resolveExtensionFiles rejects path traversal in models", async () => {
+  await withTempRepo(async (dir) => {
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        models: ["../../other/model.ts"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "must not contain '..'",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles rejects absolute path in workflows", async () => {
+  await withTempRepo(async (dir) => {
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        workflows: ["/etc/passwd"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "must not contain '..'",
+    );
+  });
+});

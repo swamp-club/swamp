@@ -27,6 +27,7 @@ import { RepoPath } from "../domain/repo/repo_path.ts";
 import { UserError } from "../domain/errors.ts";
 import {
   type ExtensionManifest,
+  isSafeRelativePath,
   parseExtensionManifest,
 } from "../domain/extensions/extension_manifest.ts";
 import { resolveLocalImports } from "../domain/extensions/extension_import_resolver.ts";
@@ -91,6 +92,29 @@ export async function resolveExtensionFiles(
   }
 
   const manifest = parseExtensionManifest(manifestContent);
+
+  // 1b. Defensive path traversal check (belt-and-suspenders with Zod schema)
+  const allManifestPaths = [
+    ...manifest.models.map((p) => ({ field: "models", path: p })),
+    ...manifest.workflows.map((p) => ({ field: "workflows", path: p })),
+    ...manifest.vaults.map((p) => ({ field: "vaults", path: p })),
+    ...manifest.drivers.map((p) => ({ field: "drivers", path: p })),
+    ...manifest.datastores.map((p) => ({ field: "datastores", path: p })),
+    ...manifest.reports.map((p) => ({ field: "reports", path: p })),
+    ...manifest.include.map((p) => ({ field: "include", path: p })),
+    ...manifest.additionalFiles.map((p) => ({
+      field: "additionalFiles",
+      path: p,
+    })),
+  ];
+  for (const { field, path } of allManifestPaths) {
+    if (!isSafeRelativePath(path)) {
+      throw new UserError(
+        `Manifest field '${field}' contains unsafe path: ${path}. ` +
+          `Paths must be relative and must not contain '..' components or start with '/'.`,
+      );
+    }
+  }
 
   // 2. Resolve models dir and vaults dir
   const repoPath = RepoPath.create(repoDir);
