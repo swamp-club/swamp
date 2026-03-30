@@ -1,42 +1,48 @@
 [
   {
-    "query": "What model types are available in swamp?",
-    "should_trigger": true
+    "query": "Search for model types that handle payments",
+    "should_trigger": true,
+    "note": "type search is a listed trigger keyword"
   },
   {
     "query": "Describe the schema for the Order model including all fields",
     "should_trigger": true
   },
   {
-    "query": "How do I create an input object for the process() method?",
-    "should_trigger": true
+    "query": "How do I create an input for the validate method?",
+    "should_trigger": true,
+    "note": "create input is a listed trigger keyword"
   },
   {
-    "query": "Run the validation method on this JSON data",
-    "should_trigger": true
+    "query": "Run the model method on my-instance with these arguments",
+    "should_trigger": true,
+    "note": "run method is a listed trigger keyword"
   },
   {
-    "query": "Show me the output format from the transform method",
-    "should_trigger": true
+    "query": "Show me the model output from the last execution",
+    "should_trigger": true,
+    "note": "model output is a listed trigger keyword"
   },
   {
-    "query": "Can I use CEL expressions to filter model fields?",
-    "should_trigger": true
+    "query": "How do CEL expressions work for referencing model data?",
+    "should_trigger": true,
+    "note": "CEL expression is a listed trigger keyword"
   },
   {
     "query": "Execute the enrichment model with my input data",
     "should_trigger": true
   },
   {
-    "query": "Type search for models that handle payments",
-    "should_trigger": true
+    "query": "Use type search to find models matching 'deploy'",
+    "should_trigger": true,
+    "note": "type search is a listed trigger keyword"
   },
   {
     "query": "View the output logs from the last model execution",
     "should_trigger": true
   },
   {
-    "query": "Delete this model from the repository",
+    "query": "How do I delete a model definition?",
     "should_trigger": true,
     "note": "model delete is a listed trigger keyword"
   },

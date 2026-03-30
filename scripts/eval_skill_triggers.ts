@@ -412,7 +412,10 @@ async function runSingleQuery(
           }
         }
 
-        // Early detection via stream events
+        // Early detection via stream events.
+        // Claude may make multiple parallel tool calls in one message
+        // (e.g., Glob + Skill). We scan all tool_use blocks in the first
+        // message — if ANY is Skill/Read targeting our skill, it's triggered.
         if (event.type === "stream_event") {
           const se = event.event as Record<string, unknown> | undefined;
           if (!se) continue;
@@ -428,8 +431,9 @@ async function runSingleQuery(
                 pendingToolName = toolName;
                 accumulatedJson = "";
               } else {
-                // Claude called a different tool first — not our skill
-                return "not_triggered";
+                // Not Skill/Read — reset pending state but keep scanning
+                pendingToolName = null;
+                accumulatedJson = "";
               }
             }
           } else if (seType === "content_block_delta" && pendingToolName) {
@@ -440,21 +444,22 @@ async function runSingleQuery(
                 return "triggered";
               }
             }
-          } else if (
-            seType === "content_block_stop" || seType === "message_stop"
-          ) {
+          } else if (seType === "content_block_stop") {
             if (pendingToolName) {
-              return matchesSkill(accumulatedJson)
-                ? "triggered"
-                : "not_triggered";
+              if (matchesSkill(accumulatedJson)) {
+                return "triggered";
+              }
             }
-            if (seType === "message_stop") {
-              return "not_triggered";
-            }
+            // Reset for the next block in this message
+            pendingToolName = null;
+            accumulatedJson = "";
+          } else if (seType === "message_stop") {
+            // End of first message — skill was not called
+            return "not_triggered";
           }
         }
 
-        // Fallback: full assistant message
+        // Fallback: full assistant message — scan ALL tool calls
         if (event.type === "assistant") {
           const message = event.message as
             | Record<string, unknown>
@@ -463,8 +468,10 @@ async function runSingleQuery(
             string,
             unknown
           >[];
+          let hasToolCalls = false;
           for (const item of content) {
             if (item.type !== "tool_use") continue;
+            hasToolCalls = true;
             const toolName = item.name as string;
             const toolInput = item.input as Record<string, unknown>;
             if (
@@ -481,6 +488,9 @@ async function runSingleQuery(
             ) {
               return "triggered";
             }
+          }
+          // Had tool calls but none matched — not triggered
+          if (hasToolCalls) {
             return "not_triggered";
           }
         }

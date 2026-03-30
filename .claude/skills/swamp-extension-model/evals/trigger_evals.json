@@ -66,23 +66,28 @@
     "note": "Viewing model data → swamp-data"
   },
   {
-    "query": "Smoke test my extension model against the live API",
-    "should_trigger": true
+    "query": "How do I smoke test my extension model before pushing?",
+    "should_trigger": true,
+    "note": "smoke test is a listed trigger keyword"
   },
   {
-    "query": "I need to test my extension before pushing it",
-    "should_trigger": true
+    "query": "I need to verify my extension model works before I push it",
+    "should_trigger": true,
+    "note": "verify model and before push test are listed triggers"
   },
   {
-    "query": "Verify my model works against the real API",
-    "should_trigger": true
+    "query": "How do I test my extension model against a real API?",
+    "should_trigger": true,
+    "note": "test against API is a listed trigger keyword"
   },
   {
-    "query": "Run a before push test on my custom model",
-    "should_trigger": true
+    "query": "What's the process for testing an extension model before publishing?",
+    "should_trigger": true,
+    "note": "test extension and before push test are triggers"
   },
   {
-    "query": "Test my extension model's CRUD lifecycle",
-    "should_trigger": true
+    "query": "Help me create and test a CRUD extension model",
+    "should_trigger": true,
+    "note": "create model + test extension triggers"
   }
 ]
