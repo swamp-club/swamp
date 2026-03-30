@@ -456,6 +456,78 @@ export async function* modelMethodRun(
           output.markFailed({ message: errorMessage, stack: errorStack });
           await deps.outputRepo.save(modelType, input.methodName, output);
 
+          // Run method-summary report for failed executions so JSON consumers
+          // see structured error output (not just the raw error event).
+          if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
+            const failedMethodContext: MethodReportContext = {
+              scope: "method",
+              repoDir: deps.repoDir,
+              logger: getRunLogger(definition.name, input.methodName),
+              dataRepository: deps.dataRepo,
+              definitionRepository: deps.definitionRepo,
+              modelType,
+              modelId: evaluatedDefinition.id,
+              definition: {
+                id: evaluatedDefinition.id,
+                name: evaluatedDefinition.name,
+                version: evaluatedDefinition.version,
+                tags: evaluatedDefinition.tags,
+              },
+              globalArgs: reportGlobalArgs,
+              methodArgs: reportMethodArgs,
+              methodName: input.methodName,
+              executionStatus: "failed",
+              errorMessage,
+              dataHandles: [],
+            };
+
+            const failedSummary = await executeReports(
+              reportRegistry,
+              failedMethodContext,
+              modelType,
+              evaluatedDefinition.id,
+              definition.reportSelection,
+              {
+                skipAllReports: input.skipAllReports,
+                skipReportNames: input.skipReportNames,
+                skipReportLabels: input.skipReportLabels,
+                reportNames: input.reportNames,
+                reportLabels: input.reportLabels,
+              },
+              {
+                onReportStarted: () => {},
+                onReportCompleted: () => {},
+                onReportFailed: () => {},
+              },
+              input.methodName,
+              [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
+            );
+
+            for (const result of failedSummary.results) {
+              yield {
+                kind: "report_started" as const,
+                reportName: result.name,
+                scope: result.scope,
+              };
+              if (result.success) {
+                yield {
+                  kind: "report_completed" as const,
+                  reportName: result.name,
+                  scope: result.scope,
+                  markdown: result.markdown!,
+                  json: result.json!,
+                };
+              } else {
+                yield {
+                  kind: "report_failed" as const,
+                  reportName: result.name,
+                  scope: result.scope,
+                  error: result.error!,
+                };
+              }
+            }
+          }
+
           if (
             error instanceof DOMException && error.name === "AbortError"
           ) {
