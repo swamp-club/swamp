@@ -32,7 +32,7 @@ import type {
   DataHandle as CanonicalDataHandle,
   DataWriter as _CanonicalDataWriter,
   MethodContext as _CanonicalMethodContext,
-  MethodResult as CanonicalMethodResult,
+  MethodResult as _CanonicalMethodResult,
 } from "./model.ts";
 
 import type {
@@ -43,96 +43,112 @@ import type {
 } from "../../../packages/testing/types.ts";
 
 /**
- * Verify that a value satisfying the testing package's type
- * can be used where the canonical type is expected.
+ * Structural compatibility checks between the testing package types and
+ * swamp's canonical types.
  *
- * If the canonical type adds a required field that the testing type
- * doesn't have, this will fail to compile.
+ * Limitations:
+ * - The testing package's MethodContext declares writeResource, readResource,
+ *   and createFileWriter as required, while the canonical type has them as
+ *   optional. This is intentional — the testing context always provides them.
+ * - The canonical MethodContext has required internal fields (modelType, modelId,
+ *   dataRepository, definitionRepository) that the testing type omits. This
+ *   means neither type is directly assignable to the other.
+ * - DataHandle uses a branded DataId in the canonical type but plain string in
+ *   the testing type. Extension authors never construct DataIds directly.
  *
- * We check the direction that matters for extension authors:
- * the testing context must be accepted by code that expects the
- * canonical context (i.e., the execute function signature).
+ * Because of these differences, we cannot use direct type assignability checks.
+ * Instead, we verify field-by-field that every field in the testing type has a
+ * compatible type in the canonical interface. If the canonical type renames a
+ * field, changes its type, or removes it, these assignments will fail to
+ * compile.
  */
 
-// MethodContext: testing type must satisfy the canonical type's required fields
-// that extension execute functions actually receive.
-// Note: the canonical MethodContext has many optional internal fields (modelType,
-// dataRepository, etc.) that extensions don't use. We verify the testing type
-// covers the fields extension authors interact with.
-function _checkContextFieldsExist(ctx: TestingMethodContext) {
-  // These assignments verify the testing type has the right field types.
-  // If the canonical type changes a field's type, these will break.
-  const _signal: AbortSignal = ctx.signal;
-  const _repoDir: string = ctx.repoDir;
-  const _globalArgs: Record<string, unknown> = ctx.globalArgs;
-  const _methodName: string = ctx.methodName;
+// MethodContext: verify the testing type's fields match the canonical field types.
+// Uses _CanonicalMethodContext indexed access so if the canonical type renames
+// or changes a field's type, the assignment will fail to compile.
+function _checkContextFields(ctx: TestingMethodContext) {
+  const _signal: _CanonicalMethodContext["signal"] = ctx.signal;
+  const _repoDir: _CanonicalMethodContext["repoDir"] = ctx.repoDir;
+  const _globalArgs: _CanonicalMethodContext["globalArgs"] = ctx.globalArgs;
+  const _methodName: _CanonicalMethodContext["methodName"] = ctx.methodName;
+
+  // definition sub-fields (canonical uses inline object type, not DefinitionInfo)
   const _defName: string = ctx.definition.name;
   const _defId: string = ctx.definition.id;
   const _defVersion: number = ctx.definition.version;
   const _defTags: Record<string, string> = ctx.definition.tags;
 
-  // Suppress unused warnings
-  void [
-    _signal,
-    _repoDir,
-    _globalArgs,
-    _methodName,
-    _defName,
-    _defId,
-    _defVersion,
-    _defTags,
-  ];
+  void [_signal, _repoDir, _globalArgs, _methodName];
+  void [_defName, _defId, _defVersion, _defTags];
 }
 
-// DataHandle: testing type must be assignable to canonical DataHandle
-function _checkDataHandleCompat(
-  handle: TestingDataHandle,
-): CanonicalDataHandle {
-  // The testing DataHandle uses string for dataId; the canonical uses branded DataId.
-  // This is fine because DataId is `string & { _brand }`, and extension authors
-  // never construct DataIds — they receive them from writeResource.
-  // We cast here to acknowledge the branding difference.
-  return handle as unknown as CanonicalDataHandle;
+// DataHandle: verify field-by-field.
+// Cannot use CanonicalDataHandle indexed access for dataId because it's a
+// branded type (DataId = string & { _brand }). We check all other fields
+// via the canonical type and verify dataId is at least a string.
+function _checkDataHandleFields(handle: TestingDataHandle) {
+  const _name: CanonicalDataHandle["name"] = handle.name;
+  const _specName: CanonicalDataHandle["specName"] = handle.specName;
+  const _kind: CanonicalDataHandle["kind"] = handle.kind;
+  const _version: CanonicalDataHandle["version"] = handle.version;
+  const _size: CanonicalDataHandle["size"] = handle.size;
+  const _tags: CanonicalDataHandle["tags"] = handle.tags;
+  // dataId: canonical uses branded DataId, testing uses plain string.
+  // The brand is a compile-time fiction — extension authors never construct DataIds.
+  const _dataId: string = handle.dataId;
+
+  void [_name, _specName, _kind, _version, _size, _tags, _dataId];
 }
 
-// DataWriter: testing type method signatures must match canonical
-function _checkDataWriterCompat(writer: TestingDataWriter) {
-  const _writeAll: (content: Uint8Array) => Promise<TestingDataHandle> =
-    writer.writeAll;
-  const _writeText: (text: string) => Promise<TestingDataHandle> =
-    writer.writeText;
-  const _writeLine: (line: string) => Promise<void> = writer.writeLine;
-  const _getFilePath: () => Promise<string> = writer.getFilePath;
-  const _finalize: () => Promise<TestingDataHandle> = writer.finalize;
+// DataWriter: verify method parameter types match.
+// Cannot directly assign method references because return types include
+// DataHandle (with branded DataId). Instead we verify parameter types
+// and structural properties.
+function _checkDataWriterFields(writer: TestingDataWriter) {
+  // Verify methods exist and accept the right parameter types
+  const _writeAllResult = writer.writeAll(new Uint8Array());
+  const _writeTextResult = writer.writeText("");
+  const _writeLineResult = writer.writeLine("");
+  const _getFilePathResult = writer.getFilePath();
+  const _finalizeResult = writer.finalize();
+
+  // Verify return types are Promises
+  const _p1: Promise<TestingDataHandle> = _writeAllResult;
+  const _p2: Promise<TestingDataHandle> = _writeTextResult;
+  const _p3: Promise<void> = _writeLineResult;
+  const _p4: Promise<string> = _getFilePathResult;
+  const _p5: Promise<TestingDataHandle> = _finalizeResult;
+
+  // Verify properties match canonical types
   const _dataId: string = writer.dataId;
-  const _name: string = writer.name;
+  const _name: _CanonicalDataWriter["name"] = writer.name;
 
-  void [
-    _writeAll,
-    _writeText,
-    _writeLine,
-    _getFilePath,
-    _finalize,
-    _dataId,
-    _name,
-  ];
+  void [_p1, _p2, _p3, _p4, _p5, _dataId, _name];
 }
 
-// MethodResult: testing type must be assignable to canonical
-function _checkMethodResultCompat(
-  result: TestingMethodResult,
-): CanonicalMethodResult {
-  // Same DataId branding issue as DataHandle
-  return result as unknown as CanonicalMethodResult;
+// MethodResult: verify field structure matches.
+// Cannot check full assignability due to branded DataId in DataHandle.
+function _checkMethodResultFields(result: TestingMethodResult) {
+  if (result.dataHandles) {
+    // Verify each element has the expected shape
+    for (const handle of result.dataHandles) {
+      const _name: string = handle.name;
+      const _specName: string = handle.specName;
+      const _kind: "resource" | "file" = handle.kind;
+      const _dataId: string = handle.dataId;
+      const _version: number = handle.version;
+      const _size: number = handle.size;
+      void [_name, _specName, _kind, _dataId, _version, _size];
+    }
+  }
 }
 
 // This is a compile-time-only test. If it type-checks, the types are compatible.
 Deno.test("testing package types: compile-time compatibility check", () => {
-  // Suppress unused function warnings by referencing them
   void [
-    _checkContextFieldsExist,
-    _checkDataHandleCompat,
-    _checkDataWriterCompat,
-    _checkMethodResultCompat,
+    _checkContextFields,
+    _checkDataHandleFields,
+    _checkDataWriterFields,
+    _checkMethodResultFields,
   ];
 });

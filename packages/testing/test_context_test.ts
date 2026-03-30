@@ -302,3 +302,65 @@ Deno.test("createModelTestContext: onEvent calls user callback too", () => {
 
   assertEquals(userEvents.length, 1);
 });
+
+Deno.test("createModelTestContext: createFileWriter dataId matches handle dataId", async () => {
+  const { context, getWrittenFiles } = createModelTestContext();
+
+  const writer = context.createFileWriter("log", "output");
+  const handle = await writer.writeText("test");
+
+  assertEquals(handle.dataId, writer.dataId);
+  assertEquals(getWrittenFiles()[0].handle.dataId, writer.dataId);
+});
+
+Deno.test("createModelTestContext: createFileWriter finalize uses same dataId", async () => {
+  const { context, getWrittenFiles } = createModelTestContext();
+
+  const writer = context.createFileWriter("log", "lines");
+  await writer.writeLine("line 1");
+  const handle = await writer.finalize();
+
+  assertEquals(handle.dataId, writer.dataId);
+  assertEquals(getWrittenFiles()[0].handle.dataId, writer.dataId);
+});
+
+Deno.test("createModelTestContext: writeStream consumes stream content", async () => {
+  const { context, getWrittenFiles } = createModelTestContext();
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("important data"));
+      controller.close();
+    },
+  });
+
+  const writer = context.createFileWriter("log", "output");
+  await writer.writeStream(stream);
+
+  const files = getWrittenFiles();
+  assertEquals(
+    new TextDecoder().decode(files[0].content),
+    "important data",
+  );
+});
+
+Deno.test("createModelTestContext: writeStream handles multi-chunk streams", async () => {
+  const { context, getWrittenFiles } = createModelTestContext();
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("chunk1"));
+      controller.enqueue(new TextEncoder().encode("chunk2"));
+      controller.close();
+    },
+  });
+
+  const writer = context.createFileWriter("log", "output");
+  const handle = await writer.writeStream(stream);
+
+  assertEquals(handle.dataId, writer.dataId);
+  assertEquals(
+    new TextDecoder().decode(getWrittenFiles()[0].content),
+    "chunk1chunk2",
+  );
+});

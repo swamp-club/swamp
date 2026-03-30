@@ -153,18 +153,23 @@ export function createModelTestContext(
     };
   }
 
+  function allocateDataId(): string {
+    return `test-data-${nextId++}`;
+  }
+
   function makeHandle(
     specName: string,
     name: string,
     kind: "resource" | "file",
     size: number,
+    dataId: string,
     contentType?: string,
   ): DataHandle {
     return {
       name,
       specName,
       kind,
-      dataId: `test-data-${nextId++}`,
+      dataId,
       version: 1,
       size,
       tags: {},
@@ -178,7 +183,13 @@ export function createModelTestContext(
     data: Record<string, unknown>,
   ): Promise<DataHandle> => {
     const content = new TextEncoder().encode(JSON.stringify(data));
-    const handle = makeHandle(specName, name, "resource", content.length);
+    const handle = makeHandle(
+      specName,
+      name,
+      "resource",
+      content.length,
+      allocateDataId(),
+    );
     writtenResources.push({ specName, name, data, handle });
     // Also store so subsequent readResource calls can find it
     storedResources.set(name, data);
@@ -194,15 +205,11 @@ export function createModelTestContext(
   };
 
   const createFileWriter = (specName: string, name: string): DataWriter => {
-    const dataId = `test-data-${nextId++}`;
+    const dataId = allocateDataId();
     const lines: string[] = [];
 
-    function buildHandle(content: Uint8Array): DataHandle {
-      return makeHandle(specName, name, "file", content.length);
-    }
-
     function capture(content: Uint8Array): DataHandle {
-      const handle = buildHandle(content);
+      const handle = makeHandle(specName, name, "file", content.length, dataId);
       writtenFiles.push({ specName, name, content, handle });
       return handle;
     }
@@ -222,10 +229,25 @@ export function createModelTestContext(
         lines.push(line);
         return Promise.resolve();
       },
-      writeStream(
-        _stream: ReadableStream<Uint8Array>,
+      async writeStream(
+        stream: ReadableStream<Uint8Array>,
+        _options?: { onLine?: (line: string) => void },
       ): Promise<DataHandle> {
-        return Promise.resolve(capture(new Uint8Array()));
+        const chunks: Uint8Array[] = [];
+        const reader = stream.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+        const merged = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          merged.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return capture(merged);
       },
       getFilePath(): Promise<string> {
         return Promise.resolve(`/tmp/swamp-test/${dataId}`);
