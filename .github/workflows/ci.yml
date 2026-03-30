@@ -160,8 +160,8 @@ jobs:
       - name: Run skill trigger evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          EVAL_RUNS: "1"
-          EVAL_WORKERS: "25"
+          EVAL_RUNS: "3"
+          EVAL_WORKERS: "50"
           EVAL_TIMEOUT: "30"
         run: deno run eval-skill-triggers
 
