@@ -484,6 +484,17 @@ export {
 } from "./extensions/update.ts";
 export type { ExtensionUpdateResult } from "../domain/extensions/extension_update_service.ts";
 export {
+  type DatastoreAutoUpdateDeps,
+  type DatastoreAutoUpdateResult,
+  maybeAutoUpdateDatastoreExtension,
+} from "./extensions/datastore_auto_update.ts";
+export {
+  type ExtensionUpdateCheckMap,
+  type ExtensionUpdateCheckRepository,
+  isExtensionCheckStale,
+} from "../domain/extensions/extension_update_check_cache.ts";
+export { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
+export {
   type CompilationError,
   createExtensionPushExecuteDeps,
   createExtensionPushPrepareDeps,
