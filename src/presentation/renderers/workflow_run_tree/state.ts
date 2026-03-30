@@ -469,6 +469,7 @@ function treeReducerSingle(
       return { ...state, jobs };
     }
 
+    case "env_var_warning":
     case "method_executing":
       return state;
 

@@ -43,6 +43,7 @@ import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import { buildOutputSpecs } from "../models/output_spec_builder.ts";
+import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
@@ -229,6 +230,20 @@ export class DefaultStepExecutor implements StepExecutor {
       modelType: modelType.normalized,
       methodName: task.methodName,
     });
+
+    // --- Check for env var usage and warn ---
+    const envVarUsages = detectEnvVarUsageInDefinition(originalDefinition);
+    if (envVarUsages.length > 0) {
+      ctx.emitEvent?.({
+        kind: "env_var_warning",
+        jobId: ctx.jobName,
+        stepId: ctx.stepName,
+        modelName: originalDefinition.name,
+        envVars: envVarUsages,
+        message:
+          "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+      });
+    }
 
     // Get the model definition from registry (auto-resolve if needed)
     const modelDef = await resolveModelType(modelType, getAutoResolver());

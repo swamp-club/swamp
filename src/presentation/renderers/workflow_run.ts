@@ -102,6 +102,21 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           { name: e.modelName, type: e.modelType },
         );
       },
+      env_var_warning: (e) => {
+        const logger = getWorkflowRunLogger(
+          this.workflowName,
+          e.jobId,
+          e.stepId,
+        );
+        logger.warn("Environment variables detected in model definition");
+        for (const detail of e.envVars) {
+          logger.warn("  {path} uses {envVar}", {
+            path: detail.path,
+            envVar: detail.envVar,
+          });
+        }
+        logger.warn(e.message);
+      },
       method_executing: (e) => {
         getRunLogger(e.modelName, e.methodName).info(
           "Executing method {method}",
@@ -229,6 +244,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_skipped: () => {},
       step_failed: () => {},
       model_resolved: () => {},
+      env_var_warning: () => {},
       method_executing: () => {},
       method_output: () => {},
       method_event: () => {},

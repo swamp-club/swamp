@@ -96,6 +96,14 @@ export type WorkflowRunEvent =
     methodName: string;
   }
   | {
+    kind: "env_var_warning";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    envVars: Array<{ path: string; envVar: string }>;
+    message: string;
+  }
+  | {
     kind: "method_executing";
     jobId: string;
     stepId: string;

@@ -19,6 +19,7 @@
 
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import type { DataHandle } from "../models/model.ts";
+import type { EnvVarUsageDetail } from "../models/validation_service.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { WorkflowRun } from "./workflow_run.ts";
 
@@ -73,6 +74,14 @@ export type WorkflowExecutionEvent =
     modelName: string;
     modelType: string;
     methodName: string;
+  }
+  | {
+    kind: "env_var_warning";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    envVars: EnvVarUsageDetail[];
+    message: string;
   }
   | {
     kind: "method_executing";

@@ -24,6 +24,7 @@ import type {
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
+import type { EnvVarUsageDetail } from "../../domain/models/validation_service.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { StepRun } from "../../domain/workflows/workflow_run.ts";
@@ -107,6 +108,14 @@ export type WorkflowRunEvent =
     modelName: string;
     modelType: string;
     methodName: string;
+  }
+  | {
+    kind: "env_var_warning";
+    jobId: string;
+    stepId: string;
+    modelName: string;
+    envVars: EnvVarUsageDetail[];
+    message: string;
   }
   | {
     kind: "method_executing";
@@ -339,6 +348,7 @@ function mapEvent(
     case "step_skipped":
     case "step_failed":
     case "model_resolved":
+    case "env_var_warning":
     case "method_executing":
     case "method_output":
     case "method_event":

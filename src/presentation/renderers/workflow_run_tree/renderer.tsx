@@ -76,6 +76,7 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
       step_skipped: forward,
       step_failed: forward,
       model_resolved: forward,
+      env_var_warning: forward,
       method_executing: forward,
       method_output: forward,
       method_event: forward,
