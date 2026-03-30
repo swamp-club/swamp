@@ -34,7 +34,11 @@ import {
   type PickerResult,
   renderInteractivePicker,
 } from "./components/search_picker.tsx";
-import { formatMethodLines, formatSchemaAttributes } from "./model_get.ts";
+import {
+  formatMethodLines,
+  formatSchemaAttributes,
+  formatSchemaType,
+} from "./model_get.ts";
 
 const INDENT_2 = "  ";
 const INDENT_4 = "    ";
@@ -235,7 +239,7 @@ function renderMethodArguments(schema: object): React.ReactElement | null {
   const s = schema as {
     properties?: Record<
       string,
-      { type?: string; enum?: string[]; description?: string }
+      { type?: string | string[]; enum?: string[]; description?: string }
     >;
     required?: string[];
   };
@@ -248,15 +252,18 @@ function renderMethodArguments(schema: object): React.ReactElement | null {
   return (
     <Box flexDirection="column" marginLeft={2}>
       <Text color="cyan">Arguments:</Text>
-      {entries.map(([name, prop]) => (
-        <Text key={name}>
-          {INDENT_4}
-          {name}
-          {prop.type ? <Text dimColor>({prop.type})</Text> : null}
-          {prop.enum ? <Text dimColor>[{prop.enum.join(", ")}]</Text> : null}
-          {required.has(name) ? <Text dimColor>*required</Text> : null}
-        </Text>
-      ))}
+      {entries.map(([name, prop]) => {
+        const formatted = formatSchemaType(prop.type);
+        return (
+          <Text key={name}>
+            {INDENT_4}
+            {name}
+            {formatted ? <Text dimColor>({formatted})</Text> : null}
+            {prop.enum ? <Text dimColor>[{prop.enum.join(", ")}]</Text> : null}
+            {required.has(name) ? <Text dimColor>*required</Text> : null}
+          </Text>
+        );
+      })}
     </Box>
   );
 }
