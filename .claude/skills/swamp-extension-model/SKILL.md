@@ -127,18 +127,10 @@ export const model = {
 
 ## CalVer Versioning
 
-Extensions use Calendar Versioning: `YYYY.MM.DD.MICRO` (e.g., `2026.03.30.1`).
-
-**To determine the correct next version**, use the CLI:
-
-```bash
-swamp extension version @myorg/my-model --json
-```
-
-This queries the registry for the latest published version and computes the next
-version automatically. Use the `nextVersion` field from the JSON output as the
-new `version` in your model. Use the `currentPublished` field as the
-`fromVersion` in your upgrade chain entry.
+Use `swamp extension version @myorg/my-model --json` to get the correct next
+version. See
+[references/publishing.md](references/publishing.md#determining-the-next-version)
+for details.
 
 ## Version Upgrades
 
