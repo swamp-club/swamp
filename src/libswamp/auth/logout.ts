@@ -48,6 +48,7 @@ export function createAuthLogoutDeps(): AuthLogoutDeps {
   const repo = new AuthRepository();
   return {
     loadCredentials: async () => {
+      if (Deno.env.get("SWAMP_API_KEY")) return null;
       const creds = await repo.load();
       if (!creds) return null;
       return { username: creds.username, serverUrl: creds.serverUrl };

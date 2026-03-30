@@ -23,19 +23,35 @@ import { getSwampConfigDir } from "./paths.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 
 const AUTH_FILE = "auth.json";
+const DEFAULT_SERVER_URL = "https://swamp.club";
 
 /**
  * Repository for managing swamp-club authentication credentials.
  * Stores API key and server info at ~/.config/swamp/auth.json
  * (or $XDG_CONFIG_HOME/swamp/auth.json).
+ *
+ * Precedence: SWAMP_API_KEY env var > auth.json file.
  */
 export class AuthRepository {
   private getAuthPath(): string {
     return join(getSwampConfigDir(), AUTH_FILE);
   }
 
-  /** Read stored auth credentials. Returns null if not found. */
+  /**
+   * Read auth credentials. Checks SWAMP_API_KEY env var first,
+   * then falls back to auth.json file. Returns null if neither exists.
+   */
   async load(): Promise<AuthCredentials | null> {
+    const envApiKey = Deno.env.get("SWAMP_API_KEY");
+    if (envApiKey) {
+      return {
+        serverUrl: Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL,
+        apiKey: envApiKey,
+        apiKeyId: "",
+        username: "",
+      };
+    }
+
     try {
       const content = await Deno.readTextFile(this.getAuthPath());
       return JSON.parse(content) as AuthCredentials;

@@ -189,3 +189,41 @@ Deno.test("whoami yields cancelled error when signal is already aborted", async 
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "cancelled");
 });
+
+Deno.test("whoami does not persist credentials when saveCredentials is a no-op", async () => {
+  const ctx = createLibSwampContext();
+  let saveCalled = false;
+  const envCredentials: AuthCredentials = {
+    serverUrl: "https://swamp.club",
+    apiKey: "swamp_env_key",
+    apiKeyId: "",
+    username: "",
+  };
+
+  // Simulate env-var auth: createAuthDeps makes saveCredentials a no-op
+  // when SWAMP_API_KEY is set. Verify that the whoami generator still
+  // completes successfully and the real save is never called.
+  const deps: AuthDeps = {
+    loadCredentials: () => Promise.resolve(envCredentials),
+    saveCredentials: () => {
+      saveCalled = true;
+      return Promise.resolve();
+    },
+    fetchWhoami: () => Promise.resolve(testWhoamiResponse),
+    serverUrlOverride: undefined,
+  };
+
+  // Replace saveCredentials with a no-op (as production code does for env-var auth)
+  const noOpDeps: AuthDeps = {
+    ...deps,
+    saveCredentials: () => Promise.resolve(),
+  };
+  const events = await collect<AuthWhoamiEvent>(whoami(ctx, noOpDeps));
+
+  const completed = events[events.length - 1] as Extract<
+    AuthWhoamiEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(saveCalled, false);
+});

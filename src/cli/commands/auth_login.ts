@@ -27,6 +27,7 @@ import {
 import type { AuthLoginInput } from "../../libswamp/mod.ts";
 import { createAuthLoginRenderer } from "../../presentation/renderers/auth_login.ts";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
+import { UserError } from "../../domain/errors.ts";
 
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
@@ -51,6 +52,13 @@ export const authLoginCommand = new Command()
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["auth", "login"]);
     cliCtx.logger.debug("Executing auth login command");
+
+    if (Deno.env.get("SWAMP_API_KEY")) {
+      throw new UserError(
+        "Already authenticated via SWAMP_API_KEY environment variable. " +
+          "Unset it to use file-based login.",
+      );
+    }
 
     const serverUrl: string = options.server ?? resolveServerUrl();
 

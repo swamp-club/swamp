@@ -81,3 +81,24 @@ Deno.test("authLogout: yields completed with loggedOut false when not authentica
   assertEquals(completed.data.loggedOut, false);
   assertEquals(completed.data.reason, "not authenticated");
 });
+
+Deno.test("authLogout: reports not authenticated when env var auth is active", async () => {
+  // Simulates createAuthLogoutDeps behavior when SWAMP_API_KEY is set:
+  // loadCredentials returns null since env-var creds can't be logged out
+  const deps = makeDeps({
+    loadCredentials: () => Promise.resolve(null),
+  });
+
+  const events = await collect<AuthLogoutEvent>(
+    authLogout(createLibSwampContext(), deps),
+  );
+
+  assertEquals(events.length, 1);
+  const completed = events[0] as Extract<
+    AuthLogoutEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.loggedOut, false);
+  assertEquals(completed.data.reason, "not authenticated");
+});

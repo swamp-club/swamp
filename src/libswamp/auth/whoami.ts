@@ -64,9 +64,12 @@ export function createAuthDeps(
   options?: { serverUrlOverride?: string },
 ): AuthDeps {
   const repo = new AuthRepository();
+  const envAuth = !!Deno.env.get("SWAMP_API_KEY");
   return {
     loadCredentials: () => repo.load(),
-    saveCredentials: (credentials) => repo.save(credentials),
+    saveCredentials: envAuth
+      ? () => Promise.resolve()
+      : (credentials) => repo.save(credentials),
     fetchWhoami: (serverUrl, apiKey, signal) => {
       const client = new SwampClubClient(serverUrl);
       return client.whoami(apiKey, signal);
