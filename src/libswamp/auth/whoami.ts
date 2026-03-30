@@ -66,7 +66,14 @@ export function createAuthDeps(
   const repo = new AuthRepository();
   return {
     loadCredentials: () => repo.load(),
-    saveCredentials: (credentials) => repo.save(credentials),
+    // When SWAMP_API_KEY is set, skip writing credentials to disk — env-var
+    // auth is ephemeral and shouldn't create/update auth.json. Checked lazily
+    // to stay consistent with loadCredentials (which also reads env at call time
+    // via repo.load()).
+    saveCredentials: (credentials) =>
+      Deno.env.get("SWAMP_API_KEY")
+        ? Promise.resolve()
+        : repo.save(credentials),
     fetchWhoami: (serverUrl, apiKey, signal) => {
       const client = new SwampClubClient(serverUrl);
       return client.whoami(apiKey, signal);

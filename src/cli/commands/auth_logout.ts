@@ -26,6 +26,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createAuthLogoutRenderer } from "../../presentation/renderers/auth_logout.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -36,6 +37,13 @@ export const authLogoutCommand = new Command()
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["auth", "logout"]);
     cliCtx.logger.debug("Executing auth logout command");
+
+    if (Deno.env.get("SWAMP_API_KEY")) {
+      throw new UserError(
+        "Authenticated via SWAMP_API_KEY environment variable. " +
+          "Unset it to log out.",
+      );
+    }
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createAuthLogoutDeps();
