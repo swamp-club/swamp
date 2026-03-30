@@ -70,11 +70,14 @@ function renderMethodExecutions(
   for (const model of models) {
     writeOutput(`  Model: ${bold(model.modelName)} ${dim(`(${model.type})`)}`);
 
+    const maxMethod = Math.max(...model.methods.map((m) => m.method.length));
+
     for (const method of model.methods) {
+      const label = method.method.padEnd(maxMethod + 3);
       const parts: string[] = [];
       if (method.succeeded > 0) parts.push(green(`\u2713 ${method.succeeded}`));
       if (method.failed > 0) parts.push(red(`\u2717 ${method.failed}`));
-      writeOutput(`    ${method.method}   ${parts.join("  ")}`);
+      writeOutput(`    ${label}${parts.join("  ")}`);
 
       if (verbose) {
         for (const run of method.runs) {
@@ -98,7 +101,9 @@ function renderMethodExecutions(
           .find((r) => r.status === "failed" && r.error);
         if (lastFailed?.error) {
           writeOutput(
-            `             ${red(`last error: "${lastFailed.error}"`)}`,
+            `    ${"".padEnd(maxMethod + 3)}${
+              red(`last error: "${lastFailed.error}"`)
+            }`,
           );
         }
       }
