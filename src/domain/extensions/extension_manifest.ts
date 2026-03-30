@@ -25,6 +25,22 @@ import { UserError } from "../errors.ts";
 /** Scoped name pattern: @collective/name or @collective/name/subname/... */
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
+/**
+ * Checks whether a relative path is safe for use in an extension manifest.
+ * Rejects absolute paths and paths containing '..' components, which would
+ * escape the base directory during archive creation.
+ */
+export function isSafeRelativePath(p: string): boolean {
+  if (p.startsWith("/")) return false;
+  const segments = p.split(/[/\\]/);
+  return !segments.includes("..");
+}
+
+const safePathString = z.string().refine(isSafeRelativePath, {
+  message:
+    "Path must be relative and must not contain '..' components or start with '/'",
+});
+
 const ExtensionManifestSchemaV1 = z.object({
   manifestVersion: z.literal(1),
   name: z.string().refine(
@@ -39,14 +55,14 @@ const ExtensionManifestSchemaV1 = z.object({
   }),
   description: z.string().optional(),
   repository: z.string().url().optional(),
-  workflows: z.array(z.string()).optional(),
-  models: z.array(z.string()).optional(),
-  vaults: z.array(z.string()).optional(),
-  drivers: z.array(z.string()).optional(),
-  datastores: z.array(z.string()).optional(),
-  reports: z.array(z.string()).optional(),
-  include: z.array(z.string()).optional(),
-  additionalFiles: z.array(z.string()).optional(),
+  workflows: z.array(safePathString).optional(),
+  models: z.array(safePathString).optional(),
+  vaults: z.array(safePathString).optional(),
+  drivers: z.array(safePathString).optional(),
+  datastores: z.array(safePathString).optional(),
+  reports: z.array(safePathString).optional(),
+  include: z.array(safePathString).optional(),
+  additionalFiles: z.array(safePathString).optional(),
   platforms: z.array(z.string().min(1)).optional(),
   labels: z.array(z.string().min(1)).optional(),
   releaseNotes: z.string().max(5000).optional(),

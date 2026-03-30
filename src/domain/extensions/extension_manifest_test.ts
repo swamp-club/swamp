@@ -19,7 +19,10 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
-import { parseExtensionManifest } from "./extension_manifest.ts";
+import {
+  isSafeRelativePath,
+  parseExtensionManifest,
+} from "./extension_manifest.ts";
 
 Deno.test("parseExtensionManifest parses valid manifest with models", () => {
   const yaml = `
@@ -325,4 +328,113 @@ models:
   assertEquals(manifest.platforms, []);
   assertEquals(manifest.labels, []);
   assertEquals(manifest.dependencies, []);
+});
+
+// --- isSafeRelativePath unit tests ---
+
+Deno.test("isSafeRelativePath: accepts simple filename", () => {
+  assertEquals(isSafeRelativePath("foo.ts"), true);
+});
+
+Deno.test("isSafeRelativePath: accepts nested relative path", () => {
+  assertEquals(isSafeRelativePath("aws/ec2/instance.ts"), true);
+});
+
+Deno.test("isSafeRelativePath: rejects path with .. component", () => {
+  assertEquals(isSafeRelativePath("../foo.ts"), false);
+});
+
+Deno.test("isSafeRelativePath: rejects path with multiple .. components", () => {
+  assertEquals(isSafeRelativePath("../../workflows/foo.yaml"), false);
+});
+
+Deno.test("isSafeRelativePath: rejects path with .. in middle", () => {
+  assertEquals(isSafeRelativePath("foo/../bar.ts"), false);
+});
+
+Deno.test("isSafeRelativePath: rejects absolute path", () => {
+  assertEquals(isSafeRelativePath("/etc/passwd"), false);
+});
+
+Deno.test("isSafeRelativePath: rejects backslash path traversal", () => {
+  assertEquals(isSafeRelativePath("..\\foo.ts"), false);
+});
+
+// --- Manifest-level path traversal rejection tests ---
+
+Deno.test("parseExtensionManifest rejects path traversal in models", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - ../../other/model.ts
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes((error as Error).message, "must not contain '..'");
+});
+
+Deno.test("parseExtensionManifest rejects path traversal in workflows", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+workflows:
+  - ../../workflows/deploy.yaml
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes((error as Error).message, "must not contain '..'");
+});
+
+Deno.test("parseExtensionManifest rejects absolute path in models", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - /etc/passwd
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes((error as Error).message, "must not contain '..'");
+});
+
+Deno.test("parseExtensionManifest rejects path traversal in additionalFiles", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+additionalFiles:
+  - ../../../secrets.txt
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes((error as Error).message, "must not contain '..'");
+});
+
+Deno.test("parseExtensionManifest rejects path traversal in include", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+include:
+  - ../helpers.ts
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes((error as Error).message, "must not contain '..'");
+});
+
+Deno.test("parseExtensionManifest accepts valid nested paths in models", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - aws/ec2/instance.ts
+  - deploy_model.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.models, ["aws/ec2/instance.ts", "deploy_model.ts"]);
 });
