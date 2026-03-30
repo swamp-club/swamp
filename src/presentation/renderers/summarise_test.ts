@@ -267,3 +267,199 @@ Deno.test("JsonSummariseRenderer: completed outputs JSON", async () => {
     console.log = originalLog;
   }
 });
+
+Deno.test("LogSummariseRenderer: verbose mode does not show last error line", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createSummariseRenderer("log", "verbose");
+    await consumeStream(
+      toStream([
+        {
+          kind: "completed",
+          data: {
+            status: "summary",
+            sinceLabel: "24 hours",
+            summary: makeSummary({
+              methodExecutions: [
+                {
+                  modelName: "my-server",
+                  type: "aws/ec2",
+                  total: 2,
+                  succeeded: 1,
+                  failed: 1,
+                  methods: [
+                    {
+                      method: "deploy",
+                      succeeded: 1,
+                      failed: 1,
+                      total: 2,
+                      runs: [
+                        {
+                          id: "run-1",
+                          definitionId: "def-1",
+                          startedAt: "2026-01-01T10:00:00Z",
+                          status: "failed",
+                          error: "Timeout exceeded",
+                          triggeredBy: "cli",
+                        },
+                        {
+                          id: "run-2",
+                          definitionId: "def-1",
+                          startedAt: "2026-01-01T11:00:00Z",
+                          status: "succeeded",
+                          triggeredBy: "cli",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+
+    const combined = stripAnsiCode(logs.join("\n"));
+    // Verbose mode shows per-run detail, not the "last error:" summary line
+    assertEquals(combined.includes("last error:"), false);
+    // But it shows the error inline with the run detail
+    assertEquals(combined.includes("Timeout exceeded"), true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("LogSummariseRenderer: compact mode shows last error for failed workflow step", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createSummariseRenderer("log", "normal");
+    await consumeStream(
+      toStream([
+        {
+          kind: "completed",
+          data: {
+            status: "summary",
+            sinceLabel: "24 hours",
+            summary: makeSummary({
+              workflows: [
+                {
+                  workflowName: "deploy-all",
+                  total: 2,
+                  succeeded: 1,
+                  failed: 1,
+                  runs: [
+                    {
+                      id: "wf-run-1",
+                      startedAt: "2026-01-01T10:00:00Z",
+                      status: "succeeded",
+                      steps: [],
+                    },
+                    {
+                      id: "wf-run-2",
+                      startedAt: "2026-01-01T11:00:00Z",
+                      status: "failed",
+                      firstFailedStep: "build > compile",
+                      steps: [
+                        {
+                          jobName: "build",
+                          stepName: "compile",
+                          status: "failed",
+                          error: "Compilation failed: missing import",
+                        },
+                        {
+                          jobName: "build",
+                          stepName: "test",
+                          status: "skipped",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+
+    const combined = stripAnsiCode(logs.join("\n"));
+    // Should show the last error from the failed step
+    assertEquals(
+      combined.includes('last error: "Compilation failed: missing import"'),
+      true,
+    );
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("LogSummariseRenderer: compact mode no error line when all methods succeed", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createSummariseRenderer("log", "normal");
+    await consumeStream(
+      toStream([
+        {
+          kind: "completed",
+          data: {
+            status: "summary",
+            sinceLabel: "24 hours",
+            summary: makeSummary({
+              methodExecutions: [
+                {
+                  modelName: "my-server",
+                  type: "aws/ec2",
+                  total: 2,
+                  succeeded: 2,
+                  failed: 0,
+                  methods: [
+                    {
+                      method: "deploy",
+                      succeeded: 2,
+                      failed: 0,
+                      total: 2,
+                      runs: [
+                        {
+                          id: "run-1",
+                          definitionId: "def-1",
+                          startedAt: "2026-01-01T10:00:00Z",
+                          status: "succeeded",
+                          triggeredBy: "cli",
+                        },
+                        {
+                          id: "run-2",
+                          definitionId: "def-1",
+                          startedAt: "2026-01-01T11:00:00Z",
+                          status: "succeeded",
+                          triggeredBy: "cli",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            }),
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertEquals(combined.includes("last error:"), false);
+  } finally {
+    console.log = originalLog;
+  }
+});

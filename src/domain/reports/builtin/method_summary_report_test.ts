@@ -401,3 +401,61 @@ Deno.test("methodSummaryReport: JSON output structure matches expected shape", a
     ["kind", "name", "retrievalCommand", "specName", "version"],
   );
 });
+
+Deno.test("methodSummaryReport: redactSensitiveArgs masks sensitive fields in markdown and JSON", async () => {
+  const ctx = makeMethodContext({
+    globalArgs: { region: "us-east-1", apiKey: "sk-secret-12345" },
+    methodArgs: { target: "prod", password: "hunter2" },
+    redactSensitiveArgs: (
+      args: Record<string, unknown>,
+      argsKind: "global" | "method",
+    ): Record<string, unknown> => {
+      const redacted = structuredClone(args);
+      if (argsKind === "global" && "apiKey" in redacted) {
+        redacted.apiKey = "***";
+      }
+      if (argsKind === "method" && "password" in redacted) {
+        redacted.password = "***";
+      }
+      return redacted;
+    },
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  // Markdown: sensitive values replaced with ***
+  assertStringIncludes(result.markdown, '"apiKey": "***"');
+  assertStringIncludes(result.markdown, '"password": "***"');
+  // Non-sensitive values still present
+  assertStringIncludes(result.markdown, '"region": "us-east-1"');
+  assertStringIncludes(result.markdown, '"target": "prod"');
+  // Original secrets must NOT appear
+  assertEquals(result.markdown.includes("sk-secret-12345"), false);
+  assertEquals(result.markdown.includes("hunter2"), false);
+
+  // JSON: same redaction applied
+  const globalArgs = result.json.globalArgs as Record<string, unknown>;
+  assertEquals(globalArgs.apiKey, "***");
+  assertEquals(globalArgs.region, "us-east-1");
+  const methodArgs = result.json.methodArgs as Record<string, unknown>;
+  assertEquals(methodArgs.password, "***");
+  assertEquals(methodArgs.target, "prod");
+});
+
+Deno.test("methodSummaryReport: without redactSensitiveArgs, args render as-is", async () => {
+  const ctx = makeMethodContext({
+    globalArgs: { apiKey: "sk-secret-12345" },
+    methodArgs: { password: "hunter2" },
+  });
+
+  const result = await methodSummaryReport.execute(ctx);
+
+  // Without redaction, raw values appear
+  assertStringIncludes(result.markdown, '"apiKey": "sk-secret-12345"');
+  assertStringIncludes(result.markdown, '"password": "hunter2"');
+
+  const globalArgs = result.json.globalArgs as Record<string, unknown>;
+  assertEquals(globalArgs.apiKey, "sk-secret-12345");
+  const methodArgs = result.json.methodArgs as Record<string, unknown>;
+  assertEquals(methodArgs.password, "hunter2");
+});
