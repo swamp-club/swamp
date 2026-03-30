@@ -163,6 +163,7 @@ export const methodSummaryReport: ReportDefinition = {
     const json: Record<string, unknown> = {
       status: executionStatus,
       ...(errorMessage ? { error: errorMessage } : {}),
+      modelId: definition.id,
       modelName: definition.name,
       modelType: modelType.normalized,
       methodName,

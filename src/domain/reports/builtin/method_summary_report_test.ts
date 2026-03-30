@@ -100,6 +100,7 @@ Deno.test("methodSummaryReport: succeeded method with data handles shows narrati
 
   // JSON checks
   assertEquals(result.json.status, "succeeded");
+  assertEquals(result.json.modelId, "def-123");
   assertEquals(result.json.modelName, "my-server");
   assertEquals(result.json.modelType, "server");
   assertEquals(result.json.methodName, "deploy");
@@ -329,6 +330,7 @@ Deno.test("methodSummaryReport: JSON output structure matches expected shape", a
   // Verify all expected keys exist
   const expectedKeys = [
     "status",
+    "modelId",
     "modelName",
     "modelType",
     "methodName",
