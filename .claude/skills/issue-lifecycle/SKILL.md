@@ -47,7 +47,7 @@ systeminit/swamp#850":
 4. **Classify the issue** based on your analysis:
    ```
    swamp model method run issue-<N> triage \
-     --input type=<bug|feature|unclear> \
+     --input type=<bug|feature|regression|unclear> \
      --input confidence=<high|medium|low> \
      --input reasoning="<your analysis>"
    ```

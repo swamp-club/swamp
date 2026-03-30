@@ -96,7 +96,7 @@ export const ContextSchema = z.object({
 });
 
 export const ClassificationSchema = z.object({
-  type: z.enum(["bug", "feature", "unclear"]),
+  type: z.enum(["bug", "feature", "regression", "unclear"]),
   confidence: z.enum(["high", "medium", "low"]),
   reasoning: z.string(),
   clarifyingQuestions: z.array(z.string()).optional(),

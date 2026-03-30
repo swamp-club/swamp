@@ -385,14 +385,14 @@ export const model = {
     triage: {
       description: "Classify the issue based on context",
       arguments: z.object({
-        type: z.enum(["bug", "feature", "unclear"]),
+        type: z.enum(["bug", "feature", "regression", "unclear"]),
         confidence: z.enum(["high", "medium", "low"]),
         reasoning: z.string(),
         clarifyingQuestions: z.array(z.string()).optional(),
       }),
       execute: async (
         args: {
-          type: "bug" | "feature" | "unclear";
+          type: "bug" | "feature" | "regression" | "unclear";
           confidence: "high" | "medium" | "low";
           reasoning: string;
           clarifyingQuestions?: string[];
@@ -456,6 +456,10 @@ export const model = {
           {
             bug: { add: ["bug"], remove: ["feature", "needs-triage"] },
             feature: { add: ["feature"], remove: ["bug", "needs-triage"] },
+            regression: {
+              add: ["bug", "regression"],
+              remove: ["feature", "needs-triage"],
+            },
             unclear: {
               add: ["lifecycle/needs-info"],
               remove: ["needs-triage"],
