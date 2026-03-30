@@ -194,6 +194,10 @@ export interface WorkflowRunInput {
   skipReportLabels?: string[];
   reportNames?: string[];
   reportLabels?: string[];
+  swampSha?: string;
+  skipCheckNames?: string[];
+  skipCheckLabels?: string[];
+  skipAllChecks?: boolean;
 }
 
 /**
@@ -449,6 +453,10 @@ export async function* workflowRun(
               reportNames: resolvedInput.reportNames,
               reportLabels: resolvedInput.reportLabels,
             },
+            swampSha: resolvedInput.swampSha,
+            skipCheckNames: resolvedInput.skipCheckNames,
+            skipCheckLabels: resolvedInput.skipCheckLabels,
+            skipAllChecks: resolvedInput.skipAllChecks,
           })
         ) {
           // Track model_resolved events for report context
