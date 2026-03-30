@@ -108,6 +108,7 @@ export class HttpUpdateChecker implements UpdateChecker {
     const response = await fetch(url, {
       method: "HEAD",
       redirect: "manual",
+      signal: AbortSignal.timeout(5000),
     });
 
     // Check for redirect via Location header or S3 metadata
