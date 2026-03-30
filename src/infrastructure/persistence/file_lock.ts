@@ -36,6 +36,25 @@ import type {
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
+/**
+ * Check if a process with the given PID is no longer running.
+ * Uses signal 0 (no-op) to test process existence.
+ * Returns false (not dead) on any error other than NotFound,
+ * so TTL-based detection remains the fallback.
+ */
+function isProcessDead(pid: number): boolean {
+  try {
+    Deno.kill(pid, "SIGCONT");
+    return false; // Process exists
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return true; // Process does not exist
+    }
+    // PermissionDenied or other error — can't determine, fall back to TTL
+    return false;
+  }
+}
+
 const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
 const DEFAULT_MAX_WAIT_MS = 60_000;
@@ -70,6 +89,7 @@ export class FileLock implements DistributedLock {
   private readonly maxWaitMs: number;
   private heartbeatId: number | undefined;
   private held = false;
+  private releasing = false;
   private nonce: string | undefined;
 
   constructor(basePath: string, options?: LockOptions) {
@@ -83,6 +103,7 @@ export class FileLock implements DistributedLock {
 
   async acquire(): Promise<void> {
     const startTime = Date.now();
+    this.releasing = false;
 
     await ensureDir(dirname(this.lockPath));
 
@@ -127,8 +148,9 @@ export class FileLock implements DistributedLock {
       // fencing in extend() ensures the old holder self-revokes.
       const existing = await this.readLockFile();
       if (existing) {
-        const acquiredAt = new Date(existing.acquiredAt).getTime();
-        if (Date.now() - acquiredAt > existing.ttlMs) {
+        const isStale = isProcessDead(existing.pid) ||
+          Date.now() - new Date(existing.acquiredAt).getTime() > existing.ttlMs;
+        if (isStale) {
           try {
             await Deno.remove(this.lockPath);
           } catch {
@@ -144,6 +166,9 @@ export class FileLock implements DistributedLock {
   }
 
   async release(): Promise<void> {
+    // Set releasing flag BEFORE stopping heartbeat so any in-flight
+    // extend() sees it and skips writing — prevents orphaned lock files.
+    this.releasing = true;
     this.stopHeartbeat();
 
     if (!this.held) return;
@@ -197,7 +222,7 @@ export class FileLock implements DistributedLock {
   }
 
   private async extend(): Promise<void> {
-    if (!this.held || !this.nonce) return;
+    if (!this.held || !this.nonce || this.releasing) return;
 
     // Verify we still own the lock before extending (fencing).
     // If another process acquired the lock (e.g., after we were paused
@@ -208,6 +233,10 @@ export class FileLock implements DistributedLock {
       this.stopHeartbeat();
       return;
     }
+
+    // Re-check releasing flag after the async read — release() may have
+    // been called while we were reading the lock file.
+    if (this.releasing) return;
 
     const info = buildLockInfo(this.ttlMs, this.nonce);
     const content = JSON.stringify(info, null, 2);
