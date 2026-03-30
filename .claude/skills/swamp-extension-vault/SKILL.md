@@ -219,6 +219,8 @@ swamp vault status --json
   `VaultProvider` interface documentation
 - **Examples**: See [references/examples.md](references/examples.md) for
   complete working examples
+- **Testing**: See [references/testing.md](references/testing.md) for unit
+  testing vault providers with `@systeminit/swamp-testing`
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md) for common
   issues (type not found, config validation, stale bundles)

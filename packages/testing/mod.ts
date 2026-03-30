@@ -18,31 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * @systeminit/swamp-testing — Test utilities for swamp extension models.
+ * @systeminit/swamp-testing — Test utilities for swamp extensions.
  *
- * Provides a fake {@linkcode MethodContext} for unit testing extension model
- * `execute` functions without running against real infrastructure.
- *
- * ```typescript
- * import { createModelTestContext } from "@systeminit/swamp-testing";
- * import { assertEquals } from "@std/assert";
- * import { model } from "./my_model.ts";
- *
- * Deno.test("run method writes expected resource", async () => {
- *   const { context, getWrittenResources } = createModelTestContext({
- *     globalArgs: { message: "hello" },
- *   });
- *
- *   await model.methods.run.execute({}, context);
- *
- *   const resources = getWrittenResources();
- *   assertEquals(resources.length, 1);
- *   assertEquals(resources[0].data.message, "HELLO");
- * });
- * ```
+ * Provides test factories for all extension types: models, vaults, datastores,
+ * execution drivers, and reports. Each factory creates in-memory fakes with
+ * inspection helpers for unit testing without real infrastructure.
  *
  * @module
  */
+
+// --- Models ---
 
 export { createModelTestContext } from "./test_context.ts";
 
@@ -67,3 +52,82 @@ export type {
   MethodResult,
   OwnerDefinition,
 } from "./types.ts";
+
+// --- Vaults ---
+
+export { createVaultTestContext } from "./vault_test_context.ts";
+
+export type {
+  VaultOperation,
+  VaultTestContextOptions,
+  VaultTestContextResult,
+} from "./vault_test_context.ts";
+
+export type { VaultProvider } from "./vault_types.ts";
+
+// --- Datastores ---
+
+export { createDatastoreTestContext } from "./datastore_test_context.ts";
+
+export type {
+  DatastoreTestContextOptions,
+  DatastoreTestContextResult,
+  LockOperation,
+  SyncOperation,
+} from "./datastore_test_context.ts";
+
+export type {
+  DatastoreHealthResult,
+  DatastoreProvider,
+  DatastoreSyncService,
+  DatastoreVerifier,
+  DistributedLock,
+  LockInfo,
+  LockOptions,
+} from "./datastore_types.ts";
+
+// --- Drivers ---
+
+export { createDriverTestContext } from "./driver_test_context.ts";
+
+export type {
+  CapturedDriverLog,
+  CapturedResourceEvent,
+  DriverTestContextResult,
+  TestExecutionRequestOptions,
+} from "./driver_test_context.ts";
+
+export type {
+  DriverOutput,
+  ExecutionCallbacks,
+  ExecutionDriver,
+  ExecutionRequest,
+  ExecutionResult,
+} from "./driver_types.ts";
+
+// --- Reports ---
+
+export { createReportTestContext } from "./report_test_context.ts";
+
+export type {
+  CapturedReportLog,
+  MethodReportTestContextOptions,
+  ModelReportTestContextOptions,
+  ReportTestContextOptions,
+  ReportTestContextResult,
+  StoredDataArtifact,
+  WorkflowReportTestContextOptions,
+} from "./report_test_context.ts";
+
+export type {
+  MethodReportContext,
+  ModelReportContext,
+  ReportContext,
+  ReportResult,
+  ReportScope,
+  TestData,
+  TestDataRepository,
+  TestDefinition,
+  TestDefinitionRepository,
+  WorkflowReportContext,
+} from "./report_types.ts";

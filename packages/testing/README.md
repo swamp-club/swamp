@@ -1,8 +1,8 @@
 # @systeminit/swamp-testing
 
-Test utilities for [swamp](https://github.com/systeminit/swamp) extension
-models. Provides a fake `MethodContext` for unit testing `execute` functions
-without running against real infrastructure.
+Test utilities for [swamp](https://github.com/systeminit/swamp) extensions.
+Provides test factories for all extension types — models, vaults, datastores,
+execution drivers, and reports — for unit testing without real infrastructure.
 
 ## Installation
 
@@ -103,6 +103,114 @@ execute: (async (args, context) => {
 const mockClient = { send: () => Promise.resolve({ Bucket: "test" }) };
 await model.methods.create.execute({ _s3Client: mockClient }, context);
 ```
+
+## `createVaultTestContext`
+
+In-memory `VaultProvider` for testing code that reads/writes secrets.
+
+```typescript
+import { createVaultTestContext } from "@systeminit/swamp-testing";
+
+Deno.test("reads API key from vault", async () => {
+  const { vault, getOperations } = createVaultTestContext({
+    secrets: { "api-key": "sk-test-123" },
+  });
+
+  const key = await vault.get("api-key");
+  assertEquals(key, "sk-test-123");
+  assertEquals(getOperations().length, 1);
+});
+```
+
+| Option           | Default        | Description                           |
+| ---------------- | -------------- | ------------------------------------- |
+| `name`           | `"test-vault"` | Vault provider name                   |
+| `secrets`        | `{}`           | Pre-seed secrets for `get()` calls    |
+| `throwOnMissing` | `true`         | Reject on missing keys vs return `""` |
+
+## `createDatastoreTestContext`
+
+In-memory `DatastoreProvider` with fake locking, health checks, and sync.
+
+```typescript
+import { createDatastoreTestContext } from "@systeminit/swamp-testing";
+
+Deno.test("lock acquire and release", async () => {
+  const { provider, isLockHeld } = createDatastoreTestContext();
+  const lock = provider.createLock("/ds");
+
+  await lock.acquire();
+  assertEquals(isLockHeld(), true);
+  await lock.release();
+  assertEquals(isLockHeld(), false);
+});
+```
+
+| Option             | Default                       | Description                      |
+| ------------------ | ----------------------------- | -------------------------------- |
+| `datastorePath`    | `"/tmp/swamp-test-datastore"` | Path from `resolveDatastorePath` |
+| `cachePath`        | `undefined`                   | Path from `resolveCachePath`     |
+| `healthResult`     | healthy                       | Override health check result     |
+| `lockAcquireFails` | `false`                       | Make lock acquire reject         |
+| `withSyncService`  | `false`                       | Enable `createSyncService`       |
+
+## `createDriverTestContext`
+
+Test harness for `ExecutionDriver` implementations. Provides a well-formed
+`ExecutionRequest` and callbacks that capture events.
+
+```typescript
+import { createDriverTestContext } from "@systeminit/swamp-testing";
+
+Deno.test("driver executes method", async () => {
+  const { request, callbacks, getCapturedLogs } = createDriverTestContext({
+    methodName: "run",
+    globalArgs: { region: "us-east-1" },
+  });
+
+  const result = await myDriver.execute(request, callbacks);
+  assertEquals(result.status, "success");
+});
+```
+
+| Option            | Default        | Description                   |
+| ----------------- | -------------- | ----------------------------- |
+| `protocolVersion` | `1`            | Protocol version              |
+| `modelType`       | `"test/model"` | Model type identifier         |
+| `methodName`      | `"run"`        | Method to execute             |
+| `globalArgs`      | `{}`           | Global arguments              |
+| `methodArgs`      | `{}`           | Method arguments              |
+| `definitionMeta`  | auto-generated | Definition metadata overrides |
+
+## `createReportTestContext`
+
+Fake `ReportContext` for testing report `execute` functions. Supports all three
+scopes (method, model, workflow) with pre-seeded data and definition
+repositories.
+
+```typescript
+import { createReportTestContext } from "@systeminit/swamp-testing";
+
+Deno.test("report generates markdown", async () => {
+  const { context } = createReportTestContext({
+    scope: "method",
+    modelType: "aws/ec2",
+    methodName: "create",
+    executionStatus: "succeeded",
+    dataHandles: [],
+  });
+
+  const result = await myReport.execute(context);
+  assertStringIncludes(result.markdown, "## Summary");
+});
+```
+
+| Option          | Default             | Description                            |
+| --------------- | ------------------- | -------------------------------------- |
+| `scope`         | required            | `"method"`, `"model"`, or `"workflow"` |
+| `dataArtifacts` | `[]`                | Pre-seed data for the fake repository  |
+| `definitions`   | `[]`                | Pre-seed definitions                   |
+| `repoDir`       | `"/tmp/swamp-test"` | Repository directory path              |
 
 ## License
 

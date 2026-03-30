@@ -230,6 +230,8 @@ driver file — swamp silently skips files that fail to compile.
   `ExecutionResult`, and `DriverOutput` interface documentation
 - **Examples**: See [references/examples.md](references/examples.md) for
   complete working examples (subprocess, remote execution, Docker reference)
+- **Testing**: See [references/testing.md](references/testing.md) for unit
+  testing execution drivers with `@systeminit/swamp-testing`
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md) for common
   issues (driver not found, output types, resolution priority)

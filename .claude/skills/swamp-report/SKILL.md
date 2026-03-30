@@ -317,3 +317,5 @@ Failed reports appear as `{ "_error": "error message" }`.
 - **Report API**: See [references/report-types.md](references/report-types.md)
   for full `ReportDefinition`, `ReportContext`, `ReportRegistry`, and
   `ReportSelection` type definitions
+- **Testing**: See [references/testing.md](references/testing.md) for unit
+  testing report execute functions with `@systeminit/swamp-testing`
