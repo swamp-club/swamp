@@ -86,7 +86,7 @@ export function createDatastoreTestContext(
 ): DatastoreTestContextResult {
   const lockOperations: LockOperation[] = [];
   const syncOperations: SyncOperation[] = [];
-  let lockHeld = false;
+  const heldLocks = new Map<string, boolean>();
 
   const datastorePath = options?.datastorePath ?? "/tmp/swamp-test-datastore";
   const cachePath = options?.cachePath;
@@ -120,7 +120,7 @@ export function createDatastoreTestContext(
             new Error(`Failed to acquire lock "${lockKey}"`),
           );
         }
-        lockHeld = true;
+        heldLocks.set(lockKey, true);
         return Promise.resolve();
       },
 
@@ -130,7 +130,7 @@ export function createDatastoreTestContext(
           lockKey,
           timestamp: Date.now(),
         });
-        lockHeld = false;
+        heldLocks.set(lockKey, false);
         return Promise.resolve();
       },
 
@@ -143,11 +143,11 @@ export function createDatastoreTestContext(
         if (lockAcquireFails) {
           throw new Error(`Failed to acquire lock "${lockKey}"`);
         }
-        lockHeld = true;
+        heldLocks.set(lockKey, true);
         try {
           return await fn();
         } finally {
-          lockHeld = false;
+          heldLocks.set(lockKey, false);
         }
       },
 
@@ -157,7 +157,7 @@ export function createDatastoreTestContext(
           lockKey,
           timestamp: Date.now(),
         });
-        if (!lockHeld) {
+        if (!heldLocks.get(lockKey)) {
           return Promise.resolve(null);
         }
         return Promise.resolve({
@@ -176,8 +176,8 @@ export function createDatastoreTestContext(
           lockKey,
           timestamp: Date.now(),
         });
-        if (lockHeld && expectedNonce === nonce) {
-          lockHeld = false;
+        if (heldLocks.get(lockKey) && expectedNonce === nonce) {
+          heldLocks.set(lockKey, false);
           return Promise.resolve(true);
         }
         return Promise.resolve(false);
@@ -237,6 +237,6 @@ export function createDatastoreTestContext(
     provider,
     getLockOperations: () => [...lockOperations],
     getSyncOperations: () => [...syncOperations],
-    isLockHeld: () => lockHeld,
+    isLockHeld: () => [...heldLocks.values()].some((held) => held),
   };
 }

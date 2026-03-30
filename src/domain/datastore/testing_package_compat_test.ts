@@ -49,7 +49,10 @@ function _checkDistributedLockFields(lock: TestingDistributedLock) {
   const _forceRelease: ReturnType<CanonicalDistributedLock["forceRelease"]> =
     lock.forceRelease("nonce");
 
-  void [_acquire, _release, _inspect, _forceRelease];
+  // withLock — verify it exists and returns a Promise
+  const _withLock: Promise<void> = lock.withLock(() => Promise.resolve());
+
+  void [_acquire, _release, _inspect, _forceRelease, _withLock];
 }
 
 // DatastoreVerifier: verify method signature matches.

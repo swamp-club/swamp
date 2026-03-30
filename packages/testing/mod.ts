@@ -155,3 +155,22 @@ export type {
   TestDefinitionRepository,
   WorkflowReportContext,
 } from "./report_types.ts";
+
+// --- Mocking ---
+
+export { withMockedFetch } from "./mock_fetch.ts";
+
+export type {
+  CapturedFetchCall,
+  FetchHandler,
+  MockFetchResult,
+} from "./mock_fetch.ts";
+
+export { withMockedCommand } from "./mock_command.ts";
+
+export type {
+  CapturedCommandCall,
+  CommandHandler,
+  CommandOutput,
+  MockCommandResult,
+} from "./mock_command.ts";
