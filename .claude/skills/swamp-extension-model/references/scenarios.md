@@ -168,7 +168,7 @@ methods:
 **4. Run and reference in other models**
 
 ```bash
-swamp model method run my-customer create --json
+swamp model method run my-customer create
 ```
 
 ```yaml
@@ -608,7 +608,7 @@ export const model = {
 
 ```bash
 swamp model create @user/vpc-scanner my-scanner --json
-swamp model method run my-scanner scan --json
+swamp model method run my-scanner scan
 ```
 
 **3. Query discovered VPCs**
@@ -752,10 +752,10 @@ swamp model edit my-script
 # Add: methods.execute.arguments.run = "echo 'Hello'"
 
 # Use the new audit method
-swamp model method run my-script audit --json
+swamp model method run my-script audit
 
 # Use the new dryRun method
-swamp model method run my-script dryRun --json
+swamp model method run my-script dryRun
 ```
 
 ### Extension Rules

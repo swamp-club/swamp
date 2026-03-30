@@ -31,6 +31,8 @@ interface BaseReportContext {
   logger: Logger;
   dataRepository: UnifiedDataRepository;
   definitionRepository: DefinitionRepository;
+  /** The git commit sha of the swamp repo at execution time */
+  swampSha?: string;
 
   /**
    * Redacts fields marked `{ sensitive: true }` in the model type's Zod schema.
@@ -44,6 +46,18 @@ interface BaseReportContext {
     args: Record<string, unknown>,
     argsKind: "global" | "method",
   ): Record<string, unknown>;
+}
+
+/**
+ * Lightweight description of a data output spec for report consumers.
+ * Mirrors the shape produced by `toMethodDescribeData()` in schema_helpers.
+ */
+export interface OutputSpecInfo {
+  specName: string;
+  kind: "resource" | "file";
+  description?: string;
+  schema?: object;
+  contentType?: string;
 }
 
 /**
@@ -65,6 +79,8 @@ export interface MethodReportContext extends BaseReportContext {
   executionStatus: "succeeded" | "failed";
   errorMessage?: string;
   dataHandles: DataHandle[];
+  /** Output spec schemas from the model type definition. */
+  outputSpecs?: OutputSpecInfo[];
 }
 
 /**
@@ -86,6 +102,8 @@ export interface ModelReportContext extends BaseReportContext {
   executionStatus: "succeeded" | "failed";
   errorMessage?: string;
   dataHandles: DataHandle[];
+  /** Output spec schemas from the model type definition. */
+  outputSpecs?: OutputSpecInfo[];
 }
 
 /**

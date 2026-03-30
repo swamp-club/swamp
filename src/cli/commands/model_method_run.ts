@@ -31,6 +31,7 @@ import { DefaultMethodExecutionService } from "../../domain/models/method_execut
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
+import { GIT_SHA } from "./version.ts";
 import { parseInputs } from "../input_parser.ts";
 import { parseTags } from "../../libswamp/mod.ts";
 import { join } from "@std/path";
@@ -230,6 +231,7 @@ export const modelMethodRunCommand = new Command()
             reportNames: options.report as string[] | undefined,
             reportLabels: options.reportLabel as string[] | undefined,
             driver: options.driver as string | undefined,
+            swampSha: GIT_SHA || undefined,
           }),
           renderer.handlers(),
         );

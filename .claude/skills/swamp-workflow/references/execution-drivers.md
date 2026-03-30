@@ -63,7 +63,7 @@ The first non-undefined `driver` value wins (no merging across levels):
 Override the driver for all steps in a workflow run:
 
 ```bash
-swamp workflow run my-workflow --driver docker --json
+swamp workflow run my-workflow --driver docker
 ```
 
 ## Parallel Steps

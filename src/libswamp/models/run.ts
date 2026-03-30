@@ -30,7 +30,9 @@ import { BUILTIN_METHOD_REPORTS } from "../../domain/reports/builtin/mod.ts";
 import type {
   MethodReportContext,
   ModelReportContext,
+  OutputSpecInfo,
 } from "../../domain/reports/report_context.ts";
+import { zodToJsonSchema } from "../types/schema_helpers.ts";
 import type { ReportResultView } from "./model_method_run_view.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
@@ -179,6 +181,35 @@ export interface ModelMethodRunInput {
   reportNames?: string[];
   reportLabels?: string[];
   driver?: string;
+  swampSha?: string;
+}
+
+/**
+ * Builds OutputSpecInfo[] from a ModelDefinition's resource and file specs.
+ */
+function buildOutputSpecs(modelDef: ModelDefinition): OutputSpecInfo[] {
+  const specs: OutputSpecInfo[] = [];
+  if (modelDef.resources) {
+    for (const [specName, spec] of Object.entries(modelDef.resources)) {
+      specs.push({
+        specName,
+        kind: "resource",
+        description: spec.description,
+        schema: zodToJsonSchema(spec.schema),
+      });
+    }
+  }
+  if (modelDef.files) {
+    for (const [specName, spec] of Object.entries(modelDef.files)) {
+      specs.push({
+        specName,
+        kind: "file",
+        description: spec.description,
+        contentType: spec.contentType,
+      });
+    }
+  }
+  return specs;
 }
 
 /**
@@ -465,6 +496,7 @@ export async function* modelMethodRun(
               logger: getRunLogger(definition.name, input.methodName),
               dataRepository: deps.dataRepo,
               definitionRepository: deps.definitionRepo,
+              swampSha: input.swampSha,
               modelType,
               modelId: evaluatedDefinition.id,
               definition: {
@@ -479,6 +511,7 @@ export async function* modelMethodRun(
               executionStatus: "failed",
               errorMessage,
               dataHandles: [],
+              outputSpecs: buildOutputSpecs(modelDef),
             };
 
             const failedSummary = await executeReports(
@@ -608,6 +641,7 @@ export async function* modelMethodRun(
             logger: getRunLogger(definition.name, input.methodName),
             dataRepository: deps.dataRepo,
             definitionRepository: deps.definitionRepo,
+            swampSha: input.swampSha,
             modelType,
             modelId: evaluatedDefinition.id,
             definition: {
@@ -621,6 +655,7 @@ export async function* modelMethodRun(
             methodName: input.methodName,
             executionStatus: "succeeded",
             dataHandles,
+            outputSpecs: buildOutputSpecs(modelDef),
           };
 
           const methodSummary = await executeReports(

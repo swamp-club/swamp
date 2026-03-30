@@ -10,16 +10,16 @@ When a method fails with a check-related error (e.g., "Pre-flight check failed:
 - To identify which check failed, look at the check name in the error output.
 - To skip a specific check temporarily:
   ```bash
-  swamp model method run <name> <method> --skip-check <check-name> --json
+  swamp model method run <name> <method> --skip-check <check-name>
   ```
 - To skip all checks (e.g., in an offline environment where live API checks
   can't run):
   ```bash
-  swamp model method run <name> <method> --skip-checks --json
+  swamp model method run <name> <method> --skip-checks
   ```
 - To skip all checks with a given label (e.g., `live` checks):
   ```bash
-  swamp model method run <name> <method> --skip-check-label live --json
+  swamp model method run <name> <method> --skip-check-label live
   ```
 - To run only the checks (without running the method) to diagnose:
   ```bash

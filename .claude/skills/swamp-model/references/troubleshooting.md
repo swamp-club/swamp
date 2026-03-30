@@ -146,7 +146,7 @@ swamp model validate my-model --json
    To fix, run the referenced model first:
 
    ```bash
-   swamp model method run my-vpc create --json
+   swamp model method run my-vpc create
    ```
 
 3. **Hyphen in spec name** (CEL interprets as subtraction):
@@ -180,7 +180,7 @@ to use that field.
 1. **Run the referenced model first** so its data is available:
 
    ```bash
-   swamp model method run <referenced-model> create --json
+   swamp model method run <referenced-model> create
    ```
 
 2. **Use a workflow** that runs models in the correct order — dependencies are

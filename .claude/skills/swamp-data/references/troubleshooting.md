@@ -39,7 +39,7 @@ swamp data list <model-name> --json
 swamp data get <model-name> <data-name> --json
 
 # 3. Run the create method first
-swamp model method run <model-name> create --json
+swamp model method run <model-name> create
 ```
 
 **CEL path anatomy**:
@@ -68,7 +68,7 @@ model.my-vpc.resource.vpc.main.attributes.VpcId
 swamp model search --json
 
 # Run a method to produce data
-swamp model method run <model-name> <method> --json
+swamp model method run <model-name> <method>
 
 # Check if model input exists
 swamp model get <model-name> --json

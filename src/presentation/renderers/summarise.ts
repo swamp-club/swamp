@@ -91,6 +91,16 @@ function renderMethodExecutions(
             `      ${dim(time)}  ${statusStr}  ${dur}  ${trigger}${errStr}`,
           );
         }
+      } else if (method.failed > 0) {
+        // Show the most recent error message in compact mode
+        const lastFailed = [...method.runs]
+          .reverse()
+          .find((r) => r.status === "failed" && r.error);
+        if (lastFailed?.error) {
+          writeOutput(
+            `             ${red(`last error: "${lastFailed.error}"`)}`,
+          );
+        }
       }
     }
   }
@@ -150,6 +160,23 @@ function renderWorkflowRuns(
           const errStr = step.error ? `  ${red(step.error)}` : "";
           writeOutput(
             `      ${step.jobName} > ${step.stepName}${model}  ${stepStatus}${dur}${errStr}`,
+          );
+        }
+      }
+    } else if (group.failed > 0) {
+      // Show the most recent failed run's error in compact mode
+      const lastFailedRun = [...group.runs]
+        .reverse()
+        .find((r) => r.status === "failed");
+      if (lastFailedRun) {
+        const failedStep = lastFailedRun.steps.find(
+          (s) => s.status === "failed" && s.error,
+        );
+        if (failedStep?.error) {
+          writeOutput(
+            `  ${"".padEnd(maxLabel + 2)} ${
+              red(`last error: "${failedStep.error}"`)
+            }`,
           );
         }
       }

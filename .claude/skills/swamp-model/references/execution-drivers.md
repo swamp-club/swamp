@@ -16,7 +16,7 @@ containers.
 Override the driver for a single method run:
 
 ```bash
-swamp model method run my-model execute --driver docker --json
+swamp model method run my-model execute --driver docker
 ```
 
 The CLI flag takes highest priority over all other driver settings.

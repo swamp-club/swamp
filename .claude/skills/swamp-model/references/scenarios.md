@@ -65,7 +65,7 @@ swamp model validate my-shell --json
 **4. Run**
 
 ```bash
-swamp model method run my-shell execute --json
+swamp model method run my-shell execute
 ```
 
 **5. View output**
@@ -133,7 +133,7 @@ methods:
 Run it:
 
 ```bash
-swamp model method run vpc-lookup execute --json
+swamp model method run vpc-lookup execute
 ```
 
 **2. Create subnet lookup model (references VPC)**
@@ -161,7 +161,7 @@ Validate and run:
 
 ```bash
 swamp model validate subnet-lookup --json
-swamp model method run subnet-lookup execute --json
+swamp model method run subnet-lookup execute
 ```
 
 **3. Create instance model (references both)**
@@ -269,16 +269,16 @@ swamp model validate my-deploy --json
 
 ```bash
 # Dev environment
-swamp model method run my-deploy deploy --input environment=dev --json
+swamp model method run my-deploy deploy --input environment=dev
 
 # Production with 3 replicas
-swamp model method run my-deploy deploy --input environment=production --input replicas=3 --json
+swamp model method run my-deploy deploy --input environment=production --input replicas=3
 
 # Staging dry run
-swamp model method run my-deploy deploy --input environment=staging --input dryRun=true --json
+swamp model method run my-deploy deploy --input environment=staging --input dryRun=true
 
 # JSON syntax also works for complex inputs
-swamp model method run my-deploy deploy --input '{"environment": "staging", "dryRun": true}' --json
+swamp model method run my-deploy deploy --input '{"environment": "staging", "dryRun": true}'
 ```
 
 **5. Alternative: Use input file**
@@ -294,7 +294,7 @@ dryRun: false
 Run with file:
 
 ```bash
-swamp model method run my-deploy deploy --input-file inputs/production.yaml --json
+swamp model method run my-deploy deploy --input-file inputs/production.yaml
 ```
 
 ### CEL Paths Used
@@ -421,10 +421,10 @@ jobs:
 
 ```bash
 # Deploy to dev
-swamp workflow run deploy-api --input environment=dev --json
+swamp workflow run deploy-api --input environment=dev
 
 # Deploy to production
-swamp workflow run deploy-api --input environment=production --json
+swamp workflow run deploy-api --input environment=production
 ```
 
 ### CEL Paths Used

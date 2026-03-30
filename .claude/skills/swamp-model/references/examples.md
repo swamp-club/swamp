@@ -78,7 +78,7 @@ methods:
 **Step 3: Run and access output**
 
 ```bash
-swamp model method run my-shell execute --json
+swamp model method run my-shell execute
 ```
 
 **Output data path**: `model.my-shell.resource.result.result.attributes.stdout`
@@ -107,7 +107,7 @@ methods:
 ```
 
 ```bash
-swamp model method run vpc-lookup execute --json
+swamp model method run vpc-lookup execute
 ```
 
 **Step 2: Subnet Lookup (references VPC)**
@@ -190,19 +190,19 @@ methods:
 
 ```bash
 # Key-value inputs (preferred for simple values)
-swamp model method run my-deploy deploy --input environment=production --json
+swamp model method run my-deploy deploy --input environment=production
 
 # Multiple inputs
-swamp model method run my-deploy deploy --input environment=production --input dryRun=true --json
+swamp model method run my-deploy deploy --input environment=production --input dryRun=true
 
 # Dot notation for nested values
-swamp model method run my-deploy deploy --input config.timeout=30 --json
+swamp model method run my-deploy deploy --input config.timeout=30
 
 # JSON input (useful for complex structures)
-swamp model method run my-deploy deploy --input '{"environment": "production"}' --json
+swamp model method run my-deploy deploy --input '{"environment": "production"}'
 
 # YAML file input
-swamp model method run my-deploy deploy --input-file inputs.yaml --json
+swamp model method run my-deploy deploy --input-file inputs.yaml
 ```
 
 **Input file format (inputs.yaml)**:

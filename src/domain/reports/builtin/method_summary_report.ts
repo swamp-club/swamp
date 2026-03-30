@@ -18,22 +18,81 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { MethodReportContext, ReportContext } from "../report_context.ts";
+import type { DataHandle } from "../../models/model.ts";
 import type { ReportDefinition, ReportResult } from "../report.ts";
 
 function isMethodContext(ctx: ReportContext): ctx is MethodReportContext {
   return ctx.scope === "method";
 }
 
-function formatArgs(args: Record<string, unknown>): string {
-  if (Object.keys(args).length === 0) {
-    return "";
+/**
+ * Builds a narrative description of what happened during the method execution.
+ */
+function buildNarrative(
+  definition: { name: string },
+  modelType: string,
+  methodName: string,
+  executionStatus: "succeeded" | "failed",
+  errorMessage: string | undefined,
+  dataHandles: DataHandle[],
+): string {
+  if (executionStatus === "failed") {
+    const reason = errorMessage ? `: ${errorMessage}` : "";
+    return `${methodName} on ${definition.name} (${modelType}) failed${reason}`;
   }
-  return "```json\n" + JSON.stringify(args, null, 2) + "\n```";
+
+  if (dataHandles.length === 0) {
+    return `${methodName} on ${definition.name} (${modelType}) succeeded with no data output.`;
+  }
+
+  // Group handles by specName
+  const groups = new Map<string, { kind: string; count: number }>();
+  for (const handle of dataHandles) {
+    const existing = groups.get(handle.specName);
+    if (existing) {
+      existing.count++;
+    } else {
+      groups.set(handle.specName, { kind: handle.kind, count: 1 });
+    }
+  }
+
+  const parts: string[] = [];
+  for (const [specName, { kind, count }] of groups) {
+    parts.push(`${count} ${kind}${count > 1 ? "s" : ""} (${specName})`);
+  }
+
+  return `${methodName} on ${definition.name} (${modelType}) succeeded, producing ${
+    parts.join(", ")
+  }.`;
+}
+
+/**
+ * Renders the data pointers section: compact resource names grouped by spec,
+ * with one example retrieval command.
+ */
+function renderPointersMarkdown(
+  definitionName: string,
+  dataHandles: DataHandle[],
+): string[] {
+  if (dataHandles.length === 0) {
+    return ["## Data Output", "", "No data output."];
+  }
+
+  const lines: string[] = ["## Data Output", ""];
+  lines.push("| Name | Kind | Retrieval Command |");
+  lines.push("| ---- | ---- | ----------------- |");
+  for (const handle of dataHandles) {
+    const cmd =
+      `swamp data get ${definitionName} ${handle.name} --version ${handle.version}`;
+    lines.push(`| **${handle.name}** | ${handle.kind} | \`${cmd}\` |`);
+  }
+
+  return lines;
 }
 
 export const methodSummaryReport: ReportDefinition = {
   description:
-    "Built-in summary of a model method execution including status, arguments, and data produced.",
+    "Built-in summary of a model method execution including narrative, output schema, and data pointers.",
   scope: "method",
   labels: ["summary"],
 
@@ -51,56 +110,51 @@ export const methodSummaryReport: ReportDefinition = {
       globalArgs,
       methodArgs,
       dataHandles,
+      outputSpecs,
       redactSensitiveArgs,
+      swampSha,
     } = context;
 
-    const redact = redactSensitiveArgs ??
-      ((a: Record<string, unknown>) => a);
-    const redactedGlobalArgs = redact(globalArgs ?? {}, "global");
-    const redactedMethodArgs = redact(methodArgs ?? {}, "method");
+    // Build narrative
+    const narrative = buildNarrative(
+      definition,
+      modelType.normalized,
+      methodName,
+      executionStatus,
+      errorMessage,
+      dataHandles,
+    );
 
-    const hasGlobal = Object.keys(redactedGlobalArgs).length > 0;
-    const hasMethod = Object.keys(redactedMethodArgs).length > 0;
-
-    // Build markdown
+    // Build markdown — compact for human terminal display.
+    // Schema lives in the JSON for agent retrieval.
+    const versionSuffix = swampSha ? ` | git sha: ${swampSha}` : "";
     const lines: string[] = [
-      `# ${definition.name} (${modelType.normalized}) \u2192 ${methodName}: ${executionStatus}`,
+      `# ${definition.name} (${modelType.normalized}) \u2192 ${methodName}: ${executionStatus}${versionSuffix}`,
       "",
-      "## Arguments",
+      narrative,
       "",
     ];
 
-    if (!hasGlobal && !hasMethod) {
-      lines.push("No arguments.");
-    } else {
-      if (hasGlobal) {
-        lines.push("**Global Arguments**", "", formatArgs(redactedGlobalArgs));
-      }
-      if (hasGlobal && hasMethod) {
-        lines.push("");
-      }
-      if (hasMethod) {
-        lines.push("**Method Arguments**", "", formatArgs(redactedMethodArgs));
-      }
-    }
-
     if (errorMessage) {
-      lines.push("", "## Error", "", errorMessage);
+      lines.push("## Error", "", errorMessage, "");
     }
 
-    lines.push("", "## Data Output", "");
+    // Arguments section
+    const redactedGlobal = redactSensitiveArgs
+      ? redactSensitiveArgs(globalArgs, "global")
+      : globalArgs;
+    const redactedMethod = redactSensitiveArgs
+      ? redactSensitiveArgs(methodArgs, "method")
+      : methodArgs;
 
-    if (dataHandles.length === 0) {
-      lines.push("No data output.");
-    } else {
-      lines.push("| Name | Kind | Retrieval Command |");
-      lines.push("| ---- | ---- | ----------------- |");
-      for (const handle of dataHandles) {
-        const cmd = `swamp data get ${definition.name} ${handle.name}`;
-        lines.push(
-          `| **${handle.name}** | ${handle.kind} | \`${cmd}\` |`,
-        );
-      }
+    lines.push("## Arguments", "");
+    lines.push("**Global Arguments**", "");
+    lines.push("```json", JSON.stringify(redactedGlobal, null, 2), "```", "");
+    lines.push("**Method Arguments**", "");
+    lines.push("```json", JSON.stringify(redactedMethod, null, 2), "```", "");
+
+    if (dataHandles.length > 0) {
+      lines.push(...renderPointersMarkdown(definition.name, dataHandles));
     }
 
     const markdown = lines.join("\n");
@@ -109,16 +163,19 @@ export const methodSummaryReport: ReportDefinition = {
     const json: Record<string, unknown> = {
       status: executionStatus,
       ...(errorMessage ? { error: errorMessage } : {}),
-      modelId: definition.id,
       modelName: definition.name,
       modelType: modelType.normalized,
       methodName,
-      globalArgs: redactedGlobalArgs,
-      methodArgs: redactedMethodArgs,
+      ...(swampSha ? { swampSha } : {}),
+      narrative,
+      globalArgs: redactedGlobal,
+      methodArgs: redactedMethod,
+      ...(outputSpecs && outputSpecs.length > 0 ? { outputSpecs } : {}),
       dataProduced: dataHandles.map((h) => ({
         name: h.name,
         kind: h.kind,
-        retrievalCommand: `swamp data get ${definition.name} ${h.name}`,
+        specName: h.specName,
+        version: h.version,
       })),
     };
 

@@ -21,19 +21,20 @@ up-to-date CLI schema.
 
 ## Quick Reference
 
-| Task                     | Command                                                              |
-| ------------------------ | -------------------------------------------------------------------- |
-| Run reports for a model  | `swamp model report <model> --json`                                  |
-| Filter by label          | `swamp model report <model> --label cost --json`                     |
-| Simulate method context  | `swamp model report <model> --method create --json`                  |
-| Run method with reports  | `swamp model method run <model> <method> --json`                     |
-| Skip all reports         | `swamp model method run <model> <method> --skip-reports --json`      |
-| Skip report by name      | `swamp model method run <model> <method> --skip-report <n> -j`       |
-| Skip report by label     | `swamp model method run <model> <method> --skip-report-label <l> -j` |
-| Run only named report    | `swamp model method run <model> <method> --report <n> -j`            |
-| Run only labeled reports | `swamp model method run <model> <method> --report-label <l> -j`      |
-| Workflow with reports    | `swamp workflow run <workflow> --json`                               |
-| Workflow skip reports    | `swamp workflow run <workflow> --skip-reports --json`                |
+| Task                     | Command                                                           |
+| ------------------------ | ----------------------------------------------------------------- |
+| Run reports for a model  | `swamp model report <model>`                                      |
+| Filter by label          | `swamp model report <model> --label cost`                         |
+| Simulate method context  | `swamp model report <model> --method create`                      |
+| Run method with reports  | `swamp model method run <model> <method>`                         |
+| Skip all reports         | `swamp model method run <model> <method> --skip-reports`          |
+| Skip report by name      | `swamp model method run <model> <method> --skip-report <n>`       |
+| Skip report by label     | `swamp model method run <model> <method> --skip-report-label <l>` |
+| Run only named report    | `swamp model method run <model> <method> --report <n>`            |
+| Run only labeled reports | `swamp model method run <model> <method> --report-label <l>`      |
+| Workflow with reports    | `swamp workflow run <workflow>`                                   |
+| Workflow skip reports    | `swamp workflow run <workflow> --skip-reports`                    |
+| Get stored report        | `swamp report get <report-name> --model <model> --json`           |
 
 ## End-to-End Workflow
 
@@ -45,8 +46,8 @@ up-to-date CLI schema.
 3. **Configure in definition YAML** — add the report name to `reports.require:`
    in the model or workflow definition if it should run beyond the model-type
    defaults. Use `reports.skip:` to exclude reports you don't need.
-4. **Run and verify** — execute `swamp model report <model> --json` to confirm
-   the report produces valid markdown and JSON output without errors.
+4. **Run and verify** — execute `swamp model report <model>` to confirm the
+   report produces valid markdown and JSON output without errors.
 5. **Check stored output** — run `swamp data search --tag type=report --json` to
    verify the report artifact was persisted correctly.
 
@@ -278,9 +279,16 @@ swamp data get my-model report-cost-estimate --json
 
 **Log mode** (default): Renders report markdown with terminal formatting.
 Displays a separator line, the rendered markdown content, and a pass/fail
-summary.
+summary. The built-in `@swamp/method-summary` markdown is compact for human
+readability: narrative + retrieval hint only.
 
-**JSON mode** (`--json`): Outputs reports keyed by name with their JSON data:
+**JSON mode** (`--json`): Full structured detail for agents. The built-in
+`@swamp/method-summary` JSON includes narrative, output schema (field names and
+types from the model's output specs), and all data pointers grouped by spec. Use
+`swamp report get <name> --model <model> --json` to retrieve this after
+execution.
+
+JSON output shape:
 
 ```json
 {

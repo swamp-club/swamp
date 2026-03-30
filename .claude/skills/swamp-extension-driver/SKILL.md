@@ -194,7 +194,7 @@ After creating your driver:
 
 ```bash
 rm -rf .swamp/driver-bundles/
-swamp model method run my-instance run --json
+swamp model method run my-instance run
 ```
 
 If it still fails after clearing bundles, check for TypeScript errors in your

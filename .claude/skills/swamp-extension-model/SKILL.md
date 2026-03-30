@@ -55,7 +55,7 @@ than wrapping CLI commands.
 | Check schema        | `swamp model type describe @myorg/my-model --json`                   |
 | Create instance     | `swamp model create @myorg/my-model my-instance --json`              |
 | Create with args    | `swamp model create @myorg/my-model inst --global-arg message=hi -j` |
-| Run method          | `swamp model method run my-instance run --json`                      |
+| Run method          | `swamp model method run my-instance run`                             |
 | Next version        | `swamp extension version @myorg/my-model --json`                     |
 | Create manifest     | Create `manifest.yaml` with model/workflow entries                   |
 | Format extension    | `swamp extension fmt manifest.yaml --json`                           |

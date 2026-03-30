@@ -42,7 +42,7 @@ jobs:
         run: echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Run workflow
-        run: swamp workflow run my-workflow --json
+        run: swamp workflow run my-workflow
 ```
 
 ### With S3 datastore in CI
@@ -52,7 +52,7 @@ jobs:
   env:
     SWAMP_DATASTORE: s3:my-bucket/my-prefix
     AWS_REGION: us-east-1
-  run: swamp workflow run my-workflow --json
+  run: swamp workflow run my-workflow
 ```
 
 ### With version pinning

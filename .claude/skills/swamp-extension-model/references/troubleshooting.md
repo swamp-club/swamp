@@ -250,5 +250,5 @@ swamp model type describe @myorg/my-model --json
 
 # Test the model
 swamp model create @myorg/my-model test --set fieldName="test" --json
-swamp model method run test methodName --json
+swamp model method run test methodName
 ```

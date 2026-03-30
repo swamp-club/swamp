@@ -115,7 +115,7 @@ jobs:
 **4. Run the workflow**
 
 ```bash
-swamp workflow run provision-networking --json
+swamp workflow run provision-networking
 ```
 
 ### CEL Paths Used
@@ -289,13 +289,13 @@ jobs:
 **3. Run with default environments**
 
 ```bash
-swamp workflow run deploy-all-envs --json
+swamp workflow run deploy-all-envs
 ```
 
 **4. Run with custom list**
 
 ```bash
-swamp workflow run deploy-all-envs --input '{"environments": ["dev", "staging"]}' --json
+swamp workflow run deploy-all-envs --input '{"environments": ["dev", "staging"]}'
 ```
 
 ### CEL Paths Used
@@ -543,7 +543,7 @@ jobs:
 **3. Run the combined workflow**
 
 ```bash
-swamp workflow run deploy-and-notify --input environment=production --json
+swamp workflow run deploy-and-notify --input environment=production
 ```
 
 ### Nested Workflow Limitations

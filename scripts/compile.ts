@@ -41,6 +41,33 @@ async function stampVersion(version: string): Promise<string> {
   return original;
 }
 
+async function getGitSha(): Promise<string> {
+  try {
+    const cmd = new Deno.Command("git", {
+      args: ["rev-parse", "--short", "HEAD"],
+      stdout: "piped",
+      stderr: "null",
+    });
+    const { success, stdout } = await cmd.output();
+    if (!success) return "";
+    return new TextDecoder().decode(stdout).trim();
+  } catch {
+    return "";
+  }
+}
+
+async function stampGitSha(): Promise<string> {
+  const sha = await getGitSha();
+  if (!sha) return "";
+  const content = await Deno.readTextFile(VERSION_FILE);
+  const updated = content.replace(
+    /export const GIT_SHA = "[^"]*";/,
+    `export const GIT_SHA = "${sha}";`,
+  );
+  await Deno.writeTextFile(VERSION_FILE, updated);
+  return sha;
+}
+
 /**
  * Downloads the deno binary for the given target platform.
  * Runs scripts/download_deno.ts to fetch from GitHub releases.
@@ -104,10 +131,19 @@ async function main() {
 
   // Only stamp version when explicitly provided (CI passes --version).
   // Local dev builds keep the source-default VERSION (with empty sha).
-  let originalContent: string | null = null;
+  // Save original version file content so we can restore after compile
+  const preStampContent = await Deno.readTextFile(VERSION_FILE);
+
+  // Always stamp the git sha (even dev builds)
+  const sha = await stampGitSha();
+  if (sha) {
+    console.log(`Git SHA: ${sha}`);
+  }
+
+  let originalContent: string | null = preStampContent;
   if (options.version) {
     console.log(`Version: ${options.version}`);
-    originalContent = await stampVersion(options.version);
+    await stampVersion(options.version);
   } else {
     console.log(
       "No --version provided; using source-default version (dev build)",

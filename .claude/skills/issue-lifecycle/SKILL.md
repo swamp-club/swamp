@@ -35,7 +35,7 @@ systeminit/swamp#850":
 
 2. **Fetch the issue context**:
    ```
-   swamp model method run issue-<N> start --json
+   swamp model method run issue-<N> start
    ```
 
 3. **Read the issue context** from the model output, then **read the codebase**:
@@ -49,7 +49,7 @@ systeminit/swamp#850":
    swamp model method run issue-<N> triage \
      --input type=<bug|feature|unclear> \
      --input confidence=<high|medium|low> \
-     --input reasoning="<your analysis>" --json
+     --input reasoning="<your analysis>"
    ```
 
 5. **Generate an implementation plan**:
@@ -85,7 +85,7 @@ systeminit/swamp#850":
      --input summary="..." \
      --input dddAnalysis="..." \
      --input testingStrategy="..." \
-     --input-file /tmp/plan.yaml --json
+     --input-file /tmp/plan.yaml
    ```
 
 6. **Check for documentation impact.** Before presenting the plan, evaluate
@@ -162,7 +162,7 @@ Then record them:
 
 ```
 swamp model method run issue-<N> adversarial_review \
-  --input-file /tmp/findings.yaml --json
+  --input-file /tmp/findings.yaml
 ```
 
 Each finding must have:
@@ -208,7 +208,7 @@ When the human gives feedback OR adversarial findings need addressing:
      --input summary="..." \
      --input dddAnalysis="..." \
      --input testingStrategy="..." \
-     --input-file /tmp/plan.yaml --json
+     --input-file /tmp/plan.yaml
    ```
 
 2. **Resolve addressed findings**. Write resolutions to a YAML file:
@@ -224,7 +224,7 @@ When the human gives feedback OR adversarial findings need addressing:
 
    ```
    swamp model method run issue-<N> resolve_findings \
-     --input-file /tmp/resolutions.yaml --json
+     --input-file /tmp/resolutions.yaml
    ```
 
 3. **Re-run adversarial review** on the new plan version. The review must be
@@ -242,7 +242,7 @@ When the human gives feedback OR adversarial findings need addressing:
 
 6. Only then call `approve`:
    ```
-   swamp model method run issue-<N> approve --json
+   swamp model method run issue-<N> approve
    ```
 
 **The `approve` method will fail** if critical/high findings are unresolved or
@@ -258,7 +258,7 @@ After plan approval, when the human says to implement:
 3. **Record the PR number**:
    ```
    swamp model method run issue-<N> implement \
-     --input prNumber=<N> --json
+     --input prNumber=<N>
    ```
 
 4. **Wait 3 minutes for CI to start.** Use `sleep 180` — CI takes at least this
@@ -270,7 +270,7 @@ After plan approval, when the human says to implement:
    during this wait — stay in the loop.
 
    ```
-   swamp model method run issue-<N> ci_status --json
+   swamp model method run issue-<N> ci_status
    ```
 
 6. **Show the CI results** to the human, grouped by reviewer and severity:
@@ -281,7 +281,7 @@ After plan approval, when the human says to implement:
 7. **If everything is green and approved**, the PR will auto-merge. Call
    `complete` immediately — no need to ask the human:
    ```
-   swamp model method run issue-<N> complete --json
+   swamp model method run issue-<N> complete
    ```
 
 8. **If there are failures or review comments**, present them and wait for the
@@ -295,7 +295,7 @@ After plan approval, when the human says to implement:
    swamp model method run issue-<N> fix \
      --input directive="<human's instruction>" \
      --input targetReview="<reviewer>" \
-     --input targetSeverity="<severity>" --json
+     --input targetSeverity="<severity>"
    ```
 
 9. **After pushing fixes, loop back to step 4.** Wait 3 minutes, poll for CI,
@@ -312,7 +312,7 @@ immediately — but it must be their decision, never yours.
 To review a specific plan version:
 
 ```
-swamp model method run issue-<N> review --input version=<V> --json
+swamp model method run issue-<N> review --input version=<V>
 ```
 
 To see all model data:
