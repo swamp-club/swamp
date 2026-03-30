@@ -30,15 +30,31 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
 interface JsonSchemaProperty {
-  type?: string;
+  type?: string | string[];
   enum?: string[];
   description?: string;
 }
 
 interface JsonSchemaObject {
-  type?: string;
+  type?: string | string[];
   properties?: Record<string, JsonSchemaProperty>;
   required?: string[];
+}
+
+/**
+ * Formats a JSON Schema `type` field into a human-readable string.
+ * Handles both single types (`"string"`) and nullable/union arrays
+ * (`["string", "null"]`) produced by `zodToJsonSchema` for optional
+ * or nullable Zod types.
+ */
+export function formatSchemaType(
+  type: string | string[] | undefined,
+): string | undefined {
+  if (type === undefined) return undefined;
+  if (Array.isArray(type)) {
+    return type.join(" | ");
+  }
+  return type;
 }
 
 /**
@@ -54,7 +70,8 @@ export function formatSchemaAttributes(
   const required = new Set(s.required ?? []);
   return Object.entries(s.properties).map(([name, prop]) => {
     const parts = [name];
-    if (prop.type) parts.push(dim(`(${prop.type})`));
+    const formatted = formatSchemaType(prop.type);
+    if (formatted) parts.push(dim(`(${formatted})`));
     if (prop.enum) parts.push(dim(`[${prop.enum.join(", ")}]`));
     if (required.has(name)) parts.push(dim("*required"));
     return `${indent}${parts.join(" ")}`;

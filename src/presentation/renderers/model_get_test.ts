@@ -21,7 +21,11 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
 import type { ModelGetEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createModelGetRenderer } from "./model_get.ts";
+import {
+  createModelGetRenderer,
+  formatSchemaAttributes,
+  formatSchemaType,
+} from "./model_get.ts";
 
 const testData = {
   id: "def-1",
@@ -101,4 +105,50 @@ Deno.test("createModelGetRenderer - factory returns correct type per mode", () =
   const jsonRenderer = createModelGetRenderer("json");
   assertEquals(typeof logRenderer.handlers, "function");
   assertEquals(typeof jsonRenderer.handlers, "function");
+});
+
+Deno.test("formatSchemaType: returns undefined for undefined input", () => {
+  assertEquals(formatSchemaType(undefined), undefined);
+});
+
+Deno.test("formatSchemaType: returns string unchanged for string input", () => {
+  assertEquals(formatSchemaType("string"), "string");
+  assertEquals(formatSchemaType("number"), "number");
+  assertEquals(formatSchemaType("object"), "object");
+});
+
+Deno.test("formatSchemaType: joins array types with pipe separator", () => {
+  assertEquals(formatSchemaType(["string", "null"]), "string | null");
+  assertEquals(
+    formatSchemaType(["string", "number", "null"]),
+    "string | number | null",
+  );
+});
+
+Deno.test("formatSchemaType: handles single-element arrays", () => {
+  assertEquals(formatSchemaType(["string"]), "string");
+});
+
+Deno.test("formatSchemaType: handles empty arrays", () => {
+  assertEquals(formatSchemaType([]), "");
+});
+
+Deno.test("formatSchemaAttributes: renders array-typed properties correctly", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      nickname: { type: ["string", "null"] },
+    },
+    required: ["name"],
+  };
+  const lines = formatSchemaAttributes(schema, "  ");
+  assertEquals(lines.length, 2);
+  // The first line should contain 'name' and '(string)' and '*required'
+  assertEquals(lines[0].includes("name"), true);
+  assertEquals(lines[0].includes("(string)"), true);
+  assertEquals(lines[0].includes("*required"), true);
+  // The second line should contain 'nickname' and '(string | null)'
+  assertEquals(lines[1].includes("nickname"), true);
+  assertEquals(lines[1].includes("(string | null)"), true);
 });
