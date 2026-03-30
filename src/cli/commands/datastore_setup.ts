@@ -20,19 +20,25 @@
 import { Command } from "@cliffy/command";
 import { isAbsolute, resolve } from "@std/path";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  requireInitializedRepo,
+  resolveDatastoreForRepo,
+} from "../repo_context.ts";
 import {
   consumeStream,
   createDatastoreSetupDeps,
   createLibSwampContext,
+  datastoreSetupExtension,
   datastoreSetupFilesystem,
-  datastoreSetupS3,
 } from "../../libswamp/mod.ts";
 import { createDatastoreSetupRenderer } from "../../presentation/renderers/datastore_setup.ts";
 import { DEFAULT_DATASTORE_SUBDIRS } from "../../domain/datastore/datastore_config.ts";
-import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { expandEnvVars } from "../../infrastructure/persistence/env_path.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import { resolveDatastoreType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
+import { RENAMED_DATASTORE_TYPES } from "../resolve_datastore.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -82,49 +88,63 @@ const datastoreSetupFilesystemCommand = new Command()
     );
   });
 
-const datastoreSetupS3Command = new Command()
-  .description("Set up an S3 datastore")
+const datastoreSetupExtensionCommand = new Command()
+  .description(
+    "Set up an extension-provided datastore (e.g., @swamp/s3-datastore)",
+  )
+  .arguments("<type:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .option("--bucket <bucket:string>", "S3 bucket name", { required: true })
-  .option("--prefix <prefix:string>", "Key prefix within the bucket")
-  .option("--region <region:string>", "AWS region")
   .option(
-    "--endpoint <endpoint:string>",
-    "Custom S3-compatible endpoint URL (e.g., https://nyc3.digitaloceanspaces.com)",
+    "--config <config:string>",
+    "JSON configuration for the datastore extension",
+    { required: true },
   )
-  .option(
-    "--force-path-style",
-    "Use path-style addressing (bucket in path, not subdomain)",
-  )
-  .option("--skip-migration", "Skip pushing existing data to S3")
-  .action(async function (options: AnyOptions) {
+  .option("--skip-migration", "Skip migrating existing data")
+  .action(async function (options: AnyOptions, type: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
       "setup",
-      "s3",
+      "extension",
     ]);
 
-    const { repoDir } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
-      outputMode: cliCtx.outputMode,
-    });
+    // Remap legacy type names (e.g., "s3" → "@swamp/s3-datastore")
+    const renamedTo = RENAMED_DATASTORE_TYPES[type];
+    const resolvedType = renamedTo ?? type;
 
-    // Read marker to get repoId for cache path
-    const markerRepo = new RepoMarkerRepository();
-    const repoPath = RepoPath.create(repoDir);
-    const marker = await markerRepo.read(repoPath);
+    // Auto-resolve the extension if needed
+    if (resolvedType.startsWith("@")) {
+      await resolveDatastoreType(resolvedType, getAutoResolver());
+    }
+
+    if (!datastoreTypeRegistry.has(resolvedType)) {
+      throw new UserError(
+        `Datastore type "${resolvedType}" is not registered. ` +
+          `Install it with: swamp extension pull ${resolvedType}`,
+      );
+    }
+
+    // Parse config JSON
+    let config: Record<string, unknown>;
+    try {
+      config = JSON.parse(options.config) as Record<string, unknown>;
+    } catch {
+      throw new UserError(
+        `Invalid JSON in --config: ${options.config}`,
+      );
+    }
+
+    const { repoDir, marker } = await resolveDatastoreForRepo(
+      options.repoDir ?? ".",
+    );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createDatastoreSetupDeps(repoDir);
     const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
     await consumeStream(
-      datastoreSetupS3(ctx, deps, {
-        bucket: options.bucket,
-        prefix: options.prefix,
-        region: options.region,
-        endpoint: options.endpoint,
-        forcePathStyle: options.forcePathStyle ? true : undefined,
+      datastoreSetupExtension(ctx, deps, {
+        type: resolvedType,
+        config,
         repoDir,
         repoId: marker?.repoId,
         skipMigration: !!options.skipMigration,
@@ -133,10 +153,8 @@ const datastoreSetupS3Command = new Command()
     );
   });
 
-/**
- * Sets up a filesystem or S3 datastore.
- */
+/** Configure a datastore for this repository. */
 export const datastoreSetupCommand = new Command()
   .description("Configure a datastore for this repository")
   .command("filesystem", datastoreSetupFilesystemCommand)
-  .command("s3", datastoreSetupS3Command);
+  .command("extension", datastoreSetupExtensionCommand);

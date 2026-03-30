@@ -35,13 +35,6 @@ const BUILT_IN_DATASTORE_TYPES: DatastoreTypeInfo[] = [
       "Store data directly on the local filesystem. This is the default datastore with no remote synchronization.",
     isBuiltIn: true,
   },
-  {
-    type: "s3",
-    name: "Amazon S3",
-    description:
-      "Store data in an Amazon S3 bucket with local cache synchronization. Provides distributed access and collaboration.",
-    isBuiltIn: true,
-  },
 ];
 
 // Register built-in types on module load

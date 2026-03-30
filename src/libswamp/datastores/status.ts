@@ -24,7 +24,6 @@ import {
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
-import { S3DatastoreVerifier } from "../../infrastructure/persistence/s3_datastore_verifier.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -36,10 +35,6 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export interface DatastoreStatusData {
   type: string;
   path?: string;
-  bucket?: string;
-  prefix?: string;
-  region?: string;
-  endpoint?: string;
   healthy: boolean;
   message: string;
   latencyMs: number;
@@ -79,11 +74,8 @@ export function createDatastoreStatusDeps(
           message: "No provider available",
           latencyMs: 0,
         };
-      } else if (config.type === "filesystem") {
-        const verifier = new FilesystemDatastoreVerifier(config.path);
-        return await verifier.verify();
       } else {
-        const verifier = new S3DatastoreVerifier(config);
+        const verifier = new FilesystemDatastoreVerifier(config.path);
         return await verifier.verify();
       }
     },
@@ -110,21 +102,7 @@ export async function* datastoreStatus(
 
       const data: DatastoreStatusData = {
         type: config.type,
-        path: !isCustomDatastoreConfig(config) && config.type === "filesystem"
-          ? config.path
-          : undefined,
-        bucket: !isCustomDatastoreConfig(config) && config.type === "s3"
-          ? config.bucket
-          : undefined,
-        prefix: !isCustomDatastoreConfig(config) && config.type === "s3"
-          ? config.prefix
-          : undefined,
-        region: !isCustomDatastoreConfig(config) && config.type === "s3"
-          ? config.region
-          : undefined,
-        endpoint: !isCustomDatastoreConfig(config) && config.type === "s3"
-          ? config.endpoint
-          : undefined,
+        path: !isCustomDatastoreConfig(config) ? config.path : undefined,
         healthy,
         message,
         latencyMs,

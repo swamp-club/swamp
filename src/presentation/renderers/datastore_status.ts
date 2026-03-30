@@ -42,18 +42,6 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
         if (data.path) {
           lines.push(`  Path:    ${data.path}`);
         }
-        if (data.bucket) {
-          lines.push(`  Bucket:  ${data.bucket}`);
-        }
-        if (data.prefix) {
-          lines.push(`  Prefix:  ${data.prefix}`);
-        }
-        if (data.region) {
-          lines.push(`  Region:  ${data.region}`);
-        }
-        if (data.endpoint) {
-          lines.push(`  Endpoint: ${data.endpoint}`);
-        }
         lines.push(
           `  Health:  ${healthIcon} ${healthText} (${
             Math.round(data.latencyMs)

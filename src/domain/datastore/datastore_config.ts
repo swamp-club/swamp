@@ -69,44 +69,11 @@ export interface FilesystemDatastoreConfig {
 }
 
 /**
- * Value object: S3 connection parameters.
- *
- * Centralizes the fields needed to connect to an S3-compatible object store
- * so that adding a new connection parameter requires updating only this type.
- */
-export interface S3ConnectionConfig {
-  /** S3 bucket name */
-  readonly bucket: string;
-  /** Key prefix within the bucket */
-  readonly prefix?: string;
-  /** AWS region */
-  readonly region?: string;
-  /** Custom S3-compatible endpoint URL (e.g., https://nyc3.digitaloceanspaces.com) */
-  readonly endpoint?: string;
-  /** Use path-style addressing (bucket in path, not subdomain). Default: false. */
-  readonly forcePathStyle?: boolean;
-}
-
-/**
- * S3-based datastore configuration.
- * Data is cached locally and synced to S3.
- */
-export interface S3DatastoreConfig extends S3ConnectionConfig {
-  readonly type: "s3";
-  /** Local cache directory path (defaults to ~/.swamp/repos/{repoId}/) */
-  readonly cachePath: string;
-  /** Which subdirectories belong to the datastore (defaults to DEFAULT_DATASTORE_SUBDIRS) */
-  readonly directories?: string[];
-  /** Gitignore-style patterns to exclude files from the datastore */
-  readonly exclude?: string[];
-}
-
-/**
  * Custom datastore configuration for user-defined datastore types.
  * Resolved eagerly during config resolution via the DatastoreProvider.
  */
 export interface CustomDatastoreConfig {
-  readonly type: string; // anything other than "filesystem" | "s3"
+  readonly type: string; // anything other than "filesystem"
   readonly config: Record<string, unknown>;
   readonly datastorePath: string;
   readonly cachePath?: string;
@@ -119,7 +86,6 @@ export interface CustomDatastoreConfig {
  */
 export type DatastoreConfig =
   | FilesystemDatastoreConfig
-  | S3DatastoreConfig
   | CustomDatastoreConfig;
 
 /**
@@ -128,7 +94,7 @@ export type DatastoreConfig =
 export function isCustomDatastoreConfig(
   config: DatastoreConfig,
 ): config is CustomDatastoreConfig {
-  return config.type !== "filesystem" && config.type !== "s3";
+  return config.type !== "filesystem";
 }
 
 /**

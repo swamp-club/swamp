@@ -86,26 +86,13 @@ Deno.test("parseDatastoreEnvVar: parses filesystem path", async () => {
   }
 });
 
-Deno.test("parseDatastoreEnvVar: parses s3 bucket with prefix", async () => {
-  const config = await parseDatastoreEnvVar(
-    "s3:my-bucket/my-prefix",
-    "test-repo",
+Deno.test("parseDatastoreEnvVar: s3 without extension throws UserError", async () => {
+  // Without the @swamp/s3-datastore extension installed, S3 env vars throw
+  await assertRejects(
+    () => parseDatastoreEnvVar("s3:my-bucket/my-prefix", "test-repo"),
+    Error,
+    "S3 datastore requires the @swamp/s3-datastore extension",
   );
-  // Falls back to built-in S3 config since extension isn't installed in tests
-  assertEquals(config.type, "s3");
-  if (!isCustomDatastoreConfig(config) && config.type === "s3") {
-    assertEquals(config.bucket, "my-bucket");
-    assertEquals(config.prefix, "my-prefix");
-  }
-});
-
-Deno.test("parseDatastoreEnvVar: parses s3 bucket without prefix", async () => {
-  const config = await parseDatastoreEnvVar("s3:my-bucket", "test-repo");
-  assertEquals(config.type, "s3");
-  if (!isCustomDatastoreConfig(config) && config.type === "s3") {
-    assertEquals(config.bucket, "my-bucket");
-    assertEquals(config.prefix, undefined);
-  }
 });
 
 Deno.test("parseDatastoreEnvVar: throws on invalid format", async () => {
@@ -121,14 +108,6 @@ Deno.test("parseDatastoreEnvVar: throws on unknown type", async () => {
     () => parseDatastoreEnvVar("gcs:bucket"),
     Error,
     "Unknown datastore type",
-  );
-});
-
-Deno.test("parseDatastoreEnvVar: throws on invalid S3 bucket name", async () => {
-  await assertRejects(
-    () => parseDatastoreEnvVar("s3:INVALID_BUCKET"),
-    Error,
-    "Invalid S3 bucket name",
   );
 });
 
@@ -196,10 +175,10 @@ Deno.test("resolveDatastoreConfig: marker config used when no env/cli", async ()
 });
 
 // ============================================================================
-// S3 endpoint / forcePathStyle tests
+// S3 marker tests (extension not installed — expect UserError)
 // ============================================================================
 
-Deno.test("resolveDatastoreConfig: S3 marker with endpoint and forcePathStyle", async () => {
+Deno.test("resolveDatastoreConfig: S3 marker without extension throws UserError", async () => {
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01",
@@ -212,35 +191,12 @@ Deno.test("resolveDatastoreConfig: S3 marker with endpoint and forcePathStyle", 
       forcePathStyle: false,
     },
   };
-  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
-  // Falls back to built-in S3 since extension isn't installed in tests
-  assertEquals(config.type, "s3");
-  if (!isCustomDatastoreConfig(config) && config.type === "s3") {
-    assertEquals(config.bucket, "my-space");
-    assertEquals(config.region, "us-east-1");
-    assertEquals(config.endpoint, "https://nyc3.digitaloceanspaces.com");
-    assertEquals(config.forcePathStyle, false);
-  }
-});
-
-Deno.test("resolveDatastoreConfig: S3 marker without endpoint defaults to undefined", async () => {
-  const marker: RepoMarkerData = {
-    swampVersion: "0.1.0",
-    initializedAt: "2024-01-01",
-    repoId: "test-repo",
-    datastore: {
-      type: "s3",
-      bucket: "my-bucket",
-      region: "us-west-2",
-    },
-  };
-  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
-  assertEquals(config.type, "s3");
-  if (!isCustomDatastoreConfig(config) && config.type === "s3") {
-    assertEquals(config.bucket, "my-bucket");
-    assertEquals(config.endpoint, undefined);
-    assertEquals(config.forcePathStyle, undefined);
-  }
+  // Without the @swamp/s3-datastore extension installed, S3 configs throw
+  await assertRejects(
+    () => resolveDatastoreConfig(marker, undefined, "/repo"),
+    Error,
+    "S3 datastore requires the @swamp/s3-datastore extension",
+  );
 });
 
 // ============================================================================
@@ -374,14 +330,15 @@ Deno.test("isCustomDatastoreConfig: returns false for filesystem", () => {
   );
 });
 
-Deno.test("isCustomDatastoreConfig: returns false for s3", () => {
+Deno.test("isCustomDatastoreConfig: returns true for s3 (now custom)", () => {
+  // After Phase 3, S3 is no longer a built-in type — it's custom
   assertEquals(
     isCustomDatastoreConfig({
       type: "s3",
-      bucket: "b",
-      cachePath: "/tmp",
+      config: { bucket: "b" },
+      datastorePath: "/tmp",
     }),
-    false,
+    true,
   );
 });
 

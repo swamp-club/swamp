@@ -13,17 +13,17 @@ machine-readable output.
 
 ## Quick Reference
 
-| Task                       | Command                                                 |
-| -------------------------- | ------------------------------------------------------- |
-| Initialize repository      | `swamp repo init [path] --json`                         |
-| Upgrade repository         | `swamp repo upgrade [path] --json`                      |
-| Start web interface        | `swamp repo webapp [path] --json`                       |
-| Show datastore status      | `swamp datastore status --json`                         |
-| Setup filesystem datastore | `swamp datastore setup filesystem --path <path> --json` |
-| Setup S3 datastore         | `swamp datastore setup s3 --bucket <bucket> --json`     |
-| Sync with S3               | `swamp datastore sync --json`                           |
-| Check lock status          | `swamp datastore lock status --json`                    |
-| Force-release stuck lock   | `swamp datastore lock release --force --json`           |
+| Task                       | Command                                                           |
+| -------------------------- | ----------------------------------------------------------------- |
+| Initialize repository      | `swamp repo init [path] --json`                                   |
+| Upgrade repository         | `swamp repo upgrade [path] --json`                                |
+| Start web interface        | `swamp repo webapp [path] --json`                                 |
+| Show datastore status      | `swamp datastore status --json`                                   |
+| Setup filesystem datastore | `swamp datastore setup filesystem --path <path> --json`           |
+| Setup extension datastore  | `swamp datastore setup extension <type> --config '<json>' --json` |
+| Sync remote datastore      | `swamp datastore sync --json`                                     |
+| Check lock status          | `swamp datastore lock status --json`                              |
+| Force-release stuck lock   | `swamp datastore lock release --force --json`                     |
 
 ## Repository Structure
 
@@ -156,17 +156,20 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-data --json
 Migrates existing `.swamp/` runtime data to the new path and updates
 `.swamp.yaml`. Use `--skip-migration` to skip the data copy.
 
-### Setting Up an S3 Datastore
+### Setting Up an Extension Datastore (e.g., S3)
 
-Store runtime data in S3 for team collaboration:
+Store runtime data in S3 for team collaboration using the `@swamp/s3-datastore`
+extension:
 
 ```bash
-swamp datastore setup s3 --bucket my-bucket --prefix my-project --region us-east-1 --json
+swamp datastore setup extension @swamp/s3-datastore \
+  --config '{"bucket":"my-bucket","prefix":"my-project","region":"us-east-1"}' --json
 ```
 
-Pushes existing local data to S3 and updates `.swamp.yaml`. Subsequent commands
-automatically pull before execution and push after. Use `--skip-migration` to
-skip the initial push.
+Verifies the backend is accessible, pushes existing local data, and updates
+`.swamp.yaml`. Subsequent commands automatically pull before execution and push
+after. Use `--skip-migration` to skip the initial push. Legacy type name `s3` is
+auto-remapped to `@swamp/s3-datastore`.
 
 ### Migrating Between Datastores
 

@@ -22,21 +22,18 @@ import { join } from "@std/path";
 import {
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
-  type S3ConnectionConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import {
   migrateDatastore,
   verifyMigration,
 } from "../../domain/datastore/datastore_migration_service.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { S3CacheSyncService } from "../../infrastructure/persistence/s3_cache_sync.ts";
-import { S3Client } from "../../infrastructure/persistence/s3_client.ts";
-import { S3DatastoreVerifier } from "../../infrastructure/persistence/s3_datastore_verifier.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -45,8 +42,6 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export interface DatastoreSetupData {
   type: string;
   path?: string;
-  bucket?: string;
-  prefix?: string;
   filesCopied: number;
   bytesCopied: number;
   directoriesMigrated: string[];
@@ -67,30 +62,12 @@ export interface DatastoreSetupFilesystemInput {
   skipMigration: boolean;
 }
 
-/** Input for S3 datastore setup. */
-export interface DatastoreSetupS3Input {
-  bucket: string;
-  prefix?: string;
-  region?: string;
-  endpoint?: string;
-  forcePathStyle?: boolean;
-  repoDir: string;
-  repoId?: string;
-  skipMigration: boolean;
-}
-
 /** Dependencies for datastore setup operations. */
 export interface DatastoreSetupDeps {
   requireUpgradedRepo: (repoDir: string) => Promise<void>;
   verifyPath: (
     path: string,
   ) => Promise<{ healthy: boolean; message: string }>;
-  verifyS3: (
-    config: S3ConnectionConfig,
-  ) => Promise<{ healthy: boolean; message: string }>;
-  checkS3DatastoreExists: (
-    config: S3ConnectionConfig,
-  ) => Promise<boolean>;
   ensureDir: (path: string) => Promise<void>;
   getDatastoreDirectories: (config: {
     type: string;
@@ -116,12 +93,6 @@ export interface DatastoreSetupDeps {
     repoDir: string,
     datastoreConfig: Record<string, unknown>,
   ) => Promise<void>;
-  pushAllToS3: (
-    config: S3ConnectionConfig,
-    cachePath: string,
-  ) => Promise<number>;
-  getSwampDataDir: () => string;
-  getCachePath: (repoId: string) => string;
   collapseEnvVars: (path: string) => string;
 }
 
@@ -238,15 +209,24 @@ export async function* datastoreSetupFilesystem(
   );
 }
 
-/** Sets up an S3 datastore. */
-export async function* datastoreSetupS3(
+/** Input for extension datastore setup. */
+export interface DatastoreSetupExtensionInput {
+  type: string;
+  config: Record<string, unknown>;
+  repoDir: string;
+  repoId?: string;
+  skipMigration: boolean;
+}
+
+/** Sets up an extension-provided datastore. */
+export async function* datastoreSetupExtension(
   ctx: LibSwampContext,
   deps: DatastoreSetupDeps,
-  input: DatastoreSetupS3Input,
+  input: DatastoreSetupExtensionInput,
 ): AsyncIterable<DatastoreSetupEvent> {
   yield* withGeneratorSpan(
     "swamp.datastore.setup",
-    { "datastore.type": "s3" },
+    { "datastore.type": input.type },
     (async function* () {
       yield { kind: "validating" };
 
@@ -263,94 +243,99 @@ export async function* datastoreSetupS3(
         return;
       }
 
-      // Build connection config once from input
-      const s3Conn: S3ConnectionConfig = {
-        bucket: input.bucket,
-        prefix: input.prefix,
-        region: input.region,
-        endpoint: input.endpoint,
-        forcePathStyle: input.forcePathStyle,
-      };
+      // Look up the extension type in the registry
+      const typeInfo = datastoreTypeRegistry.get(input.type);
+      if (!typeInfo?.createProvider) {
+        yield {
+          kind: "error",
+          error: {
+            code: "validation_failed",
+            message:
+              `Datastore type "${input.type}" is not registered or has no provider. ` +
+              `Install it with: swamp extension pull ${input.type}`,
+          },
+        };
+        return;
+      }
 
-      // Verify S3 bucket is accessible
-      const health = await deps.verifyS3(s3Conn);
+      // Validate config against extension schema
+      if (typeInfo.configSchema) {
+        const result = typeInfo.configSchema.safeParse(input.config);
+        if (!result.success) {
+          yield {
+            kind: "error",
+            error: {
+              code: "validation_failed",
+              message:
+                `Invalid config for "${input.type}": ${result.error.message}`,
+            },
+          };
+          return;
+        }
+      }
+
+      // Create provider and verify health
+      const provider = typeInfo.createProvider(input.config);
+      const verifier = provider.createVerifier();
+      const health = await verifier.verify();
       if (!health.healthy) {
         yield {
           kind: "error",
           error: {
             code: "validation_failed",
-            message: `S3 bucket is not accessible: ${health.message}`,
+            message: `Datastore is not accessible: ${health.message}`,
           },
         };
         return;
       }
 
-      // Check if this S3 location already has datastore data
-      const exists = await deps.checkS3DatastoreExists(s3Conn);
-      if (exists) {
-        const prefixStr = input.prefix ?? "";
-        yield {
-          kind: "error",
-          error: {
-            code: "already_exists",
-            message:
-              `S3 location s3://${input.bucket}/${prefixStr} already contains a datastore. ` +
-              `If you want to share this datastore, configure it in .swamp.yaml directly:\n\n` +
-              `  datastore:\n` +
-              `    type: s3\n` +
-              `    bucket: ${input.bucket}\n` +
-              (input.prefix ? `    prefix: ${input.prefix}\n` : "") +
-              (input.region ? `    region: ${input.region}\n` : "") +
-              `\nThen run 'swamp datastore sync --pull' to populate the local cache.`,
-          },
-        };
-        return;
-      }
-
-      // Update .swamp.yaml with S3 datastore config
+      // Update .swamp.yaml with extension datastore config
       await deps.updateRepoConfig(input.repoDir, {
-        type: "s3",
-        bucket: input.bucket,
-        prefix: input.prefix,
-        region: input.region,
-        endpoint: input.endpoint,
-        forcePathStyle: input.forcePathStyle,
+        type: input.type,
+        config: input.config,
       });
 
-      // Migrate existing data to S3
-      let filesPushed = 0;
+      // Migrate existing data if the extension supports sync
       const errors: string[] = [];
+      let filesCopied = 0;
 
-      if (!input.skipMigration) {
+      if (!input.skipMigration && provider.createSyncService) {
         yield { kind: "migrating" };
 
-        // Compute cache path
-        const cachePath = deps.getCachePath(input.repoId ?? "unknown");
+        const cachePath = provider.resolveCachePath?.(input.repoDir) ??
+          join(getSwampDataDir(), "repos", input.repoId ?? "unknown");
         const sourceDir = `${input.repoDir}/.swamp`;
-        const config = { type: "filesystem" as const, path: cachePath };
 
-        // Migrate local .swamp/ to cache, then push to S3
+        // Migrate local .swamp/ data to cache path
+        const config = { type: "filesystem" as const, path: cachePath };
         const migrationResult = await deps.migrateData(
           sourceDir,
           cachePath,
           config,
         );
         errors.push(...migrationResult.errors);
+        filesCopied = migrationResult.filesCopied;
 
-        // Push cache to S3
-        ctx.logger.debug`Pushing data to S3...`;
-        try {
-          filesPushed = await deps.pushAllToS3(s3Conn, cachePath);
-          ctx.logger.debug`Pushed ${filesPushed} file(s) to S3`;
-        } catch (error) {
-          errors.push(
-            `Failed to push to S3: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
+        // Push cache to remote via sync service
+        if (migrationResult.filesCopied > 0) {
+          ctx.logger.debug`Pushing data to remote datastore...`;
+          try {
+            const syncService = provider.createSyncService(
+              input.repoDir,
+              cachePath,
+            );
+            await syncService.pushChanged();
+            ctx.logger.debug`Push complete`;
+          } catch (error) {
+            errors.push(
+              `Failed to push to remote: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
         }
 
-        // Clean up migrated directories from local .swamp/ on success
+        // Clean up migrated directories from .swamp/ on success
         if (
           errors.length === 0 && migrationResult.filesCopied > 0 &&
           migrationResult.directoriesMigrated.length > 0
@@ -365,10 +350,8 @@ export async function* datastoreSetupS3(
       yield {
         kind: "completed",
         data: {
-          type: "s3",
-          bucket: input.bucket,
-          prefix: input.prefix,
-          filesCopied: filesPushed,
+          type: input.type,
+          filesCopied,
           bytesCopied: 0,
           directoriesMigrated: [],
           errors,
@@ -434,19 +417,6 @@ export function createDatastoreSetupDeps(
       const verifier = new FilesystemDatastoreVerifier(path);
       return await verifier.verify();
     },
-    verifyS3: async (config) => {
-      const verifier = new S3DatastoreVerifier(config);
-      return await verifier.verify();
-    },
-    checkS3DatastoreExists: async (config) => {
-      const s3 = new S3Client(config);
-      try {
-        await s3.getObject(".datastore-index.json");
-        return true;
-      } catch {
-        return false;
-      }
-    },
     ensureDir,
     getDatastoreDirectories: (config) =>
       getDatastoreDirectories(config as FilesystemDatastoreConfig),
@@ -484,13 +454,6 @@ export function createDatastoreSetupDeps(
         await markerRepo.write(repoPath, marker);
       }
     },
-    pushAllToS3: async (config, cachePath) => {
-      const s3 = new S3Client(config);
-      const syncService = new S3CacheSyncService(s3, cachePath);
-      return await syncService.pushAll();
-    },
-    getSwampDataDir,
-    getCachePath: (repoId: string) => join(getSwampDataDir(), "repos", repoId),
     collapseEnvVars,
   };
 }

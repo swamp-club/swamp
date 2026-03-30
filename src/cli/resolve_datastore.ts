@@ -24,7 +24,9 @@
  *
  * Env var format:
  *   - `SWAMP_DATASTORE=filesystem:/path/to/dir`
- *   - `SWAMP_DATASTORE=s3:bucket-name/prefix`
+ *   - `SWAMP_DATASTORE=@scope/type:{"key":"value"}`
+ *
+ * Legacy `s3:bucket/prefix` format is auto-remapped to the `@swamp/s3-datastore` extension.
  *
  * Default: filesystem datastore at `{repoDir}/.swamp/` (full backward compatibility)
  */
@@ -50,18 +52,6 @@ export const RENAMED_DATASTORE_TYPES: Record<string, string> = {
   "s3": "@swamp/s3-datastore",
 };
 
-/** S3 bucket naming rules: 3-63 chars, lowercase alphanumeric, hyphens, dots. */
-const S3_BUCKET_NAME_RE = /^[a-z0-9][a-z0-9.\-]{1,61}[a-z0-9]$/;
-
-function validateBucketName(bucket: string): void {
-  if (!S3_BUCKET_NAME_RE.test(bucket)) {
-    throw new Error(
-      `Invalid S3 bucket name: "${bucket}". ` +
-        `Bucket names must be 3-63 characters, lowercase, and contain only letters, numbers, hyphens, and dots.`,
-    );
-  }
-}
-
 /**
  * Parses the SWAMP_DATASTORE env var format into a DatastoreConfig.
  *
@@ -79,7 +69,7 @@ export async function parseDatastoreEnvVar(
   if (colonIdx === -1) {
     throw new Error(
       `Invalid SWAMP_DATASTORE format: "${envValue}". ` +
-        `Expected "filesystem:/path/to/dir" or "s3:bucket-name/prefix".`,
+        `Expected "filesystem:/path/to/dir" or "@scope/type:{...}".`,
     );
   }
 
@@ -102,7 +92,6 @@ export async function parseDatastoreEnvVar(
     if (type === "s3") {
       const slashIdx = value.indexOf("/");
       const bucket = slashIdx === -1 ? value : value.slice(0, slashIdx);
-      validateBucketName(bucket);
       const prefix = slashIdx === -1 ? undefined : value.slice(slashIdx + 1);
 
       // Auto-resolve the extension if not already loaded
@@ -135,13 +124,10 @@ export async function parseDatastoreEnvVar(
         };
       }
 
-      // Fallback to built-in S3 config if extension not available
-      const cachePath = join(
-        getSwampDataDir(),
-        "repos",
-        repoId ?? "unknown",
+      throw new UserError(
+        `S3 datastore requires the @swamp/s3-datastore extension. ` +
+          `Install it with: swamp extension pull @swamp/s3-datastore`,
       );
-      return { type: "s3", bucket, prefix, cachePath };
     }
 
     type = renamedTo;
@@ -165,7 +151,7 @@ export async function parseDatastoreEnvVar(
   if (!typeInfo.createProvider) {
     throw new UserError(
       `Datastore type "${type}" is a built-in type without a provider. ` +
-        `Use the built-in format (e.g., "filesystem:/path" or "s3:bucket/prefix").`,
+        `Use the built-in format (e.g., "filesystem:/path").`,
     );
   }
 
@@ -237,7 +223,7 @@ export async function resolveDatastoreConfig(
   // 3. .swamp.yaml datastore config
   if (marker?.datastore) {
     const ds = marker.datastore;
-    let dsType = ds.type;
+    const dsType = ds.type;
 
     // Remap renamed types (e.g., "s3" → "@swamp/s3-datastore")
     const renamedTo = RENAMED_DATASTORE_TYPES[dsType];
@@ -286,33 +272,11 @@ export async function resolveDatastoreConfig(
         };
       }
 
-      // Fallback to built-in S3 handling if extension not available
-      dsType = ds.type;
-    }
-
-    if (dsType === "s3") {
-      if (!ds.bucket) {
-        throw new Error(
-          "S3 datastore config in .swamp.yaml requires a 'bucket' field.",
-        );
-      }
-      validateBucketName(ds.bucket);
-      const cachePath = join(
-        getSwampDataDir(),
-        "repos",
-        repoId ?? "unknown",
+      // Extension not available — error out
+      throw new UserError(
+        `S3 datastore requires the @swamp/s3-datastore extension. ` +
+          `Install it with: swamp extension pull @swamp/s3-datastore`,
       );
-      return {
-        type: "s3",
-        bucket: ds.bucket,
-        prefix: ds.prefix,
-        region: ds.region,
-        endpoint: ds.endpoint,
-        forcePathStyle: ds.forcePathStyle,
-        cachePath,
-        directories: ds.directories,
-        exclude: ds.exclude,
-      };
     }
 
     if (dsType === "filesystem") {

@@ -20,8 +20,6 @@
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
-import { S3CacheSyncService } from "../../infrastructure/persistence/s3_cache_sync.ts";
-import { S3Client } from "../../infrastructure/persistence/s3_client.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -110,38 +108,11 @@ export function createDatastoreSyncDeps(
     };
   }
 
-  if (config.type !== "s3") {
-    return makeUnsupportedDeps(
-      config.type,
-      "Datastore sync is only available for S3 or sync-capable custom datastores. " +
-        `Current datastore type: ${config.type}`,
-    );
-  }
-
-  const s3 = new S3Client(config);
-  const syncService = new S3CacheSyncService(s3, config.cachePath);
-
-  return {
-    validateSyncSupport: () =>
-      Promise.resolve({ supported: true, type: config.type }),
-    pushSync: async () => {
-      const count = await syncService.pushAll();
-      return { filesPushed: count };
-    },
-    pullSync: async () => {
-      await syncService.pullIndex();
-      const count = await syncService.pullAll();
-      return { filesPulled: count };
-    },
-    fullSync: async () => {
-      const result = await syncService.sync();
-      return {
-        filesPulled: result.filesPulled,
-        filesPushed: result.filesPushed,
-        errors: result.errors,
-      };
-    },
-  };
+  return makeUnsupportedDeps(
+    config.type,
+    "Datastore sync is only available for sync-capable custom datastores. " +
+      `Current datastore type: ${config.type}`,
+  );
 }
 
 function makeUnsupportedDeps(

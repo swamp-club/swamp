@@ -48,9 +48,6 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         if (data.path) {
           lines.push(`  Path:     ${data.path}`);
         }
-        if (data.bucket) {
-          lines.push(`  Bucket:   ${data.bucket}`);
-        }
         lines.push(
           `  Files:    ${data.filesCopied} copied (${
             formatBytes(data.bytesCopied)
