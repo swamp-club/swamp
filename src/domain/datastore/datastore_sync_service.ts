@@ -20,8 +20,8 @@
 /**
  * Interface for datastore synchronization services.
  *
- * Extracted from S3CacheSyncService to allow user-defined datastores
- * to provide their own sync implementations.
+ * Extension datastores implement this interface to provide
+ * bidirectional sync between a local cache and a remote backend.
  */
 export interface DatastoreSyncService {
   /** Pull changed files from the remote datastore to the local cache. */

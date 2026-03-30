@@ -289,12 +289,6 @@ export async function* datastoreSetupExtension(
         return;
       }
 
-      // Update .swamp.yaml with extension datastore config
-      await deps.updateRepoConfig(input.repoDir, {
-        type: input.type,
-        config: input.config,
-      });
-
       // Migrate existing data if the extension supports sync
       const errors: string[] = [];
       let filesCopied = 0;
@@ -345,6 +339,16 @@ export async function* datastoreSetupExtension(
             migrationResult.directoriesMigrated,
           );
         }
+      }
+
+      // Update .swamp.yaml only after migration succeeds (or is skipped).
+      // This avoids leaving the config pointing at an extension datastore
+      // when data never made it to the remote.
+      if (errors.length === 0) {
+        await deps.updateRepoConfig(input.repoDir, {
+          type: input.type,
+          config: input.config,
+        });
       }
 
       yield {

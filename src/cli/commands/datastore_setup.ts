@@ -96,7 +96,7 @@ const datastoreSetupExtensionCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(
     "--config <config:string>",
-    "JSON configuration for the datastore extension",
+    'JSON config object for the extension (e.g., \'{"bucket":"name","region":"us-east-1"}\')',
     { required: true },
   )
   .option("--skip-migration", "Skip migrating existing data")
@@ -111,9 +111,15 @@ const datastoreSetupExtensionCommand = new Command()
     const renamedTo = RENAMED_DATASTORE_TYPES[type];
     const resolvedType = renamedTo ?? type;
 
-    // Auto-resolve the extension if needed
+    // Auto-resolve the extension if needed — catch network errors so
+    // the registry check below produces a clean UserError instead of
+    // an opaque stack trace.
     if (resolvedType.startsWith("@")) {
-      await resolveDatastoreType(resolvedType, getAutoResolver());
+      try {
+        await resolveDatastoreType(resolvedType, getAutoResolver());
+      } catch {
+        // Fall through to the registry check which has a user-friendly error
+      }
     }
 
     if (!datastoreTypeRegistry.has(resolvedType)) {
@@ -153,8 +159,24 @@ const datastoreSetupExtensionCommand = new Command()
     );
   });
 
+const datastoreSetupS3DeprecatedCommand = new Command()
+  .description(
+    "(Removed) Use: swamp datastore setup extension @swamp/s3-datastore --config '{...}'",
+  )
+  .arguments("[...args:string]")
+  .action(() => {
+    throw new UserError(
+      `The "datastore setup s3" command has been removed.\n\n` +
+        `S3 datastores are now provided by the @swamp/s3-datastore extension.\n` +
+        `Use the new generic command instead:\n\n` +
+        `  swamp datastore setup extension @swamp/s3-datastore \\\n` +
+        `    --config '{"bucket":"my-bucket","region":"us-east-1"}'`,
+    );
+  });
+
 /** Configure a datastore for this repository. */
 export const datastoreSetupCommand = new Command()
   .description("Configure a datastore for this repository")
   .command("filesystem", datastoreSetupFilesystemCommand)
-  .command("extension", datastoreSetupExtensionCommand);
+  .command("extension", datastoreSetupExtensionCommand)
+  .command("s3", datastoreSetupS3DeprecatedCommand);

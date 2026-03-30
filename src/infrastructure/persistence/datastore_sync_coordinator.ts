@@ -38,7 +38,7 @@ import { getTracer, SpanStatusCode } from "../tracing/mod.ts";
 
 /**
  * Common interface for sync services compatible with the coordinator.
- * Both S3CacheSyncService and DatastoreSyncService satisfy this.
+ * Any DatastoreSyncService implementation satisfies this.
  */
 export interface SyncableService {
   pullChanged(): Promise<number | void>;
