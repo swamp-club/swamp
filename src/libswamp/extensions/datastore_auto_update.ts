@@ -77,13 +77,18 @@ export async function maybeAutoUpdateDatastoreExtension(
     // Get installed version
     const installedVersion = await deps.getInstalledVersion(extensionName);
     if (!installedVersion) {
-      // Extension was auto-resolved on first use — already at latest
+      logger
+        .debug`No installed version found for ${extensionName}, skipping auto-update`;
       return null;
     }
+
+    logger
+      .debug`Checking ${extensionName} for updates (installed: ${installedVersion})`;
 
     // Query registry
     const latestVersion = await deps.getLatestVersion(extensionName);
     if (!latestVersion) {
+      logger.debug`Registry returned no version for ${extensionName}`;
       // Registry unreachable — update cache to avoid retrying immediately
       cache[extensionName] = {
         checkedAt: now.toISOString(),
