@@ -234,6 +234,34 @@ Extensions use Calendar Versioning: `YYYY.MM.DD.MICRO`
 The date must be today or earlier. If you push a version that already exists,
 the CLI will offer to bump the `MICRO` component automatically.
 
+### Determining the Next Version
+
+Use `swamp extension version` to query the registry and compute the correct next
+version:
+
+```bash
+# By extension name
+swamp extension version @myorg/my-ext --json
+
+# By manifest file
+swamp extension version --manifest manifest.yaml --json
+```
+
+**JSON output:**
+
+```json
+{
+  "extensionName": "@myorg/my-ext",
+  "currentPublished": "2026.03.25.3",
+  "publishedAt": "2026-03-25T14:30:00Z",
+  "nextVersion": "2026.03.30.1"
+}
+```
+
+- Use `nextVersion` as the new `version` in your model and manifest
+- Use `currentPublished` as the `fromVersion` in upgrade chain entries
+- If `currentPublished` is `null`, the extension has never been published
+
 ## Common Errors and Fixes
 
 | Error                           | Fix                                                                     |

@@ -56,6 +56,7 @@ than wrapping CLI commands.
 | Create instance     | `swamp model create @myorg/my-model my-instance --json`              |
 | Create with args    | `swamp model create @myorg/my-model inst --global-arg message=hi -j` |
 | Run method          | `swamp model method run my-instance run --json`                      |
+| Next version        | `swamp extension version @myorg/my-model --json`                     |
 | Create manifest     | Create `manifest.yaml` with model/workflow entries                   |
 | Format extension    | `swamp extension fmt manifest.yaml --json`                           |
 | Check formatting    | `swamp extension fmt manifest.yaml --check --json`                   |
@@ -123,6 +124,21 @@ export const model = {
 | `checks`          | No       | Pre-flight checks run before mutating methods                            |
 | `reports`         | No       | Inline report definitions (see `swamp-report`)                           |
 | `upgrades`        | No       | Version upgrade chain ([references/upgrades.md](references/upgrades.md)) |
+
+## CalVer Versioning
+
+Extensions use Calendar Versioning: `YYYY.MM.DD.MICRO` (e.g., `2026.03.30.1`).
+
+**To determine the correct next version**, use the CLI:
+
+```bash
+swamp extension version @myorg/my-model --json
+```
+
+This queries the registry for the latest published version and computes the next
+version automatically. Use the `nextVersion` field from the JSON output as the
+new `version` in your model. Use the `currentPublished` field as the
+`fromVersion` in your upgrade chain entry.
 
 ## Version Upgrades
 
@@ -499,7 +515,9 @@ swamp extension push manifest.yaml -y --json        # Skip confirmation prompts
 The manifest `name` collective must match your authenticated username. Content
 paths are relative to their respective directories (`extensions/models/`,
 `extensions/vaults/`, `extensions/drivers/`, `extensions/datastores/`). Local
-imports are auto-resolved.
+imports are auto-resolved. **All manifest paths must be relative and
+downward-only — paths containing `..` components or starting with `/` are
+rejected during push to prevent broken archives.**
 
 For the full manifest schema, safety rules, CalVer versioning, and
 troubleshooting, see [references/publishing.md](references/publishing.md).

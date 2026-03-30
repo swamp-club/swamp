@@ -484,6 +484,14 @@ export {
 } from "./extensions/update.ts";
 export type { ExtensionUpdateResult } from "../domain/extensions/extension_update_service.ts";
 export {
+  createExtensionVersionDeps,
+  extensionVersion,
+  type ExtensionVersionData,
+  type ExtensionVersionDeps,
+  type ExtensionVersionEvent,
+  type ExtensionVersionInput,
+} from "./extensions/version.ts";
+export {
   type DatastoreAutoUpdateDeps,
   type DatastoreAutoUpdateResult,
   maybeAutoUpdateDatastoreExtension,
