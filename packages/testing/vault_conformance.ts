@@ -18,11 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // deno-lint-ignore-file no-import-prefix
-import {
-  assertEquals,
-  assertExists,
-  assertStringIncludes,
-} from "jsr:@std/assert@1.0.19";
+import { assertEquals, assertExists } from "jsr:@std/assert@1.0.19";
 import type { VaultProvider } from "./vault_types.ts";
 
 /**
@@ -219,17 +215,25 @@ export async function assertVaultConformance(
     await provider.put(testKey2, "conformance-value-2");
     createdKeys.push(testKey2);
 
+    // re-read first key to confirm second write didn't clobber it
+    const value1AfterKey2 = await provider.get(testKey1);
+    assertEquals(
+      value1AfterKey2,
+      "conformance-value-updated",
+      "get(key1) must still return key1's value after writing key2",
+    );
+
     // list includes stored keys
     const keys = await provider.list();
     assertEquals(Array.isArray(keys), true, "list() must return an array");
-    assertStringIncludes(
-      keys.join(","),
-      testKey1,
+    assertEquals(
+      keys.includes(testKey1),
+      true,
       `list() must include "${testKey1}"`,
     );
-    assertStringIncludes(
-      keys.join(","),
-      testKey2,
+    assertEquals(
+      keys.includes(testKey2),
+      true,
       `list() must include "${testKey2}"`,
     );
 

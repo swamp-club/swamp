@@ -187,7 +187,9 @@ export function createReportTestContext(
         a.data.name === dataName &&
         (version === undefined || a.data.version === version)
       );
-      return Promise.resolve(match?.content ?? null);
+      return Promise.resolve(
+        match?.content ? new Uint8Array(match.content) : null,
+      );
     },
 
     findAllForModel(

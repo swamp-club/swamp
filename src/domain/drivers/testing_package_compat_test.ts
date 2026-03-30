@@ -100,7 +100,11 @@ function _checkExecutionResultFields(result: TestingExecutionResult) {
   const _followUpActions: CanonicalExecutionResult["followUpActions"] =
     result.followUpActions;
 
-  void [_status, _error, _logs, _durationMs, _followUpActions];
+  // outputs field — uses DriverOutput with DataHandle (branded DataId)
+  // so verify the array exists, not full assignability
+  const _outputs: TestingExecutionResult["outputs"] = result.outputs;
+
+  void [_status, _error, _logs, _durationMs, _followUpActions, _outputs];
 }
 
 // ExecutionDriver: verify interface shape.
@@ -108,8 +112,10 @@ function _checkExecutionDriverFields(driver: TestingExecutionDriver) {
   const _type: CanonicalExecutionDriver["type"] = driver.type;
   const _initialize: CanonicalExecutionDriver["initialize"] = driver.initialize;
   const _shutdown: CanonicalExecutionDriver["shutdown"] = driver.shutdown;
+  // execute is the most important method — verify it exists
+  const _execute: TestingExecutionDriver["execute"] = driver.execute;
 
-  void [_type, _initialize, _shutdown];
+  void [_type, _initialize, _shutdown, _execute];
 }
 
 Deno.test("testing package driver types: compile-time compatibility check", () => {

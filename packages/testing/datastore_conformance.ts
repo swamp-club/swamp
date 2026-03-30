@@ -287,22 +287,29 @@ export async function assertLockConformance(
   try {
     const info = await lock.inspect();
     assertExists(info, "lock must be held after acquire");
+    assertExists(
+      info!.nonce,
+      "lock info must include a nonce for forceRelease conformance",
+    );
+    assertEquals(
+      typeof info!.nonce,
+      "string",
+      "lock info nonce must be a string",
+    );
 
-    if (info && info.nonce) {
-      const released = await lock.forceRelease(info.nonce);
-      assertEquals(
-        released,
-        true,
-        "forceRelease with correct nonce must return true",
-      );
+    const released = await lock.forceRelease(info!.nonce!);
+    assertEquals(
+      released,
+      true,
+      "forceRelease with correct nonce must return true",
+    );
 
-      const infoAfterForce = await lock.inspect();
-      assertEquals(
-        infoAfterForce,
-        null,
-        "lock must be released after forceRelease",
-      );
-    }
+    const infoAfterForce = await lock.inspect();
+    assertEquals(
+      infoAfterForce,
+      null,
+      "lock must be released after forceRelease",
+    );
   } finally {
     // Ensure cleanup even if forceRelease didn't work
     try {
@@ -320,6 +327,13 @@ export async function assertLockConformance(
       released,
       false,
       "forceRelease with wrong nonce must return false",
+    );
+
+    // Verify lock is still held after wrong-nonce forceRelease
+    const stillHeld = await lock.inspect();
+    assertExists(
+      stillHeld,
+      "lock must remain held after wrong-nonce forceRelease",
     );
   } finally {
     await lock.release();
