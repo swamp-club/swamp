@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   parseDatastoreEnvVar,
+  RENAMED_DATASTORE_TYPES,
   resolveDatastoreConfig,
 } from "./resolve_datastore.ts";
 import {
@@ -77,16 +78,20 @@ function ensureTestType(
   }
 }
 
-Deno.test("parseDatastoreEnvVar - parses filesystem path", () => {
-  const config = parseDatastoreEnvVar("filesystem:/data/my-project");
+Deno.test("parseDatastoreEnvVar: parses filesystem path", async () => {
+  const config = await parseDatastoreEnvVar("filesystem:/data/my-project");
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
     assertEquals(config.path, "/data/my-project");
   }
 });
 
-Deno.test("parseDatastoreEnvVar - parses s3 bucket with prefix", () => {
-  const config = parseDatastoreEnvVar("s3:my-bucket/my-prefix", "test-repo");
+Deno.test("parseDatastoreEnvVar: parses s3 bucket with prefix", async () => {
+  const config = await parseDatastoreEnvVar(
+    "s3:my-bucket/my-prefix",
+    "test-repo",
+  );
+  // Falls back to built-in S3 config since extension isn't installed in tests
   assertEquals(config.type, "s3");
   if (!isCustomDatastoreConfig(config) && config.type === "s3") {
     assertEquals(config.bucket, "my-bucket");
@@ -94,8 +99,8 @@ Deno.test("parseDatastoreEnvVar - parses s3 bucket with prefix", () => {
   }
 });
 
-Deno.test("parseDatastoreEnvVar - parses s3 bucket without prefix", () => {
-  const config = parseDatastoreEnvVar("s3:my-bucket", "test-repo");
+Deno.test("parseDatastoreEnvVar: parses s3 bucket without prefix", async () => {
+  const config = await parseDatastoreEnvVar("s3:my-bucket", "test-repo");
   assertEquals(config.type, "s3");
   if (!isCustomDatastoreConfig(config) && config.type === "s3") {
     assertEquals(config.bucket, "my-bucket");
@@ -103,43 +108,43 @@ Deno.test("parseDatastoreEnvVar - parses s3 bucket without prefix", () => {
   }
 });
 
-Deno.test("parseDatastoreEnvVar - throws on invalid format", () => {
-  assertThrows(
+Deno.test("parseDatastoreEnvVar: throws on invalid format", async () => {
+  await assertRejects(
     () => parseDatastoreEnvVar("invalid"),
     Error,
     "Invalid SWAMP_DATASTORE format",
   );
 });
 
-Deno.test("parseDatastoreEnvVar - throws on unknown type", () => {
-  assertThrows(
+Deno.test("parseDatastoreEnvVar: throws on unknown type", async () => {
+  await assertRejects(
     () => parseDatastoreEnvVar("gcs:bucket"),
     Error,
     "Unknown datastore type",
   );
 });
 
-Deno.test("parseDatastoreEnvVar - throws on invalid S3 bucket name", () => {
-  assertThrows(
+Deno.test("parseDatastoreEnvVar: throws on invalid S3 bucket name", async () => {
+  await assertRejects(
     () => parseDatastoreEnvVar("s3:INVALID_BUCKET"),
     Error,
     "Invalid S3 bucket name",
   );
 });
 
-Deno.test("resolveDatastoreConfig - default is filesystem at .swamp/", () => {
-  const config = resolveDatastoreConfig(null, undefined, "/repo");
+Deno.test("resolveDatastoreConfig: default is filesystem at .swamp/", async () => {
+  const config = await resolveDatastoreConfig(null, undefined, "/repo");
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
     assertEquals(config.path, "/repo/.swamp");
   }
 });
 
-Deno.test("resolveDatastoreConfig - env var takes priority", () => {
+Deno.test("resolveDatastoreConfig: env var takes priority", async () => {
   const originalEnv = Deno.env.get("SWAMP_DATASTORE");
   try {
     Deno.env.set("SWAMP_DATASTORE", "filesystem:/custom/path");
-    const config = resolveDatastoreConfig(null, undefined, "/repo");
+    const config = await resolveDatastoreConfig(null, undefined, "/repo");
     assertEquals(config.type, "filesystem");
     if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
       assertEquals(config.path, "/custom/path");
@@ -153,14 +158,14 @@ Deno.test("resolveDatastoreConfig - env var takes priority", () => {
   }
 });
 
-Deno.test("resolveDatastoreConfig - CLI arg overrides marker", () => {
+Deno.test("resolveDatastoreConfig: CLI arg overrides marker", async () => {
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01",
     repoId: "test-repo",
     datastore: { type: "filesystem", path: "/marker-path" },
   };
-  const config = resolveDatastoreConfig(
+  const config = await resolveDatastoreConfig(
     marker,
     "filesystem:/cli-path",
     "/repo",
@@ -171,7 +176,7 @@ Deno.test("resolveDatastoreConfig - CLI arg overrides marker", () => {
   }
 });
 
-Deno.test("resolveDatastoreConfig - marker config used when no env/cli", () => {
+Deno.test("resolveDatastoreConfig: marker config used when no env/cli", async () => {
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01",
@@ -182,7 +187,7 @@ Deno.test("resolveDatastoreConfig - marker config used when no env/cli", () => {
       directories: ["data", "outputs"],
     },
   };
-  const config = resolveDatastoreConfig(marker, undefined, "/repo");
+  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
     assertEquals(config.path, "/marker-path");
@@ -194,7 +199,7 @@ Deno.test("resolveDatastoreConfig - marker config used when no env/cli", () => {
 // S3 endpoint / forcePathStyle tests
 // ============================================================================
 
-Deno.test("resolveDatastoreConfig - S3 marker with endpoint and forcePathStyle", () => {
+Deno.test("resolveDatastoreConfig: S3 marker with endpoint and forcePathStyle", async () => {
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01",
@@ -207,7 +212,8 @@ Deno.test("resolveDatastoreConfig - S3 marker with endpoint and forcePathStyle",
       forcePathStyle: false,
     },
   };
-  const config = resolveDatastoreConfig(marker, undefined, "/repo");
+  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
+  // Falls back to built-in S3 since extension isn't installed in tests
   assertEquals(config.type, "s3");
   if (!isCustomDatastoreConfig(config) && config.type === "s3") {
     assertEquals(config.bucket, "my-space");
@@ -217,7 +223,7 @@ Deno.test("resolveDatastoreConfig - S3 marker with endpoint and forcePathStyle",
   }
 });
 
-Deno.test("resolveDatastoreConfig - S3 marker without endpoint defaults to undefined", () => {
+Deno.test("resolveDatastoreConfig: S3 marker without endpoint defaults to undefined", async () => {
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01",
@@ -228,7 +234,7 @@ Deno.test("resolveDatastoreConfig - S3 marker without endpoint defaults to undef
       region: "us-west-2",
     },
   };
-  const config = resolveDatastoreConfig(marker, undefined, "/repo");
+  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
   assertEquals(config.type, "s3");
   if (!isCustomDatastoreConfig(config) && config.type === "s3") {
     assertEquals(config.bucket, "my-bucket");
@@ -241,9 +247,9 @@ Deno.test("resolveDatastoreConfig - S3 marker without endpoint defaults to undef
 // Custom datastore type tests
 // ============================================================================
 
-Deno.test("parseDatastoreEnvVar - parses custom type with JSON config", () => {
+Deno.test("parseDatastoreEnvVar: parses custom type with JSON config", async () => {
   ensureTestType("test-custom-env");
-  const config = parseDatastoreEnvVar(
+  const config = await parseDatastoreEnvVar(
     'test-custom-env:{"region":"us-east-1"}',
     "repo-1",
     "/my/repo",
@@ -256,9 +262,9 @@ Deno.test("parseDatastoreEnvVar - parses custom type with JSON config", () => {
   assertEquals(custom.cachePath, "/my/repo/.custom-cache");
 });
 
-Deno.test("parseDatastoreEnvVar - parses custom type with empty config", () => {
+Deno.test("parseDatastoreEnvVar: parses custom type with empty config", async () => {
   ensureTestType("test-custom-empty");
-  const config = parseDatastoreEnvVar(
+  const config = await parseDatastoreEnvVar(
     "test-custom-empty:",
     "repo-1",
     "/my/repo",
@@ -269,9 +275,9 @@ Deno.test("parseDatastoreEnvVar - parses custom type with empty config", () => {
   assertEquals(custom.config, {});
 });
 
-Deno.test("parseDatastoreEnvVar - custom type uses repoDir not repoId for path resolution", () => {
+Deno.test("parseDatastoreEnvVar: custom type uses repoDir not repoId for path resolution", async () => {
   ensureTestType("test-custom-path");
-  const config = parseDatastoreEnvVar(
+  const config = await parseDatastoreEnvVar(
     "test-custom-path:{}",
     "some-repo-id",
     "/actual/repo/dir",
@@ -281,26 +287,26 @@ Deno.test("parseDatastoreEnvVar - custom type uses repoDir not repoId for path r
   assertEquals(custom.datastorePath, "/actual/repo/dir/.custom-store");
 });
 
-Deno.test("parseDatastoreEnvVar - custom type throws on invalid JSON", () => {
+Deno.test("parseDatastoreEnvVar: custom type throws on invalid JSON", async () => {
   ensureTestType("test-custom-badjson");
-  assertThrows(
+  await assertRejects(
     () => parseDatastoreEnvVar("test-custom-badjson:not-json", "r", "/repo"),
     Error,
     "Invalid JSON config",
   );
 });
 
-Deno.test("parseDatastoreEnvVar - custom type validates config schema", () => {
+Deno.test("parseDatastoreEnvVar: custom type validates config schema", async () => {
   const schema = z.object({ endpoint: z.string() });
   ensureTestType("test-custom-schema", { configSchema: schema });
-  assertThrows(
+  await assertRejects(
     () => parseDatastoreEnvVar("test-custom-schema:{}", "r", "/repo"),
     Error,
     "Invalid config for datastore type",
   );
 });
 
-Deno.test("resolveDatastoreConfig - YAML custom type produces CustomDatastoreConfig", () => {
+Deno.test("resolveDatastoreConfig: YAML custom type produces CustomDatastoreConfig", async () => {
   ensureTestType("test-custom-yaml");
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
@@ -312,7 +318,7 @@ Deno.test("resolveDatastoreConfig - YAML custom type produces CustomDatastoreCon
       directories: ["data"],
     },
   };
-  const config = resolveDatastoreConfig(marker, undefined, "/repo");
+  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
   assertEquals(config.type, "test-custom-yaml");
   assertEquals(isCustomDatastoreConfig(config), true);
   const custom = config as CustomDatastoreConfig;
@@ -322,21 +328,21 @@ Deno.test("resolveDatastoreConfig - YAML custom type produces CustomDatastoreCon
   assertEquals(custom.directories, ["data"]);
 });
 
-Deno.test("resolveDatastoreConfig - YAML unknown type throws UserError", () => {
+Deno.test("resolveDatastoreConfig: YAML unknown type throws UserError", async () => {
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01",
     repoId: "test-repo",
     datastore: { type: "nonexistent-type" },
   };
-  assertThrows(
+  await assertRejects(
     () => resolveDatastoreConfig(marker, undefined, "/repo"),
     Error,
     "Unknown datastore type",
   );
 });
 
-Deno.test("resolveDatastoreConfig - YAML custom type with no config defaults to empty object", () => {
+Deno.test("resolveDatastoreConfig: YAML custom type with no config defaults to empty object", async () => {
   ensureTestType("test-custom-noconfig");
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
@@ -344,19 +350,31 @@ Deno.test("resolveDatastoreConfig - YAML custom type with no config defaults to 
     repoId: "test-repo",
     datastore: { type: "test-custom-noconfig" },
   };
-  const config = resolveDatastoreConfig(marker, undefined, "/repo");
+  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
   const custom = config as CustomDatastoreConfig;
   assertEquals(custom.config, {});
 });
 
-Deno.test("isCustomDatastoreConfig - returns false for filesystem", () => {
+// ============================================================================
+// Renamed datastore type tests
+// ============================================================================
+
+Deno.test("RENAMED_DATASTORE_TYPES: maps s3 to @swamp/s3-datastore", () => {
+  assertEquals(RENAMED_DATASTORE_TYPES["s3"], "@swamp/s3-datastore");
+});
+
+// ============================================================================
+// Type guard tests
+// ============================================================================
+
+Deno.test("isCustomDatastoreConfig: returns false for filesystem", () => {
   assertEquals(
     isCustomDatastoreConfig({ type: "filesystem", path: "/tmp" }),
     false,
   );
 });
 
-Deno.test("isCustomDatastoreConfig - returns false for s3", () => {
+Deno.test("isCustomDatastoreConfig: returns false for s3", () => {
   assertEquals(
     isCustomDatastoreConfig({
       type: "s3",
@@ -367,7 +385,7 @@ Deno.test("isCustomDatastoreConfig - returns false for s3", () => {
   );
 });
 
-Deno.test("isCustomDatastoreConfig - returns true for custom type", () => {
+Deno.test("isCustomDatastoreConfig: returns true for custom type", () => {
   assertEquals(
     isCustomDatastoreConfig({
       type: "my-custom-store",

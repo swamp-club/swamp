@@ -1,0 +1,69 @@
+name: Publish Testing Library
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+    paths:
+      - "packages/testing/**"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-testing
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to JSR
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282 # v2.0.4
+        with:
+          deno-version: v2.x
+
+      - name: Generate version
+        id: version
+        run: |
+          # Version: 0.YYYYMMDD.N where N is the total commit count touching
+          # packages/testing. This produces a monotonically increasing semver
+          # since N never resets (it's a lifetime count, not per-day).
+          VERSION="0.$(date -u +%Y%m%d).$(git rev-list --count HEAD -- packages/testing)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Stamp version
+        working-directory: packages/testing
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          deno eval "
+            const config = JSON.parse(await Deno.readTextFile('deno.json'));
+            config.version = '${VERSION}';
+            await Deno.writeTextFile('deno.json', JSON.stringify(config, null, 2) + '\n');
+          "
+          echo "Updated deno.json:"
+          cat deno.json
+
+      - name: Type check
+        working-directory: packages/testing
+        run: deno check mod.ts
+
+      - name: Run tests
+        working-directory: packages/testing
+        run: deno test -A
+
+      - name: Publish to JSR
+        working-directory: packages/testing
+        run: deno publish --allow-dirty

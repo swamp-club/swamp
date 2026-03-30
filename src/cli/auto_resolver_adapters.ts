@@ -30,6 +30,7 @@ import {
 } from "../libswamp/mod.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
+import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   renderAutoResolveInstalled,
@@ -122,6 +123,16 @@ export function createAutoResolveInstallerAdapter(
         : resolve(repoDir, vaultsDir);
       const loader = new UserVaultLoader(denoRuntime, repoDir);
       await loader.loadVaults(absoluteVaultsDir, {
+        skipAlreadyRegistered: true,
+      });
+    },
+
+    async hotLoadDatastores() {
+      const absoluteDatastoresDir = isAbsolute(datastoresDir)
+        ? datastoresDir
+        : resolve(repoDir, datastoresDir);
+      const loader = new UserDatastoreLoader(denoRuntime, repoDir);
+      await loader.loadDatastores(absoluteDatastoresDir, {
         skipAlreadyRegistered: true,
       });
     },
