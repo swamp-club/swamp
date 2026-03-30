@@ -1,53 +1,63 @@
-# Unit Testing Vault Providers
+# Testing Vault Extensions
 
-The `@systeminit/swamp-testing` package provides `createVaultTestContext()` for
-unit testing code that interacts with vault providers without real secret
-storage.
+The `@systeminit/swamp-testing` package provides conformance suites and test
+doubles for vault extensions.
 
 Install: `deno add jsr:@systeminit/swamp-testing`
 
-## createVaultTestContext Options
+## Export Conformance
 
-| Option           | Default        | Description                           |
-| ---------------- | -------------- | ------------------------------------- |
-| `name`           | `"test-vault"` | Vault provider name                   |
-| `secrets`        | `{}`           | Pre-seed secrets for `get()` calls    |
-| `throwOnMissing` | `true`         | Reject on missing keys vs return `""` |
-
-## Inspection Helpers
+One call replaces all structural boilerplate tests (metadata, config schema,
+method existence):
 
 ```typescript
-const {
-  vault, // VaultProvider to pass to code under test
-  getStoredSecrets, // () => Record<string, string>
-  getOperations, // () => VaultOperation[]
-  getOperationsByMethod, // (method) => VaultOperation[]
-} = createVaultTestContext();
-```
-
-## Testing Vault Provider Implementations
-
-Test your `VaultProvider` implementation directly:
-
-```typescript
-import { assertEquals } from "@std/assert";
+import { assertVaultExportConformance } from "@systeminit/swamp-testing";
 import { vault } from "./my_vault.ts";
 
-Deno.test("stores and retrieves secrets", async () => {
-  const provider = vault.createProvider("test", {});
-  await provider.put("api-key", "sk-123");
-  assertEquals(await provider.get("api-key"), "sk-123");
+Deno.test("vault export conforms", () => {
+  assertVaultExportConformance(vault, {
+    validConfigs: [{ region: "us-east-1" }],
+    invalidConfigs: [{}, { region: "" }],
+  });
 });
 ```
 
-## Testing Code That Reads From Vaults
+This verifies: type matches naming pattern, name/description are non-empty,
+configSchema accepts valid and rejects invalid configs, createProvider returns
+an object with get/put/list/getName.
 
-Pre-seed secrets to test code that depends on vault values:
+## Behavioral Conformance
+
+Test the full VaultProvider contract against a real or mocked provider:
+
+```typescript
+import { assertVaultConformance } from "@systeminit/swamp-testing";
+
+Deno.test("vault contract", async () => {
+  const provider = vault.createProvider("test", { region: "us-east-1" });
+  await assertVaultConformance(provider);
+});
+```
+
+Tests: put/get roundtrip, get-missing rejects, put overwrites, list includes
+stored keys, getName returns non-empty string. Test keys are prefixed with
+`swamp-conformance-test-` and cleaned up automatically.
+
+Options:
+
+| Option      | Default                     | Description             |
+| ----------- | --------------------------- | ----------------------- |
+| `keyPrefix` | `"swamp-conformance-test-"` | Namespace for test keys |
+| `cleanup`   | `true`                      | Delete test keys after  |
+
+## In-Memory Test Double
+
+For testing code that _consumes_ a vault (not the vault itself):
 
 ```typescript
 import { createVaultTestContext } from "@systeminit/swamp-testing";
 
-Deno.test("model reads API key from vault", async () => {
+Deno.test("code reads from vault", async () => {
   const { vault, getOperations } = createVaultTestContext({
     secrets: { "api-key": "sk-test-123" },
   });
@@ -55,22 +65,6 @@ Deno.test("model reads API key from vault", async () => {
   const key = await vault.get("api-key");
   assertEquals(key, "sk-test-123");
   assertEquals(getOperations().length, 1);
-  assertEquals(getOperations()[0].method, "get");
-});
-```
-
-## Verifying Side Effects
-
-Use `getStoredSecrets()` to verify what was written:
-
-```typescript
-Deno.test("rotation writes new secret", async () => {
-  const { vault, getStoredSecrets } = createVaultTestContext({
-    secrets: { "api-key": "old-value" },
-  });
-
-  await vault.put("api-key", "new-value");
-  assertEquals(getStoredSecrets()["api-key"], "new-value");
 });
 ```
 
@@ -79,5 +73,5 @@ Deno.test("rotation writes new secret", async () => {
 Import directly from the testing package source:
 
 ```typescript
-import { createVaultTestContext } from "../../packages/testing/mod.ts";
+import { assertVaultExportConformance } from "../../packages/testing/mod.ts";
 ```
