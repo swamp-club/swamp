@@ -34,6 +34,8 @@ type AnyOptions = any;
 export const vaultListKeysCommand = new Command()
   .name("list-keys")
   .description("List all secret keys in a vault (without values)")
+  .example("List keys in a vault", "swamp vault list-keys my-vault")
+  .example("List all vault keys", "swamp vault list-keys")
   .arguments("[vault_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, vaultName?: string) {

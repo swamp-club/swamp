@@ -34,6 +34,7 @@ type AnyOptions = any;
 export const vaultDescribeCommand = new Command()
   .name("describe")
   .description("Describe a vault configuration")
+  .example("Describe a vault", "swamp vault describe my-vault")
   .arguments("<vault_name_or_id:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-t, --type <type:string>", "Vault type (optional, narrows search)")

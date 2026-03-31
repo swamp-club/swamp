@@ -53,6 +53,11 @@ async function promptVaultName(): Promise<string> {
 export const vaultCreateCommand = new Command()
   .name("create")
   .description("Create a new vault configuration")
+  .example("Create a vault", "swamp vault create env my-vault")
+  .example(
+    "With provider config",
+    `swamp vault create aws-secrets-manager my-vault --config '{"region":"us-east-1"}'`,
+  )
   .arguments("<type:string> [name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(

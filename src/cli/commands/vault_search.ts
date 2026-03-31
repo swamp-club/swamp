@@ -70,6 +70,8 @@ function createVaultFetchPreview(
 export const vaultSearchCommand = new Command()
   .name("search")
   .description("Search for vaults in the repository")
+  .example("Browse all vaults", "swamp vault search")
+  .example("Search by keyword", "swamp vault search aws")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {

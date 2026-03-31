@@ -38,6 +38,8 @@ type AnyOptions = any;
 export const vaultEditCommand = new Command()
   .name("edit")
   .description("Edit a vault configuration file")
+  .example("Edit a vault", "swamp vault edit my-vault")
+  .example("Interactive search", "swamp vault edit")
   .arguments("[vault_name_or_id:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
