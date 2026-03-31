@@ -966,6 +966,53 @@ interface StepOptions {
 }
 
 /**
+ * Result of resolving a forEach step name template.
+ */
+export interface ResolvedStepName {
+  /** The resolved step name. */
+  name: string;
+  /** Whether any expression evaluation failed during resolution. */
+  hadEvalFailure: boolean;
+}
+
+/**
+ * Resolves a forEach step name template by evaluating `${{ }}` expressions,
+ * or falls back to appending a suffix when no expressions are present.
+ *
+ * When expression evaluation fails, the raw expression is preserved and the
+ * fallbackSuffix is appended to ensure uniqueness across iterations.
+ */
+export function resolveForEachStepName(
+  template: string,
+  hasExpression: boolean,
+  stepContext: Record<string, unknown>,
+  celEvaluator: CelEvaluator,
+  fallbackSuffix: string,
+): ResolvedStepName {
+  if (hasExpression) {
+    let hadEvalFailure = false;
+    const resolved = template.replace(
+      /\$\{\{\s*(.+?)\s*\}\}/g,
+      (_match, expr) => {
+        try {
+          return String(
+            celEvaluator.evaluate(expr as string, stepContext),
+          );
+        } catch {
+          hadEvalFailure = true;
+          return _match as string;
+        }
+      },
+    );
+    return {
+      name: hadEvalFailure ? `${resolved}-${fallbackSuffix}` : resolved,
+      hadEvalFailure,
+    };
+  }
+  return { name: `${template}-${fallbackSuffix}`, hadEvalFailure: false };
+}
+
+/**
  * Domain service for workflow execution.
  */
 export class WorkflowExecutionService {
@@ -1417,48 +1464,37 @@ export class WorkflowExecutionService {
             },
           };
 
-          // Evaluate ALL expressions in step name (may contain multiple
-          // like ${{ self.ep.attributes.show }}-${{ self.ep.attributes.rawTitle }})
-          let expandedName = step.name;
-          if (nameHasExpression) {
-            let hadEvalFailure = false;
-            expandedName = step.name.replace(
-              /\$\{\{\s*(.+?)\s*\}\}/g,
-              (_match, expr) => {
-                try {
-                  return String(
-                    celEvaluator.evaluate(expr as string, stepContext),
-                  );
-                } catch {
-                  hadEvalFailure = true;
-                  return _match as string;
-                }
-              },
+          // Resolve step name expressions or fall back to a unique suffix.
+          // For the expression-failure path, always use index for uniqueness.
+          // For the no-expression path, use item value for primitives, index for objects.
+          const fallbackSuffix = nameHasExpression
+            ? String(index)
+            : (item !== null && typeof item === "object")
+            ? String(index)
+            : String(item);
+          if (
+            !nameHasExpression && item !== null && typeof item === "object"
+          ) {
+            getLogger(["swamp", "workflows"]).warn(
+              "forEach step '{stepName}' uses index-based naming because item is an object. " +
+                "Consider adding a ${{{{ self.{itemName}.<field> }}}} expression to the step name for better observability.",
+              { stepName: step.name, itemName },
             );
-            if (hadEvalFailure) {
-              expandedName = `${expandedName}-${index}`;
-              getLogger(["swamp", "workflows"]).warn(
-                "forEach step '{stepName}' has expression(s) that failed to evaluate for item at index {index}. " +
-                  "Appending index to prevent duplicate names. " +
-                  "Check that the expression references valid properties on self.{itemName}.",
-                { stepName: step.name, index, itemName },
-              );
-            }
-          } else {
-            // Step name has no expression template — append item value for uniqueness
-            if (
-              item !== null && typeof item === "object"
-            ) {
-              // Objects/arrays stringify to "[object Object]" which causes duplicate names
-              expandedName = `${step.name}-${index}`;
-              getLogger(["swamp", "workflows"]).warn(
-                "forEach step '{stepName}' uses index-based naming because item is an object. " +
-                  "Consider adding a ${{{{ self.{itemName}.<field> }}}} expression to the step name for better observability.",
-                { stepName: step.name, itemName },
-              );
-            } else {
-              expandedName = `${step.name}-${String(item)}`;
-            }
+          }
+          const { name: expandedName, hadEvalFailure } = resolveForEachStepName(
+            step.name,
+            nameHasExpression,
+            stepContext,
+            celEvaluator,
+            fallbackSuffix,
+          );
+          if (hadEvalFailure) {
+            getLogger(["swamp", "workflows"]).warn(
+              "forEach step '{stepName}' has expression(s) that failed to evaluate for item at index {index}. " +
+                "Appending index to prevent duplicate names. " +
+                "Check that the expression references valid properties on self.{itemName}.",
+              { stepName: step.name, index, itemName },
+            );
           }
 
           expandedSteps.push({
@@ -1481,35 +1517,21 @@ export class WorkflowExecutionService {
             },
           };
 
-          // Evaluate ALL expressions in step name
-          let expandedName = step.name;
-          if (nameHasExpression) {
-            let hadEvalFailure = false;
-            expandedName = step.name.replace(
-              /\$\{\{\s*(.+?)\s*\}\}/g,
-              (_match, expr) => {
-                try {
-                  return String(
-                    celEvaluator.evaluate(expr as string, stepContext),
-                  );
-                } catch {
-                  hadEvalFailure = true;
-                  return _match as string;
-                }
-              },
+          // Resolve step name expressions or fall back to key suffix
+          const { name: expandedName, hadEvalFailure } = resolveForEachStepName(
+            step.name,
+            nameHasExpression,
+            stepContext,
+            celEvaluator,
+            key,
+          );
+          if (hadEvalFailure) {
+            getLogger(["swamp", "workflows"]).warn(
+              "forEach step '{stepName}' has expression(s) that failed to evaluate for key '{key}'. " +
+                "Appending key to prevent duplicate names. " +
+                "Check that the expression references valid properties on self.{itemName}.",
+              { stepName: step.name, key, itemName },
             );
-            if (hadEvalFailure) {
-              expandedName = `${expandedName}-${key}`;
-              getLogger(["swamp", "workflows"]).warn(
-                "forEach step '{stepName}' has expression(s) that failed to evaluate for key '{key}'. " +
-                  "Appending key to prevent duplicate names. " +
-                  "Check that the expression references valid properties on self.{itemName}.",
-                { stepName: step.name, key, itemName },
-              );
-            }
-          } else {
-            // Step name has no expression template — append key for uniqueness
-            expandedName = `${step.name}-${key}`;
           }
 
           expandedSteps.push({

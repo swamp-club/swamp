@@ -20,6 +20,7 @@
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import {
   DefaultStepExecutor,
+  resolveForEachStepName,
   type StepExecutionContext,
   type StepExecutor,
   WorkflowExecutionService,
@@ -40,6 +41,7 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
+import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
@@ -2323,4 +2325,116 @@ Deno.test("expandForEachSteps: does not append index when expression evaluates s
       true,
     );
   });
+});
+
+// --- resolveForEachStepName tests ---
+
+function makeStepContext(
+  vars: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    self: {
+      id: "test-id",
+      name: "test",
+      ...vars,
+    },
+  };
+}
+
+Deno.test("resolveForEachStepName: resolves single expression in template", () => {
+  const cel = new CelEvaluator();
+  const ctx = makeStepContext({ item: "hello" });
+  const result = resolveForEachStepName(
+    "step-${{ self.item }}",
+    true,
+    ctx,
+    cel,
+    "fallback",
+  );
+  assertEquals(result.name, "step-hello");
+  assertEquals(result.hadEvalFailure, false);
+});
+
+Deno.test("resolveForEachStepName: resolves multiple expressions in template", () => {
+  const cel = new CelEvaluator();
+  const ctx = makeStepContext({ show: "MyShow", title: "Episode1" });
+  const result = resolveForEachStepName(
+    "dl-${{ self.show }}-${{ self.title }}",
+    true,
+    ctx,
+    cel,
+    "0",
+  );
+  assertEquals(result.name, "dl-MyShow-Episode1");
+  assertEquals(result.hadEvalFailure, false);
+});
+
+Deno.test("resolveForEachStepName: appends fallback suffix when expression fails", () => {
+  const cel = new CelEvaluator();
+  const ctx = makeStepContext();
+  const result = resolveForEachStepName(
+    "step-${{ self.missing.deep.field }}",
+    true,
+    ctx,
+    cel,
+    "0",
+  );
+  assertEquals(result.name, "step-${{ self.missing.deep.field }}-0");
+  assertEquals(result.hadEvalFailure, true);
+});
+
+Deno.test("resolveForEachStepName: appends fallback suffix when no expressions", () => {
+  const cel = new CelEvaluator();
+  const ctx = makeStepContext();
+  const result = resolveForEachStepName(
+    "download",
+    false,
+    ctx,
+    cel,
+    "my-key",
+  );
+  assertEquals(result.name, "download-my-key");
+  assertEquals(result.hadEvalFailure, false);
+});
+
+Deno.test("resolveForEachStepName: uses numeric fallback suffix for index-based naming", () => {
+  const cel = new CelEvaluator();
+  const ctx = makeStepContext();
+  const result = resolveForEachStepName(
+    "process",
+    false,
+    ctx,
+    cel,
+    "3",
+  );
+  assertEquals(result.name, "process-3");
+  assertEquals(result.hadEvalFailure, false);
+});
+
+Deno.test("resolveForEachStepName: resolves expression with object property access", () => {
+  const cel = new CelEvaluator();
+  const ctx = makeStepContext({ ep: { attributes: { show: "Futurama" } } });
+  const result = resolveForEachStepName(
+    "dl-${{ self.ep.attributes.show }}",
+    true,
+    ctx,
+    cel,
+    "0",
+  );
+  assertEquals(result.name, "dl-Futurama");
+  assertEquals(result.hadEvalFailure, false);
+});
+
+Deno.test("resolveForEachStepName: mixed resolved and failed expressions appends suffix", () => {
+  const cel = new CelEvaluator();
+  const ctx = makeStepContext({ item: "resolved" });
+  const result = resolveForEachStepName(
+    "${{ self.item }}-${{ self.nonexistent.deep }}",
+    true,
+    ctx,
+    cel,
+    "0",
+  );
+  assertEquals(result.name, "resolved-${{ self.nonexistent.deep }}-0");
+  assertEquals(result.hadEvalFailure, true);
 });
