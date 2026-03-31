@@ -71,6 +71,9 @@ export async function repoInitAction(
 
 export const repoInitCommand = new Command()
   .description("Initialize a new swamp repository")
+  .example("Initialize in current directory", "swamp repo init")
+  .example("Initialize in a specific path", "swamp repo init ./my-project")
+  .example("Force reinitialize", "swamp repo init --force")
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
   .type("aiTool", aiToolType)

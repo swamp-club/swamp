@@ -32,6 +32,7 @@ type AnyOptions = any;
 
 export const sourceCleanCommand = new Command()
   .description("Remove downloaded swamp source")
+  .example("Remove downloaded source", "swamp source clean")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["source", "clean"]);
     ctx.logger.debug("Executing source clean command");

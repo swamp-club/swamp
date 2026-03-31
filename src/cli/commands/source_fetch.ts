@@ -33,6 +33,8 @@ type AnyOptions = any;
 
 export const sourceFetchCommand = new Command()
   .description("Download swamp source code from GitHub")
+  .example("Download latest source", "swamp source fetch")
+  .example("Fetch specific version", "swamp source fetch --version v0.42.0")
   .option(
     "--version <version:string>",
     "Version to fetch (tag or 'main')",
