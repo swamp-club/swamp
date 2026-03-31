@@ -82,5 +82,5 @@ export interface DatastoreProvider {
   createVerifier(): DatastoreVerifier;
   createSyncService?(repoDir: string, cachePath: string): DatastoreSyncService;
   resolveDatastorePath(repoDir: string): string;
-  resolveCachePath?(repoDir: string): string;
+  resolveCachePath?(repoDir: string): string | undefined;
 }

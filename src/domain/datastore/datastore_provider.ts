@@ -37,5 +37,5 @@ export interface DatastoreProvider {
   /** Resolve the datastore path relative to the repository. */
   resolveDatastorePath(repoDir: string): string;
   /** Optionally resolve a local cache path for remote datastores. */
-  resolveCachePath?(repoDir: string): string;
+  resolveCachePath?(repoDir: string): string | undefined;
 }

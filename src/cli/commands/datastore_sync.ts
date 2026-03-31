@@ -26,7 +26,10 @@ import {
 } from "../../libswamp/mod.ts";
 import { createDatastoreSyncRenderer } from "../../presentation/renderers/datastore_sync.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  requireInitializedRepo,
+  requireInitializedRepoReadOnly,
+} from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -46,16 +49,23 @@ export const datastoreSyncCommand = new Command()
     ]);
     cliCtx.logger.debug("Executing datastore sync command");
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
-      outputMode: cliCtx.outputMode,
-    });
-
     const mode = options.push
       ? "push" as const
       : options.pull
       ? "pull" as const
       : "sync" as const;
+
+    // Pull-only mode uses read-only init to avoid acquiring the global
+    // lock and triggering a coordinator push on flush.
+    const { repoDir, datastoreResolver } = mode === "pull"
+      ? await requireInitializedRepoReadOnly({
+        repoDir: options.repoDir ?? ".",
+        outputMode: cliCtx.outputMode,
+      })
+      : await requireInitializedRepo({
+        repoDir: options.repoDir ?? ".",
+        outputMode: cliCtx.outputMode,
+      });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createDatastoreSyncDeps(repoDir, datastoreResolver);
