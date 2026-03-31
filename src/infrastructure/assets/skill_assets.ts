@@ -100,6 +100,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp-report/references/report-types.md",
     name: "swamp-report",
   },
+  {
+    relativePath: "swamp-report/references/testing.md",
+    name: "swamp-report",
+  },
   { relativePath: "swamp-workflow/SKILL.md", name: "swamp-workflow" },
   {
     relativePath: "swamp-workflow/references/data-chaining.md",
@@ -154,6 +158,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-extension-model",
   },
   {
+    relativePath: "swamp-extension-model/references/testing.md",
+    name: "swamp-extension-model",
+  },
+  {
     relativePath: "swamp-model/references/execution-drivers.md",
     name: "swamp-model",
   },
@@ -182,6 +190,26 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-vault",
   },
   {
+    relativePath: "swamp-extension-vault/SKILL.md",
+    name: "swamp-extension-vault",
+  },
+  {
+    relativePath: "swamp-extension-vault/references/api.md",
+    name: "swamp-extension-vault",
+  },
+  {
+    relativePath: "swamp-extension-vault/references/examples.md",
+    name: "swamp-extension-vault",
+  },
+  {
+    relativePath: "swamp-extension-vault/references/testing.md",
+    name: "swamp-extension-vault",
+  },
+  {
+    relativePath: "swamp-extension-vault/references/troubleshooting.md",
+    name: "swamp-extension-vault",
+  },
+  {
     relativePath: "swamp-extension-datastore/SKILL.md",
     name: "swamp-extension-datastore",
   },
@@ -191,6 +219,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   {
     relativePath: "swamp-extension-datastore/references/examples.md",
+    name: "swamp-extension-datastore",
+  },
+  {
+    relativePath: "swamp-extension-datastore/references/testing.md",
     name: "swamp-extension-datastore",
   },
   {
@@ -207,6 +239,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   {
     relativePath: "swamp-extension-driver/references/examples.md",
+    name: "swamp-extension-driver",
+  },
+  {
+    relativePath: "swamp-extension-driver/references/testing.md",
     name: "swamp-extension-driver",
   },
   {
