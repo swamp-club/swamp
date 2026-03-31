@@ -136,7 +136,8 @@ jobs:
   skill-trigger-eval:
     name: Skill Trigger Eval
     needs: [changes]
-    if: needs.changes.outputs.skills == 'true'
+    # Disabled: investigating cost impact of eval runs
+    if: false # needs.changes.outputs.skills == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
