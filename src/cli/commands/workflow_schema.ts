@@ -31,6 +31,7 @@ type AnyOptions = any;
 
 export const workflowSchemaGetCommand = new Command()
   .description("Get the schema for workflow files")
+  .example("Get workflow schema", "swamp workflow schema get")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
       "workflow",

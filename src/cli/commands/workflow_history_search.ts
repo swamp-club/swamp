@@ -182,6 +182,8 @@ export async function workflowHistorySearchAction(
 export const workflowHistorySearchCommand = new Command()
   .name("search")
   .description("Search workflow run history")
+  .example("Browse run history", "swamp workflow history search")
+  .example("Search runs", "swamp workflow history search deploy")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(workflowHistorySearchAction);

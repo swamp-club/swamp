@@ -34,6 +34,8 @@ type AnyOptions = any;
 export const workflowHistoryLogsCommand = new Command()
   .name("logs")
   .description("Show logs for a workflow run")
+  .example("Show run logs", "swamp workflow history logs deploy-pipeline")
+  .example("Tail last 50 lines", "swamp workflow history logs abc123 --tail 50")
   .arguments("<run_id_or_workflow:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--tail <lines:number>", "Show only the last N lines")

@@ -53,6 +53,8 @@ async function promptConfirmation(message: string): Promise<boolean> {
 export const workflowDeleteCommand = new Command()
   .name("delete")
   .description("Delete a workflow and its run history")
+  .example("Delete a workflow", "swamp workflow delete deploy-pipeline")
+  .example("Force delete", "swamp workflow delete deploy-pipeline --force")
   .arguments("<workflow_id_or_name:workflow_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-f, --force", "Skip confirmation prompt")

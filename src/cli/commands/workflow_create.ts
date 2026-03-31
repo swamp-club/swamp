@@ -33,6 +33,7 @@ type AnyOptions = any;
 
 export const workflowCreateCommand = new Command()
   .description("Create a new workflow")
+  .example("Create a workflow", "swamp workflow create deploy-pipeline")
   .arguments("<name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, name: string) {

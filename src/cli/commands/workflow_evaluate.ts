@@ -45,6 +45,12 @@ type AnyOptions = any;
 export const workflowEvaluateCommand = new Command()
   .name("evaluate")
   .description("Evaluate expressions in workflow definitions")
+  .example("Evaluate a workflow", "swamp workflow evaluate deploy-pipeline")
+  .example("Evaluate all workflows", "swamp workflow evaluate --all")
+  .example(
+    "With inputs",
+    "swamp workflow evaluate deploy-pipeline --input env=prod",
+  )
   .arguments("[workflow_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--all", "Evaluate all workflow definitions")

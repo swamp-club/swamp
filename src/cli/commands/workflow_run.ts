@@ -49,6 +49,16 @@ type AnyOptions = any;
 export const workflowRunCommand = new Command()
   .name("run")
   .description("Execute a workflow")
+  .example("Run a workflow", "swamp workflow run deploy-pipeline")
+  .example(
+    "With inputs",
+    "swamp workflow run deploy-pipeline --input env=prod",
+  )
+  .example(
+    "With tags",
+    "swamp workflow run deploy-pipeline --tag type=deploy --tag env=production",
+  )
+  .example("Skip reports", "swamp workflow run deploy-pipeline --skip-reports")
   .arguments("<workflow_id_or_name:workflow_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(

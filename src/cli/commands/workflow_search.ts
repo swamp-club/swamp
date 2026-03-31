@@ -98,6 +98,8 @@ async function displayWorkflowGet(
 export const workflowSearchCommand = new Command()
   .name("search")
   .description("Search for workflows")
+  .example("Browse all workflows", "swamp workflow search")
+  .example("Search by keyword", "swamp workflow search deploy")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {
