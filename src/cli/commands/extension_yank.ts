@@ -53,6 +53,14 @@ async function promptConfirmation(message: string): Promise<boolean> {
 export const extensionYankCommand = new Command()
   .name("yank")
   .description("Yank an extension or specific version from the registry")
+  .example(
+    "Yank all versions",
+    `swamp extension yank @stack72/aws-ec2 --reason "security issue"`,
+  )
+  .example(
+    "Yank specific version",
+    `swamp extension yank @stack72/aws-ec2 2026.3.1 --reason "broken release"`,
+  )
   .arguments("<extension:string> [version:string]")
   .option("--reason <reason:string>", "Reason for yanking", { required: true })
   .option("-y, --yes", "Skip confirmation prompt")

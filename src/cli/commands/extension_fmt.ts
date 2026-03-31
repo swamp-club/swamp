@@ -38,6 +38,14 @@ interface ExtensionFmtOptions extends GlobalOptions {
 export const extensionFmtCommand = new Command()
   .name("fmt")
   .description("Format and lint extension TypeScript files")
+  .example(
+    "Format extension files",
+    "swamp extension fmt extensions/models/my-model/manifest.json",
+  )
+  .example(
+    "Check formatting",
+    "swamp extension fmt extensions/models/my-model/manifest.json --check",
+  )
   .arguments("<manifest-path:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--check", "Check only, do not auto-fix")

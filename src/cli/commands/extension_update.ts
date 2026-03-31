@@ -55,9 +55,10 @@ function resolveServerUrl(): string {
 
 export const extensionUpdateCommand = new Command()
   .name("update")
-  .description(
-    "Update installed extensions to latest versions.\n\nExamples:\n  swamp extension update              Update all installed extensions\n  swamp extension update @ns/name     Update a specific extension\n  swamp extension update --check      Show what's outdated without pulling",
-  )
+  .description("Update installed extensions to latest versions")
+  .example("Update all extensions", "swamp extension update")
+  .example("Update one extension", "swamp extension update @stack72/aws-ec2")
+  .example("Check for updates", "swamp extension update --check")
   .arguments("[extension:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--check", "Show what's outdated without pulling")

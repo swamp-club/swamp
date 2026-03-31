@@ -165,6 +165,8 @@ export async function pullExtension(
 export const extensionPullCommand = new Command()
   .name("pull")
   .description("Pull an extension from the swamp registry")
+  .example("Pull an extension", "swamp extension pull @stack72/aws-ec2")
+  .example("Force re-pull", "swamp extension pull @stack72/aws-ec2 --force")
   .arguments("<extension:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--force", "Overwrite existing files without prompting")

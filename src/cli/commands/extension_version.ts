@@ -38,6 +38,14 @@ export const extensionVersionCommand = new Command()
   .description(
     "Show the latest published version and compute the next CalVer version for an extension",
   )
+  .example(
+    "Show version by name",
+    "swamp extension version @stack72/aws-ec2",
+  )
+  .example(
+    "From manifest",
+    "swamp extension version --manifest extensions/models/my-model/manifest.json",
+  )
   .arguments("[name:string]")
   .option(
     "--manifest <path:string>",

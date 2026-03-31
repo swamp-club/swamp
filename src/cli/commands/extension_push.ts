@@ -155,6 +155,18 @@ async function requireNodeModules(projectDir: string): Promise<void> {
 export const extensionPushCommand = new Command()
   .name("push")
   .description("Push an extension to the swamp registry")
+  .example(
+    "Publish extension",
+    "swamp extension push extensions/models/my-model/manifest.json",
+  )
+  .example(
+    "Dry run",
+    "swamp extension push extensions/models/my-model/manifest.json --dry-run",
+  )
+  .example(
+    "With release notes",
+    `swamp extension push extensions/models/my-model/manifest.json --release-notes "Added validate method"`,
+  )
   .arguments("<manifest-path:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-y, --yes", "Skip confirmation prompts")

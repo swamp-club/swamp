@@ -33,6 +33,7 @@ type AnyOptions = any;
 export const extensionTrustAddCommand = new Command()
   .name("add")
   .description("Add a collective to the trusted list")
+  .example("Trust a collective", "swamp extension trust add stack72")
   .arguments("<collective:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, collective: string) {

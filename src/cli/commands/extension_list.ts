@@ -42,6 +42,7 @@ export const extensionListCommand = new Command()
   .name("list")
   .alias("ls")
   .description("List upstream installed extensions")
+  .example("List installed extensions", "swamp extension list")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [

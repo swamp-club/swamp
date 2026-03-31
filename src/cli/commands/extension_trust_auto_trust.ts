@@ -36,6 +36,8 @@ export const extensionTrustAutoTrustCommand = new Command()
   .description(
     "Enable or disable auto-trusting membership collectives",
   )
+  .example("Enable auto-trust", "swamp extension trust auto-trust enable")
+  .example("Disable auto-trust", "swamp extension trust auto-trust disable")
   .arguments("<enabled:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, enabled: string) {

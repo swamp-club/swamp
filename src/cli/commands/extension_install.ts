@@ -47,8 +47,9 @@ type AnyOptions = any;
 export const extensionInstallCommand = new Command()
   .name("install")
   .description(
-    "Restore pulled extensions from the lockfile.\n\nReads upstream_extensions.json and re-pulls any extensions whose source\nfiles are missing. Use after cloning a repo or in CI.\nTo add a new extension, use 'swamp extension pull <name>' instead.\n\nExamples:\n  swamp extension install",
+    "Restore pulled extensions from the lockfile.\n\nReads upstream_extensions.json and re-pulls any extensions whose source\nfiles are missing. Use after cloning a repo or in CI.\nTo add a new extension, use 'swamp extension pull <name>' instead.",
   )
+  .example("Restore extensions from lockfile", "swamp extension install")
   .arguments("[unexpected:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, unexpected?: string) {

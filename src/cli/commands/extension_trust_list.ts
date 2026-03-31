@@ -33,6 +33,7 @@ type AnyOptions = any;
 export const extensionTrustListCommand = new Command()
   .name("list")
   .description("List trusted collectives for extension auto-resolution")
+  .example("List trusted collectives", "swamp extension trust list")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [

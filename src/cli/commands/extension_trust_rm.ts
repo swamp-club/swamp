@@ -33,6 +33,7 @@ type AnyOptions = any;
 export const extensionTrustRmCommand = new Command()
   .name("rm")
   .description("Remove a collective from the trusted list")
+  .example("Remove trusted collective", "swamp extension trust rm stack72")
   .arguments("<collective:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, collective: string) {
