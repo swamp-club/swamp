@@ -36,6 +36,7 @@ type AnyOptions = any;
 
 export const typeDescribeCommand = new Command()
   .description("Describe a model type with schema details")
+  .example("Describe a model type", "swamp type describe aws-ec2")
   .alias("get")
   .arguments("<type:model_type>")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string

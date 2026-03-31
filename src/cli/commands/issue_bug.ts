@@ -111,6 +111,7 @@ function parseBugContent(
 export const issueBugCommand = new Command()
   .name("bug")
   .description("Submit a bug report")
+  .example("Submit a bug report", "swamp issue bug")
   .option("-t, --title <title:string>", "Bug title (skips editor for title)")
   .option(
     "-b, --body <body:string>",

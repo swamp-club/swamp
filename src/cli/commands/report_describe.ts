@@ -34,6 +34,7 @@ type AnyOptions = any;
 export const reportDescribeCommand = new Command()
   .name("describe")
   .description("Show report definition metadata from the registry")
+  .example("Describe a report", "swamp report describe cost-summary")
   .arguments("<report_name:string>")
   .action(async function (options: AnyOptions, reportName: string) {
     const ctx = createContext(options as GlobalOptions, [

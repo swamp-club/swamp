@@ -155,6 +155,8 @@ async function displayReportDetail(
 export const reportSearchCommand = new Command()
   .name("search")
   .description("Search stored report results across all models and workflows")
+  .example("Browse all reports", "swamp report search")
+  .example("Search by keyword", "swamp report search cost")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--model <name:string>", "Filter to a specific model")

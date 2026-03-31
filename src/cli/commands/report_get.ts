@@ -36,6 +36,15 @@ type AnyOptions = any;
 export const reportGetCommand = new Command()
   .name("get")
   .description("Show a stored report's content")
+  .example("Get a report", "swamp report get cost-summary")
+  .example(
+    "Scoped to a model",
+    "swamp report get cost-summary --model my-server",
+  )
+  .example(
+    "Scoped to a workflow",
+    "swamp report get cost-summary --workflow deploy-pipeline",
+  )
   .arguments("<report_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--model <name:string>", "Scope to a specific model")

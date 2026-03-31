@@ -74,6 +74,8 @@ function createTypeFetchPreview(): (
 export const typeSearchCommand = new Command()
   .name("search")
   .description("Search for model types")
+  .example("Browse all types", "swamp type search")
+  .example("Search by keyword", "swamp type search aws")
   .arguments("[query:string]")
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["type", "search"]);

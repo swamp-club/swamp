@@ -32,6 +32,7 @@ type AnyOptions = any;
 
 export const sourcePathCommand = new Command()
   .description("Show swamp source location and version")
+  .example("Show source location", "swamp source path")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["source", "path"]);
     ctx.logger.debug("Executing source path command");

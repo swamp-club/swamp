@@ -107,6 +107,7 @@ function parseFeatureContent(
 export const issueFeatureCommand = new Command()
   .name("feature")
   .description("Submit a feature request")
+  .example("Submit a feature request", "swamp issue feature")
   .option(
     "-t, --title <title:string>",
     "Feature title (skips editor for title)",

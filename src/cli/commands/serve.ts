@@ -31,6 +31,12 @@ const logger = getSwampLogger(["serve"]);
 export const serveCommand = new Command()
   .name("serve")
   .description("Start a WebSocket API server for workflow and model execution")
+  .example("Start server", "swamp serve")
+  .example("Custom port", "swamp serve --port 8080")
+  .example(
+    "Bind to all interfaces",
+    "swamp serve --host 0.0.0.0 --port 3000",
+  )
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--port <port:number>", "Port to listen on", { default: 9090 })
   .option("--host <host:string>", "Host to bind to", { default: "127.0.0.1" })
