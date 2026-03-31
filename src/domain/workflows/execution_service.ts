@@ -1021,16 +1021,19 @@ export class WorkflowExecutionService {
   private readonly definitionRepo: YamlDefinitionRepository;
   private readonly modelResolver: ModelResolver;
   private readonly dataRepo: FileSystemUnifiedDataRepository;
+  private readonly dataBaseDir?: string;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
     private readonly runRepo: WorkflowRunRepository,
     private readonly repoDir: string,
     executor?: StepExecutor,
+    dataBaseDir?: string,
   ) {
     this.executor = executor ?? new DefaultStepExecutor();
+    this.dataBaseDir = dataBaseDir;
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
-    this.dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    this.dataRepo = new FileSystemUnifiedDataRepository(repoDir, dataBaseDir);
     this.modelResolver = new ModelResolver(this.definitionRepo, {
       repoDir,
       dataRepo: this.dataRepo,
@@ -1861,6 +1864,8 @@ export class WorkflowExecutionService {
       this.workflowRepo,
       this.runRepo,
       this.repoDir,
+      undefined,
+      this.dataBaseDir,
     );
 
     let childRun: WorkflowRun | undefined;

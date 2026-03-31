@@ -30,6 +30,7 @@ import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { parseInputs } from "../input_parser.ts";
 import { GIT_SHA } from "./version.ts";
 import { parseTags } from "../../libswamp/mod.ts";
@@ -201,7 +202,13 @@ export const workflowRunCommand = new Command()
             await repo.findById(createWorkflowId(idOrName));
         },
         createExecutionService: (wfRepo, rnRepo, dir) =>
-          new WorkflowExecutionService(wfRepo, rnRepo, dir),
+          new WorkflowExecutionService(
+            wfRepo,
+            rnRepo,
+            dir,
+            undefined,
+            unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
+          ),
         dataRepo: repoContext.unifiedDataRepo,
         definitionRepo: repoContext.definitionRepo,
       };
