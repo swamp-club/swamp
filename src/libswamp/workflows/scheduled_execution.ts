@@ -33,9 +33,10 @@ import {
   WorkflowScheduler,
 } from "../../domain/workflows/workflow_scheduler.ts";
 import { workflowsDir, WorkflowWatcher } from "./watcher.ts";
-import { workflowRun, type WorkflowRunDeps } from "./run.ts";
-import { createLibSwampContext } from "../context.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["scheduled-execution"]);
@@ -92,8 +93,9 @@ export type ScheduledExecutionEventHandler = (
  */
 export interface ScheduledExecutionDeps {
   workflowRepo: WorkflowRepository;
+  repoContext: RepositoryContext;
+  datastoreConfig: DatastoreConfig;
   repoDir: string;
-  createWorkflowRunDeps: () => WorkflowRunDeps;
 }
 
 export class ScheduledExecutionService {
@@ -252,23 +254,20 @@ export class ScheduledExecutionService {
     this.running.set(workflowId, controller);
 
     try {
-      const deps = this.deps.createWorkflowRunDeps();
-      const ctx = createLibSwampContext({ signal: controller.signal });
-
       let runId = "";
 
-      for await (
-        const event of workflowRun(ctx, deps, {
-          workflowIdOrName: workflowId,
-        })
-      ) {
-        if (event.kind === "started") {
-          runId = event.runId;
-        }
-        // Events are consumed but not forwarded — the scheduled execution
-        // service emits its own higher-level events. Detailed workflow events
-        // are logged via the standard logging infrastructure.
-      }
+      await executeWorkflowWithLocks(
+        this.deps.repoDir,
+        this.deps.repoContext,
+        this.deps.datastoreConfig,
+        { workflowIdOrName: workflowName },
+        controller.signal,
+        (event) => {
+          if (event.kind === "started") {
+            runId = event.runId;
+          }
+        },
+      );
 
       this.emit({
         kind: "schedule_completed",

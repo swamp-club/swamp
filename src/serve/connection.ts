@@ -25,12 +25,8 @@
 import { z } from "zod";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
-import {
-  createLibSwampContext,
-  modelMethodRun,
-  workflowRun,
-} from "../libswamp/mod.ts";
-import { createModelMethodRunDeps, createWorkflowRunDeps } from "./deps.ts";
+import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
+import { createModelMethodRunDeps, executeWorkflowWithLocks } from "./deps.ts";
 import { serializeEvent } from "./serializer.ts";
 import type {
   ModelMethodRunPayload,
@@ -39,8 +35,6 @@ import type {
   WorkflowRunPayload,
 } from "./protocol.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
-import { extractModelReferencesFromWorkflow } from "../domain/workflows/model_reference_extractor.ts";
-import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -205,86 +199,34 @@ async function handleWorkflowRun(
   payload: WorkflowRunPayload,
   controller: AbortController,
 ): Promise<void> {
-  let flushLocks: (() => Promise<void>) | null = null;
-
   try {
-    // Pre-lookup workflow for per-model lock acquisition
-    const workflowRepo = ctx.repoContext.workflowRepo;
-    const workflow = await workflowRepo.findByName(
-      payload.workflowIdOrName,
-    ) ?? await workflowRepo.findById(
-      createWorkflowId(payload.workflowIdOrName),
-    );
-
-    if (workflow) {
-      const modelRefs = await extractModelReferencesFromWorkflow(
-        workflow,
-        workflowRepo,
-      );
-      if (modelRefs !== null && modelRefs.length > 0) {
-        const resolvedModels: Array<{ modelType: string; modelId: string }> =
-          [];
-        for (const ref of modelRefs) {
-          const result = await findDefinitionByIdOrName(
-            ctx.repoContext.definitionRepo,
-            ref,
-          );
-          if (result) {
-            resolvedModels.push({
-              modelType: result.type.normalized,
-              modelId: result.definition.id,
-            });
-          }
-        }
-        if (resolvedModels.length > 0) {
-          const lockResult = await acquireModelLocks(
-            ctx.datastoreConfig,
-            resolvedModels,
-            ctx.repoDir,
-          );
-          if (lockResult.synced) ctx.repoContext.catalogStore?.invalidate();
-          flushLocks = lockResult.flush;
-        }
-      }
-    }
-
-    const deps = await createWorkflowRunDeps(ctx.repoDir, ctx.repoContext);
-    const libCtx = createLibSwampContext({ signal: controller.signal });
-
-    for await (
-      const event of workflowRun(libCtx, deps, {
+    await executeWorkflowWithLocks(
+      ctx.repoDir,
+      ctx.repoContext,
+      ctx.datastoreConfig,
+      {
         workflowIdOrName: payload.workflowIdOrName,
         inputs: payload.inputs,
         lastEvaluated: payload.lastEvaluated,
         driver: payload.driver,
         verbose: payload.verbose,
         runtimeTags: payload.runtimeTags,
-      })
-    ) {
-      if (socket.readyState !== WebSocket.OPEN) break;
-      const serialized = serializeEvent(
-        event as { kind: string; [key: string]: unknown },
-      );
-      send(socket, { type: "event", id: requestId, event: serialized });
-    }
+      },
+      controller.signal,
+      (event) => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        const serialized = serializeEvent(
+          event as { kind: string; [key: string]: unknown },
+        );
+        send(socket, { type: "event", id: requestId, event: serialized });
+      },
+    );
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else {
       const message = error instanceof Error ? error.message : String(error);
       sendError(socket, requestId, "workflow_execution_failed", message);
-    }
-  } finally {
-    if (flushLocks) {
-      try {
-        await flushLocks();
-      } catch (releaseError) {
-        logger.warn("Failed to release locks: {error}", {
-          error: releaseError instanceof Error
-            ? releaseError.message
-            : String(releaseError),
-        });
-      }
     }
   }
 }

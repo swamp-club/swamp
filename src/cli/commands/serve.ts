@@ -25,7 +25,6 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import {
   ScheduledExecutionService,
 } from "../../libswamp/workflows/scheduled_execution.ts";
-import { createWorkflowRunDeps } from "../../serve/deps.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -80,9 +79,9 @@ export const serveCommand = new Command()
     if (enableSchedule) {
       scheduledExecution = new ScheduledExecutionService({
         workflowRepo: repoContext.workflowRepo,
+        repoContext,
+        datastoreConfig,
         repoDir: resolvedRepoDir,
-        createWorkflowRunDeps: () =>
-          createWorkflowRunDeps(resolvedRepoDir, repoContext),
       });
 
       await scheduledExecution.start((event) => {

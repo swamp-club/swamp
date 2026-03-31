@@ -25,10 +25,17 @@
 
 import { join } from "@std/path";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import type { ModelMethodRunDeps, WorkflowRunDeps } from "../libswamp/mod.ts";
+import type {
+  ModelMethodRunDeps,
+  WorkflowRunDeps,
+  WorkflowRunEvent,
+  WorkflowRunInput,
+} from "../libswamp/mod.ts";
+import { createLibSwampContext, workflowRun } from "../libswamp/mod.ts";
 import { WorkflowExecutionService } from "../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
+import { extractModelReferencesFromWorkflow } from "../domain/workflows/model_reference_extractor.ts";
 import { resolveModelType } from "../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
@@ -45,6 +52,9 @@ import { modelRegistry } from "../domain/models/model.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
+import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import { acquireModelLocks } from "../cli/repo_context.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 export async function createWorkflowRunDeps(
   repoDir: string,
@@ -141,4 +151,85 @@ export async function createModelMethodRunDeps(
       };
     },
   };
+}
+
+const depsLogger = getSwampLogger(["serve", "deps"]);
+
+/**
+ * Executes a workflow run with model lock acquisition — the single code path
+ * for both WebSocket-triggered and scheduled workflow execution.
+ *
+ * Handles: pre-lookup → lock acquisition → workflowRun → lock release.
+ * The caller provides a callback to consume the event stream.
+ */
+export async function executeWorkflowWithLocks(
+  repoDir: string,
+  repoContext: RepositoryContext,
+  datastoreConfig: DatastoreConfig,
+  input: WorkflowRunInput,
+  signal: AbortSignal,
+  onEvent: (event: WorkflowRunEvent) => void,
+): Promise<void> {
+  let flushLocks: (() => Promise<void>) | null = null;
+
+  try {
+    // Pre-lookup workflow for per-model lock acquisition
+    const workflowRepo = repoContext.workflowRepo;
+    const workflow = await workflowRepo.findByName(
+      input.workflowIdOrName,
+    ) ?? await workflowRepo.findById(
+      createWorkflowId(input.workflowIdOrName),
+    );
+
+    if (workflow) {
+      const modelRefs = await extractModelReferencesFromWorkflow(
+        workflow,
+        workflowRepo,
+      );
+      if (modelRefs !== null && modelRefs.length > 0) {
+        const resolvedModels: Array<{ modelType: string; modelId: string }> =
+          [];
+        for (const ref of modelRefs) {
+          const result = await findDefinitionByIdOrName(
+            repoContext.definitionRepo,
+            ref,
+          );
+          if (result) {
+            resolvedModels.push({
+              modelType: result.type.normalized,
+              modelId: result.definition.id,
+            });
+          }
+        }
+        if (resolvedModels.length > 0) {
+          const lockResult = await acquireModelLocks(
+            datastoreConfig,
+            resolvedModels,
+            repoDir,
+          );
+          if (lockResult.synced) repoContext.catalogStore?.invalidate();
+          flushLocks = lockResult.flush;
+        }
+      }
+    }
+
+    const deps = await createWorkflowRunDeps(repoDir, repoContext);
+    const libCtx = createLibSwampContext({ signal });
+
+    for await (const event of workflowRun(libCtx, deps, input)) {
+      onEvent(event);
+    }
+  } finally {
+    if (flushLocks) {
+      try {
+        await flushLocks();
+      } catch (releaseError) {
+        depsLogger.warn("Failed to release locks: {error}", {
+          error: releaseError instanceof Error
+            ? releaseError.message
+            : String(releaseError),
+        });
+      }
+    }
+  }
 }
