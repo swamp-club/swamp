@@ -137,6 +137,8 @@ export interface StepExecutionContext {
   skipCheckLabels?: string[];
   /** Skip all pre-flight checks */
   skipAllChecks?: boolean;
+  /** Resolved base directory for data storage (S3 cache path) */
+  dataBaseDir?: string;
 }
 
 /**
@@ -198,7 +200,10 @@ export class DefaultStepExecutor implements StepExecutor {
     ctx: StepExecutionContext,
   ): Promise<unknown> {
     const definitionRepo = new YamlDefinitionRepository(ctx.repoDir);
-    const unifiedDataRepo = new FileSystemUnifiedDataRepository(ctx.repoDir);
+    const unifiedDataRepo = new FileSystemUnifiedDataRepository(
+      ctx.repoDir,
+      ctx.dataBaseDir,
+    );
     const outputRepo = new YamlOutputRepository(ctx.repoDir);
     const executionService = new DefaultMethodExecutionService();
     const vaultService = await VaultService.fromRepository(ctx.repoDir);
@@ -1686,6 +1691,7 @@ export class WorkflowExecutionService {
           skipCheckNames: options.skipCheckNames,
           skipCheckLabels: options.skipCheckLabels,
           skipAllChecks: options.skipAllChecks,
+          dataBaseDir: this.dataBaseDir,
         };
         return this.executor.execute(step, ctx);
       });
