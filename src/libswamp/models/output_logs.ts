@@ -25,6 +25,8 @@ import {
 } from "../../domain/models/model_lookup.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -77,9 +79,18 @@ export interface ModelOutputLogsDeps {
 /** Wires real infrastructure into ModelOutputLogsDeps. */
 export function createModelOutputLogsDeps(
   repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
 ): ModelOutputLogsDeps {
-  const outputRepo = new YamlOutputRepository(repoDir);
-  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
+  const outputRepo = new YamlOutputRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.outputs),
+  );
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
   return {
     isPartialId,
     matchOutputByPartialId: async (idPrefix: string) => {

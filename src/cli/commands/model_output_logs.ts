@@ -47,13 +47,15 @@ export const modelOutputLogsCommand = new Command()
     ]);
     cliCtx.logger.debug`Getting logs for output: ${outputIdArg}`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
+      {
+        repoDir: options.repoDir ?? ".",
+        outputMode: cliCtx.outputMode,
+      },
+    );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelOutputLogsDeps(repoDir);
+    const deps = createModelOutputLogsDeps(repoDir, datastoreResolver);
 
     const renderer = createModelOutputLogsRenderer(cliCtx.outputMode);
     await consumeStream(

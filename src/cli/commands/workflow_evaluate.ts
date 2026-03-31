@@ -73,13 +73,13 @@ export const workflowEvaluateCommand = new Command()
 
       // If --all flag or no argument, evaluate all workflows (global lock)
       if (options.all || !workflowIdOrName) {
-        const { repoDir } = await requireInitializedRepo({
+        const { repoDir, datastoreResolver } = await requireInitializedRepo({
           repoDir: options.repoDir ?? ".",
           outputMode: cliCtx.outputMode,
         });
 
         const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const deps = createWorkflowEvaluateDeps(repoDir);
+        const deps = createWorkflowEvaluateDeps(repoDir, datastoreResolver);
         const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 
         await consumeStream(
@@ -133,6 +133,7 @@ export const workflowEvaluateCommand = new Command()
 
       let flushModelLocks: (() => Promise<void>) | null = null;
       let repoDir: string;
+      let datastoreResolver = unlocked.datastoreResolver;
 
       if (modelRefs !== null && modelRefs.length > 0) {
         // Resolve model references to { modelType, modelId }
@@ -172,13 +173,14 @@ export const workflowEvaluateCommand = new Command()
           outputMode: cliCtx.outputMode,
         });
         repoDir = globalResult.repoDir;
+        datastoreResolver = globalResult.datastoreResolver;
       } else {
         // No model references
         repoDir = unlocked.repoDir;
       }
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createWorkflowEvaluateDeps(repoDir);
+      const deps = createWorkflowEvaluateDeps(repoDir, datastoreResolver);
       const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 
       try {

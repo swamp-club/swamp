@@ -50,13 +50,15 @@ export const modelMethodHistoryGetCommand = new Command()
     ]);
     cliCtx.logger.debug`Getting method run: ${outputIdOrModelName}`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
+      {
+        repoDir: options.repoDir ?? ".",
+        outputMode: cliCtx.outputMode,
+      },
+    );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelOutputGetDeps(repoDir);
+    const deps = createModelOutputGetDeps(repoDir, datastoreResolver);
 
     const renderer = createModelOutputGetRenderer(cliCtx.outputMode);
     await consumeStream(
