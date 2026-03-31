@@ -206,7 +206,8 @@ swamp vault status --json
 
 Publishing is the same for all extension types. Before pushing:
 
-1. **Get next version**: `swamp extension version --manifest manifest.yaml --json`
+1. **Get next version**:
+   `swamp extension version --manifest manifest.yaml --json`
 2. **Bump version** in `manifest.yaml` — use the `nextVersion` from above
 3. **Format & lint**: `swamp extension fmt manifest.yaml`
 4. **Dry-run**: `swamp extension push manifest.yaml --dry-run --json`

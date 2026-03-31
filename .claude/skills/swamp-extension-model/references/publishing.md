@@ -111,7 +111,8 @@ dependencies:
 
 ## Pre-Push Checklist
 
-1. **Get next version**: `swamp extension version --manifest manifest.yaml --json`
+1. **Get next version**:
+   `swamp extension version --manifest manifest.yaml --json`
 2. **Bump version** in `manifest.yaml` — use `nextVersion` from the output above
 3. **Format & lint**: `swamp extension fmt manifest.yaml`
 4. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json`
