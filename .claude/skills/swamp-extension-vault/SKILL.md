@@ -202,6 +202,21 @@ swamp vault status --json
    `(name: string, config: Record<string, unknown>)` — the first arg is the
    vault instance name, the second is the parsed config
 
+## Publishing
+
+Publishing is the same for all extension types. Before pushing:
+
+1. **Get next version**:
+   `swamp extension version --manifest manifest.yaml --json`
+2. **Bump version** in `manifest.yaml` — use the `nextVersion` from above
+3. **Format & lint**: `swamp extension fmt manifest.yaml`
+4. **Dry-run**: `swamp extension push manifest.yaml --dry-run --json`
+5. **Push**: `swamp extension push manifest.yaml --yes --json`
+
+For the full manifest schema, CalVer versioning, safety rules, and
+troubleshooting, see the
+[publishing guide](../swamp-extension-model/references/publishing.md).
+
 ## When to Use Other Skills
 
 | Need                               | Use Skill                   |

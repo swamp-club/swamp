@@ -109,6 +109,15 @@ dependencies:
   - "@myorg/aws-core"
 ```
 
+## Pre-Push Checklist
+
+1. **Get next version**:
+   `swamp extension version --manifest manifest.yaml --json`
+2. **Bump version** in `manifest.yaml` — use `nextVersion` from the output above
+3. **Format & lint**: `swamp extension fmt manifest.yaml`
+4. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json`
+5. **Push**: `swamp extension push manifest.yaml --yes --json`
+
 ## Push Workflow
 
 > **Before you push:** Your extension must pass

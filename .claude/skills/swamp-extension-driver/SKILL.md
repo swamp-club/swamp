@@ -223,6 +223,21 @@ driver file — swamp silently skips files that fail to compile.
 7. **Output types**: Drivers return `"pending"` outputs (data to be persisted by
    swamp) or `"persisted"` outputs (already written by in-process drivers)
 
+## Publishing
+
+Publishing is the same for all extension types. Before pushing:
+
+1. **Get next version**:
+   `swamp extension version --manifest manifest.yaml --json`
+2. **Bump version** in `manifest.yaml` — use the `nextVersion` from above
+3. **Format & lint**: `swamp extension fmt manifest.yaml`
+4. **Dry-run**: `swamp extension push manifest.yaml --dry-run --json`
+5. **Push**: `swamp extension push manifest.yaml --yes --json`
+
+For the full manifest schema, CalVer versioning, safety rules, and
+troubleshooting, see the
+[publishing guide](../swamp-extension-model/references/publishing.md).
+
 ## References
 
 - **API Reference**: See [references/api.md](references/api.md) for full
