@@ -34,6 +34,8 @@ type AnyOptions = any;
 export const workflowValidateCommand = new Command()
   .name("validate")
   .description("Validate a workflow against its schema")
+  .example("Validate a workflow", "swamp workflow validate deploy-pipeline")
+  .example("Validate all workflows", "swamp workflow validate")
   .arguments("[workflow_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, workflowIdOrName?: string) {

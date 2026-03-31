@@ -39,6 +39,8 @@ type AnyOptions = any;
 export const workflowEditCommand = new Command()
   .name("edit")
   .description("Edit a workflow file")
+  .example("Edit a workflow", "swamp workflow edit deploy-pipeline")
+  .example("Interactive search", "swamp workflow edit")
   .arguments("[workflow_id_or_name:workflow_name]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
