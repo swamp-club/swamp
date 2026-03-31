@@ -23,7 +23,18 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
+const ACTIVITY_INTERVAL_MS = 5_000;
+
 class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
+  private activityTimer: ReturnType<typeof setInterval> | undefined;
+
+  private clearTimer(): void {
+    if (this.activityTimer !== undefined) {
+      clearInterval(this.activityTimer);
+      this.activityTimer = undefined;
+    }
+  }
+
   handlers(): EventHandlers<DatastoreSyncEvent> {
     return {
       syncing: (e) => {
@@ -33,8 +44,19 @@ class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
           sync: "Syncing with remote...",
         };
         writeOutput(labels[e.mode] ?? `Syncing (${e.mode})...`);
+
+        const activityLabels: Record<string, string> = {
+          push: "Still pushing...",
+          pull: "Still pulling...",
+          sync: "Still syncing...",
+        };
+        const msg = activityLabels[e.mode] ?? "Still syncing...";
+        this.activityTimer = setInterval(() => {
+          writeOutput(msg);
+        }, ACTIVITY_INTERVAL_MS);
       },
       completed: (e) => {
+        this.clearTimer();
         const data = e.data;
         if (data.mode === "push") {
           writeOutput(
@@ -62,6 +84,7 @@ class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
         }
       },
       error: (e) => {
+        this.clearTimer();
         throw new UserError(e.error.message);
       },
     };
