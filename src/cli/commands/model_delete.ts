@@ -66,13 +66,13 @@ export const modelDeleteCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["model", "delete"]);
     cliCtx.logger.debug`Deleting model: ${modelIdOrName}`;
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir, datastoreResolver } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelDeleteDeps(repoDir);
+    const deps = createModelDeleteDeps(repoDir, datastoreResolver);
     const force = !!options.force;
 
     // Phase 1: Preview — gather what will be affected

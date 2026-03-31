@@ -28,6 +28,8 @@ import { readLogFile } from "../../presentation/output/log_file_reader.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -92,8 +94,15 @@ export interface WorkflowHistoryLogsDeps {
 /** Wires real infrastructure into WorkflowHistoryLogsDeps. */
 export function createWorkflowHistoryLogsDeps(
   repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
 ): WorkflowHistoryLogsDeps {
-  const runRepo = new YamlWorkflowRunRepository(repoDir);
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
+  const runRepo = new YamlWorkflowRunRepository(
+    repoDir,
+    undefined,
+    dsPath(SWAMP_SUBDIRS.workflowRuns),
+  );
   const workflowRepo = new YamlWorkflowRepository(repoDir);
   return {
     isPartialId,

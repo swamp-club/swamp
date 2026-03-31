@@ -25,6 +25,8 @@ import {
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -76,10 +78,22 @@ export interface WorkflowDeleteDeps {
 }
 
 /** Wires real infrastructure into WorkflowDeleteDeps. */
-export function createWorkflowDeleteDeps(repoDir: string): WorkflowDeleteDeps {
+export function createWorkflowDeleteDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): WorkflowDeleteDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
   const workflowRepo = new YamlWorkflowRepository(repoDir);
-  const workflowRunRepo = new YamlWorkflowRunRepository(repoDir);
-  const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(repoDir);
+  const workflowRunRepo = new YamlWorkflowRunRepository(
+    repoDir,
+    undefined,
+    dsPath(SWAMP_SUBDIRS.workflowRuns),
+  );
+  const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.workflowsEvaluated),
+  );
   return {
     findById: (id) => workflowRepo.findById(id),
     findByName: (name) => workflowRepo.findByName(name),

@@ -28,6 +28,8 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 
@@ -82,15 +84,26 @@ export interface ModelEvaluateDeps {
 }
 
 /** Wires real infrastructure into ModelEvaluateDeps. */
-export function createModelEvaluateDeps(repoDir: string): ModelEvaluateDeps {
+export function createModelEvaluateDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): ModelEvaluateDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
   const evaluationService = new ExpressionEvaluationService(
     definitionRepo,
     repoDir,
     { dataRepo },
   );
-  const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(repoDir);
+  const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
+  );
 
   return {
     lookupDefinition: (idOrName) =>

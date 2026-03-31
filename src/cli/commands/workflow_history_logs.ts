@@ -49,13 +49,15 @@ export const workflowHistoryLogsCommand = new Command()
     );
     cliCtx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
+      {
+        repoDir: options.repoDir ?? ".",
+        outputMode: cliCtx.outputMode,
+      },
+    );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowHistoryLogsDeps(repoDir);
+    const deps = createWorkflowHistoryLogsDeps(repoDir, datastoreResolver);
 
     const renderer = createWorkflowHistoryLogsRenderer(cliCtx.outputMode);
     await consumeStream(

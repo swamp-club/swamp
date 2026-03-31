@@ -26,6 +26,8 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { createModelOutputId } from "../../domain/models/model_output.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -95,11 +97,22 @@ export interface ModelDeleteDeps {
 }
 
 /** Wires real infrastructure into ModelDeleteDeps. */
-export function createModelDeleteDeps(repoDir: string): ModelDeleteDeps {
+export function createModelDeleteDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): ModelDeleteDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
   const workflowRepo = new YamlWorkflowRepository(repoDir);
-  const unifiedDataRepo = new FileSystemUnifiedDataRepository(repoDir);
-  const outputRepo = new YamlOutputRepository(repoDir);
+  const unifiedDataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
+  const outputRepo = new YamlOutputRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.outputs),
+  );
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),

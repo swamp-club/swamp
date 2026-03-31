@@ -66,13 +66,13 @@ export const workflowDeleteCommand = new Command()
     ]);
     cliCtx.logger.debug`Deleting workflow: ${workflowIdOrName}`;
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir, datastoreResolver } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowDeleteDeps(repoDir);
+    const deps = createWorkflowDeleteDeps(repoDir, datastoreResolver);
 
     // Phase 1: Preview
     let preview;

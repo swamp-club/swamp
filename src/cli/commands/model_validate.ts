@@ -65,7 +65,7 @@ export const modelValidateCommand = new Command()
       const method = options.method as string | undefined;
       const hasCheckOptions = (labels && labels.length > 0) || method;
 
-      const { repoDir } = hasCheckOptions
+      const { repoDir, datastoreResolver } = hasCheckOptions
         ? await requireInitializedRepo({
           repoDir: options.repoDir ?? ".",
           outputMode: cliCtx.outputMode,
@@ -76,7 +76,11 @@ export const modelValidateCommand = new Command()
         });
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createModelValidateDeps(repoDir, { labels, method });
+      const deps = createModelValidateDeps(
+        repoDir,
+        { labels, method },
+        datastoreResolver,
+      );
 
       const renderer = createModelValidateRenderer(cliCtx.outputMode);
       await consumeStream(

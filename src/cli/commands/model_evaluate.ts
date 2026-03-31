@@ -54,13 +54,13 @@ export const modelEvaluateCommand = new Command()
 
       // If --all flag or no argument, evaluate all definitions (global lock)
       if (options.all || !modelIdOrName) {
-        const { repoDir } = await requireInitializedRepo({
+        const { repoDir, datastoreResolver } = await requireInitializedRepo({
           repoDir: options.repoDir ?? ".",
           outputMode: cliCtx.outputMode,
         });
 
         const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const deps = createModelEvaluateDeps(repoDir);
+        const deps = createModelEvaluateDeps(repoDir, datastoreResolver);
         const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
 
         await consumeStream(
@@ -71,7 +71,7 @@ export const modelEvaluateCommand = new Command()
       }
 
       // Single model evaluation — use per-model lock
-      const { repoDir, repoContext, datastoreConfig } =
+      const { repoDir, repoContext, datastoreConfig, datastoreResolver } =
         await requireInitializedRepoUnlocked({
           repoDir: options.repoDir ?? ".",
           outputMode: cliCtx.outputMode,
@@ -94,7 +94,7 @@ export const modelEvaluateCommand = new Command()
       ], repoDir);
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createModelEvaluateDeps(repoDir);
+      const deps = createModelEvaluateDeps(repoDir, datastoreResolver);
       const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
 
       try {

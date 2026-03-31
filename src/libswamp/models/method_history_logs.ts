@@ -33,6 +33,8 @@ import { readLogFile } from "../../presentation/output/log_file_reader.ts";
 import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
@@ -106,9 +108,15 @@ export interface ModelMethodHistoryLogsDeps {
 /** Wires real infrastructure into ModelMethodHistoryLogsDeps. */
 export function createModelMethodHistoryLogsDeps(
   repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
 ): ModelMethodHistoryLogsDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const outputRepo = new YamlOutputRepository(repoDir);
+  const outputRepo = new YamlOutputRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.outputs),
+  );
   return {
     isPartialId,
     matchOutputByPartialId: async (idPrefix: string) => {

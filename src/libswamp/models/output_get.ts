@@ -29,6 +29,8 @@ import {
 } from "../../domain/models/model_lookup.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
@@ -143,9 +145,17 @@ export interface ModelOutputGetDeps {
 }
 
 /** Wires real infrastructure into ModelOutputGetDeps. */
-export function createModelOutputGetDeps(repoDir: string): ModelOutputGetDeps {
+export function createModelOutputGetDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): ModelOutputGetDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const outputRepo = new YamlOutputRepository(repoDir);
+  const outputRepo = new YamlOutputRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.outputs),
+  );
   return {
     findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
     findDefinitionByIdOrName: (idOrName) =>
