@@ -52,8 +52,12 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
 
     // Determine the base path for the datastore
     if (isCustomDatastoreConfig(datastoreConfig)) {
-      // Custom: path was eagerly resolved during config resolution
-      this.datastoreBasePath = datastoreConfig.datastorePath;
+      // For remote datastores with a local cache (e.g. S3), use the cache
+      // path so reads/writes go to the same directory the sync service
+      // pushes from and pulls to.  Fall back to datastorePath for custom
+      // datastores that don't use a separate cache.
+      this.datastoreBasePath = datastoreConfig.cachePath ??
+        datastoreConfig.datastorePath;
     } else {
       this.datastoreBasePath = datastoreConfig.path;
     }

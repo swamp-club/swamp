@@ -147,6 +147,38 @@ Deno.test("DefaultDatastorePathResolver - default config (no external datastore)
   );
 });
 
+Deno.test("DefaultDatastorePathResolver - custom datastore prefers cachePath over datastorePath", () => {
+  const config: DatastoreConfig = {
+    type: "s3",
+    config: { bucket: "my-bucket" },
+    datastorePath: "/repo/.swamp",
+    cachePath: "/home/user/.swamp/repos/abc",
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+  // Data should go to cachePath so the sync service can find it
+  assertEquals(
+    resolver.datastorePath("data"),
+    "/home/user/.swamp/repos/abc/data",
+  );
+  assertEquals(
+    resolver.resolvePath("data", "foo"),
+    "/home/user/.swamp/repos/abc/data/foo",
+  );
+});
+
+Deno.test("DefaultDatastorePathResolver - custom datastore falls back to datastorePath without cachePath", () => {
+  const config: DatastoreConfig = {
+    type: "custom",
+    config: {},
+    datastorePath: "/shared/datastore",
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+  assertEquals(
+    resolver.datastorePath("data"),
+    "/shared/datastore/data",
+  );
+});
+
 Deno.test("DefaultDatastorePathResolver - config returns the stored config", () => {
   const config: DatastoreConfig = {
     type: "filesystem",

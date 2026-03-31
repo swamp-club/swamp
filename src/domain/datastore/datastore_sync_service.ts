@@ -25,7 +25,7 @@
  */
 export interface DatastoreSyncService {
   /** Pull changed files from the remote datastore to the local cache. */
-  pullChanged(): Promise<void>;
+  pullChanged(): Promise<number | void>;
   /** Push changed files from the local cache to the remote datastore. */
-  pushChanged(): Promise<void>;
+  pushChanged(): Promise<number | void>;
 }

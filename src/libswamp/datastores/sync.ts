@@ -93,17 +93,21 @@ export function createDatastoreSyncDeps(
       validateSyncSupport: () =>
         Promise.resolve({ supported: true, type: config.type }),
       pushSync: async () => {
-        await syncService.pushChanged();
-        return { filesPushed: 0 };
+        const count = await syncService.pushChanged();
+        return { filesPushed: typeof count === "number" ? count : 0 };
       },
       pullSync: async () => {
-        await syncService.pullChanged();
-        return { filesPulled: 0 };
+        const count = await syncService.pullChanged();
+        return { filesPulled: typeof count === "number" ? count : 0 };
       },
       fullSync: async () => {
-        await syncService.pullChanged();
-        await syncService.pushChanged();
-        return { filesPulled: 0, filesPushed: 0, errors: [] };
+        const pulled = await syncService.pullChanged();
+        const pushed = await syncService.pushChanged();
+        return {
+          filesPulled: typeof pulled === "number" ? pulled : 0,
+          filesPushed: typeof pushed === "number" ? pushed : 0,
+          errors: [],
+        };
       },
     };
   }
