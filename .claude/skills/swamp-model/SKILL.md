@@ -151,6 +151,16 @@ swamp model create aws/ec2/vpc my-vpc \
   --json
 ```
 
+Use `${{ vault.get() }}` expressions for secrets — never resolve a secret and
+pass the literal value (see **swamp-vault** skill for details):
+
+```bash
+swamp model create @user/my-api api-client \
+  --global-arg 'apiKey=${{ vault.get(prod-secrets, API_KEY) }}' \
+  --global-arg endpoint=https://api.example.com \
+  --json
+```
+
 Dot notation creates nested objects:
 
 ```bash

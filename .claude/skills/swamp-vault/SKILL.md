@@ -202,8 +202,26 @@ attributes:
 **Key rules:**
 
 - Vault must exist before expression evaluation
-- Expressions are evaluated lazily at runtime
+- Expressions are evaluated lazily at runtime, per-step in workflows
 - Failed lookups throw errors with helpful messages
+
+### Resolution Timing
+
+Vault expressions are resolved **per-step at execution time** — each step gets
+a fresh vault read. A step that writes to a vault makes the new value available
+to all subsequent steps (e.g., token-refresh-then-use patterns).
+
+**Never resolve a secret and pass the literal value.** This freezes the secret
+at model creation time and prevents rotation or in-workflow refresh:
+
+```bash
+# WRONG — frozen at creation time
+TOKEN=$(swamp vault get my-vault AUTH_TOKEN)
+swamp model create ... --global-arg "token=$TOKEN"
+
+# RIGHT — resolved fresh per-step
+swamp model create ... --global-arg 'token=${{ vault.get(my-vault, AUTH_TOKEN) }}'
+```
 
 ## Using Vaults in Workflows
 

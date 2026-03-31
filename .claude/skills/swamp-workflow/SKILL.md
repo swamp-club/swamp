@@ -444,6 +444,29 @@ apiKey: ${{ vault.get(vault-name, secret-key) }}
 dbPassword: ${{ vault.get(prod-secrets, DB_PASSWORD) }}
 ```
 
+Vault expressions are resolved **per-step at execution time** — a step that
+writes to a vault makes the new value available to subsequent steps. Example
+token-refresh-then-use pattern:
+
+```yaml
+jobs:
+  refresh:
+    steps:
+      - name: refresh-token
+        task:
+          type: model_method
+          modelIdOrName: token-refresher
+          methodName: refresh
+  use-token:
+    depends_on: [refresh]
+    steps:
+      - name: call-api
+        task:
+          type: model_method
+          modelIdOrName: api-client  # vault.get() resolved after refresh
+          methodName: invoke
+```
+
 ## Workflow Example
 
 End-to-end workflow creation:
