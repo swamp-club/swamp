@@ -34,6 +34,15 @@ type AnyOptions = any;
 export const modelOutputDataCommand = new Command()
   .name("data")
   .description("Show data artifact content for a model output")
+  .example("Show output data", "swamp model output data abc123")
+  .example(
+    "Show specific field",
+    "swamp model output data abc123 --field status",
+  )
+  .example(
+    "Show specific version",
+    "swamp model output data abc123 --version 2",
+  )
   .arguments("<output_id:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--field <name:string>", "Show only a specific field from the data")

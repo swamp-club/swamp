@@ -37,6 +37,12 @@ type AnyOptions = any;
 export const modelValidateCommand = new Command()
   .name("validate")
   .description("Validate a model definition against its schema")
+  .example("Validate a model", "swamp model validate my-server")
+  .example("Validate all models", "swamp model validate")
+  .example(
+    "Filter by label",
+    "swamp model validate --label production",
+  )
   .arguments("[model_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(

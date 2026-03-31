@@ -34,6 +34,11 @@ type AnyOptions = any;
 export const modelMethodHistoryLogsCommand = new Command()
   .name("logs")
   .description("Show logs for a model method run")
+  .example("Show run logs", "swamp model method history logs abc123")
+  .example(
+    "Tail last 50 lines",
+    "swamp model method history logs abc123 --tail 50",
+  )
   .arguments("<output_id_or_model_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--tail <lines:number>", "Show only the last N lines")

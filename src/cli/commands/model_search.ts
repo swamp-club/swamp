@@ -120,6 +120,8 @@ export async function modelSearchAction(
 export const modelSearchCommand = new Command()
   .name("search")
   .description("Search for model definitions")
+  .example("Browse all models", "swamp model search")
+  .example("Search by keyword", "swamp model search aws")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(modelSearchAction);

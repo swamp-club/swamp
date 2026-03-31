@@ -39,6 +39,8 @@ type AnyOptions = any;
 export const modelEditCommand = new Command()
   .name("edit")
   .description("Edit a model definition file")
+  .example("Edit a model", "swamp model edit my-server")
+  .example("Interactive search", "swamp model edit")
   .arguments("[model_id_or_name:model_name]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   // @ts-expect-error - Cliffy custom type returns unknown instead of string

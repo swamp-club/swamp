@@ -34,6 +34,8 @@ type AnyOptions = any;
 export const modelOutputGetCommand = new Command()
   .name("get")
   .description("Show details of a model output")
+  .example("Show output details by ID", "swamp model output get abc123")
+  .example("Show latest output for a model", "swamp model output get my-server")
   .arguments("<output_id_or_model_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, outputIdOrModelName: string) {

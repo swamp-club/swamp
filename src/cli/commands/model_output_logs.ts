@@ -34,6 +34,8 @@ type AnyOptions = any;
 export const modelOutputLogsCommand = new Command()
   .name("logs")
   .description("Show log artifact content for a model output")
+  .example("Show output logs", "swamp model output logs abc123")
+  .example("Tail last 100 lines", "swamp model output logs abc123 --tail 100")
   .arguments("<output_id:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--tail <n:number>", "Show only last N lines")

@@ -34,6 +34,11 @@ type AnyOptions = any;
 export const modelMethodHistoryGetCommand = new Command()
   .name("get")
   .description("Show details of a model method run")
+  .example("Show run details by ID", "swamp model method history get abc123")
+  .example(
+    "Show latest run for a model",
+    "swamp model method history get my-server",
+  )
   .arguments("<output_id_or_model_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, outputIdOrModelName: string) {

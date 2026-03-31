@@ -43,6 +43,8 @@ type AnyOptions = any;
 export const modelMethodHistorySearchCommand = new Command()
   .name("search")
   .description("Search model method run history")
+  .example("Browse all history", "swamp model method history search")
+  .example("Search by keyword", "swamp model method history search deploy")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {

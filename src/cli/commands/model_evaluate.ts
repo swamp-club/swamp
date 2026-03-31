@@ -40,6 +40,8 @@ type AnyOptions = any;
 export const modelEvaluateCommand = new Command()
   .name("evaluate")
   .description("Evaluate expressions in model definitions")
+  .example("Evaluate a model", "swamp model evaluate my-server")
+  .example("Evaluate all models", "swamp model evaluate --all")
   .arguments("[model_id_or_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--all", "Evaluate all model definitions")

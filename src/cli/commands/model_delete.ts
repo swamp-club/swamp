@@ -53,6 +53,8 @@ async function promptConfirmation(message: string): Promise<boolean> {
 export const modelDeleteCommand = new Command()
   .name("delete")
   .description("Delete a model and all related artifacts")
+  .example("Delete a model", "swamp model delete my-server")
+  .example("Force delete", "swamp model delete my-server --force")
   .arguments("<model_id_or_name:model_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(

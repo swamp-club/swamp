@@ -72,6 +72,8 @@ function createOutputFetchPreview(
 export const modelOutputSearchCommand = new Command()
   .name("search")
   .description("Search for model outputs")
+  .example("Browse all outputs", "swamp model output search")
+  .example("Search by keyword", "swamp model output search deploy")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions, query?: string) {

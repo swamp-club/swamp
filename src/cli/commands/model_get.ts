@@ -34,6 +34,8 @@ type AnyOptions = any;
 export const modelGetCommand = new Command()
   .name("get")
   .description("Show details of a model definition")
+  .example("Show model details", "swamp model get my-server")
+  .example("JSON output", "swamp model get my-server --json")
   .arguments("<model_id_or_name:model_name>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   // @ts-expect-error - Cliffy custom type returns unknown instead of string

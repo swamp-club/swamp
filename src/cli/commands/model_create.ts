@@ -44,6 +44,11 @@ type AnyOptions = any;
 
 export const modelCreateCommand = new Command()
   .description("Create a new model definition")
+  .example("Create a model", "swamp model create aws-ec2 my-server")
+  .example(
+    "With global args",
+    "swamp model create aws-ec2 my-server --global-arg region=us-east-1",
+  )
   .arguments("<type:model_type> <name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(
