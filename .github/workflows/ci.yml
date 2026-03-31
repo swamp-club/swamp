@@ -133,38 +133,38 @@ jobs:
       - name: Review skills
         run: deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/review_skills.ts
 
-  skill-trigger-eval:
-    name: Skill Trigger Eval
-    needs: [changes]
-    # Disabled: investigating cost impact of eval runs
-    if: false # needs.changes.outputs.skills == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-
-      - name: Install Claude CLI
-        run: npm install -g @anthropic-ai/claude-code
-
-      - name: Run skill trigger evals
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          EVAL_RUNS: "3"
-          EVAL_WORKERS: "25"
-          EVAL_TIMEOUT: "30"
-        run: deno run eval-skill-triggers
+  # Disabled: investigating cost impact of eval runs
+  # skill-trigger-eval:
+  #   name: Skill Trigger Eval
+  #   needs: [changes]
+  #   if: needs.changes.outputs.skills == 'true'
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: read
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v6
+  #
+  #     - name: Setup Deno
+  #       uses: denoland/setup-deno@v2
+  #       with:
+  #         deno-version: v2.x
+  #
+  #     - name: Setup Node.js
+  #       uses: actions/setup-node@v6
+  #       with:
+  #         node-version: "24"
+  #
+  #     - name: Install Claude CLI
+  #       run: npm install -g @anthropic-ai/claude-code
+  #
+  #     - name: Run skill trigger evals
+  #       env:
+  #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  #         EVAL_RUNS: "3"
+  #         EVAL_WORKERS: "25"
+  #         EVAL_TIMEOUT: "30"
+  #       run: deno run eval-skill-triggers
 
   claude-review:
     # NOTE: For this to block merges, enable branch protection on main with:
