@@ -138,13 +138,13 @@ Deno.test("getNotification returns null when current version is newer than cache
   // User updated via another channel (e.g. deno run compile) to a version
   // newer than what the background check last cached.
   const cache: UpdateCheckCacheData = {
-    latestVersion: "20260228.200442.0-sha.abc123",
+    latestVersion: versionDaysAgo(2), // older cached version
     checkedAt: new Date().toISOString(),
   };
   const cacheRepo = createMockCacheRepo(cache);
   const checker = createMockChecker();
   const service = new UpdateNotificationService(
-    "20260301.120000.0-sha.def456",
+    versionDaysAgoAlt(1), // newer current version
     cacheRepo,
     checker,
   );
