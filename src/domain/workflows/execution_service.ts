@@ -1402,13 +1402,23 @@ export class WorkflowExecutionService {
             },
           };
 
-          // Evaluate step name (may contain ${{ self.env }})
+          // Evaluate ALL expressions in step name (may contain multiple
+          // like ${{ self.ep.attributes.show }}-${{ self.ep.attributes.rawTitle }})
           let expandedName = step.name;
-          const nameMatch = step.name.match(/\$\{\{\s*(.+?)\s*\}\}/);
-          if (nameMatch) {
-            const value = celEvaluator.evaluate(nameMatch[1], stepContext);
-            expandedName = step.name.replace(nameMatch[0], String(value));
-          } else if (!nameHasExpression) {
+          if (nameHasExpression) {
+            expandedName = step.name.replace(
+              /\$\{\{\s*(.+?)\s*\}\}/g,
+              (_match, expr) => {
+                try {
+                  return String(
+                    celEvaluator.evaluate(expr as string, stepContext),
+                  );
+                } catch {
+                  return _match as string;
+                }
+              },
+            );
+          } else {
             // Step name has no expression template — append item value for uniqueness
             if (
               item !== null && typeof item === "object"
@@ -1445,13 +1455,22 @@ export class WorkflowExecutionService {
             },
           };
 
-          // Evaluate step name
+          // Evaluate ALL expressions in step name
           let expandedName = step.name;
-          const nameMatch = step.name.match(/\$\{\{\s*(.+?)\s*\}\}/);
-          if (nameMatch) {
-            const evalValue = celEvaluator.evaluate(nameMatch[1], stepContext);
-            expandedName = step.name.replace(nameMatch[0], String(evalValue));
-          } else if (!nameHasExpression) {
+          if (nameHasExpression) {
+            expandedName = step.name.replace(
+              /\$\{\{\s*(.+?)\s*\}\}/g,
+              (_match, expr) => {
+                try {
+                  return String(
+                    celEvaluator.evaluate(expr as string, stepContext),
+                  );
+                } catch {
+                  return _match as string;
+                }
+              },
+            );
+          } else {
             // Step name has no expression template — append key for uniqueness
             expandedName = `${step.name}-${key}`;
           }
