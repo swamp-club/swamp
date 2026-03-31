@@ -46,6 +46,7 @@ export type WorkflowExecutionEvent =
     runId: string;
     workflowName: string;
     logPath: string;
+    driver?: string;
     jobs: WorkflowJobInfo[];
   }
   | { kind: "job_started"; jobId: string }

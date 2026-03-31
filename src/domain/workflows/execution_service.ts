@@ -971,6 +971,7 @@ export class WorkflowExecutionService {
         runId: run.id,
         workflowName: workflow.name,
         logPath: workflowLogPath,
+        driver: workflow.driver,
         jobs: workflow.jobs.map((job) => ({
           id: job.name,
           stepCount: job.steps.length,

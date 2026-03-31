@@ -73,7 +73,7 @@ export type ServerMessage =
 export type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
-  | { kind: "started"; runId: string; workflowName: string }
+  | { kind: "started"; runId: string; workflowName: string; driver?: string }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
