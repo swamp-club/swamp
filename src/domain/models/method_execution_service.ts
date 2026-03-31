@@ -613,7 +613,20 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               "this is a bug; raw driver should only produce persisted outputs",
           );
         }
+        // Process outputs first — even on error, data may have been written
+        // to disk before the method threw (e.g. code-review writes log then
+        // throws on verdict=FAIL). Handles must survive the error path.
         currentHandles = await processDriverOutputs(driverResult.outputs);
+
+        if (driverResult.status === "error") {
+          const err = new Error(
+            driverResult.error ?? "Method execution failed",
+          );
+          (err as unknown as Record<string, unknown>).dataHandles =
+            currentHandles;
+          throw err;
+        }
+
         result = {
           dataHandles: currentHandles,
           followUpActions: driverResult

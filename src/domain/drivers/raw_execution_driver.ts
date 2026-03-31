@@ -147,31 +147,54 @@ export class RawExecutionDriver implements ExecutionDriver {
       createFileWriter,
     };
 
-    const result = await this.executor.execute(
-      this.definition,
-      this.method,
-      this.contextWithWriters,
-    );
+    try {
+      const result = await this.executor.execute(
+        this.definition,
+        this.method,
+        this.contextWithWriters,
+      );
 
-    const durationMs = performance.now() - start;
-    const writerHandles = [
-      ...getResourceHandles(),
-      ...getFileHandles(),
-    ];
-    const handles = result.dataHandles?.length
-      ? result.dataHandles
-      : writerHandles;
-    const outputs = handles.map((handle) => ({
-      kind: "persisted" as const,
-      handle,
-    }));
+      const durationMs = performance.now() - start;
+      const writerHandles = [
+        ...getResourceHandles(),
+        ...getFileHandles(),
+      ];
+      const handles = result.dataHandles?.length
+        ? result.dataHandles
+        : writerHandles;
+      const outputs = handles.map((handle) => ({
+        kind: "persisted" as const,
+        handle,
+      }));
 
-    return {
-      status: "success",
-      outputs,
-      logs,
-      durationMs,
-      followUpActions: result.followUpActions,
-    };
+      return {
+        status: "success",
+        outputs,
+        logs,
+        durationMs,
+        followUpActions: result.followUpActions,
+      };
+    } catch (error) {
+      // Collect handles for data that was already written to disk before the
+      // throw. Without this, data produced by a method that writes-then-throws
+      // (e.g. code-review verdict=FAIL) would be invisible to workflow queries.
+      const durationMs = performance.now() - start;
+      const writerHandles = [
+        ...getResourceHandles(),
+        ...getFileHandles(),
+      ];
+      const outputs = writerHandles.map((handle) => ({
+        kind: "persisted" as const,
+        handle,
+      }));
+
+      return {
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+        outputs,
+        logs,
+        durationMs,
+      };
+    }
   }
 }

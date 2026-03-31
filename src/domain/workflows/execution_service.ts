@@ -413,6 +413,15 @@ export class DefaultStepExecutor implements StepExecutor {
     const resources: Record<string, Record<string, DataRecord>> = {};
     const files: Record<string, Record<string, FileDataRecord>> = {};
 
+    // Declared outside try so the catch block can record artifacts written
+    // before a throw (e.g. model writes data then throws on verdict=FAIL).
+    const savedArtifacts: Array<{
+      dataId: string;
+      name: string;
+      version: number;
+      tags: Record<string, string>;
+    }> = [];
+
     try {
       runLogger.debug("Executing method {method}", {
         method: task.methodName,
@@ -525,12 +534,6 @@ export class DefaultStepExecutor implements StepExecutor {
       );
 
       // Extract artifact info from dataHandles (already persisted by DataWriter)
-      const savedArtifacts: Array<{
-        dataId: string;
-        name: string;
-        version: number;
-        tags: Record<string, string>;
-      }> = [];
       if (result.dataHandles && result.dataHandles.length > 0) {
         for (const handle of result.dataHandles) {
           const artifactRef = {
@@ -756,6 +759,24 @@ export class DefaultStepExecutor implements StepExecutor {
         dataHandles: result.dataHandles ?? [],
       };
     } catch (error) {
+      // Recover data handles written before the throw (e.g. model wrote data
+      // then threw on verdict=FAIL). The driver attaches them to the error.
+      const errorHandles = (error as Record<string, unknown>).dataHandles as
+        | import("../models/model.ts").DataHandle[]
+        | undefined;
+      if (errorHandles && errorHandles.length > 0) {
+        for (const handle of errorHandles) {
+          const artifactRef = {
+            dataId: handle.dataId,
+            name: handle.name,
+            version: handle.version,
+            tags: handle.tags,
+          };
+          output.addDataArtifact(artifactRef);
+          savedArtifacts.push(artifactRef);
+        }
+      }
+
       // Mark output as failed and save
       const errorMessage = error instanceof Error
         ? error.message
@@ -868,6 +889,11 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       }
 
+      // Attach saved artifacts to the error so the outer step loop can
+      // record them in the step run even though the step failed.
+      if (savedArtifacts.length > 0) {
+        (error as Record<string, unknown>).dataArtifacts = savedArtifacts;
+      }
       throw error;
     }
   }
@@ -1783,6 +1809,22 @@ export class WorkflowExecutionService {
         dataHandles: stepDataHandles,
       };
     } catch (error) {
+      // Record data artifacts that were written before the throw so they
+      // survive in the workflow run record for later data get --workflow.
+      const errorArtifacts = (error as Record<string, unknown>).dataArtifacts as
+        | Array<{
+          dataId: string;
+          name: string;
+          version: number;
+          tags: Record<string, string>;
+        }>
+        | undefined;
+      if (errorArtifacts) {
+        for (const artifact of errorArtifacts) {
+          stepRun.addDataArtifact(artifact);
+        }
+      }
+
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
