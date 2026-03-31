@@ -22,6 +22,10 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  ScheduledExecutionService,
+} from "../../libswamp/workflows/scheduled_execution.ts";
+import { createWorkflowRunDeps } from "../../serve/deps.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -40,6 +44,7 @@ export const serveCommand = new Command()
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--port <port:number>", "Port to listen on", { default: 9090 })
   .option("--host <host:string>", "Host to bind to", { default: "127.0.0.1" })
+  .option("--no-schedule", "Disable scheduled workflow execution")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve"]);
     const repoDir = options.repoDir as string ?? ".";
@@ -68,6 +73,57 @@ export const serveCommand = new Command()
     };
 
     const ac = new AbortController();
+    const enableSchedule = options.schedule !== false;
+
+    // Start scheduled execution service if enabled
+    let scheduledExecution: ScheduledExecutionService | null = null;
+    if (enableSchedule) {
+      scheduledExecution = new ScheduledExecutionService({
+        workflowRepo: repoContext.workflowRepo,
+        repoDir: resolvedRepoDir,
+        createWorkflowRunDeps: () =>
+          createWorkflowRunDeps(resolvedRepoDir, repoContext),
+      });
+
+      await scheduledExecution.start((event) => {
+        if (isJson) {
+          console.log(JSON.stringify(event));
+        } else {
+          switch (event.kind) {
+            case "schedule_registered":
+              logger.info(
+                "Scheduled workflow {name} ({cron})",
+                { name: event.workflowName, cron: event.cronExpression },
+              );
+              break;
+            case "schedule_fired":
+              logger.info(
+                "Running scheduled workflow {name}",
+                { name: event.workflowName },
+              );
+              break;
+            case "schedule_skipped":
+              logger.warn(
+                "Skipped scheduled workflow {name}: {reason}",
+                { name: event.workflowName, reason: event.reason },
+              );
+              break;
+            case "schedule_completed":
+              logger.info(
+                "Scheduled workflow {name} completed (run: {runId})",
+                { name: event.workflowName, runId: event.runId },
+              );
+              break;
+            case "schedule_failed":
+              logger.error(
+                "Scheduled workflow {name} failed: {error}",
+                { name: event.workflowName, error: event.error },
+              );
+              break;
+          }
+        }
+      });
+    }
 
     const server = Deno.serve(
       {
@@ -81,6 +137,7 @@ export const serveCommand = new Command()
               host: hostname,
               port: listenPort,
               url: `ws://${hostname}:${listenPort}`,
+              schedulingEnabled: enableSchedule,
             }));
           } else {
             logger.info("WebSocket API server listening on {host}:{port}", {
@@ -103,7 +160,21 @@ export const serveCommand = new Command()
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/" || url.pathname === "/health") {
-            return Response.json({ status: "ok", version: "1" });
+            const schedules = scheduledExecution?.listSchedules().map((s) => ({
+              workflowId: s.workflowId,
+              cronExpression: s.cronExpression,
+              nextRun: s.nextRun?.toISOString() ?? null,
+              running: scheduledExecution!.isRunning(s.workflowId),
+            })) ?? [];
+
+            return Response.json({
+              status: "ok",
+              version: "1",
+              scheduling: {
+                enabled: enableSchedule,
+                schedules,
+              },
+            });
           }
         }
 
@@ -112,15 +183,21 @@ export const serveCommand = new Command()
     );
 
     // Handle SIGINT/SIGTERM for graceful shutdown
-    const shutdown = () => {
+    const shutdown = async () => {
+      if (isJson) {
+        console.log(JSON.stringify({ status: "stopping" }));
+      }
+      logger.info("Shutting down...");
+      if (scheduledExecution) {
+        await scheduledExecution.stop();
+      }
+      ac.abort();
       if (isJson) {
         console.log(JSON.stringify({ status: "stopped" }));
       }
-      logger.info("Shutting down...");
-      ac.abort();
     };
-    Deno.addSignalListener("SIGINT", shutdown);
-    Deno.addSignalListener("SIGTERM", shutdown);
+    Deno.addSignalListener("SIGINT", () => shutdown());
+    Deno.addSignalListener("SIGTERM", () => shutdown());
 
     await server.finished;
 
