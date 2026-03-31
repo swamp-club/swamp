@@ -696,7 +696,14 @@ export async function acquireModelLocks(
         try {
           await pushLock.acquire();
           logger.info`Pushing changes to datastore...`;
-          await customSyncService.pushChanged();
+          const pushed = await customSyncService.pushChanged();
+          if (pushed && pushed > 0) {
+            logger.info("Pushed {count} file(s) to datastore", {
+              count: pushed,
+            });
+          } else {
+            logger.info`Push complete, no changes`;
+          }
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           logger.error("Failed to push changes to datastore: {error}", {
