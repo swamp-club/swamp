@@ -560,3 +560,141 @@ Deno.test("data.* returns null/empty for missing data name", async () => {
     assertEquals(ctx.data.listVersions("empty-model", "nonexistent"), []);
   });
 });
+
+// ============================================================================
+// data.findBySpec() run-scoping via workflowRunId
+// ============================================================================
+
+Deno.test("findBySpec: scopes to current run when workflowRunId is set", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "dedup-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    // Data from run-1
+    const episodeA = Data.create({
+      name: "episode-a",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: {
+        type: "resource",
+        specName: "episode",
+        workflowRunId: "run-1",
+      },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      episodeA,
+      new TextEncoder().encode(JSON.stringify({ title: "Episode A" })),
+    );
+
+    // Data from run-2
+    const episodeB = Data.create({
+      name: "episode-b",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: {
+        type: "resource",
+        specName: "episode",
+        workflowRunId: "run-2",
+      },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      episodeB,
+      new TextEncoder().encode(JSON.stringify({ title: "Episode B" })),
+    );
+
+    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const ctx = await resolver.buildContext();
+    assertExists(ctx.data);
+
+    // Without workflowRunId, findBySpec returns all data
+    const allResults = ctx.data.findBySpec("dedup-model", "episode");
+    assertEquals(allResults.length, 2);
+
+    // With workflowRunId set, findBySpec only returns data from that run
+    ctx.workflowRunId = "run-1";
+    const run1Results = ctx.data.findBySpec("dedup-model", "episode");
+    assertEquals(run1Results.length, 1);
+    assertEquals(run1Results[0].name, "episode-a");
+
+    // Switch to run-2
+    ctx.workflowRunId = "run-2";
+    const run2Results = ctx.data.findBySpec("dedup-model", "episode");
+    assertEquals(run2Results.length, 1);
+    assertEquals(run2Results[0].name, "episode-b");
+  });
+});
+
+Deno.test("findBySpec: returns all data when workflowRunId is not set", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const type = ModelType.create("test/model");
+
+    const model = Definition.create({
+      name: "global-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, model);
+
+    // Data with no workflowRunId tag (e.g., written outside a workflow)
+    const dataNoRun = Data.create({
+      name: "item-standalone",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "item" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      dataNoRun,
+      new TextEncoder().encode(JSON.stringify({ value: 1 })),
+    );
+
+    // Data with a workflowRunId tag
+    const dataWithRun = Data.create({
+      name: "item-from-workflow",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: {
+        type: "resource",
+        specName: "item",
+        workflowRunId: "run-abc",
+      },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      model.id,
+      dataWithRun,
+      new TextEncoder().encode(JSON.stringify({ value: 2 })),
+    );
+
+    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const ctx = await resolver.buildContext();
+    assertExists(ctx.data);
+
+    // No workflowRunId set — returns all data regardless of tags
+    const allResults = ctx.data.findBySpec("global-model", "item");
+    assertEquals(allResults.length, 2);
+  });
+});

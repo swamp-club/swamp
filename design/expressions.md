@@ -174,6 +174,43 @@ attributes:
   historySize: ${{ size(data.listVersions('processor', 'result')) }}
 ```
 
+### data.findBySpec(modelName, specName)
+
+Returns all data records for a model that match a given output spec name.
+Commonly used in `forEach` expressions to iterate over variable-length output.
+
+**Workflow run scoping:** When called inside a workflow run, `findBySpec` only
+returns data produced during the current run. This prevents stale data from
+previous runs leaking into `forEach` iteration. Outside a workflow context, it
+returns all data globally.
+
+```yaml
+# In a forEach step — only sees data from the current workflow run:
+steps:
+  - name: dl-${{ self.ep.attributes.title }}
+    forEach:
+      item: ep
+      in: ${{ data.findBySpec("dedup-model", "episode") }}
+    task:
+      type: model_method
+      modelIdOrName: downloader
+      methodName: download
+      inputs:
+        uri: ${{ self.ep.attributes.url }}
+```
+
+### data.findByTag(tagKey, tagValue)
+
+Returns all data records across all models with a matching tag. This function is
+**not** run-scoped — it always returns all matching data globally. Use it when
+you need cross-run data access.
+
+```yaml
+# Find all data tagged with env=prod across all models:
+inputs:
+  prodData: ${{ data.findByTag("env", "prod") }}
+```
+
 ## Sensitive Data
 
 You should be able to access sensitive data by referencing the storage keys they

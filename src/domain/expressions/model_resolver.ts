@@ -204,6 +204,12 @@ export interface ExpressionContext {
   data?: DataNamespace;
   /** File namespace for lazy-loading file contents */
   file?: FileNamespace;
+  /**
+   * Workflow run ID for scoping data queries.
+   * When set, `data.findBySpec()` only returns data tagged with this run ID.
+   * Set by the workflow engine after creating the run.
+   */
+  workflowRunId?: string;
   /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }
@@ -605,6 +611,7 @@ export class ModelResolver {
         if (!allCoords) return [];
         const results: DataRecord[] = [];
         const seen = new Set<string>();
+        const runId = context.workflowRunId;
         for (const { modelType, modelId } of allCoords) {
           const allData = dataRepo.findAllForModelSync(modelType, modelId);
           for (const data of allData) {
@@ -621,6 +628,10 @@ export class ModelResolver {
               latestVersion,
             );
             if (versionData && versionData.tags["specName"] === specName) {
+              // When inside a workflow run, scope to current run's data only
+              if (runId && versionData.tags["workflowRunId"] !== runId) {
+                continue;
+              }
               const dedupeKey =
                 `${modelType.normalized}:${modelId}:${data.name}`;
               if (seen.has(dedupeKey)) continue;
