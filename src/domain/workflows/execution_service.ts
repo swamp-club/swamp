@@ -1421,6 +1421,7 @@ export class WorkflowExecutionService {
           // like ${{ self.ep.attributes.show }}-${{ self.ep.attributes.rawTitle }})
           let expandedName = step.name;
           if (nameHasExpression) {
+            let hadEvalFailure = false;
             expandedName = step.name.replace(
               /\$\{\{\s*(.+?)\s*\}\}/g,
               (_match, expr) => {
@@ -1429,10 +1430,20 @@ export class WorkflowExecutionService {
                     celEvaluator.evaluate(expr as string, stepContext),
                   );
                 } catch {
+                  hadEvalFailure = true;
                   return _match as string;
                 }
               },
             );
+            if (hadEvalFailure) {
+              expandedName = `${expandedName}-${index}`;
+              getLogger(["swamp", "workflows"]).warn(
+                "forEach step '{stepName}' has expression(s) that failed to evaluate for item at index {index}. " +
+                  "Appending index to prevent duplicate names. " +
+                  "Check that the expression references valid properties on self.{itemName}.",
+                { stepName: step.name, index, itemName },
+              );
+            }
           } else {
             // Step name has no expression template — append item value for uniqueness
             if (
@@ -1473,6 +1484,7 @@ export class WorkflowExecutionService {
           // Evaluate ALL expressions in step name
           let expandedName = step.name;
           if (nameHasExpression) {
+            let hadEvalFailure = false;
             expandedName = step.name.replace(
               /\$\{\{\s*(.+?)\s*\}\}/g,
               (_match, expr) => {
@@ -1481,10 +1493,20 @@ export class WorkflowExecutionService {
                     celEvaluator.evaluate(expr as string, stepContext),
                   );
                 } catch {
+                  hadEvalFailure = true;
                   return _match as string;
                 }
               },
             );
+            if (hadEvalFailure) {
+              expandedName = `${expandedName}-${key}`;
+              getLogger(["swamp", "workflows"]).warn(
+                "forEach step '{stepName}' has expression(s) that failed to evaluate for key '{key}'. " +
+                  "Appending key to prevent duplicate names. " +
+                  "Check that the expression references valid properties on self.{itemName}.",
+                { stepName: step.name, key, itemName },
+              );
+            }
           } else {
             // Step name has no expression template — append key for uniqueness
             expandedName = `${step.name}-${key}`;

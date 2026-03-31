@@ -2151,3 +2151,176 @@ Deno.test("expandForEachSteps: object iteration with multi-expression step name"
     assertEquals(new Set(stepNames).size, stepNames.length);
   });
 });
+
+// Regression test for issue #975: forEach expression evaluation failure should
+// append index to prevent duplicate step names.
+Deno.test("expandForEachSteps: appends index when array item expression evaluation fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    // Create workflow where forEach iterates an array, and the step name
+    // references a property that doesn't exist on the items.
+    // Both items will fail expression evaluation, but the index suffix
+    // should prevent duplicate names.
+    const workflow = Workflow.create({
+      name: "foreach-eval-fail-array",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "process-${{ self.item.missingField }}",
+              task: StepTask.model("test-model", "run"),
+              forEach: {
+                item: "item",
+                in: "${{ inputs.items }}",
+              },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, {
+      inputs: { items: [{ a: 1 }, { a: 2 }] },
+    });
+
+    assertEquals(run.status, "succeeded");
+    // Each expanded step should have a unique name with index suffix
+    assertEquals(executor.executedSteps.length, 2);
+    assertEquals(
+      executor.executedSteps.includes(
+        "job1/process-${{ self.item.missingField }}-0",
+      ),
+      true,
+    );
+    assertEquals(
+      executor.executedSteps.includes(
+        "job1/process-${{ self.item.missingField }}-1",
+      ),
+      true,
+    );
+  });
+});
+
+// Regression test for issue #975: forEach expression evaluation failure over
+// object iteration should append key to prevent duplicate step names.
+Deno.test("expandForEachSteps: appends key when object item expression evaluation fails", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    // Create workflow where forEach iterates an object, and the step name
+    // references a property that doesn't exist on the items.
+    const workflow = Workflow.create({
+      name: "foreach-eval-fail-object",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "process-${{ self.entry.missingField }}",
+              task: StepTask.model("test-model", "run"),
+              forEach: {
+                item: "entry",
+                in: "${{ inputs.items }}",
+              },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, {
+      inputs: { items: { alpha: "one", beta: "two" } },
+    });
+
+    assertEquals(run.status, "succeeded");
+    // Each expanded step should have a unique name with key suffix
+    assertEquals(executor.executedSteps.length, 2);
+    assertEquals(
+      executor.executedSteps.includes(
+        "job1/process-${{ self.entry.missingField }}-alpha",
+      ),
+      true,
+    );
+    assertEquals(
+      executor.executedSteps.includes(
+        "job1/process-${{ self.entry.missingField }}-beta",
+      ),
+      true,
+    );
+  });
+});
+
+// Verify that forEach with successful expression evaluation still works without
+// appending index/key suffix.
+Deno.test("expandForEachSteps: does not append index when expression evaluates successfully", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "foreach-eval-success",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "process-${{ self.item.name }}",
+              task: StepTask.model("test-model", "run"),
+              forEach: {
+                item: "item",
+                in: "${{ inputs.items }}",
+              },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, {
+      inputs: { items: [{ name: "foo" }, { name: "bar" }] },
+    });
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps.length, 2);
+    // Names should be resolved without index suffix
+    assertEquals(
+      executor.executedSteps.includes("job1/process-foo"),
+      true,
+    );
+    assertEquals(
+      executor.executedSteps.includes("job1/process-bar"),
+      true,
+    );
+  });
+});
