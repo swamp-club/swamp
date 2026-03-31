@@ -293,7 +293,8 @@ export async function parseDatastoreEnvVar(
   const provider = typeInfo.createProvider(config);
   const resolvedRepoDir = repoDir ?? ".";
   const datastorePath = provider.resolveDatastorePath(resolvedRepoDir);
-  const cachePath = provider.resolveCachePath?.(resolvedRepoDir);
+  const cachePath = provider.resolveCachePath?.(resolvedRepoDir) ??
+    join(getSwampDataDir(), "repos", repoId ?? "unknown");
 
   return {
     type,
@@ -448,7 +449,8 @@ export async function resolveDatastoreConfig(
 
     const provider = typeInfo.createProvider(customConfig);
     const datastorePath = provider.resolveDatastorePath(repoDir ?? ".");
-    const cachePath = provider.resolveCachePath?.(repoDir ?? ".");
+    const cachePath = provider.resolveCachePath?.(repoDir ?? ".") ??
+      join(getSwampDataDir(), "repos", repoId ?? "unknown");
 
     return {
       type: dsType,
