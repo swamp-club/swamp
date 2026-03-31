@@ -173,6 +173,7 @@ export const AdversarialFindingSchema = z.object({
     "testing",
     "complexity",
     "correctness",
+    "documentation",
   ]),
   description: z.string(),
   resolved: z.boolean().default(false),

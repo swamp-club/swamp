@@ -38,6 +38,11 @@ For each plan step, **read the actual code**:
 - Check for conflicts with existing patterns or naming conventions
 - Verify that proposed test paths and test patterns match the codebase
 - Look for code that already does what a step proposes (duplication risk)
+- **Trace existing execution paths**: When the plan adds a new entry point to an
+  existing capability (e.g. a new way to run workflows, execute model methods,
+  acquire locks), find how existing callers invoke that capability and verify
+  the plan routes through the same shared code path. New entry points that
+  reimplement existing logic are a high-severity finding.
 - Check if design docs in `design/` describe behavior being changed — flag stale
   docs
 - Check if skills in `.claude/skills/` reference commands, flags, or examples
