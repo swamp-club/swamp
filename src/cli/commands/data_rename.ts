@@ -31,6 +31,10 @@ import { requireInitializedRepo } from "../repo_context.ts";
 export const dataRenameCommand = new Command()
   .name("rename")
   .description("Rename a data instance with backwards-compatible forwarding")
+  .example(
+    "Rename with forwarding",
+    "swamp data rename my-server old-name new-name",
+  )
   .arguments("<model_id_or_name:string> <old_name:string> <new_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(

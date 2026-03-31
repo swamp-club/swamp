@@ -34,6 +34,16 @@ type AnyOptions = any;
 export const dataGetCommand = new Command()
   .name("get")
   .description("Get data by model and name, or by workflow")
+  .example("Get latest data", "swamp data get my-server system-info")
+  .example(
+    "Get a specific version",
+    "swamp data get my-server system-info --version 2",
+  )
+  .example("Get workflow data", "swamp data get --workflow deploy --run latest")
+  .example(
+    "Metadata only",
+    "swamp data get my-server system-info --no-content",
+  )
   .arguments("[model_id_or_name:model_name] [data_name:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--version <version:number>", "Specific version (defaults to latest)")

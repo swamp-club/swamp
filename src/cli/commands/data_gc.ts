@@ -53,6 +53,8 @@ type AnyOptions = any;
 export const dataGcCommand = new Command()
   .name("gc")
   .description("Run garbage collection on data (lifecycle and versions)")
+  .example("Preview what would be collected", "swamp data gc --dry-run")
+  .example("Run garbage collection", "swamp data gc --force")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--dry-run", "Show what would be deleted without deleting")
   .option("-f, --force", "Skip confirmation prompt")

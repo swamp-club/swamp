@@ -164,6 +164,9 @@ async function displayDataDetail(
 export const dataSearchCommand = new Command()
   .name("search")
   .description("Search for data across all models")
+  .example("Interactive search", "swamp data search")
+  .example("Search with query", "swamp data search cpu-metrics")
+  .example("Search within a model", "swamp data search --model my-server")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option(

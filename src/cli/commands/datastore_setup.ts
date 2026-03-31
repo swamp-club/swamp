@@ -45,6 +45,14 @@ type AnyOptions = any;
 
 const datastoreSetupFilesystemCommand = new Command()
   .description("Set up a filesystem datastore")
+  .example(
+    "Set up filesystem datastore",
+    "swamp datastore setup filesystem --path ~/swamp-data",
+  )
+  .example(
+    "Custom subdirectories",
+    "swamp datastore setup filesystem --path /data --directories models,outputs",
+  )
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--path <path:string>", "Path for the datastore directory", {
     required: true,
@@ -91,6 +99,10 @@ const datastoreSetupFilesystemCommand = new Command()
 const datastoreSetupExtensionCommand = new Command()
   .description(
     "Set up an extension-provided datastore (e.g., @swamp/s3-datastore)",
+  )
+  .example(
+    "Set up S3 datastore",
+    `swamp datastore setup extension @swamp/s3-datastore --config '{"bucket":"my-bucket","region":"us-east-1"}'`,
   )
   .arguments("<type:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })

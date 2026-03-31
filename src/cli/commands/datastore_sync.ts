@@ -39,6 +39,9 @@ type AnyOptions = any;
  */
 export const datastoreSyncCommand = new Command()
   .description("Sync local cache with S3 datastore")
+  .example("Full sync", "swamp datastore sync")
+  .example("Pull only", "swamp datastore sync --pull")
+  .example("Push only", "swamp datastore sync --push")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--pull", "Pull-only mode (fetch all remote data to local cache)")
   .option("--push", "Push-only mode (upload all local cache data to S3)")

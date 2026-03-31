@@ -34,6 +34,7 @@ type AnyOptions = any;
 export const dataVersionsCommand = new Command()
   .name("versions")
   .description("List all versions of specific data")
+  .example("List all versions", "swamp data versions my-server system-info")
   .arguments("<model_id_or_name:model_name> <data_name:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(

@@ -47,6 +47,7 @@ type AnyOptions = any;
  */
 const datastoreLockStatusCommand = new Command()
   .description("Show who holds the datastore lock")
+  .example("Check lock status", "swamp datastore lock status")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -82,6 +83,14 @@ const datastoreLockStatusCommand = new Command()
  */
 const datastoreLockReleaseCommand = new Command()
   .description("Force-release a stuck datastore lock")
+  .example(
+    "Release stuck datastore lock",
+    "swamp datastore lock release --force",
+  )
+  .example(
+    "Release a model lock",
+    "swamp datastore lock release --force --model aws-ec2/my-server",
+  )
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--force", "Required to confirm force release", { required: true })
   .option(

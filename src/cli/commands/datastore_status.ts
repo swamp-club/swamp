@@ -36,6 +36,7 @@ type AnyOptions = any;
  */
 export const datastoreStatusCommand = new Command()
   .description("Show datastore configuration and health")
+  .example("Show datastore health", "swamp datastore status")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
