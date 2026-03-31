@@ -186,11 +186,13 @@ export async function executeWorkflowWithLocks(
           }
         }
         if (resolvedModels.length > 0) {
-          flushLocks = await acquireModelLocks(
+          const lockResult = await acquireModelLocks(
             datastoreConfig,
             resolvedModels,
             repoDir,
           );
+          if (lockResult.synced) repoContext.catalogStore?.invalidate();
+          flushLocks = lockResult.flush;
         }
       }
     }
