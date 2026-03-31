@@ -51,13 +51,14 @@ export const dataVersionsCommand = new Command()
       cliCtx.logger
         .debug`Listing versions: model=${modelIdOrName}, name=${dataName}`;
 
-      const { repoDir } = await requireInitializedRepoReadOnly({
-        repoDir: options.repoDir ?? ".",
-        outputMode: cliCtx.outputMode,
-      });
+      const { repoDir, datastoreResolver } =
+        await requireInitializedRepoReadOnly({
+          repoDir: options.repoDir ?? ".",
+          outputMode: cliCtx.outputMode,
+        });
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDataVersionsDeps(repoDir);
+      const deps = createDataVersionsDeps(repoDir, datastoreResolver);
 
       const renderer = createDataVersionsRenderer(cliCtx.outputMode);
       await consumeStream(

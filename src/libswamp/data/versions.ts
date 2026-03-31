@@ -22,6 +22,8 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 
@@ -82,9 +84,17 @@ export interface DataVersionsDeps {
 }
 
 /** Wires real infrastructure into DataVersionsDeps. */
-export function createDataVersionsDeps(repoDir: string): DataVersionsDeps {
+export function createDataVersionsDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): DataVersionsDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),

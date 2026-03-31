@@ -49,13 +49,13 @@ export const dataRenameCommand = new Command()
         "rename",
       ]);
 
-      const { repoDir } = await requireInitializedRepo({
+      const { repoDir, datastoreResolver } = await requireInitializedRepo({
         repoDir: options.repoDir ?? ".",
         outputMode: cliCtx.outputMode,
       });
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDataRenameDeps(repoDir);
+      const deps = createDataRenameDeps(repoDir, datastoreResolver);
       const renderer = createDataRenameRenderer(cliCtx.outputMode);
       await consumeStream(
         dataRename(ctx, deps, { modelIdOrName, oldName, newName }),

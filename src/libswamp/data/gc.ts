@@ -24,6 +24,8 @@ import {
 } from "../../domain/data/data_lifecycle_service.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -74,9 +76,21 @@ export interface DataGcDeps {
 }
 
 /** Wires real infrastructure into DataGcDeps. */
-export function createDataGcDeps(repoDir: string): DataGcDeps {
-  const unifiedDataRepo = new FileSystemUnifiedDataRepository(repoDir);
-  const workflowRunRepo = new YamlWorkflowRunRepository(repoDir);
+export function createDataGcDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): DataGcDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
+  const unifiedDataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
+  const workflowRunRepo = new YamlWorkflowRunRepository(
+    repoDir,
+    undefined,
+    dsPath(SWAMP_SUBDIRS.workflowRuns),
+  );
   const service = new DefaultDataLifecycleService(
     unifiedDataRepo,
     workflowRunRepo,
