@@ -207,9 +207,9 @@ attributes:
 
 ### Resolution Timing
 
-Vault expressions are resolved **per-step at execution time** — each step gets
-a fresh vault read. A step that writes to a vault makes the new value available
-to all subsequent steps (e.g., token-refresh-then-use patterns).
+Vault expressions are resolved **per-step at execution time** — each step gets a
+fresh vault read. A step that writes to a vault makes the new value available to
+all subsequent steps (e.g., token-refresh-then-use patterns).
 
 **Never resolve a secret and pass the literal value.** This freezes the secret
 at model creation time and prevents rotation or in-workflow refresh:

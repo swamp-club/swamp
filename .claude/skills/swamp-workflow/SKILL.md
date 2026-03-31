@@ -463,7 +463,7 @@ jobs:
       - name: call-api
         task:
           type: model_method
-          modelIdOrName: api-client  # vault.get() resolved after refresh
+          modelIdOrName: api-client # vault.get() resolved after refresh
           methodName: invoke
 ```
 
