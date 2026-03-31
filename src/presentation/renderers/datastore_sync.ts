@@ -25,8 +25,21 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 const ACTIVITY_INTERVAL_MS = 5_000;
 
+const syncModeLabels: Record<string, { initial: string; activity: string }> = {
+  push: {
+    initial: "Pushing all local data to remote...",
+    activity: "Still pushing...",
+  },
+  pull: {
+    initial: "Pulling all data from remote...",
+    activity: "Still pulling...",
+  },
+  sync: { initial: "Syncing with remote...", activity: "Still syncing..." },
+};
+
 class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
   private activityTimer: ReturnType<typeof setInterval> | undefined;
+  private startedAt: number | undefined;
 
   private clearTimer(): void {
     if (this.activityTimer !== undefined) {
@@ -38,21 +51,16 @@ class LogDatastoreSyncRenderer implements Renderer<DatastoreSyncEvent> {
   handlers(): EventHandlers<DatastoreSyncEvent> {
     return {
       syncing: (e) => {
-        const labels: Record<string, string> = {
-          push: "Pushing all local data to remote...",
-          pull: "Pulling all data from remote...",
-          sync: "Syncing with remote...",
-        };
-        writeOutput(labels[e.mode] ?? `Syncing (${e.mode})...`);
+        const labels = syncModeLabels[e.mode];
+        writeOutput(labels?.initial ?? `Syncing (${e.mode})...`);
 
-        const activityLabels: Record<string, string> = {
-          push: "Still pushing...",
-          pull: "Still pulling...",
-          sync: "Still syncing...",
-        };
-        const msg = activityLabels[e.mode] ?? "Still syncing...";
+        this.startedAt = Date.now();
+        const activityMsg = labels?.activity ?? "Still syncing...";
         this.activityTimer = setInterval(() => {
-          writeOutput(msg);
+          const elapsed = Math.round(
+            (Date.now() - this.startedAt!) / 1_000,
+          );
+          writeOutput(`${activityMsg} (${elapsed}s)`);
         }, ACTIVITY_INTERVAL_MS);
       },
       completed: (e) => {
