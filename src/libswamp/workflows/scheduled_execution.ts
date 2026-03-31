@@ -103,6 +103,11 @@ export class ScheduledExecutionService {
   private readonly watcher: WorkflowWatcher;
   private readonly running = new Map<WorkflowId, AbortController>();
   private readonly workflowNames = new Map<WorkflowId, string>();
+  private readonly runQueue: Array<{
+    workflowId: WorkflowId;
+    workflowName: string;
+  }> = [];
+  private processing = false;
   private eventHandler: ScheduledExecutionEventHandler | null = null;
 
   constructor(private readonly deps: ScheduledExecutionDeps) {
@@ -218,7 +223,7 @@ export class ScheduledExecutionService {
   private handleFire(workflowId: WorkflowId): void {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
 
-    // Overlap prevention
+    // Overlap prevention — skip if this specific workflow is already running
     if (this.running.has(workflowId)) {
       this.emit({
         kind: "schedule_skipped",
@@ -242,8 +247,25 @@ export class ScheduledExecutionService {
       name: workflowName,
     });
 
-    // Execute asynchronously — don't block the cron callback
-    this.executeWorkflow(workflowId, workflowName);
+    // Queue the run — workflows execute one at a time to avoid lock
+    // contention. Before scheduling, each workflow ran as a separate
+    // process via systemd timers; serializing preserves that behavior.
+    this.runQueue.push({ workflowId, workflowName });
+    this.processQueue();
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+
+    try {
+      while (this.runQueue.length > 0) {
+        const { workflowId, workflowName } = this.runQueue.shift()!;
+        await this.executeWorkflow(workflowId, workflowName);
+      }
+    } finally {
+      this.processing = false;
+    }
   }
 
   private async executeWorkflow(
