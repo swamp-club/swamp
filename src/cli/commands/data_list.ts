@@ -55,13 +55,15 @@ export const dataListCommand = new Command()
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["data", "list"]);
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
+      {
+        repoDir: options.repoDir ?? ".",
+        outputMode: cliCtx.outputMode,
+      },
+    );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDataListDeps(repoDir);
+    const deps = createDataListDeps(repoDir, datastoreResolver);
 
     const renderer = createDataListRenderer(cliCtx.outputMode);
     await consumeStream(

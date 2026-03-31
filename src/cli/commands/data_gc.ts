@@ -61,13 +61,13 @@ export const dataGcCommand = new Command()
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["data", "gc"]);
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir, datastoreResolver } = await requireInitializedRepo({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDataGcDeps(repoDir);
+    const deps = createDataGcDeps(repoDir, datastoreResolver);
 
     // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
     if (cliCtx.outputMode === "log" && !options.force && !options.dryRun) {

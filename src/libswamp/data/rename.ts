@@ -23,6 +23,8 @@ import {
 } from "../../domain/data/data_rename_service.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
@@ -64,8 +66,16 @@ export interface DataRenameDeps {
 }
 
 /** Wires real infrastructure into DataRenameDeps. */
-export function createDataRenameDeps(repoDir: string): DataRenameDeps {
-  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+export function createDataRenameDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): DataRenameDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
   const definitionRepo = new YamlDefinitionRepository(repoDir);
   const service = new DataRenameService(dataRepo, definitionRepo);
   return {
