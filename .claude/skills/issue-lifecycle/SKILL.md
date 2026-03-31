@@ -66,7 +66,48 @@ systeminit/swamp#850":
      modified. Regressions get both `bug` and `regression` labels.
    - `unclear` — not enough information to classify confidently
 
-5. **Generate an implementation plan**:
+5. **Reproduce the bug** (bugs and regressions only — skip for features):
+
+   Before planning a fix, reproduce the issue in an isolated scratch repo to
+   confirm the failure mode and understand it firsthand.
+
+   a. **Ensure swamp is up to date:**
+   ```
+   swamp update
+   ```
+
+   b. **Create a scratch repo:**
+   ```
+   mkdir -p /tmp/swamp-repro-issue-<N>
+   cd /tmp/swamp-repro-issue-<N>
+   swamp repo init
+   ```
+
+   c. **Build a minimal reproduction.** Based on the issue description and your
+   codebase analysis, create the simplest set of models and/or workflows that
+   trigger the bug. Use an Agent (subagent) to do this — give it the issue
+   context, the error description, and tell it to create and run a swamp
+   scenario that reproduces the problem. The agent should:
+   - Create model definitions and workflow YAML files
+   - Create any required input data
+   - Run the workflow or model method that triggers the issue
+   - Capture the exact error output or incorrect behavior
+
+   d. **Document what you observed.** Before moving to planning, record:
+   - The exact commands that reproduce the issue
+   - The actual output/error (copy it verbatim)
+   - The expected output/behavior
+   - Any differences from what the issue originally described
+
+   e. **Keep the scratch repo.** You'll reuse it in the verification step after
+   the fix is implemented. The path `/tmp/swamp-repro-issue-<N>` must survive
+   until verification is complete.
+
+   If the bug **cannot be reproduced**, note that in the plan. It may mean the
+   issue description is incomplete, the bug is environment-specific, or the
+   underlying code has already changed. Ask the human how to proceed.
+
+6. **Generate an implementation plan**:
 
    First, write a single YAML file (e.g. `/tmp/plan.yaml`) containing both
    `steps` and `potentialChallenges` as top-level keys. The CLI only supports
@@ -102,14 +143,14 @@ systeminit/swamp#850":
      --input-file /tmp/plan.yaml
    ```
 
-6. **Check for documentation impact.** Before presenting the plan, evaluate
+7. **Check for documentation impact.** Before presenting the plan, evaluate
    whether the change affects anything described in `design/*.md` or
    `.claude/skills/`. If so, include explicit plan steps to update those files.
    Common triggers: new domain concepts, changed CLI commands or flags, new
    extension patterns, modified architectural decisions, renamed types or
    methods referenced in skill examples.
 
-7. **Show the plan to the human**, then **run adversarial review** (see below).
+8. **Show the plan to the human**, then **run adversarial review** (see below).
 
 ## Adversarial Plan Review
 
@@ -268,37 +309,82 @@ if the adversarial review is stale (wrong plan version). This is enforced by the
 After plan approval, when the human says to implement:
 
 1. **Do the implementation work** based on the approved plan
-2. **Create a PR** using the `github-pr` skill
-3. **Record the PR number**:
+
+2. **Verify the fix against the reproduction** (bugs and regressions only):
+
+   If a reproduction was created in step 5, reuse it to confirm the fix works.
+
+   a. **Recompile swamp** with the fix:
+   ```
+   deno run compile
+   ```
+   This produces a `./swamp` binary in the repo root.
+
+   b. **Re-run the reproduction scenario** in the scratch repo using the locally
+   compiled binary — **not** the `swamp` on PATH:
+   ```
+   cd /tmp/swamp-repro-issue-<N>
+   /path/to/repo/swamp <same commands from reproduction>
+   ```
+   Use the absolute path to the compiled binary (e.g.
+   `/Users/.../swamp/.claude/worktrees/issue-lifecycle/swamp`).
+
+   c. **Confirm the fix.** The previously failing scenario should now succeed.
+   If it still fails, the fix is incomplete — go back to step 1.
+
+   d. **Report verification results** to the human before creating the PR:
+   - "Verified: reproduction scenario now passes" or
+   - "Verification failed: <what still breaks>"
+
+3. **Create a PR** using the `github-pr` skill
+4. **Record the PR number**:
    ```
    swamp model method run issue-<N> implement \
      --input prNumber=<N>
    ```
 
-4. **Wait 3 minutes for CI to start.** Use `sleep 180` — CI takes at least this
+5. **Wait 3 minutes for CI to start.** Use `sleep 180` — CI takes at least this
    long, so there's no point polling earlier.
 
-5. **Poll for CI results.** Call `ci_status` and check if checks are still
-   pending. If pending, wait 60 seconds and retry. Keep polling until all checks
-   have completed (passed or failed). Do NOT hand control back to the human
-   during this wait — stay in the loop.
+6. **Poll for CI results in a loop.** You MUST implement an explicit polling
+   loop — do not check once and assume done. The loop works like this:
 
+   ```
+   repeat:
+     call ci_status
+     parse the output — look at EVERY check's status
+     if ANY check is "pending", "queued", or "in_progress":
+       tell the human: "CI still running — N of M checks complete. Waiting 60s..."
+       sleep 60
+       go back to repeat
+     else:
+       all checks are conclusive (passed/failed) — exit the loop
+   ```
+
+   The ci_status command:
    ```
    swamp model method run issue-<N> ci_status
    ```
 
-6. **Show the CI results** to the human, grouped by reviewer and severity:
+   **Do NOT exit this loop early.** A single ci_status call that shows some
+   checks passed does not mean CI is done — other checks may still be running.
+   You must confirm that **every** check has a conclusive status (passed or
+   failed) before proceeding. The human can always interrupt the loop (e.g.
+   "stop", "pause") — respect that immediately. But the agent must never exit
+   the loop on its own.
+
+7. **Show the CI results** to the human, grouped by reviewer and severity:
    - Which checks passed/failed
    - Review comments grouped by reviewer
    - Comments sorted by severity (critical first)
 
-7. **If everything is green and approved**, the PR will auto-merge. Call
+8. **If everything is green and approved**, the PR will auto-merge. Call
    `complete` immediately — no need to ask the human:
    ```
    swamp model method run issue-<N> complete
    ```
 
-8. **If there are failures or review comments**, present them and wait for the
+9. **If there are failures or review comments**, present them and wait for the
    human's direction. Parse their instruction:
    - "fix the CRITICAL issues from adversarial review" ->
      `targetReview: "claude-adversarial-review"`, `targetSeverity: "critical"`
@@ -312,8 +398,8 @@ After plan approval, when the human says to implement:
      --input targetSeverity="<severity>"
    ```
 
-9. **After pushing fixes, loop back to step 4.** Wait 3 minutes, poll for CI,
-   show results. Repeat until clean or the human says to stop.
+10. **After pushing fixes, loop back to step 5.** Wait 3 minutes, poll for CI,
+    show results. Repeat until clean or the human says to stop.
 
 **IMPORTANT:** Do not break out of this loop voluntarily. The human should never
 have to manually check CI or come back to ask "what happened?" — the skill stays
