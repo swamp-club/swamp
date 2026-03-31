@@ -109,8 +109,34 @@ type AnyOptions = any;
 
 export const vaultPutCommand = new Command()
   .name("put")
-  .description("Store a secret in a vault")
+  .description(
+    `Store a secret in a vault.
+
+The value can be provided in several ways:
+  - As a third argument:   swamp vault put <vault> <key> <value>
+  - Inline with KEY=VALUE: swamp vault put <vault> KEY=VALUE
+  - Piped via stdin:       echo "val" | swamp vault put <vault> <key>
+  - Interactive prompt:    swamp vault put <vault> <key>  (prompts with hidden input)
+
+Piping via stdin is recommended for scripts and CI to avoid exposing secrets in the process argument list.`,
+  )
   .arguments("<vault_name:string> <key:string> [value:string]")
+  .example(
+    "Inline KEY=VALUE",
+    "swamp vault put my-vault API_KEY=sk-1234567890",
+  )
+  .example(
+    "Pipe from stdin (recommended for scripts)",
+    'echo "$SECRET" | swamp vault put my-vault API_KEY',
+  )
+  .example(
+    "Interactive prompt (value is hidden)",
+    "swamp vault put my-vault API_KEY",
+  )
+  .example(
+    "Overwrite existing secret",
+    "swamp vault put my-vault API_KEY=new-value --force",
+  )
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("-f, --force", "Skip confirmation prompt when overwriting")
   .action(async function (
