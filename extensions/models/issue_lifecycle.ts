@@ -454,15 +454,21 @@ export const model = {
 
         const typeLabels: Record<string, { add: string[]; remove: string[] }> =
           {
-            bug: { add: ["bug"], remove: ["feature", "needs-triage"] },
-            feature: { add: ["feature"], remove: ["bug", "needs-triage"] },
+            bug: {
+              add: ["bug"],
+              remove: ["feature", "regression", "needs-triage"],
+            },
+            feature: {
+              add: ["feature"],
+              remove: ["bug", "regression", "needs-triage"],
+            },
             regression: {
               add: ["bug", "regression"],
               remove: ["feature", "needs-triage"],
             },
             unclear: {
               add: ["lifecycle/needs-info"],
-              remove: ["needs-triage"],
+              remove: ["bug", "regression", "needs-triage"],
             },
           };
         const labelOps = typeLabels[args.type];
