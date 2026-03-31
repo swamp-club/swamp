@@ -32,6 +32,7 @@ import {
   type ReportSelection,
   ReportSelectionSchema,
 } from "../reports/report_selection.ts";
+import { Cron } from "croner";
 
 /**
  * Zod schema for Workflow aggregate root.
@@ -55,6 +56,18 @@ export const WorkflowSchema = z.object({
     },
   ),
   description: z.string().optional(),
+  schedule: z.string().refine(
+    (expr) => {
+      try {
+        const cron = new Cron(expr);
+        cron.stop();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: "Invalid cron expression" },
+  ).optional(),
   tags: z.record(z.string(), z.string()).default({}),
   inputs: InputsSchemaSchema,
   jobs: z.array(JobSchema).min(1),
@@ -81,6 +94,7 @@ export interface CreateWorkflowProps {
   id?: string;
   name: string;
   description?: string;
+  schedule?: string;
   tags?: Record<string, string>;
   inputs?: InputsSchema;
   jobs?: Job[];
@@ -105,6 +119,7 @@ export class Workflow {
     readonly id: WorkflowId,
     readonly name: string,
     readonly description: string | undefined,
+    readonly schedule: string | undefined,
     readonly tags: Record<string, string>,
     readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
@@ -128,6 +143,7 @@ export class Workflow {
       id,
       name: props.name,
       description: props.description,
+      schedule: props.schedule,
       tags,
       inputs: props.inputs,
       jobs: jobs.map((j) => j.toData()),
@@ -149,6 +165,7 @@ export class Workflow {
       createWorkflowId(data.id),
       data.name,
       data.description,
+      data.schedule,
       data.tags,
       data.inputs,
       jobs,
@@ -170,6 +187,7 @@ export class Workflow {
       createWorkflowId(validated.id),
       validated.name,
       validated.description,
+      validated.schedule,
       validated.tags,
       validated.inputs,
       jobs,
@@ -219,6 +237,7 @@ export class Workflow {
       id: this.id,
       name: this.name,
       description: this.description,
+      schedule: this.schedule,
       tags: this.tags,
       inputs: this.inputs,
       jobs: this._jobs.map((j) => j.toData()) as JobData[],

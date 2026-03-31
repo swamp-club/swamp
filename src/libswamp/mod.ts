@@ -70,6 +70,20 @@ export {
   type WorkflowRunView,
 } from "./workflows/workflow_run_view.ts";
 
+// Scheduled execution
+export {
+  type ScheduledExecutionDeps,
+  type ScheduledExecutionEvent,
+  type ScheduledExecutionEventHandler,
+  ScheduledExecutionService,
+} from "./workflows/scheduled_execution.ts";
+export { workflowsDir, WorkflowWatcher } from "./workflows/watcher.ts";
+export {
+  type ScheduleEntry,
+  type ScheduleFireCallback,
+  WorkflowScheduler,
+} from "../domain/workflows/workflow_scheduler.ts";
+
 // Workflow search operations
 export {
   workflowSearch,

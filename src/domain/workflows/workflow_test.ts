@@ -566,6 +566,116 @@ Deno.test("Workflow.fromData and toData roundtrip with reports", () => {
   assertEquals(restored.reports?.skip, ["debug-report"]);
 });
 
+// Schedule field tests
+
+Deno.test("Workflow.create creates workflow with schedule", () => {
+  const workflow = Workflow.create({
+    name: "scheduled-workflow",
+    schedule: "0 3,12 * * *",
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(workflow.schedule, "0 3,12 * * *");
+});
+
+Deno.test("Workflow.create defaults schedule to undefined", () => {
+  const workflow = Workflow.create({ name: "no-schedule-workflow" });
+  assertEquals(workflow.schedule, undefined);
+});
+
+Deno.test("Workflow.toData includes schedule in output", () => {
+  const workflow = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    schedule: "*/15 * * * *",
+    jobs: [createTestJob("job1")],
+  });
+
+  const data = workflow.toData();
+  assertEquals(data.schedule, "*/15 * * * *");
+});
+
+Deno.test("Workflow.fromData and toData roundtrip with schedule", () => {
+  const original = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "roundtrip-schedule",
+    schedule: "0 * * * *",
+    jobs: [createTestJob("deploy")],
+  });
+
+  const data = original.toData();
+  const restored = Workflow.fromData(data);
+
+  assertEquals(restored.schedule, "0 * * * *");
+});
+
+Deno.test("Workflow.fromData reconstructs workflow without schedule (backward compat)", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "legacy-no-schedule",
+    tags: {},
+    inputs: undefined,
+    jobs: [
+      {
+        name: "job1",
+        steps: [
+          {
+            name: "step1",
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
+            dependsOn: [],
+            weight: 0,
+          },
+        ],
+        dependsOn: [],
+        weight: 0,
+      },
+    ],
+    version: 1,
+  };
+
+  const workflow = Workflow.fromData(data);
+  assertEquals(workflow.schedule, undefined);
+});
+
+Deno.test("Workflow.fromData rejects invalid cron expression", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "bad-schedule",
+    schedule: "not a cron expression",
+    tags: {},
+    inputs: undefined,
+    jobs: [
+      {
+        name: "job1",
+        steps: [
+          {
+            name: "step1",
+            task: {
+              type: "model_method" as const,
+              modelIdOrName: "test-model",
+              methodName: "run",
+            },
+            dependsOn: [],
+            weight: 0,
+          },
+        ],
+        dependsOn: [],
+        weight: 0,
+      },
+    ],
+    version: 1,
+  };
+
+  assertThrows(
+    () => Workflow.fromData(data),
+    Error,
+  );
+});
+
 Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
   // Simulate legacy data without tags field — Zod .default({}) fills it in
   const data = {
