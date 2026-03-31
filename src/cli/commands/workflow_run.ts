@@ -56,7 +56,7 @@ export const workflowRunCommand = new Command()
   )
   .example(
     "With tags",
-    "swamp workflow run deploy-pipeline --tag deploy --tag production",
+    "swamp workflow run deploy-pipeline --tag type=deploy --tag env=production",
   )
   .example("Skip reports", "swamp workflow run deploy-pipeline --skip-reports")
   .arguments("<workflow_id_or_name:workflow_name>")
