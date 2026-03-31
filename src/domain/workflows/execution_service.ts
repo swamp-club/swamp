@@ -432,6 +432,7 @@ export class DefaultStepExecutor implements StepExecutor {
         ...(ctx.workflowTags ?? {}),
         source: "step-output",
         workflow: ctx.workflowName,
+        workflowRunId: ctx.workflowRunId,
         step: ctx.stepName,
       };
 
@@ -1138,6 +1139,12 @@ export class WorkflowExecutionService {
         ...(options?.runtimeTags ?? {}),
       };
       const run = WorkflowRun.create(workflow, mergedTags);
+
+      // Scope data.findBySpec() to this run so forEach expressions
+      // only see data produced during the current workflow run.
+      if (expressionContext) {
+        expressionContext.workflowRunId = run.id;
+      }
 
       // Create secret redactor — populated during vault resolution, used by log sink and data writers
       const secretRedactor = new SecretRedactor();
