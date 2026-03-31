@@ -64,7 +64,9 @@ import type { RepoIndexService } from "../../domain/repo/repo_index_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
-import { SWAMP_SUBDIRS } from "./paths.ts";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
+import { CatalogStore } from "./catalog_store.ts";
+import { join } from "@std/path";
 
 // =============================================================================
 // Standalone Repository Factory Functions
@@ -209,6 +211,7 @@ export interface RepositoryContext {
   workflowRepo: WorkflowRepository;
   workflowRunRepo: YamlWorkflowRunRepository;
   vaultConfigRepo: YamlVaultConfigRepository;
+  catalogStore?: CatalogStore;
 }
 
 /**
@@ -273,10 +276,17 @@ export function createRepositoryContext(
     dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
   );
 
-  // Unified data repository
+  // Create catalog store for data query
+  const dataBaseDir = dsPath(SWAMP_SUBDIRS.data) ??
+    swampPath(repoDir, SWAMP_SUBDIRS.data);
+  const catalogDbPath = join(dataBaseDir, "_catalog.db");
+  const catalogStore = new CatalogStore(catalogDbPath);
+
+  // Unified data repository with catalog write-through
   const unifiedDataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
+    catalogStore,
   );
   const outputRepo = new YamlOutputRepository(
     repoDir,
@@ -303,5 +313,6 @@ export function createRepositoryContext(
     workflowRepo,
     workflowRunRepo,
     vaultConfigRepo,
+    catalogStore,
   };
 }

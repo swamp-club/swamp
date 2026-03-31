@@ -32,6 +32,7 @@ import {
   type OwnerDefinition,
 } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import type { CatalogStore } from "./catalog_store.ts";
 
 const logger = getSwampLogger(["data", "repository"]);
 
@@ -399,6 +400,16 @@ export interface UnifiedDataRepository {
    * @returns Array of data (latest version of each)
    */
   findAllForModelSync(type: ModelType, modelId: string): Data[];
+
+  /**
+   * Finds all data across all model types and models synchronously.
+   * Used by DataQueryService for catalog backfill in sync contexts.
+   *
+   * @returns Array of data with their model type and model ID
+   */
+  findAllGlobalSync(): Array<
+    { data: Data; modelType: ModelType; modelId: string }
+  >;
 }
 
 /**
@@ -417,8 +428,42 @@ export interface UnifiedDataRepository {
 export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   private readonly baseDir: string;
 
-  constructor(private readonly repoDir: string, baseDir?: string) {
+  constructor(
+    private readonly repoDir: string,
+    baseDir?: string,
+    private readonly catalogStore?: CatalogStore,
+  ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
+  }
+
+  private catalogUpsert(type: ModelType, modelId: string, data: Data): void {
+    if (!this.catalogStore) return;
+    this.catalogStore.upsert({
+      type_normalized: type.normalized,
+      model_id: modelId,
+      data_name: data.name,
+      id: data.id,
+      version: data.version,
+      model_name: data.tags["modelName"] ?? "",
+      spec_name: data.tags["specName"] ?? "",
+      data_type: data.tags["type"] ?? "",
+      content_type: data.contentType,
+      lifetime: data.lifetime,
+      owner_type: data.ownerDefinition.ownerType,
+      streaming: data.streaming ? 1 : 0,
+      size: data.size ?? 0,
+      created_at: data.createdAt.toISOString(),
+      tags: JSON.stringify(data.tags),
+    });
+  }
+
+  private catalogRemove(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): void {
+    if (!this.catalogStore) return;
+    this.catalogStore.remove(type.normalized, modelId, dataName);
   }
 
   async findAllGlobal(): Promise<
@@ -731,6 +776,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // Update latest symlink
     await this.updateLatestMarker(type, modelId, data.name, newVersion);
 
+    this.catalogUpsert(type, modelId, dataToSave);
+
     return { version: newVersion };
   }
 
@@ -782,6 +829,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       metadataPath,
       stringifyYaml(cleanData as Record<string, unknown>),
     );
+
+    // Update catalog with new size
+    const updatedData = Data.fromData(metadata);
+    this.catalogUpsert(type, modelId, updatedData);
   }
 
   async *stream(
@@ -869,10 +920,21 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (versions.length > 0) {
         const newLatest = Math.max(...versions);
         await this.updateLatestMarker(type, modelId, dataName, newLatest);
+        // Update catalog to reflect new latest version
+        const latestData = await this.findByName(
+          type,
+          modelId,
+          dataName,
+          newLatest,
+        );
+        if (latestData) {
+          this.catalogUpsert(type, modelId, latestData);
+        }
       } else {
         // No versions left, remove the data name directory
         const dataNameDir = this.getDataNameDir(type, modelId, dataName);
         await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+        this.catalogRemove(type, modelId, dataName);
       }
     } else {
       // Delete all versions
@@ -884,6 +946,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           throw error;
         }
       }
+      this.catalogRemove(type, modelId, dataName);
     }
   }
 
@@ -907,6 +970,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       }
       // Symlink already missing is OK
     }
+
+    this.catalogRemove(type, modelId, dataName);
   }
 
   async rename(
@@ -1023,6 +1088,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
       // Update latest marker to point to tombstone
       await this.updateLatestMarker(type, modelId, oldName, tombstoneVersion);
+
+      // Old name is now a tombstone — remove from catalog
+      this.catalogRemove(type, modelId, oldName);
     } catch (tombstoneError) {
       // Roll back: remove the newly created data under the new name
       logger
@@ -1143,6 +1211,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     // Update latest symlink
     await this.updateLatestMarker(type, modelId, data.name, version);
+
+    this.catalogUpsert(type, modelId, dataToSave);
 
     return { size, checksum };
   }
@@ -1340,6 +1410,82 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
+  findAllGlobalSync(): Array<
+    { data: Data; modelType: ModelType; modelId: string }
+  > {
+    const results: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+    const baseDir = this.getBaseDir();
+    this.collectAllDataSync(baseDir, [], results);
+    return results;
+  }
+
+  private collectAllDataSync(
+    currentDir: string,
+    pathSegments: string[],
+    results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
+  ): void {
+    try {
+      const entries: string[] = [];
+      for (const entry of Deno.readDirSync(currentDir)) {
+        if (entry.isDirectory) {
+          entries.push(entry.name);
+        }
+      }
+
+      for (const name of entries) {
+        const childPath = join(currentDir, name);
+        const childSegments = [...pathSegments, name];
+
+        const isModelIdDir = this.isModelIdDirectorySync(childPath);
+
+        if (isModelIdDir && childSegments.length >= 2) {
+          const typeSegments = pathSegments;
+          const modelId = name;
+          const typeStr = typeSegments.join("/");
+
+          try {
+            const modelType = ModelType.create(typeStr);
+            const dataItems = this.findAllForModelSync(modelType, modelId);
+            for (const data of dataItems) {
+              results.push({ data, modelType, modelId });
+            }
+          } catch {
+            // Skip invalid model types
+          }
+        } else {
+          this.collectAllDataSync(childPath, childSegments, results);
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+  }
+
+  private isModelIdDirectorySync(dir: string): boolean {
+    try {
+      for (const entry of Deno.readDirSync(dir)) {
+        if (!entry.isDirectory && !entry.isSymlink) continue;
+        const childPath = join(dir, entry.name);
+        try {
+          for (const subEntry of Deno.readDirSync(childPath)) {
+            if (subEntry.isDirectory && /^\d+$/.test(subEntry.name)) {
+              return true;
+            }
+          }
+        } catch {
+          // Skip unreadable directories
+        }
+      }
+    } catch {
+      // Directory doesn't exist or can't be read
+    }
+    return false;
+  }
+
   async collectGarbage(
     type: ModelType,
     modelId: string,
@@ -1429,15 +1575,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           data.name,
         );
         if (currentVersions.length > 0) {
+          const latestVersion = Math.max(...currentVersions);
           await this.updateLatestMarker(
             type,
             modelId,
             data.name,
-            Math.max(...currentVersions),
+            latestVersion,
           );
+          // Update catalog with the surviving latest version
+          const latestData = await this.findByName(
+            type,
+            modelId,
+            data.name,
+            latestVersion,
+          );
+          if (latestData) {
+            this.catalogUpsert(type, modelId, latestData);
+          }
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
           await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
+          this.catalogRemove(type, modelId, data.name);
         }
       }
     }

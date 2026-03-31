@@ -44,6 +44,7 @@ import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
+import type { DataRecord } from "../../domain/data/data_record.ts";
 import type {
   DataArtifactView,
   ModelMethodRunView,
@@ -155,6 +156,11 @@ export interface ModelMethodRunDeps {
   dataRepo: UnifiedDataRepository;
   definitionRepo: YamlDefinitionRepository;
   outputRepo: OutputRepository;
+  /** Pre-built query function for context.queryData(). Absent = feature unavailable. */
+  queryData?: (
+    predicate: string,
+    select?: string,
+  ) => Promise<DataRecord[] | unknown[]>;
   createRunLog: (
     modelType: ModelType,
     methodName: string,
@@ -446,6 +452,7 @@ export async function* modelMethodRun(
                       });
                     }
                   },
+                  queryData: deps.queryData,
                 },
               ),
           );

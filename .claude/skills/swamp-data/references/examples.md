@@ -325,15 +325,17 @@ globalArguments:
   tagValue: Swamp
 ```
 
-### Search Workflow-Produced Data
+### Query Workflow-Produced Data
+
+Use `swamp data query` with CEL predicates (see `swamp-data-query` skill):
 
 ```bash
 # Find all data created by a specific workflow
-swamp data search --workflow deploy-workflow --json
+swamp data query 'tags.workflow == "deploy-workflow"'
 
 # Filter by type within workflow data
-swamp data search --workflow deploy-workflow --type resource --json
+swamp data query 'tags.workflow == "deploy-workflow" && dataType == "resource"'
 
-# Combine with time filter
-swamp data search --workflow deploy-workflow --since 1d --json
+# With projection — extract specific fields
+swamp data query 'tags.workflow == "deploy-workflow"' --select '{"name": name, "spec": specName}'
 ```

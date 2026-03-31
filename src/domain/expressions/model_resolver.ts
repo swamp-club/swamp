@@ -25,6 +25,8 @@ import type { YamlDefinitionRepository } from "../../infrastructure/persistence/
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
+import type { DataQueryService } from "../data/data_query_service.ts";
+import { isTextContentType } from "../data/content_type.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
@@ -147,6 +149,14 @@ export interface DataNamespace {
    * @returns Array of matching DataRecords
    */
   findBySpec(modelName: string, specName: string): DataRecord[];
+
+  /**
+   * Query data artifacts using a CEL predicate, with optional projection.
+   * @param predicate - CEL expression evaluated against DataRecord fields
+   * @param select - Optional CEL projection expression
+   * @returns Array of DataRecords, or projected values if select is provided
+   */
+  query(predicate: string, select?: string): DataRecord[] | unknown[];
 }
 
 /**
@@ -225,6 +235,8 @@ export interface ModelResolverRepositories {
   repoDir?: string;
   /** Optional data repository for loading versioned data */
   dataRepo?: UnifiedDataRepository;
+  /** Optional data query service for CEL data.query() support */
+  dataQueryService?: DataQueryService;
 }
 
 /**
@@ -252,6 +264,7 @@ export class ModelResolver {
   private vaultService?: VaultService;
   private readonly repoDir?: string;
   private readonly dataRepo?: UnifiedDataRepository;
+  private readonly dataQueryService?: DataQueryService;
   private vaultServiceInitialized = false;
 
   constructor(
@@ -261,6 +274,7 @@ export class ModelResolver {
     this.outputRepo = repos?.outputRepo;
     this.repoDir = repos?.repoDir;
     this.dataRepo = repos?.dataRepo;
+    this.dataQueryService = repos?.dataQueryService;
     // If a vault service was provided, use it directly
     if (repos?.vaultService) {
       this.vaultService = repos.vaultService;
@@ -455,6 +469,8 @@ export class ModelResolver {
               modelType,
               modelId,
               data.name,
+              undefined,
+              modelName,
             );
             if (!latestRecord) continue;
 
@@ -517,7 +533,14 @@ export class ModelResolver {
             version,
           );
           if (data) {
-            return dataToRecord(data, modelType, modelId, dataName, version);
+            return dataToRecord(
+              data,
+              modelType,
+              modelId,
+              dataName,
+              version,
+              modelName,
+            );
           }
         }
         return null;
@@ -546,6 +569,7 @@ export class ModelResolver {
                 modelId,
                 dataName,
                 latestVersion,
+                modelName,
               );
             }
           }
@@ -570,7 +594,7 @@ export class ModelResolver {
         if (!dataRepo) return [];
         const results: DataRecord[] = [];
         const seen = new Set<string>();
-        for (const [, allCoords] of coordsMap) {
+        for (const [tagModelName, allCoords] of coordsMap) {
           for (const { modelType, modelId } of allCoords) {
             const allData = dataRepo.findAllForModelSync(modelType, modelId);
             for (const data of allData) {
@@ -597,6 +621,7 @@ export class ModelResolver {
                   modelId,
                   data.name,
                   latestVersion,
+                  tagModelName,
                 );
                 if (record) results.push(record);
               }
@@ -605,9 +630,12 @@ export class ModelResolver {
         }
         return results;
       },
-      findBySpec: (modelName: string, specName: string): DataRecord[] => {
+      findBySpec: (
+        specModelName: string,
+        specName: string,
+      ): DataRecord[] => {
         if (!dataRepo) return [];
-        const allCoords = coordsMap.get(modelName);
+        const allCoords = coordsMap.get(specModelName);
         if (!allCoords) return [];
         const results: DataRecord[] = [];
         const seen = new Set<string>();
@@ -642,12 +670,20 @@ export class ModelResolver {
                 modelId,
                 data.name,
                 latestVersion,
+                specModelName,
               );
               if (record) results.push(record);
             }
           }
         }
         return results;
+      },
+      query: (
+        predicate: string,
+        select?: string,
+      ): DataRecord[] | unknown[] => {
+        if (!this.dataQueryService) return [];
+        return this.dataQueryService.querySync(predicate, { select });
       },
     };
 
@@ -775,29 +811,35 @@ export class ModelResolver {
     modelId: string,
     dataName: string,
     version?: number,
+    modelName?: string,
   ): DataRecord | null {
     if (!this.dataRepo) return null;
 
     const resolvedVersion = version ?? data.version;
     let attributes: Record<string, unknown> = {};
+    let textContent = "";
 
-    if (data.contentType === "application/json") {
-      const content = this.dataRepo.getContentSync(
+    if (isTextContentType(data.contentType)) {
+      const rawBytes = this.dataRepo.getContentSync(
         modelType,
         modelId,
         dataName,
         resolvedVersion,
       );
-      if (content) {
-        try {
-          attributes = JSON.parse(
-            new TextDecoder().decode(content),
-          ) as Record<string, unknown>;
-        } catch {
-          // Not valid JSON, use empty attributes
+      if (rawBytes) {
+        const decoded = new TextDecoder().decode(rawBytes);
+        textContent = decoded;
+        if (data.contentType === "application/json") {
+          try {
+            attributes = JSON.parse(decoded) as Record<string, unknown>;
+          } catch {
+            // Not valid JSON, use empty attributes
+          }
         }
       }
     }
+
+    const resolvedModelName = modelName ?? data.tags["modelName"] ?? "";
 
     return {
       id: data.id,
@@ -806,6 +848,16 @@ export class ModelResolver {
       createdAt: data.createdAt.toISOString(),
       attributes,
       tags: { ...data.tags },
+      modelName: resolvedModelName,
+      modelType: modelType.normalized,
+      specName: data.tags["specName"] ?? "",
+      dataType: data.tags["type"] ?? "",
+      contentType: data.contentType,
+      lifetime: data.lifetime,
+      ownerType: data.ownerDefinition.ownerType,
+      streaming: data.streaming,
+      size: data.size ?? 0,
+      content: textContent,
     };
   }
 

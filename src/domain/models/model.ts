@@ -244,6 +244,15 @@ export interface MethodContext {
   ) => Promise<DataRecord[]>;
 
   /**
+   * Query data artifacts across all models using a CEL predicate.
+   * Returns matching DataRecords, or projected values if select is provided.
+   */
+  queryData?: (
+    predicate: string,
+    select?: string,
+  ) => Promise<DataRecord[] | unknown[]>;
+
+  /**
    * Create a file writer — returns DataWriter for binary/streaming content.
    */
   createFileWriter?: (

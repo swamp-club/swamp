@@ -15,11 +15,11 @@ machine-readable output.
 
 | Task                   | Command                                               |
 | ---------------------- | ----------------------------------------------------- |
-| Search all data        | `swamp data search --json`                            |
-| Search with filters    | `swamp data search --type output --since 1d --json`   |
-| Search by workflow     | `swamp data search --workflow my-workflow --json`     |
-| Search by model        | `swamp data search --model my-model --json`           |
-| Free-text search       | `swamp data search vpc --json`                        |
+| Query by model         | `swamp data query 'modelName == "my-model"'`          |
+| Query by type          | `swamp data query 'dataType == "resource"'`           |
+| Query with projection  | `swamp data query 'modelName == "x"' --select 'name'` |
+| Query by tags          | `swamp data query 'tags.env == "prod"'`               |
+| Query by content       | `swamp data query 'attributes.status == "failed"'`    |
 | List model data        | `swamp data list <model> --json`                      |
 | List workflow data     | `swamp data list --workflow <name> --json`            |
 | Get specific data      | `swamp data get <model> <name> --json`                |
@@ -33,37 +33,25 @@ machine-readable output.
 See [references/concepts.md](references/concepts.md) for lifetime types, tags,
 and version GC policies.
 
-## Search Data
+## Query Data
 
-Search across all models with extensive filtering options.
+Use `swamp data query` with CEL predicates for filtering and `--select` for
+projection. See the `swamp-data-query` skill for full query syntax, filterable
+fields, and projection examples.
 
 ```bash
-# All data in the repo
-swamp data search --json
+# By model
+swamp data query 'modelName == "my-model"'
 
-# Filter by type tag
-swamp data search --type resource --json
+# By type and tags
+swamp data query 'dataType == "resource" && tags.env == "prod"'
 
-# Combined filters (AND logic) — all filters can be combined freely
-swamp data search --type resource --since 1d --workflow deploy --tag env=prod --json
+# With projection — extract specific fields
+swamp data query 'modelName == "scanner"' --select '{"name": name, "os": attributes.os}'
+
+# By content
+swamp data query 'attributes.status == "failed"' --select 'name'
 ```
-
-**Search filters:**
-
-| Filter           | Description                                             |
-| ---------------- | ------------------------------------------------------- |
-| `--type`         | Data type tag (log, file, resource, data, output)       |
-| `--lifetime`     | Lifetime (ephemeral, infinite, job, workflow, duration) |
-| `--owner-type`   | Owner type (model-method, workflow-step, manual)        |
-| `--workflow`     | Workflow name tag                                       |
-| `--model`        | Model name                                              |
-| `--content-type` | MIME content type                                       |
-| `--since`        | Duration (1h, 1d, 7d, 1w, 1mo)                          |
-| `--output`       | Model output ID                                         |
-| `--run`          | Workflow run ID                                         |
-| `--tag`          | Arbitrary tag (KEY=VALUE, repeatable, AND logic)        |
-| `--streaming`    | Only streaming data                                     |
-| `--limit`        | Max results (default: 50)                               |
 
 ## List Model Data
 

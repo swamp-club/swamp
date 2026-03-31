@@ -888,9 +888,9 @@ jobs:
 - On success, `writeResource` refreshes stored state with live data
 - On failure (resource gone), write a `not_found` marker so downstream logic can
   detect drift
-- Enumerate instances with `swamp data list <model> --type resource --json` or
-  `swamp data search --model <name> --type resource --json` to discover what
-  needs syncing
+- Enumerate instances with
+  `swamp data query 'modelName == "<name>" && dataType == "resource"'` to
+  discover what needs syncing (see `swamp-data-query` skill)
 
 ## Error Handling Model
 

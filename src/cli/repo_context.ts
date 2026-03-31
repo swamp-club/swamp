@@ -267,6 +267,9 @@ export function requireInitializedRepo(
       datastoreConfig,
     );
 
+    // Track whether a remote sync happened so we can invalidate the catalog
+    let needsCatalogInvalidation = false;
+
     // Verify datastore is accessible
     if (isCustomDatastoreConfig(datastoreConfig)) {
       const provider = resolveCustomProvider(datastoreConfig);
@@ -289,6 +292,10 @@ export function requireInitializedRepo(
         lock,
         label: datastoreConfig.type,
       });
+      // Invalidate catalog after pull so next query backfills from fresh data
+      if (syncService) {
+        needsCatalogInvalidation = true;
+      }
     } else if (datastoreConfig.type === "filesystem") {
       try {
         const stat = await Deno.stat(datastoreConfig.path);
@@ -335,6 +342,12 @@ export function requireInitializedRepo(
       datastoreResolver,
       ...factoryConfig,
     });
+
+    // If a remote sync pulled fresh data, invalidate the catalog so the
+    // next query backfills from the freshly-pulled local cache.
+    if (needsCatalogInvalidation) {
+      repoContext.catalogStore?.invalidate();
+    }
 
     return {
       repoDir: repoPath.value,
@@ -530,12 +543,19 @@ async function waitForPerModelLocks(datastorePath: string): Promise<void> {
  * @returns A flush function that releases all acquired per-model locks
  *          (and pushes changes for sync-capable datastores).
  */
+export interface ModelLockResult {
+  flush: () => Promise<void>;
+  /** True if a remote datastore sync pulled data during lock acquisition. */
+  synced: boolean;
+}
+
 export async function acquireModelLocks(
   config: DatastoreConfig,
   models: Array<{ modelType: string; modelId: string }>,
   repoDir?: string,
-): Promise<() => Promise<void>> {
+): Promise<ModelLockResult> {
   const logger = getSwampLogger(["datastore", "lock"]);
+  let synced = false;
 
   // For custom datastores, resolve the provider once and reuse it everywhere
   let customProvider: DatastoreProvider | undefined;
@@ -674,6 +694,7 @@ export async function acquireModelLocks(
           id: modelId,
         });
         await customSyncService.pullChanged();
+        synced = true;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         logger.error("Failed to pull model data from datastore: {error}", {
@@ -686,7 +707,7 @@ export async function acquireModelLocks(
     }
   }
 
-  return async () => {
+  const flush = async () => {
     try {
       // For custom sync-capable datastores: push under global lock
       if (
@@ -727,6 +748,8 @@ export async function acquireModelLocks(
       }
     }
   };
+
+  return { flush, synced };
 }
 
 /**

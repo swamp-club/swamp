@@ -582,6 +582,16 @@ export class DefaultStepExecutor implements StepExecutor {
               createdAt: new Date().toISOString(),
               attributes,
               tags: handle.tags,
+              modelName: handle.tags["modelName"] ?? evaluatedDefinition.name,
+              modelType: modelType.normalized,
+              specName: handle.specName,
+              dataType: handle.tags["type"] ?? "resource",
+              contentType: handle.metadata.contentType,
+              lifetime: handle.metadata.lifetime,
+              ownerType: handle.metadata.ownerDefinition.ownerType,
+              streaming: handle.metadata.streaming,
+              size: handle.size,
+              content: "",
             };
           } else if (handle.kind === "file") {
             const contentPath = unifiedDataRepo.getContentPath(

@@ -256,6 +256,16 @@ export {
   parseTags,
 } from "./data/search.ts";
 
+// Data query operations
+export {
+  dataQuery,
+  type DataQueryData,
+  type DataQueryDeps,
+  type DataQueryEvent,
+  type DataQueryInput,
+  type ProjectedData,
+} from "./data/query.ts";
+
 // Extension trust operations
 export {
   DEFAULT_TRUSTED,

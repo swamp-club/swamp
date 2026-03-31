@@ -18,29 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Record returned by data access functions.
- * Represents a single version of a named data item with parsed content.
- *
- * Used by:
- * - CEL expression data functions (data.version, data.latest, etc.)
- * - DataAccessService for cross-model data reads
- * - context.readModelData() in execute functions
+ * Returns true if the content type represents human-readable text.
  */
-export interface DataRecord {
-  id: string;
-  name: string;
-  version: number;
-  createdAt: string;
-  attributes: Record<string, unknown>;
-  tags: Record<string, string>;
-  modelName: string;
-  modelType: string;
-  specName: string;
-  dataType: string;
-  contentType: string;
-  lifetime: string;
-  ownerType: string;
-  streaming: boolean;
-  size: number;
-  content: string;
+export function isTextContentType(contentType: string): boolean {
+  return contentType.startsWith("text/") ||
+    contentType === "application/json" ||
+    contentType === "application/yaml" ||
+    contentType === "application/x-yaml";
 }

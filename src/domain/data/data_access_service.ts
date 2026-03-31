@@ -25,6 +25,7 @@ import type { SecretRedactor } from "../secrets/mod.ts";
 import type { Data } from "./data.ts";
 import type { DataRecord } from "./data_record.ts";
 import { resolveVaultRefsInData } from "../models/data_writer.ts";
+import { isTextContentType } from "./content_type.ts";
 
 /**
  * A data item with its origin model coordinates, used to track
@@ -149,6 +150,7 @@ export class DataAccessService {
         located.data,
         located.modelType,
         located.modelId,
+        modelName,
       );
       if (record) {
         records.push(record);
@@ -245,32 +247,36 @@ export class DataAccessService {
     data: Data,
     modelType: ModelType,
     modelId: string,
+    modelName?: string,
   ): Promise<DataRecord | null> {
     let attributes: Record<string, unknown> = {};
+    let textContent = "";
 
-    if (data.contentType === "application/json") {
-      const content = await this.dataRepo.getContent(
+    if (isTextContentType(data.contentType)) {
+      const rawBytes = await this.dataRepo.getContent(
         modelType,
         modelId,
         data.name,
       );
-      if (content) {
-        try {
-          attributes = JSON.parse(
-            new TextDecoder().decode(content),
-          ) as Record<string, unknown>;
-        } catch {
-          // Not valid JSON, use empty attributes
-        }
-      }
+      if (rawBytes) {
+        const decoded = new TextDecoder().decode(rawBytes);
+        textContent = decoded;
+        if (data.contentType === "application/json") {
+          try {
+            attributes = JSON.parse(decoded) as Record<string, unknown>;
+          } catch {
+            // Not valid JSON, use empty attributes
+          }
 
-      // Resolve vault references if vault service is available
-      if (this.vaultService && Object.keys(attributes).length > 0) {
-        await resolveVaultRefsInData(
-          attributes,
-          this.vaultService,
-          this.redactor,
-        );
+          // Resolve vault references if vault service is available
+          if (this.vaultService && Object.keys(attributes).length > 0) {
+            await resolveVaultRefsInData(
+              attributes,
+              this.vaultService,
+              this.redactor,
+            );
+          }
+        }
       }
     }
 
@@ -281,6 +287,16 @@ export class DataAccessService {
       createdAt: data.createdAt.toISOString(),
       attributes,
       tags: { ...data.tags },
+      modelName: modelName ?? data.tags["modelName"] ?? "",
+      modelType: modelType.normalized,
+      specName: data.tags["specName"] ?? "",
+      dataType: data.tags["type"] ?? "",
+      contentType: data.contentType,
+      lifetime: data.lifetime,
+      ownerType: data.ownerDefinition.ownerType,
+      streaming: data.streaming,
+      size: data.size ?? 0,
+      content: textContent,
     };
   }
 }

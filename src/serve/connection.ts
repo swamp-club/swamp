@@ -237,11 +237,13 @@ async function handleWorkflowRun(
           }
         }
         if (resolvedModels.length > 0) {
-          flushLocks = await acquireModelLocks(
+          const lockResult = await acquireModelLocks(
             ctx.datastoreConfig,
             resolvedModels,
             ctx.repoDir,
           );
+          if (lockResult.synced) ctx.repoContext.catalogStore?.invalidate();
+          flushLocks = lockResult.flush;
         }
       }
     }
@@ -303,7 +305,7 @@ async function handleModelMethodRun(
       payload.modelIdOrName,
     );
     if (preResult) {
-      flushLocks = await acquireModelLocks(
+      const lockResult = await acquireModelLocks(
         ctx.datastoreConfig,
         [{
           modelType: preResult.type.normalized,
@@ -311,6 +313,8 @@ async function handleModelMethodRun(
         }],
         ctx.repoDir,
       );
+      if (lockResult.synced) ctx.repoContext.catalogStore?.invalidate();
+      flushLocks = lockResult.flush;
     }
 
     const deps = createModelMethodRunDeps(ctx.repoDir, ctx.repoContext);

@@ -34,6 +34,7 @@ import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../domain/expressions/expression_evaluation_service.ts";
+import { DataQueryService } from "../domain/data/data_query_service.ts";
 import { runFileSink } from "../infrastructure/logging/logger.ts";
 import {
   SWAMP_SUBDIRS,
@@ -73,7 +74,15 @@ export function createModelMethodRunDeps(
       new ExpressionEvaluationService(
         repoContext.definitionRepo,
         repoDir,
-        { dataRepo: repoContext.unifiedDataRepo },
+        {
+          dataRepo: repoContext.unifiedDataRepo,
+          dataQueryService: repoContext.catalogStore
+            ? new DataQueryService(
+              repoContext.catalogStore,
+              repoContext.unifiedDataRepo,
+            )
+            : undefined,
+        },
       ),
     loadEvaluatedDefinition: (type, name) =>
       repoContext.evaluatedDefinitionRepo.findByName(type, name),
@@ -84,6 +93,15 @@ export function createModelMethodRunDeps(
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     outputRepo: repoContext.outputRepo,
+    queryData: repoContext.catalogStore
+      ? ((dqs) => (predicate: string, select?: string) =>
+        dqs.query(predicate, { select }))(
+          new DataQueryService(
+            repoContext.catalogStore,
+            repoContext.unifiedDataRepo,
+          ),
+        )
+      : undefined,
     createRunLog: async (modelType, method, definitionId) => {
       const redactor = new SecretRedactor();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

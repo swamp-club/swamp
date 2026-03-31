@@ -40,6 +40,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { modelMethodHistoryCommand } from "./model_method_history.ts";
 import { modelMethodDescribeCommand } from "./model_method_describe.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
@@ -158,7 +159,15 @@ export const modelMethodRunCommand = new Command()
           new ExpressionEvaluationService(
             repoContext.definitionRepo,
             repoDir,
-            { dataRepo: repoContext.unifiedDataRepo },
+            {
+              dataRepo: repoContext.unifiedDataRepo,
+              dataQueryService: repoContext.catalogStore
+                ? new DataQueryService(
+                  repoContext.catalogStore,
+                  repoContext.unifiedDataRepo,
+                )
+                : undefined,
+            },
           ),
         loadEvaluatedDefinition: (type, name) =>
           repoContext.evaluatedDefinitionRepo.findByName(type, name),
@@ -169,6 +178,15 @@ export const modelMethodRunCommand = new Command()
         dataRepo: repoContext.unifiedDataRepo,
         definitionRepo: repoContext.definitionRepo,
         outputRepo: repoContext.outputRepo,
+        queryData: repoContext.catalogStore
+          ? ((dqs) => (predicate: string, select?: string) =>
+            dqs.query(predicate, { select }))(
+              new DataQueryService(
+                repoContext.catalogStore,
+                repoContext.unifiedDataRepo,
+              ),
+            )
+          : undefined,
         createRunLog: async (modelType, method, definitionId) => {
           const redactor = new SecretRedactor();
           const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -206,12 +224,14 @@ export const modelMethodRunCommand = new Command()
       );
       let flushModelLocks: (() => Promise<void>) | null = null;
       if (preResult) {
-        flushModelLocks = await acquireModelLocks(datastoreConfig, [
+        const lockResult = await acquireModelLocks(datastoreConfig, [
           {
             modelType: preResult.type.normalized,
             modelId: preResult.definition.id,
           },
         ], repoDir);
+        if (lockResult.synced) repoContext.catalogStore?.invalidate();
+        flushModelLocks = lockResult.flush;
       }
 
       try {

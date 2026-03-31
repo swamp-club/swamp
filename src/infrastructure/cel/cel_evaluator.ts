@@ -164,6 +164,17 @@ export class CelDataNamespace {
     }
     return [];
   }
+
+  query(predicate: string, select?: string): unknown {
+    const fn = this.delegate["query"];
+    if (typeof fn === "function") {
+      return (fn as (pred: string, sel?: string) => unknown)(
+        predicate,
+        select,
+      );
+    }
+    return [];
+  }
 }
 
 /**
@@ -301,6 +312,18 @@ export class CelEvaluator {
       "CelDataNamespace.findBySpec(string, string): dyn",
       (receiver: CelDataNamespace, modelName: string, specName: string) =>
         receiver.findBySpec(modelName, specName),
+    );
+
+    this.env.registerFunction(
+      "CelDataNamespace.query(string): dyn",
+      (receiver: CelDataNamespace, predicate: string) =>
+        receiver.query(predicate),
+    );
+
+    this.env.registerFunction(
+      "CelDataNamespace.query(string, string): dyn",
+      (receiver: CelDataNamespace, predicate: string, select: string) =>
+        receiver.query(predicate, select),
     );
   }
 

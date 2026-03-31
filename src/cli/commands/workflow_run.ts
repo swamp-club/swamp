@@ -172,11 +172,15 @@ export const workflowRunCommand = new Command()
           }
 
           if (resolvedModels.length > 0) {
-            flushModelLocks = await acquireModelLocks(
+            const lockResult = await acquireModelLocks(
               unlocked.datastoreConfig,
               resolvedModels,
               unlocked.repoDir,
             );
+            if (lockResult.synced) {
+              unlocked.repoContext.catalogStore?.invalidate();
+            }
+            flushModelLocks = lockResult.flush;
           }
 
           repoDir = unlocked.repoDir;

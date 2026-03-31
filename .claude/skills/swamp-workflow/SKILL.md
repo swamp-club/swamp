@@ -40,7 +40,7 @@ run.
 | Get latest run     | `swamp workflow history get <workflow> --json`         |
 | View run logs      | `swamp workflow history logs <run_or_workflow> --json` |
 | List workflow data | `swamp data list --workflow <name> --json`             |
-| Search wf data     | `swamp data search --workflow <name> --json`           |
+| Query wf data      | `swamp data query 'tags.workflow == "<name>"'`         |
 | Get workflow data  | `swamp data get --workflow <name> <data_name> --json`  |
 
 ## Repository Structure

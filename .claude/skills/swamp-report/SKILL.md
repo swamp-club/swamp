@@ -48,7 +48,7 @@ up-to-date CLI schema.
    defaults. Use `reports.skip:` to exclude reports you don't need.
 4. **Run and verify** — execute `swamp model report <model>` to confirm the
    report produces valid markdown and JSON output without errors.
-5. **Check stored output** — run `swamp data search --tag type=report --json` to
+5. **Check stored output** — run `swamp data query 'tags.type == "report"'` to
    verify the report artifact was persisted correctly.
 
 ## Creating a Standalone Report Extension
@@ -271,10 +271,10 @@ Report results are automatically persisted as data artifacts:
 - **Lifetime**: 30 days, garbage collection keeps 5 versions
 - **Tags**: `type=report`, `reportName={name}`, `reportScope={scope}`
 
-Access stored reports via the data commands:
+Access stored reports via data query (see `swamp-data-query` skill):
 
 ```bash
-swamp data search --tag type=report --json
+swamp data query 'tags.type == "report"'
 swamp data get my-model report-cost-estimate --json
 ```
 

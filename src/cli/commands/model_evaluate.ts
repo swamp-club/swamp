@@ -89,9 +89,11 @@ export const modelEvaluateCommand = new Command()
       const { definition, type } = lookupResult;
 
       // Acquire per-model lock (for S3, also pulls model-scoped files)
-      const flushModelLocks = await acquireModelLocks(datastoreConfig, [
+      const lockResult = await acquireModelLocks(datastoreConfig, [
         { modelType: type.normalized, modelId: definition.id },
       ], repoDir);
+      if (lockResult.synced) repoContext.catalogStore?.invalidate();
+      const flushModelLocks = lockResult.flush;
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const deps = createModelEvaluateDeps(repoDir, datastoreResolver);

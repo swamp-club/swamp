@@ -427,7 +427,7 @@ Deno.test("acquireModelLocks - acquires and releases per-model locks", async () 
 
     const { datastoreConfig } = await resolveDatastoreForRepo(dir);
 
-    const flush = await acquireModelLocks(datastoreConfig, [
+    const lockResult = await acquireModelLocks(datastoreConfig, [
       { modelType: "aws-ec2", modelId: "server-1" },
       { modelType: "aws-ec2", modelId: "server-2" },
     ], dir);
@@ -442,7 +442,7 @@ Deno.test("acquireModelLocks - acquires and releases per-model locks", async () 
     assertEquals(info2 !== null, true);
 
     // Release
-    await flush();
+    await lockResult.flush();
 
     // Verify released
     const afterInfo = await lock1.inspect();
@@ -457,11 +457,11 @@ Deno.test("acquireModelLocks - deduplicates same model", async () => {
     const { datastoreConfig } = await resolveDatastoreForRepo(dir);
 
     // Pass the same model twice — should only acquire one lock
-    const flush = await acquireModelLocks(datastoreConfig, [
+    const lockResult = await acquireModelLocks(datastoreConfig, [
       { modelType: "aws-ec2", modelId: "server-1" },
       { modelType: "aws-ec2", modelId: "server-1" },
     ], dir);
 
-    await flush();
+    await lockResult.flush();
   });
 });
