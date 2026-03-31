@@ -444,3 +444,7 @@ feedback, and CI results is persisted in the model data.
    reference specific files, functions, and test paths.
 6. **Use DDD analysis.** Every plan should identify domain concepts, entities,
    and services affected by the change.
+7. **File unrelated issues immediately.** If you discover a bug, code smell, or
+   problem during investigation that is NOT related to the current issue, file
+   it as a new GitHub issue in swamp using the `swamp-issue` skill. Do not try
+   to fix it in the current work span — keep the scope focused.
