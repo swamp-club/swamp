@@ -26,7 +26,11 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
-import { toRelativePath } from "../../infrastructure/persistence/paths.ts";
+import {
+  SWAMP_SUBDIRS,
+  toRelativePath,
+} from "../../infrastructure/persistence/paths.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -155,11 +159,23 @@ export interface DataGetDeps {
 }
 
 /** Wires real infrastructure into DataGetDeps. */
-export function createDataGetDeps(repoDir: string): DataGetDeps {
+export function createDataGetDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): DataGetDeps {
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
   const workflowRepo = new YamlWorkflowRepository(repoDir);
-  const runRepo = new YamlWorkflowRunRepository(repoDir);
+  const runRepo = new YamlWorkflowRunRepository(
+    repoDir,
+    undefined,
+    dsPath(SWAMP_SUBDIRS.workflowRuns),
+  );
   const workflowDataService = new WorkflowDataService(definitionRepo, dataRepo);
   return {
     lookupDefinition: (idOrName) =>

@@ -58,13 +58,14 @@ export const dataGetCommand = new Command()
     ) {
       const cliCtx = createContext(options as GlobalOptions, ["data", "get"]);
 
-      const { repoDir } = await requireInitializedRepoReadOnly({
-        repoDir: options.repoDir ?? ".",
-        outputMode: cliCtx.outputMode,
-      });
+      const { repoDir, datastoreResolver } =
+        await requireInitializedRepoReadOnly({
+          repoDir: options.repoDir ?? ".",
+          outputMode: cliCtx.outputMode,
+        });
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDataGetDeps(repoDir);
+      const deps = createDataGetDeps(repoDir, datastoreResolver);
 
       const renderer = createDataGetRenderer(cliCtx.outputMode);
       await consumeStream(
