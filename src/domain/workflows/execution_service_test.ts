@@ -1940,3 +1940,214 @@ Deno.test("check skip options and swampSha are threaded to step context", async 
     assertEquals(ctx.swampSha, "abc123");
   });
 });
+
+// --- forEach step name expansion regression tests (Issue #976 / PR #973) ---
+
+Deno.test("expandForEachSteps: multi-expression step name produces unique names for items sharing a field", async () => {
+  // Regression: before PR #973, only the first ${{ }} was resolved which caused
+  // duplicate step names when items shared the first field but differed in the second.
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "multi-expr-foreach",
+      jobs: [
+        Job.create({
+          name: "process",
+          steps: [
+            Step.create({
+              name: "${{ self.ep.show }}-${{ self.ep.title }}",
+              task: StepTask.model("test-model", "run"),
+              forEach: {
+                item: "ep",
+                in: "${{ inputs.episodes }}",
+              },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, {
+      inputs: {
+        episodes: [
+          { show: "Trek", title: "Pilot" },
+          { show: "Trek", title: "Finale" },
+          { show: "Wars", title: "Pilot" },
+        ],
+      },
+    });
+
+    assertEquals(run.status, "succeeded");
+
+    // All three expanded step names must be unique and fully resolved
+    const stepNames = executor.executedSteps.map((s) => s.split("/")[1]);
+    assertEquals(stepNames.length, 3);
+    assertEquals(stepNames.includes("Trek-Pilot"), true);
+    assertEquals(stepNames.includes("Trek-Finale"), true);
+    assertEquals(stepNames.includes("Wars-Pilot"), true);
+
+    // Verify uniqueness — the set size equals the array length
+    assertEquals(new Set(stepNames).size, stepNames.length);
+  });
+});
+
+Deno.test("expandForEachSteps: single-expression step name resolves correctly", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "single-expr-foreach",
+      jobs: [
+        Job.create({
+          name: "deploy",
+          steps: [
+            Step.create({
+              name: "deploy-${{ self.env }}",
+              task: StepTask.model("test-model", "run"),
+              forEach: {
+                item: "env",
+                in: "${{ inputs.environments }}",
+              },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, {
+      inputs: {
+        environments: ["dev", "staging", "prod"],
+      },
+    });
+
+    assertEquals(run.status, "succeeded");
+
+    const stepNames = executor.executedSteps.map((s) => s.split("/")[1]);
+    assertEquals(stepNames.length, 3);
+    assertEquals(stepNames.includes("deploy-dev"), true);
+    assertEquals(stepNames.includes("deploy-staging"), true);
+    assertEquals(stepNames.includes("deploy-prod"), true);
+  });
+});
+
+Deno.test("expandForEachSteps: step name without expressions appends item value", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "no-expr-foreach",
+      jobs: [
+        Job.create({
+          name: "process",
+          steps: [
+            Step.create({
+              name: "step",
+              task: StepTask.model("test-model", "run"),
+              forEach: {
+                item: "val",
+                in: "${{ inputs.items }}",
+              },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, {
+      inputs: {
+        items: ["alpha", "beta"],
+      },
+    });
+
+    assertEquals(run.status, "succeeded");
+
+    // Without expression templates, the step name is appended with the item value
+    const stepNames = executor.executedSteps.map((s) => s.split("/")[1]);
+    assertEquals(stepNames.length, 2);
+    assertEquals(stepNames.includes("step-alpha"), true);
+    assertEquals(stepNames.includes("step-beta"), true);
+  });
+});
+
+Deno.test("expandForEachSteps: object iteration with multi-expression step name", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "obj-foreach",
+      jobs: [
+        Job.create({
+          name: "configure",
+          steps: [
+            Step.create({
+              name: "${{ self.svc.key }}-${{ self.svc.value }}",
+              task: StepTask.model("test-model", "run"),
+              forEach: {
+                item: "svc",
+                in: "${{ inputs.services }}",
+              },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+    );
+
+    const run = await service.execute(workflow.name, {
+      inputs: {
+        services: { web: 8080, api: 3000, db: 5432 },
+      },
+    });
+
+    assertEquals(run.status, "succeeded");
+
+    const stepNames = executor.executedSteps.map((s) => s.split("/")[1]);
+    assertEquals(stepNames.length, 3);
+    assertEquals(stepNames.includes("web-8080"), true);
+    assertEquals(stepNames.includes("api-3000"), true);
+    assertEquals(stepNames.includes("db-5432"), true);
+
+    // Verify uniqueness
+    assertEquals(new Set(stepNames).size, stepNames.length);
+  });
+});
