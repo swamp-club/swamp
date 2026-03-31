@@ -85,6 +85,7 @@ export type WorkflowRunEvent =
     kind: "started";
     runId: string;
     workflowName: string;
+    driver?: string;
     jobs: WorkflowRunJobInfo[];
   }
   | { kind: "job_started"; jobId: string }
@@ -313,6 +314,7 @@ function mapEvent(
         kind: "started",
         runId: event.runId,
         workflowName: event.workflowName,
+        driver: event.driver,
         jobs: event.jobs.map((j) => ({
           id: j.id,
           stepCount: j.stepCount,
