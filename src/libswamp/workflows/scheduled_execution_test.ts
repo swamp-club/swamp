@@ -27,8 +27,6 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { createWorkflowRunId } from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRunDeps } from "./run.ts";
 
 function createTestWorkflow(
   name: string,
@@ -74,37 +72,19 @@ function createMockWorkflowRepo(
   };
 }
 
-// Minimal mock deps that won't actually execute
-function createMockWorkflowRunDeps(): WorkflowRunDeps {
-  const mockRepo = createMockWorkflowRepo([]);
-  return {
-    workflowRepo: mockRepo,
-    runRepo: {
-      findById: () => Promise.resolve(null),
-      findAllByWorkflowId: () => Promise.resolve([]),
-      findLatestByWorkflowId: () => Promise.resolve(null),
-      findAllGlobal: () => Promise.resolve([]),
-      save: () => Promise.resolve(),
-      nextId: () => createWorkflowRunId(crypto.randomUUID()),
-      getPath: () => "",
-      deleteAllByWorkflowId: () => Promise.resolve(0),
-    },
-    repoDir: "/tmp/test-repo",
-    lookupWorkflow: () => Promise.resolve(null),
-    createExecutionService: () => {
-      throw new Error("not implemented in mock");
-    },
-  };
-}
-
 Deno.test("ScheduledExecutionService: registers schedules from existing workflows", async () => {
   const wf = createTestWorkflow("scheduled-wf", "0 * * * *");
   const events: ScheduledExecutionEvent[] = [];
 
+  const mockRepo = createMockWorkflowRepo([wf]);
   const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
+    workflowRepo: mockRepo,
+    repoContext: {
+      workflowRepo: mockRepo,
+    } as unknown as import("../../infrastructure/persistence/repository_factory.ts").RepositoryContext,
+    datastoreConfig:
+      {} as unknown as import("../../domain/datastore/datastore_config.ts").DatastoreConfig,
     repoDir: "/tmp/nonexistent-test-repo",
-    createWorkflowRunDeps: () => createMockWorkflowRunDeps(),
   });
 
   await service.start((e) => events.push(e));
@@ -125,10 +105,15 @@ Deno.test("ScheduledExecutionService: ignores workflows without schedules", asyn
   const wf = createTestWorkflow("no-schedule-wf");
   const events: ScheduledExecutionEvent[] = [];
 
+  const mockRepo = createMockWorkflowRepo([wf]);
   const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
+    workflowRepo: mockRepo,
+    repoContext: {
+      workflowRepo: mockRepo,
+    } as unknown as import("../../infrastructure/persistence/repository_factory.ts").RepositoryContext,
+    datastoreConfig:
+      {} as unknown as import("../../domain/datastore/datastore_config.ts").DatastoreConfig,
     repoDir: "/tmp/nonexistent-test-repo",
-    createWorkflowRunDeps: () => createMockWorkflowRunDeps(),
   });
 
   await service.start((e) => events.push(e));
@@ -142,10 +127,15 @@ Deno.test("ScheduledExecutionService: ignores workflows without schedules", asyn
 Deno.test("ScheduledExecutionService: stop clears schedules", async () => {
   const wf = createTestWorkflow("scheduled-wf", "0 * * * *");
 
+  const mockRepo = createMockWorkflowRepo([wf]);
   const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
+    workflowRepo: mockRepo,
+    repoContext: {
+      workflowRepo: mockRepo,
+    } as unknown as import("../../infrastructure/persistence/repository_factory.ts").RepositoryContext,
+    datastoreConfig:
+      {} as unknown as import("../../domain/datastore/datastore_config.ts").DatastoreConfig,
     repoDir: "/tmp/nonexistent-test-repo",
-    createWorkflowRunDeps: () => createMockWorkflowRunDeps(),
   });
 
   await service.start();

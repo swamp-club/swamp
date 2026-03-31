@@ -27,4 +27,8 @@ export type {
 } from "./protocol.ts";
 export { serializeEvent, serializeSwampError } from "./serializer.ts";
 export { type ConnectionContext, handleConnection } from "./connection.ts";
-export { createModelMethodRunDeps, createWorkflowRunDeps } from "./deps.ts";
+export {
+  createModelMethodRunDeps,
+  createWorkflowRunDeps,
+  executeWorkflowWithLocks,
+} from "./deps.ts";
