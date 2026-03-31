@@ -33,6 +33,7 @@ type AnyOptions = any;
 export const authWhoamiCommand = new Command()
   .name("whoami")
   .description("Show current authenticated identity")
+  .example("Show current identity", "swamp auth whoami")
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["auth", "whoami"]);
     cliCtx.logger.debug("Executing auth whoami command");

@@ -41,6 +41,15 @@ type AnyOptions = any;
 export const authLoginCommand = new Command()
   .name("login")
   .description("Authenticate with a swamp-club server")
+  .example("Login via browser", "swamp auth login")
+  .example(
+    "Login to custom server",
+    "swamp auth login --server https://registry.example.com",
+  )
+  .example(
+    "Non-interactive login",
+    "swamp auth login --username alice --password secret --no-browser",
+  )
   .option(
     "--server <url:string>",
     "Server URL (env: SWAMP_CLUB_URL)",

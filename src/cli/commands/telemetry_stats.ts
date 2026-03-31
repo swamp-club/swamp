@@ -32,6 +32,8 @@ import { VERSION } from "./version.ts";
 export const telemetryStatsCommand = new Command()
   .name("stats")
   .description("View telemetry usage statistics")
+  .example("View usage statistics", "swamp telemetry stats")
+  .example("Last 7 days", "swamp telemetry stats --days 7")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--days <days:number>", "Number of days to analyze", { default: 2 })
   .action(async function (options) {

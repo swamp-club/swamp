@@ -46,4 +46,6 @@ import { CompletionsCommand } from "@cliffy/command/completions";
  * Note: Model and workflow name completions are directory-dependent.
  * They return names from the current working directory's swamp repository.
  */
-export const completionCommand = new CompletionsCommand();
+export const completionCommand = new CompletionsCommand()
+  .example("Generate zsh completions", "swamp completions zsh")
+  .example("Generate bash completions", "swamp completions bash");

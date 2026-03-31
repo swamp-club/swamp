@@ -142,6 +142,9 @@ export const auditRecordCommand = new Command()
 export const auditCommand = new Command()
   .name("audit")
   .description("View audit timeline of swamp vs direct CLI commands")
+  .example("View audit timeline", "swamp audit")
+  .example("Last 4 hours", "swamp audit --hours 4")
+  .example("Include all commands", "swamp audit --all")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--hours <hours:number>", "Number of hours to analyze", {
     default: 24,

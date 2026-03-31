@@ -40,6 +40,9 @@ export const summariseCommand = new Command()
   .description(
     "Show a high-level overview of repo activity (method executions, workflows, data)",
   )
+  .example("Show recent activity", "swamp summarise")
+  .example("Activity from the last day", "swamp summarise --since 1d")
+  .example("Activity from the last hour", "swamp summarise --since 1h")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--since <duration:string>", "Time window (e.g. 1h, 1d, 7d, 1w)", {
     default: "7d",
