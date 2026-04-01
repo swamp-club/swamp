@@ -58,6 +58,35 @@ must be present with entries.
 - Reserved collectives (`@swamp`, `@si`) cannot be used
 - Allowed characters: lowercase letters, numbers, hyphens, underscores
 
+### Collective Validation
+
+| Type                        | Valid? | Notes                       |
+| --------------------------- | ------ | --------------------------- |
+| `@user/my-model`            | Yes    | Valid collective            |
+| `@myorg/deploy`             | Yes    | Custom collective allowed   |
+| `myorg/my-model`            | Yes    | Non-@ format allowed        |
+| `digitalocean/app-platform` | Yes    | Non-@ multi-segment allowed |
+| `@user/aws/s3`              | Yes    | Nested paths allowed        |
+| `swamp/my-model`            | No     | Reserved collective         |
+| `si/my-model`               | No     | Reserved collective         |
+
+### Import Rules
+
+- `import { z } from "npm:zod@4";` is always required
+- Any Deno-compatible import (`npm:`, `jsr:`, `https://`) can be used — swamp
+  bundles all dependencies automatically
+- Extensions with a `deno.json` or `package.json` can use bare specifiers (e.g.,
+  `from "zod"`)
+- All imports must be static top-level imports — dynamic `import()` calls are
+  rejected during push
+- Always pin npm versions — either inline (`npm:lodash-es@4.17.21`), via a
+  `deno.json` import map, or in `package.json` dependencies
+- Use `include` in the manifest for helper scripts executed via `Deno.Command`
+  that shouldn't be bundled
+
+See [examples.md](examples.md#import-styles) for import style examples and
+[examples.md](examples.md#helper-scripts) for helper script details.
+
 ### How Content Maps to Manifest
 
 - `models` paths resolve relative to `extensions/models/`

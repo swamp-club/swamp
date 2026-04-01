@@ -202,6 +202,14 @@ swamp vault status --json
    `(name: string, config: Record<string, unknown>)` — the first arg is the
    vault instance name, the second is the parsed config
 
+## Extension Adversarial Review
+
+After writing or significantly modifying vault code, and before running unit
+tests, read the
+[extension adversarial review](../swamp-extension-model/references/adversarial-review.md)
+and self-review against all applicable dimensions (universal + vaults). Present
+findings to the user before proceeding.
+
 ## Publishing
 
 Publishing is the same for all extension types. Before pushing:

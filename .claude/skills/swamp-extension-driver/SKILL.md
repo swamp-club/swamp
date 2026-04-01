@@ -223,6 +223,14 @@ driver file — swamp silently skips files that fail to compile.
 7. **Output types**: Drivers return `"pending"` outputs (data to be persisted by
    swamp) or `"persisted"` outputs (already written by in-process drivers)
 
+## Extension Adversarial Review
+
+After writing or significantly modifying driver code, and before running unit
+tests, read the
+[extension adversarial review](../swamp-extension-model/references/adversarial-review.md)
+and self-review against all applicable dimensions (universal + drivers). Present
+findings to the user before proceeding.
+
 ## Publishing
 
 Publishing is the same for all extension types. Before pushing:

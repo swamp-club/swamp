@@ -471,6 +471,23 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-extension-datastore reference f
   });
 });
 
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model adversarial-review file", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const adversarialPath = join(
+      dir,
+      "swamp-extension-model",
+      "references",
+      "adversarial-review.md",
+    );
+
+    const adversarialStat = await Deno.stat(adversarialPath);
+    assertEquals(adversarialStat.isFile, true);
+  });
+});
+
 Deno.test("SkillAssets includes swamp-extension-driver skill", () => {
   const assets = new SkillAssets();
   const names = assets.getSkillNames();

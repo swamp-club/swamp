@@ -227,57 +227,22 @@ files: {
 
 The execute function receives pre-validated `args` and a `context` object:
 
-```typescript
-execute: (async (args, context) => {
-  // args                   - Pre-validated method arguments
-  // context.globalArgs     - Global arguments
-  // context.definition     - { id, name, version, tags }
-  // context.methodName     - Name of the executing method
-  // context.repoDir        - Repository root path
-  // context.logger         - LogTape Logger
-  // context.dataRepository - For advanced data operations
-  // context.writeResource  - Write structured JSON data
-  // context.readResource   - Read stored JSON data by instance name
-  // context.createFileWriter - Create a writer for files
+- `args` — Pre-validated method arguments
+- `context.globalArgs` — Global arguments
+- `context.definition` — `{ id, name, version, tags }`
+- `context.methodName` — Name of the executing method
+- `context.repoDir` — Repository root path
+- `context.logger` — LogTape Logger
+- `context.writeResource(specName, instanceName, data)` — Write structured JSON
+- `context.readResource(instanceName, version?)` — Read stored JSON
+- `context.createFileWriter(specName, instanceName)` — Create file writer
+- `context.dataRepository` — Advanced data operations
 
-  const handle = await context.writeResource("result", "main", {
-    value: "processed",
-    timestamp: new Date().toISOString(),
-  });
+Return `{ dataHandles: [handle] }` from execute. Throw **before** writing data —
+failed executions should not persist incorrect data. The workflow engine catches
+exceptions and marks the step as failed.
 
-  return { dataHandles: [handle] };
-});
-```
-
-### Error Handling
-
-Models should throw when execution fails. Throw **before** writing data — failed
-executions should not persist incorrect or misleading data.
-
-```typescript
-execute: (async (args, context) => {
-  const result = await callExternalApi(args);
-
-  // Throw BEFORE writing data — don't persist failure data
-  if (result.status >= 400) {
-    throw new Error(`API request failed with status ${result.status}`);
-  }
-
-  const handle = await context.writeResource("result", "main", {
-    statusCode: result.status,
-    response: result.body,
-  });
-
-  return { dataHandles: [handle] };
-});
-```
-
-The workflow engine catches exceptions and marks the step as failed. Use
-`allowFailure: true` on a workflow step to continue execution after a failure.
-
-For detailed API documentation on `writeResource`, `createFileWriter`,
-`DataWriter`, `DataHandle`, and `dataRepository`, see
-[references/api.md](references/api.md).
+See [references/api.md](references/api.md) for detailed API documentation.
 
 ## Instance Names
 
@@ -300,34 +265,9 @@ one spec — see [Factory Models](#factory-models) below.
 ## Factory Models
 
 A single method execution can produce multiple dynamically-named resources from
-the same output spec. This is useful when a model discovers N items and needs to
-emit each as a separately-addressable resource.
-
-```typescript
-const handles = [];
-for (const subnet of subnets) {
-  const handle = await context.writeResource(
-    "subnet",
-    subnet.subnetId, // Dynamic instance name
-    subnet,
-  );
-  handles.push(handle);
-}
-return { dataHandles: handles };
-```
-
-**Discovering factory outputs in CEL:**
-
-```yaml
-# Get all subnets produced by the scanner
-allSubnets: ${{ data.findBySpec("my-scanner", "subnet") }}
-
-# Access a specific named instance
-subnetA: ${{ model.my-scanner.resource.subnet.subnet-aaa.attributes.cidr }}
-```
-
-See [references/scenarios.md](references/scenarios.md) for complete factory
-model examples.
+the same output spec by passing distinct instance names to `writeResource`. See
+[references/scenarios.md](references/scenarios.md#scenario-3-factory-model-for-discovery)
+for complete factory model examples with CEL discovery patterns.
 
 ## CRUD Lifecycle Models
 
@@ -457,28 +397,17 @@ Deno.test("run method writes expected resource", async () => {
 });
 ```
 
-For CRUD models, seed stored resources to test methods that read existing state:
+See [references/testing.md](references/testing.md) for CRUD lifecycle testing
+with `storedResources`, injectable client patterns, log assertions, and
+cancellation testing.
 
-```typescript
-const { context } = createModelTestContext({
-  storedResources: { "main": { instanceId: "i-abc123" } },
-});
-await model.methods.sync.execute({}, context);
-```
+## Extension Adversarial Review
 
-For models calling external APIs, use the injectable client pattern — accept an
-optional client parameter so tests can pass a stub:
-
-```typescript
-execute: (async (args, context) => {
-  const s3 = args._s3Client ??
-    new S3Client({ region: context.globalArgs.region });
-  // ...
-});
-```
-
-See [references/testing.md](references/testing.md) for the full guide including
-injectable client examples, log assertions, and cancellation testing.
+After writing or significantly modifying extension code, and before running unit
+tests or smoke tests, read
+[references/adversarial-review.md](references/adversarial-review.md) and
+self-review against all applicable dimensions. Present findings to the user
+before proceeding to testing.
 
 ## Publishing Extensions
 
@@ -516,44 +445,17 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
 
 ## Key Rules
 
-1. **Export**: Use `export const model = { ... }` for new types or
+1. **Export**: `export const model = { ... }` for new types,
    `export const extension = { ... }` for extending existing types
-2. **Import**: `import { z } from "npm:zod@4";` is always required. Any
-   Deno-compatible import (`npm:`, `jsr:`, `https://`) can also be used — swamp
-   bundles all dependencies automatically. Extensions with a `deno.json` or
-   `package.json` can use bare specifiers instead (e.g., `from "zod"`). See
-   [references/examples.md](references/examples.md#using-external-dependencies)
-3. **Static imports only**: All imports must be static top-level imports.
-   Dynamic `import()` calls are not supported — the quality checker rejects them
-   during `extension push`.
-4. **Pin npm versions**: Always pin versions — either inline
-   (`npm:lodash-es@4.17.21`), via a `deno.json` import map, or in `package.json`
-   dependencies. See
-   [references/examples.md](references/examples.md#import-styles) for details.
-5. **Helper scripts**: Use `include` in the manifest for TypeScript files that
-   are executed via `Deno.Command` subprocess and shouldn't be bundled. See
-   [references/examples.md](references/examples.md#helper-scripts) for details.
-6. **Type naming**: Use `@<collective>/<name>` or `<collective>/<name>` format
-   (e.g., `@user/my-model` or `myorg/my-model`)
-7. **No type annotations**: Avoid TypeScript types in execute parameters
-8. **File naming**: Use snake_case (`my_model.ts`)
-9. **Version upgrades**: When bumping `version`, always add an `upgrades` entry
-   and prompt the user for the migration path. See
-   [references/upgrades.md](references/upgrades.md)
+2. **Import**: `import { z } from "npm:zod@4";` is always required
+3. **Static imports only**: Dynamic `import()` is rejected during push
+4. **Pin npm versions**: Always pin — inline, via `deno.json`, or `package.json`
+5. **No type annotations**: Avoid TypeScript types in execute parameters
+6. **File naming**: Use snake_case (`my_model.ts`)
+7. **Version upgrades**: When bumping `version`, always add an `upgrades` entry
 
-## Collective Rules
-
-User-defined models can use any collective except reserved ones (`swamp`, `si`):
-
-| Type                        | Valid? | Notes                       |
-| --------------------------- | ------ | --------------------------- |
-| `@user/my-model`            | ✅     | Valid collective            |
-| `@myorg/deploy`             | ✅     | Custom collective allowed   |
-| `myorg/my-model`            | ✅     | Non-@ format allowed        |
-| `digitalocean/app-platform` | ✅     | Non-@ multi-segment allowed |
-| `@user/aws/s3`              | ✅     | Nested paths allowed        |
-| `swamp/my-model`            | ❌     | Reserved collective         |
-| `si/my-model`               | ❌     | Reserved collective         |
+For import styles, helper scripts, collective naming rules, and version details,
+see [references/publishing.md](references/publishing.md).
 
 ## Verify
 
@@ -598,5 +500,8 @@ swamp model type describe @myorg/my-model --json  # Check schema
   [references/troubleshooting.md](references/troubleshooting.md)
 - **Version Upgrades**: See [references/upgrades.md](references/upgrades.md) for
   upgrade patterns, user prompt workflow, and migration examples
+- **Adversarial Review**: See
+  [references/adversarial-review.md](references/adversarial-review.md) for the
+  pre-push quality review checklist (credentials, logging, errors, idempotency)
 - **Docker execution**: See
   [references/docker-execution.md](references/docker-execution.md)
