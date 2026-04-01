@@ -749,14 +749,17 @@ export async function runCli(args: string[]): Promise<void> {
     if (telemetryCtx) {
       await telemetryCtx.service.recordSuccess(commandInfo, startTime);
 
-      // Flush unflushed telemetry to remote endpoint (fire-and-forget)
+      // Flush telemetry to remote endpoint with a 2-second cancellation
+      // timeout. If the endpoint is slow or unreachable, data stays local
+      // and will be flushed on the next invocation.
       const sender = new HttpTelemetrySender(telemetryCtx.telemetryEndpoint);
-      telemetryCtx.service.flushTelemetry({
+      await telemetryCtx.service.flushTelemetry({
         sender,
         distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
         repoId: telemetryCtx.repoId,
         authToken: telemetryCtx.authToken ?? undefined,
         keepFlushed: telemetryCtx.keepFlushed,
+        signal: AbortSignal.timeout(2000),
       });
 
       // Trigger cleanup asynchronously (fire-and-forget)
@@ -794,9 +797,19 @@ export async function runCli(args: string[]): Promise<void> {
     // Release datastore lock even on failure (don't leave locks stuck)
     await flushDatastoreSync();
 
-    // Record error invocation before re-throwing
+    // Record error invocation and flush before re-throwing
     if (telemetryCtx && error instanceof Error) {
       await telemetryCtx.service.recordError(commandInfo, startTime, error);
+
+      const sender = new HttpTelemetrySender(telemetryCtx.telemetryEndpoint);
+      await telemetryCtx.service.flushTelemetry({
+        sender,
+        distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
+        repoId: telemetryCtx.repoId,
+        authToken: telemetryCtx.authToken ?? undefined,
+        keepFlushed: telemetryCtx.keepFlushed,
+        signal: AbortSignal.timeout(2000),
+      });
     }
     throw error;
   }

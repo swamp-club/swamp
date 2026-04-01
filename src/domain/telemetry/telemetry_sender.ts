@@ -31,6 +31,7 @@ export interface TelemetrySender {
    * @param distinctId - The user or repo UUID used as distinct_id
    * @param repoId - Optional repo UUID included as a property
    * @param authToken - Optional API key sent via x-api-key header to authenticate the flush request
+   * @param signal - Optional AbortSignal for cancellation
    * @returns true if the batch was accepted, false otherwise
    */
   sendBatch(
@@ -38,5 +39,6 @@ export interface TelemetrySender {
     distinctId: string,
     repoId?: string,
     authToken?: string,
+    signal?: AbortSignal,
   ): Promise<boolean>;
 }

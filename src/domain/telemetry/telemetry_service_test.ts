@@ -77,6 +77,7 @@ class MockTelemetrySender implements TelemetrySender {
     distinctId: string,
     repoId?: string,
     authToken?: string,
+    _signal?: AbortSignal,
   ): Promise<boolean> {
     this.sentBatches.push({ entries, distinctId, repoId, authToken });
     return Promise.resolve(this.shouldSucceed);
@@ -271,10 +272,7 @@ Deno.test("TelemetryService.flushTelemetry sends unflushed entries and marks the
   );
   repo.mockUnflushedEntries = [entry1, entry2];
 
-  service.flushTelemetry({ sender, distinctId: "repo-uuid" });
-
-  // Wait for fire-and-forget to settle
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await service.flushTelemetry({ sender, distinctId: "repo-uuid" });
 
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].entries.length, 2);
@@ -294,10 +292,7 @@ Deno.test("TelemetryService.flushTelemetry does not mark flushed on send failure
   );
   repo.mockUnflushedEntries = [entry];
 
-  service.flushTelemetry({ sender, distinctId: "repo-uuid" });
-
-  // Wait for fire-and-forget to settle
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await service.flushTelemetry({ sender, distinctId: "repo-uuid" });
 
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(repo.flushedEntries.length, 0);
@@ -310,10 +305,7 @@ Deno.test("TelemetryService.flushTelemetry is a no-op when no unflushed entries"
 
   repo.mockUnflushedEntries = [];
 
-  service.flushTelemetry({ sender, distinctId: "repo-uuid" });
-
-  // Wait for fire-and-forget to settle
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await service.flushTelemetry({ sender, distinctId: "repo-uuid" });
 
   assertEquals(sender.sentBatches.length, 0);
   assertEquals(repo.flushedEntries.length, 0);
@@ -330,14 +322,11 @@ Deno.test("TelemetryService.flushTelemetry passes repoId to sender", async () =>
   );
   repo.mockUnflushedEntries = [entry];
 
-  service.flushTelemetry({
+  await service.flushTelemetry({
     sender,
     distinctId: "user-uuid",
     repoId: "repo-uuid-456",
   });
-
-  // Wait for fire-and-forget to settle
-  await new Promise((resolve) => setTimeout(resolve, 50));
 
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].distinctId, "user-uuid");
@@ -355,15 +344,12 @@ Deno.test("TelemetryService.flushTelemetry passes authToken to sender", async ()
   );
   repo.mockUnflushedEntries = [entry];
 
-  service.flushTelemetry({
+  await service.flushTelemetry({
     sender,
     distinctId: "user-uuid",
     repoId: "repo-uuid-456",
     authToken: "test-api-key-123",
   });
-
-  // Wait for fire-and-forget to settle
-  await new Promise((resolve) => setTimeout(resolve, 50));
 
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].authToken, "test-api-key-123");
@@ -380,13 +366,10 @@ Deno.test("TelemetryService.flushTelemetry passes undefined authToken when not p
   );
   repo.mockUnflushedEntries = [entry];
 
-  service.flushTelemetry({
+  await service.flushTelemetry({
     sender,
     distinctId: "user-uuid",
   });
-
-  // Wait for fire-and-forget to settle
-  await new Promise((resolve) => setTimeout(resolve, 50));
 
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].authToken, undefined);

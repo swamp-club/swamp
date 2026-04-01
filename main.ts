@@ -44,8 +44,9 @@ if (import.meta.main) {
     await shutdownTracing();
   }
 
-  // Explicit exit so fire-and-forget promises (telemetry flush, background
-  // update check) can never keep the event loop alive after the CLI finishes.
+  // Explicit exit so fire-and-forget promises (background update check,
+  // telemetry cleanup) can never keep the event loop alive after the CLI
+  // finishes. Telemetry flush is awaited inside runCli before reaching here.
   // The error path already calls Deno.exit(1) in the catch block above.
   Deno.exit(0);
 }

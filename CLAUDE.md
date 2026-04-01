@@ -23,6 +23,10 @@ When creating or updating `swamp-*` skills in `.claude/skills/`, follow the
 - All `.ts` and `.tsx` files must include the AGPLv3 copyright header from
   `FILE-LICENSE-TEMPLATE.md` at the top of the file (as `//` comments). Run
   `deno run license-headers` to add headers to any new files.
+- No fire-and-forget promises. Every promise must be awaited or explicitly
+  handled — unhandled promises race with `Deno.exit` and silently lose data.
+  For outbound network calls, pass an `AbortSignal` with a timeout so the
+  caller controls cancellation.
 
 Changes should only touch what's necessary — don't refactor adjacent code that
 isn't part of the task. Keep the blast radius small.

@@ -41,6 +41,7 @@ export interface TelemetryFlushConfig {
   authToken?: string;
   batchSize?: number;
   keepFlushed?: boolean;
+  signal?: AbortSignal;
 }
 
 /**
@@ -156,22 +157,23 @@ export class TelemetryService {
 
   /**
    * Flushes unflushed telemetry entries to a remote endpoint.
-   * Fire-and-forget: errors are logged but never propagated.
+   * Returns a promise that resolves when the flush completes (or fails silently).
+   * Callers should await this before process exit to ensure data is sent.
    *
    * @param config - Flush configuration with sender and distinctId
    */
-  flushTelemetry(config: TelemetryFlushConfig): void {
+  flushTelemetry(config: TelemetryFlushConfig): Promise<void> {
     const batchSize = config.batchSize ?? DEFAULT_FLUSH_BATCH_SIZE;
     const keepFlushed = config.keepFlushed ?? false;
 
-    // Fire-and-forget: don't await, don't let errors propagate
-    this.doFlush(
+    return this.doFlush(
       config.sender,
       config.distinctId,
       batchSize,
       keepFlushed,
       config.repoId,
       config.authToken,
+      config.signal,
     )
       .catch(
         (error) => {
@@ -189,6 +191,7 @@ export class TelemetryService {
     keepFlushed: boolean,
     repoId?: string,
     authToken?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const entries = await this.repository.findUnflushed(batchSize);
     if (entries.length === 0) return;
@@ -198,6 +201,7 @@ export class TelemetryService {
       distinctId,
       repoId,
       authToken,
+      signal,
     );
     if (success) {
       for (const entry of entries) {

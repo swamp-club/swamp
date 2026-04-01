@@ -32,6 +32,7 @@ export class HttpTelemetrySender implements TelemetrySender {
     distinctId: string,
     repoId?: string,
     authToken?: string,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     const events = entries.map((entry) => ({
       event: "cli_invocation",
@@ -52,11 +53,16 @@ export class HttpTelemetrySender implements TelemetrySender {
         ...(authToken ? { "x-api-key": authToken } : {}),
       };
 
+      // Combine caller's signal with a hard 5-second ceiling
+      const fetchSignal = signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(5000)])
+        : AbortSignal.timeout(5000);
+
       const response = await fetch(`${this.endpointUrl}/ingest`, {
         method: "POST",
         headers,
         body,
-        signal: AbortSignal.timeout(5000),
+        signal: fetchSignal,
       });
       // Consume the response body to prevent resource leaks
       await response.body?.cancel();
