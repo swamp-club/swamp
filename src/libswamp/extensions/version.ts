@@ -22,6 +22,7 @@ import {
   ExtensionApiClient,
   type LatestVersionInfo,
 } from "../../infrastructure/http/extension_api_client.ts";
+import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { resolveServerUrl } from "./pull.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -51,11 +52,16 @@ export interface ExtensionVersionDeps {
 }
 
 /** Wires real infrastructure into ExtensionVersionDeps. */
-export function createExtensionVersionDeps(): ExtensionVersionDeps {
-  const serverUrl = resolveServerUrl();
+export async function createExtensionVersionDeps(): Promise<
+  ExtensionVersionDeps
+> {
+  const authRepo = new AuthRepository();
+  const creds = await authRepo.load();
+  const serverUrl = creds?.serverUrl ?? resolveServerUrl();
   const client = new ExtensionApiClient(serverUrl);
+  const apiKey = creds?.apiKey;
   return {
-    getLatestVersion: (name: string) => client.getLatestVersion(name),
+    getLatestVersion: (name: string) => client.getLatestVersion(name, apiKey),
   };
 }
 

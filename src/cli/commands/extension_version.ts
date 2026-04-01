@@ -58,7 +58,7 @@ export const extensionVersionCommand = new Command()
       const extensionName = await resolveExtensionName(name, options.manifest);
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createExtensionVersionDeps();
+      const deps = await createExtensionVersionDeps();
       const renderer = createExtensionVersionRenderer(cliCtx.outputMode);
 
       await consumeStream(
