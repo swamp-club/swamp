@@ -122,16 +122,21 @@ export async function* dataQuery(
           yield { kind: "projected_match" as const, value };
         }
 
-        const shape = projected.length > 0
-          ? classifyProjection(projected[0])
+        // Find first non-null value to determine shape — null values come
+        // from records where the projection failed (e.g. missing attribute key)
+        const firstNonNull = projected.find((v) => v != null);
+        const shape = firstNonNull !== undefined
+          ? classifyProjection(firstNonNull)
           : "scalar";
 
         let projectedData: ProjectedData;
         switch (shape) {
           case "map": {
-            const firstObj = projected[0] as Record<string, unknown>;
+            const firstObj = firstNonNull as Record<string, unknown>;
             const columns = Object.keys(firstObj);
-            const rows = projected.map((v) => v as Record<string, unknown>);
+            const rows = projected.map((v) =>
+              (v ?? {}) as Record<string, unknown>
+            );
             projectedData = { shape: "map", columns, rows };
             break;
           }

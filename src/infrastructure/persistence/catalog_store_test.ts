@@ -187,6 +187,128 @@ Deno.test("CatalogStore: iterate paginates across page boundaries", () => {
   store.close();
 });
 
+Deno.test("CatalogStore: distinctValues returns unique non-empty values", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(
+    makeRow({ model_id: "m1", data_name: "a", model_name: "scanner" }),
+  );
+  store.upsert(
+    makeRow({ model_id: "m2", data_name: "b", model_name: "ingest" }),
+  );
+  store.upsert(
+    makeRow({ model_id: "m3", data_name: "c", model_name: "scanner" }),
+  );
+  store.upsert(makeRow({ model_id: "m4", data_name: "d", model_name: "" }));
+
+  const names = store.distinctValues("model_name");
+  assertEquals(names, ["ingest", "scanner"]);
+
+  const types = store.distinctValues("data_type");
+  assertEquals(types, ["resource"]);
+
+  store.close();
+});
+
+Deno.test("CatalogStore: distinctValues returns empty for empty catalog", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.distinctValues("model_name"), []);
+  store.close();
+});
+
+Deno.test("CatalogStore: distinctTagKeys collects keys from all rows", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(
+    makeRow({
+      model_id: "m1",
+      data_name: "a",
+      tags: '{"env":"prod","team":"infra"}',
+    }),
+  );
+  store.upsert(
+    makeRow({
+      model_id: "m2",
+      data_name: "b",
+      tags: '{"env":"staging","region":"us-east-1"}',
+    }),
+  );
+  store.upsert(
+    makeRow({ model_id: "m3", data_name: "c", tags: "{}" }),
+  );
+
+  const keys = store.distinctTagKeys();
+  assertEquals(keys, ["env", "region", "team"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: distinctTagKeys handles invalid JSON gracefully", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(
+    makeRow({ model_id: "m1", data_name: "a", tags: "not-json" }),
+  );
+  store.upsert(
+    makeRow({
+      model_id: "m2",
+      data_name: "b",
+      tags: '{"env":"prod"}',
+    }),
+  );
+
+  const keys = store.distinctTagKeys();
+  assertEquals(keys, ["env"]);
+  store.close();
+});
+
+Deno.test("CatalogStore: distinctTagValues returns values for a key", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(
+    makeRow({
+      model_id: "m1",
+      data_name: "a",
+      tags: '{"env":"prod"}',
+    }),
+  );
+  store.upsert(
+    makeRow({
+      model_id: "m2",
+      data_name: "b",
+      tags: '{"env":"staging"}',
+    }),
+  );
+  store.upsert(
+    makeRow({
+      model_id: "m3",
+      data_name: "c",
+      tags: '{"env":"prod"}',
+    }),
+  );
+  store.upsert(
+    makeRow({
+      model_id: "m4",
+      data_name: "d",
+      tags: '{"team":"infra"}',
+    }),
+  );
+
+  const values = store.distinctTagValues("env");
+  assertEquals(values, ["prod", "staging"]);
+
+  const teamValues = store.distinctTagValues("team");
+  assertEquals(teamValues, ["infra"]);
+
+  const missing = store.distinctTagValues("nonexistent");
+  assertEquals(missing, []);
+  store.close();
+});
+
 Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);

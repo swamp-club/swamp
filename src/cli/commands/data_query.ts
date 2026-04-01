@@ -25,6 +25,7 @@ import {
   type DataQueryDeps,
 } from "../../libswamp/mod.ts";
 import { createDataQueryRenderer } from "../../presentation/renderers/data_query.ts";
+import { renderInteractiveQuery } from "../../presentation/renderers/data_query_tui.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
@@ -35,13 +36,19 @@ type AnyOptions = any;
 
 export const dataQueryCommand = new Command()
   .name("query")
-  .description("Query data artifacts using CEL predicates")
-  .arguments("<predicate:string>")
+  .description(
+    "Query data artifacts using CEL predicates (interactive TUI when no predicate given)",
+  )
+  .arguments("[predicate:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--limit <n:number>", "Maximum results", { default: 100 })
   .option(
     "--select <expr:string>",
     "CEL expression to extract fields from matching records (e.g. data.name)",
+  )
+  .example(
+    "Interactive mode",
+    "swamp data query",
   )
   .example("Filter by model", "swamp data query 'modelName == \"scanner\"'")
   .example(
@@ -52,9 +59,8 @@ export const dataQueryCommand = new Command()
     "Project a single field",
     "swamp data query 'dataType == \"resource\"' --select data.name",
   )
-  .action(async function (options: AnyOptions, predicate: string) {
+  .action(async function (options: AnyOptions, predicate?: string) {
     const ctx = createContext(options as GlobalOptions, ["data", "query"]);
-    const libCtx = createLibSwampContext();
 
     const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
@@ -75,6 +81,32 @@ export const dataQueryCommand = new Command()
     const deps: DataQueryDeps = {
       query: (pred, opts) => queryService.query(pred, opts),
     };
+
+    // Interactive TUI when no predicate is given, TTY, and not --json mode
+    if (!predicate && Deno.stdout.isTerminal() && ctx.outputMode !== "json") {
+      await renderInteractiveQuery({
+        queryDeps: deps,
+        distinctFn: (col) =>
+          repoContext.catalogStore!.distinctValues(
+            col as Parameters<
+              typeof repoContext.catalogStore.distinctValues
+            >[0],
+          ),
+        tagKeysFn: () => repoContext.catalogStore!.distinctTagKeys(),
+        tagValuesFn: (key) => repoContext.catalogStore!.distinctTagValues(key),
+      });
+      return;
+    }
+
+    if (!predicate) {
+      throw new UserError(
+        "A CEL predicate is required in non-interactive mode.\n" +
+          "Usage: swamp data query 'modelName == \"scanner\"'\n" +
+          "Run without arguments in a terminal for interactive mode.",
+      );
+    }
+
+    const libCtx = createLibSwampContext();
 
     const renderer = createDataQueryRenderer(ctx.outputMode);
     await consumeStream(

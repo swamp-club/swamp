@@ -194,6 +194,14 @@ function renderJson(data: DataQueryData): void {
   }
 }
 
+/**
+ * Renders query results as a markdown string, suitable for terminal display.
+ * Used by both the non-interactive renderer and the interactive TUI.
+ */
+export function renderQueryResultsMarkdown(data: DataQueryData): string {
+  return data.projected ? renderProjected(data) : renderDefaultTable(data);
+}
+
 export function createDataQueryRenderer(
   outputMode: OutputMode,
 ): { handlers: () => EventHandlers<DataQueryEvent> } {
@@ -206,10 +214,9 @@ export function createDataQueryRenderer(
         if (outputMode === "json") {
           renderJson(event.data);
         } else {
-          const md = event.data.projected
-            ? renderProjected(event.data)
-            : renderDefaultTable(event.data);
-          writeOutput(renderMarkdownToTerminal(md));
+          writeOutput(
+            renderMarkdownToTerminal(renderQueryResultsMarkdown(event.data)),
+          );
         }
       },
       error: (event: DataQueryEvent & { kind: "error" }) => {

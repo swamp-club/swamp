@@ -265,6 +265,7 @@ export {
   type DataQueryInput,
   type ProjectedData,
 } from "./data/query.ts";
+export type { DataRecord } from "../domain/data/data_record.ts";
 
 // Extension trust operations
 export {

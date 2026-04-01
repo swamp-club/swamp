@@ -204,6 +204,85 @@ export class CatalogStore {
   }
 
   /**
+   * Returns distinct non-empty values for a catalog column.
+   * Used for autocomplete in the interactive query TUI.
+   */
+  distinctValues(
+    column:
+      | "id"
+      | "data_name"
+      | "version"
+      | "created_at"
+      | "model_name"
+      | "type_normalized"
+      | "spec_name"
+      | "data_type"
+      | "content_type"
+      | "lifetime"
+      | "owner_type"
+      | "size",
+  ): string[] {
+    const ALLOWED = new Set([
+      "id",
+      "data_name",
+      "version",
+      "created_at",
+      "model_name",
+      "type_normalized",
+      "spec_name",
+      "data_type",
+      "content_type",
+      "lifetime",
+      "owner_type",
+      "size",
+    ]);
+    if (!ALLOWED.has(column)) return [];
+    const stmt = this.db.prepare(
+      `SELECT DISTINCT ${column} FROM catalog WHERE ${column} != '' ORDER BY ${column}`,
+    );
+    return (stmt.all() as Record<string, unknown>[]).map((row) =>
+      String(row[column])
+    );
+  }
+
+  /**
+   * Returns distinct tag keys across all catalog rows.
+   * Parses the JSON `tags` column from each row.
+   */
+  distinctTagKeys(): string[] {
+    const keys = new Set<string>();
+    for (const row of this.iterate()) {
+      try {
+        const tags = JSON.parse(row.tags) as Record<string, string>;
+        for (const key of Object.keys(tags)) {
+          keys.add(key);
+        }
+      } catch {
+        // Skip invalid JSON
+      }
+    }
+    return [...keys].sort();
+  }
+
+  /**
+   * Returns distinct tag values for a given tag key.
+   */
+  distinctTagValues(tagKey: string): string[] {
+    const values = new Set<string>();
+    for (const row of this.iterate()) {
+      try {
+        const tags = JSON.parse(row.tags) as Record<string, string>;
+        if (tagKey in tags) {
+          values.add(tags[tagKey]);
+        }
+      } catch {
+        // Skip invalid JSON
+      }
+    }
+    return [...values].sort();
+  }
+
+  /**
    * Closes the database connection.
    */
   close(): void {

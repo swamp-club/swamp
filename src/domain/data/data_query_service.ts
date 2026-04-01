@@ -141,11 +141,17 @@ export class DataQueryService {
       }
     }
 
-    // Apply projection if select expression provided
+    // Apply projection if select expression provided.
+    // Per-record errors (e.g. missing attribute keys) produce null instead of
+    // failing the entire query, so partial results are still useful.
     if (selectParsed) {
-      return results.map((r) =>
-        selectParsed(r as unknown as Record<string, unknown>)
-      );
+      return results.map((r) => {
+        try {
+          return selectParsed(r as unknown as Record<string, unknown>);
+        } catch {
+          return null;
+        }
+      });
     }
 
     return results;
