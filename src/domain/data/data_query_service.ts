@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { Environment } from "cel-js";
 import type {
   CatalogRow,
@@ -33,6 +34,8 @@ import {
   validateFieldReferences,
 } from "./query_predicate.ts";
 import { isTextContentType } from "./content_type.ts";
+
+const logger = getLogger(["swamp", "domain", "data", "query"]);
 
 export interface DataQueryOptions {
   limit?: number;
@@ -130,8 +133,11 @@ export class DataQueryService {
           results.push(record);
           if (results.length >= limit) break;
         }
-      } catch {
-        // Evaluation error on this row (e.g., type mismatch) — skip
+      } catch (error) {
+        logger
+          .debug`Query predicate skipped row ${row.model_name}/${row.data_name}: ${
+          String(error)
+        }`;
       }
     }
 

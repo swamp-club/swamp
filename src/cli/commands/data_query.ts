@@ -39,7 +39,19 @@ export const dataQueryCommand = new Command()
   .arguments("<predicate:string>")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--limit <n:number>", "Maximum results", { default: 100 })
-  .option("--select <expr:string>", "CEL projection expression")
+  .option(
+    "--select <expr:string>",
+    "CEL expression to extract fields from matching records (e.g. data.name)",
+  )
+  .example("Filter by model", "swamp data query 'modelName == \"scanner\"'")
+  .example(
+    "Filter with size threshold",
+    "swamp data query 'size > 1048576'",
+  )
+  .example(
+    "Project a single field",
+    "swamp data query 'dataType == \"resource\"' --select data.name",
+  )
   .action(async function (options: AnyOptions, predicate: string) {
     const ctx = createContext(options as GlobalOptions, ["data", "query"]);
     const libCtx = createLibSwampContext();

@@ -177,17 +177,18 @@ function renderProjected(data: DataQueryData): string {
  */
 function renderJson(data: DataQueryData): void {
   if (data.projected) {
-    switch (data.projected.shape) {
-      case "scalar":
-        writeOutput(JSON.stringify(data.projected.values, null, 2));
-        break;
-      case "map":
-        writeOutput(JSON.stringify(data.projected.rows, null, 2));
-        break;
-      case "list":
-        writeOutput(JSON.stringify(data.projected.rows, null, 2));
-        break;
-    }
+    const results = data.projected.shape === "scalar"
+      ? data.projected.values
+      : data.projected.rows;
+    writeOutput(JSON.stringify(
+      {
+        results,
+        total: data.total,
+        limited: data.limited,
+      },
+      null,
+      2,
+    ));
   } else {
     writeOutput(JSON.stringify(data, null, 2));
   }

@@ -53,6 +53,8 @@ export interface CatalogRow {
  * The catalog is local-only and excluded from datastore sync. It self-heals
  * by triggering a backfill when missing or not yet populated.
  */
+const ITERATE_PAGE_SIZE = 1000;
+
 export class CatalogStore {
   private readonly db: DatabaseSync;
 
@@ -139,13 +141,21 @@ export class CatalogStore {
   }
 
   /**
-   * Iterates over all catalog rows. Uses a generator so only one row
-   * is in memory at a time.
+   * Iterates over all catalog rows using paged queries.
+   * Fetches rows in batches of {@link ITERATE_PAGE_SIZE} to bound memory.
    */
   *iterate(): IterableIterator<CatalogRow> {
-    const stmt = this.db.prepare("SELECT * FROM catalog");
-    for (const row of stmt.all()) {
-      yield row as unknown as CatalogRow;
+    const stmt = this.db.prepare("SELECT * FROM catalog LIMIT ? OFFSET ?");
+    let offset = 0;
+    while (true) {
+      const rows = stmt.all(
+        ITERATE_PAGE_SIZE,
+        offset,
+      ) as unknown as CatalogRow[];
+      if (rows.length === 0) break;
+      yield* rows;
+      if (rows.length < ITERATE_PAGE_SIZE) break;
+      offset += ITERATE_PAGE_SIZE;
     }
   }
 

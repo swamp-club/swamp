@@ -123,4 +123,6 @@ export const serveCommand = new Command()
     Deno.addSignalListener("SIGTERM", shutdown);
 
     await server.finished;
+
+    repoContext.catalogStore?.close();
   });
