@@ -448,7 +448,15 @@ export const model = {
         await tracker.postComment(
           repo,
           issueNumber,
-          `\u{1F4CB} **Classified as ${args.type}** (${args.confidence}) \u2014 ${args.reasoning}`,
+          [
+            `\u{1F4CB} **Classified as ${args.type}** (${args.confidence})`,
+            "",
+            "<details>",
+            "<summary>Classification details</summary>",
+            "",
+            args.reasoning,
+            "</details>",
+          ].join("\n"),
         );
         await tracker.setPhaseLabel(repo, issueNumber, "classified");
 
@@ -548,7 +556,15 @@ export const model = {
         await tracker.postComment(
           repo,
           issueNumber,
-          `\u{1F4DD} **Implementation plan generated** (v1) \u2014 ${args.summary}`,
+          [
+            `\u{1F4DD} **Implementation plan generated** (v1)`,
+            "",
+            "<details>",
+            "<summary>Plan summary</summary>",
+            "",
+            args.summary,
+            "</details>",
+          ].join("\n"),
         );
         await tracker.setPhaseLabel(repo, issueNumber, "plan_generated");
 
@@ -725,7 +741,15 @@ export const model = {
         await tracker.postComment(
           repo,
           issueNumber,
-          `\u{1F504} **Plan revised** (v${newVersion}) \u2014 incorporated feedback round ${feedbackRound}`,
+          [
+            `\u{1F504} **Plan revised** (v${newVersion}) \u2014 incorporated feedback round ${feedbackRound}`,
+            "",
+            "<details>",
+            "<summary>Updated plan summary</summary>",
+            "",
+            args.summary,
+            "</details>",
+          ].join("\n"),
         );
         await tracker.setPhaseLabel(repo, issueNumber, "plan_generated");
 
@@ -820,15 +844,26 @@ export const model = {
           ? `\u{1F6D1} **${blockers} blocking finding(s)** must be resolved before approval`
           : "\u{2705} No blocking findings — ready for approval";
 
+        const severitySummary = [
+          critical > 0 ? `${critical} critical` : "",
+          high > 0 ? `${high} high` : "",
+          medium > 0 ? `${medium} medium` : "",
+          low > 0 ? `${low} low` : "",
+        ].filter(Boolean).join(", ");
+
         await tracker.postComment(
           repo,
           issueNumber,
           [
             `\u{1F50D} **Adversarial review** (plan v${planVersion})`,
             "",
-            findingsText,
-            "",
             status,
+            "",
+            "<details>",
+            `<summary>Findings (${severitySummary})</summary>`,
+            "",
+            findingsText,
+            "</details>",
           ].join("\n"),
         );
 
@@ -920,17 +955,23 @@ export const model = {
           .map((r) => `- **${r.findingId}**: ${r.resolutionNote}`)
           .join("\n");
 
+        const remainingStatus = remaining > 0
+          ? `\u{1F6D1} ${remaining} blocking finding(s) remain`
+          : "\u{2705} All blocking findings resolved — ready for approval";
+
         await tracker.postComment(
           repo,
           issueNumber,
           [
             `\u{2705} **Findings resolved** (${resolved})`,
             "",
-            resolvedText,
+            remainingStatus,
             "",
-            remaining > 0
-              ? `\u{1F6D1} ${remaining} blocking finding(s) remain`
-              : "\u{2705} All blocking findings resolved — ready for approval",
+            "<details>",
+            "<summary>Resolution details</summary>",
+            "",
+            resolvedText,
+            "</details>",
           ].join("\n"),
         );
 
@@ -992,6 +1033,11 @@ export const model = {
             "\n",
           );
 
+          const fileCount = plan.steps
+            .flatMap((s) => s.files)
+            .filter((f, i, a) => a.indexOf(f) === i)
+            .length;
+
           await tracker.postComment(
             repo,
             issueNumber,
@@ -1001,20 +1047,32 @@ export const model = {
               "",
               `**Summary:** ${plan.summary}`,
               "",
-              "### DDD Analysis",
+              "<details>",
+              "<summary>DDD Analysis</summary>",
+              "",
               plan.dddAnalysis,
+              "</details>",
               "",
               "### Implementation Steps",
               steps,
               "",
-              "### Files",
+              "<details>",
+              `<summary>Files (${fileCount})</summary>`,
+              "",
               files,
+              "</details>",
               "",
-              "### Testing Strategy",
+              "<details>",
+              "<summary>Testing Strategy</summary>",
+              "",
               plan.testingStrategy,
+              "</details>",
               "",
-              "### Potential Challenges",
+              "<details>",
+              "<summary>Potential Challenges</summary>",
+              "",
               challenges,
+              "</details>",
               "",
               plan.feedbackIncorporated.length > 0
                 ? `_Incorporated ${plan.feedbackIncorporated.length} round(s) of feedback._`
