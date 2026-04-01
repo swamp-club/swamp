@@ -190,6 +190,14 @@ swamp datastore status --json
 7. **Locking is required**: `createLock` must return a working `DistributedLock`
    — swamp acquires locks for all write operations
 
+## Extension Adversarial Review
+
+After writing or significantly modifying datastore code, and before running unit
+tests, read the
+[extension adversarial review](../swamp-extension-model/references/adversarial-review.md)
+and self-review against all applicable dimensions (universal + datastores).
+Present findings to the user before proceeding.
+
 ## Publishing
 
 Publishing is the same for all extension types. Before pushing:
