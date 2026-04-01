@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -54,7 +54,6 @@ function makeDeps(
 
   return {
     resolveModelType: () => Promise.resolve(modelDef),
-    getAvailableTypes: () => ["model/type"],
     ...overrides,
   };
 }
@@ -83,7 +82,6 @@ Deno.test("typeDescribe yields resolving then completed on happy path", async ()
 Deno.test("typeDescribe yields error with not_found when type not found", async () => {
   const deps = makeDeps({
     resolveModelType: () => Promise.resolve(undefined),
-    getAvailableTypes: () => ["model/type"],
   });
   const unknownType = ModelType.create("unknown/type");
   const events = await collect<TypeDescribeEvent>(
@@ -95,4 +93,35 @@ Deno.test("typeDescribe yields error with not_found when type not found", async 
   const last = events[1] as Extract<TypeDescribeEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_found");
+});
+
+Deno.test("typeDescribe error includes extension search hint", async () => {
+  const deps = makeDeps({
+    resolveModelType: () => Promise.resolve(undefined),
+  });
+  const unknownType = ModelType.create("@swamp/gcp/oauth2");
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(createLibSwampContext(), deps, unknownType),
+  );
+
+  const last = events[1] as Extract<TypeDescribeEvent, { kind: "error" }>;
+  assertStringIncludes(last.error.message, "swamp extension search gcp/oauth2");
+  assertStringIncludes(
+    last.error.message,
+    "swamp extension pull @swamp/gcp/oauth2",
+  );
+});
+
+Deno.test("typeDescribe error derives correct search term for non-namespaced type", async () => {
+  const deps = makeDeps({
+    resolveModelType: () => Promise.resolve(undefined),
+  });
+  const unknownType = ModelType.create("docker/run");
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(createLibSwampContext(), deps, unknownType),
+  );
+
+  const last = events[1] as Extract<TypeDescribeEvent, { kind: "error" }>;
+  assertStringIncludes(last.error.message, "swamp extension search run");
+  assertStringIncludes(last.error.message, "swamp extension pull @docker/run");
 });
