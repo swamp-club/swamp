@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { type CatalogRow, CatalogStore } from "./catalog_store.ts";
+import {
+  type CatalogRow,
+  CatalogStore,
+  ITERATE_PAGE_SIZE,
+} from "./catalog_store.ts";
 
 function makeTempDbPath(): string {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-catalog-test-" });
@@ -153,6 +157,33 @@ Deno.test("CatalogStore: empty catalog iterates zero rows", () => {
   const store = new CatalogStore(dbPath);
   const rows = [...store.iterate()];
   assertEquals(rows.length, 0);
+  store.close();
+});
+
+Deno.test("CatalogStore: iterate paginates across page boundaries", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  const totalRows = ITERATE_PAGE_SIZE + 1;
+  for (let i = 0; i < totalRows; i++) {
+    store.upsert(
+      makeRow({
+        model_id: `model-${String(i).padStart(5, "0")}`,
+        data_name: `data-${String(i).padStart(5, "0")}`,
+      }),
+    );
+  }
+
+  assertEquals(store.count(), totalRows);
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, totalRows);
+
+  // Verify deterministic ordering — rows come back in rowid order
+  for (let i = 0; i < totalRows; i++) {
+    assertEquals(rows[i].model_id, `model-${String(i).padStart(5, "0")}`);
+  }
+
   store.close();
 });
 
