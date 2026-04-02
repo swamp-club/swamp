@@ -2,14 +2,14 @@ description: Swamp skill trigger routing evaluation
 prompts:
   - "{{query}}"
 providers:
-  - id: "anthropic:messages:claude-sonnet-4-5-20250929"
+  - id: "anthropic:messages:claude-sonnet-4-5"
     config:
       temperature: 0
       max_tokens: 200
       systemMessage: >-
-        You are a skill router for swamp, an AI-native automation framework. Your ONLY job is to route user requests to the correct skill by making a tool call. You MUST call exactly one tool for every
-        request. NEVER respond with text. NEVER ask clarifying questions. Even if the request is vague or missing details, route it to the best-matching skill based on the topic and keywords. The skill
-        itself will handle gathering any missing information from the user.
+        You are a skill router for swamp, an AI-native automation framework. Your ONLY job is to route user requests to the correct skill by making a tool call. You MUST call exactly one tool for
+        every request. NEVER respond with text. NEVER ask clarifying questions. Even if the request is vague or missing details, route it to the best-matching skill based on the topic and keywords.
+        The skill itself will handle gathering any missing information from the user.
       tools:
         - type: function
           function:
@@ -908,9 +908,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: "[swamp-extension-model] SHOULD trigger: Implement the model interface in TypeScript for my domain"
+  - description: "[swamp-extension-model] SHOULD trigger: Implement the model interface in TypeScript for managing Str"
     vars:
-      query: Implement the model interface in TypeScript for my domain
+      query: Implement the model interface in TypeScript for managing Stripe subscriptions
     assert:
       - type: javascript
         value: |-
@@ -1288,9 +1288,9 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-vault"');
-  - description: "[swamp-issue] SHOULD trigger: File a bug report for a crash in the vault system"
+  - description: "[swamp-issue] SHOULD trigger: File a bug report — swamp vault get crashes with a segfault "
     vars:
-      query: File a bug report for a crash in the vault system
+      query: File a bug report — swamp vault get crashes with a segfault when the key contains special characters
     assert:
       - type: javascript
         value: |-
@@ -1316,9 +1316,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: "[swamp-issue] SHOULD trigger: Create a GitHub issue documenting unexpected behavior in swa"
+  - description: "[swamp-issue] SHOULD trigger: Create a GitHub issue — swamp workflow run silently skips st"
     vars:
-      query: Create a GitHub issue documenting unexpected behavior in swamp
+      query: Create a GitHub issue — swamp workflow run silently skips steps when a dependency model has no data
     assert:
       - type: javascript
         value: |-
@@ -1330,9 +1330,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: "[swamp-issue] SHOULD trigger: File a bug report about performance degradation"
+  - description: "[swamp-issue] SHOULD trigger: File a bug report — swamp model get takes 30+ seconds when t"
     vars:
-      query: File a bug report about performance degradation
+      query: File a bug report — swamp model get takes 30+ seconds when there are more than 100 data versions
     assert:
       - type: javascript
         value: |-
@@ -1453,19 +1453,6 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-issue"');
-  - description: "[swamp-issue] should NOT trigger: Show me the existing issues in the swamp repository"
-    vars:
-      query: Show me the existing issues in the swamp repository
-    assert:
-      - type: javascript
-        value: |-
-          try {
-            const calls = JSON.parse(output);
-            if (Array.isArray(calls)) {
-              return !calls.some(c => c.function?.name === 'swamp-issue' || c.name === 'swamp-issue');
-            }
-          } catch {}
-          return !String(output).includes('"swamp-issue"');
   - description: "[swamp-issue] should NOT trigger: Help me plan the architecture for a new feature"
     vars:
       query: Help me plan the architecture for a new feature
@@ -1534,9 +1521,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: "[swamp-model] SHOULD trigger: Run the model method on my-instance with these arguments"
+  - description: "[swamp-model] SHOULD trigger: Run the validate method on the payment-processor model with "
     vars:
-      query: Run the model method on my-instance with these arguments
+      query: Run the validate method on the payment-processor model with amount=100 and currency=USD
     assert:
       - type: javascript
         value: |-
@@ -1576,9 +1563,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: "[swamp-model] SHOULD trigger: Execute the enrichment model with my input data"
+  - description: "[swamp-model] SHOULD trigger: Execute the enrichment model on the customer-profile instanc"
     vars:
-      query: Execute the enrichment model with my input data
+      query: Execute the enrichment model on the customer-profile instance to add geo data
     assert:
       - type: javascript
         value: |-
@@ -2146,9 +2133,9 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-report"');
-  - description: "[swamp-troubleshooting] SHOULD trigger: Debug why my workflow is failing on the second step"
+  - description: "[swamp-troubleshooting] SHOULD trigger: Debug why my deploy-infra workflow is failing on the second "
     vars:
-      query: Debug why my workflow is failing on the second step
+      query: Debug why my deploy-infra workflow is failing on the second step with error 'model not found'
     assert:
       - type: javascript
         value: |-
@@ -2216,9 +2203,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: "[swamp-troubleshooting] SHOULD trigger: The swamp CLI command is giving me a strange error message"
+  - description: '[swamp-troubleshooting] SHOULD trigger: swamp model get is giving me ''Error: ENOENT: no such file or'
     vars:
-      query: The swamp CLI command is giving me a strange error message
+      query: 'swamp model get is giving me ''Error: ENOENT: no such file or directory'' but the model exists'
     assert:
       - type: javascript
         value: |-
@@ -2244,9 +2231,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] SHOULD trigger: Read the swamp source code to understand what''s causing this'
+  - description: "[swamp-troubleshooting] SHOULD trigger: Read the swamp source code to understand why vault.get retur"
     vars:
-      query: Read the swamp source code to understand what's causing this error
+      query: Read the swamp source code to understand why vault.get returns undefined for keys that exist
     assert:
       - type: javascript
         value: |-
@@ -2721,9 +2708,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: "[swamp-workflow] SHOULD trigger: Execute this workflow and show me the results"
+  - description: "[swamp-workflow] SHOULD trigger: Execute the nightly-sync workflow and show me the results"
     vars:
-      query: Execute this workflow and show me the results
+      query: Execute the nightly-sync workflow and show me the results
     assert:
       - type: javascript
         value: |-

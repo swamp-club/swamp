@@ -106,7 +106,7 @@ async function main(): Promise<void> {
   const command = new Deno.Command("npx", {
     args: [
       "-y",
-      "promptfoo@latest",
+      "promptfoo@0.121.3",
       "eval",
       "-j",
       String(concurrency),
@@ -200,4 +200,4 @@ async function main(): Promise<void> {
   console.log("\nAll skills passed trigger evals.");
 }
 
-main();
+await main();

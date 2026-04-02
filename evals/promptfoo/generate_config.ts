@@ -211,4 +211,4 @@ async function main(): Promise<void> {
   console.log(stringifyYaml(config, { lineWidth: 200 }));
 }
 
-main();
+await main();
