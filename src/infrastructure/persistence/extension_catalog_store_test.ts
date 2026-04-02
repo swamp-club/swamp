@@ -79,23 +79,23 @@ Deno.test("ExtensionCatalogStore: upsert overwrites existing row", () => {
   store.close();
 });
 
-Deno.test("ExtensionCatalogStore: remove deletes row", () => {
+Deno.test("ExtensionCatalogStore: removeBySourcePath deletes row", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow());
   assertEquals(store.count(), 1);
 
-  store.remove("@myorg/echo", "model");
+  store.removeBySourcePath("/repo/extensions/models/echo.ts");
   assertEquals(store.count(), 0);
   assertEquals(store.findByType("@myorg/echo", "model"), undefined);
   store.close();
 });
 
-Deno.test("ExtensionCatalogStore: remove nonexistent row is a no-op", () => {
+Deno.test("ExtensionCatalogStore: removeBySourcePath nonexistent is a no-op", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
-  store.remove("nonexistent", "model");
+  store.removeBySourcePath("/nonexistent");
   assertEquals(store.count(), 0);
   store.close();
 });
@@ -104,11 +104,21 @@ Deno.test("ExtensionCatalogStore: findByKind returns only matching kind", () => 
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
 
-  store.upsert(makeRow({ type_normalized: "@org/model-a", kind: "model" }));
-  store.upsert(makeRow({ type_normalized: "@org/model-b", kind: "model" }));
-  store.upsert(
-    makeRow({ type_normalized: "@org/my-vault", kind: "vault" }),
-  );
+  store.upsert(makeRow({
+    type_normalized: "@org/model-a",
+    kind: "model",
+    source_path: "/repo/models/a.ts",
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@org/model-b",
+    kind: "model",
+    source_path: "/repo/models/b.ts",
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@org/my-vault",
+    kind: "vault",
+    source_path: "/repo/vaults/v.ts",
+  }));
 
   const models = store.findByKind("model");
   assertEquals(models.length, 2);
@@ -132,28 +142,28 @@ Deno.test("ExtensionCatalogStore: findExtensionsForType returns targeting extens
   store.upsert(makeRow({
     type_normalized: "@swamp/aws/ec2/instance",
     kind: "model",
+    source_path: "/repo/models/instance.ts",
   }));
 
   // Extension targeting the base model
   store.upsert(makeRow({
-    type_normalized: "@swamp/aws/ec2/instance-ext-terminate",
+    type_normalized: "@swamp/aws/ec2/instance",
     kind: "extension",
     extends_type: "@swamp/aws/ec2/instance",
+    source_path: "/repo/models/instance_terminate.ts",
   }));
 
   // Extension targeting a different model
   store.upsert(makeRow({
-    type_normalized: "@swamp/aws/ec2/vpc-ext-audit",
+    type_normalized: "@swamp/aws/ec2/vpc",
     kind: "extension",
     extends_type: "@swamp/aws/ec2/vpc",
+    source_path: "/repo/models/vpc_audit.ts",
   }));
 
   const exts = store.findExtensionsForType("@swamp/aws/ec2/instance");
   assertEquals(exts.length, 1);
-  assertEquals(
-    exts[0].type_normalized,
-    "@swamp/aws/ec2/instance-ext-terminate",
-  );
+  assertEquals(exts[0].source_path, "/repo/models/instance_terminate.ts");
 
   const noExts = store.findExtensionsForType("@swamp/aws/s3/bucket");
   assertEquals(noExts.length, 0);
@@ -164,9 +174,21 @@ Deno.test("ExtensionCatalogStore: count filters by kind", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
 
-  store.upsert(makeRow({ type_normalized: "@org/a", kind: "model" }));
-  store.upsert(makeRow({ type_normalized: "@org/b", kind: "model" }));
-  store.upsert(makeRow({ type_normalized: "@org/c", kind: "vault" }));
+  store.upsert(makeRow({
+    type_normalized: "@org/a",
+    kind: "model",
+    source_path: "/repo/a.ts",
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@org/b",
+    kind: "model",
+    source_path: "/repo/b.ts",
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@org/c",
+    kind: "vault",
+    source_path: "/repo/c.ts",
+  }));
 
   assertEquals(store.count(), 3);
   assertEquals(store.count("model"), 2);
@@ -258,16 +280,18 @@ Deno.test("ExtensionCatalogStore: same type different kinds are separate entries
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
 
-  // Hypothetical: same name used as both model and vault
+  // Hypothetical: same name used as both model and vault (different source files)
   store.upsert(makeRow({
     type_normalized: "@org/thing",
     kind: "model",
     version: "1.0.0",
+    source_path: "/repo/models/thing.ts",
   }));
   store.upsert(makeRow({
     type_normalized: "@org/thing",
     kind: "vault",
     version: "2.0.0",
+    source_path: "/repo/vaults/thing.ts",
   }));
 
   assertEquals(store.count(), 2);
@@ -290,8 +314,14 @@ Deno.test("ExtensionCatalogStore: concurrent opens do not throw database is lock
   const store2 = new ExtensionCatalogStore(dbPath);
 
   // Write from both — WAL + busy_timeout should handle contention
-  store1.upsert(makeRow({ type_normalized: "@org/from-store1" }));
-  store2.upsert(makeRow({ type_normalized: "@org/from-store2" }));
+  store1.upsert(makeRow({
+    type_normalized: "@org/from-store1",
+    source_path: "/repo/s1.ts",
+  }));
+  store2.upsert(makeRow({
+    type_normalized: "@org/from-store2",
+    source_path: "/repo/s2.ts",
+  }));
 
   // Both writes visible from either handle
   assertEquals(
@@ -305,4 +335,43 @@ Deno.test("ExtensionCatalogStore: concurrent opens do not throw database is lock
 
   store1.close();
   store2.close();
+});
+
+Deno.test("ExtensionCatalogStore: multiple extensions targeting same base type coexist", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  // Base model
+  store.upsert(makeRow({
+    type_normalized: "@myorg/server",
+    kind: "model",
+    source_path: "/repo/models/server.ts",
+  }));
+
+  // Two extensions targeting the same base type
+  store.upsert(makeRow({
+    type_normalized: "@myorg/server",
+    kind: "extension",
+    extends_type: "@myorg/server",
+    source_path: "/repo/models/server_terminate.ts",
+  }));
+  store.upsert(makeRow({
+    type_normalized: "@myorg/server",
+    kind: "extension",
+    extends_type: "@myorg/server",
+    source_path: "/repo/models/server_backup.ts",
+  }));
+
+  // Both extensions survive — not overwritten
+  const exts = store.findExtensionsForType("@myorg/server");
+  assertEquals(exts.length, 2);
+  const paths = exts.map((e) => e.source_path).sort();
+  assertEquals(paths, [
+    "/repo/models/server_backup.ts",
+    "/repo/models/server_terminate.ts",
+  ]);
+
+  // Total: 1 model + 2 extensions
+  assertEquals(store.count(), 3);
+  store.close();
 });

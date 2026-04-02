@@ -77,21 +77,22 @@ export class ExtensionCatalogStore {
   private createSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bundle_types (
+        source_path     TEXT NOT NULL PRIMARY KEY,
         type_normalized TEXT NOT NULL,
         kind            TEXT NOT NULL DEFAULT 'model',
         bundle_path     TEXT NOT NULL,
-        source_path     TEXT NOT NULL DEFAULT '',
         version         TEXT NOT NULL DEFAULT '',
         description     TEXT NOT NULL DEFAULT '',
         extends_type    TEXT NOT NULL DEFAULT '',
-        source_mtime    TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY (type_normalized, kind)
+        source_mtime    TEXT NOT NULL DEFAULT ''
       );
 
       CREATE INDEX IF NOT EXISTS idx_bundle_types_kind
         ON bundle_types(kind);
       CREATE INDEX IF NOT EXISTS idx_bundle_types_extends
         ON bundle_types(extends_type);
+      CREATE INDEX IF NOT EXISTS idx_bundle_types_type
+        ON bundle_types(type_normalized, kind);
 
       CREATE TABLE IF NOT EXISTS bundle_meta (
         key   TEXT PRIMARY KEY,
@@ -102,20 +103,20 @@ export class ExtensionCatalogStore {
 
   /**
    * Upserts a bundle type entry. Replaces any existing row with
-   * the same primary key (type_normalized, kind).
+   * the same source path (primary key).
    */
   upsert(row: ExtensionTypeRow): void {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO bundle_types (
-        type_normalized, kind, bundle_path, source_path,
+        source_path, type_normalized, kind, bundle_path,
         version, description, extends_type, source_mtime
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
+      row.source_path,
       row.type_normalized,
       row.kind,
       row.bundle_path,
-      row.source_path,
       row.version,
       row.description,
       row.extends_type,
@@ -124,13 +125,13 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Removes a bundle type entry by its primary key.
+   * Removes a bundle type entry by source path.
    */
-  remove(typeNormalized: string, kind: ExtensionKind): void {
+  removeBySourcePath(sourcePath: string): void {
     const stmt = this.db.prepare(
-      "DELETE FROM bundle_types WHERE type_normalized = ? AND kind = ?",
+      "DELETE FROM bundle_types WHERE source_path = ?",
     );
-    stmt.run(typeNormalized, kind);
+    stmt.run(sourcePath);
   }
 
   /**

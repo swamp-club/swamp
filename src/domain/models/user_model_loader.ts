@@ -803,9 +803,9 @@ export class UserModelLoader {
     }
 
     // Check for deleted files — remove from catalog
-    for (const [sourcePath, entry] of catalogBySource) {
+    for (const [sourcePath] of catalogBySource) {
       if (!seenSources.has(sourcePath)) {
-        catalog.remove(entry.type_normalized, entry.kind);
+        catalog.removeBySourcePath(sourcePath);
       }
     }
 
