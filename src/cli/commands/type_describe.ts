@@ -27,6 +27,7 @@ import {
 import { createTypeDescribeRenderer } from "../../presentation/renderers/type_describe.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 
 // Re-export from libswamp for backward compatibility with existing importers
 export { toMethodDescribeData, zodToJsonSchema } from "../../libswamp/mod.ts";
@@ -48,6 +49,8 @@ export const typeDescribeCommand = new Command()
     cliCtx.logger.debug`Describing type: ${typeArg}`;
 
     const modelType = ModelType.create(typeArg);
+
+    await modelRegistry.ensureLoaded();
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createTypeDescribeDeps();

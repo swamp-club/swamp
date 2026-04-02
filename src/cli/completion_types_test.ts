@@ -102,9 +102,9 @@ Deno.test("ModelTypeType.parse handles nested type paths", () => {
   assertEquals(result, "aws/ec2/instance");
 });
 
-Deno.test("ModelTypeType.complete returns registered model types", () => {
+Deno.test("ModelTypeType.complete returns registered model types", async () => {
   const type = new ModelTypeType();
-  const result = type.complete();
+  const result = await type.complete();
 
   // Should return an array of strings
   assertEquals(Array.isArray(result), true);
@@ -113,9 +113,9 @@ Deno.test("ModelTypeType.complete returns registered model types", () => {
   assertEquals(result.includes("command/shell"), true);
 });
 
-Deno.test("ModelTypeType.complete returns registered types", () => {
+Deno.test("ModelTypeType.complete returns registered types", async () => {
   const type = new ModelTypeType();
-  const result = type.complete();
+  const result = await type.complete();
 
   // Should include registered types (command/shell is built-in)
   assertEquals(result.includes("command/shell"), true);

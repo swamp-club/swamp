@@ -27,6 +27,7 @@ import {
 import { createModelMethodDescribeRenderer } from "../../presentation/renderers/model_method_describe.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -57,6 +58,8 @@ export const modelMethodDescribeCommand = new Command()
         repoDir: options.repoDir ?? ".",
         outputMode: cliCtx.outputMode,
       });
+
+      await modelRegistry.ensureLoaded();
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const deps = createModelMethodDescribeDeps(repoDir);

@@ -130,7 +130,8 @@ export class ModelTypeType extends Type<string> {
     return value;
   }
 
-  override complete(): string[] {
+  override async complete(): Promise<string[]> {
+    await modelRegistry.ensureLoaded();
     return modelRegistry.types().map((t) => t.normalized);
   }
 }

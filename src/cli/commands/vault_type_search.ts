@@ -31,6 +31,7 @@ import {
   interactiveOutputMode,
 } from "../context.ts";
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -46,6 +47,8 @@ export async function vaultTypeSearchAction(
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching vault types with query: ${query ?? "(none)"}`;
+
+  await vaultTypeRegistry.ensureLoaded();
 
   const deps: VaultTypeSearchDeps = {
     getVaultTypes: () => getVaultTypes(),
