@@ -31,3 +31,4 @@ CLAUDE.local.md
 .envrc
 resources/deno/
 /scripts/dist
+evals/promptfoo/results.json
