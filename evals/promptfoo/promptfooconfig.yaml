@@ -1,8 +1,8 @@
 description: Swamp skill trigger routing evaluation
 prompts:
-  - '{{query}}'
+  - "{{query}}"
 providers:
-  - id: 'anthropic:messages:claude-sonnet-4-5-20250929'
+  - id: "anthropic:messages:claude-sonnet-4-5-20250929"
     config:
       temperature: 0
       max_tokens: 200
@@ -198,7 +198,7 @@ providers:
               required:
                 - query
 tests:
-  - description: '[swamp-data] SHOULD trigger: Show me all the model data currently stored in swamp'
+  - description: "[swamp-data] SHOULD trigger: Show me all the model data currently stored in swamp"
     vars:
       query: Show me all the model data currently stored in swamp
     assert:
@@ -212,7 +212,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-data"');
-  - description: '[swamp-data] SHOULD trigger: List the version history for the Customer model'
+  - description: "[swamp-data] SHOULD trigger: List the version history for the Customer model"
     vars:
       query: List the version history for the Customer model
     assert:
@@ -226,7 +226,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-data"');
-  - description: '[swamp-data] SHOULD trigger: How do I delete old data versions that are no longer needed?'
+  - description: "[swamp-data] SHOULD trigger: How do I delete old data versions that are no longer needed?"
     vars:
       query: How do I delete old data versions that are no longer needed?
     assert:
@@ -240,7 +240,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-data"');
-  - description: '[swamp-data] SHOULD trigger: Run garbage collection to clean up expired data'
+  - description: "[swamp-data] SHOULD trigger: Run garbage collection to clean up expired data"
     vars:
       query: Run garbage collection to clean up expired data
     assert:
@@ -254,7 +254,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-data"');
-  - description: '[swamp-data] SHOULD trigger: What data retention policies are in place?'
+  - description: "[swamp-data] SHOULD trigger: What data retention policies are in place?"
     vars:
       query: What data retention policies are in place?
     assert:
@@ -268,7 +268,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-data"');
-  - description: '[swamp-data] SHOULD trigger: Get the latest version of the Payment data'
+  - description: "[swamp-data] SHOULD trigger: Get the latest version of the Payment data"
     vars:
       query: Get the latest version of the Payment data
     assert:
@@ -296,7 +296,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-data"');
-  - description: '[swamp-data] SHOULD trigger: Configure data gc to run on a schedule'
+  - description: "[swamp-data] SHOULD trigger: Configure data gc to run on a schedule"
     vars:
       query: Configure data gc to run on a schedule
     assert:
@@ -310,7 +310,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-data"');
-  - description: '[swamp-data] SHOULD trigger: View the data lifecycle and retention settings'
+  - description: "[swamp-data] SHOULD trigger: View the data lifecycle and retention settings"
     vars:
       query: View the data lifecycle and retention settings
     assert:
@@ -324,7 +324,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-data"');
-  - description: '[swamp-data] should NOT trigger: I want to understand the schema fields in this model type'
+  - description: "[swamp-data] should NOT trigger: I want to understand the schema fields in this model type"
     vars:
       query: I want to understand the schema fields in this model type
     assert:
@@ -337,7 +337,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-data"');
-  - description: '[swamp-data] should NOT trigger: How do I create a custom input for the validation method?'
+  - description: "[swamp-data] should NOT trigger: How do I create a custom input for the validation method?"
     vars:
       query: How do I create a custom input for the validation method?
     assert:
@@ -350,7 +350,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-data"');
-  - description: '[swamp-data] should NOT trigger: Run the transform method on this dataset'
+  - description: "[swamp-data] should NOT trigger: Run the transform method on this dataset"
     vars:
       query: Run the transform method on this dataset
     assert:
@@ -363,7 +363,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-data"');
-  - description: '[swamp-data] should NOT trigger: Help me set up a new datastore backend'
+  - description: "[swamp-data] should NOT trigger: Help me set up a new datastore backend"
     vars:
       query: Help me set up a new datastore backend
     assert:
@@ -389,7 +389,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-data"');
-  - description: '[swamp-data] should NOT trigger: Create a custom datastore for MongoDB'
+  - description: "[swamp-data] should NOT trigger: Create a custom datastore for MongoDB"
     vars:
       query: Create a custom datastore for MongoDB
     assert:
@@ -402,7 +402,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-data"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: How do I implement a custom DatastoreProvider for MongoDB?'
+  - description: "[swamp-extension-datastore] SHOULD trigger: How do I implement a custom DatastoreProvider for MongoDB?"
     vars:
       query: How do I implement a custom DatastoreProvider for MongoDB?
     assert:
@@ -416,7 +416,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: Create a custom datastore backend for PostgreSQL'
+  - description: "[swamp-extension-datastore] SHOULD trigger: Create a custom datastore backend for PostgreSQL"
     vars:
       query: Create a custom datastore backend for PostgreSQL
     assert:
@@ -430,7 +430,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: Build a datastore that stores data in S3 buckets'
+  - description: "[swamp-extension-datastore] SHOULD trigger: Build a datastore that stores data in S3 buckets"
     vars:
       query: Build a datastore that stores data in S3 buckets
     assert:
@@ -444,7 +444,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: I want to extend swamp with a custom vector database datasto'
+  - description: "[swamp-extension-datastore] SHOULD trigger: I want to extend swamp with a custom vector database datasto"
     vars:
       query: I want to extend swamp with a custom vector database datastore
     assert:
@@ -458,7 +458,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: Guide me through creating a DatastoreProvider interface impl'
+  - description: "[swamp-extension-datastore] SHOULD trigger: Guide me through creating a DatastoreProvider interface impl"
     vars:
       query: Guide me through creating a DatastoreProvider interface implementation
     assert:
@@ -472,7 +472,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: Create a custom datastore for graph database support'
+  - description: "[swamp-extension-datastore] SHOULD trigger: Create a custom datastore for graph database support"
     vars:
       query: Create a custom datastore for graph database support
     assert:
@@ -486,7 +486,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: Build a datastore backend for DynamoDB with locking support'
+  - description: "[swamp-extension-datastore] SHOULD trigger: Build a datastore backend for DynamoDB with locking support"
     vars:
       query: Build a datastore backend for DynamoDB with locking support
     assert:
@@ -500,7 +500,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: Implement a datastore plugin for Redis with sync capabilitie'
+  - description: "[swamp-extension-datastore] SHOULD trigger: Implement a datastore plugin for Redis with sync capabilitie"
     vars:
       query: Implement a datastore plugin for Redis with sync capabilities
     assert:
@@ -514,7 +514,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] SHOULD trigger: Create a custom datastore for Cassandra'
+  - description: "[swamp-extension-datastore] SHOULD trigger: Create a custom datastore for Cassandra"
     vars:
       query: Create a custom datastore for Cassandra
     assert:
@@ -528,7 +528,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] should NOT trigger: Initialize a new swamp repository with the default datastore'
+  - description: "[swamp-extension-datastore] should NOT trigger: Initialize a new swamp repository with the default datastore"
     vars:
       query: Initialize a new swamp repository with the default datastore
     assert:
@@ -541,7 +541,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] should NOT trigger: List all versions of my data stored in the datastore'
+  - description: "[swamp-extension-datastore] should NOT trigger: List all versions of my data stored in the datastore"
     vars:
       query: List all versions of my data stored in the datastore
     assert:
@@ -554,7 +554,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] should NOT trigger: Implement a custom vault provider for storing secrets'
+  - description: "[swamp-extension-datastore] should NOT trigger: Implement a custom vault provider for storing secrets"
     vars:
       query: Implement a custom vault provider for storing secrets
     assert:
@@ -567,7 +567,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] should NOT trigger: Datastore writes are failing intermittently'
+  - description: "[swamp-extension-datastore] should NOT trigger: Datastore writes are failing intermittently"
     vars:
       query: Datastore writes are failing intermittently
     assert:
@@ -580,7 +580,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] should NOT trigger: How do I store my API key securely?'
+  - description: "[swamp-extension-datastore] should NOT trigger: How do I store my API key securely?"
     vars:
       query: How do I store my API key securely?
     assert:
@@ -593,7 +593,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-datastore] should NOT trigger: Run garbage collection to clean up old data'
+  - description: "[swamp-extension-datastore] should NOT trigger: Run garbage collection to clean up old data"
     vars:
       query: Run garbage collection to clean up old data
     assert:
@@ -606,7 +606,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-datastore"');
-  - description: '[swamp-extension-driver] SHOULD trigger: How do I create a custom execution driver for SSH?'
+  - description: "[swamp-extension-driver] SHOULD trigger: How do I create a custom execution driver for SSH?"
     vars:
       query: How do I create a custom execution driver for SSH?
     assert:
@@ -620,7 +620,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] SHOULD trigger: Build a Lambda execution driver for running jobs on AWS'
+  - description: "[swamp-extension-driver] SHOULD trigger: Build a Lambda execution driver for running jobs on AWS"
     vars:
       query: Build a Lambda execution driver for running jobs on AWS
     assert:
@@ -634,7 +634,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] SHOULD trigger: I want to create a custom driver that runs on Kubernetes'
+  - description: "[swamp-extension-driver] SHOULD trigger: I want to create a custom driver that runs on Kubernetes"
     vars:
       query: I want to create a custom driver that runs on Kubernetes
     assert:
@@ -648,7 +648,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] SHOULD trigger: Guide me through implementing a remote execution driver'
+  - description: "[swamp-extension-driver] SHOULD trigger: Guide me through implementing a remote execution driver"
     vars:
       query: Guide me through implementing a remote execution driver
     assert:
@@ -662,7 +662,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] SHOULD trigger: Create a custom driver for executing tasks on GCP Cloud Run'
+  - description: "[swamp-extension-driver] SHOULD trigger: Create a custom driver for executing tasks on GCP Cloud Run"
     vars:
       query: Create a custom driver for executing tasks on GCP Cloud Run
     assert:
@@ -676,7 +676,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] SHOULD trigger: How do I implement the ExecutionDriver interface in TypeScri'
+  - description: "[swamp-extension-driver] SHOULD trigger: How do I implement the ExecutionDriver interface in TypeScri"
     vars:
       query: How do I implement the ExecutionDriver interface in TypeScript?
     assert:
@@ -690,7 +690,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] SHOULD trigger: Build a driver that executes workloads on a Docker Swarm clu'
+  - description: "[swamp-extension-driver] SHOULD trigger: Build a driver that executes workloads on a Docker Swarm clu"
     vars:
       query: Build a driver that executes workloads on a Docker Swarm cluster
     assert:
@@ -704,7 +704,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] SHOULD trigger: Create an extension driver for running code on a custom VM'
+  - description: "[swamp-extension-driver] SHOULD trigger: Create an extension driver for running code on a custom VM"
     vars:
       query: Create an extension driver for running code on a custom VM
     assert:
@@ -718,7 +718,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] SHOULD trigger: Implement a driver plugin for Nomad job orchestration'
+  - description: "[swamp-extension-driver] SHOULD trigger: Implement a driver plugin for Nomad job orchestration"
     vars:
       query: Implement a driver plugin for Nomad job orchestration
     assert:
@@ -732,7 +732,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] should NOT trigger: Create a model type for processing Docker containers'
+  - description: "[swamp-extension-driver] should NOT trigger: Create a model type for processing Docker containers"
     vars:
       query: Create a model type for processing Docker containers
     assert:
@@ -745,7 +745,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] should NOT trigger: How do I orchestrate multiple remote jobs in a workflow?'
+  - description: "[swamp-extension-driver] should NOT trigger: How do I orchestrate multiple remote jobs in a workflow?"
     vars:
       query: How do I orchestrate multiple remote jobs in a workflow?
     assert:
@@ -758,7 +758,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] should NOT trigger: What custom datastores can I build?'
+  - description: "[swamp-extension-driver] should NOT trigger: What custom datastores can I build?"
     vars:
       query: What custom datastores can I build?
     assert:
@@ -771,7 +771,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] should NOT trigger: My SSH driver is timing out when executing remote tasks'
+  - description: "[swamp-extension-driver] should NOT trigger: My SSH driver is timing out when executing remote tasks"
     vars:
       query: My SSH driver is timing out when executing remote tasks
     assert:
@@ -784,7 +784,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] should NOT trigger: Run this workflow step on a remote Kubernetes cluster'
+  - description: "[swamp-extension-driver] should NOT trigger: Run this workflow step on a remote Kubernetes cluster"
     vars:
       query: Run this workflow step on a remote Kubernetes cluster
     assert:
@@ -797,7 +797,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-driver] should NOT trigger: Store the execution credentials in a secure vault'
+  - description: "[swamp-extension-driver] should NOT trigger: Store the execution credentials in a secure vault"
     vars:
       query: Store the execution credentials in a secure vault
     assert:
@@ -810,7 +810,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-driver"');
-  - description: '[swamp-extension-model] SHOULD trigger: How do I create a custom model using TypeScript and Zod?'
+  - description: "[swamp-extension-model] SHOULD trigger: How do I create a custom model using TypeScript and Zod?"
     vars:
       query: How do I create a custom model using TypeScript and Zod?
     assert:
@@ -824,7 +824,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: I want to build a new model type that integrates with our in'
+  - description: "[swamp-extension-model] SHOULD trigger: I want to build a new model type that integrates with our in"
     vars:
       query: I want to build a new model type that integrates with our internal API
     assert:
@@ -838,7 +838,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: Create a user-defined model for processing healthcare record'
+  - description: "[swamp-extension-model] SHOULD trigger: Create a user-defined model for processing healthcare record"
     vars:
       query: Create a user-defined model for processing healthcare records
     assert:
@@ -852,7 +852,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: How do I extend swamp with a custom transformation model?'
+  - description: "[swamp-extension-model] SHOULD trigger: How do I extend swamp with a custom transformation model?"
     vars:
       query: How do I extend swamp with a custom transformation model?
     assert:
@@ -866,7 +866,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: Guide me through building a model that works with GraphQL'
+  - description: "[swamp-extension-model] SHOULD trigger: Guide me through building a model that works with GraphQL"
     vars:
       query: Guide me through building a model that works with GraphQL
     assert:
@@ -880,7 +880,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: Create a Zod schema for my custom data validation model'
+  - description: "[swamp-extension-model] SHOULD trigger: Create a Zod schema for my custom data validation model"
     vars:
       query: Create a Zod schema for my custom data validation model
     assert:
@@ -894,7 +894,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: Build a new model type for extracting entities from text'
+  - description: "[swamp-extension-model] SHOULD trigger: Build a new model type for extracting entities from text"
     vars:
       query: Build a new model type for extracting entities from text
     assert:
@@ -908,7 +908,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: Implement the model interface in TypeScript for my domain'
+  - description: "[swamp-extension-model] SHOULD trigger: Implement the model interface in TypeScript for my domain"
     vars:
       query: Implement the model interface in TypeScript for my domain
     assert:
@@ -922,7 +922,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: Create a deno model plugin for Salesforce CRM integration'
+  - description: "[swamp-extension-model] SHOULD trigger: Create a deno model plugin for Salesforce CRM integration"
     vars:
       query: Create a deno model plugin for Salesforce CRM integration
     assert:
@@ -936,7 +936,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] should NOT trigger: What are the available model types already in swamp?'
+  - description: "[swamp-extension-model] should NOT trigger: What are the available model types already in swamp?"
     vars:
       query: What are the available model types already in swamp?
     assert:
@@ -949,7 +949,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] should NOT trigger: How do I retrieve secrets from a vault in my model?'
+  - description: "[swamp-extension-model] should NOT trigger: How do I retrieve secrets from a vault in my model?"
     vars:
       query: How do I retrieve secrets from a vault in my model?
     assert:
@@ -962,7 +962,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] should NOT trigger: Can I run this custom model as part of a scheduled workflow?'
+  - description: "[swamp-extension-model] should NOT trigger: Can I run this custom model as part of a scheduled workflow?"
     vars:
       query: Can I run this custom model as part of a scheduled workflow?
     assert:
@@ -988,7 +988,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] should NOT trigger: Execute my custom model with this input data'
+  - description: "[swamp-extension-model] should NOT trigger: Execute my custom model with this input data"
     vars:
       query: Execute my custom model with this input data
     assert:
@@ -1001,7 +1001,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] should NOT trigger: List all the data stored from running my models'
+  - description: "[swamp-extension-model] should NOT trigger: List all the data stored from running my models"
     vars:
       query: List all the data stored from running my models
     assert:
@@ -1014,7 +1014,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: How do I smoke test my extension model before pushing?'
+  - description: "[swamp-extension-model] SHOULD trigger: How do I smoke test my extension model before pushing?"
     vars:
       query: How do I smoke test my extension model before pushing?
     assert:
@@ -1028,7 +1028,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: I need to verify my extension model works before I push it'
+  - description: "[swamp-extension-model] SHOULD trigger: I need to verify my extension model works before I push it"
     vars:
       query: I need to verify my extension model works before I push it
     assert:
@@ -1042,7 +1042,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: How do I test my extension model against a real API?'
+  - description: "[swamp-extension-model] SHOULD trigger: How do I test my extension model against a real API?"
     vars:
       query: How do I test my extension model against a real API?
     assert:
@@ -1070,7 +1070,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-model] SHOULD trigger: Help me create and test a CRUD extension model'
+  - description: "[swamp-extension-model] SHOULD trigger: Help me create and test a CRUD extension model"
     vars:
       query: Help me create and test a CRUD extension model
     assert:
@@ -1084,7 +1084,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-model"');
-  - description: '[swamp-extension-vault] SHOULD trigger: How do I implement a custom VaultProvider for HashiCorp Vaul'
+  - description: "[swamp-extension-vault] SHOULD trigger: How do I implement a custom VaultProvider for HashiCorp Vaul"
     vars:
       query: How do I implement a custom VaultProvider for HashiCorp Vault?
     assert:
@@ -1098,7 +1098,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] SHOULD trigger: Create a vault backend that integrates with AWS Secrets Mana'
+  - description: "[swamp-extension-vault] SHOULD trigger: Create a vault backend that integrates with AWS Secrets Mana"
     vars:
       query: Create a vault backend that integrates with AWS Secrets Manager
     assert:
@@ -1112,7 +1112,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] SHOULD trigger: Build a custom vault implementation for Azure Key Vault'
+  - description: "[swamp-extension-vault] SHOULD trigger: Build a custom vault implementation for Azure Key Vault"
     vars:
       query: Build a custom vault implementation for Azure Key Vault
     assert:
@@ -1126,7 +1126,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] SHOULD trigger: I want to extend swamp with a custom vault provider'
+  - description: "[swamp-extension-vault] SHOULD trigger: I want to extend swamp with a custom vault provider"
     vars:
       query: I want to extend swamp with a custom vault provider
     assert:
@@ -1140,7 +1140,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] SHOULD trigger: Guide me through creating a VaultProvider interface implemen'
+  - description: "[swamp-extension-vault] SHOULD trigger: Guide me through creating a VaultProvider interface implemen"
     vars:
       query: Guide me through creating a VaultProvider interface implementation
     assert:
@@ -1154,7 +1154,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] SHOULD trigger: Implement a custom vault that uses environment variables'
+  - description: "[swamp-extension-vault] SHOULD trigger: Implement a custom vault that uses environment variables"
     vars:
       query: Implement a custom vault that uses environment variables
     assert:
@@ -1168,7 +1168,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] SHOULD trigger: Build a vault plugin for GCP Secret Manager'
+  - description: "[swamp-extension-vault] SHOULD trigger: Build a vault plugin for GCP Secret Manager"
     vars:
       query: Build a vault plugin for GCP Secret Manager
     assert:
@@ -1182,7 +1182,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] SHOULD trigger: Create a user-defined vault backend for Kubernetes secrets'
+  - description: "[swamp-extension-vault] SHOULD trigger: Create a user-defined vault backend for Kubernetes secrets"
     vars:
       query: Create a user-defined vault backend for Kubernetes secrets
     assert:
@@ -1196,7 +1196,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] SHOULD trigger: Implement a vault provider for Hashicorp Consul'
+  - description: "[swamp-extension-vault] SHOULD trigger: Implement a vault provider for Hashicorp Consul"
     vars:
       query: Implement a vault provider for Hashicorp Consul
     assert:
@@ -1210,7 +1210,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] should NOT trigger: How do I store and retrieve secrets in the built-in vault?'
+  - description: "[swamp-extension-vault] should NOT trigger: How do I store and retrieve secrets in the built-in vault?"
     vars:
       query: How do I store and retrieve secrets in the built-in vault?
     assert:
@@ -1223,7 +1223,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] should NOT trigger: List all the secrets in my production vault'
+  - description: "[swamp-extension-vault] should NOT trigger: List all the secrets in my production vault"
     vars:
       query: List all the secrets in my production vault
     assert:
@@ -1236,7 +1236,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] should NOT trigger: Create a custom datastore backend for Cassandra'
+  - description: "[swamp-extension-vault] should NOT trigger: Create a custom datastore backend for Cassandra"
     vars:
       query: Create a custom datastore backend for Cassandra
     assert:
@@ -1249,7 +1249,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] should NOT trigger: The vault provider is not connecting to Vault'
+  - description: "[swamp-extension-vault] should NOT trigger: The vault provider is not connecting to Vault"
     vars:
       query: The vault provider is not connecting to Vault
     assert:
@@ -1262,7 +1262,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] should NOT trigger: How do I use vault expressions in my workflow?'
+  - description: "[swamp-extension-vault] should NOT trigger: How do I use vault expressions in my workflow?"
     vars:
       query: How do I use vault expressions in my workflow?
     assert:
@@ -1275,7 +1275,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-extension-vault] should NOT trigger: Build a Lambda driver for running on AWS'
+  - description: "[swamp-extension-vault] should NOT trigger: Build a Lambda driver for running on AWS"
     vars:
       query: Build a Lambda driver for running on AWS
     assert:
@@ -1288,7 +1288,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-extension-vault"');
-  - description: '[swamp-issue] SHOULD trigger: File a bug report for a crash in the vault system'
+  - description: "[swamp-issue] SHOULD trigger: File a bug report for a crash in the vault system"
     vars:
       query: File a bug report for a crash in the vault system
     assert:
@@ -1302,7 +1302,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] SHOULD trigger: Report a feature request for dashboard improvements'
+  - description: "[swamp-issue] SHOULD trigger: Report a feature request for dashboard improvements"
     vars:
       query: Report a feature request for dashboard improvements
     assert:
@@ -1316,7 +1316,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] SHOULD trigger: Create a GitHub issue documenting unexpected behavior in swa'
+  - description: "[swamp-issue] SHOULD trigger: Create a GitHub issue documenting unexpected behavior in swa"
     vars:
       query: Create a GitHub issue documenting unexpected behavior in swamp
     assert:
@@ -1330,7 +1330,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] SHOULD trigger: File a bug report about performance degradation'
+  - description: "[swamp-issue] SHOULD trigger: File a bug report about performance degradation"
     vars:
       query: File a bug report about performance degradation
     assert:
@@ -1344,7 +1344,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] SHOULD trigger: Submit an issue requesting support for PostgreSQL'
+  - description: "[swamp-issue] SHOULD trigger: Submit an issue requesting support for PostgreSQL"
     vars:
       query: Submit an issue requesting support for PostgreSQL
     assert:
@@ -1358,7 +1358,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] SHOULD trigger: Report that the CLI is not respecting vault expressions'
+  - description: "[swamp-issue] SHOULD trigger: Report that the CLI is not respecting vault expressions"
     vars:
       query: Report that the CLI is not respecting vault expressions
     assert:
@@ -1372,7 +1372,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] SHOULD trigger: File a bug about workflows not executing on schedule'
+  - description: "[swamp-issue] SHOULD trigger: File a bug about workflows not executing on schedule"
     vars:
       query: File a bug about workflows not executing on schedule
     assert:
@@ -1386,7 +1386,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] SHOULD trigger: Submit a feature request for better error messages'
+  - description: "[swamp-issue] SHOULD trigger: Submit a feature request for better error messages"
     vars:
       query: Submit a feature request for better error messages
     assert:
@@ -1400,7 +1400,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] SHOULD trigger: Report an issue with data version handling'
+  - description: "[swamp-issue] SHOULD trigger: Report an issue with data version handling"
     vars:
       query: Report an issue with data version handling
     assert:
@@ -1414,7 +1414,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] should NOT trigger: Create and submit a pull request with my fix'
+  - description: "[swamp-issue] should NOT trigger: Create and submit a pull request with my fix"
     vars:
       query: Create and submit a pull request with my fix
     assert:
@@ -1427,7 +1427,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] should NOT trigger: Debug why my workflow is failing'
+  - description: "[swamp-issue] should NOT trigger: Debug why my workflow is failing"
     vars:
       query: Debug why my workflow is failing
     assert:
@@ -1440,7 +1440,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] should NOT trigger: List all the data versions I have'
+  - description: "[swamp-issue] should NOT trigger: List all the data versions I have"
     vars:
       query: List all the data versions I have
     assert:
@@ -1453,7 +1453,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] should NOT trigger: Show me the existing issues in the swamp repository'
+  - description: "[swamp-issue] should NOT trigger: Show me the existing issues in the swamp repository"
     vars:
       query: Show me the existing issues in the swamp repository
     assert:
@@ -1466,7 +1466,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] should NOT trigger: Help me plan the architecture for a new feature'
+  - description: "[swamp-issue] should NOT trigger: Help me plan the architecture for a new feature"
     vars:
       query: Help me plan the architecture for a new feature
     assert:
@@ -1479,7 +1479,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-issue"');
-  - description: '[swamp-issue] should NOT trigger: How do I retrieve secrets from a vault?'
+  - description: "[swamp-issue] should NOT trigger: How do I retrieve secrets from a vault?"
     vars:
       query: How do I retrieve secrets from a vault?
     assert:
@@ -1492,7 +1492,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-issue"');
-  - description: '[swamp-model] SHOULD trigger: Search for model types that handle payments'
+  - description: "[swamp-model] SHOULD trigger: Search for model types that handle payments"
     vars:
       query: Search for model types that handle payments
     assert:
@@ -1506,7 +1506,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] SHOULD trigger: Describe the schema for the Order model including all fields'
+  - description: "[swamp-model] SHOULD trigger: Describe the schema for the Order model including all fields"
     vars:
       query: Describe the schema for the Order model including all fields
     assert:
@@ -1520,7 +1520,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] SHOULD trigger: How do I create an input for the validate method?'
+  - description: "[swamp-model] SHOULD trigger: How do I create an input for the validate method?"
     vars:
       query: How do I create an input for the validate method?
     assert:
@@ -1534,7 +1534,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] SHOULD trigger: Run the model method on my-instance with these arguments'
+  - description: "[swamp-model] SHOULD trigger: Run the model method on my-instance with these arguments"
     vars:
       query: Run the model method on my-instance with these arguments
     assert:
@@ -1548,7 +1548,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] SHOULD trigger: Show me the model output from the last execution'
+  - description: "[swamp-model] SHOULD trigger: Show me the model output from the last execution"
     vars:
       query: Show me the model output from the last execution
     assert:
@@ -1562,7 +1562,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] SHOULD trigger: How do CEL expressions work for referencing model data?'
+  - description: "[swamp-model] SHOULD trigger: How do CEL expressions work for referencing model data?"
     vars:
       query: How do CEL expressions work for referencing model data?
     assert:
@@ -1576,7 +1576,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] SHOULD trigger: Execute the enrichment model with my input data'
+  - description: "[swamp-model] SHOULD trigger: Execute the enrichment model with my input data"
     vars:
       query: Execute the enrichment model with my input data
     assert:
@@ -1604,7 +1604,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] SHOULD trigger: View the output logs from the last model execution'
+  - description: "[swamp-model] SHOULD trigger: View the output logs from the last model execution"
     vars:
       query: View the output logs from the last model execution
     assert:
@@ -1618,7 +1618,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] SHOULD trigger: How do I delete a model definition?'
+  - description: "[swamp-model] SHOULD trigger: How do I delete a model definition?"
     vars:
       query: How do I delete a model definition?
     assert:
@@ -1632,7 +1632,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-model"');
-  - description: '[swamp-model] should NOT trigger: List all the data I have stored in the system'
+  - description: "[swamp-model] should NOT trigger: List all the data I have stored in the system"
     vars:
       query: List all the data I have stored in the system
     assert:
@@ -1645,7 +1645,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-model"');
-  - description: '[swamp-model] should NOT trigger: I want to create a completely custom model type using TypeSc'
+  - description: "[swamp-model] should NOT trigger: I want to create a completely custom model type using TypeSc"
     vars:
       query: I want to create a completely custom model type using TypeScript
     assert:
@@ -1658,7 +1658,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-model"');
-  - description: '[swamp-model] should NOT trigger: How do I chain this model into an automated workflow?'
+  - description: "[swamp-model] should NOT trigger: How do I chain this model into an automated workflow?"
     vars:
       query: How do I chain this model into an automated workflow?
     assert:
@@ -1684,7 +1684,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-model"');
-  - description: '[swamp-model] should NOT trigger: Run a report on model performance over time'
+  - description: "[swamp-model] should NOT trigger: Run a report on model performance over time"
     vars:
       query: Run a report on model performance over time
     assert:
@@ -1697,7 +1697,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-model"');
-  - description: '[swamp-model] should NOT trigger: Build a Zod schema for my custom validation model'
+  - description: "[swamp-model] should NOT trigger: Build a Zod schema for my custom validation model"
     vars:
       query: Build a Zod schema for my custom validation model
     assert:
@@ -1710,7 +1710,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-model"');
-  - description: '[swamp-repo] SHOULD trigger: How do I initialize a new swamp repository?'
+  - description: "[swamp-repo] SHOULD trigger: How do I initialize a new swamp repository?"
     vars:
       query: How do I initialize a new swamp repository?
     assert:
@@ -1724,7 +1724,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: I need to upgrade swamp to the latest version'
+  - description: "[swamp-repo] SHOULD trigger: I need to upgrade swamp to the latest version"
     vars:
       query: I need to upgrade swamp to the latest version
     assert:
@@ -1738,7 +1738,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: Sync the datastore with the remote repository'
+  - description: "[swamp-repo] SHOULD trigger: Sync the datastore with the remote repository"
     vars:
       query: Sync the datastore with the remote repository
     assert:
@@ -1752,7 +1752,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: What lock mechanisms are available for concurrent access?'
+  - description: "[swamp-repo] SHOULD trigger: What lock mechanisms are available for concurrent access?"
     vars:
       query: What lock mechanisms are available for concurrent access?
     assert:
@@ -1766,7 +1766,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: Set up a new datastore for production use'
+  - description: "[swamp-repo] SHOULD trigger: Set up a new datastore for production use"
     vars:
       query: Set up a new datastore for production use
     assert:
@@ -1780,7 +1780,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: How do I upgrade the web application?'
+  - description: "[swamp-repo] SHOULD trigger: How do I upgrade the web application?"
     vars:
       query: How do I upgrade the web application?
     assert:
@@ -1808,7 +1808,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: Configure an S3 datastore for my swamp project'
+  - description: "[swamp-repo] SHOULD trigger: Configure an S3 datastore for my swamp project"
     vars:
       query: Configure an S3 datastore for my swamp project
     assert:
@@ -1822,7 +1822,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: Check the datastore status and health'
+  - description: "[swamp-repo] SHOULD trigger: Check the datastore status and health"
     vars:
       query: Check the datastore status and health
     assert:
@@ -1836,7 +1836,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: How do I install swamp in a GitHub Actions CI pipeline?'
+  - description: "[swamp-repo] SHOULD trigger: How do I install swamp in a GitHub Actions CI pipeline?"
     vars:
       query: How do I install swamp in a GitHub Actions CI pipeline?
     assert:
@@ -1850,7 +1850,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] SHOULD trigger: Create a GitHub Actions workflow that runs swamp on every PR'
+  - description: "[swamp-repo] SHOULD trigger: Create a GitHub Actions workflow that runs swamp on every PR"
     vars:
       query: Create a GitHub Actions workflow that runs swamp on every PR
     assert:
@@ -1864,7 +1864,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] should NOT trigger: Create a custom model type for AWS Lambda'
+  - description: "[swamp-repo] should NOT trigger: Create a custom model type for AWS Lambda"
     vars:
       query: Create a custom model type for AWS Lambda
     assert:
@@ -1877,7 +1877,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] should NOT trigger: List all the data versions in my system'
+  - description: "[swamp-repo] should NOT trigger: List all the data versions in my system"
     vars:
       query: List all the data versions in my system
     assert:
@@ -1890,7 +1890,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] should NOT trigger: How do I define a workflow that runs nightly?'
+  - description: "[swamp-repo] should NOT trigger: How do I define a workflow that runs nightly?"
     vars:
       query: How do I define a workflow that runs nightly?
     assert:
@@ -1903,7 +1903,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] should NOT trigger: The datastore sync is failing with an error'
+  - description: "[swamp-repo] should NOT trigger: The datastore sync is failing with an error"
     vars:
       query: The datastore sync is failing with an error
     assert:
@@ -1916,7 +1916,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] should NOT trigger: Help me plan the architecture for a new feature'
+  - description: "[swamp-repo] should NOT trigger: Help me plan the architecture for a new feature"
     vars:
       query: Help me plan the architecture for a new feature
     assert:
@@ -1929,7 +1929,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-repo"');
-  - description: '[swamp-repo] should NOT trigger: Implement a custom datastore backend for PostgreSQL'
+  - description: "[swamp-repo] should NOT trigger: Implement a custom datastore backend for PostgreSQL"
     vars:
       query: Implement a custom datastore backend for PostgreSQL
     assert:
@@ -1942,7 +1942,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-repo"');
-  - description: '[swamp-report] SHOULD trigger: How do I create a report on model performance metrics?'
+  - description: "[swamp-report] SHOULD trigger: How do I create a report on model performance metrics?"
     vars:
       query: How do I create a report on model performance metrics?
     assert:
@@ -1956,7 +1956,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] SHOULD trigger: Run a report to show all workflow executions from last week'
+  - description: "[swamp-report] SHOULD trigger: Run a report to show all workflow executions from last week"
     vars:
       query: Run a report to show all workflow executions from last week
     assert:
@@ -1970,7 +1970,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] SHOULD trigger: Generate a report extension for custom data analysis'
+  - description: "[swamp-report] SHOULD trigger: Generate a report extension for custom data analysis"
     vars:
       query: Generate a report extension for custom data analysis
     assert:
@@ -1984,7 +1984,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] SHOULD trigger: Create a report that tracks data model changes over time'
+  - description: "[swamp-report] SHOULD trigger: Create a report that tracks data model changes over time"
     vars:
       query: Create a report that tracks data model changes over time
     assert:
@@ -1998,7 +1998,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] SHOULD trigger: Can I export a report as CSV or JSON?'
+  - description: "[swamp-report] SHOULD trigger: Can I export a report as CSV or JSON?"
     vars:
       query: Can I export a report as CSV or JSON?
     assert:
@@ -2012,7 +2012,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] SHOULD trigger: Run a compliance report for all stored secrets'
+  - description: "[swamp-report] SHOULD trigger: Run a compliance report for all stored secrets"
     vars:
       query: Run a compliance report for all stored secrets
     assert:
@@ -2026,7 +2026,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] SHOULD trigger: Configure report labels in the model definition YAML'
+  - description: "[swamp-report] SHOULD trigger: Configure report labels in the model definition YAML"
     vars:
       query: Configure report labels in the model definition YAML
     assert:
@@ -2040,7 +2040,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] SHOULD trigger: Skip a report from running in a specific workflow'
+  - description: "[swamp-report] SHOULD trigger: Skip a report from running in a specific workflow"
     vars:
       query: Skip a report from running in a specific workflow
     assert:
@@ -2054,7 +2054,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] SHOULD trigger: Show me the report results from the last automation run'
+  - description: "[swamp-report] SHOULD trigger: Show me the report results from the last automation run"
     vars:
       query: Show me the report results from the last automation run
     assert:
@@ -2068,7 +2068,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-report"');
-  - description: '[swamp-report] should NOT trigger: List the version history for the Payment model'
+  - description: "[swamp-report] should NOT trigger: List the version history for the Payment model"
     vars:
       query: List the version history for the Payment model
     assert:
@@ -2081,7 +2081,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-report"');
-  - description: '[swamp-report] should NOT trigger: I need to define a multi-step automation that runs daily'
+  - description: "[swamp-report] should NOT trigger: I need to define a multi-step automation that runs daily"
     vars:
       query: I need to define a multi-step automation that runs daily
     assert:
@@ -2094,7 +2094,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-report"');
-  - description: '[swamp-report] should NOT trigger: Help me debug an issue with my model output'
+  - description: "[swamp-report] should NOT trigger: Help me debug an issue with my model output"
     vars:
       query: Help me debug an issue with my model output
     assert:
@@ -2107,7 +2107,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-report"');
-  - description: '[swamp-report] should NOT trigger: Create a custom execution driver for running on Kubernetes'
+  - description: "[swamp-report] should NOT trigger: Create a custom execution driver for running on Kubernetes"
     vars:
       query: Create a custom execution driver for running on Kubernetes
     assert:
@@ -2120,7 +2120,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-report"');
-  - description: '[swamp-report] should NOT trigger: Execute the processing workflow and show logs'
+  - description: "[swamp-report] should NOT trigger: Execute the processing workflow and show logs"
     vars:
       query: Execute the processing workflow and show logs
     assert:
@@ -2133,7 +2133,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-report"');
-  - description: '[swamp-report] should NOT trigger: The report generation is timing out'
+  - description: "[swamp-report] should NOT trigger: The report generation is timing out"
     vars:
       query: The report generation is timing out
     assert:
@@ -2146,7 +2146,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-report"');
-  - description: '[swamp-troubleshooting] SHOULD trigger: Debug why my workflow is failing on the second step'
+  - description: "[swamp-troubleshooting] SHOULD trigger: Debug why my workflow is failing on the second step"
     vars:
       query: Debug why my workflow is failing on the second step
     assert:
@@ -2160,7 +2160,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] SHOULD trigger: Swamp is throwing an unexpected type error'
+  - description: "[swamp-troubleshooting] SHOULD trigger: Swamp is throwing an unexpected type error"
     vars:
       query: Swamp is throwing an unexpected type error
     assert:
@@ -2188,7 +2188,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] SHOULD trigger: The datastore sync is hanging and timing out'
+  - description: "[swamp-troubleshooting] SHOULD trigger: The datastore sync is hanging and timing out"
     vars:
       query: The datastore sync is hanging and timing out
     assert:
@@ -2216,7 +2216,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] SHOULD trigger: The swamp CLI command is giving me a strange error message'
+  - description: "[swamp-troubleshooting] SHOULD trigger: The swamp CLI command is giving me a strange error message"
     vars:
       query: The swamp CLI command is giving me a strange error message
     assert:
@@ -2230,7 +2230,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] SHOULD trigger: Trace the swamp execution flow to find where the data pipeli'
+  - description: "[swamp-troubleshooting] SHOULD trigger: Trace the swamp execution flow to find where the data pipeli"
     vars:
       query: Trace the swamp execution flow to find where the data pipeline failed
     assert:
@@ -2258,7 +2258,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] SHOULD trigger: Why is the workflow not reading the correct data version?'
+  - description: "[swamp-troubleshooting] SHOULD trigger: Why is the workflow not reading the correct data version?"
     vars:
       query: Why is the workflow not reading the correct data version?
     assert:
@@ -2272,9 +2272,9 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] SHOULD trigger: My model method is crashing with a stack trace, help me find'
+  - description: "[swamp-troubleshooting] SHOULD trigger: My model method is crashing with a stack trace, help me find"
     vars:
-      query: 'My model method is crashing with a stack trace, help me find the root cause'
+      query: "My model method is crashing with a stack trace, help me find the root cause"
     assert:
       - type: javascript
         value: |-
@@ -2286,7 +2286,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] should NOT trigger: File a bug report for this issue on GitHub'
+  - description: "[swamp-troubleshooting] should NOT trigger: File a bug report for this issue on GitHub"
     vars:
       query: File a bug report for this issue on GitHub
     assert:
@@ -2299,7 +2299,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] should NOT trigger: How do I define a workflow that handles errors gracefully?'
+  - description: "[swamp-troubleshooting] should NOT trigger: How do I define a workflow that handles errors gracefully?"
     vars:
       query: How do I define a workflow that handles errors gracefully?
     assert:
@@ -2312,7 +2312,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] should NOT trigger: List all the data stored in my system'
+  - description: "[swamp-troubleshooting] should NOT trigger: List all the data stored in my system"
     vars:
       query: List all the data stored in my system
     assert:
@@ -2325,7 +2325,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] should NOT trigger: Create a pull request to fix the swamp core'
+  - description: "[swamp-troubleshooting] should NOT trigger: Create a pull request to fix the swamp core"
     vars:
       query: Create a pull request to fix the swamp core
     assert:
@@ -2338,7 +2338,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] should NOT trigger: How do I store my database password securely?'
+  - description: "[swamp-troubleshooting] should NOT trigger: How do I store my database password securely?"
     vars:
       query: How do I store my database password securely?
     assert:
@@ -2351,7 +2351,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] should NOT trigger: Show me the execution logs from the last workflow run'
+  - description: "[swamp-troubleshooting] should NOT trigger: Show me the execution logs from the last workflow run"
     vars:
       query: Show me the execution logs from the last workflow run
     assert:
@@ -2364,7 +2364,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-troubleshooting] should NOT trigger: Format the output of this CLI command'
+  - description: "[swamp-troubleshooting] should NOT trigger: Format the output of this CLI command"
     vars:
       query: Format the output of this CLI command
     assert:
@@ -2377,7 +2377,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-troubleshooting"');
-  - description: '[swamp-vault] SHOULD trigger: How do I store my database password securely in swamp?'
+  - description: "[swamp-vault] SHOULD trigger: How do I store my database password securely in swamp?"
     vars:
       query: How do I store my database password securely in swamp?
     assert:
@@ -2391,7 +2391,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: Retrieve the API key from my production vault'
+  - description: "[swamp-vault] SHOULD trigger: Retrieve the API key from my production vault"
     vars:
       query: Retrieve the API key from my production vault
     assert:
@@ -2405,7 +2405,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: Create a new vault and add my AWS credentials to it'
+  - description: "[swamp-vault] SHOULD trigger: Create a new vault and add my AWS credentials to it"
     vars:
       query: Create a new vault and add my AWS credentials to it
     assert:
@@ -2419,7 +2419,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: List all secrets stored in the vault'
+  - description: "[swamp-vault] SHOULD trigger: List all secrets stored in the vault"
     vars:
       query: List all secrets stored in the vault
     assert:
@@ -2433,7 +2433,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: How do I reference a vault secret inside a workflow step?'
+  - description: "[swamp-vault] SHOULD trigger: How do I reference a vault secret inside a workflow step?"
     vars:
       query: How do I reference a vault secret inside a workflow step?
     assert:
@@ -2447,7 +2447,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: Delete an expired credential from the vault'
+  - description: "[swamp-vault] SHOULD trigger: Delete an expired credential from the vault"
     vars:
       query: Delete an expired credential from the vault
     assert:
@@ -2461,7 +2461,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: I need to store a token so my models can authenticate with a'
+  - description: "[swamp-vault] SHOULD trigger: I need to store a token so my models can authenticate with a"
     vars:
       query: I need to store a token so my models can authenticate with an external API
     assert:
@@ -2475,7 +2475,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: How do I use vault expressions like vault.get in my workflow'
+  - description: "[swamp-vault] SHOULD trigger: How do I use vault expressions like vault.get in my workflow"
     vars:
       query: How do I use vault expressions like vault.get in my workflow YAML?
     assert:
@@ -2489,7 +2489,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: Put a secret called db-password into my vault'
+  - description: "[swamp-vault] SHOULD trigger: Put a secret called db-password into my vault"
     vars:
       query: Put a secret called db-password into my vault
     assert:
@@ -2503,7 +2503,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: Which vault providers does swamp support out of the box?'
+  - description: "[swamp-vault] SHOULD trigger: Which vault providers does swamp support out of the box?"
     vars:
       query: Which vault providers does swamp support out of the box?
     assert:
@@ -2517,7 +2517,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] SHOULD trigger: Get the OAuth token from my vault for the integration'
+  - description: "[swamp-vault] SHOULD trigger: Get the OAuth token from my vault for the integration"
     vars:
       query: Get the OAuth token from my vault for the integration
     assert:
@@ -2531,7 +2531,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] should NOT trigger: I want to build a custom vault provider that talks to HashiC'
+  - description: "[swamp-vault] should NOT trigger: I want to build a custom vault provider that talks to HashiC"
     vars:
       query: I want to build a custom vault provider that talks to HashiCorp Vault
     assert:
@@ -2544,7 +2544,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] should NOT trigger: Implement VaultProvider interface for Azure Key Vault'
+  - description: "[swamp-vault] should NOT trigger: Implement VaultProvider interface for Azure Key Vault"
     vars:
       query: Implement VaultProvider interface for Azure Key Vault
     assert:
@@ -2557,7 +2557,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] should NOT trigger: Show me the version history of my stored model data'
+  - description: "[swamp-vault] should NOT trigger: Show me the version history of my stored model data"
     vars:
       query: Show me the version history of my stored model data
     assert:
@@ -2570,7 +2570,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] should NOT trigger: Create a new TypeScript model type for DNS management'
+  - description: "[swamp-vault] should NOT trigger: Create a new TypeScript model type for DNS management"
     vars:
       query: Create a new TypeScript model type for DNS management
     assert:
@@ -2583,7 +2583,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] should NOT trigger: The vault command keeps crashing with a stack trace'
+  - description: "[swamp-vault] should NOT trigger: The vault command keeps crashing with a stack trace"
     vars:
       query: The vault command keeps crashing with a stack trace
     assert:
@@ -2596,7 +2596,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-vault"');
-  - description: '[swamp-vault] should NOT trigger: Run the deploy workflow and show me the logs'
+  - description: "[swamp-vault] should NOT trigger: Run the deploy workflow and show me the logs"
     vars:
       query: Run the deploy workflow and show me the logs
     assert:
@@ -2609,7 +2609,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-vault"');
-  - description: '[swamp-workflow] SHOULD trigger: How do I define a workflow in YAML that orchestrates multipl'
+  - description: "[swamp-workflow] SHOULD trigger: How do I define a workflow in YAML that orchestrates multipl"
     vars:
       query: How do I define a workflow in YAML that orchestrates multiple models?
     assert:
@@ -2623,7 +2623,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] SHOULD trigger: Show me the run history for the deployment workflow'
+  - description: "[swamp-workflow] SHOULD trigger: Show me the run history for the deployment workflow"
     vars:
       query: Show me the run history for the deployment workflow
     assert:
@@ -2637,7 +2637,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] SHOULD trigger: Wire together the validation and processing models in a DAG'
+  - description: "[swamp-workflow] SHOULD trigger: Wire together the validation and processing models in a DAG"
     vars:
       query: Wire together the validation and processing models in a DAG
     assert:
@@ -2665,7 +2665,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] SHOULD trigger: Create an automated job that runs the data sync every night'
+  - description: "[swamp-workflow] SHOULD trigger: Create an automated job that runs the data sync every night"
     vars:
       query: Create an automated job that runs the data sync every night
     assert:
@@ -2679,7 +2679,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] SHOULD trigger: Inspect the execution logs from the last workflow run'
+  - description: "[swamp-workflow] SHOULD trigger: Inspect the execution logs from the last workflow run"
     vars:
       query: Inspect the execution logs from the last workflow run
     assert:
@@ -2693,7 +2693,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] SHOULD trigger: Run the production workflow and monitor for failures'
+  - description: "[swamp-workflow] SHOULD trigger: Run the production workflow and monitor for failures"
     vars:
       query: Run the production workflow and monitor for failures
     assert:
@@ -2707,7 +2707,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] SHOULD trigger: Define dependencies between workflow steps'
+  - description: "[swamp-workflow] SHOULD trigger: Define dependencies between workflow steps"
     vars:
       query: Define dependencies between workflow steps
     assert:
@@ -2721,7 +2721,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] SHOULD trigger: Execute this workflow and show me the results'
+  - description: "[swamp-workflow] SHOULD trigger: Execute this workflow and show me the results"
     vars:
       query: Execute this workflow and show me the results
     assert:
@@ -2735,7 +2735,7 @@ tests:
             }
           } catch {}
           return String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] should NOT trigger: List all stored secrets and their expiration dates'
+  - description: "[swamp-workflow] should NOT trigger: List all stored secrets and their expiration dates"
     vars:
       query: List all stored secrets and their expiration dates
     assert:
@@ -2748,7 +2748,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] should NOT trigger: I want to create a custom SSH execution driver'
+  - description: "[swamp-workflow] should NOT trigger: I want to create a custom SSH execution driver"
     vars:
       query: I want to create a custom SSH execution driver
     assert:
@@ -2761,7 +2761,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] should NOT trigger: How do I describe the schema for this data model?'
+  - description: "[swamp-workflow] should NOT trigger: How do I describe the schema for this data model?"
     vars:
       query: How do I describe the schema for this data model?
     assert:
@@ -2774,7 +2774,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] should NOT trigger: The workflow is erroring on the second step'
+  - description: "[swamp-workflow] should NOT trigger: The workflow is erroring on the second step"
     vars:
       query: The workflow is erroring on the second step
     assert:
@@ -2787,7 +2787,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] should NOT trigger: Clean up old data versions from the system'
+  - description: "[swamp-workflow] should NOT trigger: Clean up old data versions from the system"
     vars:
       query: Clean up old data versions from the system
     assert:
@@ -2800,7 +2800,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] should NOT trigger: Generate a cost report for workflow executions'
+  - description: "[swamp-workflow] should NOT trigger: Generate a cost report for workflow executions"
     vars:
       query: Generate a cost report for workflow executions
     assert:
@@ -2813,7 +2813,7 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-workflow"');
-  - description: '[swamp-workflow] should NOT trigger: How do I install swamp in CI to run workflows on every PR?'
+  - description: "[swamp-workflow] should NOT trigger: How do I install swamp in CI to run workflows on every PR?"
     vars:
       query: How do I install swamp in CI to run workflows on every PR?
     assert:
@@ -2826,4 +2826,3 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-workflow"');
-

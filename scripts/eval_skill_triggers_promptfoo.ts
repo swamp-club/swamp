@@ -120,7 +120,10 @@ async function main(): Promise<void> {
   });
 
   const { code } = await command.output();
-  if (code !== 0) {
+  // promptfoo exits with code 100 when any assertions fail, which is expected.
+  // We handle pass/fail via our own threshold check below. Only treat other
+  // non-zero codes as hard failures (e.g., missing API key, config errors).
+  if (code !== 0 && code !== 100) {
     console.error("promptfoo eval failed with exit code", code);
     Deno.exit(1);
   }
