@@ -64,15 +64,21 @@ jobs:
 See [./expressions.md] for CEL expression syntax and [./models.md] for detailed
 input specification patterns.
 
-### Workflow Schedule
+### Workflow Triggers
 
-Workflows can declare a `schedule` field with a cron expression to enable
-automatic scheduled execution via `swamp serve`:
+Workflows can declare a `trigger` section to enable automatic execution via
+`swamp serve`. The `trigger` section is an optional object that contains trigger
+configuration.
+
+#### Schedule Trigger
+
+A `schedule` trigger runs the workflow on a cron schedule:
 
 ```yaml
 id: abc123
 name: anime-downloader
-schedule: "0 3,12 * * *"
+trigger:
+  schedule: "0 3,12 * * *"
 jobs:
   # ... jobs run automatically at 3am and noon
 ```

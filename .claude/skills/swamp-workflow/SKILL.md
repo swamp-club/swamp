@@ -148,13 +148,14 @@ jobs:
 
 ## Scheduled Workflows
 
-Workflows can declare a `schedule` field with a cron expression for automatic
-execution via `swamp serve`:
+Workflows can declare a `trigger` section with a `schedule` cron expression for
+automatic execution via `swamp serve`:
 
 ```yaml
 id: 3fa85f64-5717-4562-b3fc-2c963f66afa6
 name: anime-downloader
-schedule: "0 3,12 * * *"
+trigger:
+  schedule: "0 3,12 * * *"
 jobs:
   - name: download
     steps:
@@ -166,7 +167,7 @@ jobs:
 ```
 
 When `swamp serve` starts, it scans all workflows and registers cron entries for
-any with `schedule:`. A filesystem watcher monitors for changes — adding,
+any with `trigger.schedule`. A filesystem watcher monitors for changes — adding,
 modifying, or removing a schedule takes effect without restart.
 
 **Key behaviors:**

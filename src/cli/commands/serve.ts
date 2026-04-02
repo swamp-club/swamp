@@ -106,6 +106,12 @@ export const serveCommand = new Command()
                 { name: event.workflowName, cron: event.cronExpression },
               );
               break;
+            case "schedule_unregistered":
+              logger.info(
+                "Unregistered scheduled workflow {name}",
+                { name: event.workflowName },
+              );
+              break;
             case "schedule_fired":
               logger.info(
                 "Running scheduled workflow {name}",

@@ -251,7 +251,9 @@ export class ScheduledExecutionService {
     // contention. Before scheduling, each workflow ran as a separate
     // process via systemd timers; serializing preserves that behavior.
     this.runQueue.push({ workflowId, workflowName });
-    this.processingPromise = this.processQueue();
+    if (!this.processing) {
+      this.processingPromise = this.processQueue();
+    }
   }
 
   private async processQueue(): Promise<void> {

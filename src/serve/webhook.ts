@@ -25,6 +25,7 @@
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import { UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -52,13 +53,13 @@ export interface WebhookEndpoint {
 export function parseWebhookFlag(flag: string): WebhookEndpoint {
   const firstColon = flag.indexOf(":");
   if (firstColon === -1) {
-    throw new Error(
+    throw new UserError(
       `Invalid --webhook format: expected '<route>:<workflow>:<secret>', got '${flag}'`,
     );
   }
   const secondColon = flag.indexOf(":", firstColon + 1);
   if (secondColon === -1) {
-    throw new Error(
+    throw new UserError(
       `Invalid --webhook format: expected '<route>:<workflow>:<secret>', got '${flag}'`,
     );
   }
@@ -68,13 +69,13 @@ export function parseWebhookFlag(flag: string): WebhookEndpoint {
   const secret = flag.slice(secondColon + 1);
 
   if (!route || !workflowIdOrName || !secret) {
-    throw new Error(
+    throw new UserError(
       `Invalid --webhook format: route, workflow, and secret must all be non-empty. Got '${flag}'`,
     );
   }
 
   if (!route.startsWith("/")) {
-    throw new Error(
+    throw new UserError(
       `Invalid --webhook route: must start with '/', got '${route}'`,
     );
   }
@@ -129,6 +130,46 @@ export async function verifySignature(
   }
 
   return mismatch === 0;
+}
+
+// ── Body Size Limit ────────────────────────────────────────────────────
+
+/**
+ * Read a request body with a byte budget. Returns null if the body
+ * exceeds the limit, cancelling the stream to avoid full allocation.
+ */
+async function readBodyWithLimit(
+  req: Request,
+  maxBytes: number,
+): Promise<Uint8Array | null> {
+  const reader = req.body?.getReader();
+  if (!reader) return new Uint8Array(0);
+
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const result = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
 }
 
 // ── Webhook Event Types ────────────────────────────────────────────────
@@ -236,28 +277,10 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    // Reject oversized bodies before reading
-    const contentLength = parseInt(
-      req.headers.get("content-length") ?? "0",
-      10,
-    );
-    if (contentLength > MAX_WEBHOOK_BODY_BYTES) {
-      this.emit({
-        kind: "webhook_rejected",
-        route: endpoint.route,
-        reason: "Request body too large",
-      });
-      return Response.json(
-        { error: "Request body too large" },
-        { status: 413 },
-      );
-    }
-
-    // Verify HMAC signature
+    // Read body with size limit — streams to avoid unbounded allocation
     const signatureHeader = req.headers.get("x-hub-signature-256") ?? "";
-    const body = new Uint8Array(await req.arrayBuffer());
-
-    if (body.byteLength > MAX_WEBHOOK_BODY_BYTES) {
+    const body = await readBodyWithLimit(req, MAX_WEBHOOK_BODY_BYTES);
+    if (body === null) {
       this.emit({
         kind: "webhook_rejected",
         route: endpoint.route,
@@ -323,8 +346,10 @@ export class WebhookService {
       { route: endpoint.route, workflow: endpoint.workflowIdOrName },
     );
 
-    // Start processing the queue — store promise so stop() can drain it
-    this.processingPromise = this.processQueue();
+    // Start processing the queue — only store when actually starting
+    if (!this.processing) {
+      this.processingPromise = this.processQueue();
+    }
 
     return Response.json({
       status: "queued",
