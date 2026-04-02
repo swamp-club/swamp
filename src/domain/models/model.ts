@@ -770,12 +770,17 @@ export class ModelRegistry {
       return;
     }
 
-    // Deduplicate concurrent loads for the same type
+    // Deduplicate concurrent loads for the same type.
+    // On rejection, remove the cached promise so subsequent calls retry
+    // rather than permanently failing (e.g. transient I/O error).
     let promise = this.typeLoadPromises.get(key);
     if (!promise) {
       const loader = this.typeLoader;
       promise = loader(key).then(() => {
         this.lazyTypes.delete(key);
+      }).catch((err) => {
+        this.typeLoadPromises.delete(key);
+        throw err;
       });
       this.typeLoadPromises.set(key, promise);
     }

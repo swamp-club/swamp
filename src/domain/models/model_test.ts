@@ -945,3 +945,34 @@ Deno.test("ModelRegistry.ensureTypeLoaded: concurrent callers share same promise
   assertEquals(callCount, 1);
   assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
 });
+
+Deno.test("ModelRegistry.ensureTypeLoaded: retries after transient failure", async () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+
+  let callCount = 0;
+  registry.setTypeLoader((type) => {
+    callCount++;
+    if (callCount === 1) {
+      return Promise.reject(new Error("transient I/O error"));
+    }
+    registry.promoteFromLazy(createTestModel(type));
+    return Promise.resolve();
+  });
+
+  // First call fails
+  let caught = false;
+  try {
+    await registry.ensureTypeLoaded("@myorg/echo");
+  } catch {
+    caught = true;
+  }
+  assertEquals(caught, true);
+  assertEquals(callCount, 1);
+  assertEquals(registry.get("@myorg/echo"), undefined);
+
+  // Second call retries and succeeds
+  await registry.ensureTypeLoaded("@myorg/echo");
+  assertEquals(callCount, 2);
+  assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
+});

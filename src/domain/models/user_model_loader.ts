@@ -572,6 +572,7 @@ export class UserModelLoader {
 
   /**
    * Imports a single bundle and extends an existing model type.
+   * Logs warnings for any failures during extension processing.
    */
   private async importAndExtendBundle(entry: ExtensionTypeRow): Promise<void> {
     const module = await this.importBundleByPath(entry.bundle_path);
@@ -582,6 +583,11 @@ export class UserModelLoader {
 
     const result: LoadResult = { loaded: [], extended: [], failed: [] };
     this.processExtension(entry.source_path, module.extension, result);
+
+    for (const failure of result.failed) {
+      logger
+        .warn`Failed to extend model from ${failure.file}: ${failure.error}`;
+    }
   }
 
   /**
@@ -603,6 +609,9 @@ export class UserModelLoader {
 
   /**
    * Registers lazy entries for all model types in the catalog.
+   * Only registers "model" kind entries — "extension" kind entries are not
+   * standalone types but augment base types via modelRegistry.extend().
+   * Extensions are loaded alongside their base type in loadSingleType().
    */
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
     const entries = catalog.findByKind("model");
@@ -675,7 +684,11 @@ export class UserModelLoader {
 
         if (!modelMatch && !extensionMatch) continue;
 
-        // Extract type from source (best-effort regex)
+        // Best-effort regex to extract type name from source text.
+        // This may match inside comments or string literals, but it only
+        // runs during the first-run catalog bootstrap. Any mismatches are
+        // corrected on subsequent runs when the mtime scan detects the
+        // file as new (not in catalog) and does a proper bundle import.
         const typeMatch = source.match(
           /type\s*:\s*["']([^"']+)["']/,
         );
