@@ -23,7 +23,7 @@ import {
   vaultTypeSearchCommand,
 } from "./vault_type_search.ts";
 import { vaultCreateCommand } from "./vault_create.ts";
-import { vaultSearchCommand } from "./vault_search.ts";
+import { vaultSearchAction, vaultSearchCommand } from "./vault_search.ts";
 import { vaultGetCommand } from "./vault_get.ts";
 import { vaultDescribeCommand } from "./vault_describe.ts";
 import { vaultEditCommand } from "./vault_edit.ts";
@@ -67,4 +67,15 @@ export const vaultCommand = new Command()
   .command("describe", vaultDescribeCommand)
   .command("edit", vaultEditCommand)
   .command("put", vaultPutCommand)
-  .command("list-keys", vaultListKeysCommand);
+  .command("list-keys", vaultListKeysCommand)
+  .command(
+    "list",
+    new Command()
+      .description("Alias for vault search")
+      .hidden()
+      .arguments("[query:string]")
+      .option("--repo-dir <dir:string>", "Repository directory", {
+        default: ".",
+      })
+      .action(vaultSearchAction),
+  );

@@ -67,6 +67,56 @@ function createVaultFetchPreview(
   };
 }
 
+export async function vaultSearchAction(
+  options: AnyOptions,
+  query?: string,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, ["vault", "search"]);
+  const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
+  ctx.logger.debug`Searching vaults with query: ${query ?? "(none)"}`;
+
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: options.repoDir ?? ".",
+    outputMode: effectiveMode,
+  });
+
+  const deps: VaultSearchDeps = {
+    findAllVaults: () => repoContext.vaultConfigRepo.findAll(),
+  };
+
+  const repoDir = options.repoDir ?? ".";
+  const fetchPreview = effectiveMode === "log"
+    ? createVaultFetchPreview(repoDir)
+    : undefined;
+
+  const renderer = createVaultSearchRenderer(effectiveMode, fetchPreview);
+  await consumeStream(
+    vaultSearch(libCtx, deps, { query }),
+    renderer.handlers(),
+  );
+
+  const selected = renderer.selectedItem();
+  if (selected) {
+    ctx.logger.debug`Selected vault: ${selected.name}`;
+    // In JSON mode, still display the full vault describe output after auto-select
+    if (effectiveMode === "json") {
+      const describeRenderer = createVaultDescribeRenderer(effectiveMode);
+      const describeDeps = createVaultDescribeDeps(repoDir);
+      await consumeStream(
+        vaultDescribe(libCtx, describeDeps, selected.name),
+        describeRenderer.handlers(),
+      );
+    }
+    // In interactive mode, the scrollback from the picker already contains
+    // the vault detail, so no additional vaultDescribe call is needed.
+  } else {
+    ctx.logger.debug`Search cancelled`;
+  }
+
+  ctx.logger.debug("Vault search command completed");
+}
+
 export const vaultSearchCommand = new Command()
   .name("search")
   .description("Search for vaults in the repository")
@@ -74,49 +124,4 @@ export const vaultSearchCommand = new Command()
   .example("Search by keyword", "swamp vault search aws")
   .arguments("[query:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, ["vault", "search"]);
-    const effectiveMode = interactiveOutputMode(ctx);
-    const libCtx = createLibSwampContext();
-    ctx.logger.debug`Searching vaults with query: ${query ?? "(none)"}`;
-
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
-      outputMode: effectiveMode,
-    });
-
-    const deps: VaultSearchDeps = {
-      findAllVaults: () => repoContext.vaultConfigRepo.findAll(),
-    };
-
-    const repoDir = options.repoDir ?? ".";
-    const fetchPreview = effectiveMode === "log"
-      ? createVaultFetchPreview(repoDir)
-      : undefined;
-
-    const renderer = createVaultSearchRenderer(effectiveMode, fetchPreview);
-    await consumeStream(
-      vaultSearch(libCtx, deps, { query }),
-      renderer.handlers(),
-    );
-
-    const selected = renderer.selectedItem();
-    if (selected) {
-      ctx.logger.debug`Selected vault: ${selected.name}`;
-      // In JSON mode, still display the full vault describe output after auto-select
-      if (effectiveMode === "json") {
-        const describeRenderer = createVaultDescribeRenderer(effectiveMode);
-        const describeDeps = createVaultDescribeDeps(repoDir);
-        await consumeStream(
-          vaultDescribe(libCtx, describeDeps, selected.name),
-          describeRenderer.handlers(),
-        );
-      }
-      // In interactive mode, the scrollback from the picker already contains
-      // the vault detail, so no additional vaultDescribe call is needed.
-    } else {
-      ctx.logger.debug`Search cancelled`;
-    }
-
-    ctx.logger.debug("Vault search command completed");
-  });
+  .action(vaultSearchAction);

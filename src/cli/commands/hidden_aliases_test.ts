@@ -65,6 +65,27 @@ Deno.test("workflow history list is registered as a hidden subcommand", async ()
   );
 });
 
+Deno.test("vault list is registered as a hidden subcommand", async () => {
+  const { vaultCommand } = await import("./vault.ts");
+
+  // getCommand with second arg true includes hidden commands
+  const listCmd = vaultCommand.getCommand("list", true);
+  assertEquals(
+    listCmd !== undefined,
+    true,
+    "list command should be registered",
+  );
+
+  // Verify it's hidden: not in getCommands() (which excludes hidden)
+  const visibleCommands = vaultCommand.getCommands();
+  const visibleList = visibleCommands.find((c) => c.getName() === "list");
+  assertEquals(
+    visibleList,
+    undefined,
+    "list should not appear in visible commands",
+  );
+});
+
 Deno.test("vault type list is registered as a hidden subcommand", async () => {
   const { vaultTypeCommand } = await import("./vault.ts");
 
