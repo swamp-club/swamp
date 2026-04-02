@@ -222,7 +222,6 @@ async function loadUserModels(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
-  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const modelsDir = resolveModelsDir(marker);
@@ -238,13 +237,10 @@ async function loadUserModels(
       skipAlreadyRegistered: true,
     });
 
-    // Collect failures for deferred logging (logging not yet initialized)
+    // Log warnings directly — logging is initialized by the time
+    // ensureLoaded() runs (inside command .action() handlers).
     for (const failure of result.failed) {
-      deferredWarnings.push({
-        kind: "model",
-        file: failure.file,
-        error: failure.error,
-      });
+      logger.warn`Failed to load user model ${failure.file}: ${failure.error}`;
     }
   } catch {
     // Not in a swamp repo or models dir doesn't exist — not an error
@@ -258,7 +254,6 @@ async function loadUserVaults(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
-  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const vaultsDir = resolveVaultsDir(marker);
@@ -274,11 +269,7 @@ async function loadUserVaults(
     });
 
     for (const failure of result.failed) {
-      deferredWarnings.push({
-        kind: "vault",
-        file: failure.file,
-        error: failure.error,
-      });
+      logger.warn`Failed to load user vault ${failure.file}: ${failure.error}`;
     }
   } catch {
     // Not in a swamp repo or vaults dir doesn't exist — not an error
@@ -289,7 +280,6 @@ async function loadUserDrivers(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
-  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const driversDir = resolveDriversDir(marker);
@@ -305,11 +295,7 @@ async function loadUserDrivers(
     });
 
     for (const failure of result.failed) {
-      deferredWarnings.push({
-        kind: "driver",
-        file: failure.file,
-        error: failure.error,
-      });
+      logger.warn`Failed to load user driver ${failure.file}: ${failure.error}`;
     }
   } catch {
     // Not in a swamp repo or drivers dir doesn't exist — not an error
@@ -320,7 +306,6 @@ async function loadUserDatastores(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
-  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const datastoresDir = resolveDatastoresDir(marker);
@@ -336,11 +321,8 @@ async function loadUserDatastores(
     });
 
     for (const failure of result.failed) {
-      deferredWarnings.push({
-        kind: "datastore",
-        file: failure.file,
-        error: failure.error,
-      });
+      logger
+        .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
     }
   } catch {
     // Not in a swamp repo or datastores dir doesn't exist — not an error
@@ -351,7 +333,6 @@ async function loadUserReports(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
-  deferredWarnings: DeferredWarning[],
 ): Promise<void> {
   try {
     const reportsDir = resolveReportsDir(marker);
@@ -367,11 +348,7 @@ async function loadUserReports(
     });
 
     for (const failure of result.failed) {
-      deferredWarnings.push({
-        kind: "report",
-        file: failure.file,
-        error: failure.error,
-      });
+      logger.warn`Failed to load user report ${failure.file}: ${failure.error}`;
     }
   } catch {
     // Not in a swamp repo or reports dir doesn't exist — not an error
@@ -589,27 +566,27 @@ export async function runCli(args: string[]): Promise<void> {
   // Configure lazy extension loaders on each registry.
   // Extensions are NOT loaded here — they load on first access when a
   // command calls registry.ensureLoaded() via its dep factory.
-  // Collect warnings because logging is not yet initialized at this point.
+  // Warnings are logged directly by the loaders (logging is initialized
+  // by the time ensureLoaded() runs inside command .action() handlers).
   const deferredWarnings: DeferredWarning[] = [];
   if (commandNeedsLoaderSetup(args)) {
     const denoRuntime = new EmbeddedDenoRuntime();
-    modelRegistry.setLoader(() =>
-      loadUserModels(repoDir, marker, denoRuntime, deferredWarnings)
-    );
+    modelRegistry.setLoader(() => loadUserModels(repoDir, marker, denoRuntime));
     vaultTypeRegistry.setLoader(() =>
-      loadUserVaults(repoDir, marker, denoRuntime, deferredWarnings)
+      loadUserVaults(repoDir, marker, denoRuntime)
     );
     driverTypeRegistry.setLoader(() =>
-      loadUserDrivers(repoDir, marker, denoRuntime, deferredWarnings)
+      loadUserDrivers(repoDir, marker, denoRuntime)
     );
     datastoreTypeRegistry.setLoader(() =>
-      loadUserDatastores(repoDir, marker, denoRuntime, deferredWarnings)
+      loadUserDatastores(repoDir, marker, denoRuntime)
     );
     reportRegistry.setLoader(() =>
-      loadUserReports(repoDir, marker, denoRuntime, deferredWarnings)
+      loadUserReports(repoDir, marker, denoRuntime)
     );
 
-    // Warn if lockfile has entries but pulled extension files are missing
+    // Warn if lockfile has entries but pulled extension files are missing.
+    // This runs eagerly (before logging init) so uses deferred warnings.
     await checkForMissingPulledExtensions(
       repoDir,
       marker,

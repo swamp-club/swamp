@@ -71,10 +71,12 @@ import { withSpan } from "../infrastructure/tracing/mod.ts";
 
 /**
  * Resolves a DatastoreProvider for a custom datastore config.
+ * Ensures the datastore extension registry is loaded before lookup.
  */
-function resolveCustomProvider(
+async function resolveCustomProvider(
   config: CustomDatastoreConfig,
-): DatastoreProvider {
+): Promise<DatastoreProvider> {
+  await datastoreTypeRegistry.ensureLoaded();
   const typeInfo = datastoreTypeRegistry.get(config.type);
   if (!typeInfo?.createProvider) {
     throw new UserError(
@@ -272,7 +274,7 @@ export function requireInitializedRepo(
 
     // Verify datastore is accessible
     if (isCustomDatastoreConfig(datastoreConfig)) {
-      const provider = resolveCustomProvider(datastoreConfig);
+      const provider = await resolveCustomProvider(datastoreConfig);
       const lock = provider.createLock(datastoreConfig.datastorePath);
 
       // If the custom provider supports sync, register sync service too
@@ -451,14 +453,14 @@ export async function requireInitializedRepoUnlocked(
  *
  * Lock key: `data/{modelType}/{modelId}/.lock`
  */
-export function createModelLock(
+export async function createModelLock(
   config: DatastoreConfig,
   modelType: string,
   modelId: string,
-): DistributedLock {
+): Promise<DistributedLock> {
   const lockKey = `data/${modelType}/${modelId}/.lock`;
   if (isCustomDatastoreConfig(config)) {
-    const provider = resolveCustomProvider(config);
+    const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath, { lockKey });
   }
   return new FileLock(config.path, { lockKey });
@@ -563,7 +565,7 @@ export async function acquireModelLocks(
     | ReturnType<NonNullable<DatastoreProvider["createSyncService"]>>
     | undefined;
   if (isCustomDatastoreConfig(config)) {
-    customProvider = resolveCustomProvider(config);
+    customProvider = await resolveCustomProvider(config);
     if (config.cachePath) {
       customSyncService = customProvider.createSyncService?.(
         repoDir ?? ".",
@@ -576,7 +578,7 @@ export async function acquireModelLocks(
   // Use the cached provider for custom types so all locks share the same instance.
   const globalLock = customProvider && isCustomDatastoreConfig(config)
     ? customProvider.createLock(config.datastorePath)
-    : createDatastoreLock(config);
+    : await createDatastoreLock(config);
   const globalInfo = await globalLock.inspect();
   if (globalInfo) {
     logger.info(
@@ -637,7 +639,7 @@ export async function acquireModelLocks(
     // Use cached provider for custom types to avoid repeated registry lookups
     const lock = customProvider && isCustomDatastoreConfig(config)
       ? customProvider.createLock(config.datastorePath, { lockKey: key })
-      : createModelLock(config, modelType, modelId);
+      : await createModelLock(config, modelType, modelId);
     // Register lock only (no sync service — we handle S3 pull/push manually)
     await registerDatastoreSyncNamed(key, { lock });
     lockKeys.push(key);
@@ -758,9 +760,11 @@ export async function acquireModelLocks(
  * Used by the lock breakglass commands to inspect/release locks without
  * going through the full sync coordinator lifecycle.
  */
-export function createDatastoreLock(config: DatastoreConfig): DistributedLock {
+export async function createDatastoreLock(
+  config: DatastoreConfig,
+): Promise<DistributedLock> {
   if (isCustomDatastoreConfig(config)) {
-    const provider = resolveCustomProvider(config);
+    const provider = await resolveCustomProvider(config);
     return provider.createLock(config.datastorePath);
   }
   return new FileLock(config.path);
