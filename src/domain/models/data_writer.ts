@@ -578,6 +578,9 @@ export function createResourceWriter(
       ownerDefinition: {
         ownerType: "model-method",
         ownerRef: modelId,
+        ...(tagOverrides?.["workflowRunId"]
+          ? { workflowRunId: tagOverrides["workflowRunId"] }
+          : {}),
       },
     };
 
@@ -856,6 +859,9 @@ export function createFileWriterFactory(
       ownerDefinition: {
         ownerType: "model-method",
         ownerRef: modelId,
+        ...(tagOverrides?.["workflowRunId"]
+          ? { workflowRunId: tagOverrides["workflowRunId"] }
+          : {}),
       },
     };
 

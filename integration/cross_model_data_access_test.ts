@@ -210,6 +210,95 @@ Deno.test("cross-model data access: model with no data returns empty array", asy
   });
 });
 
+Deno.test("cross-model data access: workflowRunId scoping returns only matching data", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const sourceType = ModelType.create("test/source");
+
+    const sourceDef = Definition.create({
+      name: "scoped-source",
+      globalArguments: {},
+    });
+    await defRepo.save(sourceType, sourceDef);
+
+    const runId1 = crypto.randomUUID();
+    const runId2 = crypto.randomUUID();
+    const definitionHash = await computeDefinitionHash({
+      type: "model-method",
+      ref: `${sourceDef.id}:create`,
+    });
+
+    // Write data scoped to workflow run 1
+    const data1 = Data.create({
+      name: "episode-run1",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "resource", specName: "episode", workflowRunId: runId1 },
+      ownerDefinition: {
+        definitionHash,
+        ownerType: "model-method",
+        ownerRef: sourceDef.id,
+        workflowRunId: runId1,
+      },
+    });
+    await dataRepo.save(
+      sourceType,
+      sourceDef.id,
+      data1,
+      new TextEncoder().encode(JSON.stringify({ title: "from run 1" })),
+    );
+
+    // Write data scoped to workflow run 2
+    const data2 = Data.create({
+      name: "episode-run2",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "resource", specName: "episode", workflowRunId: runId2 },
+      ownerDefinition: {
+        definitionHash,
+        ownerType: "model-method",
+        ownerRef: sourceDef.id,
+        workflowRunId: runId2,
+      },
+    });
+    await dataRepo.save(
+      sourceType,
+      sourceDef.id,
+      data2,
+      new TextEncoder().encode(JSON.stringify({ title: "from run 2" })),
+    );
+
+    const service = new DataAccessService(defRepo, dataRepo);
+
+    // Scoped to run 1 — should return only run 1's data
+    const run1Records = await service.readModelData(
+      "scoped-source",
+      "episode",
+      runId1,
+    );
+    assertEquals(run1Records.length, 1);
+    assertEquals(run1Records[0].attributes, { title: "from run 1" });
+
+    // Scoped to run 2 — should return only run 2's data
+    const run2Records = await service.readModelData(
+      "scoped-source",
+      "episode",
+      runId2,
+    );
+    assertEquals(run2Records.length, 1);
+    assertEquals(run2Records[0].attributes, { title: "from run 2" });
+
+    // No scope — should return both
+    const allRecords = await service.readModelData("scoped-source", "episode");
+    assertEquals(allRecords.length, 2);
+  });
+});
+
 Deno.test("cross-model data access: orphan recovery reads content from old UUID path", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
