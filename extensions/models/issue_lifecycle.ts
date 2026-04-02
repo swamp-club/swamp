@@ -33,8 +33,56 @@ import {
   TRANSITIONS,
 } from "./_lib/schemas.ts";
 import { createTracker } from "./_lib/issue_tracker.ts";
+import { createSwampClubClient } from "./_lib/swamp_club.ts";
+import type { SwampClubClient } from "./_lib/swamp_club.ts";
 
 const tracker = createTracker();
+
+/** Extended global args type including optional swamp-club fields. */
+type GlobalArgs = {
+  repo: string;
+  issueNumber: number;
+  swampClubUrl?: string;
+  swampClubApiKey?: string;
+};
+
+/** Get or create the swamp-club client (lazily, from globalArgs). */
+function getSwampClub(
+  globalArgs: GlobalArgs,
+  logger?: {
+    info: (msg: string, props: Record<string, unknown>) => void;
+    warning: (msg: string, props: Record<string, unknown>) => void;
+  },
+): SwampClubClient | null {
+  if (_swampClub === undefined) {
+    _swampClub = createSwampClubClient(globalArgs, logger);
+  }
+  return _swampClub;
+}
+let _swampClub: SwampClubClient | null | undefined;
+
+/**
+ * Get the swamp-club client and ensure the issue exists.
+ * Each method run is a separate process, so the issueId cache is lost.
+ * This helper must be called before postLifecycleEntry/transitionStatus.
+ */
+async function ensureSwampClub(
+  globalArgs: GlobalArgs,
+  logger: {
+    info: (msg: string, props: Record<string, unknown>) => void;
+    warning: (msg: string, props: Record<string, unknown>) => void;
+  },
+): Promise<SwampClubClient | null> {
+  const sc = getSwampClub(globalArgs, logger);
+  if (!sc) return null;
+  const id = await sc.ensureIssue({
+    title: `Issue #${globalArgs.issueNumber}`,
+    body: `GitHub issue #${globalArgs.issueNumber} in ${globalArgs.repo}`,
+    type: "feature",
+  });
+  if (!id) return null;
+  return sc;
+}
 
 /** Read the current state from data repository (for checks). */
 async function readState(
@@ -330,7 +378,7 @@ export const model = {
       execute: async (
         _args: Record<string, never>,
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -376,6 +424,22 @@ export const model = {
           issueNumber,
           `\u{1F50D} **Triage started** \u2014 fetching issue context`,
         );
+        const sc = getSwampClub(context.globalArgs, context.logger);
+        if (sc) {
+          await sc.ensureIssue({
+            title: issue.title,
+            body: issue.body,
+            type: "feature",
+          });
+          await sc.postLifecycleEntry({
+            step: "triage_started",
+            targetStatus: "open",
+            summary: "Triage started",
+            emoji: "\u{1F50D}",
+            payload: { issueNumber, repo },
+            isVerbose: false,
+          });
+        }
         await tracker.setPhaseLabel(repo, issueNumber, "triaging");
 
         return { dataHandles: handles };
@@ -398,7 +462,7 @@ export const model = {
           clarifyingQuestions?: string[];
         },
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -458,6 +522,26 @@ export const model = {
             "</details>",
           ].join("\n"),
         );
+        const scClassify = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        if (scClassify) {
+          await scClassify.postLifecycleEntry({
+            step: "classified",
+            targetStatus: "triaged",
+            summary: `Classified as ${args.type} (${args.confidence})`,
+            emoji: "\u{1F4CB}",
+            payload: {
+              type: args.type,
+              confidence: args.confidence,
+              reasoning: args.reasoning,
+              clarifyingQuestions: args.clarifyingQuestions,
+            },
+            isVerbose: false,
+          });
+          await scClassify.transitionStatus("triaged");
+        }
         await tracker.setPhaseLabel(repo, issueNumber, "classified");
 
         const typeLabels: Record<string, { add: string[]; remove: string[] }> =
@@ -512,7 +596,7 @@ export const model = {
           potentialChallenges: string[];
         },
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -566,6 +650,25 @@ export const model = {
             "</details>",
           ].join("\n"),
         );
+        const scPlan = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        await scPlan?.postLifecycleEntry({
+          step: "plan_generated",
+          targetStatus: "triaged",
+          summary: `Implementation plan generated (v1) \u2014 ${args.summary}`,
+          emoji: "\u{1F4DD}",
+          payload: {
+            version: 1,
+            summary: args.summary,
+            dddAnalysis: args.dddAnalysis,
+            steps: args.steps,
+            testingStrategy: args.testingStrategy,
+            potentialChallenges: args.potentialChallenges,
+          },
+          isVerbose: true,
+        });
         await tracker.setPhaseLabel(repo, issueNumber, "plan_generated");
 
         return { dataHandles: handles };
@@ -639,7 +742,7 @@ export const model = {
           potentialChallenges: string[];
         },
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -751,6 +854,26 @@ export const model = {
             "</details>",
           ].join("\n"),
         );
+        const scIterate = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        await scIterate?.postLifecycleEntry({
+          step: "plan_revised",
+          targetStatus: "triaged",
+          summary: `Plan revised (v${newVersion}) \u2014 feedback round ${feedbackRound}`,
+          emoji: "\u{1F504}",
+          payload: {
+            version: newVersion,
+            feedbackRound,
+            feedback: args.feedback,
+            summary: args.summary,
+            steps: args.steps,
+            testingStrategy: args.testingStrategy,
+            potentialChallenges: args.potentialChallenges,
+          },
+          isVerbose: true,
+        });
         await tracker.setPhaseLabel(repo, issueNumber, "plan_generated");
 
         return { dataHandles: handles };
@@ -781,7 +904,7 @@ export const model = {
           }[];
         },
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -866,6 +989,26 @@ export const model = {
             "</details>",
           ].join("\n"),
         );
+        const scReview = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        await scReview?.postLifecycleEntry({
+          step: "adversarial_review",
+          targetStatus: "triaged",
+          summary: `Adversarial review (plan v${planVersion}): ${critical} critical, ${high} high`,
+          emoji: "\u{1F50D}",
+          payload: {
+            planVersion,
+            findings,
+            critical,
+            high,
+            medium,
+            low,
+            blockers: critical + high,
+          },
+          isVerbose: true,
+          });
 
         return { dataHandles: handles };
       },
@@ -887,7 +1030,7 @@ export const model = {
           resolutions: { findingId: string; resolutionNote: string }[];
         },
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -974,6 +1117,22 @@ export const model = {
             "</details>",
           ].join("\n"),
         );
+        const scResolve = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        await scResolve?.postLifecycleEntry({
+          step: "findings_resolved",
+          targetStatus: "triaged",
+          summary: `${resolved} finding(s) resolved, ${remaining} blocking remain`,
+          emoji: "\u{2705}",
+          payload: {
+            resolved,
+            remaining,
+            resolutions: args.resolutions,
+          },
+          isVerbose: false,
+        });
 
         return { dataHandles: handles };
       },
@@ -985,7 +1144,7 @@ export const model = {
       execute: async (
         _args: Record<string, never>,
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -1086,6 +1245,26 @@ export const model = {
         context.logger.info("Plan approved", {});
         await tracker.setPhaseLabel(repo, issueNumber, "approved");
 
+        const scApprove = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        if (scApprove && plan) {
+          await scApprove.postLifecycleEntry({
+            step: "plan_approved",
+            targetStatus: "triaged",
+            summary: `Plan approved (v${plan.version})`,
+            emoji: "\u{2705}",
+            payload: {
+              version: plan.version,
+              summary: plan.summary,
+              stepsCount: plan.steps.length,
+            },
+            isVerbose: true,
+          });
+          await scApprove.transitionStatus("triaged");
+        }
+
         return { dataHandles: handles };
       },
     },
@@ -1100,7 +1279,7 @@ export const model = {
       execute: async (
         args: { prNumber?: number },
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -1130,6 +1309,23 @@ export const model = {
           issueNumber,
           `\u{1F680} **Implementation started**${prText}`,
         );
+        const scImpl = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        if (scImpl) {
+          await scImpl.postLifecycleEntry({
+            step: "implementation_started",
+            targetStatus: "in_progress",
+            summary: `Implementation started${prText}`,
+            emoji: "\u{1F680}",
+            payload: {
+              prNumber: args.prNumber ?? null,
+            },
+            isVerbose: false,
+          });
+          await scImpl.transitionStatus("in_progress");
+        }
         await tracker.setPhaseLabel(repo, issueNumber, "implementing");
 
         return { dataHandles: [stateHandle] };
@@ -1142,7 +1338,7 @@ export const model = {
       execute: async (
         _args: Record<string, never>,
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -1205,6 +1401,23 @@ export const model = {
           issueNumber,
           `\u{1F52C} **CI results**: ${passed} passed, ${failed} failed`,
         );
+        const scCi = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        await scCi?.postLifecycleEntry({
+          step: "ci_results",
+          targetStatus: "in_progress",
+          summary: `CI results: ${passed} passed, ${failed} failed`,
+          emoji: "\u{1F52C}",
+          payload: {
+            passed,
+            failed,
+            checks: checkRuns,
+            reviews,
+          },
+          isVerbose: true,
+        });
         await tracker.setPhaseLabel(repo, issueNumber, "ci_review");
 
         return { dataHandles: handles };
@@ -1231,7 +1444,7 @@ export const model = {
           targetSeverity?: string;
         },
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -1303,6 +1516,22 @@ export const model = {
           issueNumber,
           `\u{1F527} **Fixing**: ${args.directive}`,
         );
+        const scFix = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        await scFix?.postLifecycleEntry({
+          step: "fixing",
+          targetStatus: "in_progress",
+          summary: `Fixing: ${args.directive}`,
+          emoji: "\u{1F527}",
+          payload: {
+            directive: args.directive,
+            targetReview: args.targetReview,
+            targetSeverity: args.targetSeverity,
+          },
+          isVerbose: false,
+        });
         await tracker.setPhaseLabel(repo, issueNumber, "implementing");
 
         return { dataHandles: handles };
@@ -1315,7 +1544,7 @@ export const model = {
       execute: async (
         _args: Record<string, never>,
         context: {
-          globalArgs: { repo: string; issueNumber: number };
+          globalArgs: GlobalArgs;
           logger: {
             info: (msg: string, props: Record<string, unknown>) => void;
             warning: (msg: string, props: Record<string, unknown>) => void;
@@ -1352,6 +1581,21 @@ export const model = {
           issueNumber,
           `\u{2705} **Complete** \u2014 all checks passed`,
         );
+        const scDone = await ensureSwampClub(
+          context.globalArgs,
+          context.logger,
+        );
+        if (scDone) {
+          await scDone.postLifecycleEntry({
+            step: "complete",
+            targetStatus: "shipped",
+            summary: "Complete \u2014 all checks passed",
+            emoji: "\u{2705}",
+            payload: { summary: "all checks passed" },
+            isVerbose: false,
+          });
+          await scDone.transitionStatus("shipped");
+        }
         await tracker.setPhaseLabel(repo, issueNumber, "done");
 
         return { dataHandles: [stateHandle] };

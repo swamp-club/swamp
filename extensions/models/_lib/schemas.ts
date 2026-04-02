@@ -25,6 +25,12 @@ export const GlobalArgsSchema = z.object({
     "GitHub repository in owner/repo format",
   ),
   issueNumber: z.number().describe("GitHub issue number"),
+  swampClubUrl: z.string().optional().describe(
+    "Swamp Club API base URL (e.g., https://swamp.club or http://localhost:8000)",
+  ),
+  swampClubApiKey: z.string().optional().describe(
+    "Swamp Club API key (starts with swamp_)",
+  ),
 });
 
 // ---------------------------------------------------------------------------
