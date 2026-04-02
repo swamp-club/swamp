@@ -182,7 +182,9 @@ Commonly used in `forEach` expressions to iterate over variable-length output.
 **Workflow run scoping:** When called inside a workflow run, `findBySpec` only
 returns data produced during the current run. This prevents stale data from
 previous runs leaking into `forEach` iteration. Outside a workflow context, it
-returns all data globally.
+returns all data globally. The same run-scoping applies to
+`context.readModelData()` and `context.queryData()` in extension model methods
+(see `design/data-query.md`).
 
 ```yaml
 # In a forEach step — only sees data from the current workflow run:

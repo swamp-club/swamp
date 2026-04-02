@@ -37,6 +37,7 @@ const TEST_MODEL_NAME = "anime-source";
 async function createTestData(
   name: string,
   tags: Record<string, string> = { type: "resource" },
+  ownerOverrides?: { workflowRunId?: string; workflowId?: string },
 ): Promise<Data> {
   const definitionHash = await computeDefinitionHash({
     type: "model-method",
@@ -52,6 +53,7 @@ async function createTestData(
       definitionHash,
       ownerType: "model-method",
       ownerRef: "test:create",
+      ...ownerOverrides,
     },
   });
 }
@@ -357,4 +359,130 @@ Deno.test("DataAccessService.readModelData: recovers orphan data via modelName t
   assertEquals(records.length, 1);
   assertEquals(records[0].name, "orphan-episode");
   assertEquals(records[0].attributes, { title: "Orphan Episode" });
+});
+
+const WORKFLOW_RUN_A = "a00a0a00-a00a-4a0a-a00a-a00a0a00a00a";
+const WORKFLOW_RUN_B = "b00b0b00-b00b-4b0b-b00b-b00b0b00b00b";
+
+Deno.test("DataAccessService.readModelData: scopes to workflowRunId when provided", async () => {
+  const def = createTestDefinition();
+  const runAData = await createTestData(
+    "episode-run-a",
+    { type: "resource", specName: "episode" },
+    { workflowRunId: WORKFLOW_RUN_A },
+  );
+  const runBData = await createTestData(
+    "episode-run-b",
+    { type: "resource", specName: "episode" },
+    { workflowRunId: WORKFLOW_RUN_B },
+  );
+  const contentA = new TextEncoder().encode(
+    JSON.stringify({ title: "Run A Episode" }),
+  );
+  const contentB = new TextEncoder().encode(
+    JSON.stringify({ title: "Run B Episode" }),
+  );
+
+  const defRepo = createMockDefinitionRepo([
+    { definition: def, type: TEST_MODEL_TYPE },
+  ]);
+  const dataRepo = createMockDataRepo(
+    new Map([[TEST_MODEL_ID, [runAData, runBData]]]),
+    new Map([["episode-run-a", contentA], ["episode-run-b", contentB]]),
+  );
+
+  const service = new DataAccessService(defRepo, dataRepo);
+  const records = await service.readModelData(
+    TEST_MODEL_NAME,
+    undefined,
+    WORKFLOW_RUN_A,
+  );
+
+  assertEquals(records.length, 1);
+  assertEquals(records[0].name, "episode-run-a");
+  assertEquals(records[0].attributes, { title: "Run A Episode" });
+});
+
+Deno.test("DataAccessService.readModelData: returns all data when workflowRunId is absent", async () => {
+  const def = createTestDefinition();
+  const runAData = await createTestData(
+    "episode-run-a",
+    { type: "resource", specName: "episode" },
+    { workflowRunId: WORKFLOW_RUN_A },
+  );
+  const unscopedData = await createTestData(
+    "episode-standalone",
+    { type: "resource", specName: "episode" },
+  );
+  const contentA = new TextEncoder().encode(
+    JSON.stringify({ title: "Run A" }),
+  );
+  const contentStandalone = new TextEncoder().encode(
+    JSON.stringify({ title: "Standalone" }),
+  );
+
+  const defRepo = createMockDefinitionRepo([
+    { definition: def, type: TEST_MODEL_TYPE },
+  ]);
+  const dataRepo = createMockDataRepo(
+    new Map([[TEST_MODEL_ID, [runAData, unscopedData]]]),
+    new Map([
+      ["episode-run-a", contentA],
+      ["episode-standalone", contentStandalone],
+    ]),
+  );
+
+  const service = new DataAccessService(defRepo, dataRepo);
+  const records = await service.readModelData(TEST_MODEL_NAME);
+
+  assertEquals(records.length, 2);
+});
+
+Deno.test("DataAccessService.readModelData: filters orphan data by workflowRunId", async () => {
+  const currentId = "550e8400-e29b-41d4-a716-446655440033";
+  const oldId = "550e8400-e29b-41d4-a716-446655440044";
+  const def = createTestDefinition(currentId, TEST_MODEL_NAME);
+
+  const orphanRunA = await createTestData(
+    "orphan-run-a",
+    { type: "resource", specName: "episode", modelName: TEST_MODEL_NAME },
+    { workflowRunId: WORKFLOW_RUN_A },
+  );
+  const orphanRunB = await createTestData(
+    "orphan-run-b",
+    { type: "resource", specName: "episode", modelName: TEST_MODEL_NAME },
+    { workflowRunId: WORKFLOW_RUN_B },
+  );
+  const contentA = new TextEncoder().encode(
+    JSON.stringify({ title: "Orphan A" }),
+  );
+  const contentB = new TextEncoder().encode(
+    JSON.stringify({ title: "Orphan B" }),
+  );
+
+  const defRepo = createMockDefinitionRepo([
+    { definition: def, type: TEST_MODEL_TYPE },
+  ]);
+  const dataRepo = createMockDataRepo(
+    new Map([[currentId, []]]),
+    new Map([
+      [`${oldId}:orphan-run-a`, contentA],
+      [`${oldId}:orphan-run-b`, contentB],
+    ]),
+    [
+      { data: orphanRunA, modelType: TEST_MODEL_TYPE, modelId: oldId },
+      { data: orphanRunB, modelType: TEST_MODEL_TYPE, modelId: oldId },
+    ],
+  );
+
+  const service = new DataAccessService(defRepo, dataRepo);
+  const records = await service.readModelData(
+    TEST_MODEL_NAME,
+    undefined,
+    WORKFLOW_RUN_A,
+  );
+
+  assertEquals(records.length, 1);
+  assertEquals(records[0].name, "orphan-run-a");
+  assertEquals(records[0].attributes, { title: "Orphan A" });
 });

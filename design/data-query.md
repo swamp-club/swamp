@@ -86,6 +86,22 @@ JSON (for `application/json` only). `content` contains the raw text string
 (for `text/*`, `application/json`, `application/yaml`). For binary content
 types, `content` is `""`.
 
+## Workflow Run Scoping
+
+When `context.readModelData()` or `context.queryData()` is called inside a
+workflow run, results are automatically scoped to data produced during the
+current run. This prevents stale data from previous runs leaking into workflow
+pipeline steps — the same scoping behavior applied to `data.findBySpec()` in
+CEL expressions.
+
+- **`context.readModelData(modelName, specName)`** — filters by
+  `ownerDefinition.workflowRunId` matching the current run.
+- **`context.queryData(predicate)`** — injects
+  `tags.workflowRunId == "<currentRunId>"` into the predicate.
+
+Outside a workflow context (standalone CLI execution), both functions return
+all data globally.
+
 ## Predicate Syntax
 
 Predicates are standard CEL expressions that evaluate to a boolean. Any CEL
