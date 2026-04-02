@@ -861,7 +861,8 @@ export const model = {
         await scIterate?.postLifecycleEntry({
           step: "plan_revised",
           targetStatus: "triaged",
-          summary: `Plan revised (v${newVersion}) \u2014 feedback round ${feedbackRound}`,
+          summary:
+            `Plan revised (v${newVersion}) \u2014 feedback round ${feedbackRound}`,
           emoji: "\u{1F504}",
           payload: {
             version: newVersion,
@@ -996,7 +997,8 @@ export const model = {
         await scReview?.postLifecycleEntry({
           step: "adversarial_review",
           targetStatus: "triaged",
-          summary: `Adversarial review (plan v${planVersion}): ${critical} critical, ${high} high`,
+          summary:
+            `Adversarial review (plan v${planVersion}): ${critical} critical, ${high} high`,
           emoji: "\u{1F50D}",
           payload: {
             planVersion,
@@ -1008,7 +1010,7 @@ export const model = {
             blockers: critical + high,
           },
           isVerbose: true,
-          });
+        });
 
         return { dataHandles: handles };
       },
@@ -1124,7 +1126,8 @@ export const model = {
         await scResolve?.postLifecycleEntry({
           step: "findings_resolved",
           targetStatus: "triaged",
-          summary: `${resolved} finding(s) resolved, ${remaining} blocking remain`,
+          summary:
+            `${resolved} finding(s) resolved, ${remaining} blocking remain`,
           emoji: "\u{2705}",
           payload: {
             resolved,
@@ -1252,8 +1255,9 @@ export const model = {
         if (scApprove && plan) {
           await scApprove.postLifecycleEntry({
             step: "plan_approved",
-            targetStatus: "triaged",
-            summary: `Plan approved (v${plan.version})`,
+            targetStatus: "in_progress",
+            summary:
+              `Plan approved (v${plan.version}) — implementation starting`,
             emoji: "\u{2705}",
             payload: {
               version: plan.version,
@@ -1262,7 +1266,7 @@ export const model = {
             },
             isVerbose: true,
           });
-          await scApprove.transitionStatus("triaged");
+          await scApprove.transitionStatus("in_progress");
         }
 
         return { dataHandles: handles };

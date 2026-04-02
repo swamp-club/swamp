@@ -35,7 +35,7 @@ export interface LifecycleEntryParams {
  */
 export class SwampClubClient {
   private baseUrl: string;
-  private apiKey: string;
+  readonly #apiKey: string;
   private repo: string;
   private issueNumber: number;
   private log: (msg: string, props: Record<string, unknown>) => void;
@@ -54,7 +54,7 @@ export class SwampClubClient {
     },
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this.apiKey = apiKey;
+    this.#apiKey = apiKey;
     this.repo = repo;
     this.issueNumber = issueNumber;
     this.log = logger?.warning.bind(logger) ?? (() => {});
@@ -79,7 +79,7 @@ export class SwampClubClient {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.apiKey}`,
+          "Authorization": `Bearer ${this.#apiKey}`,
         },
         body: JSON.stringify({
           githubRepoFullName: this.repo,
@@ -102,7 +102,19 @@ export class SwampClubClient {
         issue: { id: string };
         created: boolean;
       };
-      this.issueId = data.issue.id;
+      const resolvedId = data.issue.id;
+      // Validate UUID format to prevent path traversal
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          resolvedId,
+        )
+      ) {
+        this.log("swamp-club returned invalid issue ID: {id}", {
+          id: resolvedId,
+        });
+        return null;
+      }
+      this.issueId = resolvedId;
       return this.issueId;
     } catch (err) {
       this.log("swamp-club ensure issue error: {error}", {
@@ -116,13 +128,12 @@ export class SwampClubClient {
   async postLifecycleEntry(params: LifecycleEntryParams): Promise<void> {
     if (!this.issueId) return;
     try {
-      const url =
-        `${this.baseUrl}/api/v1/lab/issues/${this.issueId}/lifecycle`;
+      const url = `${this.baseUrl}/api/v1/lab/issues/${this.issueId}/lifecycle`;
       const res = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.apiKey}`,
+          "Authorization": `Bearer ${this.#apiKey}`,
         },
         body: JSON.stringify({
           step: params.step,
@@ -157,7 +168,7 @@ export class SwampClubClient {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.apiKey}`,
+          "Authorization": `Bearer ${this.#apiKey}`,
         },
         body: JSON.stringify({ status }),
       });
@@ -194,10 +205,11 @@ export function createSwampClubClient(
     warning: (msg: string, props: Record<string, unknown>) => void;
   },
 ): SwampClubClient | null {
-  const url = globalArgs.swampClubUrl ?? Deno.env.get("SWAMP_CLUB_URL");
+  const url = globalArgs.swampClubUrl ?? Deno.env.get("SWAMP_CLUB_URL") ??
+    "https://swamp.club";
   const apiKey = globalArgs.swampClubApiKey ?? Deno.env.get("SWAMP_API_KEY");
 
-  if (url && apiKey) {
+  if (apiKey) {
     return new SwampClubClient(
       url,
       apiKey,
