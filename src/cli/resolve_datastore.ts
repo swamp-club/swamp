@@ -207,7 +207,8 @@ export async function parseDatastoreEnvVar(
       const bucket = slashIdx === -1 ? value : value.slice(0, slashIdx);
       const prefix = slashIdx === -1 ? undefined : value.slice(slashIdx + 1);
 
-      // Auto-resolve the extension if not already loaded
+      // Ensure lazy-loaded extensions are loaded before auto-resolve
+      await datastoreTypeRegistry.ensureLoaded();
       await resolveDatastoreType(renamedTo, getAutoResolver());
       await maybeAutoUpdateSwampDatastore(renamedTo, repoDir ?? ".", null);
 
@@ -247,7 +248,10 @@ export async function parseDatastoreEnvVar(
     type = renamedTo;
   }
 
-  // Auto-resolve extension types
+  // Ensure lazy-loaded extensions are loaded before auto-resolve
+  await datastoreTypeRegistry.ensureLoaded();
+
+  // Auto-resolve extension types (only fires if type is genuinely missing)
   if (type.startsWith("@")) {
     await resolveDatastoreType(type, getAutoResolver());
     await maybeAutoUpdateSwampDatastore(type, repoDir ?? ".", null);
@@ -349,7 +353,8 @@ export async function resolveDatastoreConfig(
           `Update your .swamp.yaml to use the new name.`,
       );
 
-      // Auto-resolve the extension if not already loaded
+      // Ensure lazy-loaded extensions are loaded before auto-resolve
+      await datastoreTypeRegistry.ensureLoaded();
       await resolveDatastoreType(renamedTo, getAutoResolver());
       await maybeAutoUpdateSwampDatastore(
         renamedTo,
@@ -414,7 +419,13 @@ export async function resolveDatastoreConfig(
       };
     }
 
-    // Auto-resolve extension types
+    // Ensure lazy-loaded extension datastores are loaded before checking
+    // the registry. Without this, the registry appears empty after PR #1050's
+    // lazy loading change, causing the auto-resolver to fire unnecessarily
+    // and write progress JSON to stdout — corrupting --json output.
+    await datastoreTypeRegistry.ensureLoaded();
+
+    // Auto-resolve extension types (only fires if type is genuinely missing)
     if (dsType.startsWith("@")) {
       await resolveDatastoreType(dsType, getAutoResolver());
       await maybeAutoUpdateSwampDatastore(dsType, repoDir ?? ".", marker);
