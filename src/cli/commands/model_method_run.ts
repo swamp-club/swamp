@@ -28,6 +28,10 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
@@ -149,6 +153,14 @@ export const modelMethodRunCommand = new Command()
       const runtimeTags = options.tag
         ? parseTags(options.tag as string[])
         : undefined;
+
+      // Load all extension registries needed for method execution in parallel
+      await Promise.all([
+        modelRegistry.ensureLoaded(),
+        vaultTypeRegistry.ensureLoaded(),
+        driverTypeRegistry.ensureLoaded(),
+        reportRegistry.ensureLoaded(),
+      ]);
 
       const deps: ModelMethodRunDeps = {
         repoDir,

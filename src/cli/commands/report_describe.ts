@@ -42,6 +42,7 @@ export const reportDescribeCommand = new Command()
       "describe",
     ]);
 
+    await reportRegistry.ensureLoaded();
     const deps: ReportDescribeDeps = {
       getReport: (name) => reportRegistry.get(name),
     };

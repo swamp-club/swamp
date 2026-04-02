@@ -123,6 +123,8 @@ const datastoreSetupExtensionCommand = new Command()
     const renamedTo = RENAMED_DATASTORE_TYPES[type];
     const resolvedType = renamedTo ?? type;
 
+    await datastoreTypeRegistry.ensureLoaded();
+
     // Auto-resolve the extension if needed — catch network errors so
     // the registry check below produces a clean UserError instead of
     // an opaque stack trace.

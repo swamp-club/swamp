@@ -60,7 +60,7 @@ const datastoreLockStatusCommand = new Command()
       options.repoDir ?? ".",
     );
 
-    const lock = createDatastoreLock(config);
+    const lock = await createDatastoreLock(config);
     const deps = createDatastoreLockStatusDeps(lock, config);
 
     const isFilesystem = !isCustomDatastoreConfig(config) &&
@@ -125,9 +125,9 @@ const datastoreLockReleaseCommand = new Command()
           `Invalid --model format: "${modelSpec}". Expected "type/id" (e.g. aws-ec2/my-server).`,
         );
       }
-      lock = createModelLock(config, parts[0], parts[1]);
+      lock = await createModelLock(config, parts[0], parts[1]);
     } else {
-      lock = createDatastoreLock(config);
+      lock = await createDatastoreLock(config);
     }
 
     const deps = createDatastoreLockReleaseDeps(lock);

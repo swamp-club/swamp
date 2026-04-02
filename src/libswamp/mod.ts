@@ -118,8 +118,13 @@ export {
 } from "./models/model_method_run_view.ts";
 
 // Report operations (top-level)
-export { reportDescribe, type ReportDescribeDeps } from "./reports/describe.ts";
 export {
+  createReportDescribeDeps,
+  reportDescribe,
+  type ReportDescribeDeps,
+} from "./reports/describe.ts";
+export {
+  createReportSearchDeps,
   reportSearch,
   type ReportSearchDeps,
   type ReportSearchInput,

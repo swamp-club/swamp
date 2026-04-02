@@ -106,10 +106,11 @@ export interface ModelMethodHistoryLogsDeps {
 }
 
 /** Wires real infrastructure into ModelMethodHistoryLogsDeps. */
-export function createModelMethodHistoryLogsDeps(
+export async function createModelMethodHistoryLogsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
-): ModelMethodHistoryLogsDeps {
+): Promise<ModelMethodHistoryLogsDeps> {
+  await modelRegistry.ensureLoaded();
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);

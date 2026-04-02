@@ -54,7 +54,7 @@ export const modelOutputGetCommand = new Command()
     );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelOutputGetDeps(repoDir, datastoreResolver);
+    const deps = await createModelOutputGetDeps(repoDir, datastoreResolver);
 
     const renderer = createModelOutputGetRenderer(cliCtx.outputMode);
     await consumeStream(

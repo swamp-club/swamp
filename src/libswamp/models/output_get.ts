@@ -145,10 +145,11 @@ export interface ModelOutputGetDeps {
 }
 
 /** Wires real infrastructure into ModelOutputGetDeps. */
-export function createModelOutputGetDeps(
+export async function createModelOutputGetDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
-): ModelOutputGetDeps {
+): Promise<ModelOutputGetDeps> {
+  await modelRegistry.ensureLoaded();
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);

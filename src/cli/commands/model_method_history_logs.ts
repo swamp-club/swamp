@@ -59,7 +59,10 @@ export const modelMethodHistoryLogsCommand = new Command()
     );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelMethodHistoryLogsDeps(repoDir, datastoreResolver);
+    const deps = await createModelMethodHistoryLogsDeps(
+      repoDir,
+      datastoreResolver,
+    );
 
     const renderer = createModelMethodHistoryLogsRenderer(cliCtx.outputMode);
     await consumeStream(

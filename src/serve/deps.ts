@@ -41,11 +41,21 @@ import {
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
 import { SecretRedactor } from "../domain/secrets/mod.ts";
+import { modelRegistry } from "../domain/models/model.ts";
+import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
+import { driverTypeRegistry } from "../domain/drivers/driver_type_registry.ts";
+import { reportRegistry } from "../domain/reports/report_registry.ts";
 
-export function createWorkflowRunDeps(
+export async function createWorkflowRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
-): WorkflowRunDeps {
+): Promise<WorkflowRunDeps> {
+  await Promise.all([
+    modelRegistry.ensureLoaded(),
+    vaultTypeRegistry.ensureLoaded(),
+    driverTypeRegistry.ensureLoaded(),
+    reportRegistry.ensureLoaded(),
+  ]);
   return {
     workflowRepo: repoContext.workflowRepo,
     runRepo: repoContext.workflowRunRepo,
@@ -61,10 +71,16 @@ export function createWorkflowRunDeps(
   };
 }
 
-export function createModelMethodRunDeps(
+export async function createModelMethodRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
-): ModelMethodRunDeps {
+): Promise<ModelMethodRunDeps> {
+  await Promise.all([
+    modelRegistry.ensureLoaded(),
+    vaultTypeRegistry.ensureLoaded(),
+    driverTypeRegistry.ensureLoaded(),
+    reportRegistry.ensureLoaded(),
+  ]);
   return {
     repoDir,
     lookupDefinition: (idOrName) =>

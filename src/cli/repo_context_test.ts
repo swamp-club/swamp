@@ -409,7 +409,7 @@ Deno.test("createModelLock - creates lock with correct path for filesystem", asy
     await initializeRepo(dir);
 
     const { datastoreConfig } = await resolveDatastoreForRepo(dir);
-    const lock = createModelLock(datastoreConfig, "aws-ec2", "my-server");
+    const lock = await createModelLock(datastoreConfig, "aws-ec2", "my-server");
 
     // Verify we can inspect (no lock held)
     const info = await lock.inspect();
@@ -433,11 +433,11 @@ Deno.test("acquireModelLocks - acquires and releases per-model locks", async () 
     ], dir);
 
     // Locks should be held — verify by inspecting
-    const lock1 = createModelLock(datastoreConfig, "aws-ec2", "server-1");
+    const lock1 = await createModelLock(datastoreConfig, "aws-ec2", "server-1");
     const info1 = await lock1.inspect();
     assertEquals(info1 !== null, true);
 
-    const lock2 = createModelLock(datastoreConfig, "aws-ec2", "server-2");
+    const lock2 = await createModelLock(datastoreConfig, "aws-ec2", "server-2");
     const info2 = await lock2.inspect();
     assertEquals(info2 !== null, true);
 

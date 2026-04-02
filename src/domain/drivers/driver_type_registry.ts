@@ -41,9 +41,33 @@ export interface DriverTypeInfo {
 /**
  * Registry of available execution driver types (built-in and user-defined).
  * Map-backed singleton that allows registration and lookup by type identifier.
+ *
+ * Supports lazy loading of user extensions via {@link setLoader} and
+ * {@link ensureLoaded}.
  */
 export class DriverTypeRegistry {
   private readonly types = new Map<string, DriverTypeInfo>();
+  private extensionLoader: (() => Promise<void>) | null = null;
+  private extensionLoadPromise: Promise<void> | null = null;
+  private extensionsLoaded = false;
+
+  /** Configures the lazy loader for user driver extensions. */
+  setLoader(loader: () => Promise<void>): void {
+    this.extensionLoader = loader;
+  }
+
+  /** Ensures user driver extensions have been loaded. */
+  async ensureLoaded(): Promise<void> {
+    if (this.extensionsLoaded) return;
+    if (!this.extensionLoader) return;
+    if (!this.extensionLoadPromise) {
+      const loader = this.extensionLoader;
+      this.extensionLoadPromise = loader().then(() => {
+        this.extensionsLoaded = true;
+      });
+    }
+    await this.extensionLoadPromise;
+  }
 
   /**
    * Registers a driver type. Throws if the type is already registered.

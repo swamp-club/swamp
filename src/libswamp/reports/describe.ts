@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { ReportDefinition } from "../../domain/reports/report.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound } from "../errors.ts";
 import type { ReportDescribeEvent } from "./report_views.ts";
@@ -28,6 +29,14 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
  */
 export interface ReportDescribeDeps {
   getReport: (name: string) => ReportDefinition | undefined;
+}
+
+/** Wires real infrastructure into ReportDescribeDeps. */
+export async function createReportDescribeDeps(): Promise<ReportDescribeDeps> {
+  await reportRegistry.ensureLoaded();
+  return {
+    getReport: (name) => reportRegistry.get(name),
+  };
 }
 
 /**

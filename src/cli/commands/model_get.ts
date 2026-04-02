@@ -49,7 +49,7 @@ export const modelGetCommand = new Command()
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelGetDeps(repoDir);
+    const deps = await createModelGetDeps(repoDir);
 
     const renderer = createModelGetRenderer(cliCtx.outputMode);
     await consumeStream(

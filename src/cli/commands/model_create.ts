@@ -74,7 +74,7 @@ export const modelCreateCommand = new Command()
       : undefined;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelCreateDeps(repoDir);
+    const deps = await createModelCreateDeps(repoDir);
     const renderer = createModelCreateRenderer(cliCtx.outputMode);
     await consumeStream(
       modelCreate(ctx, deps, { typeArg, name, globalArguments }),

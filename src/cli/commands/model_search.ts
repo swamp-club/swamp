@@ -45,11 +45,11 @@ type AnyOptions = any;
  * This bridges the presentation layer to the libswamp modelGet application
  * service, capturing the repoDir dependency.
  */
-function createModelFetchPreview(
+async function createModelFetchPreview(
   repoDir: string,
-): (item: ModelSearchItem) => Promise<ModelGetData> {
+): Promise<(item: ModelSearchItem) => Promise<ModelGetData>> {
   const libCtx = createLibSwampContext();
-  const getDeps = createModelGetDeps(repoDir);
+  const getDeps = await createModelGetDeps(repoDir);
 
   return async (item: ModelSearchItem): Promise<ModelGetData> => {
     let result: ModelGetData | undefined;
@@ -87,7 +87,7 @@ export async function modelSearchAction(
 
   const repoDir = options.repoDir ?? ".";
   const fetchPreview = effectiveMode === "log"
-    ? createModelFetchPreview(repoDir)
+    ? await createModelFetchPreview(repoDir)
     : undefined;
 
   const renderer = createModelSearchRenderer(effectiveMode, fetchPreview);
@@ -102,7 +102,7 @@ export async function modelSearchAction(
     // In JSON mode, still display the full model get output after auto-select
     if (effectiveMode === "json") {
       const getRenderer = createModelGetRenderer(effectiveMode);
-      const getDeps = createModelGetDeps(repoDir);
+      const getDeps = await createModelGetDeps(repoDir);
       await consumeStream(
         modelGet(libCtx, getDeps, selected.name),
         getRenderer.handlers(),

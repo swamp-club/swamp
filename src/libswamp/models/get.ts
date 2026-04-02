@@ -62,7 +62,10 @@ export interface ModelGetDeps {
 }
 
 /** Wires real infrastructure into ModelGetDeps. */
-export function createModelGetDeps(repoDir: string): ModelGetDeps {
+export async function createModelGetDeps(
+  repoDir: string,
+): Promise<ModelGetDeps> {
+  await modelRegistry.ensureLoaded();
   const definitionRepo = new YamlDefinitionRepository(repoDir);
   return {
     lookupDefinition: (idOrName) =>
