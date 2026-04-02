@@ -483,9 +483,12 @@ export class UserModelLoader {
       return result;
     }
 
-    // Catalog not populated — full import to bootstrap
+    // Catalog not populated — full import to bootstrap.
+    // skipAlreadyRegistered avoids failures when a user extension
+    // shadows a built-in type name during first-run bootstrap.
     const fullResult = await this.loadModels(modelsDir, {
       additionalDirs: options?.additionalDirs,
+      skipAlreadyRegistered: true,
     });
 
     // Populate catalog from the now-loaded registry
@@ -689,6 +692,11 @@ export class UserModelLoader {
         // runs during the first-run catalog bootstrap. Any mismatches are
         // corrected on subsequent runs when the mtime scan detects the
         // file as new (not in catalog) and does a proper bundle import.
+        //
+        // Classification: extension takes priority over model, matching
+        // the loader's own if/else if logic (line ~347). In practice
+        // these exports are mutually exclusive — a file exports one or
+        // the other, never both.
         const typeMatch = source.match(
           /type\s*:\s*["']([^"']+)["']/,
         );
