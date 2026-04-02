@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { DatabaseSync } from "node:sqlite";
 import {
   type CatalogRow,
   CatalogStore,
@@ -307,6 +308,68 @@ Deno.test("CatalogStore: distinctTagValues returns values for a key", () => {
   const missing = store.distinctTagValues("nonexistent");
   assertEquals(missing, []);
   store.close();
+});
+
+Deno.test("CatalogStore: constructor retries under write lock contention", async () => {
+  const dbPath = makeTempDbPath();
+  const dir = dirname(dbPath);
+
+  // Pre-create the database with WAL mode so it exists on disk
+  const setup = new DatabaseSync(dbPath);
+  setup.exec("PRAGMA journal_mode=WAL");
+  setup.close();
+
+  // Reopen and hold an exclusive write lock from this process
+  const holder = new DatabaseSync(dbPath);
+  holder.exec("BEGIN EXCLUSIVE");
+  holder.exec("CREATE TABLE IF NOT EXISTS _lock (x INTEGER)");
+
+  // Write a helper script that constructs a CatalogStore on the same DB.
+  // If busy_timeout is not set before journal_mode=WAL, this will throw
+  // "database is locked" because the PRAGMA needs a lock we're holding.
+  const catalogStoreUrl = new URL("./catalog_store.ts", import.meta.url).href;
+  const scriptPath = join(dir, "open_catalog.ts");
+  Deno.writeTextFileSync(
+    scriptPath,
+    [
+      `import { CatalogStore } from "${catalogStoreUrl}";`,
+      `const store = new CatalogStore(Deno.args[0]);`,
+      `store.close();`,
+    ].join("\n"),
+  );
+
+  // Start a subprocess — it will block in busy_timeout waiting for our lock.
+  // Pass --config so the subprocess can resolve @std/fs and other imports.
+  const denoJsonPath = new URL("../../../deno.json", import.meta.url).pathname;
+  const proc = new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--unstable-bundle",
+      "--allow-read",
+      "--allow-write",
+      "--config",
+      denoJsonPath,
+      scriptPath,
+      dbPath,
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+
+  // Release the lock after 200ms so the subprocess can proceed
+  await new Promise((r) => setTimeout(r, 200));
+  holder.exec("COMMIT");
+  holder.close();
+
+  // The subprocess should succeed — busy_timeout let it wait for our lock
+  const output = await proc.output();
+  assertEquals(
+    output.code,
+    0,
+    `CatalogStore constructor failed under lock contention: ${
+      new TextDecoder().decode(output.stderr)
+    }`,
+  );
 });
 
 Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () => {
