@@ -52,6 +52,7 @@ export class VaultService {
     repoDir: string,
     vaultsDir?: string,
   ): Promise<VaultService> {
+    await vaultTypeRegistry.ensureLoaded();
     const vaultService = new VaultService();
     try {
       const effectiveVaultsDir = vaultsDir ?? join(repoDir, "vaults");

@@ -30,6 +30,7 @@ import {
   modelValidate,
 } from "../../libswamp/mod.ts";
 import { createModelValidateRenderer } from "../../presentation/renderers/model_validate.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -75,6 +76,7 @@ export const modelValidateCommand = new Command()
           outputMode: cliCtx.outputMode,
         });
 
+      await modelRegistry.ensureLoaded();
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const deps = createModelValidateDeps(
         repoDir,
