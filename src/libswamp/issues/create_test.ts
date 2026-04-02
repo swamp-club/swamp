@@ -91,3 +91,56 @@ Deno.test("issueCreate: yields completed with url method", async () => {
   assertEquals(completed.data.title, "Test feature");
   assertEquals(completed.data.type, "feature");
 });
+
+Deno.test("issueCreate: threads repo through to createIssue", async () => {
+  let capturedRepo: string | undefined;
+  const deps = makeDeps({
+    createIssue: (opts) => {
+      capturedRepo = opts.repo;
+      return Promise.resolve({
+        method: "created" as const,
+        url: "https://github.com/systeminit/swamp-extensions/issues/1",
+        number: 1,
+      });
+    },
+  });
+
+  const events = await collect<IssueCreateEvent>(
+    issueCreate(createLibSwampContext(), deps, {
+      title: "Extension bug",
+      body: "Test body",
+      labels: ["bug"],
+      type: "bug",
+      repo: "systeminit/swamp-extensions",
+    }),
+  );
+
+  assertEquals(capturedRepo, "systeminit/swamp-extensions");
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "completed");
+});
+
+Deno.test("issueCreate: repo is undefined when not provided", async () => {
+  let capturedRepo: string | undefined = "should-be-undefined";
+  const deps = makeDeps({
+    createIssue: (opts) => {
+      capturedRepo = opts.repo;
+      return Promise.resolve({
+        method: "created" as const,
+        url: "https://github.com/systeminit/swamp/issues/2",
+        number: 2,
+      });
+    },
+  });
+
+  await collect<IssueCreateEvent>(
+    issueCreate(createLibSwampContext(), deps, {
+      title: "Core bug",
+      body: "Test body",
+      labels: ["bug"],
+      type: "bug",
+    }),
+  );
+
+  assertEquals(capturedRepo, undefined);
+});

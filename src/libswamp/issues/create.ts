@@ -52,6 +52,7 @@ export interface IssueCreateInput {
   body: string;
   labels: string[];
   type: "bug" | "feature";
+  repo?: string;
 }
 
 /** Dependencies for the issue create operation. */
@@ -60,6 +61,7 @@ export interface IssueCreateDeps {
     title: string;
     body: string;
     labels: string[];
+    repo?: string;
   }) => Promise<
     | { method: "created"; url: string; number: number }
     | { method: "url"; url: string; body: string; labels: string[] }
@@ -90,6 +92,7 @@ export async function* issueCreate(
         title: input.title,
         body: input.body,
         labels: input.labels,
+        repo: input.repo,
       });
 
       const data: IssueCreateData = result.method === "created"

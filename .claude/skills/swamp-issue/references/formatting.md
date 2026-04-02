@@ -34,3 +34,36 @@ Provide a summary of the implementation plan:
 >
 > The approach would intercept execution at the method call boundary and display
 > the planned actions without making external calls.
+
+## Extension Issues
+
+When filing an issue for an official extension, prefix the title with the
+extension name:
+
+**Format:** `@collective/extension-name: brief description`
+
+**Example bug:**
+
+> **Title:**
+> `@swamp/aws-ec2: describe method returns empty attributes for stopped instances`
+>
+> This bug affects the `@swamp/aws-ec2` extension's `describe` method. When an
+> EC2 instance is in a stopped state, the method returns an empty attributes map
+> instead of the instance metadata.
+>
+> The fix would involve updating the attribute mapping in the describe method to
+> handle stopped-state API responses, which return a subset of fields.
+
+**Example feature:**
+
+> **Title:** `@swamp/aws-s3: add support for bucket lifecycle rules`
+>
+> This feature would add a `lifecycle` method to the `@swamp/aws-s3` extension
+> model. Changes would be needed in:
+>
+> - New `lifecycle` method definition in the extension model
+> - S3 lifecycle rule API integration
+> - Output type definitions for lifecycle configuration
+>
+> The approach would follow the existing pattern used by the `policy` method for
+> bucket policy management.
