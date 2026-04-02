@@ -56,9 +56,10 @@ export interface DatastoreStatusDeps {
 }
 
 /** Wires real infrastructure into DatastoreStatusDeps. */
-export function createDatastoreStatusDeps(
+export async function createDatastoreStatusDeps(
   datastoreResolver: DatastorePathResolver,
-): DatastoreStatusDeps {
+): Promise<DatastoreStatusDeps> {
+  await datastoreTypeRegistry.ensureLoaded();
   return {
     loadConfig: () => datastoreResolver.config(),
     verifyHealth: async (config: DatastoreConfig) => {

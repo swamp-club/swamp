@@ -60,10 +60,11 @@ export interface DatastoreSyncDeps {
 }
 
 /** Wires real infrastructure into DatastoreSyncDeps. */
-export function createDatastoreSyncDeps(
+export async function createDatastoreSyncDeps(
   repoDir: string,
   datastoreResolver: DatastorePathResolver,
-): DatastoreSyncDeps {
+): Promise<DatastoreSyncDeps> {
+  await datastoreTypeRegistry.ensureLoaded();
   const config = datastoreResolver.config();
 
   if (isCustomDatastoreConfig(config)) {

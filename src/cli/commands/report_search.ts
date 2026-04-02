@@ -46,7 +46,10 @@ import { createReportGetRenderer } from "../../presentation/renderers/report_get
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-function buildSearchDeps(repoContext: RepositoryContext): ReportSearchDeps {
+async function buildSearchDeps(
+  repoContext: RepositoryContext,
+): Promise<ReportSearchDeps> {
+  await reportRegistry.ensureLoaded();
   return {
     findAllGlobal: () => repoContext.unifiedDataRepo.findAllGlobal(),
     findAllForModel: (type, modelId) =>
@@ -194,7 +197,7 @@ export const reportSearchCommand = new Command()
       fetchPreview,
     );
     await consumeStream(
-      reportSearch(libCtx, buildSearchDeps(repoContext), {
+      reportSearch(libCtx, await buildSearchDeps(repoContext), {
         query,
         model: options.model as string | undefined,
         workflow: options.workflow as string | undefined,

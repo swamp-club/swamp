@@ -248,7 +248,7 @@ async function handleWorkflowRun(
       }
     }
 
-    const deps = createWorkflowRunDeps(ctx.repoDir, ctx.repoContext);
+    const deps = await createWorkflowRunDeps(ctx.repoDir, ctx.repoContext);
     const libCtx = createLibSwampContext({ signal: controller.signal });
 
     for await (
@@ -317,7 +317,7 @@ async function handleModelMethodRun(
       flushLocks = lockResult.flush;
     }
 
-    const deps = createModelMethodRunDeps(ctx.repoDir, ctx.repoContext);
+    const deps = await createModelMethodRunDeps(ctx.repoDir, ctx.repoContext);
     const libCtx = createLibSwampContext({ signal: controller.signal });
 
     for await (

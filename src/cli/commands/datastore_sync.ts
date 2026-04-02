@@ -71,7 +71,7 @@ export const datastoreSyncCommand = new Command()
       });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDatastoreSyncDeps(repoDir, datastoreResolver);
+    const deps = await createDatastoreSyncDeps(repoDir, datastoreResolver);
     const renderer = createDatastoreSyncRenderer(cliCtx.outputMode);
     await consumeStream(
       datastoreSync(ctx, deps, { mode }),

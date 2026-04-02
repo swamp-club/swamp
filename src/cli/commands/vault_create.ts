@@ -106,7 +106,7 @@ export const vaultCreateCommand = new Command()
       }
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createVaultCreateDeps(repoDir);
+      const deps = await createVaultCreateDeps(repoDir);
       const renderer = createVaultCreateRenderer(cliCtx.outputMode);
       await consumeStream(
         vaultCreate(ctx, deps, {

@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
-  commandNeedsExtensions,
+  commandNeedsLoaderSetup,
   isLocalhostUrl,
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
@@ -550,61 +550,61 @@ Deno.test("isUpdateCheckDisabledByEnv returns false when env var is ''", () => {
   }
 });
 
-Deno.test("commandNeedsExtensions returns false for empty args (bare swamp)", () => {
-  assertEquals(commandNeedsExtensions([]), false);
+Deno.test("commandNeedsLoaderSetup returns false for empty args (bare swamp)", () => {
+  assertEquals(commandNeedsLoaderSetup([]), false);
 });
 
-Deno.test("commandNeedsExtensions returns false for help", () => {
-  assertEquals(commandNeedsExtensions(["help"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for help", () => {
+  assertEquals(commandNeedsLoaderSetup(["help"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns false for version", () => {
-  assertEquals(commandNeedsExtensions(["version"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for version", () => {
+  assertEquals(commandNeedsLoaderSetup(["version"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns false for completions subcommand", () => {
-  assertEquals(commandNeedsExtensions(["completions", "bash"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for completions subcommand", () => {
+  assertEquals(commandNeedsLoaderSetup(["completions", "bash"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns false for init", () => {
-  assertEquals(commandNeedsExtensions(["init"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for init", () => {
+  assertEquals(commandNeedsLoaderSetup(["init"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns false for update", () => {
-  assertEquals(commandNeedsExtensions(["update"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for update", () => {
+  assertEquals(commandNeedsLoaderSetup(["update"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns false for auth", () => {
-  assertEquals(commandNeedsExtensions(["auth"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for auth", () => {
+  assertEquals(commandNeedsLoaderSetup(["auth"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns false for telemetry", () => {
-  assertEquals(commandNeedsExtensions(["telemetry"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for telemetry", () => {
+  assertEquals(commandNeedsLoaderSetup(["telemetry"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns false for issue", () => {
-  assertEquals(commandNeedsExtensions(["issue"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for issue", () => {
+  assertEquals(commandNeedsLoaderSetup(["issue"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns true for model command", () => {
-  assertEquals(commandNeedsExtensions(["model", "create"]), true);
+Deno.test("commandNeedsLoaderSetup returns true for model command", () => {
+  assertEquals(commandNeedsLoaderSetup(["model", "create"]), true);
 });
 
-Deno.test("commandNeedsExtensions returns true for workflow command", () => {
-  assertEquals(commandNeedsExtensions(["workflow", "run"]), true);
+Deno.test("commandNeedsLoaderSetup returns true for workflow command", () => {
+  assertEquals(commandNeedsLoaderSetup(["workflow", "run"]), true);
 });
 
-Deno.test("commandNeedsExtensions returns true for data command", () => {
-  assertEquals(commandNeedsExtensions(["data", "list"]), true);
+Deno.test("commandNeedsLoaderSetup returns true for data command", () => {
+  assertEquals(commandNeedsLoaderSetup(["data", "list"]), true);
 });
 
-Deno.test("commandNeedsExtensions returns false for version with global flags", () => {
-  assertEquals(commandNeedsExtensions(["--json", "version"]), false);
+Deno.test("commandNeedsLoaderSetup returns false for version with global flags", () => {
+  assertEquals(commandNeedsLoaderSetup(["--json", "version"]), false);
 });
 
-Deno.test("commandNeedsExtensions returns true for model type search with global flags", () => {
+Deno.test("commandNeedsLoaderSetup returns true for model type search with global flags", () => {
   assertEquals(
-    commandNeedsExtensions(["--json", "model", "type", "search", "aws"]),
+    commandNeedsLoaderSetup(["--json", "model", "type", "search", "aws"]),
     true,
   );
 });

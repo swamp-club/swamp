@@ -68,7 +68,10 @@ export interface VaultCreateDeps {
 }
 
 /** Wires real infrastructure into VaultCreateDeps. */
-export function createVaultCreateDeps(repoDir: string): VaultCreateDeps {
+export async function createVaultCreateDeps(
+  repoDir: string,
+): Promise<VaultCreateDeps> {
+  await vaultTypeRegistry.ensureLoaded();
   const repo = new YamlVaultConfigRepository(repoDir);
   return {
     resolveExtensionVaultType: async (type) => {

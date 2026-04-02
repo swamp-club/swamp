@@ -51,7 +51,7 @@ export const datastoreStatusCommand = new Command()
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDatastoreStatusDeps(datastoreResolver);
+    const deps = await createDatastoreStatusDeps(datastoreResolver);
     const renderer = createDatastoreStatusRenderer(cliCtx.outputMode);
     await consumeStream(datastoreStatus(ctx, deps), renderer.handlers());
 

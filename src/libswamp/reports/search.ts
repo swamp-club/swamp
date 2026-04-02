@@ -18,9 +18,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Data } from "../../domain/data/data.ts";
-import type { Definition } from "../../domain/definitions/definition.ts";
+import {
+  createDefinitionId,
+  type Definition,
+} from "../../domain/definitions/definition.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import type { ReportDefinition } from "../../domain/reports/report.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound } from "../errors.ts";
 import type { ReportSearchEvent, StoredReportSummary } from "./report_views.ts";
@@ -59,6 +69,42 @@ export interface ReportSearchDeps {
     id: string,
   ) => Promise<{ id: string; name: string } | null>;
   getReport: (name: string) => ReportDefinition | undefined;
+}
+
+/** Wires real infrastructure into ReportSearchDeps. */
+export async function createReportSearchDeps(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): Promise<ReportSearchDeps> {
+  await reportRegistry.ensureLoaded();
+  const dsPath = (subdir: string): string | undefined =>
+    datastoreResolver?.resolvePath(subdir);
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    dsPath(SWAMP_SUBDIRS.data),
+  );
+  const workflowRepo = new YamlWorkflowRepository(repoDir);
+  return {
+    findAllGlobal: () => dataRepo.findAllGlobal(),
+    findAllForModel: (type, modelId) => dataRepo.findAllForModel(type, modelId),
+    lookupDefinition: (idOrName) =>
+      findDefinitionByIdOrName(definitionRepo, idOrName),
+    lookupDefinitionById: (type, id) =>
+      definitionRepo.findById(type, createDefinitionId(id)),
+    findWorkflowByName: async (name) => {
+      const wf = await workflowRepo.findByName(name);
+      if (!wf) return null;
+      return { id: wf.id, name: wf.name };
+    },
+    findWorkflowById: async (id) => {
+      const all = await workflowRepo.findAll();
+      const wf = all.find((w) => w.id === id);
+      if (!wf) return null;
+      return { id: wf.id, name: wf.name };
+    },
+    getReport: (name) => reportRegistry.get(name),
+  };
 }
 
 /**

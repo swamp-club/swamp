@@ -33,6 +33,10 @@ import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { parseInputs } from "../input_parser.ts";
 import { GIT_SHA } from "./version.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { parseTags } from "../../libswamp/mod.ts";
 import { workflowRunSearchCommand } from "./workflow_run_search.ts";
 import {
@@ -206,6 +210,14 @@ export const workflowRunCommand = new Command()
       }
 
       const runRepo = repoContext.workflowRunRepo;
+
+      // Load all extension registries needed for workflow execution in parallel
+      await Promise.all([
+        modelRegistry.ensureLoaded(),
+        vaultTypeRegistry.ensureLoaded(),
+        driverTypeRegistry.ensureLoaded(),
+        reportRegistry.ensureLoaded(),
+      ]);
 
       const deps: WorkflowRunDeps = {
         workflowRepo: repoContext.workflowRepo,

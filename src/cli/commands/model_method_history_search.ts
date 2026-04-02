@@ -82,7 +82,7 @@ export const modelMethodHistorySearchCommand = new Command()
     if (selected) {
       ctx.logger.debug`Selected output: ${selected.id}`;
       const getRenderer = createModelOutputGetRenderer(effectiveMode);
-      const getDeps = createModelOutputGetDeps(options.repoDir ?? ".");
+      const getDeps = await createModelOutputGetDeps(options.repoDir ?? ".");
       await consumeStream(
         modelOutputGet(libCtx, getDeps, selected.id),
         getRenderer.handlers(),

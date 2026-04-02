@@ -660,9 +660,43 @@ export interface ModelDefinition<
 
 /**
  * Registry of all known model definitions.
+ *
+ * Supports lazy loading of user extensions via {@link setLoader} and
+ * {@link ensureLoaded}. Built-in types registered via {@link defineModel}
+ * at import time are always available without calling ensureLoaded().
  */
 export class ModelRegistry {
   private models = new Map<string, ModelDefinition>();
+  private extensionLoader: (() => Promise<void>) | null = null;
+  private extensionLoadPromise: Promise<void> | null = null;
+  private extensionsLoaded = false;
+
+  /**
+   * Configures the lazy loader for user extensions.
+   * The loader will be invoked on the first call to {@link ensureLoaded}.
+   * Call this once during CLI startup — it does not trigger loading.
+   */
+  setLoader(loader: () => Promise<void>): void {
+    this.extensionLoader = loader;
+  }
+
+  /**
+   * Ensures user extensions have been loaded into the registry.
+   * On first call, invokes the loader set via {@link setLoader}.
+   * Subsequent calls (including concurrent ones) return the cached promise.
+   * No-op if no loader was configured (e.g. not in a swamp repo).
+   */
+  async ensureLoaded(): Promise<void> {
+    if (this.extensionsLoaded) return;
+    if (!this.extensionLoader) return;
+    if (!this.extensionLoadPromise) {
+      const loader = this.extensionLoader;
+      this.extensionLoadPromise = loader().then(() => {
+        this.extensionsLoaded = true;
+      });
+    }
+    await this.extensionLoadPromise;
+  }
 
   /**
    * Registers a model definition.
@@ -812,6 +846,10 @@ export class ModelRegistry {
 
   /**
    * Returns all registered model types.
+   *
+   * Note: If user extensions have not been loaded via {@link ensureLoaded},
+   * this returns only built-in types. Call ensureLoaded() before enumerating
+   * types if user extension types are needed.
    */
   types(): ModelType[] {
     return Array.from(this.models.values()).map((m) => m.type);

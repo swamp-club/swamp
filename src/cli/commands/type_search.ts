@@ -83,6 +83,7 @@ export const typeSearchCommand = new Command()
     const libCtx = createLibSwampContext();
     ctx.logger.debug`Searching types with query: ${query ?? "(none)"}`;
 
+    await modelRegistry.ensureLoaded();
     const deps: TypeSearchDeps = {
       getRegisteredTypes: () => modelRegistry.types(),
     };
