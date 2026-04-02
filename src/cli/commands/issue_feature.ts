@@ -116,6 +116,10 @@ export const issueFeatureCommand = new Command()
     "-b, --body <body:string>",
     "Feature description (requires --title, skips editor entirely)",
   )
+  .option(
+    "-r, --repo <repo:string>",
+    "Target GitHub repository (e.g., systeminit/swamp-extensions)",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "feature"]);
     ctx.logger.debug`Submitting feature request`;
@@ -189,6 +193,7 @@ export const issueFeatureCommand = new Command()
         body,
         labels: ["feature", "needs-triage"],
         type: "feature",
+        repo: options.repo,
       }),
       renderer.handlers(),
     );
