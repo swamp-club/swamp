@@ -489,3 +489,58 @@ proceeding.
 
 Extensions pulled before file tracking was added cannot be removed cleanly —
 the user is prompted to re-pull with `--force` to populate the file list first.
+
+## Lazy Per-Bundle Loading
+
+Extension bundles are loaded lazily — individual bundles are imported on demand
+rather than all at once. This keeps CLI response times constant regardless of
+how many extensions are installed.
+
+### Architecture
+
+**Extension Catalog**: A SQLite database at `.swamp/_extension_catalog.db`
+indexes all known bundle types. Each entry stores the type name, bundle path,
+source path, source mtime, version, and (for extensions) the base type it
+targets. The catalog lives at the `.swamp` root level because it is shared
+across all registry types (models, vaults, drivers, datastores, reports). It
+is completely independent of the data catalog (`_catalog.db`) used for data
+queries.
+
+The schema includes a `kind` column (`model`, `extension`, `vault`, `driver`,
+`datastore`, `report`) so a single catalog supports all registry types. Only
+the model registry is wired up initially.
+
+**Loading Flow**:
+
+1. On first `ensureLoaded()` call, the model registry's loader runs
+   `buildIndex()` which:
+   - Checks the catalog's `populated` flag
+   - If populated: scans source directories, compares mtimes against catalog
+     entries, rebundles only changed files, then registers lazy entries for all
+     types from the catalog (no bundle imports)
+   - If not populated (first run or DB deleted): falls back to the existing
+     full-import path, then populates the catalog from the loaded registry
+
+2. `types()` returns both fully loaded and lazy type names — commands like
+   `model type search` work without importing any bundles.
+
+3. When a specific type is needed (e.g. `model get`, `model create`),
+   `ensureTypeLoaded(type)` queries the catalog for the bundle path, imports
+   just that bundle, and also imports any extension bundles targeting the base
+   type.
+
+4. Concurrent callers requesting the same type share a single load promise
+   (per-type memoization).
+
+### Self-Healing
+
+The catalog self-heals: deleting `_extension_catalog.db` triggers a full import
+on next access (same behavior as before lazy loading was added). The
+`populated` flag follows the same pattern as the data catalog's backfill
+mechanism.
+
+### Roadmap
+
+Per-bundle lazy loading for vault, driver, datastore, and report registries
+will follow the same pattern using the shared `kind` column in the bundle
+catalog schema.

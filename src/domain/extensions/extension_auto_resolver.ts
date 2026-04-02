@@ -354,6 +354,8 @@ export async function resolveModelType(
   type: string | ModelType,
   resolver: ExtensionAutoResolver | null,
 ): Promise<ModelDefinition | undefined> {
+  // Try lazy loading first — the type may be indexed but not imported yet
+  await modelRegistry.ensureTypeLoaded(type);
   const def = modelRegistry.get(type);
   if (def) return def;
   if (!resolver) return undefined;

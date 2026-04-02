@@ -45,6 +45,10 @@ import {
   ResourceOutputSpecSchema,
   type VersionUpgrade,
 } from "./model.ts";
+import type {
+  ExtensionCatalogStore,
+  ExtensionTypeRow,
+} from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import {
   SWAMP_DATA_DIR,
@@ -419,6 +423,478 @@ export class UserModelLoader {
     }
 
     return result;
+  }
+
+  /**
+   * Builds the bundle type index: discovers files, checks mtimes against catalog,
+   * bundles only changed files, and populates the catalog with metadata.
+   * Registers lazy entries in the model registry for all known types.
+   *
+   * This is the "index-only" mode — no bundles are imported into the runtime.
+   * Types are registered as lazy entries that will be imported on demand.
+   *
+   * @param modelsDir - Primary directory containing model/extension files
+   * @param catalog - The bundle catalog store
+   * @param options - Additional directories to scan
+   */
+  async buildIndex(
+    modelsDir: string,
+    catalog: ExtensionCatalogStore,
+    options?: { additionalDirs?: string[] },
+  ): Promise<LoadResult> {
+    const result: LoadResult = { loaded: [], extended: [], failed: [] };
+
+    installZodGlobal();
+    const denoPath = await this.denoRuntime.ensureDeno();
+
+    // If catalog is already populated, register lazy entries from it
+    // and do a lightweight mtime check for staleness.
+    if (catalog.isPopulated("model")) {
+      const staleFiles = await this.findStaleFiles(
+        modelsDir,
+        catalog,
+        options?.additionalDirs,
+      );
+
+      if (staleFiles.length === 0) {
+        // All fresh — register lazy entries from catalog and return
+        this.registerLazyFromCatalog(catalog);
+        return result;
+      }
+
+      // Some files are stale — rebundle and reimport just those
+      for (const { absolutePath, relativePath, baseDir } of staleFiles) {
+        try {
+          await this.rebundleAndUpdateCatalog(
+            absolutePath,
+            relativePath,
+            denoPath,
+            baseDir,
+            catalog,
+          );
+          result.loaded.push(relativePath);
+        } catch (error) {
+          result.failed.push({ file: relativePath, error: String(error) });
+        }
+      }
+
+      // Register lazy entries from the now-updated catalog
+      this.registerLazyFromCatalog(catalog);
+      return result;
+    }
+
+    // Catalog not populated — full import to bootstrap
+    const fullResult = await this.loadModels(modelsDir, {
+      additionalDirs: options?.additionalDirs,
+    });
+
+    // Populate catalog from the now-loaded registry
+    this.populateCatalogFromRegistry(
+      catalog,
+      modelsDir,
+      options?.additionalDirs,
+    );
+    catalog.markPopulated("model");
+
+    return fullResult;
+  }
+
+  /**
+   * Loads a single model type by its normalized type name.
+   * Looks up the bundle path and any extensions from the catalog,
+   * imports only those bundles, and registers/extends the type.
+   *
+   * @param typeNormalized - The normalized type name to load
+   * @param catalog - The bundle catalog store
+   */
+  async loadSingleType(
+    typeNormalized: string,
+    catalog: ExtensionCatalogStore,
+  ): Promise<void> {
+    installZodGlobal();
+
+    // Load the base type bundle
+    const entry = catalog.findByType(typeNormalized, "model");
+    if (!entry) {
+      throw new Error(`No catalog entry for type: ${typeNormalized}`);
+    }
+
+    await this.importAndRegisterBundle(entry);
+
+    // Load all extensions targeting this type
+    const extensions = catalog.findExtensionsForType(typeNormalized);
+    for (const ext of extensions) {
+      await this.importAndExtendBundle(ext);
+    }
+  }
+
+  /**
+   * Imports a single bundle and registers it as a model type.
+   */
+  private async importAndRegisterBundle(
+    entry: ExtensionTypeRow,
+  ): Promise<void> {
+    if (modelRegistry.get(entry.type_normalized)) return; // Already loaded
+
+    // Import directly via file URL for the cached bundle
+    const module = await this.importBundleByPath(entry.bundle_path);
+
+    if (!module.model) {
+      throw new Error(`Bundle has no model export: ${entry.bundle_path}`);
+    }
+
+    const parsed = UserModelSchema.safeParse(module.model);
+    if (!parsed.success) {
+      throw new Error(formatUserModelError(parsed.error));
+    }
+
+    const modelDef = this.convertToModelDefinition(parsed.data);
+
+    // Set up self-contained bundle factory for out-of-process execution
+    const denoPath = await this.denoRuntime.ensureDeno();
+    let bundlePromise: Promise<string> | undefined;
+    modelDef.bundleSourceFactory = () => {
+      bundlePromise ??= bundleExtension(
+        entry.source_path,
+        denoPath,
+        { selfContained: true },
+      ).catch((error) => {
+        bundlePromise = undefined;
+        logger
+          .warn`Failed to create self-contained bundle for ${entry.source_path}: ${error}`;
+        throw error;
+      });
+      return bundlePromise;
+    };
+
+    modelRegistry.promoteFromLazy(modelDef);
+  }
+
+  /**
+   * Imports a single bundle and extends an existing model type.
+   */
+  private async importAndExtendBundle(entry: ExtensionTypeRow): Promise<void> {
+    const module = await this.importBundleByPath(entry.bundle_path);
+
+    if (!module.extension) {
+      throw new Error(`Bundle has no extension export: ${entry.bundle_path}`);
+    }
+
+    const result: LoadResult = { loaded: [], extended: [], failed: [] };
+    this.processExtension(entry.source_path, module.extension, result);
+  }
+
+  /**
+   * Imports a cached bundle directly by its file path.
+   * Fixes zod imports and CJS/ESM interop before importing.
+   */
+  private async importBundleByPath(
+    bundlePath: string,
+  ): Promise<Record<string, unknown>> {
+    // Fix zod imports and CJS/ESM interop in the cached file on disk
+    let js = await Deno.readTextFile(bundlePath);
+    const fixed = fixCjsEsmInterop(rewriteZodImports(js));
+    if (fixed !== js) {
+      js = fixed;
+      await Deno.writeTextFile(bundlePath, js);
+    }
+    return await import(toFileUrl(bundlePath).href);
+  }
+
+  /**
+   * Registers lazy entries for all model types in the catalog.
+   */
+  private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
+    const entries = catalog.findByKind("model");
+    for (const entry of entries) {
+      modelRegistry.registerLazy({
+        type: ModelType.create(entry.type_normalized),
+        bundlePath: entry.bundle_path,
+        sourcePath: entry.source_path,
+        version: entry.version,
+      });
+    }
+  }
+
+  /**
+   * Populates the catalog from the currently loaded registry.
+   * Used on first run to bootstrap the catalog from a full import.
+   */
+  private populateCatalogFromRegistry(
+    catalog: ExtensionCatalogStore,
+    modelsDir: string,
+    additionalDirs?: string[],
+  ): void {
+    // We can only populate entries that have bundle files on disk
+    if (!this.repoDir) return;
+
+    const bundleBaseDir = join(
+      this.repoDir,
+      SWAMP_DATA_DIR,
+      SWAMP_SUBDIRS.bundles,
+    );
+
+    // Scan all directories for .ts files and write catalog entries for
+    // those that have corresponding cached bundles
+    const dirs = [modelsDir, ...(additionalDirs ?? [])];
+    for (const dir of dirs) {
+      try {
+        this.populateCatalogFromDir(dir, bundleBaseDir, catalog);
+      } catch {
+        // Directory doesn't exist — skip
+      }
+    }
+  }
+
+  /**
+   * Synchronously populates catalog entries from a single directory.
+   */
+  private populateCatalogFromDir(
+    dir: string,
+    bundleBaseDir: string,
+    catalog: ExtensionCatalogStore,
+  ): void {
+    const files = this.discoverFilesSync(dir);
+    for (const relativePath of files) {
+      const absolutePath = resolve(dir, relativePath);
+      const bundlePath = join(
+        bundleBaseDir,
+        relativePath.replace(/\.ts$/, ".js"),
+      );
+
+      try {
+        const sourceStat = Deno.statSync(absolutePath);
+        Deno.statSync(bundlePath); // Ensure bundle exists
+
+        // Read source to determine if model or extension and extract type
+        const source = Deno.readTextFileSync(absolutePath);
+        const modelMatch = /export\s+const\s+model\s*[=:]/.test(source);
+        const extensionMatch = /export\s+const\s+extension\s*[=:]/.test(
+          source,
+        );
+
+        if (!modelMatch && !extensionMatch) continue;
+
+        // Extract type from source (best-effort regex)
+        const typeMatch = source.match(
+          /type\s*:\s*["']([^"']+)["']/,
+        );
+        if (!typeMatch) continue;
+
+        const typeNormalized = ModelType.create(typeMatch[1]).normalized;
+
+        // Extract version from source (best-effort regex)
+        const versionMatch = source.match(
+          /version\s*:\s*["']([^"']+)["']/,
+        );
+
+        catalog.upsert({
+          type_normalized: typeNormalized,
+          kind: extensionMatch ? "extension" : "model",
+          bundle_path: bundlePath,
+          source_path: absolutePath,
+          version: versionMatch?.[1] ?? "",
+          description: "",
+          extends_type: extensionMatch ? typeNormalized : "",
+          source_mtime: sourceStat.mtime?.toISOString() ?? "",
+        });
+      } catch {
+        // Skip files that can't be read or don't have bundles
+      }
+    }
+  }
+
+  /**
+   * Synchronous version of discoverFiles for catalog population.
+   */
+  private discoverFilesSync(dir: string, prefix = ""): string[] {
+    const files: string[] = [];
+    for (const entry of Deno.readDirSync(dir)) {
+      const relativePath = prefix ? join(prefix, entry.name) : entry.name;
+      if (entry.isDirectory) {
+        if (entry.name.startsWith("_")) continue;
+        files.push(
+          ...this.discoverFilesSync(join(dir, entry.name), relativePath),
+        );
+      } else if (
+        entry.isFile && entry.name.endsWith(".ts") &&
+        !entry.name.endsWith("_test.ts")
+      ) {
+        files.push(relativePath);
+      }
+    }
+    return files.sort();
+  }
+
+  /**
+   * Finds files that have changed since the catalog was last populated.
+   * Compares source file mtimes against catalog entries.
+   */
+  private async findStaleFiles(
+    modelsDir: string,
+    catalog: ExtensionCatalogStore,
+    additionalDirs?: string[],
+  ): Promise<
+    Array<{ absolutePath: string; relativePath: string; baseDir: string }>
+  > {
+    const stale: Array<{
+      absolutePath: string;
+      relativePath: string;
+      baseDir: string;
+    }> = [];
+
+    const allDirs = [modelsDir, ...(additionalDirs ?? [])];
+
+    // Build a set of all known source paths from the catalog
+    const catalogEntries = [
+      ...catalog.findByKind("model"),
+      ...catalog.findByKind("extension"),
+    ];
+    const catalogBySource = new Map<string, ExtensionTypeRow>();
+    for (const entry of catalogEntries) {
+      catalogBySource.set(entry.source_path, entry);
+    }
+
+    const seenSources = new Set<string>();
+
+    for (const dir of allDirs) {
+      try {
+        await Deno.stat(dir);
+      } catch {
+        continue;
+      }
+
+      const files = await this.discoverFiles(dir);
+      for (const relativePath of files) {
+        const absolutePath = resolve(dir, relativePath);
+        seenSources.add(absolutePath);
+
+        const catalogEntry = catalogBySource.get(absolutePath);
+        if (!catalogEntry) {
+          // New file not in catalog
+          stale.push({ absolutePath, relativePath, baseDir: dir });
+          continue;
+        }
+
+        // Check mtime
+        try {
+          const stat = await Deno.stat(absolutePath);
+          const sourceMtime = stat.mtime?.toISOString() ?? "";
+          if (sourceMtime !== catalogEntry.source_mtime) {
+            stale.push({ absolutePath, relativePath, baseDir: dir });
+          }
+        } catch {
+          stale.push({ absolutePath, relativePath, baseDir: dir });
+        }
+      }
+    }
+
+    // Check for deleted files — remove from catalog
+    for (const [sourcePath, entry] of catalogBySource) {
+      if (!seenSources.has(sourcePath)) {
+        catalog.remove(entry.type_normalized, entry.kind);
+      }
+    }
+
+    return stale;
+  }
+
+  /**
+   * Rebundles a single file and updates the catalog entry.
+   */
+  private async rebundleAndUpdateCatalog(
+    absolutePath: string,
+    relativePath: string,
+    denoPath: string,
+    baseDir: string,
+    catalog: ExtensionCatalogStore,
+  ): Promise<void> {
+    const source = await Deno.readTextFile(absolutePath);
+    if (!/export\s+const\s+(model|extension)\s*[=:]/.test(source)) {
+      return; // Not a model/extension file
+    }
+
+    const js = await this.bundleWithCache(
+      absolutePath,
+      relativePath,
+      denoPath,
+      baseDir,
+    );
+    const module = await this.importBundle(js, relativePath);
+
+    const stat = await Deno.stat(absolutePath);
+    const sourceMtime = stat.mtime?.toISOString() ?? "";
+
+    if (module.model) {
+      const parsed = UserModelSchema.safeParse(module.model);
+      if (!parsed.success) {
+        throw new Error(formatUserModelError(parsed.error));
+      }
+      const typeNormalized = ModelType.create(parsed.data.type).normalized;
+      const bundlePath = this.getBundlePath(relativePath);
+
+      catalog.upsert({
+        type_normalized: typeNormalized,
+        kind: "model",
+        bundle_path: bundlePath,
+        source_path: absolutePath,
+        version: parsed.data.version,
+        description: "",
+        extends_type: "",
+        source_mtime: sourceMtime,
+      });
+
+      // Also register the full definition since we already imported it
+      const modelDef = this.convertToModelDefinition(parsed.data);
+      const denoPathForBundle = denoPath;
+      let bundlePromise: Promise<string> | undefined;
+      modelDef.bundleSourceFactory = () => {
+        bundlePromise ??= bundleExtension(
+          absolutePath,
+          denoPathForBundle,
+          { selfContained: true },
+        ).catch((error) => {
+          bundlePromise = undefined;
+          throw error;
+        });
+        return bundlePromise;
+      };
+
+      if (!modelRegistry.has(modelDef.type)) {
+        modelRegistry.register(modelDef);
+      }
+    } else if (module.extension) {
+      const parsed = UserExtensionSchema.safeParse(module.extension);
+      if (!parsed.success) {
+        throw new Error(parsed.error.message);
+      }
+      const typeNormalized = ModelType.create(parsed.data.type).normalized;
+      const bundlePath = this.getBundlePath(relativePath);
+
+      catalog.upsert({
+        type_normalized: typeNormalized,
+        kind: "extension",
+        bundle_path: bundlePath,
+        source_path: absolutePath,
+        version: "",
+        description: "",
+        extends_type: typeNormalized,
+        source_mtime: sourceMtime,
+      });
+    }
+  }
+
+  /**
+   * Returns the bundle cache path for a relative source path.
+   */
+  private getBundlePath(relativePath: string): string {
+    if (!this.repoDir) return "";
+    return join(
+      this.repoDir,
+      SWAMP_DATA_DIR,
+      SWAMP_SUBDIRS.bundles,
+      relativePath.replace(/\.ts$/, ".js"),
+    );
   }
 
   /**

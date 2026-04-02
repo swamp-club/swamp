@@ -58,7 +58,9 @@ export interface ModelGetDeps {
   lookupDefinition: (
     idOrName: string,
   ) => Promise<{ definition: Definition; type: ModelType } | null>;
-  getModelDef: (type: ModelType) => ModelDefinition | undefined;
+  getModelDef: (
+    type: ModelType,
+  ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
 }
 
 /** Wires real infrastructure into ModelGetDeps. */
@@ -70,7 +72,10 @@ export async function createModelGetDeps(
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
-    getModelDef: (type) => modelRegistry.get(type),
+    getModelDef: async (type) => {
+      await modelRegistry.ensureTypeLoaded(type);
+      return modelRegistry.get(type);
+    },
   };
 }
 
@@ -93,7 +98,7 @@ export async function* modelGet(
       }
 
       const { definition, type: modelType } = result;
-      const modelDef = deps.getModelDef(modelType);
+      const modelDef = await deps.getModelDef(modelType);
 
       const data: ModelGetData = {
         id: definition.id,

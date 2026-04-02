@@ -25,6 +25,7 @@ import {
   defineModel,
   inferMethodKind,
   isMutatingKind,
+  type LazyModelEntry,
   type MethodContext,
   type ModelDefinition,
   ModelRegistry,
@@ -802,4 +803,145 @@ Deno.test("ModelRegistry.extend merges checks from extension with existing check
   const extended = registry.get("swamp/merge-checks");
   assertEquals("check-a" in extended!.checks!, true);
   assertEquals("check-b" in extended!.checks!, true);
+});
+
+// --- Lazy entry tests ---
+
+function createLazyEntry(typeString: string): LazyModelEntry {
+  return {
+    type: ModelType.create(typeString),
+    bundlePath: `/repo/.swamp/bundles/${typeString}.js`,
+    sourcePath: `/repo/extensions/models/${typeString}.ts`,
+    version: "2026.01.15.1",
+  };
+}
+
+Deno.test("ModelRegistry.registerLazy: adds lazy type to registry", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+
+  assertEquals(registry.has("@myorg/echo"), true);
+  assertEquals(registry.isLazy("@myorg/echo"), true);
+  assertEquals(registry.get("@myorg/echo"), undefined);
+});
+
+Deno.test("ModelRegistry.registerLazy: does not overwrite fully loaded type", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("@myorg/loaded"));
+  registry.registerLazy(createLazyEntry("@myorg/loaded"));
+
+  assertEquals(registry.isLazy("@myorg/loaded"), false);
+  assertEquals(registry.get("@myorg/loaded")?.version, "2026.02.09.1");
+});
+
+Deno.test("ModelRegistry.registerLazy: does not overwrite existing lazy entry", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+  registry.registerLazy({
+    ...createLazyEntry("@myorg/echo"),
+    version: "9999.01.01.1",
+  });
+
+  assertEquals(registry.isLazy("@myorg/echo"), true);
+});
+
+Deno.test("ModelRegistry.types: includes both loaded and lazy types", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("@myorg/loaded"));
+  registry.registerLazy(createLazyEntry("@myorg/lazy"));
+
+  const types = registry.types().map((t) => t.normalized).sort();
+  assertEquals(types, ["@myorg/lazy", "@myorg/loaded"]);
+});
+
+Deno.test("ModelRegistry.types: does not duplicate promoted lazy types", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+  registry.promoteFromLazy(createTestModel("@myorg/echo"));
+
+  const types = registry.types().map((t) => t.normalized);
+  assertEquals(types, ["@myorg/echo"]);
+  assertEquals(registry.isLazy("@myorg/echo"), false);
+  assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
+});
+
+Deno.test("ModelRegistry.has: returns true for lazy types", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+
+  assertEquals(registry.has("@myorg/echo"), true);
+  assertEquals(registry.has("@myorg/nonexistent"), false);
+});
+
+Deno.test("ModelRegistry.get: returns undefined for lazy types", () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+
+  assertEquals(registry.get("@myorg/echo"), undefined);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: calls type loader for lazy types", async () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+
+  let loadedType: string | null = null;
+  registry.setTypeLoader((type) => {
+    loadedType = type;
+    registry.promoteFromLazy(createTestModel(type));
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/echo");
+
+  assertEquals(loadedType, "@myorg/echo");
+  assertEquals(registry.isLazy("@myorg/echo"), false);
+  assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: no-op for already loaded types", async () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("@myorg/loaded"));
+
+  let called = false;
+  registry.setTypeLoader(() => {
+    called = true;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/loaded");
+  assertEquals(called, false);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: no-op for unknown types", async () => {
+  const registry = new ModelRegistry();
+
+  let called = false;
+  registry.setTypeLoader(() => {
+    called = true;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/nonexistent");
+  assertEquals(called, false);
+});
+
+Deno.test("ModelRegistry.ensureTypeLoaded: concurrent callers share same promise", async () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+
+  let callCount = 0;
+  registry.setTypeLoader(async (type) => {
+    callCount++;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    registry.promoteFromLazy(createTestModel(type));
+  });
+
+  await Promise.all([
+    registry.ensureTypeLoaded("@myorg/echo"),
+    registry.ensureTypeLoaded("@myorg/echo"),
+    registry.ensureTypeLoaded("@myorg/echo"),
+  ]);
+
+  assertEquals(callCount, 1);
+  assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
 });

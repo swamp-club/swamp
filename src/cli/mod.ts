@@ -58,6 +58,7 @@ import {
   WorkflowNameType,
 } from "./completion_types.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
+import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
@@ -217,6 +218,7 @@ export interface DeferredWarning {
 
 /**
  * Load user models from configured directory.
+ * Uses the bundle catalog for lazy per-bundle loading when available.
  */
 async function loadUserModels(
   repoDir: string,
@@ -232,13 +234,28 @@ async function loadUserModels(
 
     const loader = new UserModelLoader(denoRuntime, repoDir);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
-    const result = await loader.loadModels(absoluteModelsDir, {
-      additionalDirs: [pulledDir],
-      skipAlreadyRegistered: true,
+
+    // Use bundle catalog for lazy per-bundle loading.
+    // The catalog stays open for the process lifetime so the type loader
+    // can query it when ensureTypeLoaded() is called later.
+    // DB at .swamp/_extension_catalog.db (root level) — shared across all
+    // registry types (models, vaults, drivers, datastores, reports).
+    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
+    const catalog = new ExtensionCatalogStore(catalogDbPath);
+
+    // Set type loader on the registry for on-demand loading
+    modelRegistry.setTypeLoader(async (type) => {
+      await loader.loadSingleType(type, catalog);
     });
 
-    // Log warnings directly — logging is initialized by the time
-    // ensureLoaded() runs (inside command .action() handlers).
+    // Build the index: reads catalog + mtime scan for freshness.
+    // If catalog is populated, only rebundles changed files.
+    // If not populated (first run), does a full import to bootstrap.
+    // Always scans for staleness so users never see stale data.
+    const result = await loader.buildIndex(absoluteModelsDir, catalog, {
+      additionalDirs: [pulledDir],
+    });
+
     for (const failure of result.failed) {
       logger.warn`Failed to load user model ${failure.file}: ${failure.error}`;
     }

@@ -659,17 +659,40 @@ export interface ModelDefinition<
 }
 
 /**
+ * Metadata for a lazily-indexed model type. The type is known to exist
+ * (from the bundle catalog) but its bundle has not been imported yet.
+ * Holds just enough information for {@link ModelRegistry.types} and
+ * {@link ModelRegistry.has} to work without importing bundles.
+ */
+export interface LazyModelEntry {
+  type: ModelType;
+  bundlePath: string;
+  sourcePath: string;
+  version: string;
+}
+
+/**
  * Registry of all known model definitions.
  *
  * Supports lazy loading of user extensions via {@link setLoader} and
  * {@link ensureLoaded}. Built-in types registered via {@link defineModel}
  * at import time are always available without calling ensureLoaded().
+ *
+ * With per-bundle lazy loading, the registry also tracks "lazy entries" —
+ * types that are known to exist (from the bundle catalog) but whose bundles
+ * have not been imported yet. {@link types} returns both loaded and lazy
+ * entries. {@link get} only returns fully loaded definitions.
  */
 export class ModelRegistry {
   private models = new Map<string, ModelDefinition>();
+  private lazyTypes = new Map<string, LazyModelEntry>();
   private extensionLoader: (() => Promise<void>) | null = null;
   private extensionLoadPromise: Promise<void> | null = null;
   private extensionsLoaded = false;
+  private typeLoadPromises = new Map<string, Promise<void>>();
+  private typeLoader:
+    | ((type: string) => Promise<void>)
+    | null = null;
 
   /**
    * Configures the lazy loader for user extensions.
@@ -678,6 +701,33 @@ export class ModelRegistry {
    */
   setLoader(loader: () => Promise<void>): void {
     this.extensionLoader = loader;
+  }
+
+  /**
+   * Configures the per-type loader for on-demand bundle imports.
+   * Called by {@link ensureTypeLoaded} to import a single bundle.
+   */
+  setTypeLoader(loader: (type: string) => Promise<void>): void {
+    this.typeLoader = loader;
+  }
+
+  /**
+   * Registers a lazy model entry — a type known to exist from the bundle
+   * catalog but not yet imported. Does nothing if the type is already
+   * registered (either fully loaded or lazy).
+   */
+  registerLazy(entry: LazyModelEntry): void {
+    const key = entry.type.normalized;
+    if (this.models.has(key) || this.lazyTypes.has(key)) return;
+    this.lazyTypes.set(key, entry);
+  }
+
+  /**
+   * Returns true if a type is registered as lazy (not yet imported).
+   */
+  isLazy(type: string | ModelType): boolean {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    return this.lazyTypes.has(modelType.normalized);
   }
 
   /**
@@ -696,6 +746,53 @@ export class ModelRegistry {
       });
     }
     await this.extensionLoadPromise;
+  }
+
+  /**
+   * Ensures a specific model type's bundle has been imported.
+   * If the type is lazy, invokes the type loader to import just that bundle
+   * (and any extensions targeting it). Concurrent callers for the same type
+   * share the same promise. No-op if the type is already fully loaded.
+   */
+  async ensureTypeLoaded(type: string | ModelType): Promise<void> {
+    const modelType = typeof type === "string" ? ModelType.create(type) : type;
+    const key = modelType.normalized;
+
+    // Already fully loaded
+    if (this.models.has(key)) return;
+
+    // Not known at all — nothing to load
+    if (!this.lazyTypes.has(key)) return;
+
+    // No type loader configured — fall back to full load
+    if (!this.typeLoader) {
+      await this.ensureLoaded();
+      return;
+    }
+
+    // Deduplicate concurrent loads for the same type
+    let promise = this.typeLoadPromises.get(key);
+    if (!promise) {
+      const loader = this.typeLoader;
+      promise = loader(key).then(() => {
+        this.lazyTypes.delete(key);
+      });
+      this.typeLoadPromises.set(key, promise);
+    }
+    await promise;
+  }
+
+  /**
+   * Promotes a lazy entry to a fully loaded definition.
+   * Called by the type loader after importing a bundle.
+   * The lazy entry is removed and the full definition is registered.
+   */
+  promoteFromLazy(model: ModelDefinition): void {
+    const key = model.type.normalized;
+    this.lazyTypes.delete(key);
+    if (!this.models.has(key)) {
+      this.register(model);
+    }
   }
 
   /**
@@ -834,25 +931,29 @@ export class ModelRegistry {
   }
 
   /**
-   * Checks if a model type is registered.
+   * Checks if a model type is registered (either fully loaded or lazy).
    *
    * @param type - The model type (raw or normalized)
    * @returns true if registered, false otherwise
    */
   has(type: string | ModelType): boolean {
     const modelType = typeof type === "string" ? ModelType.create(type) : type;
-    return this.models.has(modelType.normalized);
+    const key = modelType.normalized;
+    return this.models.has(key) || this.lazyTypes.has(key);
   }
 
   /**
-   * Returns all registered model types.
+   * Returns all registered model types (both fully loaded and lazy).
    *
-   * Note: If user extensions have not been loaded via {@link ensureLoaded},
-   * this returns only built-in types. Call ensureLoaded() before enumerating
-   * types if user extension types are needed.
+   * Note: If user extensions have not been loaded or indexed via
+   * {@link ensureLoaded}, this returns only built-in types.
    */
   types(): ModelType[] {
-    return Array.from(this.models.values()).map((m) => m.type);
+    const loaded = Array.from(this.models.values()).map((m) => m.type);
+    const lazy = Array.from(this.lazyTypes.values())
+      .filter((entry) => !this.models.has(entry.type.normalized))
+      .map((entry) => entry.type);
+    return [...loaded, ...lazy];
   }
 }
 
