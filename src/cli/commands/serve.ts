@@ -21,10 +21,9 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { handleConnection } from "../../serve/connection.ts";
+import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import {
-  ScheduledExecutionService,
-} from "../../libswamp/workflows/scheduled_execution.ts";
+import { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -90,9 +89,16 @@ export const serveCommand = new Command()
     if (enableSchedule) {
       scheduledExecution = new ScheduledExecutionService({
         workflowRepo: repoContext.workflowRepo,
-        repoContext,
-        datastoreConfig,
         repoDir: resolvedRepoDir,
+        executeWorkflow: (input, signal, onEvent) =>
+          executeWorkflowWithLocks(
+            resolvedRepoDir,
+            repoContext,
+            datastoreConfig,
+            input,
+            signal,
+            onEvent,
+          ),
       });
 
       await scheduledExecution.start((event) => {

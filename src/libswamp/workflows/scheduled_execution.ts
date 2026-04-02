@@ -34,9 +34,7 @@ import {
 } from "../../domain/workflows/workflow_scheduler.ts";
 import { workflowsDir, WorkflowWatcher } from "./watcher.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
-import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import { executeWorkflowWithLocks } from "../../serve/deps.ts";
+import type { WorkflowRunEvent, WorkflowRunInput } from "./run.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["scheduled-execution"]);
@@ -91,11 +89,20 @@ export type ScheduledExecutionEventHandler = (
 /**
  * Dependencies required by the ScheduledExecutionService.
  */
+/**
+ * Callback that executes a workflow run. Injected by the serve layer
+ * so libswamp doesn't depend on serve infrastructure.
+ */
+export type WorkflowExecutor = (
+  input: WorkflowRunInput,
+  signal: AbortSignal,
+  onEvent: (event: WorkflowRunEvent) => void,
+) => Promise<void>;
+
 export interface ScheduledExecutionDeps {
   workflowRepo: WorkflowRepository;
-  repoContext: RepositoryContext;
-  datastoreConfig: DatastoreConfig;
   repoDir: string;
+  executeWorkflow: WorkflowExecutor;
 }
 
 export class ScheduledExecutionService {
@@ -280,10 +287,7 @@ export class ScheduledExecutionService {
     try {
       let runId = "";
 
-      await executeWorkflowWithLocks(
-        this.deps.repoDir,
-        this.deps.repoContext,
-        this.deps.datastoreConfig,
+      await this.deps.executeWorkflow(
         { workflowIdOrName: workflowName },
         controller.signal,
         (event) => {

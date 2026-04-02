@@ -277,8 +277,22 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    // Read body with size limit — streams to avoid unbounded allocation
+    // Reject missing signature before reading the body to avoid
+    // unauthenticated resource consumption
     const signatureHeader = req.headers.get("x-hub-signature-256") ?? "";
+    if (!signatureHeader) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        reason: "Missing X-Hub-Signature-256 header",
+      });
+      return Response.json(
+        { error: "Missing X-Hub-Signature-256 header" },
+        { status: 401 },
+      );
+    }
+
+    // Read body with size limit — streams to avoid unbounded allocation
     const body = await readBodyWithLimit(req, MAX_WEBHOOK_BODY_BYTES);
     if (body === null) {
       this.emit({
@@ -289,18 +303,6 @@ export class WebhookService {
       return Response.json(
         { error: "Request body too large" },
         { status: 413 },
-      );
-    }
-
-    if (!signatureHeader) {
-      this.emit({
-        kind: "webhook_rejected",
-        route: endpoint.route,
-        reason: "Missing X-Hub-Signature-256 header",
-      });
-      return Response.json(
-        { error: "Missing X-Hub-Signature-256 header" },
-        { status: 401 },
       );
     }
 
