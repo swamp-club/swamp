@@ -273,7 +273,10 @@ export const serveCommand = new Command()
     );
 
     // Handle SIGINT/SIGTERM for graceful shutdown
+    let shuttingDown = false;
     const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       if (isJson) {
         console.log(JSON.stringify({ status: "stopping" }));
       }
@@ -289,8 +292,20 @@ export const serveCommand = new Command()
         console.log(JSON.stringify({ status: "stopped" }));
       }
     };
-    Deno.addSignalListener("SIGINT", () => shutdown());
-    Deno.addSignalListener("SIGTERM", () => shutdown());
+    Deno.addSignalListener("SIGINT", () => {
+      shutdown().catch((e) =>
+        logger.error("Shutdown error: {error}", {
+          error: e instanceof Error ? e.message : String(e),
+        })
+      );
+    });
+    Deno.addSignalListener("SIGTERM", () => {
+      shutdown().catch((e) =>
+        logger.error("Shutdown error: {error}", {
+          error: e instanceof Error ? e.message : String(e),
+        })
+      );
+    });
 
     await server.finished;
 

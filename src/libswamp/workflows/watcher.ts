@@ -44,6 +44,7 @@ export type ScheduleChangeCallback = (
 
 export class WorkflowWatcher {
   private watcher: Deno.FsWatcher | null = null;
+  private watchLoopPromise: Promise<void> = Promise.resolve();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
@@ -67,13 +68,17 @@ export class WorkflowWatcher {
     }
 
     this.watcher = Deno.watchFs(this.workflowsDir);
-    this.watchLoop();
+    this.watchLoopPromise = this.watchLoop().catch((error) => {
+      logger.error("Watch loop failed: {error}", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   /**
    * Stops watching and clears all pending debounce timers.
    */
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
@@ -82,6 +87,7 @@ export class WorkflowWatcher {
       clearTimeout(timer);
     }
     this.debounceTimers.clear();
+    await this.watchLoopPromise;
   }
 
   private async watchLoop(): Promise<void> {
@@ -112,7 +118,12 @@ export class WorkflowWatcher {
       path,
       setTimeout(() => {
         this.debounceTimers.delete(path);
-        this.handleChange(path, kind);
+        this.handleChange(path, kind).catch((error) => {
+          logger.warn("Failed to handle workflow change at {path}: {error}", {
+            path,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }, DEBOUNCE_MS),
     );
   }

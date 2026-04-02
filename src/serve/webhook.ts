@@ -178,12 +178,24 @@ export interface WebhookServiceDeps {
  * and serialized workflow execution. Queues runs to avoid lock contention,
  * matching the pattern used by ScheduledExecutionService.
  */
+const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_QUEUE_DEPTH = 100;
+
+/**
+ * Webhook endpoint info exposed to callers, without the secret.
+ */
+export interface WebhookEndpointInfo {
+  readonly route: string;
+  readonly workflowIdOrName: string;
+}
+
 export class WebhookService {
   private readonly runQueue: Array<{
     workflowIdOrName: string;
     route: string;
   }> = [];
   private processing = false;
+  private processingPromise: Promise<void> = Promise.resolve();
   private eventHandler: WebhookEventHandler | null = null;
   private readonly running = new Map<string, AbortController>();
 
@@ -196,8 +208,11 @@ export class WebhookService {
   /**
    * Returns the configured webhook endpoints (without secrets).
    */
-  listEndpoints(): ReadonlyArray<WebhookEndpoint> {
-    return this.deps.endpoints;
+  listEndpoints(): ReadonlyArray<WebhookEndpointInfo> {
+    return this.deps.endpoints.map((e) => ({
+      route: e.route,
+      workflowIdOrName: e.workflowIdOrName,
+    }));
   }
 
   /**
@@ -221,9 +236,38 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
+    // Reject oversized bodies before reading
+    const contentLength = parseInt(
+      req.headers.get("content-length") ?? "0",
+      10,
+    );
+    if (contentLength > MAX_WEBHOOK_BODY_BYTES) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        reason: "Request body too large",
+      });
+      return Response.json(
+        { error: "Request body too large" },
+        { status: 413 },
+      );
+    }
+
     // Verify HMAC signature
     const signatureHeader = req.headers.get("x-hub-signature-256") ?? "";
     const body = new Uint8Array(await req.arrayBuffer());
+
+    if (body.byteLength > MAX_WEBHOOK_BODY_BYTES) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        reason: "Request body too large",
+      });
+      return Response.json(
+        { error: "Request body too large" },
+        { status: 413 },
+      );
+    }
 
     if (!signatureHeader) {
       this.emit({
@@ -250,7 +294,19 @@ export class WebhookService {
       );
     }
 
-    // Queue the workflow run
+    // Queue the workflow run (with backpressure)
+    if (this.runQueue.length >= MAX_QUEUE_DEPTH) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        reason: "Queue full",
+      });
+      return Response.json(
+        { error: "Too many queued runs, try again later" },
+        { status: 503 },
+      );
+    }
+
     this.runQueue.push({
       workflowIdOrName: endpoint.workflowIdOrName,
       route: endpoint.route,
@@ -267,8 +323,8 @@ export class WebhookService {
       { route: endpoint.route, workflow: endpoint.workflowIdOrName },
     );
 
-    // Start processing the queue (serialized, awaited — not fire-and-forget)
-    this.processQueue();
+    // Start processing the queue — store promise so stop() can drain it
+    this.processingPromise = this.processQueue();
 
     return Response.json({
       status: "queued",
@@ -277,19 +333,14 @@ export class WebhookService {
   }
 
   /**
-   * Gracefully stop: abort in-flight runs and wait for completion.
+   * Gracefully stop: abort in-flight runs and drain the processing promise.
    */
   async stop(): Promise<void> {
+    this.runQueue.length = 0;
     for (const controller of this.running.values()) {
       controller.abort();
     }
-    this.runQueue.length = 0;
-
-    const waitStart = Date.now();
-    while (this.running.size > 0 && Date.now() - waitStart < 10_000) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    this.running.clear();
+    await this.processingPromise;
   }
 
   private async processQueue(): Promise<void> {

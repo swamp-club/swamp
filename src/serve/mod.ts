@@ -36,6 +36,7 @@ export {
   parseWebhookFlag,
   verifySignature,
   type WebhookEndpoint,
+  type WebhookEndpointInfo,
   type WebhookEvent,
   type WebhookEventHandler,
   WebhookService,

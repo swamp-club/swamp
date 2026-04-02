@@ -108,6 +108,7 @@ export class ScheduledExecutionService {
     workflowName: string;
   }> = [];
   private processing = false;
+  private processingPromise: Promise<void> = Promise.resolve();
   private eventHandler: ScheduledExecutionEventHandler | null = null;
 
   constructor(private readonly deps: ScheduledExecutionDeps) {
@@ -149,7 +150,11 @@ export class ScheduledExecutionService {
    * Stops the service: aborts in-flight runs, stops watcher and scheduler.
    */
   async stop(): Promise<void> {
-    this.watcher.stop();
+    await this.watcher.stop();
+    this.scheduler.stop();
+
+    // Clear the queue so no new runs start after current one finishes
+    this.runQueue.length = 0;
 
     // Abort all in-flight runs
     for (const [workflowId, controller] of this.running) {
@@ -160,14 +165,9 @@ export class ScheduledExecutionService {
       controller.abort();
     }
 
-    // Wait for all in-flight runs to complete
-    // They should exit quickly after abort signal
-    const waitStart = Date.now();
-    while (this.running.size > 0 && Date.now() - waitStart < 10_000) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    // Drain the processing promise — runs exit quickly after abort
+    await this.processingPromise;
 
-    this.scheduler.stop();
     this.running.clear();
     this.workflowNames.clear();
     this.eventHandler = null;
@@ -251,7 +251,7 @@ export class ScheduledExecutionService {
     // contention. Before scheduling, each workflow ran as a separate
     // process via systemd timers; serializing preserves that behavior.
     this.runQueue.push({ workflowId, workflowName });
-    this.processQueue();
+    this.processingPromise = this.processQueue();
   }
 
   private async processQueue(): Promise<void> {
