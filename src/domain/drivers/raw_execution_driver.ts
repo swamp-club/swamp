@@ -135,8 +135,18 @@ export class RawExecutionDriver implements ExecutionDriver {
       this.context.vaultService,
       this.context.redactor,
     );
+    const workflowRunId = this.context.tagOverrides?.["workflowRunId"];
     const readModelData = (modelName: string, specName?: string) =>
-      dataAccessService.readModelData(modelName, specName);
+      dataAccessService.readModelData(modelName, specName, workflowRunId);
+
+    // Scope queryData to workflow run when executing inside a workflow
+    const queryData = this.context.queryData && workflowRunId
+      ? (predicate: string, select?: string) => {
+        const scopedPredicate =
+          `(${predicate}) && tags.workflowRunId == "${workflowRunId}"`;
+        return this.context.queryData!(scopedPredicate, select);
+      }
+      : this.context.queryData;
 
     this.contextWithWriters = {
       ...this.context,
@@ -144,6 +154,7 @@ export class RawExecutionDriver implements ExecutionDriver {
       writeResource,
       readResource,
       readModelData,
+      queryData,
       createFileWriter,
     };
 

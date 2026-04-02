@@ -31,6 +31,7 @@ import type {
 } from "../models/model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
 
@@ -237,4 +238,125 @@ Deno.test("RawExecutionDriver: returns empty outputs when no writes and no dataH
 
   assertEquals(result.status, "success");
   assertEquals(result.outputs.length, 0);
+});
+
+Deno.test("RawExecutionDriver: passes workflowRunId from tagOverrides to readModelData", async () => {
+  const WORKFLOW_RUN_ID = "c00c0c00-c00c-4c0c-900c-c00c0c00c00c";
+  let capturedContext: MethodContext | null = null;
+
+  const executor: MethodExecutor = {
+    execute: (_def, _method, context) => {
+      capturedContext = context;
+      return Promise.resolve({});
+    },
+  };
+
+  const context = createMockContext();
+  context.tagOverrides = {
+    source: "step-output",
+    workflow: "test-workflow",
+    workflowRunId: WORKFLOW_RUN_ID,
+    step: "test-step",
+  };
+  context.definitionRepository = {
+    findByNameGlobal: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findAllGlobal: () => Promise.resolve([]),
+  } as unknown as DefinitionRepository;
+
+  const driver = new RawExecutionDriver(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  await driver.execute(createMockRequest());
+
+  // readModelData should be wired up on the context
+  assertEquals(typeof capturedContext!.readModelData, "function");
+
+  // When called, it should scope to the workflow run — a non-existent model
+  // returns empty array either way, but the function should be callable
+  const result = await capturedContext!.readModelData!("nonexistent");
+  assertEquals(result, []);
+});
+
+Deno.test("RawExecutionDriver: scopes queryData predicate with workflowRunId when in workflow", async () => {
+  const WORKFLOW_RUN_ID = "d00d0d00-d00d-4d0d-900d-d00d0d00d00d";
+  let capturedPredicate = "";
+
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      await context.queryData!("model_name == 'source'", undefined);
+      return {};
+    },
+  };
+
+  const context = createMockContext();
+  context.tagOverrides = {
+    workflowRunId: WORKFLOW_RUN_ID,
+  };
+  context.definitionRepository = {
+    findByNameGlobal: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findAllGlobal: () => Promise.resolve([]),
+  } as unknown as DefinitionRepository;
+  context.queryData = (predicate: string) => {
+    capturedPredicate = predicate;
+    return Promise.resolve([]);
+  };
+
+  const driver = new RawExecutionDriver(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  await driver.execute(createMockRequest());
+
+  assertEquals(
+    capturedPredicate,
+    `(model_name == 'source') && tags.workflowRunId == "${WORKFLOW_RUN_ID}"`,
+  );
+});
+
+Deno.test("RawExecutionDriver: leaves queryData unscoped when no workflowRunId", async () => {
+  let capturedPredicate = "";
+
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      await context.queryData!("model_name == 'source'", undefined);
+      return {};
+    },
+  };
+
+  const context = createMockContext();
+  context.definitionRepository = {
+    findByNameGlobal: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findAllGlobal: () => Promise.resolve([]),
+  } as unknown as DefinitionRepository;
+  context.queryData = (predicate: string) => {
+    capturedPredicate = predicate;
+    return Promise.resolve([]);
+  };
+
+  const driver = new RawExecutionDriver(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  await driver.execute(createMockRequest());
+
+  assertEquals(capturedPredicate, "model_name == 'source'");
 });

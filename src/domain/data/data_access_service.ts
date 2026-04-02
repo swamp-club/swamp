@@ -96,11 +96,15 @@ export class DataAccessService {
    *
    * @param modelName - The name of the model to read data from
    * @param specName - Optional spec name filter (matches the "specName" tag)
+   * @param workflowRunId - Optional workflow run ID to scope results. When
+   *   provided, only data whose ownerDefinition.workflowRunId matches is
+   *   returned. When absent, all data is returned (global read).
    * @returns Array of DataRecord items. Empty array if model not found or has no data.
    */
   async readModelData(
     modelName: string,
     specName?: string,
+    workflowRunId?: string,
   ): Promise<DataRecord[]> {
     const resolved = await this.resolveModel(modelName);
     if (!resolved) {
@@ -142,10 +146,17 @@ export class DataAccessService {
       (d) => !d.data.isRenamed && !d.data.isDeleted,
     );
 
+    // Scope to current workflow run when executing inside a workflow
+    const scoped = workflowRunId
+      ? active.filter(
+        (d) => d.data.ownerDefinition.workflowRunId === workflowRunId,
+      )
+      : active;
+
     // Convert to DataRecords with parsed content, using the correct modelId
     // for each item (orphan data lives under the old UUID on disk)
     const records: DataRecord[] = [];
-    for (const located of active) {
+    for (const located of scoped) {
       const record = await this.dataToRecord(
         located.data,
         located.modelType,
