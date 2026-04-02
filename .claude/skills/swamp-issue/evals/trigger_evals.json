@@ -50,7 +50,7 @@
     "should_trigger": false,
     "note": "Listing data → swamp-data"
   },
-{
+  {
     "query": "Help me plan the architecture for a new feature",
     "should_trigger": false,
     "note": "Architecture planning → ddd skill"
