@@ -568,10 +568,10 @@ Deno.test("Workflow.fromData and toData roundtrip with reports", () => {
 
 // Schedule field tests
 
-Deno.test("Workflow.create creates workflow with schedule", () => {
+Deno.test("Workflow.create creates workflow with trigger.schedule", () => {
   const workflow = Workflow.create({
     name: "scheduled-workflow",
-    schedule: "0 3,12 * * *",
+    trigger: { schedule: "0 3,12 * * *" },
     jobs: [createTestJob("job1")],
   });
 
@@ -583,23 +583,23 @@ Deno.test("Workflow.create defaults schedule to undefined", () => {
   assertEquals(workflow.schedule, undefined);
 });
 
-Deno.test("Workflow.toData includes schedule in output", () => {
+Deno.test("Workflow.toData includes trigger.schedule in output", () => {
   const workflow = Workflow.create({
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "test-workflow",
-    schedule: "*/15 * * * *",
+    trigger: { schedule: "*/15 * * * *" },
     jobs: [createTestJob("job1")],
   });
 
   const data = workflow.toData();
-  assertEquals(data.schedule, "*/15 * * * *");
+  assertEquals(data.trigger?.schedule, "*/15 * * * *");
 });
 
-Deno.test("Workflow.fromData and toData roundtrip with schedule", () => {
+Deno.test("Workflow.fromData and toData roundtrip with trigger.schedule", () => {
   const original = Workflow.create({
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "roundtrip-schedule",
-    schedule: "0 * * * *",
+    trigger: { schedule: "0 * * * *" },
     jobs: [createTestJob("deploy")],
   });
 
@@ -609,10 +609,10 @@ Deno.test("Workflow.fromData and toData roundtrip with schedule", () => {
   assertEquals(restored.schedule, "0 * * * *");
 });
 
-Deno.test("Workflow.fromData reconstructs workflow without schedule (backward compat)", () => {
+Deno.test("Workflow.fromData reconstructs workflow without trigger (backward compat)", () => {
   const data = {
     id: "550e8400-e29b-41d4-a716-446655440000",
-    name: "legacy-no-schedule",
+    name: "legacy-no-trigger",
     tags: {},
     inputs: undefined,
     jobs: [
@@ -645,7 +645,7 @@ Deno.test("Workflow.fromData rejects invalid cron expression", () => {
   const data = {
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "bad-schedule",
-    schedule: "not a cron expression",
+    trigger: { schedule: "not a cron expression" },
     tags: {},
     inputs: undefined,
     jobs: [

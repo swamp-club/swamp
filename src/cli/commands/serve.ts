@@ -25,6 +25,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import {
   ScheduledExecutionService,
 } from "../../libswamp/workflows/scheduled_execution.ts";
+import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -44,6 +45,15 @@ export const serveCommand = new Command()
   .option("--port <port:number>", "Port to listen on", { default: 9090 })
   .option("--host <host:string>", "Host to bind to", { default: "127.0.0.1" })
   .option("--no-schedule", "Disable scheduled workflow execution")
+  .option(
+    "--webhook <spec:string>",
+    "Register a webhook endpoint: <route>:<workflow>:<secret>",
+    { collect: true },
+  )
+  .example(
+    "Webhook trigger",
+    "swamp serve --webhook '/hooks/github:my-workflow:$WEBHOOK_SECRET'",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve"]);
     const repoDir = options.repoDir as string ?? ".";
@@ -73,6 +83,7 @@ export const serveCommand = new Command()
 
     const ac = new AbortController();
     const enableSchedule = options.schedule !== false;
+    const webhookFlags: string[] = options.webhook ?? [];
 
     // Start scheduled execution service if enabled
     let scheduledExecution: ScheduledExecutionService | null = null;
@@ -124,6 +135,72 @@ export const serveCommand = new Command()
       });
     }
 
+    // Parse and initialize webhook endpoints
+    let webhookService: WebhookService | null = null;
+    if (webhookFlags.length > 0) {
+      const endpoints = webhookFlags.map(parseWebhookFlag);
+      webhookService = new WebhookService({
+        repoDir: resolvedRepoDir,
+        repoContext,
+        datastoreConfig,
+        endpoints,
+      });
+
+      webhookService.setEventHandler((event) => {
+        if (isJson) {
+          console.log(JSON.stringify(event));
+        } else {
+          switch (event.kind) {
+            case "webhook_received":
+              logger.info(
+                "Webhook received on {route} for workflow {workflow}",
+                { route: event.route, workflow: event.workflowName },
+              );
+              break;
+            case "webhook_rejected":
+              logger.warn(
+                "Webhook rejected on {route}: {reason}",
+                { route: event.route, reason: event.reason },
+              );
+              break;
+            case "webhook_queued":
+              logger.info(
+                "Webhook queued workflow {workflow}",
+                { workflow: event.workflowName },
+              );
+              break;
+            case "webhook_completed":
+              logger.info(
+                "Webhook workflow {workflow} completed (run: {runId})",
+                { workflow: event.workflowName, runId: event.runId },
+              );
+              break;
+            case "webhook_failed":
+              logger.error(
+                "Webhook workflow {workflow} failed: {error}",
+                { workflow: event.workflowName, error: event.error },
+              );
+              break;
+          }
+        }
+      });
+
+      for (const ep of endpoints) {
+        if (isJson) {
+          console.log(JSON.stringify({
+            kind: "webhook_registered",
+            route: ep.route,
+            workflow: ep.workflowIdOrName,
+          }));
+        } else {
+          logger.info(
+            "Webhook registered: {route} → {workflow}",
+            { route: ep.route, workflow: ep.workflowIdOrName },
+          );
+        }
+      }
+    }
+
     const server = Deno.serve(
       {
         port,
@@ -146,13 +223,19 @@ export const serveCommand = new Command()
           }
         },
       },
-      (req) => {
+      async (req) => {
         // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
         if (upgrade.toLowerCase() === "websocket") {
           const { socket, response } = Deno.upgradeWebSocket(req);
           handleConnection(socket, connectionCtx);
           return response;
+        }
+
+        // Webhook endpoints (POST only, checked before health)
+        if (webhookService && req.method === "POST") {
+          const webhookResponse = await webhookService.handleRequest(req);
+          if (webhookResponse) return webhookResponse;
         }
 
         // Health check endpoint
@@ -166,6 +249,13 @@ export const serveCommand = new Command()
               running: scheduledExecution!.isRunning(s.workflowId),
             })) ?? [];
 
+            const webhooks = webhookService
+              ? webhookService.listEndpoints().map((ep) => ({
+                route: ep.route,
+                workflow: ep.workflowIdOrName,
+              }))
+              : [];
+
             return Response.json({
               status: "ok",
               version: "1",
@@ -173,6 +263,7 @@ export const serveCommand = new Command()
                 enabled: enableSchedule,
                 schedules,
               },
+              webhooks,
             });
           }
         }
@@ -187,6 +278,9 @@ export const serveCommand = new Command()
         console.log(JSON.stringify({ status: "stopping" }));
       }
       logger.info("Shutting down...");
+      if (webhookService) {
+        await webhookService.stop();
+      }
       if (scheduledExecution) {
         await scheduledExecution.stop();
       }

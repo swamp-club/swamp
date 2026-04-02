@@ -32,3 +32,11 @@ export {
   createWorkflowRunDeps,
   executeWorkflowWithLocks,
 } from "./deps.ts";
+export {
+  parseWebhookFlag,
+  verifySignature,
+  type WebhookEndpoint,
+  type WebhookEvent,
+  type WebhookEventHandler,
+  WebhookService,
+} from "./webhook.ts";

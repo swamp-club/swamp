@@ -56,18 +56,20 @@ export const WorkflowSchema = z.object({
     },
   ),
   description: z.string().optional(),
-  schedule: z.string().refine(
-    (expr) => {
-      try {
-        const cron = new Cron(expr);
-        cron.stop();
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    { message: "Invalid cron expression" },
-  ).optional(),
+  trigger: z.object({
+    schedule: z.string().refine(
+      (expr) => {
+        try {
+          const cron = new Cron(expr);
+          cron.stop();
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "Invalid cron expression" },
+    ).optional(),
+  }).optional(),
   tags: z.record(z.string(), z.string()).default({}),
   inputs: InputsSchemaSchema,
   jobs: z.array(JobSchema).min(1),
@@ -94,7 +96,7 @@ export interface CreateWorkflowProps {
   id?: string;
   name: string;
   description?: string;
-  schedule?: string;
+  trigger?: { schedule?: string };
   tags?: Record<string, string>;
   inputs?: InputsSchema;
   jobs?: Job[];
@@ -119,7 +121,7 @@ export class Workflow {
     readonly id: WorkflowId,
     readonly name: string,
     readonly description: string | undefined,
-    readonly schedule: string | undefined,
+    readonly trigger: { schedule?: string } | undefined,
     readonly tags: Record<string, string>,
     readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
@@ -143,7 +145,7 @@ export class Workflow {
       id,
       name: props.name,
       description: props.description,
-      schedule: props.schedule,
+      trigger: props.trigger,
       tags,
       inputs: props.inputs,
       jobs: jobs.map((j) => j.toData()),
@@ -165,7 +167,7 @@ export class Workflow {
       createWorkflowId(data.id),
       data.name,
       data.description,
-      data.schedule,
+      data.trigger,
       data.tags,
       data.inputs,
       jobs,
@@ -187,7 +189,7 @@ export class Workflow {
       createWorkflowId(validated.id),
       validated.name,
       validated.description,
-      validated.schedule,
+      validated.trigger,
       validated.tags,
       validated.inputs,
       jobs,
@@ -196,6 +198,13 @@ export class Workflow {
       validated.driver,
       validated.driverConfig,
     );
+  }
+
+  /**
+   * Returns the cron schedule expression, if configured.
+   */
+  get schedule(): string | undefined {
+    return this.trigger?.schedule;
   }
 
   /**
@@ -237,7 +246,7 @@ export class Workflow {
       id: this.id,
       name: this.name,
       description: this.description,
-      schedule: this.schedule,
+      trigger: this.trigger,
       tags: this.tags,
       inputs: this.inputs,
       jobs: this._jobs.map((j) => j.toData()) as JobData[],

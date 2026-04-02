@@ -51,7 +51,7 @@ function createTestWorkflow(
   });
   return Workflow.create({
     name,
-    schedule,
+    trigger: schedule ? { schedule } : undefined,
     jobs: [job],
   });
 }
