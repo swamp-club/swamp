@@ -18,11 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { CalVer } from "../../domain/models/calver.ts";
-import {
-  ExtensionApiClient,
-  type LatestVersionInfo,
-} from "../../infrastructure/http/extension_api_client.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { resolveServerUrl } from "./pull.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -46,22 +42,27 @@ export interface ExtensionVersionInput {
   extensionName: string;
 }
 
+/** Version info resolved from the public extension metadata endpoint. */
+export interface LatestVersionInfo {
+  version: string;
+  publishedAt: string | null;
+}
+
 /** Dependencies for the extension version operation. */
 export interface ExtensionVersionDeps {
   getLatestVersion: (name: string) => Promise<LatestVersionInfo | null>;
 }
 
-/** Wires real infrastructure into ExtensionVersionDeps. */
-export async function createExtensionVersionDeps(): Promise<
-  ExtensionVersionDeps
-> {
-  const authRepo = new AuthRepository();
-  const creds = await authRepo.load();
-  const serverUrl = creds?.serverUrl ?? resolveServerUrl();
+/** Wires real infrastructure into ExtensionVersionDeps. No authentication required. */
+export function createExtensionVersionDeps(): ExtensionVersionDeps {
+  const serverUrl = resolveServerUrl();
   const client = new ExtensionApiClient(serverUrl);
-  const apiKey = creds?.apiKey;
   return {
-    getLatestVersion: (name: string) => client.getLatestVersion(name, apiKey),
+    getLatestVersion: async (name: string) => {
+      const info = await client.getExtension(name);
+      if (!info) return null;
+      return { version: info.latestVersion, publishedAt: null };
+    },
   };
 }
 
