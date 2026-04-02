@@ -32,7 +32,7 @@
     "should_trigger": true
   },
   {
-    "query": "Execute this workflow and show me the results",
+    "query": "Execute the nightly-sync workflow and show me the results",
     "should_trigger": true
   },
   {

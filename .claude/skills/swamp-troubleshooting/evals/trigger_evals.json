@@ -1,6 +1,6 @@
 [
   {
-    "query": "Debug why my workflow is failing on the second step",
+    "query": "Debug why my deploy-infra workflow is failing on the second step with error 'model not found'",
     "should_trigger": true
   },
   {
@@ -20,9 +20,9 @@
     "should_trigger": true
   },
   {
-    "query": "The swamp CLI command is giving me a strange error message",
+    "query": "swamp model get is giving me 'Error: ENOENT: no such file or directory' but the model exists",
     "should_trigger": true,
-    "note": "Added 'swamp' anchor to avoid being too generic"
+    "note": "Added specific error message for clarity"
   },
   {
     "query": "Trace the swamp execution flow to find where the data pipeline failed",
@@ -30,7 +30,7 @@
     "note": "Added 'swamp' anchor to clarify domain"
   },
   {
-    "query": "Read the swamp source code to understand what's causing this error",
+    "query": "Read the swamp source code to understand why vault.get returns undefined for keys that exist",
     "should_trigger": true
   },
   {

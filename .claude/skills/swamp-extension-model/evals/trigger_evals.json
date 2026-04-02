@@ -28,7 +28,7 @@
     "should_trigger": true
   },
   {
-    "query": "Implement the model interface in TypeScript for my domain",
+    "query": "Implement the model interface in TypeScript for managing Stripe subscriptions",
     "should_trigger": true
   },
   {

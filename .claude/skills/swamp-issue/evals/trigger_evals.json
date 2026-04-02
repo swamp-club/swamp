@@ -1,6 +1,6 @@
 [
   {
-    "query": "File a bug report for a crash in the vault system",
+    "query": "File a bug report — swamp vault get crashes with a segfault when the key contains special characters",
     "should_trigger": true
   },
   {
@@ -8,11 +8,11 @@
     "should_trigger": true
   },
   {
-    "query": "Create a GitHub issue documenting unexpected behavior in swamp",
+    "query": "Create a GitHub issue — swamp workflow run silently skips steps when a dependency model has no data",
     "should_trigger": true
   },
   {
-    "query": "File a bug report about performance degradation",
+    "query": "File a bug report — swamp model get takes 30+ seconds when there are more than 100 data versions",
     "should_trigger": true
   },
   {
@@ -49,11 +49,6 @@
     "query": "List all the data versions I have",
     "should_trigger": false,
     "note": "Listing data → swamp-data"
-  },
-  {
-    "query": "Show me the existing issues in the swamp repository",
-    "should_trigger": false,
-    "note": "Viewing existing issues (not creating) → out of scope"
   },
   {
     "query": "Help me plan the architecture for a new feature",

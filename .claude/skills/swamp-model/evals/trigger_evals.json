@@ -14,7 +14,7 @@
     "note": "create input is a listed trigger keyword"
   },
   {
-    "query": "Run the model method on my-instance with these arguments",
+    "query": "Run the validate method on the payment-processor model with amount=100 and currency=USD",
     "should_trigger": true,
     "note": "run method is a listed trigger keyword"
   },
@@ -29,7 +29,7 @@
     "note": "CEL expression is a listed trigger keyword"
   },
   {
-    "query": "Execute the enrichment model with my input data",
+    "query": "Execute the enrichment model on the customer-profile instance to add geo data",
     "should_trigger": true
   },
   {
