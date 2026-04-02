@@ -112,9 +112,13 @@ export async function verifySignature(
     ["sign"],
   );
 
-  const bodyBuffer = new ArrayBuffer(body.byteLength);
-  new Uint8Array(bodyBuffer).set(body);
-  const signature = await crypto.subtle.sign("HMAC", key, bodyBuffer);
+  // body is always a freshly-allocated Uint8Array from readBodyWithLimit
+  // or TextEncoder, so .buffer is a plain ArrayBuffer (not SharedArrayBuffer)
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    body.buffer as ArrayBuffer,
+  );
   const expectedHex = Array.from(new Uint8Array(signature))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -154,7 +158,7 @@ async function readBodyWithLimit(
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {
-        reader.cancel();
+        await reader.cancel();
         return null;
       }
       chunks.push(value);
