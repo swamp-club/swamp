@@ -122,10 +122,11 @@ runs:
 
           - **CRITICAL**: Security vulnerabilities, data loss/corruption, or crashes in production paths.
             These BLOCK the merge.
-          - **HIGH**: Logic errors that produce wrong results, resource leaks, or unhandled failure modes
-            in common paths. These BLOCK the merge.
-          - **MEDIUM**: Edge cases in uncommon paths, minor race conditions, or API contract concerns.
-            These are warnings but do NOT block.
+          - **HIGH**: Logic errors that produce wrong results, resource leaks, race conditions that can
+            corrupt shared state or produce wrong results, or unhandled failure modes in common paths.
+            These BLOCK the merge.
+          - **MEDIUM**: Edge cases in uncommon paths, cosmetic concurrency issues (e.g. log interleaving,
+            progress bar flicker), or API contract concerns. These are warnings but do NOT block.
           - **LOW**: Theoretical issues that are unlikely in practice. Mention but do NOT block.
 
           After reviewing, submit your review using ONE of these commands:
