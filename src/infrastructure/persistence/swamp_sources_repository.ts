@@ -19,7 +19,7 @@
 
 import { isAbsolute, resolve } from "@std/path";
 import { expandGlob } from "@std/fs";
-import { stringify as stringifyYaml } from "@std/yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import { expandEnvVars } from "./env_path.ts";
 import { swampSourcesPath } from "./paths.ts";
@@ -139,7 +139,6 @@ export async function resolveSourceExtensionDirs(
     // Try to read the source's own .swamp.yaml for directory overrides
     let sourceMarker: RepoMarkerData | null = null;
     try {
-      const { parse: parseYaml } = await import("@std/yaml");
       const markerPath = resolve(sourceDir, ".swamp.yaml");
       const content = await Deno.readTextFile(markerPath);
       sourceMarker = parseYaml(content) as RepoMarkerData;

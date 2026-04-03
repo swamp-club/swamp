@@ -319,6 +319,12 @@ export {
   type TrustAutoTrustEvent,
 } from "./extensions/trust_auto_trust.ts";
 
+// Extension source types
+export {
+  EXTENSION_KINDS,
+  type ExtensionKind,
+} from "../domain/repo/swamp_sources.ts";
+
 // Extension source operations
 export {
   type SourceListData,

@@ -33,6 +33,7 @@ type AnyOptions = any;
 export const extensionSourceListCommand = new Command()
   .name("list")
   .description("List configured extension sources")
+  .example("List all sources", "swamp extension source list")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [

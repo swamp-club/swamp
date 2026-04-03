@@ -33,7 +33,10 @@ class LogSourceModifyRenderer implements Renderer<SourceModifyEvent> {
         if (e.data.only) {
           writeOutput(`  only: ${e.data.only.join(", ")}`);
         }
-        writeOutput(`Total sources: ${e.data.totalSources}`);
+        const count = e.data.totalSources;
+        writeOutput(
+          count === 1 ? "1 source configured" : `${count} sources configured`,
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);

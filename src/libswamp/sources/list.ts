@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { LibSwampContext } from "../context.ts";
-import { validationFailed } from "../errors.ts";
 import type { SourceListEntry, SourceListEvent } from "./source_events.ts";
 import { isGlobPattern } from "../../domain/repo/swamp_sources.ts";
 import type { SwampSourcesConfig } from "../../domain/repo/swamp_sources.ts";
@@ -97,18 +96,10 @@ export async function* sourceList(
           entry.status = "path_not_found";
         }
       }
-    } catch (error) {
+    } catch {
+      // Expansion failed (e.g., unset env var in path) — mark as not found
+      // and continue listing remaining sources rather than aborting.
       entry.status = "path_not_found";
-      // Include the expansion error in expanded paths for diagnostics
-      if (error instanceof Error) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Failed to resolve source path '${source.path}': ${error.message}`,
-          ),
-        };
-        return;
-      }
     }
 
     entries.push(entry);

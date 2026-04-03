@@ -23,10 +23,12 @@ import {
   consumeStream,
   createLibSwampContext,
   createSourceAddDeps,
+  EXTENSION_KINDS,
   sourceAdd,
 } from "../../libswamp/mod.ts";
 import { createSourceModifyRenderer } from "../../presentation/renderers/extension_source_modify.ts";
-import type { ExtensionKind } from "../../domain/repo/swamp_sources.ts";
+import type { ExtensionKind } from "../../libswamp/mod.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -63,11 +65,23 @@ export const extensionSourceAddCommand = new Command()
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createSourceAddDeps(options.repoDir ?? ".");
 
-    const only = options.only
-      ? (options.only as string).split(",").map((s: string) =>
+    let only: ExtensionKind[] | undefined;
+    if (options.only) {
+      const kinds = (options.only as string).split(",").map((s: string) =>
         s.trim()
-      ) as ExtensionKind[]
-      : undefined;
+      );
+      const validKinds = EXTENSION_KINDS as readonly string[];
+      for (const kind of kinds) {
+        if (!validKinds.includes(kind)) {
+          throw new UserError(
+            `Unknown extension kind '${kind}'. Expected one of: ${
+              EXTENSION_KINDS.join(", ")
+            }`,
+          );
+        }
+      }
+      only = kinds as ExtensionKind[];
+    }
 
     const renderer = createSourceModifyRenderer(cliCtx.outputMode);
     await consumeStream(sourceAdd(ctx, deps, path, only), renderer.handlers());
