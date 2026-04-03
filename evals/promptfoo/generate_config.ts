@@ -19,8 +19,8 @@
 
 /**
  * Generates a promptfoo configuration YAML from existing trigger_evals.json
- * files and SKILL.md frontmatter. This replaces the expensive eval_skill_triggers.ts
- * approach (579 Claude Code sessions) with lightweight API calls (~193 calls).
+ * files and SKILL.md frontmatter, using lightweight API calls (~193 calls)
+ * instead of spawning Claude Code sessions.
  *
  * Usage: deno run --allow-read generate_config.ts > promptfooconfig.yaml
  */
