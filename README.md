@@ -162,10 +162,10 @@ development process.
 1. **You file an issue** —
    [bug reports and feature requests](https://github.com/systeminit/swamp/issues)
    are very welcome. Be as detailed as you like.
-2. **We triage it** — A maintainer comments `/triage` on the issue and Claude
-   analyzes the report, confirms bugs by tracing through the codebase, and
-   generates a detailed implementation plan right in the issue thread.
-   Maintainers can leave feedback as comments and re-run `/triage` to refine.
+2. **We triage it** — A maintainer triages the issue locally using Claude,
+   confirms bugs by tracing through the codebase, and generates a detailed
+   implementation plan. Plans are revised interactively until the approach is
+   solid.
 3. **We build it** — System Initiative engineers (with AI agents under our
    direct control) implement the plan, with full test coverage and code review.
 4. **You get credit** — We're happy to include you as a co-author on any PR
