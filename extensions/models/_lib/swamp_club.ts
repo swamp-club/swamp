@@ -209,14 +209,18 @@ export function createSwampClubClient(
     "https://swamp.club";
   const apiKey = globalArgs.swampClubApiKey ?? Deno.env.get("SWAMP_API_KEY");
 
-  if (apiKey) {
-    return new SwampClubClient(
-      url,
-      apiKey,
-      globalArgs.repo,
-      globalArgs.issueNumber,
-      logger,
+  if (!apiKey) {
+    logger?.warning(
+      "No SWAMP_API_KEY found — swamp-club lifecycle entries will be skipped",
+      {},
     );
+    return null;
   }
-  return null;
+  return new SwampClubClient(
+    url,
+    apiKey,
+    globalArgs.repo,
+    globalArgs.issueNumber,
+    logger,
+  );
 }
