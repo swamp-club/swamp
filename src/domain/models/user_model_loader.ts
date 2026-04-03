@@ -921,12 +921,16 @@ export class UserModelLoader {
   /**
    * Walks up from a source file to find the nearest deno.json or deno.jsonc.
    * Returns the absolute path to the config file, or undefined if none found.
-   * Stops at the filesystem root.
+   * Stops at the filesystem root or at the consumer repo root to avoid
+   * picking up an unrelated project's config.
    */
   private findNearestDenoConfig(absolutePath: string): string | undefined {
     let dir = dirname(absolutePath);
     const root = resolve("/");
     while (dir !== root) {
+      // Stop at the consumer repo boundary
+      if (this.repoDir && resolve(dir) === resolve(this.repoDir)) break;
+
       for (const name of ["deno.json", "deno.jsonc"]) {
         const candidate = join(dir, name);
         try {
