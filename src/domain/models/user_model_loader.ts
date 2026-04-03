@@ -60,6 +60,13 @@ import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 const logger = getLogger(["swamp", "models", "loader"]);
 
 /**
+ * Bundle layout version. Stored in the catalog's bundle_meta table.
+ * When this doesn't match, the catalog is invalidated to force a full
+ * rescan — migrating from flat to namespaced bundle paths.
+ */
+const BUNDLE_LAYOUT_VERSION = "namespaced-v1";
+
+/**
  * Plain object result returned by user methods before conversion.
  * User models must use context.writeResource() / context.createFileWriter() to produce data.
  */
@@ -448,6 +455,18 @@ export class UserModelLoader {
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
+    // Force a full rescan if the bundle layout version has changed.
+    // This ensures repos with old flat-layout catalog entries get migrated
+    // to the namespaced layout, fixing any #1065 cache poisoning.
+    if (
+      catalog.isPopulated("model") &&
+      catalog.getLayoutVersion() !== BUNDLE_LAYOUT_VERSION
+    ) {
+      logger
+        .warn`Bundle layout changed — invalidating catalog for full rescan`;
+      catalog.invalidate("model");
+    }
+
     // If catalog is already populated, register lazy entries from it
     // and do a lightweight mtime check for staleness.
     if (catalog.isPopulated("model")) {
@@ -499,45 +518,65 @@ export class UserModelLoader {
       options?.additionalDirs,
     );
     catalog.markPopulated("model");
+    catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
 
-    // Clean up old flat-layout bundle files from before the namespaced layout.
+    // Migrate old flat-layout bundle files into namespaced subdirectories.
     if (this.repoDir) {
-      this.cleanupOldFlatBundles();
+      this.migrateOldFlatBundles(options?.additionalDirs);
     }
 
     return fullResult;
   }
 
   /**
-   * Removes orphaned .js files from the old flat bundle layout.
-   * The new layout uses hash-namespaced subdirectories. Files directly
-   * in .swamp/bundles/ (not in a subdirectory) are from the old layout.
+   * Migrates old flat-layout bundle files into namespaced subdirectories.
+   * The old layout stored bundles at `.swamp/bundles/foo.js`. The new layout
+   * uses `.swamp/bundles/<hash>/foo.js`. Moving (not deleting) preserves
+   * pre-built bundles from pulled extensions that can't be rebundled locally.
+   *
+   * @param additionalDirs - The additional directories (sources + pulled)
+   *   used to determine which hash namespace to move flat files into.
+   *   Falls back to a "_migrated" namespace if no pulled dir is available.
    */
-  private cleanupOldFlatBundles(): void {
+  private migrateOldFlatBundles(additionalDirs?: string[]): void {
     if (!this.repoDir) return;
     const bundlesDir = join(
       this.repoDir,
       SWAMP_DATA_DIR,
       SWAMP_SUBDIRS.bundles,
     );
+
+    // Determine target namespace: use the pulled models dir if available,
+    // otherwise use a fixed migration namespace.
+    const pulledDir = additionalDirs?.find((d) =>
+      d.includes("pulled-extensions")
+    );
+    const targetNs = pulledDir
+      ? bundleNamespace(pulledDir, this.repoDir)
+      : "_migrated";
+
     try {
-      let cleaned = 0;
+      let migrated = 0;
       for (const entry of Deno.readDirSync(bundlesDir)) {
         if (entry.isFile && entry.name.endsWith(".js")) {
+          const srcPath = join(bundlesDir, entry.name);
+          const destDir = join(bundlesDir, targetNs);
+          const destPath = join(destDir, entry.name);
           try {
-            Deno.removeSync(join(bundlesDir, entry.name));
-            cleaned++;
+            Deno.mkdirSync(destDir, { recursive: true });
+            Deno.renameSync(srcPath, destPath);
+            migrated++;
           } catch {
-            // Best-effort cleanup
+            // Best-effort — if move fails, leave the flat file
           }
         }
       }
-      if (cleaned > 0) {
+      if (migrated > 0) {
         logger
-          .warn`Migrated bundle cache to new format: cleaned up ${cleaned} old bundle file(s)`;
+          .warn`Migrated ${migrated} bundle file(s) to namespaced layout`;
       }
     } catch {
-      // Bundles directory doesn't exist — nothing to clean
+      // Bundles directory doesn't exist — nothing to migrate
     }
   }
 

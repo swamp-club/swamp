@@ -375,3 +375,30 @@ Deno.test("ExtensionCatalogStore: multiple extensions targeting same base type c
   assertEquals(store.count(), 3);
   store.close();
 });
+
+Deno.test("ExtensionCatalogStore: getLayoutVersion returns undefined when not set", () => {
+  const store = new ExtensionCatalogStore(makeTempDbPath());
+  assertEquals(store.getLayoutVersion(), undefined);
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: setLayoutVersion and getLayoutVersion round-trip", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+  store.setLayoutVersion("namespaced-v1");
+  assertEquals(store.getLayoutVersion(), "namespaced-v1");
+  store.close();
+
+  // Verify it persists across reopen
+  const store2 = new ExtensionCatalogStore(dbPath);
+  assertEquals(store2.getLayoutVersion(), "namespaced-v1");
+  store2.close();
+});
+
+Deno.test("ExtensionCatalogStore: setLayoutVersion overwrites previous value", () => {
+  const store = new ExtensionCatalogStore(makeTempDbPath());
+  store.setLayoutVersion("v1");
+  store.setLayoutVersion("v2");
+  assertEquals(store.getLayoutVersion(), "v2");
+  store.close();
+});

@@ -237,6 +237,30 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Returns the stored bundle layout version, or undefined if not set.
+   * Used to detect when the bundle path scheme has changed and a full
+   * rescan is needed.
+   */
+  getLayoutVersion(): string | undefined {
+    const stmt = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = 'bundle_layout'",
+    );
+    const row = stmt.get() as { value: string } | undefined;
+    return row?.value;
+  }
+
+  /**
+   * Stores the bundle layout version. Set after a successful rescan
+   * so subsequent runs skip the migration check.
+   */
+  setLayoutVersion(version: string): void {
+    const stmt = this.db.prepare(
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES ('bundle_layout', ?)",
+    );
+    stmt.run(version);
+  }
+
+  /**
    * Closes the database connection.
    */
   close(): void {
