@@ -228,6 +228,26 @@ swamp source clean --json
 - Use `--version main` to get the latest unreleased code
 - Use `--version <tag>` to get a specific release
 
+## Source Extension Not Loading
+
+If a source extension isn't appearing in `swamp model type search`:
+
+1. **Check the source is registered**: `swamp extension source list` — look for
+   green checkmark. Red cross means the path doesn't exist.
+2. **Check the directory structure**: The source path must contain
+   `extensions/models/` (or the appropriate type directory).
+3. **Check for a `deno.json`**: Source extensions need a `deno.json` with
+   dependency mappings (e.g., `"zod": "npm:zod@4"`). Without it, bundling fails
+   with `"Import "zod" not a dependency"`.
+4. **Check the warning output**: Look for `"Using discovered deno config"`
+   warnings — this confirms the bundler found the source's config file.
+5. **Check the `only` filter**: If the source was added with `--only vaults`,
+   model types won't load from it.
+
+The source loading code lives in:
+- `src/infrastructure/persistence/swamp_sources_repository.ts` — file reading and path resolution
+- `src/cli/mod.ts` — wiring sources into the loader pipeline
+
 ## When to Use Other Skills
 
 | Need                    | Use Skill               |

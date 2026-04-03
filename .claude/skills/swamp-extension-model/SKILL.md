@@ -349,13 +349,37 @@ Extensions can also add pre-flight checks — see
 
 ## Model Discovery
 
-Swamp discovers models and extensions recursively:
+Swamp discovers models and extensions from multiple sources, in priority order:
 
-1. **Repository extensions**: `{repo}/extensions/models/**/*.ts`
-2. **Built-in models**: Bundled with swamp binary
+1. **Local extensions**: `{repo}/extensions/models/**/*.ts`
+2. **Source extensions**: Paths from `.swamp-sources.yaml` (see `swamp-repo` skill)
+3. **Pulled extensions**: `.swamp/pulled-extensions/models/**/*.ts`
+4. **Built-in models**: Bundled with swamp binary
+
+Sources override pulled extensions of the same type — if you're developing a
+local copy of a pulled extension, add it as a source and your version loads
+instead.
 
 Files are classified by export name: `export const model` defines new types,
 `export const extension` adds methods to existing types.
+
+### Testing Extensions from a Separate Repo
+
+To test an extension without copying files into the consumer repo:
+
+```bash
+# In the consumer repo, add the extension as a source
+swamp extension source add ~/code/my-extensions/model/aws/ec2
+
+# Verify it loads
+swamp model type search ec2
+
+# When done, remove the source
+swamp extension source rm ~/code/my-extensions/model/aws/ec2
+```
+
+The source extension must have a `deno.json` with its dependencies (e.g.,
+`"zod": "npm:zod@4"`) for bundling to succeed.
 
 ## Smoke Testing
 

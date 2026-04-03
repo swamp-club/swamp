@@ -20,7 +20,9 @@ Before creating a custom vault, check what's available:
 
 Extensions from trusted collectives (`@swamp/*`, `@si/*`, and your membership
 collectives) auto-resolve on first use — no manual `extension pull` needed. Use
-`swamp extension trust list` to see which collectives are trusted.
+`swamp extension trust list` to see which collectives are trusted. For local or
+private extensions, use `swamp extension source add <path>` to load them without
+publishing (see `swamp-repo` skill).
 
 Custom vaults let you:
 

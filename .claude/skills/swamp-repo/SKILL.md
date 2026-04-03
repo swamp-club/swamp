@@ -24,6 +24,9 @@ machine-readable output.
 | Sync remote datastore      | `swamp datastore sync --json`                                     |
 | Check lock status          | `swamp datastore lock status --json`                              |
 | Force-release stuck lock   | `swamp datastore lock release --force --json`                     |
+| Add extension source       | `swamp extension source add <path> [--only models,vaults,...]`    |
+| Remove extension source    | `swamp extension source rm <path>`                                |
+| List extension sources     | `swamp extension source list --json`                              |
 
 ## Repository Structure
 
@@ -78,6 +81,7 @@ swamp repo init ./my-automation --json
 - `extensions/models/` directory for custom model types
 - `.swamp.yaml` configuration file with version metadata
 - `CLAUDE.md` with agent instructions and skill references
+- `.gitignore` entries for `.swamp/` and `.swamp-sources.yaml`
 
 ## Upgrade a Repository
 
@@ -259,6 +263,63 @@ export SWAMP_DATASTORE=s3:my-bucket/my-prefix
 export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
 export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 ```
+
+## Extension Sources
+
+Load extensions from external filesystem paths without copying files. Use this
+when testing extensions from a separate development repo, using private
+extensions that can't be published to swamp.club, or composing extensions from
+multiple locations.
+
+### `.swamp-sources.yaml`
+
+A gitignored file at the repo root. Each entry is a **source** — a path (or
+glob) pointing at one or more extension roots. Always added to `.gitignore` by
+`swamp repo init` and `swamp repo upgrade`.
+
+```yaml
+sources:
+  - path: ~/code/systeminit/swamp-extensions/model/aws/*
+  - path: ~/code/acme-corp/internal-extensions/model/*
+  - path: ~/code/my-experimental-vault
+    only: [vaults]
+```
+
+**Fields:**
+
+- `path` — filesystem path to an extension root. Supports `~`, `$VAR`, and glob
+  patterns (`*`, `**`). Each glob match is treated as a separate extension root.
+- `only` — optional filter limiting which extension types to load from this
+  source: `models`, `vaults`, `drivers`, `datastores`, `reports`, `workflows`.
+
+### Managing Sources
+
+```bash
+# Add a source (creates .swamp-sources.yaml if needed)
+swamp extension source add ~/code/swamp-extensions/model/aws/ec2
+
+# Add with glob (all AWS extensions)
+swamp extension source add "~/code/swamp-extensions/model/aws/*"
+
+# Add with type filter
+swamp extension source add ~/code/my-vaults --only vaults
+
+# List sources with status
+swamp extension source list
+
+# Remove a source
+swamp extension source rm "~/code/swamp-extensions/model/aws/*"
+```
+
+### Load Order
+
+1. **Local extensions** (`extensions/models/`, etc.)
+2. **Source extensions** (from `.swamp-sources.yaml`, in order listed)
+3. **Pulled extensions** (`.swamp/pulled-extensions/`)
+
+Sources override pulled extensions of the same type. This means you can pull
+`@swamp/aws/ec2` from the registry, then add a source pointing at your local
+development copy — your local version loads instead.
 
 ## When to Use Other Skills
 
