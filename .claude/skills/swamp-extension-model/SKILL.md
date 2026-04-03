@@ -352,7 +352,8 @@ Extensions can also add pre-flight checks — see
 Swamp discovers models and extensions from multiple sources, in priority order:
 
 1. **Local extensions**: `{repo}/extensions/models/**/*.ts`
-2. **Source extensions**: Paths from `.swamp-sources.yaml` (see `swamp-repo` skill)
+2. **Source extensions**: Paths from `.swamp-sources.yaml` (see `swamp-repo`
+   skill)
 3. **Pulled extensions**: `.swamp/pulled-extensions/models/**/*.ts`
 4. **Built-in models**: Bundled with swamp binary
 

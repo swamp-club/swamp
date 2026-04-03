@@ -245,7 +245,9 @@ If a source extension isn't appearing in `swamp model type search`:
    model types won't load from it.
 
 The source loading code lives in:
-- `src/infrastructure/persistence/swamp_sources_repository.ts` — file reading and path resolution
+
+- `src/infrastructure/persistence/swamp_sources_repository.ts` — file reading
+  and path resolution
 - `src/cli/mod.ts` — wiring sources into the loader pipeline
 
 ## When to Use Other Skills
