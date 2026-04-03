@@ -42,13 +42,14 @@ dependencies:
 | `vaults`          | No*      | Vault file paths relative to `extensions/vaults/`                                                |
 | `drivers`         | No*      | Driver file paths relative to `extensions/drivers/`                                              |
 | `datastores`      | No*      | Datastore file paths relative to `extensions/datastores/`                                        |
+| `reports`         | No*      | Report file paths relative to `extensions/reports/`                                              |
 | `additionalFiles` | No       | Extra files relative to the manifest location                                                    |
 | `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                    |
 | `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                     |
 | `dependencies`    | No       | Other extensions this one depends on                                                             |
 
-*At least one of `models`, `workflows`, `vaults`, `drivers`, or `datastores`
-must be present with entries.
+*At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`, or
+`reports` must be present with entries.
 
 ### Name Rules
 
@@ -136,6 +137,18 @@ models:
   - dashboard.ts
 dependencies:
   - "@myorg/aws-core"
+```
+
+### Model + report
+
+```yaml
+manifestVersion: 1
+name: "@myorg/ports"
+version: "2026.03.01.1"
+models:
+  - ports.ts
+reports:
+  - port_whisperer.ts
 ```
 
 ## Pre-Push Checklist

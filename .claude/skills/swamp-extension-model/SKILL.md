@@ -1,12 +1,21 @@
 ---
 name: swamp-extension-model
-description: Create user-defined TypeScript models for swamp — define Zod schemas, implement model interfaces, configure output specs — and publish extensions to the registry. Use when users want to extend swamp with custom model types, create automation models, add new integrations, or publish any extension type (models, vaults, drivers, datastores). Triggers on "create model", "new model type", "custom model", "extension model", "user model", "typescript model", "extend swamp", "build integration", "zod schema", "model plugin", "deno model", "extensions/models", "model development", "implement model", "smoke test", "test extension", "verify model", "test against API", "before push test", "push extension", "publish extension", "extension push", "release extension", "bump version", "publish to registry", "test extension from another repo", "source extension loading".
+description: Create, test, and publish extension models for swamp — define Zod schemas, implement model interfaces, smoke test against live APIs, write manifest.yaml, and push extensions to the registry. Use when creating models, writing manifest.yaml, publishing/pushing extensions, testing extensions, or preparing models for the registry. Covers all extension types (models, vaults, drivers, datastores, reports). Triggers on "create model", "new model type", "custom model", "extension model", "user model", "typescript model", "extend swamp", "build integration", "zod schema", "model plugin", "deno model", "extensions/models", "model development", "implement model", "smoke test", "test extension", "verify model", "test against API", "before push test", "push extension", "publish extension", "extension push", "release extension", "bump version", "publish to registry", "test extension from another repo", "source extension loading", "manifest", "manifest.yaml", "write manifest", "prepare for publishing".
 ---
 
 # Swamp Extension Model
 
 Create TypeScript models in `extensions/models/*.ts` that swamp loads at
 startup.
+
+## Choosing a Collective Name
+
+Before creating a model, determine the collective name for the `type` field. Run
+`swamp auth whoami --json` to see available collectives. If multiple collectives
+are returned, **always ask the user** which one to use — never auto-select. Use
+`@collective/model-name` as the type from the start (e.g., `@keeb/ports`). Do
+not use placeholder prefixes like `@local/` — they will be rejected during
+`swamp extension push`.
 
 ## When to Create a Custom Model
 
@@ -438,7 +447,7 @@ before proceeding to testing.
 
 Extensions are published to the swamp registry via a `manifest.yaml` and the
 `swamp extension push` command. Extensions can contain models, workflows,
-vaults, drivers, and datastores.
+vaults, drivers, datastores, and reports.
 
 **Minimal manifest:**
 

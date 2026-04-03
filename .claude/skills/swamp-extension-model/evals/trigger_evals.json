@@ -89,5 +89,40 @@
     "query": "Help me create and test a CRUD extension model",
     "should_trigger": true,
     "note": "create model + test extension triggers"
+  },
+  {
+    "query": "Make a manifest.yaml so I can push my extension",
+    "should_trigger": true,
+    "note": "manifest.yaml and push extension are triggers"
+  },
+  {
+    "query": "Publish my model to the registry",
+    "should_trigger": true,
+    "note": "publish extension and publish to registry are triggers"
+  },
+  {
+    "query": "Help me push this extension to swamp-club",
+    "should_trigger": true,
+    "note": "push extension is a trigger"
+  },
+  {
+    "query": "I need to write a manifest for my model",
+    "should_trigger": true,
+    "note": "write manifest and manifest are triggers"
+  },
+  {
+    "query": "Prepare my extension for publishing",
+    "should_trigger": true,
+    "note": "prepare for publishing is a trigger"
+  },
+  {
+    "query": "How do I swamp extension push my model?",
+    "should_trigger": true,
+    "note": "extension push is a trigger"
+  },
+  {
+    "query": "I want to release a new version of my extension",
+    "should_trigger": true,
+    "note": "release extension and bump version are triggers"
   }
 ]
