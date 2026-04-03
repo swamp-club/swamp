@@ -276,7 +276,7 @@ export class UserVaultLoader {
               ? bundleError.message
               : String(bundleError);
             logger
-              .info`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
+              .debug`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
             // Touch the cache mtime so subsequent loads see it as fresh,
             // avoiding repeated failed rebundle attempts on every cold start.
             try {
