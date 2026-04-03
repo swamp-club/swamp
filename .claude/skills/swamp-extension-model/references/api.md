@@ -142,16 +142,29 @@ const handle = await streamWriter.finalize();
 
 Returned by `writeResource` and writer methods:
 
-| Field      | Description                          |
-| ---------- | ------------------------------------ |
-| `name`     | Data artifact name                   |
-| `specName` | The declared spec name               |
-| `kind`     | `"resource"` or `"file"`             |
-| `dataId`   | Unique ID for this data              |
-| `version`  | Version number of this write         |
-| `size`     | Size of the written content in bytes |
-| `tags`     | Tags from the writer options         |
-| `metadata` | Full metadata for the data artifact  |
+| Field      | Description                                |
+| ---------- | ------------------------------------------ |
+| `name`     | Data artifact name                         |
+| `specName` | The declared spec name                     |
+| `kind`     | `"resource"` or `"file"`                   |
+| `dataId`   | Unique ID for this data                    |
+| `version`  | Version number of this write               |
+| `size`     | Size of the written content in bytes       |
+| `tags`     | Tags from the writer options               |
+| `metadata` | Metadata for the data artifact (see below) |
+
+**`metadata` sub-fields:**
+
+| Field               | Type                      | Description                                              |
+| ------------------- | ------------------------- | -------------------------------------------------------- |
+| `contentType`       | `string`                  | MIME type (e.g. `"application/json"`)                    |
+| `lifetime`          | `Lifetime`                | TTL from the spec (e.g. `"7d"`, `"infinite"`)            |
+| `garbageCollection` | `GarbageCollectionPolicy` | Version retention count or duration                      |
+| `streaming`         | `boolean`                 | Whether the data was written as streaming                |
+| `tags`              | `Record<string, string>`  | Tags (e.g. `type`, `specName`, `modelName`)              |
+| `ownerDefinition`   | `OwnerDefinition`         | Owner type and ref (model-method, workflow-step, manual) |
+| `lifecycle`         | `"active" \| "deleted"`   | Current lifecycle state                                  |
+| `renamedTo`         | `string?`                 | New name if the data was renamed                         |
 
 **UserMethodResult:**
 

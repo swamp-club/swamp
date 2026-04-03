@@ -91,6 +91,66 @@ Deno.test("report reads model data", async () => {
 });
 ```
 
+## Testing Reports That Read Data
+
+Reports that read execution data via `getContent` need pre-seeded data
+artifacts. Use the `dataArtifacts` option and provide `content` as raw bytes:
+
+```typescript
+Deno.test("report reads execution data via getContent", async () => {
+  const stateData = { status: "active", instanceId: "i-abc123" };
+  const content = new TextEncoder().encode(JSON.stringify(stateData));
+  const { context } = createReportTestContext({
+    scope: "method",
+    modelType: "aws/ec2",
+    modelId: "my-ec2",
+    methodName: "create",
+    executionStatus: "succeeded",
+    dataHandles: [{
+      name: "state-current",
+      specName: "state",
+      kind: "resource",
+      dataId: "d1",
+      version: 1,
+      size: content.length,
+      tags: { type: "resource", specName: "state" },
+      metadata: {
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 5,
+        streaming: false,
+        tags: { type: "resource", specName: "state" },
+        ownerDefinition: { type: "model-method", ref: "create" },
+      },
+    }],
+    dataArtifacts: [{
+      modelType: "aws/ec2",
+      modelId: "my-ec2",
+      data: {
+        name: "state-current",
+        kind: "resource",
+        dataId: "d1",
+        version: 1,
+        size: content.length,
+        contentType: "application/json",
+      },
+      content,
+    }],
+  });
+
+  // Read raw bytes and parse — same pattern as live reports
+  const raw = await context.dataRepository.getContent(
+    "aws/ec2",
+    "my-ec2",
+    "state-current",
+    1,
+  );
+  const parsed = JSON.parse(new TextDecoder().decode(raw!));
+  assertEquals(parsed.status, "active");
+  assertEquals(parsed.instanceId, "i-abc123");
+});
+```
+
 ## Mocking External Calls
 
 Reports that call external APIs (e.g., pricing APIs, cost calculators) can use

@@ -61,5 +61,17 @@
     "query": "The report generation is timing out",
     "should_trigger": false,
     "note": "Debugging report execution issues → swamp-troubleshooting"
+  },
+  {
+    "query": "How do I read execution data in a report using dataHandles?",
+    "should_trigger": true
+  },
+  {
+    "query": "Access dataRepository from report context to get model output",
+    "should_trigger": true
+  },
+  {
+    "query": "What methods does UnifiedDataRepository expose in reports?",
+    "should_trigger": true
   }
 ]

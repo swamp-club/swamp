@@ -122,6 +122,44 @@ const methodArgs = context.redactSensitiveArgs(context.methodArgs, "method");
 The helper is available on method and model scope contexts. It returns args
 unchanged if no schema is found, so it is safe to call unconditionally.
 
+### Reading Execution Data
+
+Reports can read data produced during method execution via `context.dataHandles`
+and `context.dataRepository`:
+
+```typescript
+execute: async (context) => {
+  const handle = context.dataHandles.find(h => h.specName === "state");
+  if (!handle) {
+    return { markdown: "No data produced.", json: {} };
+  }
+
+  // getContent returns raw bytes — parse JSON manually
+  const raw = await context.dataRepository.getContent(
+    context.modelType,
+    context.modelId,
+    handle.name,
+    handle.version,
+  );
+  if (!raw) {
+    return { markdown: "Data not found.", json: {} };
+  }
+  const attrs = JSON.parse(new TextDecoder().decode(raw));
+
+  return {
+    markdown: `# State Report\n\n- **Status**: ${attrs.status}\n`,
+    json: { status: attrs.status },
+  };
+},
+```
+
+Use `findByName()` when you need metadata (tags, version, content type) without
+the content itself. See
+[references/report-types.md](references/report-types.md#unifieddatarepository-methods)
+for the full API and
+[references/testing.md](references/testing.md#testing-reports-that-read-data)
+for testing patterns.
+
 ### Key Rules
 
 1. **Return both markdown and json** — every report must produce both
