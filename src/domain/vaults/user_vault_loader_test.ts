@@ -266,11 +266,16 @@ export const vault = {
     const loader1 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
     await loader1.loadVaults(vaultsDir);
 
-    // Read the cached bundle content
+    // Read the cached bundle content (namespaced by baseDir hash)
+    const { bundleNamespace } = await import(
+      "../../infrastructure/persistence/paths.ts"
+    );
+    const ns = bundleNamespace(vaultsDir, repoDir);
     const bundlePath = join(
       repoDir,
       ".swamp",
       "vault-bundles",
+      ns,
       "my_vault.js",
     );
     const cachedBundle1 = await Deno.readTextFile(bundlePath);

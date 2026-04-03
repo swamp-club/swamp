@@ -33,6 +33,7 @@ import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { DatastoreProvider } from "./datastore_provider.ts";
 import { datastoreTypeRegistry } from "./datastore_type_registry.ts";
 import {
+  bundleNamespace,
   SWAMP_DATA_DIR,
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
@@ -215,6 +216,7 @@ export class UserDatastoreLoader {
         this.repoDir,
         SWAMP_DATA_DIR,
         SWAMP_SUBDIRS.datastoreBundles,
+        bundleNamespace(boundaryDir, this.repoDir),
         relativePath.replace(/\.ts$/, ".js"),
       );
 

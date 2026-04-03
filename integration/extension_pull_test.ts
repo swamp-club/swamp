@@ -190,11 +190,30 @@ Deno.test("extension pull and load works for @stack72/letsencrypt-certificate", 
     ]);
     assertEquals(code, 0, `Pull failed: ${stderr}`);
 
-    // Verify the bundle was extracted
-    const bundleStat = await Deno.stat(
-      `${tmpDir}/.swamp/bundles/letsencrypt_certificate.js`,
+    // Verify the bundle was extracted into a namespaced subdirectory.
+    // The namespace hash is based on the pulled models directory.
+    const bundlesDir = `${tmpDir}/.swamp/bundles`;
+    let foundBundle = false;
+    for await (const entry of Deno.readDir(bundlesDir)) {
+      if (entry.isDirectory) {
+        try {
+          const stat = await Deno.stat(
+            `${bundlesDir}/${entry.name}/letsencrypt_certificate.js`,
+          );
+          if (stat.isFile) {
+            foundBundle = true;
+            break;
+          }
+        } catch {
+          // Not in this namespace dir
+        }
+      }
+    }
+    assertEquals(
+      foundBundle,
+      true,
+      "Bundle should be extracted into namespaced subdirectory",
     );
-    assertEquals(bundleStat.isFile, true, "Bundle should be extracted");
 
     // Verify the model loads at runtime by searching for it.
     // model type search uses cwd to find the repo, so run from tmpDir.

@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { UserModelLoader } from "./user_model_loader.ts";
 import { modelRegistry } from "./model.ts";
+import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import type { DataHandle, DataWriter, MethodContext } from "./model.ts";
 import type { ModelType } from "./model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -2144,8 +2145,9 @@ export const model = {
     const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
     await loader1.loadModels(modelsDir);
 
-    // Read the cached bundle content
-    const bundlePath = join(repoDir, ".swamp", "bundles", "model.js");
+    // Read the cached bundle content (namespaced by baseDir hash)
+    const ns = bundleNamespace(modelsDir, repoDir);
+    const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
     const cachedBundle1 = await Deno.readTextFile(bundlePath);
 
     // Wait so mtime differs

@@ -51,6 +51,7 @@ import type {
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import {
+  bundleNamespace,
   SWAMP_DATA_DIR,
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
@@ -342,7 +343,7 @@ export class UserModelLoader {
           denoPath,
           baseDir,
         );
-        const module = await this.importBundle(js, file);
+        const module = await this.importBundle(js, file, baseDir);
 
         if (module.model) {
           modelFiles.push({ file, module, absolutePath });
@@ -499,7 +500,45 @@ export class UserModelLoader {
     );
     catalog.markPopulated("model");
 
+    // Clean up old flat-layout bundle files from before the namespaced layout.
+    if (this.repoDir) {
+      this.cleanupOldFlatBundles();
+    }
+
     return fullResult;
+  }
+
+  /**
+   * Removes orphaned .js files from the old flat bundle layout.
+   * The new layout uses hash-namespaced subdirectories. Files directly
+   * in .swamp/bundles/ (not in a subdirectory) are from the old layout.
+   */
+  private cleanupOldFlatBundles(): void {
+    if (!this.repoDir) return;
+    const bundlesDir = join(
+      this.repoDir,
+      SWAMP_DATA_DIR,
+      SWAMP_SUBDIRS.bundles,
+    );
+    try {
+      let cleaned = 0;
+      for (const entry of Deno.readDirSync(bundlesDir)) {
+        if (entry.isFile && entry.name.endsWith(".js")) {
+          try {
+            Deno.removeSync(join(bundlesDir, entry.name));
+            cleaned++;
+          } catch {
+            // Best-effort cleanup
+          }
+        }
+      }
+      if (cleaned > 0) {
+        logger
+          .warn`Migrated bundle cache to new format: cleaned up ${cleaned} old bundle file(s)`;
+      }
+    } catch {
+      // Bundles directory doesn't exist — nothing to clean
+    }
   }
 
   /**
@@ -667,10 +706,12 @@ export class UserModelLoader {
     catalog: ExtensionCatalogStore,
   ): void {
     const files = this.discoverFilesSync(dir);
+    const ns = this.repoDir ? bundleNamespace(dir, this.repoDir) : "";
     for (const relativePath of files) {
       const absolutePath = resolve(dir, relativePath);
       const bundlePath = join(
         bundleBaseDir,
+        ns,
         relativePath.replace(/\.ts$/, ".js"),
       );
 
@@ -841,7 +882,7 @@ export class UserModelLoader {
       denoPath,
       baseDir,
     );
-    const module = await this.importBundle(js, relativePath);
+    const module = await this.importBundle(js, relativePath, baseDir);
 
     const stat = await Deno.stat(absolutePath);
     const sourceMtime = stat.mtime?.toISOString() ?? "";
@@ -852,7 +893,7 @@ export class UserModelLoader {
         throw new Error(formatUserModelError(parsed.error));
       }
       const typeNormalized = ModelType.create(parsed.data.type).normalized;
-      const bundlePath = this.getBundlePath(relativePath);
+      const bundlePath = this.getBundlePath(relativePath, baseDir);
 
       catalog.upsert({
         type_normalized: typeNormalized,
@@ -890,7 +931,7 @@ export class UserModelLoader {
         throw new Error(parsed.error.message);
       }
       const typeNormalized = ModelType.create(parsed.data.type).normalized;
-      const bundlePath = this.getBundlePath(relativePath);
+      const bundlePath = this.getBundlePath(relativePath, baseDir);
 
       catalog.upsert({
         type_normalized: typeNormalized,
@@ -906,14 +947,16 @@ export class UserModelLoader {
   }
 
   /**
-   * Returns the bundle cache path for a relative source path.
+   * Returns the bundle cache path for a relative source path, namespaced
+   * by a hash of the base directory to prevent collisions between sources.
    */
-  private getBundlePath(relativePath: string): string {
+  private getBundlePath(relativePath: string, baseDir: string): string {
     if (!this.repoDir) return "";
     return join(
       this.repoDir,
       SWAMP_DATA_DIR,
       SWAMP_SUBDIRS.bundles,
+      bundleNamespace(baseDir, this.repoDir),
       relativePath.replace(/\.ts$/, ".js"),
     );
   }
@@ -962,6 +1005,7 @@ export class UserModelLoader {
         this.repoDir,
         SWAMP_DATA_DIR,
         SWAMP_SUBDIRS.bundles,
+        bundleNamespace(boundaryDir, this.repoDir),
         relativePath.replace(/\.ts$/, ".js"),
       );
 
@@ -1057,17 +1101,22 @@ export class UserModelLoader {
   private async importBundle(
     js: string,
     relativePath: string,
+    baseDir?: string,
   ): Promise<Record<string, unknown>> {
     // Rewrite zod imports and fix CJS/ESM interop at import-time — catches
     // old cached bundles. Both rewrites are idempotent.
     const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
     if (this.repoDir) {
+      const ns = baseDir ? bundleNamespace(baseDir, this.repoDir) : "";
+      const segments = ns
+        ? [ns, relativePath.replace(/\.ts$/, ".js")]
+        : [relativePath.replace(/\.ts$/, ".js")];
       const bundlePath = join(
         this.repoDir,
         SWAMP_DATA_DIR,
         SWAMP_SUBDIRS.bundles,
-        relativePath.replace(/\.ts$/, ".js"),
+        ...segments,
       );
 
       try {

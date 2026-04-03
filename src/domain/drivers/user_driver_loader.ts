@@ -33,6 +33,7 @@ import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { ExecutionDriver } from "./execution_driver.ts";
 import { driverTypeRegistry } from "./driver_type_registry.ts";
 import {
+  bundleNamespace,
   SWAMP_DATA_DIR,
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
@@ -214,6 +215,7 @@ export class UserDriverLoader {
         this.repoDir,
         SWAMP_DATA_DIR,
         SWAMP_SUBDIRS.driverBundles,
+        bundleNamespace(boundaryDir, this.repoDir),
         relativePath.replace(/\.ts$/, ".js"),
       );
 

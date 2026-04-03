@@ -34,6 +34,7 @@ import type { ReportContext } from "./report_context.ts";
 import type { ReportResult } from "./report.ts";
 import { reportRegistry } from "./report_registry.ts";
 import {
+  bundleNamespace,
   SWAMP_DATA_DIR,
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
@@ -152,7 +153,7 @@ export class UserReportLoader {
           denoPath,
           baseDir,
         );
-        const module = await this.importBundle(js, file);
+        const module = await this.importBundle(js, file, baseDir);
 
         if (!module.report) {
           // Files without a report export are silently skipped (utility files)
@@ -212,6 +213,7 @@ export class UserReportLoader {
         this.repoDir,
         SWAMP_DATA_DIR,
         SWAMP_SUBDIRS.reportBundles,
+        bundleNamespace(boundaryDir, this.repoDir),
         relativePath.replace(/\.ts$/, ".js"),
       );
 
@@ -274,6 +276,7 @@ export class UserReportLoader {
   private async importBundle(
     js: string,
     relativePath: string,
+    baseDir?: string,
   ): Promise<Record<string, unknown>> {
     const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
@@ -282,6 +285,7 @@ export class UserReportLoader {
         this.repoDir,
         SWAMP_DATA_DIR,
         SWAMP_SUBDIRS.reportBundles,
+        ...(baseDir ? [bundleNamespace(baseDir, this.repoDir)] : []),
         relativePath.replace(/\.ts$/, ".js"),
       );
 

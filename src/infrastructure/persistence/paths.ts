@@ -131,6 +131,30 @@ export function swampSourcesPath(repoDir: string): string {
 }
 
 /**
+ * Creates a short, stable hash for namespacing bundle cache directories.
+ *
+ * Uses the **relative** path from `repoDir` to `baseDir` as the hash input
+ * rather than the absolute path. This ensures consistency across processes
+ * even when the repo path resolves differently due to filesystem symlinks
+ * (e.g., macOS `/var` → `/private/var`). Since both paths share the same
+ * prefix within a process, `relative()` cancels it out.
+ *
+ * @param baseDir - The extension source directory (absolute)
+ * @param repoDir - The repository root directory (absolute)
+ * @returns An 8-character hex hash string
+ */
+export function bundleNamespace(baseDir: string, repoDir: string): string {
+  const rel = relative(repoDir, baseDir);
+  // FNV-1a hash
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < rel.length; i++) {
+    hash ^= rel.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
  * Converts an absolute path to a relative path from the repository root.
  *
  * Used when persisting paths to YAML files so they work across different

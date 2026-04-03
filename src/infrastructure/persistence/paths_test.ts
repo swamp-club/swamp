@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  bundleNamespace,
   getSwampConfigDir,
   getSwampDataDir,
   SWAMP_DATA_DIR,
@@ -241,4 +242,33 @@ Deno.test("getSwampDataDir throws when neither HOME nor USERPROFILE set", () => 
     if (originalProfile) Deno.env.set("USERPROFILE", originalProfile);
     else Deno.env.delete("USERPROFILE");
   }
+});
+
+Deno.test("bundleNamespace: same relative relationship produces same hash", () => {
+  // Simulates /var/... vs /private/var/... — different absolute prefixes,
+  // same relative relationship
+  const hash1 = bundleNamespace(
+    "/var/tmp/repo/.swamp/pulled-extensions/models",
+    "/var/tmp/repo",
+  );
+  const hash2 = bundleNamespace(
+    "/private/var/tmp/repo/.swamp/pulled-extensions/models",
+    "/private/var/tmp/repo",
+  );
+  assertEquals(hash1, hash2);
+});
+
+Deno.test("bundleNamespace: different base dirs produce different hashes", () => {
+  const local = bundleNamespace("/repo/extensions/models", "/repo");
+  const pulled = bundleNamespace(
+    "/repo/.swamp/pulled-extensions/models",
+    "/repo",
+  );
+  assertEquals(local !== pulled, true);
+});
+
+Deno.test("bundleNamespace: returns 8-char hex string", () => {
+  const hash = bundleNamespace("/repo/extensions/models", "/repo");
+  assertEquals(hash.length, 8);
+  assertEquals(/^[0-9a-f]{8}$/.test(hash), true);
 });

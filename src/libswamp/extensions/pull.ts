@@ -24,7 +24,10 @@ import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  bundleNamespace,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
 import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
@@ -776,11 +779,28 @@ export async function installExtension(
     const absoluteDriversDir = resolve(repoDir, ctx.driversDir);
     const absoluteDatastoresDir = resolve(repoDir, ctx.datastoresDir);
     const absoluteReportsDir = resolve(repoDir, ctx.reportsDir);
-    const bundlesDir = swampPath(repoDir, "bundles");
-    const vaultBundlesDir = swampPath(repoDir, "vault-bundles");
-    const driverBundlesDir = swampPath(repoDir, "driver-bundles");
-    const datastoreBundlesDir = swampPath(repoDir, "datastore-bundles");
-    const reportBundlesDir = swampPath(repoDir, "report-bundles");
+    // Namespace bundles by source directory hash to prevent cache collisions
+    // between local, pulled, and source extensions with the same filenames.
+    const bundlesDir = join(
+      swampPath(repoDir, "bundles"),
+      bundleNamespace(absoluteModelsDir, repoDir),
+    );
+    const vaultBundlesDir = join(
+      swampPath(repoDir, "vault-bundles"),
+      bundleNamespace(absoluteVaultsDir, repoDir),
+    );
+    const driverBundlesDir = join(
+      swampPath(repoDir, "driver-bundles"),
+      bundleNamespace(absoluteDriversDir, repoDir),
+    );
+    const datastoreBundlesDir = join(
+      swampPath(repoDir, "datastore-bundles"),
+      bundleNamespace(absoluteDatastoresDir, repoDir),
+    );
+    const reportBundlesDir = join(
+      swampPath(repoDir, "report-bundles"),
+      bundleNamespace(absoluteReportsDir, repoDir),
+    );
 
     const conflicts = await detectConflicts(
       extractDir,

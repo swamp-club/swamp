@@ -267,11 +267,16 @@ export const datastore = {
     const loader1 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
     await loader1.loadDatastores(datastoresDir);
 
-    // Read the cached bundle content
+    // Read the cached bundle content (namespaced by baseDir hash)
+    const { bundleNamespace } = await import(
+      "../../infrastructure/persistence/paths.ts"
+    );
+    const ns = bundleNamespace(datastoresDir, repoDir);
     const bundlePath = join(
       repoDir,
       ".swamp",
       "datastore-bundles",
+      ns,
       "my_store.js",
     );
     const cachedBundle1 = await Deno.readTextFile(bundlePath);

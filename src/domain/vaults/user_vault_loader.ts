@@ -33,6 +33,7 @@ import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { VaultProvider } from "./vault_provider.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import {
+  bundleNamespace,
   SWAMP_DATA_DIR,
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
@@ -215,6 +216,7 @@ export class UserVaultLoader {
         this.repoDir,
         SWAMP_DATA_DIR,
         SWAMP_SUBDIRS.vaultBundles,
+        bundleNamespace(boundaryDir, this.repoDir),
         relativePath.replace(/\.ts$/, ".js"),
       );
 
