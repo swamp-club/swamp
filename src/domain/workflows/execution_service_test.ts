@@ -19,6 +19,7 @@
 
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import {
+  coerceToSuffix,
   DefaultStepExecutor,
   resolveForEachStepName,
   type StepExecutionContext,
@@ -2437,4 +2438,55 @@ Deno.test("resolveForEachStepName: mixed resolved and failed expressions appends
   );
   assertEquals(result.name, "resolved-${{ self.nonexistent.deep }}-0");
   assertEquals(result.hadEvalFailure, true);
+});
+
+// --- coerceToSuffix tests ---
+
+Deno.test("coerceToSuffix: returns string for primitive values", () => {
+  assertEquals(coerceToSuffix("hello"), "hello");
+  assertEquals(coerceToSuffix(42), "42");
+  assertEquals(coerceToSuffix(true), "true");
+});
+
+Deno.test("coerceToSuffix: returns empty string for null and undefined", () => {
+  assertEquals(coerceToSuffix(null), "");
+  assertEquals(coerceToSuffix(undefined), "");
+});
+
+Deno.test("coerceToSuffix: uses key property from object", () => {
+  assertEquals(coerceToSuffix({ key: "my-key", value: "stuff" }), "my-key");
+});
+
+Deno.test("coerceToSuffix: uses name property from object without key", () => {
+  assertEquals(coerceToSuffix({ name: "my-name", id: "123" }), "my-name");
+});
+
+Deno.test("coerceToSuffix: uses id property from object without key or name", () => {
+  assertEquals(coerceToSuffix({ id: "abc-123", other: "data" }), "abc-123");
+});
+
+Deno.test("coerceToSuffix: falls back to JSON.stringify for object without known properties", () => {
+  const val = { foo: "bar", baz: 1 };
+  assertEquals(coerceToSuffix(val), JSON.stringify(val));
+});
+
+Deno.test("coerceToSuffix: truncates long JSON.stringify output", () => {
+  const val = { data: "x".repeat(100) };
+  const result = coerceToSuffix(val);
+  assertEquals(result.length, 64);
+  assertEquals(result, JSON.stringify(val).slice(0, 64));
+});
+
+Deno.test("coerceToSuffix: prefers key over name and id", () => {
+  assertEquals(
+    coerceToSuffix({ key: "k", name: "n", id: "i" }),
+    "k",
+  );
+});
+
+Deno.test("coerceToSuffix: skips null/undefined properties", () => {
+  assertEquals(
+    coerceToSuffix({ key: null, name: undefined, id: "fallback-id" }),
+    "fallback-id",
+  );
 });

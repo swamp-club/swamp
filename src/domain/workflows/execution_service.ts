@@ -458,7 +458,7 @@ export class DefaultStepExecutor implements StepExecutor {
                   `Vary dimension '${key}' not found in step inputs for spec '${override.specName}'`,
                 );
               }
-              return String(val);
+              return coerceToSuffix(val);
             });
             resolvedVarySuffix = varyValues.join("-");
           }
@@ -636,14 +636,7 @@ export class DefaultStepExecutor implements StepExecutor {
         // Compute vary suffix from forEach variable
         let reportVarySuffix: string | undefined;
         if (ctx.forEachVariable?.value !== undefined) {
-          const val = ctx.forEachVariable.value;
-          if (typeof val === "object" && val !== null && "key" in val) {
-            reportVarySuffix = String(
-              (val as Record<string, unknown>).key,
-            );
-          } else {
-            reportVarySuffix = String(val);
-          }
+          reportVarySuffix = coerceToSuffix(ctx.forEachVariable.value);
         }
 
         const reportEventCallbacks: ReportEventCallback = {
@@ -1015,6 +1008,34 @@ export interface ResolvedStepName {
   name: string;
   /** Whether any expression evaluation failed during resolution. */
   hadEvalFailure: boolean;
+}
+
+/** Maximum length for a coerced suffix before truncation. */
+const MAX_SUFFIX_LENGTH = 64;
+
+/**
+ * Safely converts an unknown value to a string suitable for use as a data
+ * artifact name suffix. For objects, tries common identifier properties
+ * (`key`, `name`, `id`) before falling back to a truncated JSON representation.
+ */
+export function coerceToSuffix(val: unknown): string {
+  if (val === undefined || val === null) {
+    return "";
+  }
+  if (typeof val !== "object") {
+    return String(val);
+  }
+  const obj = val as Record<string, unknown>;
+  for (const prop of ["key", "name", "id"]) {
+    if (prop in obj && obj[prop] !== undefined && obj[prop] !== null) {
+      return String(obj[prop]);
+    }
+  }
+  const json = JSON.stringify(val);
+  if (json.length <= MAX_SUFFIX_LENGTH) {
+    return json;
+  }
+  return json.slice(0, MAX_SUFFIX_LENGTH);
 }
 
 /**
