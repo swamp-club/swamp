@@ -136,12 +136,43 @@ export async function resolveSourceExtensionDirs(
     const sourceDir = source.path;
     const resolved: ResolvedSourceDirs = { sourcePath: sourceDir };
 
-    // Try to read the source's own .swamp.yaml for directory overrides
+    // Try to read the source's own .swamp.yaml for directory overrides.
+    // The YAML is from an external repo, so we only extract fields we need
+    // and validate they are strings before using them.
     let sourceMarker: RepoMarkerData | null = null;
     try {
       const markerPath = resolve(sourceDir, ".swamp.yaml");
       const content = await Deno.readTextFile(markerPath);
-      sourceMarker = parseYaml(content) as RepoMarkerData;
+      const raw = parseYaml(content);
+      if (raw && typeof raw === "object") {
+        const obj = raw as Record<string, unknown>;
+        sourceMarker = {
+          swampVersion: typeof obj.swampVersion === "string"
+            ? obj.swampVersion
+            : "",
+          initializedAt: typeof obj.initializedAt === "string"
+            ? obj.initializedAt
+            : "",
+          modelsDir: typeof obj.modelsDir === "string"
+            ? obj.modelsDir
+            : undefined,
+          workflowsDir: typeof obj.workflowsDir === "string"
+            ? obj.workflowsDir
+            : undefined,
+          vaultsDir: typeof obj.vaultsDir === "string"
+            ? obj.vaultsDir
+            : undefined,
+          driversDir: typeof obj.driversDir === "string"
+            ? obj.driversDir
+            : undefined,
+          datastoresDir: typeof obj.datastoresDir === "string"
+            ? obj.datastoresDir
+            : undefined,
+          reportsDir: typeof obj.reportsDir === "string"
+            ? obj.reportsDir
+            : undefined,
+        };
+      }
     } catch {
       // No marker file — use defaults
     }

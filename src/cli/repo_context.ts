@@ -77,18 +77,24 @@ import {
 
 /**
  * Resolves source workflow directories from `.swamp-sources.yaml`.
+ * Results are cached per repoDir to avoid re-reading and re-expanding on
+ * every call (multiple repo context functions call this per command).
  * Returns an empty array if no sources are configured or file doesn't exist.
  */
+const sourceWorkflowDirCache = new Map<string, string[]>();
 async function getSourceWorkflowDirs(repoDir: string): Promise<string[]> {
-  try {
-    const sourcesConfig = await readSwampSources(repoDir);
-    if (!sourcesConfig) return [];
-    const expanded = await expandSourcePaths(sourcesConfig, repoDir);
-    const resolved = await resolveSourceExtensionDirs(expanded);
-    return collectDirsForKind(resolved, "workflows");
-  } catch {
+  const cached = sourceWorkflowDirCache.get(repoDir);
+  if (cached) return cached;
+  const sourcesConfig = await readSwampSources(repoDir);
+  if (!sourcesConfig) {
+    sourceWorkflowDirCache.set(repoDir, []);
     return [];
   }
+  const expanded = await expandSourcePaths(sourcesConfig, repoDir);
+  const resolved = await resolveSourceExtensionDirs(expanded);
+  const dirs = collectDirsForKind(resolved, "workflows");
+  sourceWorkflowDirCache.set(repoDir, dirs);
+  return dirs;
 }
 
 /**

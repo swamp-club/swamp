@@ -272,8 +272,11 @@ export class UserDatastoreLoader {
         if (bundleExists) {
           try {
             const cached = await Deno.readTextFile(bundlePath);
+            const msg = bundleError instanceof Error
+              ? bundleError.message
+              : String(bundleError);
             logger
-              .warn`Rebundle failed for ${relativePath}, using cached bundle: ${bundleError}`;
+              .info`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
             // Touch the cache mtime so subsequent loads see it as fresh,
             // avoiding repeated failed rebundle attempts on every cold start.
             try {

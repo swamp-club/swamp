@@ -596,14 +596,10 @@ export async function runCli(args: string[]): Promise<void> {
   // Read extension sources (additional extension directories from
   // .swamp-sources.yaml). Resolved once and shared across all loaders.
   let resolvedSources: ResolvedSourceDirs[] = [];
-  try {
-    const sourcesConfig = await readSwampSources(repoDir);
-    if (sourcesConfig) {
-      const expanded = await expandSourcePaths(sourcesConfig, repoDir);
-      resolvedSources = await resolveSourceExtensionDirs(expanded);
-    }
-  } catch {
-    // Sources file missing or invalid — continue without sources
+  const sourcesConfig = await readSwampSources(repoDir);
+  if (sourcesConfig) {
+    const expanded = await expandSourcePaths(sourcesConfig, repoDir);
+    resolvedSources = await resolveSourceExtensionDirs(expanded);
   }
 
   // Configure lazy extension loaders on each registry.
