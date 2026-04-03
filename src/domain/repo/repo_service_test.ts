@@ -457,6 +457,7 @@ Deno.test("RepoService.init always creates .gitignore with managed section", asy
     );
     assertStringIncludes(content, "# END swamp managed section");
     assertStringIncludes(content, ".swamp/");
+    assertStringIncludes(content, ".swamp-sources.yaml");
     assertStringIncludes(content, ".claude/");
 
     // Check marker persists the preference

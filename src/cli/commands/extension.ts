@@ -29,6 +29,7 @@ import { extensionUpdateCommand } from "./extension_update.ts";
 import { extensionVersionCommand } from "./extension_version.ts";
 import { extensionYankCommand } from "./extension_yank.ts";
 import { extensionTrustCommand } from "./extension_trust.ts";
+import { extensionSourceCommand } from "./extension_source.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const extensionCommand = new Command()
@@ -48,4 +49,5 @@ export const extensionCommand = new Command()
   .command("update", extensionUpdateCommand)
   .command("version", extensionVersionCommand)
   .command("yank", extensionYankCommand)
-  .command("trust", extensionTrustCommand);
+  .command("trust", extensionTrustCommand)
+  .command("source", extensionSourceCommand);

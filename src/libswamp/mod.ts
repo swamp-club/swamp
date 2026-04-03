@@ -319,6 +319,30 @@ export {
   type TrustAutoTrustEvent,
 } from "./extensions/trust_auto_trust.ts";
 
+// Extension source operations
+export {
+  type SourceListData,
+  type SourceListEntry,
+  type SourceListEvent,
+  type SourceModifyData,
+  type SourceModifyEvent,
+} from "./sources/source_events.ts";
+export {
+  createSourceAddDeps,
+  sourceAdd,
+  type SourceAddDeps,
+} from "./sources/add.ts";
+export {
+  createSourceRemoveDeps,
+  sourceRemove,
+  type SourceRemoveDeps,
+} from "./sources/remove.ts";
+export {
+  createSourceListDeps,
+  sourceList,
+  type SourceListDeps,
+} from "./sources/list.ts";
+
 // Type operations
 export {
   createTypeDescribeDeps,

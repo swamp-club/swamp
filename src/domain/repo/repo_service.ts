@@ -743,6 +743,9 @@ ${body}`;
       "",
       "# Runtime data (not needed in version control)",
       ".swamp/",
+      "",
+      "# Local extension sources (developer-specific, not shared)",
+      ".swamp-sources.yaml",
     ];
 
     const toolEntry = GITIGNORE_TOOL_ENTRIES[tool];

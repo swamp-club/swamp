@@ -106,6 +106,13 @@ import { renderUpdateNotification } from "../presentation/renderers/update_notif
 import { getOutputModeFromArgs } from "./context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
+import {
+  collectDirsForKind,
+  expandSourcePaths,
+  readSwampSources,
+  resolveSourceExtensionDirs,
+} from "../infrastructure/persistence/swamp_sources_repository.ts";
+import type { ResolvedSourceDirs } from "../domain/repo/swamp_sources.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -224,6 +231,7 @@ async function loadUserModels(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  sourceDirs: string[] = [],
 ): Promise<void> {
   try {
     const modelsDir = resolveModelsDir(marker);
@@ -252,8 +260,9 @@ async function loadUserModels(
     // If catalog is populated, only rebundles changed files.
     // If not populated (first run), does a full import to bootstrap.
     // Always scans for staleness so users never see stale data.
+    // Load order: local > sources > pulled (sources override pulled)
     const result = await loader.buildIndex(absoluteModelsDir, catalog, {
-      additionalDirs: [pulledDir],
+      additionalDirs: [...sourceDirs, pulledDir],
     });
 
     for (const failure of result.failed) {
@@ -271,6 +280,7 @@ async function loadUserVaults(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  sourceDirs: string[] = [],
 ): Promise<void> {
   try {
     const vaultsDir = resolveVaultsDir(marker);
@@ -281,7 +291,7 @@ async function loadUserVaults(
     const loader = new UserVaultLoader(denoRuntime, repoDir);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
     const result = await loader.loadVaults(absoluteVaultsDir, {
-      additionalDirs: [pulledDir],
+      additionalDirs: [...sourceDirs, pulledDir],
       skipAlreadyRegistered: true,
     });
 
@@ -297,6 +307,7 @@ async function loadUserDrivers(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  sourceDirs: string[] = [],
 ): Promise<void> {
   try {
     const driversDir = resolveDriversDir(marker);
@@ -307,7 +318,7 @@ async function loadUserDrivers(
     const loader = new UserDriverLoader(denoRuntime, repoDir);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
     const result = await loader.loadDrivers(absoluteDriversDir, {
-      additionalDirs: [pulledDir],
+      additionalDirs: [...sourceDirs, pulledDir],
       skipAlreadyRegistered: true,
     });
 
@@ -323,6 +334,7 @@ async function loadUserDatastores(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  sourceDirs: string[] = [],
 ): Promise<void> {
   try {
     const datastoresDir = resolveDatastoresDir(marker);
@@ -333,7 +345,7 @@ async function loadUserDatastores(
     const loader = new UserDatastoreLoader(denoRuntime, repoDir);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores);
     const result = await loader.loadDatastores(absoluteDatastoresDir, {
-      additionalDirs: [pulledDir],
+      additionalDirs: [...sourceDirs, pulledDir],
       skipAlreadyRegistered: true,
     });
 
@@ -350,6 +362,7 @@ async function loadUserReports(
   repoDir: string,
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
+  sourceDirs: string[] = [],
 ): Promise<void> {
   try {
     const reportsDir = resolveReportsDir(marker);
@@ -360,7 +373,7 @@ async function loadUserReports(
     const loader = new UserReportLoader(denoRuntime, repoDir);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
     const result = await loader.loadReports(absoluteReportsDir, {
-      additionalDirs: [pulledDir],
+      additionalDirs: [...sourceDirs, pulledDir],
       skipAlreadyRegistered: true,
     });
 
@@ -580,6 +593,19 @@ export async function runCli(args: string[]): Promise<void> {
     // Not in a swamp repo - marker stays null
   }
 
+  // Read extension sources (additional extension directories from
+  // .swamp-sources.yaml). Resolved once and shared across all loaders.
+  let resolvedSources: ResolvedSourceDirs[] = [];
+  try {
+    const sourcesConfig = await readSwampSources(repoDir);
+    if (sourcesConfig) {
+      const expanded = await expandSourcePaths(sourcesConfig, repoDir);
+      resolvedSources = await resolveSourceExtensionDirs(expanded);
+    }
+  } catch {
+    // Sources file missing or invalid — continue without sources
+  }
+
   // Configure lazy extension loaders on each registry.
   // Extensions are NOT loaded here — they load on first access when a
   // command calls registry.ensureLoaded() via its dep factory.
@@ -588,18 +614,29 @@ export async function runCli(args: string[]): Promise<void> {
   const deferredWarnings: DeferredWarning[] = [];
   if (commandNeedsLoaderSetup(args)) {
     const denoRuntime = new EmbeddedDenoRuntime();
-    modelRegistry.setLoader(() => loadUserModels(repoDir, marker, denoRuntime));
+    const sourceModelsDirs = collectDirsForKind(resolvedSources, "models");
+    const sourceVaultsDirs = collectDirsForKind(resolvedSources, "vaults");
+    const sourceDriversDirs = collectDirsForKind(resolvedSources, "drivers");
+    const sourceDatastoresDirs = collectDirsForKind(
+      resolvedSources,
+      "datastores",
+    );
+    const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
+
+    modelRegistry.setLoader(() =>
+      loadUserModels(repoDir, marker, denoRuntime, sourceModelsDirs)
+    );
     vaultTypeRegistry.setLoader(() =>
-      loadUserVaults(repoDir, marker, denoRuntime)
+      loadUserVaults(repoDir, marker, denoRuntime, sourceVaultsDirs)
     );
     driverTypeRegistry.setLoader(() =>
-      loadUserDrivers(repoDir, marker, denoRuntime)
+      loadUserDrivers(repoDir, marker, denoRuntime, sourceDriversDirs)
     );
     datastoreTypeRegistry.setLoader(() =>
-      loadUserDatastores(repoDir, marker, denoRuntime)
+      loadUserDatastores(repoDir, marker, denoRuntime, sourceDatastoresDirs)
     );
     reportRegistry.setLoader(() =>
-      loadUserReports(repoDir, marker, denoRuntime)
+      loadUserReports(repoDir, marker, denoRuntime, sourceReportsDirs)
     );
 
     // Warn if lockfile has entries but pulled extension files are missing.

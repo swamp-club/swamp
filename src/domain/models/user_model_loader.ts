@@ -919,6 +919,31 @@ export class UserModelLoader {
   }
 
   /**
+   * Walks up from a source file to find the nearest deno.json or deno.jsonc.
+   * Returns the absolute path to the config file, or undefined if none found.
+   * Stops at the filesystem root.
+   */
+  private findNearestDenoConfig(absolutePath: string): string | undefined {
+    let dir = dirname(absolutePath);
+    const root = resolve("/");
+    while (dir !== root) {
+      for (const name of ["deno.json", "deno.jsonc"]) {
+        const candidate = join(dir, name);
+        try {
+          Deno.statSync(candidate);
+          return candidate;
+        } catch {
+          // Not found — keep walking up
+        }
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return undefined;
+  }
+
+  /**
    * Bundles an extension file, using cached bundle from .swamp/bundles/ when possible.
    * Writes the bundle to disk for future caching and potential publishing.
    */
@@ -974,7 +999,17 @@ export class UserModelLoader {
       // to the cache. The old bundle file is untouched on failure since
       // bundleExtension returns the JS string in memory before we write.
       try {
-        const js = await bundleExtension(absolutePath, denoPath);
+        // Discover the nearest deno.json for import map resolution.
+        // This is essential for source extensions that live in a separate
+        // directory tree with their own deno.json.
+        const denoConfigPath = this.findNearestDenoConfig(absolutePath);
+        if (denoConfigPath) {
+          logger
+            .warn`Using discovered deno config for ${relativePath}: ${denoConfigPath}`;
+        }
+        const js = await bundleExtension(absolutePath, denoPath, {
+          denoConfigPath,
+        });
         const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
         await assertSafePath(bundlePath, bundleBoundary);
         await Deno.mkdir(dirname(bundlePath), { recursive: true });
@@ -1003,7 +1038,12 @@ export class UserModelLoader {
     }
 
     // No repo dir — just bundle without caching
-    return await bundleExtension(absolutePath, denoPath);
+    const denoConfigPath = this.findNearestDenoConfig(absolutePath);
+    if (denoConfigPath) {
+      logger
+        .warn`Using discovered deno config for ${absolutePath}: ${denoConfigPath}`;
+    }
+    return await bundleExtension(absolutePath, denoPath, { denoConfigPath });
   }
 
   /**

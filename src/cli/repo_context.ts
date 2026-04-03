@@ -68,6 +68,28 @@ import type { DatastoreProvider } from "../domain/datastore/datastore_provider.t
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
+import {
+  collectDirsForKind,
+  expandSourcePaths,
+  readSwampSources,
+  resolveSourceExtensionDirs,
+} from "../infrastructure/persistence/swamp_sources_repository.ts";
+
+/**
+ * Resolves source workflow directories from `.swamp-sources.yaml`.
+ * Returns an empty array if no sources are configured or file doesn't exist.
+ */
+async function getSourceWorkflowDirs(repoDir: string): Promise<string[]> {
+  try {
+    const sourcesConfig = await readSwampSources(repoDir);
+    if (!sourcesConfig) return [];
+    const expanded = await expandSourcePaths(sourcesConfig, repoDir);
+    const resolved = await resolveSourceExtensionDirs(expanded);
+    return collectDirsForKind(resolved, "workflows");
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Resolves a DatastoreProvider for a custom datastore config.
@@ -213,11 +235,15 @@ export async function requireInitializedRepoReadOnly(
   const yamlWorkflowsDir = join(repoPath.value, "workflows");
   const vaultsDir = join(repoPath.value, "vaults");
 
+  // Resolve source workflow directories from .swamp-sources.yaml
+  const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
+
   // Create repository context with the validated directory and datastore resolver
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
     workflowsDir,
     additionalWorkflowsDirs: [
+      ...sourceWorkflowDirs,
       swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
     ],
     definitionsDir,
@@ -334,10 +360,17 @@ export function requireInitializedRepo(
     const yamlWorkflowsDir = join(repoPath.value, "workflows");
     const vaultsDir = join(repoPath.value, "vaults");
 
+    // Resolve source workflow directories from .swamp-sources.yaml
+    const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
+
     // Create repository context with the validated directory and datastore resolver
     const repoContext = createRepositoryContext({
       repoDir: repoPath.value,
       workflowsDir,
+      additionalWorkflowsDirs: [
+        ...sourceWorkflowDirs,
+        swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
+      ],
       definitionsDir,
       yamlWorkflowsDir,
       vaultsDir,
@@ -426,11 +459,15 @@ export async function requireInitializedRepoUnlocked(
   const yamlWorkflowsDir = join(repoPath.value, "workflows");
   const vaultsDir = join(repoPath.value, "vaults");
 
+  // Resolve source workflow directories from .swamp-sources.yaml
+  const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
+
   // Create repository context with the validated directory and datastore resolver
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
     workflowsDir,
     additionalWorkflowsDirs: [
+      ...sourceWorkflowDirs,
       swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
     ],
     definitionsDir,
