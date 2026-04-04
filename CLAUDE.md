@@ -9,8 +9,32 @@ architecture.
 
 ## Skills
 
-When creating or updating `swamp-*` skills in `.claude/skills/`, follow the
-`skill-creator` skill guidelines to ensure consistent structure and quality.
+Skills live in `.claude/skills/<skill-name>/`. When creating or modifying any
+skill, **always load the `skill-creator` skill first** — it contains the
+authoritative guidelines for structure, frontmatter, and progressive disclosure.
+
+### Skill structure
+
+```
+.claude/skills/<skill-name>/
+├── SKILL.md              (required — uppercase)
+├── references/            (optional — detailed docs loaded on demand)
+└── evals/                 (optional — trigger_evals.json)
+```
+
+### Rules for skill files
+
+- **SKILL.md must be uppercase** — not `skill.md`.
+- **Frontmatter is required** — YAML with `name` and `description` fields only.
+  The `description` is the primary trigger mechanism; include what the skill
+  does AND specific trigger phrases/contexts.
+- **Keep SKILL.md body under 500 lines** — split detailed content into
+  `references/` files and reference them from SKILL.md.
+- **No extraneous files** — no README.md, CHANGELOG.md, INSTALLATION_GUIDE.md,
+  or similar auxiliary docs.
+- **Format after editing** — run `deno fmt` after modifying any `.md` files in
+  `.claude/skills/`. Skill markdown files follow the same formatting rules as
+  all other files in this repository.
 
 ## Code Style
 
