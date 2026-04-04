@@ -1,6 +1,7 @@
 # Implementation & CI Flow
 
-Read this after the plan is approved and the human says to implement.
+Read this after the plan is approved and the human says to implement. The
+`approve` method already transitioned the issue to "in progress" in swamp-club.
 
 ## 1. Do the Implementation Work
 
@@ -44,6 +45,8 @@ d. **Report verification results** to the human before creating the PR:
 Use the `github-pr` skill.
 
 ## 4. Record the PR Number
+
+After the PR is created, record its number so `ci_status` can find it:
 
 ```
 swamp model method run issue-<N> implement \

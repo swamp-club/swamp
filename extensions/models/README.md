@@ -162,7 +162,7 @@ swamp model method run issue-850 approve --json
 ### Implementation & CI
 
 ```bash
-# Record implementation start + PR number
+# Record PR number (approve already marked work as in-progress)
 swamp model method run issue-850 implement --input prNumber=851 --json
 
 # Fetch CI results
@@ -193,18 +193,18 @@ swamp model output search issue-850 --json
 
 ## Methods
 
-| Method      | Description                                   | State Transition                 |
-| ----------- | --------------------------------------------- | -------------------------------- |
-| `start`     | Fetch issue from GitHub                       | * -> triaging                    |
-| `triage`    | Classify as bug/feature/unclear               | triaging -> classified           |
-| `plan`      | Generate implementation plan                  | classified -> plan_generated     |
-| `review`    | Display current plan (read-only)              | no change                        |
-| `iterate`   | Revise plan with feedback                     | plan_generated -> plan_generated |
-| `approve`   | Lock the plan, post to GitHub                 | plan_generated -> approved       |
-| `implement` | Record PR number, signal implementation start | approved -> implementing         |
-| `ci_status` | Fetch CI check results and review comments    | implementing -> ci_review        |
-| `fix`       | Direct specific fixes from review feedback    | ci_review -> implementing        |
-| `complete`  | Mark lifecycle done                           | ci_review -> done                |
+| Method      | Description                                | State Transition                 |
+| ----------- | ------------------------------------------ | -------------------------------- |
+| `start`     | Fetch issue from GitHub                    | * -> triaging                    |
+| `triage`    | Classify as bug/feature/unclear            | triaging -> classified           |
+| `plan`      | Generate implementation plan               | classified -> plan_generated     |
+| `review`    | Display current plan (read-only)           | no change                        |
+| `iterate`   | Revise plan with feedback                  | plan_generated -> plan_generated |
+| `approve`   | Lock the plan, post to GitHub, start work  | plan_generated -> approved       |
+| `implement` | Record PR number for CI tracking           | approved -> implementing         |
+| `ci_status` | Fetch CI check results and review comments | implementing -> ci_review        |
+| `fix`       | Direct specific fixes from review feedback | ci_review -> implementing        |
+| `complete`  | Mark lifecycle done                        | ci_review -> done                |
 
 ## Data stored
 
@@ -221,7 +221,54 @@ and a new feedback version. You can review any prior version.
 | `ciResults`      | CI check runs + review comments               |
 | `fixDirective`   | Human-directed fix instructions               |
 
+## Swamp Club Integration
+
+The issue-lifecycle model can optionally push structured lifecycle data to
+[swamp.club](https://swamp.club), giving you a dashboard view of issue progress
+across your team.
+
+### How it works
+
+Every state transition (triage, plan, approve, implement, complete) posts a
+structured lifecycle entry to the swamp-club API. The issue is created in
+swamp-club on first contact via the `/ensure` endpoint, which matches by GitHub
+repo + issue number.
+
+Key status transitions in swamp-club:
+
+| Method     | swamp-club status |
+| ---------- | ----------------- |
+| `start`    | open              |
+| `triage`   | triaged           |
+| `approve`  | in_progress       |
+| `complete` | shipped           |
+
+### Setup
+
+The integration requires a swamp-club API key. The URL defaults to
+`https://swamp.club`.
+
+**Option 1: Environment variable (recommended)**
+
+```bash
+export SWAMP_API_KEY=swamp_your_key_here
+```
+
+That's it. The model reads `SWAMP_API_KEY` automatically and connects to
+`https://swamp.club`.
+
+**Option 2: Point at a local dev server**
+
+```bash
+export SWAMP_API_KEY=swamp_your_key_here
+export SWAMP_CLUB_URL=http://localhost:8000
+```
+
+If no API key is set, the swamp-club integration is silently disabled — all
+GitHub comment posting and local data storage still works normally.
+
 ## Prerequisites
 
 - `gh` CLI installed and authenticated (`gh auth login`)
 - swamp initialized in the repository (`swamp init`)
+- (Optional) `SWAMP_API_KEY` env var for swamp-club integration
