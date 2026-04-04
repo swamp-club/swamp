@@ -1328,7 +1328,6 @@ export const model = {
             },
             isVerbose: false,
           });
-          await scImpl.transitionStatus("in_progress");
         }
         await tracker.setPhaseLabel(repo, issueNumber, "implementing");
 

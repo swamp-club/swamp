@@ -91,6 +91,7 @@ export class SwampClubClient {
           type: params.type ?? "feature",
           githubAuthorLogin: params.githubAuthorLogin,
         }),
+        signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -146,6 +147,7 @@ export class SwampClubClient {
           body: params.body,
           isVerbose: params.isVerbose ?? false,
         }),
+        signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
@@ -173,6 +175,7 @@ export class SwampClubClient {
           "Authorization": `Bearer ${this.#apiKey}`,
         },
         body: JSON.stringify({ status }),
+        signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");

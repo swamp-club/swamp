@@ -241,7 +241,7 @@ Key status transitions in swamp-club:
 | `start`    | open              |
 | `triage`   | triaged           |
 | `approve`  | in_progress       |
-| `complete` | done              |
+| `complete` | shipped           |
 
 ### Setup
 
