@@ -274,6 +274,7 @@ export async function createSwampClubClient(
       method: "GET",
       signal: AbortSignal.timeout(5_000),
     });
+    await res.body?.cancel();
     if (!res.ok) {
       logger?.warning(
         "swamp-club at {url} returned HTTP {status} — lifecycle entries will be skipped",

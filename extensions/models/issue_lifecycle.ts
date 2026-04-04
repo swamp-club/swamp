@@ -1421,7 +1421,7 @@ export const model = {
           | null;
         if (!state?.prNumber) {
           throw new Error(
-            "No PR number recorded. Run 'implement' with --input prNumber=<N> first.",
+            "No PR number recorded. Run 'record_pr' with --input prNumber=<N> first.",
           );
         }
         const prNumber = state.prNumber;
