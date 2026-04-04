@@ -224,7 +224,10 @@ async function main(): Promise<void> {
     for (const f of failures) {
       const desc = f.testCase?.description ?? f.testCase?.vars?.query ??
         "unknown";
-      const output = (f.response?.output ?? "").slice(0, 100);
+      const rawOutput = f.response?.output ?? "";
+      const output = (typeof rawOutput === "string"
+        ? rawOutput
+        : JSON.stringify(rawOutput)).slice(0, 100);
       console.log(`  FAIL: ${desc}`);
       console.log(`    → ${output}`);
     }
@@ -249,7 +252,10 @@ async function main(): Promise<void> {
       for (const f of failures) {
         const desc = (f.testCase?.description ?? f.testCase?.vars?.query ??
           "unknown").replace(/\|/g, "\\|");
-        const output = (f.response?.output ?? "").slice(0, 80).replace(
+        const rawOut = f.response?.output ?? "";
+        const output = (typeof rawOut === "string"
+          ? rawOut
+          : JSON.stringify(rawOut)).slice(0, 80).replace(
           /\|/g,
           "\\|",
         ).replace(/\n/g, " ");

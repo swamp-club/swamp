@@ -20,7 +20,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [sonnet, opus, gpt-4.1, gemini-2.5-pro]
+        include:
+          - model: sonnet
+            concurrency: 20
+          - model: opus
+            concurrency: 20
+          - model: gpt-4.1
+            concurrency: 5
+          - model: gemini-2.5-pro
+            concurrency: 20
     steps:
       - name: Check if model is selected
         id: check
@@ -54,4 +62,4 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-        run: deno run eval-skill-triggers --model ${{ matrix.model }}
+        run: deno run eval-skill-triggers --model ${{ matrix.model }} --concurrency ${{ matrix.concurrency }}
