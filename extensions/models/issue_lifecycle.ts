@@ -1335,6 +1335,62 @@ export const model = {
       },
     },
 
+    record_pr: {
+      description: "Record the PR number after implementation has started",
+      arguments: z.object({
+        prNumber: z.number().describe("Pull request number"),
+      }),
+      execute: async (
+        args: { prNumber: number },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
+        const { repo, issueNumber } = context.globalArgs;
+
+        const stateHandle = await context.writeResource("state", "state-main", {
+          phase: "implementing",
+          issueNumber,
+          repo,
+          prNumber: args.prNumber,
+          updatedAt: new Date().toISOString(),
+        });
+
+        context.logger.info("Recorded PR #{prNumber}", {
+          prNumber: args.prNumber,
+        });
+
+        await tracker.postComment(
+          repo,
+          issueNumber,
+          `\u{1F517} **PR linked:** #${args.prNumber}`,
+        );
+
+        const sc = await ensureSwampClub(context.globalArgs, context.logger);
+        if (sc) {
+          await sc.postLifecycleEntry({
+            step: "pr_linked",
+            targetStatus: "in_progress",
+            summary: `PR #${args.prNumber} linked to implementation`,
+            emoji: "\u{1F517}",
+            payload: { prNumber: args.prNumber },
+            isVerbose: false,
+          });
+        }
+
+        return { dataHandles: [stateHandle] };
+      },
+    },
+
     ci_status: {
       description: "Fetch CI results and review comments for the PR",
       arguments: z.object({}),

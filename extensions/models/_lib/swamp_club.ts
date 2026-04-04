@@ -266,6 +266,29 @@ export async function createSwampClubClient(
     );
     return null;
   }
+
+  // Reachability check — verify the swamp-club URL is accessible before proceeding
+  try {
+    const healthUrl = `${url}/api/v1/health`;
+    const res = await fetch(healthUrl, {
+      method: "GET",
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) {
+      logger?.warning(
+        "swamp-club at {url} returned HTTP {status} — lifecycle entries will be skipped",
+        { url, status: res.status },
+      );
+      return null;
+    }
+  } catch (err) {
+    logger?.warning(
+      "swamp-club at {url} is not reachable ({error}) — lifecycle entries will be skipped",
+      { url, error: String(err) },
+    );
+    return null;
+  }
+
   return new SwampClubClient(
     url,
     apiKey,

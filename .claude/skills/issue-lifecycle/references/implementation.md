@@ -3,11 +3,22 @@
 Read this after the plan is approved and the human says to implement. The
 `approve` method already transitioned the issue to "in progress" in swamp-club.
 
-## 1. Do the Implementation Work
+## 1. Signal Implementation Started
+
+Before writing any code, signal that implementation has begun:
+
+```
+swamp model method run issue-<N> implement
+```
+
+This transitions the phase to `implementing`, posts a GitHub comment, and
+notifies swamp-club that work is underway. Do this **before** touching any code.
+
+## 2. Do the Implementation Work
 
 Follow the approved plan step by step.
 
-## 2. Verify the Fix Against the Reproduction
+## 3. Verify the Fix Against the Reproduction
 
 **Bugs and regressions only — skip for features.**
 
@@ -33,32 +44,32 @@ Use the absolute path to the compiled binary (e.g.
 `/Users/.../swamp/.claude/worktrees/issue-lifecycle/swamp`).
 
 c. **Confirm the fix.** The previously failing scenario should now succeed. If
-it still fails, the fix is incomplete — go back to step 1.
+it still fails, the fix is incomplete — go back to step 2.
 
 d. **Report verification results** to the human before creating the PR:
 
 - "Verified: reproduction scenario now passes" or
 - "Verification failed: <what still breaks>"
 
-## 3. Create a PR
+## 4. Create a PR
 
 Use the `github-pr` skill.
 
-## 4. Record the PR Number
+## 5. Record the PR Number
 
-After the PR is created, record its number so `ci_status` can find it:
+After the PR is created, link it to the issue so `ci_status` can find it:
 
 ```
-swamp model method run issue-<N> implement \
+swamp model method run issue-<N> record_pr \
   --input prNumber=<N>
 ```
 
-## 5. Wait for CI to Start
+## 6. Wait for CI to Start
 
 Use `sleep 180` — CI takes at least 3 minutes, so there's no point polling
 earlier.
 
-## 6. Poll for CI Results
+## 7. Poll for CI Results
 
 You MUST implement an explicit polling loop — do not check once and assume done:
 
@@ -86,7 +97,7 @@ confirm that **every** check has a conclusive status (passed or failed) before
 proceeding. The human can always interrupt the loop (e.g. "stop", "pause") —
 respect that immediately. But the agent must never exit the loop on its own.
 
-## 7. Show CI Results
+## 8. Show CI Results
 
 Show results to the human, grouped by reviewer and severity:
 
@@ -94,7 +105,7 @@ Show results to the human, grouped by reviewer and severity:
 - Review comments grouped by reviewer
 - Comments sorted by severity (critical first)
 
-## 8. If Everything is Green and Approved
+## 9. If Everything is Green and Approved
 
 The PR will auto-merge. Call `complete` immediately — no need to ask the human:
 
@@ -102,7 +113,7 @@ The PR will auto-merge. Call `complete` immediately — no need to ask the human
 swamp model method run issue-<N> complete
 ```
 
-## 9. If There Are Failures or Review Comments
+## 10. If There Are Failures or Review Comments
 
 Present them and wait for the human's direction. Parse their instruction:
 
@@ -118,9 +129,9 @@ swamp model method run issue-<N> fix \
   --input targetSeverity="<severity>"
 ```
 
-## 10. After Pushing Fixes
+## 11. After Pushing Fixes
 
-Loop back to step 5. Wait 3 minutes, poll for CI, show results. Repeat until
+Loop back to step 6. Wait 3 minutes, poll for CI, show results. Repeat until
 clean or the human says to stop.
 
 **IMPORTANT:** Do not break out of this loop voluntarily. The human should never

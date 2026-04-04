@@ -66,6 +66,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   iterate: ["plan_generated"],
   approve: ["plan_generated"],
   implement: ["approved"],
+  record_pr: ["implementing"],
   ci_status: ["implementing"],
   adversarial_review: ["plan_generated"],
   resolve_findings: ["plan_generated"],
