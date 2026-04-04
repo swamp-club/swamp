@@ -270,6 +270,13 @@ async function* validateSingle(
     return;
   }
 
+  // Ensure all model types in the repo are resolved so cross-type
+  // expression references can be validated (matches validateAll behavior)
+  const allDefinitions = await deps.findAllDefinitions();
+  for (const { type } of allDefinitions) {
+    await deps.resolveModelType(type);
+  }
+
   const outcome = await deps.validateModel(definition, modelDef, modelType);
   const validations = toValidationItemData(outcome.results);
   const warnings = toValidationWarningData(outcome.warnings);

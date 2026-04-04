@@ -138,6 +138,47 @@ Deno.test("modelValidate all yields error when no models exist", async () => {
   assertEquals(events[1].kind, "error");
 });
 
+Deno.test("modelValidate single model resolves all model types for cross-type references", async () => {
+  const targetType = ModelType.create("@keeb/mms/dedup");
+  const otherType = ModelType.create("@keeb/mms/organizer");
+  const targetDef = Definition.create({
+    id: "00000000-0000-4000-8000-000000000001",
+    name: "dedup",
+    version: 1,
+  });
+  const otherDef = Definition.create({
+    id: "00000000-0000-4000-8000-000000000002",
+    name: "organizer",
+    version: 1,
+  });
+
+  const resolvedTypes: string[] = [];
+  const deps = makeDeps({
+    lookupDefinition: () =>
+      Promise.resolve({ definition: targetDef, type: targetType }),
+    findAllDefinitions: () =>
+      Promise.resolve([
+        { definition: targetDef, type: targetType },
+        { definition: otherDef, type: otherType },
+      ]),
+    resolveModelType: (type) => {
+      resolvedTypes.push(type.normalized);
+      return Promise.resolve({});
+    },
+  });
+
+  await collect<ModelValidateEvent>(
+    modelValidate(createLibSwampContext(), deps, {
+      modelIdOrName: "dedup",
+    }),
+  );
+
+  // The target type is resolved once for the target model, then all types
+  // (including the target again) are resolved to populate the registry
+  assertEquals(resolvedTypes.includes(targetType.normalized), true);
+  assertEquals(resolvedTypes.includes(otherType.normalized), true);
+});
+
 Deno.test("modelValidate single model propagates warnings", async () => {
   const deps = makeDeps({
     validateModel: () =>
