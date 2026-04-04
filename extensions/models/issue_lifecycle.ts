@@ -47,15 +47,15 @@ type GlobalArgs = {
 };
 
 /** Get or create the swamp-club client (lazily, from globalArgs). */
-function getSwampClub(
+async function getSwampClub(
   globalArgs: GlobalArgs,
   logger?: {
     info: (msg: string, props: Record<string, unknown>) => void;
     warning: (msg: string, props: Record<string, unknown>) => void;
   },
-): SwampClubClient | null {
+): Promise<SwampClubClient | null> {
   if (_swampClub === undefined) {
-    _swampClub = createSwampClubClient(globalArgs, logger);
+    _swampClub = await createSwampClubClient(globalArgs, logger);
   }
   return _swampClub;
 }
@@ -73,7 +73,7 @@ async function ensureSwampClub(
     warning: (msg: string, props: Record<string, unknown>) => void;
   },
 ): Promise<SwampClubClient | null> {
-  const sc = getSwampClub(globalArgs, logger);
+  const sc = await getSwampClub(globalArgs, logger);
   if (!sc) return null;
   const id = await sc.ensureIssue({
     title: `Issue #${globalArgs.issueNumber}`,
@@ -424,7 +424,7 @@ export const model = {
           issueNumber,
           `\u{1F50D} **Triage started** \u2014 fetching issue context`,
         );
-        const sc = getSwampClub(context.globalArgs, context.logger);
+        const sc = await getSwampClub(context.globalArgs, context.logger);
         if (sc) {
           await sc.ensureIssue({
             title: issue.title,

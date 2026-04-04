@@ -18,6 +18,8 @@
 // Swamp Club Lifecycle API Client
 // ---------------------------------------------------------------------------
 
+import { join } from "@std/path";
+
 export interface LifecycleEntryParams {
   step: string;
   targetStatus: string;
@@ -188,12 +190,46 @@ export class SwampClubClient {
 }
 
 /**
+ * Load credentials from ~/.config/swamp/auth.json (or $XDG_CONFIG_HOME/swamp/auth.json).
+ * Returns { serverUrl, apiKey } or null if the file doesn't exist.
+ */
+async function loadAuthFile(): Promise<
+  { serverUrl: string; apiKey: string } | null
+> {
+  try {
+    const xdg = Deno.env.get("XDG_CONFIG_HOME");
+    const home = Deno.env.get("HOME");
+    let configDir: string;
+    if (xdg) {
+      configDir = join(xdg, "swamp");
+    } else if (home) {
+      configDir = join(home, ".config", "swamp");
+    } else {
+      return null;
+    }
+    const content = await Deno.readTextFile(join(configDir, "auth.json"));
+    const creds = JSON.parse(content) as {
+      serverUrl?: string;
+      apiKey?: string;
+    };
+    if (creds.apiKey) {
+      return {
+        serverUrl: creds.serverUrl ?? "https://swamp.club",
+        apiKey: creds.apiKey,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Create a SwampClubClient if URL and API key are available.
- * Checks global args first, then falls back to env vars:
- *   SWAMP_CLUB_URL, SWAMP_API_KEY
+ * Precedence: explicit global args > SWAMP_API_KEY env var > auth.json file.
  * The issue ID is resolved lazily — no swampClubIssueId arg needed.
  */
-export function createSwampClubClient(
+export async function createSwampClubClient(
   globalArgs: {
     repo: string;
     issueNumber: number;
@@ -204,14 +240,25 @@ export function createSwampClubClient(
     info: (msg: string, props: Record<string, unknown>) => void;
     warning: (msg: string, props: Record<string, unknown>) => void;
   },
-): SwampClubClient | null {
-  const url = globalArgs.swampClubUrl ?? Deno.env.get("SWAMP_CLUB_URL") ??
-    "https://swamp.club";
-  const apiKey = globalArgs.swampClubApiKey ?? Deno.env.get("SWAMP_API_KEY");
+): Promise<SwampClubClient | null> {
+  // 1. Explicit args or env var
+  let url = globalArgs.swampClubUrl ?? Deno.env.get("SWAMP_CLUB_URL");
+  let apiKey = globalArgs.swampClubApiKey ?? Deno.env.get("SWAMP_API_KEY");
+
+  // 2. Fall back to auth.json from `swamp auth login`
+  if (!apiKey) {
+    const fileCreds = await loadAuthFile();
+    if (fileCreds) {
+      apiKey = fileCreds.apiKey;
+      url = url ?? fileCreds.serverUrl;
+    }
+  }
+
+  url = url ?? "https://swamp.club";
 
   if (!apiKey) {
     logger?.warning(
-      "No SWAMP_API_KEY found — swamp-club lifecycle entries will be skipped",
+      "No swamp-club credentials found (set SWAMP_API_KEY or run `swamp auth login`) — lifecycle entries will be skipped",
       {},
     );
     return null;
