@@ -1,6 +1,6 @@
 ---
 name: swamp-data-query
-description: Query swamp data artifacts using CEL predicates — find, filter, and extract data across all models. Use when searching for data by field values, filtering by attributes or tags, extracting specific fields from data records, or answering questions about what data exists. Triggers on "data query", "query data", "find data", "search data where", "filter data", "which data has", "data with", "select from data", "data.query", "context.queryData", "CEL predicate", "data predicate".
+description: Query swamp data artifacts using CEL predicates — find, filter, and extract data across all models. Use when searching for data by field values, filtering by attributes or tags, extracting specific fields from data records, answering questions about what data exists, or exploring results after running a model method. Triggers on "data query", "query data", "find data", "search data where", "filter data", "which data has", "data with", "select from data", "data.query", "context.queryData", "CEL predicate", "data predicate", "inspect results", "method output", "factory results", "browse artifacts", "what did method produce".
 ---
 
 # Swamp Data Query

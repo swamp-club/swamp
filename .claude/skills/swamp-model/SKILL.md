@@ -407,6 +407,11 @@ swamp model method run my-deploy create --skip-check valid-region
 swamp model method run my-deploy create --skip-check-label live
 ```
 
+**Data versioning:** Running a method multiple times creates new data versions
+(v1, v2, ...), never overwrites. Each run's artifacts are preserved. Use
+`swamp data get <name> <spec> --version <N>` to access a specific version, or
+see the **swamp-data** skill for version history and cleanup.
+
 Pre-flight checks run automatically before mutating methods (`create`, `update`,
 `delete`, `action`). Read-only methods (`sync`, `get`, etc.) do not trigger
 checks.
@@ -451,6 +456,24 @@ Use `swamp model output search`, `output get`, `output logs`, and `output data`
 to inspect method execution results. See
 [references/outputs.md](references/outputs.md) for commands and output shapes.
 
+### Inspecting Factory Method Results
+
+When a factory method produces multiple data artifacts, use `swamp data query`
+(from the **swamp-data-query** skill) to explore them:
+
+```bash
+# List all artifacts from a model
+swamp data query 'modelName == "my-scanner"' --select '{"name": name, "version": version}'
+
+# Filter by spec name and extract fields
+swamp data query 'modelName == "my-scanner" && specName == "result"' \
+    --select '{"host": attributes.hostname, "status": attributes.status}'
+```
+
+For single-output inspection, `swamp model output get <name> --json` is
+sufficient. For browsing N artifacts, `data query` with `--select` is the
+primary pattern.
+
 ## Workflow Example
 
 1. **Search** for the right type: `swamp model type search "shell" --json`
@@ -492,6 +515,7 @@ validation.
 | Manage secrets                  | `swamp-vault`           |
 | Repository structure            | `swamp-repo`            |
 | Manage data lifecycle           | `swamp-data`            |
+| Explore/query method results    | `swamp-data-query`      |
 | Create custom TypeScript models | `swamp-extension-model` |
 | Create reports for models       | `swamp-report`          |
 | Understand swamp internals      | `swamp-troubleshooting` |
