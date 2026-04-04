@@ -187,3 +187,61 @@ Deno.test("DefaultDatastorePathResolver - config returns the stored config", () 
   const resolver = new DefaultDatastorePathResolver("/repo", config);
   assertEquals(resolver.config(), config);
 });
+
+Deno.test("DefaultDatastorePathResolver - bundle subdirs are recognized as datastore subdirs", () => {
+  const config: DatastoreConfig = {
+    type: "filesystem",
+    path: "/data/store",
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+  assertEquals(resolver.isDatastoreSubdir("bundles"), true);
+  assertEquals(resolver.isDatastoreSubdir("vault-bundles"), true);
+  assertEquals(resolver.isDatastoreSubdir("driver-bundles"), true);
+  assertEquals(resolver.isDatastoreSubdir("datastore-bundles"), true);
+  assertEquals(resolver.isDatastoreSubdir("report-bundles"), true);
+});
+
+Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to S3 cache", () => {
+  const config: DatastoreConfig = {
+    type: "s3",
+    config: { bucket: "my-bucket" },
+    datastorePath: "/repo/.swamp",
+    cachePath: "/home/user/.swamp/repos/abc",
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+
+  assertEquals(
+    resolver.resolvePath("bundles", "2e4ea9ae", "aws/logs.js"),
+    "/home/user/.swamp/repos/abc/bundles/2e4ea9ae/aws/logs.js",
+  );
+  assertEquals(
+    resolver.resolvePath("vault-bundles", "ff00aa11", "sm.js"),
+    "/home/user/.swamp/repos/abc/vault-bundles/ff00aa11/sm.js",
+  );
+  assertEquals(
+    resolver.resolvePath("driver-bundles", "bb22cc33", "driver.js"),
+    "/home/user/.swamp/repos/abc/driver-bundles/bb22cc33/driver.js",
+  );
+  assertEquals(
+    resolver.resolvePath("datastore-bundles", "dd44ee55", "ds.js"),
+    "/home/user/.swamp/repos/abc/datastore-bundles/dd44ee55/ds.js",
+  );
+  assertEquals(
+    resolver.resolvePath("report-bundles", "66778899", "report.js"),
+    "/home/user/.swamp/repos/abc/report-bundles/66778899/report.js",
+  );
+});
+
+Deno.test("DefaultDatastorePathResolver - filesystem datastore resolves bundles to same local path", () => {
+  const config: DatastoreConfig = {
+    type: "filesystem",
+    path: "/repo/.swamp",
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+
+  // With default filesystem datastore, bundles stay in .swamp/ (same path)
+  assertEquals(
+    resolver.resolvePath("bundles", "2e4ea9ae", "aws/logs.js"),
+    "/repo/.swamp/bundles/2e4ea9ae/aws/logs.js",
+  );
+});

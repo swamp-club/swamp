@@ -222,6 +222,15 @@ config. This supports pulled extensions that were built with a `deno.json` or
 `package.json` project — the archive includes pre-built bundles but not the
 project config.
 
+When a non-filesystem datastore is configured (e.g. `@swamp/s3-datastore`),
+bundle paths are resolved through the `DatastorePathResolver` instead of the
+hardcoded local `.swamp/` directory. This routes bundle reads and writes to the
+datastore cache path (e.g. `~/.swamp/repos/<repo-id>/bundles/`). The datastore
+loader is excluded from this routing due to bootstrap ordering — it always uses
+the local path since it loads datastore extensions that configure the resolver
+itself. When no resolver is available (e.g. during `repo init` or in tests),
+loaders fall back to the local `.swamp/` path.
+
 ### Vaults, Drivers, Datastores, and Reports
 
 Vault, driver, datastore, and report entry points are bundled with the same

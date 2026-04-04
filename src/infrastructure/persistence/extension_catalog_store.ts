@@ -261,6 +261,30 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Returns the stored datastore base path, or undefined if not set.
+   * Used to detect when the datastore configuration has changed and a
+   * full rescan is needed so bundle paths point to the new location.
+   */
+  getDatastoreBasePath(): string | undefined {
+    const stmt = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = 'datastore_base_path'",
+    );
+    const row = stmt.get() as { value: string } | undefined;
+    return row?.value;
+  }
+
+  /**
+   * Stores the datastore base path. Set after a successful catalog
+   * population so subsequent runs can detect datastore changes.
+   */
+  setDatastoreBasePath(basePath: string): void {
+    const stmt = this.db.prepare(
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES ('datastore_base_path', ?)",
+    );
+    stmt.run(basePath);
+  }
+
+  /**
    * Closes the database connection.
    */
   close(): void {

@@ -97,6 +97,9 @@ import {
 } from "./telemetry_integration.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
+import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
+import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
+import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { isDevBuild } from "../domain/update/update_service.ts";
 import { UpdateNotificationService } from "../domain/update/update_notification_service.ts";
 import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_check_cache_file_repository.ts";
@@ -232,6 +235,7 @@ async function loadUserModels(
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
+  resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
 ): Promise<void> {
   try {
     const modelsDir = resolveModelsDir(marker);
@@ -240,7 +244,8 @@ async function loadUserModels(
       ? modelsDir
       : resolve(repoDir, modelsDir);
 
-    const loader = new UserModelLoader(denoRuntime, repoDir);
+    const resolver = resolverFactory ? await resolverFactory() : undefined;
+    const loader = new UserModelLoader(denoRuntime, repoDir, resolver);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
 
     // Use bundle catalog for lazy per-bundle loading.
@@ -281,6 +286,7 @@ async function loadUserVaults(
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
+  resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
 ): Promise<void> {
   try {
     const vaultsDir = resolveVaultsDir(marker);
@@ -288,7 +294,8 @@ async function loadUserVaults(
       ? vaultsDir
       : resolve(repoDir, vaultsDir);
 
-    const loader = new UserVaultLoader(denoRuntime, repoDir);
+    const resolver = resolverFactory ? await resolverFactory() : undefined;
+    const loader = new UserVaultLoader(denoRuntime, repoDir, resolver);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
     const result = await loader.loadVaults(absoluteVaultsDir, {
       additionalDirs: [...sourceDirs, pulledDir],
@@ -308,6 +315,7 @@ async function loadUserDrivers(
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
+  resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
 ): Promise<void> {
   try {
     const driversDir = resolveDriversDir(marker);
@@ -315,7 +323,8 @@ async function loadUserDrivers(
       ? driversDir
       : resolve(repoDir, driversDir);
 
-    const loader = new UserDriverLoader(denoRuntime, repoDir);
+    const resolver = resolverFactory ? await resolverFactory() : undefined;
+    const loader = new UserDriverLoader(denoRuntime, repoDir, resolver);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
     const result = await loader.loadDrivers(absoluteDriversDir, {
       additionalDirs: [...sourceDirs, pulledDir],
@@ -363,6 +372,7 @@ async function loadUserReports(
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
+  resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
 ): Promise<void> {
   try {
     const reportsDir = resolveReportsDir(marker);
@@ -370,7 +380,8 @@ async function loadUserReports(
       ? reportsDir
       : resolve(repoDir, reportsDir);
 
-    const loader = new UserReportLoader(denoRuntime, repoDir);
+    const resolver = resolverFactory ? await resolverFactory() : undefined;
+    const loader = new UserReportLoader(denoRuntime, repoDir, resolver);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
     const result = await loader.loadReports(absoluteReportsDir, {
       additionalDirs: [...sourceDirs, pulledDir],
@@ -619,20 +630,61 @@ export async function runCli(args: string[]): Promise<void> {
     );
     const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
 
+    // Lazy resolver factory — deferred until first loader runs.
+    // Cached after first construction so all loaders share one resolver.
+    let resolverPromise: Promise<DatastorePathResolver | undefined> | undefined;
+    const lazyResolver = (): Promise<DatastorePathResolver | undefined> => {
+      resolverPromise ??= resolveDatastoreConfig(marker, undefined, repoDir)
+        .then((config) =>
+          new DefaultDatastorePathResolver(
+            repoDir,
+            config,
+          ) as DatastorePathResolver
+        )
+        .catch(() => undefined);
+      return resolverPromise;
+    };
+
     modelRegistry.setLoader(() =>
-      loadUserModels(repoDir, marker, denoRuntime, sourceModelsDirs)
+      loadUserModels(
+        repoDir,
+        marker,
+        denoRuntime,
+        sourceModelsDirs,
+        lazyResolver,
+      )
     );
     vaultTypeRegistry.setLoader(() =>
-      loadUserVaults(repoDir, marker, denoRuntime, sourceVaultsDirs)
+      loadUserVaults(
+        repoDir,
+        marker,
+        denoRuntime,
+        sourceVaultsDirs,
+        lazyResolver,
+      )
     );
     driverTypeRegistry.setLoader(() =>
-      loadUserDrivers(repoDir, marker, denoRuntime, sourceDriversDirs)
+      loadUserDrivers(
+        repoDir,
+        marker,
+        denoRuntime,
+        sourceDriversDirs,
+        lazyResolver,
+      )
     );
+    // Bootstrap: datastore loader must NOT receive the resolver — it loads
+    // datastore extensions that configure the resolver itself.
     datastoreTypeRegistry.setLoader(() =>
       loadUserDatastores(repoDir, marker, denoRuntime, sourceDatastoresDirs)
     );
     reportRegistry.setLoader(() =>
-      loadUserReports(repoDir, marker, denoRuntime, sourceReportsDirs)
+      loadUserReports(
+        repoDir,
+        marker,
+        denoRuntime,
+        sourceReportsDirs,
+        lazyResolver,
+      )
     );
 
     // Warn if lockfile has entries but pulled extension files are missing.

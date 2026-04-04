@@ -57,6 +57,7 @@ import {
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
+import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
@@ -268,15 +269,43 @@ export interface LoadResult {
 export class UserModelLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
+  private readonly datastoreResolver?: DatastorePathResolver;
 
   /**
    * @param denoRuntime - Runtime manager for obtaining a deno binary path
    * @param repoDir - Repository root for writing bundles to .swamp/bundles/
    *                   (pass null to skip bundle caching)
+   * @param datastoreResolver - Optional resolver for routing bundle paths
+   *                            through the configured datastore tier
    */
-  constructor(denoRuntime: DenoRuntime, repoDir: string | null = null) {
+  constructor(
+    denoRuntime: DenoRuntime,
+    repoDir: string | null = null,
+    datastoreResolver?: DatastorePathResolver,
+  ) {
     this.denoRuntime = denoRuntime;
     this.repoDir = repoDir;
+    this.datastoreResolver = datastoreResolver;
+  }
+
+  /**
+   * Resolves a bundle path through the datastore resolver when available,
+   * falling back to the local .swamp/bundles/ path otherwise.
+   */
+  private resolveBundlePath(...segments: string[]): string {
+    if (!this.repoDir) return "";
+    if (this.datastoreResolver) {
+      return this.datastoreResolver.resolvePath(
+        SWAMP_SUBDIRS.bundles,
+        ...segments,
+      );
+    }
+    return join(
+      this.repoDir,
+      SWAMP_DATA_DIR,
+      SWAMP_SUBDIRS.bundles,
+      ...segments,
+    );
   }
 
   /**
@@ -468,6 +497,20 @@ export class UserModelLoader {
       catalog.invalidate("model");
     }
 
+    // Force a full rescan if the datastore base path has changed.
+    // After a datastore migration (e.g. filesystem -> S3), stored bundle
+    // paths in the catalog point to the old location. Invalidating forces
+    // a rescan that writes the correct datastore-resolved paths (#1100).
+    const currentBasePath = this.resolveBundlePath();
+    if (
+      catalog.isPopulated("model") &&
+      catalog.getDatastoreBasePath() !== currentBasePath
+    ) {
+      logger
+        .warn`Datastore base path changed — invalidating catalog for full rescan`;
+      catalog.invalidate("model");
+    }
+
     // If catalog is already populated, register lazy entries from it
     // and do a lightweight mtime check for staleness.
     if (catalog.isPopulated("model")) {
@@ -520,6 +563,7 @@ export class UserModelLoader {
     );
     catalog.markPopulated("model");
     catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
+    catalog.setDatastoreBasePath(currentBasePath);
 
     // Migrate old flat-layout bundle files into namespaced subdirectories.
     if (this.repoDir) {
@@ -719,11 +763,7 @@ export class UserModelLoader {
     // We can only populate entries that have bundle files on disk
     if (!this.repoDir) return;
 
-    const bundleBaseDir = join(
-      this.repoDir,
-      SWAMP_DATA_DIR,
-      SWAMP_SUBDIRS.bundles,
-    );
+    const bundleBaseDir = this.resolveBundlePath();
 
     // Scan all directories for .ts files and write catalog entries for
     // those that have corresponding cached bundles
@@ -1029,10 +1069,7 @@ export class UserModelLoader {
    */
   private getBundlePath(relativePath: string, baseDir: string): string {
     if (!this.repoDir) return "";
-    return join(
-      this.repoDir,
-      SWAMP_DATA_DIR,
-      SWAMP_SUBDIRS.bundles,
+    return this.resolveBundlePath(
       bundleNamespace(baseDir, this.repoDir),
       relativePath.replace(/\.ts$/, ".js"),
     );
@@ -1078,10 +1115,7 @@ export class UserModelLoader {
     boundaryDir: string,
   ): Promise<string> {
     if (this.repoDir) {
-      const bundlePath = join(
-        this.repoDir,
-        SWAMP_DATA_DIR,
-        SWAMP_SUBDIRS.bundles,
+      const bundlePath = this.resolveBundlePath(
         bundleNamespace(boundaryDir, this.repoDir),
         relativePath.replace(/\.ts$/, ".js"),
       );
@@ -1135,7 +1169,7 @@ export class UserModelLoader {
         const js = await bundleExtension(absolutePath, denoPath, {
           denoConfigPath,
         });
-        const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
+        const bundleBoundary = this.resolveBundlePath();
         await assertSafePath(bundlePath, bundleBoundary);
         await Deno.mkdir(dirname(bundlePath), { recursive: true });
         await Deno.writeTextFile(bundlePath, js);
@@ -1205,12 +1239,7 @@ export class UserModelLoader {
       const segments = ns
         ? [ns, relativePath.replace(/\.ts$/, ".js")]
         : [relativePath.replace(/\.ts$/, ".js")];
-      const bundlePath = join(
-        this.repoDir,
-        SWAMP_DATA_DIR,
-        SWAMP_SUBDIRS.bundles,
-        ...segments,
-      );
+      const bundlePath = this.resolveBundlePath(...segments);
 
       try {
         await Deno.stat(bundlePath);

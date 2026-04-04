@@ -2538,3 +2538,33 @@ export const model = {
     await Deno.remove(modelsDir, { recursive: true });
   }
 });
+
+Deno.test("UserModelLoader: accepts optional DatastorePathResolver", () => {
+  // Verify the constructor accepts a resolver without errors
+  const mockResolver = {
+    localPath: (...segments: string[]) => join("/repo/.swamp", ...segments),
+    datastorePath: (...segments: string[]) => join("/cache/path", ...segments),
+    isDatastoreSubdir: (_subdir: string) => true,
+    isExcluded: (_path: string) => false,
+    resolvePath: (subdir: string, ...rest: string[]) =>
+      join("/cache/path", subdir, ...rest),
+    config: () => ({
+      type: "s3" as const,
+      config: { bucket: "test" },
+      datastorePath: "/cache/path",
+      cachePath: "/cache/path",
+    }),
+  };
+
+  // Should construct without error with resolver
+  const loaderWithResolver = new UserModelLoader(
+    testDenoRuntime,
+    "/repo",
+    mockResolver,
+  );
+  assertNotEquals(loaderWithResolver, undefined);
+
+  // Should construct without error without resolver (backward compat)
+  const loaderWithoutResolver = new UserModelLoader(testDenoRuntime, "/repo");
+  assertNotEquals(loaderWithoutResolver, undefined);
+});

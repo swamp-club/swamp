@@ -39,6 +39,7 @@ import {
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
+import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 
 const logger = getLogger(["swamp", "drivers", "loader"]);
 
@@ -88,15 +89,43 @@ export interface DriverLoadResult {
 export class UserDriverLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
+  private readonly datastoreResolver?: DatastorePathResolver;
 
   /**
    * @param denoRuntime - Runtime manager for obtaining a deno binary path
    * @param repoDir - Repository root for writing bundles to .swamp/driver-bundles/
    *                   (pass null to skip bundle caching)
+   * @param datastoreResolver - Optional resolver for routing bundle paths
+   *                            through the configured datastore tier
    */
-  constructor(denoRuntime: DenoRuntime, repoDir: string | null = null) {
+  constructor(
+    denoRuntime: DenoRuntime,
+    repoDir: string | null = null,
+    datastoreResolver?: DatastorePathResolver,
+  ) {
     this.denoRuntime = denoRuntime;
     this.repoDir = repoDir;
+    this.datastoreResolver = datastoreResolver;
+  }
+
+  /**
+   * Resolves a driver bundle path through the datastore resolver when available,
+   * falling back to the local .swamp/driver-bundles/ path otherwise.
+   */
+  private resolveBundlePath(...segments: string[]): string {
+    if (!this.repoDir) return "";
+    if (this.datastoreResolver) {
+      return this.datastoreResolver.resolvePath(
+        SWAMP_SUBDIRS.driverBundles,
+        ...segments,
+      );
+    }
+    return join(
+      this.repoDir,
+      SWAMP_DATA_DIR,
+      SWAMP_SUBDIRS.driverBundles,
+      ...segments,
+    );
   }
 
   /**
@@ -212,10 +241,7 @@ export class UserDriverLoader {
     boundaryDir: string,
   ): Promise<string> {
     if (this.repoDir) {
-      const bundlePath = join(
-        this.repoDir,
-        SWAMP_DATA_DIR,
-        SWAMP_SUBDIRS.driverBundles,
+      const bundlePath = this.resolveBundlePath(
         bundleNamespace(boundaryDir, this.repoDir),
         relativePath.replace(/\.ts$/, ".js"),
       );
@@ -262,7 +288,7 @@ export class UserDriverLoader {
       // bundleExtension returns the JS string in memory before we write.
       try {
         const js = await bundleExtension(absolutePath, denoPath);
-        const bundleBoundary = join(this.repoDir, SWAMP_DATA_DIR);
+        const bundleBoundary = this.resolveBundlePath();
         await assertSafePath(bundlePath, bundleBoundary);
         await Deno.mkdir(dirname(bundlePath), { recursive: true });
         await Deno.writeTextFile(bundlePath, js);
@@ -318,10 +344,7 @@ export class UserDriverLoader {
     const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
     if (this.repoDir) {
-      const bundlePath = join(
-        this.repoDir,
-        SWAMP_DATA_DIR,
-        SWAMP_SUBDIRS.driverBundles,
+      const bundlePath = this.resolveBundlePath(
         relativePath.replace(/\.ts$/, ".js"),
       );
 

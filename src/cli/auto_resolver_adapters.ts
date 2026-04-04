@@ -31,6 +31,7 @@ import {
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
+import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   renderAutoResolveInstalled,
@@ -56,6 +57,7 @@ interface InstallerAdapterConfig {
   reportsDir: string;
   repoDir: string;
   denoRuntime: DenoRuntime;
+  datastoreResolver?: DatastorePathResolver;
 }
 
 /**
@@ -78,6 +80,7 @@ export function createAutoResolveInstallerAdapter(
     reportsDir,
     repoDir,
     denoRuntime,
+    datastoreResolver,
   } = config;
 
   return {
@@ -110,7 +113,11 @@ export function createAutoResolveInstallerAdapter(
       const absoluteModelsDir = isAbsolute(modelsDir)
         ? modelsDir
         : resolve(repoDir, modelsDir);
-      const loader = new UserModelLoader(denoRuntime, repoDir);
+      const loader = new UserModelLoader(
+        denoRuntime,
+        repoDir,
+        datastoreResolver,
+      );
       const result = await loader.loadModels(absoluteModelsDir, {
         skipAlreadyRegistered: true,
       });
@@ -121,7 +128,11 @@ export function createAutoResolveInstallerAdapter(
       const absoluteVaultsDir = isAbsolute(vaultsDir)
         ? vaultsDir
         : resolve(repoDir, vaultsDir);
-      const loader = new UserVaultLoader(denoRuntime, repoDir);
+      const loader = new UserVaultLoader(
+        denoRuntime,
+        repoDir,
+        datastoreResolver,
+      );
       await loader.loadVaults(absoluteVaultsDir, {
         skipAlreadyRegistered: true,
       });
@@ -131,6 +142,8 @@ export function createAutoResolveInstallerAdapter(
       const absoluteDatastoresDir = isAbsolute(datastoresDir)
         ? datastoresDir
         : resolve(repoDir, datastoresDir);
+      // Bootstrap: datastore loader must NOT receive the resolver —
+      // it loads datastore extensions that configure the resolver.
       const loader = new UserDatastoreLoader(denoRuntime, repoDir);
       await loader.loadDatastores(absoluteDatastoresDir, {
         skipAlreadyRegistered: true,
