@@ -45,6 +45,14 @@ const API_KEY_ENV: Record<string, string> = {
   "gemini-2.5-pro": "GOOGLE_API_KEY",
 };
 
+// Per-million-token pricing for cost estimation
+const TOKEN_PRICING: Record<string, { prompt: number; completion: number }> = {
+  "sonnet": { prompt: 3.0, completion: 15.0 },
+  "opus": { prompt: 15.0, completion: 75.0 },
+  "gpt-4.1": { prompt: 2.0, completion: 8.0 },
+  "gemini-2.5-pro": { prompt: 1.25, completion: 10.0 },
+};
+
 const VALID_MODELS = Object.keys(API_KEY_ENV);
 
 interface EvalStats {
@@ -60,7 +68,6 @@ interface EvalStats {
 
 interface EvalResult {
   success: boolean;
-  cost?: number;
   testCase?: {
     description?: string;
     vars?: Record<string, string>;
@@ -204,10 +211,14 @@ async function main(): Promise<void> {
   const { stats } = data.results;
   const total = stats.successes + stats.failures;
   const rate = stats.successes / total;
-  const totalCost = data.results.results.reduce(
-    (sum, r) => sum + (r.cost ?? 0),
-    0,
-  );
+  // Calculate cost from aggregate token usage and model pricing.
+  // promptfoo does not populate per-result cost for Anthropic providers,
+  // so we compute it from the token counts directly.
+  const pricing = TOKEN_PRICING[model];
+  const totalCost = pricing
+    ? (stats.tokenUsage.prompt / 1_000_000) * pricing.prompt +
+      (stats.tokenUsage.completion / 1_000_000) * pricing.completion
+    : 0;
 
   console.log(
     `\nResults (${model}): ${stats.successes}/${total} passed (${(rate * 100).toFixed(1)}%)`,
