@@ -20,19 +20,32 @@
 /**
  * Runs skill trigger evaluations using promptfoo. This replaces the previous
  * approach that spawned hundreds of `claude -p` subprocesses with lightweight
- * Anthropic API calls via promptfoo's tool-call evaluation.
+ * API calls via promptfoo's tool-call evaluation.
  *
- * The promptfoo config at evals/promptfoo/promptfooconfig.yaml defines all
- * skill tools and test cases (generated from .claude/skills/<skill>/evals/trigger_evals.json).
+ * The promptfoo config is regenerated at eval time from
+ * .claude/skills/<skill>/evals/trigger_evals.json using evals/promptfoo/generate_config.ts.
  *
- * Usage: deno run eval-skill-triggers [--concurrency <n>] [--threshold <0.0-1.0>]
+ * Usage: deno run eval-skill-triggers [--model <alias>] [--concurrency <n>] [--threshold <0.0-1.0>]
+ *
+ * Supported models: sonnet (default), opus, gpt-4.1, gemini-2.5-pro
  *
  * Environment:
- *   ANTHROPIC_API_KEY - Required. Anthropic API key for running evals.
+ *   ANTHROPIC_API_KEY - Required for sonnet/opus models.
+ *   OPENAI_API_KEY    - Required for gpt-4.1 model.
+ *   GOOGLE_API_KEY    - Required for gemini-2.5-pro model.
  */
 
 import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
+
+const API_KEY_ENV: Record<string, string> = {
+  "sonnet": "ANTHROPIC_API_KEY",
+  "opus": "ANTHROPIC_API_KEY",
+  "gpt-4.1": "OPENAI_API_KEY",
+  "gemini-2.5-pro": "GOOGLE_API_KEY",
+};
+
+const VALID_MODELS = Object.keys(API_KEY_ENV);
 
 interface EvalStats {
   successes: number;
@@ -78,11 +91,53 @@ function findProjectRoot(): string {
   }
 }
 
+async function regenerateConfig(
+  projectRoot: string,
+  model: string,
+): Promise<void> {
+  const generatorPath = join(
+    projectRoot,
+    "evals",
+    "promptfoo",
+    "generate_config.ts",
+  );
+  const configPath = join(
+    projectRoot,
+    "evals",
+    "promptfoo",
+    "promptfooconfig.yaml",
+  );
+
+  const command = new Deno.Command("deno", {
+    args: ["run", "--allow-read", generatorPath, "--model", model],
+    cwd: projectRoot,
+    stdout: "piped",
+    stderr: "inherit",
+  });
+
+  const { code, stdout } = await command.output();
+  if (code !== 0) {
+    console.error(`Failed to regenerate promptfoo config for model ${model}`);
+    Deno.exit(1);
+  }
+
+  await Deno.writeFile(configPath, stdout);
+  console.log(`Regenerated promptfoo config for model: ${model}`);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(Deno.args, {
-    string: ["concurrency", "threshold"],
-    default: { concurrency: "20", threshold: "0.9" },
+    string: ["model", "concurrency", "threshold"],
+    default: { model: "sonnet", concurrency: "20", threshold: "0.9" },
   });
+
+  const model = args.model;
+  if (!VALID_MODELS.includes(model)) {
+    console.error(
+      `Error: unknown model "${model}". Valid models: ${VALID_MODELS.join(", ")}`,
+    );
+    Deno.exit(1);
+  }
 
   const concurrency = parseInt(args.concurrency);
   const passThreshold = parseFloat(args.threshold);
@@ -90,16 +145,30 @@ async function main(): Promise<void> {
   const configDir = join(projectRoot, "evals", "promptfoo");
   const resultsPath = join(configDir, "results.json");
 
-  if (!Deno.env.get("ANTHROPIC_API_KEY")) {
-    console.error(
-      "Error: ANTHROPIC_API_KEY environment variable is required.",
-    );
-    console.error("  export ANTHROPIC_API_KEY=sk-ant-...");
-    Deno.exit(1);
+  // Check for required API key — gracefully skip if missing
+  const requiredKeyEnv = API_KEY_ENV[model];
+  if (!Deno.env.get(requiredKeyEnv)) {
+    const message =
+      `Skipping ${model} eval: ${requiredKeyEnv} environment variable is not set.`;
+    console.warn(message);
+
+    // Write skip status to GitHub Actions summary
+    const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
+    if (summaryFile) {
+      let md = `## Skill Trigger Eval Results (${model})\n\n`;
+      md += `**Skipped** — \`${requiredKeyEnv}\` not configured.\n`;
+      await Deno.writeTextFile(summaryFile, md, { append: true });
+    }
+
+    // Exit 0 — missing key is not a failure
+    return;
   }
 
+  // Regenerate config for the selected model
+  await regenerateConfig(projectRoot, model);
+
   console.log(
-    `Running skill trigger evals (concurrency=${concurrency}, threshold=${passThreshold})…`,
+    `Running skill trigger evals for ${model} (concurrency=${concurrency}, threshold=${passThreshold})…`,
   );
 
   // Run promptfoo eval
@@ -141,7 +210,7 @@ async function main(): Promise<void> {
   );
 
   console.log(
-    `\nResults: ${stats.successes}/${total} passed (${(rate * 100).toFixed(1)}%)`,
+    `\nResults (${model}): ${stats.successes}/${total} passed (${(rate * 100).toFixed(1)}%)`,
   );
   console.log(
     `Tokens: ${stats.tokenUsage.total} (${stats.tokenUsage.prompt} prompt, ${stats.tokenUsage.completion} completion)`,
@@ -164,8 +233,9 @@ async function main(): Promise<void> {
   // Write GitHub Actions summary
   const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
   if (summaryFile) {
-    let md = "## Skill Trigger Eval Results\n\n";
+    let md = `## Skill Trigger Eval Results (${model})\n\n`;
     md += "| Metric | Value |\n|---|---|\n";
+    md += `| Model | ${model} |\n`;
     md += `| Total tests | ${total} |\n`;
     md += `| Passed | ${stats.successes} |\n`;
     md += `| Failed | ${stats.failures} |\n`;
@@ -192,12 +262,12 @@ async function main(): Promise<void> {
   // Check threshold
   if (rate < passThreshold) {
     console.error(
-      `\nFAIL: Pass rate ${(rate * 100).toFixed(1)}% is below ${(passThreshold * 100).toFixed(0)}% threshold`,
+      `\nFAIL (${model}): Pass rate ${(rate * 100).toFixed(1)}% is below ${(passThreshold * 100).toFixed(0)}% threshold`,
     );
     Deno.exit(1);
   }
 
-  console.log("\nAll skills passed trigger evals.");
+  console.log(`\nAll skills passed trigger evals for ${model}.`);
 }
 
 await main();

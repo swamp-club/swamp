@@ -22,11 +22,41 @@
  * files and SKILL.md frontmatter, using lightweight API calls (~193 calls)
  * instead of spawning Claude Code sessions.
  *
- * Usage: deno run --allow-read generate_config.ts > promptfooconfig.yaml
+ * Usage: deno run --allow-read generate_config.ts [--model <alias>]
+ *
+ * Supported model aliases: sonnet, opus, gpt-4.1, gemini-2.5-pro
+ * Default: sonnet
  */
 
+import { parseArgs } from "@std/cli/parse-args";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+
+interface ProviderDefinition {
+  id: string;
+  apiKeyEnv: string;
+}
+
+const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
+  "sonnet": {
+    id: "anthropic:messages:claude-sonnet-4-5",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+  },
+  "opus": {
+    id: "anthropic:messages:claude-opus-4-6",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+  },
+  "gpt-4.1": {
+    id: "openai:gpt-4.1",
+    apiKeyEnv: "OPENAI_API_KEY",
+  },
+  "gemini-2.5-pro": {
+    id: "google:gemini-2.5-pro",
+    apiKeyEnv: "GOOGLE_API_KEY",
+  },
+};
+
+const VALID_MODELS = Object.keys(PROVIDER_REGISTRY);
 
 const SKILLS_DIR = join(Deno.cwd(), ".claude", "skills");
 const SKILL_NAMES = [
@@ -98,6 +128,22 @@ interface PromptfooTest {
 }
 
 async function main(): Promise<void> {
+  const args = parseArgs(Deno.args, {
+    string: ["model"],
+    default: { model: "sonnet" },
+  });
+
+  const modelAlias = args.model;
+  if (!VALID_MODELS.includes(modelAlias)) {
+    console.error(
+      `Error: unknown model "${modelAlias}". Valid models: ${
+        VALID_MODELS.join(", ")
+      }`,
+    );
+    Deno.exit(1);
+  }
+
+  const provider = PROVIDER_REGISTRY[modelAlias];
   const tools: PromptfooTool[] = [];
   const tests: PromptfooTest[] = [];
 
@@ -190,17 +236,19 @@ async function main(): Promise<void> {
     }
   }
 
+  const systemMessage =
+    "You are a skill router for swamp, an AI-native automation framework. Your ONLY job is to route user requests to the correct skill by making a tool call. You MUST call exactly one tool for every request. NEVER respond with text. NEVER ask clarifying questions. Even if the request is vague or missing details, route it to the best-matching skill based on the topic and keywords. The skill itself will handle gathering any missing information from the user.";
+
   const config = {
-    description: "Swamp skill trigger routing evaluation",
+    description: `Swamp skill trigger routing evaluation (${modelAlias})`,
     prompts: ["{{query}}"],
     providers: [
       {
-        id: "anthropic:messages:claude-sonnet-4-5",
+        id: provider.id,
         config: {
           temperature: 0,
           max_tokens: 200,
-          systemMessage:
-            "You are a skill router for swamp, an AI-native automation framework. Your ONLY job is to route user requests to the correct skill by making a tool call. You MUST call exactly one tool for every request. NEVER respond with text. NEVER ask clarifying questions. Even if the request is vague or missing details, route it to the best-matching skill based on the topic and keywords. The skill itself will handle gathering any missing information from the user.",
+          systemMessage,
           tools,
         },
       },

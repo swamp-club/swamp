@@ -1,0 +1,57 @@
+name: Multi-Model Skill Trigger Eval
+
+on:
+  schedule:
+    # Run every Saturday at 08:00 UTC
+    - cron: "0 8 * * 6"
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Comma-separated model aliases to evaluate (or 'all')"
+        required: false
+        default: "all"
+
+jobs:
+  eval:
+    name: Eval (${{ matrix.model }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [sonnet, opus, gpt-4.1, gemini-2.5-pro]
+    steps:
+      - name: Check if model is selected
+        id: check
+        run: |
+          MODELS="${{ github.event.inputs.models || 'all' }}"
+          if [ "$MODELS" = "all" ] || echo ",$MODELS," | grep -q ",${{ matrix.model }},"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout code
+        if: steps.check.outputs.run == 'true'
+        uses: actions/checkout@v6
+
+      - name: Setup Deno
+        if: steps.check.outputs.run == 'true'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Setup Node.js
+        if: steps.check.outputs.run == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Run skill trigger evals
+        if: steps.check.outputs.run == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: deno run eval-skill-triggers --model ${{ matrix.model }}

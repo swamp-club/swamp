@@ -1,4 +1,4 @@
-description: Swamp skill trigger routing evaluation
+description: Swamp skill trigger routing evaluation (sonnet)
 prompts:
   - "{{query}}"
 providers:
@@ -60,11 +60,12 @@ providers:
           function:
             name: swamp-extension-model
             description: >-
-              Create user-defined TypeScript models for swamp — define Zod schemas, implement model interfaces, configure output specs — and publish extensions to the registry. Use when users want to
-              extend swamp with custom model types, create automation models, add new integrations, or publish any extension type (models, vaults, drivers, datastores). Triggers on "create model",
-              "new model type", "custom model", "extension model", "user model", "typescript model", "extend swamp", "build integration", "zod schema", "model plugin", "deno model",
-              "extensions/models", "model development", "implement model", "smoke test", "test extension", "verify model", "test against API", "before push test", "push extension", "publish
-              extension", "extension push", "release extension", "bump version", "publish to registry".
+              Create, test, and publish extension models for swamp — define Zod schemas, implement model interfaces, smoke test against live APIs, write manifest.yaml, and push extensions to the
+              registry. Use when creating models, writing manifest.yaml, publishing/pushing extensions, testing extensions, or preparing models for the registry. Covers all extension types (models,
+              vaults, drivers, datastores, reports). Triggers on "create model", "new model type", "custom model", "extension model", "user model", "typescript model", "extend swamp", "build
+              integration", "zod schema", "model plugin", "deno model", "extensions/models", "model development", "implement model", "smoke test", "test extension", "verify model", "test against API",
+              "before push test", "push extension", "publish extension", "extension push", "release extension", "bump version", "publish to registry", "test extension from another repo", "source
+              extension loading", "manifest", "manifest.yaml", "write manifest", "prepare for publishing".
             parameters:
               type: object
               properties:
@@ -124,10 +125,12 @@ providers:
           function:
             name: swamp-repo
             description: >-
-              Manage swamp repositories and datastores — initializing repos, upgrading swamp, syncing data, releasing stuck locks, and installing swamp in CI. Use when initializing repos, upgrading
-              swamp, starting the webapp, configuring datastores, or setting up swamp in CI/CD pipelines. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new
-              swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore
-              lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release", "install swamp", "CI", "CI/CD", "GitHub Actions", "install in CI", "setup CI".
+              Manage swamp repositories, datastores, and extension sources — initializing repos, upgrading swamp, syncing data, releasing stuck locks, loading extensions from external paths, and
+              installing swamp in CI. Use when initializing repos, upgrading swamp, starting the webapp, configuring datastores, managing extension sources, or setting up swamp in CI/CD pipelines.
+              Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp
+              folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release", "install swamp",
+              "CI", "CI/CD", "GitHub Actions", "install in CI", "setup CI", "extension source", "extension sources", ".swamp-sources.yaml", "load extensions from", "local extension source", "add
+              source", "source add", "source rm", "source list".
             parameters:
               type: object
               properties:
@@ -1073,6 +1076,104 @@ tests:
   - description: "[swamp-extension-model] SHOULD trigger: Help me create and test a CRUD extension model"
     vars:
       query: Help me create and test a CRUD extension model
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-extension-model' || c.name === 'swamp-extension-model');
+            }
+          } catch {}
+          return String(output).includes('"swamp-extension-model"');
+  - description: "[swamp-extension-model] SHOULD trigger: Make a manifest.yaml so I can push my extension"
+    vars:
+      query: Make a manifest.yaml so I can push my extension
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-extension-model' || c.name === 'swamp-extension-model');
+            }
+          } catch {}
+          return String(output).includes('"swamp-extension-model"');
+  - description: "[swamp-extension-model] SHOULD trigger: Publish my model to the registry"
+    vars:
+      query: Publish my model to the registry
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-extension-model' || c.name === 'swamp-extension-model');
+            }
+          } catch {}
+          return String(output).includes('"swamp-extension-model"');
+  - description: "[swamp-extension-model] SHOULD trigger: Help me push this extension to swamp-club"
+    vars:
+      query: Help me push this extension to swamp-club
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-extension-model' || c.name === 'swamp-extension-model');
+            }
+          } catch {}
+          return String(output).includes('"swamp-extension-model"');
+  - description: "[swamp-extension-model] SHOULD trigger: I need to write a manifest for my model"
+    vars:
+      query: I need to write a manifest for my model
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-extension-model' || c.name === 'swamp-extension-model');
+            }
+          } catch {}
+          return String(output).includes('"swamp-extension-model"');
+  - description: "[swamp-extension-model] SHOULD trigger: Prepare my extension for publishing"
+    vars:
+      query: Prepare my extension for publishing
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-extension-model' || c.name === 'swamp-extension-model');
+            }
+          } catch {}
+          return String(output).includes('"swamp-extension-model"');
+  - description: "[swamp-extension-model] SHOULD trigger: How do I swamp extension push my model?"
+    vars:
+      query: How do I swamp extension push my model?
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-extension-model' || c.name === 'swamp-extension-model');
+            }
+          } catch {}
+          return String(output).includes('"swamp-extension-model"');
+  - description: "[swamp-extension-model] SHOULD trigger: I want to release a new version of my extension"
+    vars:
+      query: I want to release a new version of my extension
     assert:
       - type: javascript
         value: |-
@@ -2133,6 +2234,48 @@ tests:
             }
           } catch {}
           return !String(output).includes('"swamp-report"');
+  - description: "[swamp-report] SHOULD trigger: How do I read execution data in a report using dataHandles?"
+    vars:
+      query: How do I read execution data in a report using dataHandles?
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-report' || c.name === 'swamp-report');
+            }
+          } catch {}
+          return String(output).includes('"swamp-report"');
+  - description: "[swamp-report] SHOULD trigger: Access dataRepository from report context to get model outpu"
+    vars:
+      query: Access dataRepository from report context to get model output
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-report' || c.name === 'swamp-report');
+            }
+          } catch {}
+          return String(output).includes('"swamp-report"');
+  - description: "[swamp-report] SHOULD trigger: What methods does UnifiedDataRepository expose in reports?"
+    vars:
+      query: What methods does UnifiedDataRepository expose in reports?
+    assert:
+      - type: javascript
+        value: |-
+          const toolCalls = (context.prompt?.raw || '').includes('tool_use') ? [] : [];
+          try {
+            const calls = JSON.parse(output);
+            if (Array.isArray(calls)) {
+              return calls.some(c => c.function?.name === 'swamp-report' || c.name === 'swamp-report');
+            }
+          } catch {}
+          return String(output).includes('"swamp-report"');
   - description: "[swamp-troubleshooting] SHOULD trigger: Debug why my deploy-infra workflow is failing on the second "
     vars:
       query: Debug why my deploy-infra workflow is failing on the second step with error 'model not found'
