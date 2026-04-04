@@ -49,13 +49,18 @@ export const DEFAULT_DATASTORE_SUBDIRS = [
   "bundles",
   "vault-bundles",
   "driver-bundles",
-  "datastore-bundles",
   "report-bundles",
   "audit",
   "telemetry",
   "logs",
   "files",
 ] as const;
+
+// Note: "datastore-bundles" is intentionally excluded from the datastore tier.
+// The datastore loader runs during bootstrap BEFORE the DatastorePathResolver
+// exists, so datastore extension bundles must always remain in local .swamp/.
+// Including it here causes the setup migration to delete .swamp/datastore-bundles/
+// after copying to cache, breaking subsequent extension loading.
 
 /**
  * Filesystem-based datastore configuration.

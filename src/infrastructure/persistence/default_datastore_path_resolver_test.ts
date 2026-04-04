@@ -197,7 +197,8 @@ Deno.test("DefaultDatastorePathResolver - bundle subdirs are recognized as datas
   assertEquals(resolver.isDatastoreSubdir("bundles"), true);
   assertEquals(resolver.isDatastoreSubdir("vault-bundles"), true);
   assertEquals(resolver.isDatastoreSubdir("driver-bundles"), true);
-  assertEquals(resolver.isDatastoreSubdir("datastore-bundles"), true);
+  // datastore-bundles intentionally excluded — bootstrap ordering
+  assertEquals(resolver.isDatastoreSubdir("datastore-bundles"), false);
   assertEquals(resolver.isDatastoreSubdir("report-bundles"), true);
 });
 
@@ -222,9 +223,10 @@ Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to S3 cache
     resolver.resolvePath("driver-bundles", "bb22cc33", "driver.js"),
     "/home/user/.swamp/repos/abc/driver-bundles/bb22cc33/driver.js",
   );
+  // datastore-bundles stays local (bootstrap ordering — excluded from datastore tier)
   assertEquals(
     resolver.resolvePath("datastore-bundles", "dd44ee55", "ds.js"),
-    "/home/user/.swamp/repos/abc/datastore-bundles/dd44ee55/ds.js",
+    "/repo/.swamp/datastore-bundles/dd44ee55/ds.js",
   );
   assertEquals(
     resolver.resolvePath("report-bundles", "66778899", "report.js"),
