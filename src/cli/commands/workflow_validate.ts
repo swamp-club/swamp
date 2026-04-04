@@ -43,13 +43,13 @@ export const workflowValidateCommand = new Command()
       "workflow",
       "validate",
     ]);
-    const { repoDir } = await requireInitializedRepoReadOnly({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowValidateDeps(repoDir);
+    const deps = createWorkflowValidateDeps(repoContext.workflowRepo);
 
     const renderer = createWorkflowValidateRenderer(cliCtx.outputMode);
     await consumeStream(

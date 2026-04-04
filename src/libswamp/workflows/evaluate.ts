@@ -36,7 +36,7 @@ import { hasStepOutputDependency } from "../../domain/expressions/dependency_ext
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
 import { ModelResolver } from "../../domain/expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -99,11 +99,11 @@ export interface WorkflowEvaluateDeps {
 /** Wires real infrastructure into WorkflowEvaluateDeps. */
 export function createWorkflowEvaluateDeps(
   repoDir: string,
+  workflowRepo: WorkflowRepository,
   datastoreResolver?: DatastorePathResolver,
 ): WorkflowEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const workflowRepo = new YamlWorkflowRepository(repoDir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
   const dataRepo = new FileSystemUnifiedDataRepository(
     repoDir,

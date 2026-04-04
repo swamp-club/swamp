@@ -73,13 +73,18 @@ export const workflowEvaluateCommand = new Command()
 
       // If --all flag or no argument, evaluate all workflows (global lock)
       if (options.all || !workflowIdOrName) {
-        const { repoDir, datastoreResolver } = await requireInitializedRepo({
-          repoDir: options.repoDir ?? ".",
-          outputMode: cliCtx.outputMode,
-        });
+        const { repoDir, repoContext, datastoreResolver } =
+          await requireInitializedRepo({
+            repoDir: options.repoDir ?? ".",
+            outputMode: cliCtx.outputMode,
+          });
 
         const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const deps = createWorkflowEvaluateDeps(repoDir, datastoreResolver);
+        const deps = createWorkflowEvaluateDeps(
+          repoDir,
+          repoContext.workflowRepo,
+          datastoreResolver,
+        );
         const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 
         await consumeStream(
@@ -184,7 +189,11 @@ export const workflowEvaluateCommand = new Command()
       }
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createWorkflowEvaluateDeps(repoDir, datastoreResolver);
+      const deps = createWorkflowEvaluateDeps(
+        repoDir,
+        workflowRepo,
+        datastoreResolver,
+      );
       const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 
       try {

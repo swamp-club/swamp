@@ -27,7 +27,7 @@ import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -81,13 +81,15 @@ export interface WorkflowEditDeps {
 }
 
 /** Wires real infrastructure into WorkflowEditDeps. */
-export function createWorkflowEditDeps(repoDir: string): WorkflowEditDeps {
-  const repo = new YamlWorkflowRepository(repoDir);
+export function createWorkflowEditDeps(
+  repoDir: string,
+  workflowRepo: WorkflowRepository,
+): WorkflowEditDeps {
   const editorService = new EditorService();
   return {
-    findById: (id) => repo.findById(id),
-    findByName: (name) => repo.findByName(name),
-    getPath: (id) => repo.getPath(id),
+    findById: (id) => workflowRepo.findById(id),
+    findByName: (name) => workflowRepo.findByName(name),
+    getPath: (id) => workflowRepo.getPath(id),
     resolveSymlink: async (name) => {
       const symlinkPath = join(repoDir, "workflows", name, "workflow.yaml");
       try {
@@ -113,7 +115,7 @@ export function createWorkflowEditDeps(repoDir: string): WorkflowEditDeps {
       const yamlData = parseYaml(content) as WorkflowData;
       yamlData.id = workflow.id;
       const updated = Workflow.fromData(yamlData);
-      await repo.save(updated);
+      await workflowRepo.save(updated);
       return updated;
     },
   };

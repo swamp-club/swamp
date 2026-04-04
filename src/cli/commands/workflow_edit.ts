@@ -89,7 +89,7 @@ export const workflowEditCommand = new Command()
     }
 
     const stdinContent = await readStdin();
-    const deps = createWorkflowEditDeps(repoDir);
+    const deps = createWorkflowEditDeps(repoDir, repoContext.workflowRepo);
 
     const renderer = createWorkflowEditRenderer(cliCtx.outputMode);
     await consumeStream(

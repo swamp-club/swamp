@@ -42,13 +42,13 @@ export const workflowGetCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["workflow", "get"]);
     cliCtx.logger.debug`Getting workflow: ${workflowIdOrName}`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: options.repoDir ?? ".",
       outputMode: cliCtx.outputMode,
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowGetDeps(repoDir);
+    const deps = createWorkflowGetDeps(repoContext.workflowRepo);
 
     const renderer = createWorkflowGetRenderer(cliCtx.outputMode);
     await consumeStream(

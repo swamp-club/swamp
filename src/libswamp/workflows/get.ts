@@ -22,7 +22,7 @@ import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
@@ -69,8 +69,9 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Wires real infrastructure into WorkflowGetDeps. */
-export function createWorkflowGetDeps(repoDir: string): WorkflowGetDeps {
-  const workflowRepo = new YamlWorkflowRepository(repoDir);
+export function createWorkflowGetDeps(
+  workflowRepo: WorkflowRepository,
+): WorkflowGetDeps {
   return {
     findWorkflow: async (idOrName) => {
       if (isUuid(idOrName)) {
