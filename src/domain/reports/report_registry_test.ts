@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { ReportRegistry } from "./report_registry.ts";
+import { type LazyReportEntry, ReportRegistry } from "./report_registry.ts";
 import type { ReportDefinition } from "./report.ts";
 import type { ReportContext } from "./report_context.ts";
 
@@ -94,4 +94,116 @@ Deno.test("ReportRegistry - getByScope filters by scope", () => {
   const workflowReports = registry.getByScope("workflow");
   assertEquals(workflowReports.length, 1);
   assertEquals(workflowReports[0].name, "workflow-1");
+});
+
+// --- Lazy loading tests ---
+
+function createLazyReportEntry(type: string): LazyReportEntry {
+  return {
+    type,
+    bundlePath: `/repo/.swamp/report-bundles/${type}.js`,
+    sourcePath: `/repo/extensions/reports/${type}.ts`,
+    version: "2026.01.15.1",
+  };
+}
+
+Deno.test("ReportRegistry.registerLazy: stores lazy entries without importing", () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy(createLazyReportEntry("@myorg/custom-report"));
+
+  assertEquals(registry.has("@myorg/custom-report"), true);
+  assertEquals(registry.isLazy("@myorg/custom-report"), true);
+  assertEquals(registry.get("@myorg/custom-report"), undefined);
+});
+
+Deno.test("ReportRegistry.ensureTypeLoaded: calls type loader for lazy types", async () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy(createLazyReportEntry("@myorg/custom-report"));
+
+  let loadedType: string | null = null;
+  registry.setTypeLoader((type) => {
+    loadedType = type;
+    registry.promoteFromLazy(type, makeReport("method"));
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/custom-report");
+
+  assertEquals(loadedType, "@myorg/custom-report");
+  assertEquals(registry.isLazy("@myorg/custom-report"), false);
+  assertEquals(registry.get("@myorg/custom-report")?.scope, "method");
+});
+
+Deno.test("ReportRegistry.ensureTypeLoaded: no-op for already loaded types", async () => {
+  const registry = new ReportRegistry();
+  registry.register("@myorg/loaded", makeReport());
+
+  let called = false;
+  registry.setTypeLoader(() => {
+    called = true;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/loaded");
+  assertEquals(called, false);
+});
+
+Deno.test("ReportRegistry.ensureTypeLoaded: no-op for unknown types", async () => {
+  const registry = new ReportRegistry();
+
+  let called = false;
+  registry.setTypeLoader(() => {
+    called = true;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/nonexistent");
+  assertEquals(called, false);
+});
+
+Deno.test("ReportRegistry.ensureTypeLoaded: concurrent callers share same promise", async () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy(createLazyReportEntry("@myorg/custom-report"));
+
+  let callCount = 0;
+  registry.setTypeLoader(async (type) => {
+    callCount++;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    registry.promoteFromLazy(type, makeReport());
+  });
+
+  await Promise.all([
+    registry.ensureTypeLoaded("@myorg/custom-report"),
+    registry.ensureTypeLoaded("@myorg/custom-report"),
+    registry.ensureTypeLoaded("@myorg/custom-report"),
+  ]);
+
+  assertEquals(callCount, 1);
+});
+
+Deno.test("ReportRegistry.ensureTypeLoaded: retries after transient failure", async () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy(createLazyReportEntry("@myorg/custom-report"));
+
+  let callCount = 0;
+  registry.setTypeLoader((type) => {
+    callCount++;
+    if (callCount === 1) {
+      return Promise.reject(new Error("transient I/O error"));
+    }
+    registry.promoteFromLazy(type, makeReport());
+    return Promise.resolve();
+  });
+
+  let caught = false;
+  try {
+    await registry.ensureTypeLoaded("@myorg/custom-report");
+  } catch {
+    caught = true;
+  }
+  assertEquals(caught, true);
+
+  await registry.ensureTypeLoaded("@myorg/custom-report");
+  assertEquals(callCount, 2);
+  assertEquals(registry.get("@myorg/custom-report")?.scope, "method");
 });

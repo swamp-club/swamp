@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { DatastoreTypeRegistry } from "./datastore_type_registry.ts";
+import {
+  type DatastoreTypeInfo,
+  DatastoreTypeRegistry,
+  type LazyDatastoreEntry,
+} from "./datastore_type_registry.ts";
 
 Deno.test("DatastoreTypeRegistry - register and get", () => {
   const registry = new DatastoreTypeRegistry();
@@ -144,4 +148,125 @@ Deno.test("DatastoreTypeRegistry - register user-defined type with createProvide
   assertEquals(info?.type, "@myorg/custom");
   assertEquals(info?.isBuiltIn, false);
   assertEquals(typeof info?.createProvider, "function");
+});
+
+// --- Lazy loading tests ---
+
+function createLazyDatastoreEntry(type: string): LazyDatastoreEntry {
+  return {
+    type,
+    bundlePath: `/repo/.swamp/datastore-bundles/${type}.js`,
+    sourcePath: `/repo/extensions/datastores/${type}.ts`,
+    version: "2026.01.15.1",
+  };
+}
+
+function createDatastoreTypeInfo(type: string): DatastoreTypeInfo {
+  return {
+    type,
+    name: `${type} store`,
+    description: `A ${type} datastore`,
+    isBuiltIn: false,
+  };
+}
+
+Deno.test("DatastoreTypeRegistry.registerLazy: stores lazy entries without importing", () => {
+  const registry = new DatastoreTypeRegistry();
+  registry.registerLazy(createLazyDatastoreEntry("@myorg/custom"));
+
+  assertEquals(registry.has("@myorg/custom"), true);
+  assertEquals(registry.isLazy("@myorg/custom"), true);
+  assertEquals(registry.get("@myorg/custom"), undefined);
+});
+
+Deno.test("DatastoreTypeRegistry.ensureTypeLoaded: calls type loader for lazy types", async () => {
+  const registry = new DatastoreTypeRegistry();
+  registry.registerLazy(createLazyDatastoreEntry("@myorg/custom"));
+
+  let loadedType: string | null = null;
+  registry.setTypeLoader((type) => {
+    loadedType = type;
+    registry.promoteFromLazy(createDatastoreTypeInfo(type));
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/custom");
+
+  assertEquals(loadedType, "@myorg/custom");
+  assertEquals(registry.isLazy("@myorg/custom"), false);
+  assertEquals(registry.get("@myorg/custom")?.name, "@myorg/custom store");
+});
+
+Deno.test("DatastoreTypeRegistry.ensureTypeLoaded: no-op for already loaded types", async () => {
+  const registry = new DatastoreTypeRegistry();
+  registry.register(createDatastoreTypeInfo("@myorg/loaded"));
+
+  let called = false;
+  registry.setTypeLoader(() => {
+    called = true;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/loaded");
+  assertEquals(called, false);
+});
+
+Deno.test("DatastoreTypeRegistry.ensureTypeLoaded: no-op for unknown types", async () => {
+  const registry = new DatastoreTypeRegistry();
+
+  let called = false;
+  registry.setTypeLoader(() => {
+    called = true;
+    return Promise.resolve();
+  });
+
+  await registry.ensureTypeLoaded("@myorg/nonexistent");
+  assertEquals(called, false);
+});
+
+Deno.test("DatastoreTypeRegistry.ensureTypeLoaded: concurrent callers share same promise", async () => {
+  const registry = new DatastoreTypeRegistry();
+  registry.registerLazy(createLazyDatastoreEntry("@myorg/custom"));
+
+  let callCount = 0;
+  registry.setTypeLoader(async (type) => {
+    callCount++;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    registry.promoteFromLazy(createDatastoreTypeInfo(type));
+  });
+
+  await Promise.all([
+    registry.ensureTypeLoaded("@myorg/custom"),
+    registry.ensureTypeLoaded("@myorg/custom"),
+    registry.ensureTypeLoaded("@myorg/custom"),
+  ]);
+
+  assertEquals(callCount, 1);
+});
+
+Deno.test("DatastoreTypeRegistry.ensureTypeLoaded: retries after transient failure", async () => {
+  const registry = new DatastoreTypeRegistry();
+  registry.registerLazy(createLazyDatastoreEntry("@myorg/custom"));
+
+  let callCount = 0;
+  registry.setTypeLoader((type) => {
+    callCount++;
+    if (callCount === 1) {
+      return Promise.reject(new Error("transient I/O error"));
+    }
+    registry.promoteFromLazy(createDatastoreTypeInfo(type));
+    return Promise.resolve();
+  });
+
+  let caught = false;
+  try {
+    await registry.ensureTypeLoaded("@myorg/custom");
+  } catch {
+    caught = true;
+  }
+  assertEquals(caught, true);
+
+  await registry.ensureTypeLoaded("@myorg/custom");
+  assertEquals(callCount, 2);
+  assertEquals(registry.get("@myorg/custom")?.name, "@myorg/custom store");
 });

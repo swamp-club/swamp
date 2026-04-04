@@ -46,10 +46,23 @@ for (const vaultType of BUILT_IN_VAULT_TYPES) {
 }
 
 /**
- * Gets all available vault types.
+ * Gets all available vault types (both loaded and lazy).
+ * Lazy types are synthesized from catalog metadata.
  */
 export function getVaultTypes(): VaultTypeInfo[] {
-  return vaultTypeRegistry.getAll();
+  const loaded = vaultTypeRegistry.getAll();
+  const loadedKeys = new Set(loaded.map((t) => t.type.toLowerCase()));
+
+  const lazy = vaultTypeRegistry.getAllLazy()
+    .filter((entry) => !loadedKeys.has(entry.type.toLowerCase()))
+    .map((entry) => ({
+      type: entry.type,
+      name: entry.type,
+      description: entry.description ?? "",
+      isBuiltIn: false,
+    }));
+
+  return [...loaded, ...lazy];
 }
 
 /**

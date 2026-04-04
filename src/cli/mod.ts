@@ -236,6 +236,7 @@ async function loadUserModels(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
+  catalog?: ExtensionCatalogStore,
 ): Promise<void> {
   try {
     const modelsDir = resolveModelsDir(marker);
@@ -251,14 +252,12 @@ async function loadUserModels(
     // Use bundle catalog for lazy per-bundle loading.
     // The catalog stays open for the process lifetime so the type loader
     // can query it when ensureTypeLoaded() is called later.
-    // DB at .swamp/_extension_catalog.db (root level) — shared across all
-    // registry types (models, vaults, drivers, datastores, reports).
-    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
-    const catalog = new ExtensionCatalogStore(catalogDbPath);
+    const effectiveCatalog = catalog ??
+      new ExtensionCatalogStore(swampPath(repoDir, "_extension_catalog.db"));
 
     // Set type loader on the registry for on-demand loading
     modelRegistry.setTypeLoader(async (type) => {
-      await loader.loadSingleType(type, catalog);
+      await loader.loadSingleType(type, effectiveCatalog);
     });
 
     // Build the index: reads catalog + mtime scan for freshness.
@@ -266,9 +265,13 @@ async function loadUserModels(
     // If not populated (first run), does a full import to bootstrap.
     // Always scans for staleness so users never see stale data.
     // Load order: local > sources > pulled (sources override pulled)
-    const result = await loader.buildIndex(absoluteModelsDir, catalog, {
-      additionalDirs: [...sourceDirs, pulledDir],
-    });
+    const result = await loader.buildIndex(
+      absoluteModelsDir,
+      effectiveCatalog,
+      {
+        additionalDirs: [...sourceDirs, pulledDir],
+      },
+    );
 
     for (const failure of result.failed) {
       logger.warn`Failed to load user model ${failure.file}: ${failure.error}`;
@@ -280,6 +283,7 @@ async function loadUserModels(
 
 /**
  * Load user vault implementations from configured directory.
+ * Uses the bundle catalog for lazy per-bundle loading when available.
  */
 async function loadUserVaults(
   repoDir: string,
@@ -287,6 +291,7 @@ async function loadUserVaults(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
+  catalog?: ExtensionCatalogStore,
 ): Promise<void> {
   try {
     const vaultsDir = resolveVaultsDir(marker);
@@ -297,13 +302,30 @@ async function loadUserVaults(
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new UserVaultLoader(denoRuntime, repoDir, resolver);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
-    const result = await loader.loadVaults(absoluteVaultsDir, {
-      additionalDirs: [...sourceDirs, pulledDir],
-      skipAlreadyRegistered: true,
-    });
 
-    for (const failure of result.failed) {
-      logger.warn`Failed to load user vault ${failure.file}: ${failure.error}`;
+    if (catalog) {
+      vaultTypeRegistry.setTypeLoader(async (type) => {
+        await loader.loadSingleType(type, catalog);
+      });
+
+      const result = await loader.buildIndex(absoluteVaultsDir, catalog, {
+        additionalDirs: [...sourceDirs, pulledDir],
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user vault ${failure.file}: ${failure.error}`;
+      }
+    } else {
+      const result = await loader.loadVaults(absoluteVaultsDir, {
+        additionalDirs: [...sourceDirs, pulledDir],
+        skipAlreadyRegistered: true,
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user vault ${failure.file}: ${failure.error}`;
+      }
     }
   } catch {
     // Not in a swamp repo or vaults dir doesn't exist — not an error
@@ -316,6 +338,7 @@ async function loadUserDrivers(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
+  catalog?: ExtensionCatalogStore,
 ): Promise<void> {
   try {
     const driversDir = resolveDriversDir(marker);
@@ -326,13 +349,30 @@ async function loadUserDrivers(
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new UserDriverLoader(denoRuntime, repoDir, resolver);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
-    const result = await loader.loadDrivers(absoluteDriversDir, {
-      additionalDirs: [...sourceDirs, pulledDir],
-      skipAlreadyRegistered: true,
-    });
 
-    for (const failure of result.failed) {
-      logger.warn`Failed to load user driver ${failure.file}: ${failure.error}`;
+    if (catalog) {
+      driverTypeRegistry.setTypeLoader(async (type) => {
+        await loader.loadSingleType(type, catalog);
+      });
+
+      const result = await loader.buildIndex(absoluteDriversDir, catalog, {
+        additionalDirs: [...sourceDirs, pulledDir],
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user driver ${failure.file}: ${failure.error}`;
+      }
+    } else {
+      const result = await loader.loadDrivers(absoluteDriversDir, {
+        additionalDirs: [...sourceDirs, pulledDir],
+        skipAlreadyRegistered: true,
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user driver ${failure.file}: ${failure.error}`;
+      }
     }
   } catch {
     // Not in a swamp repo or drivers dir doesn't exist — not an error
@@ -344,6 +384,7 @@ async function loadUserDatastores(
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
+  catalog?: ExtensionCatalogStore,
 ): Promise<void> {
   try {
     const datastoresDir = resolveDatastoresDir(marker);
@@ -353,14 +394,34 @@ async function loadUserDatastores(
 
     const loader = new UserDatastoreLoader(denoRuntime, repoDir);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores);
-    const result = await loader.loadDatastores(absoluteDatastoresDir, {
-      additionalDirs: [...sourceDirs, pulledDir],
-      skipAlreadyRegistered: true,
-    });
 
-    for (const failure of result.failed) {
-      logger
-        .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
+    if (catalog) {
+      datastoreTypeRegistry.setTypeLoader(async (type) => {
+        await loader.loadSingleType(type, catalog);
+      });
+
+      const result = await loader.buildIndex(
+        absoluteDatastoresDir,
+        catalog,
+        {
+          additionalDirs: [...sourceDirs, pulledDir],
+        },
+      );
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
+      }
+    } else {
+      const result = await loader.loadDatastores(absoluteDatastoresDir, {
+        additionalDirs: [...sourceDirs, pulledDir],
+        skipAlreadyRegistered: true,
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
+      }
     }
   } catch {
     // Not in a swamp repo or datastores dir doesn't exist — not an error
@@ -373,6 +434,7 @@ async function loadUserReports(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
+  catalog?: ExtensionCatalogStore,
 ): Promise<void> {
   try {
     const reportsDir = resolveReportsDir(marker);
@@ -383,13 +445,30 @@ async function loadUserReports(
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new UserReportLoader(denoRuntime, repoDir, resolver);
     const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
-    const result = await loader.loadReports(absoluteReportsDir, {
-      additionalDirs: [...sourceDirs, pulledDir],
-      skipAlreadyRegistered: true,
-    });
 
-    for (const failure of result.failed) {
-      logger.warn`Failed to load user report ${failure.file}: ${failure.error}`;
+    if (catalog) {
+      reportRegistry.setTypeLoader(async (type) => {
+        await loader.loadSingleType(type, catalog);
+      });
+
+      const result = await loader.buildIndex(absoluteReportsDir, catalog, {
+        additionalDirs: [...sourceDirs, pulledDir],
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user report ${failure.file}: ${failure.error}`;
+      }
+    } else {
+      const result = await loader.loadReports(absoluteReportsDir, {
+        additionalDirs: [...sourceDirs, pulledDir],
+        skipAlreadyRegistered: true,
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user report ${failure.file}: ${failure.error}`;
+      }
     }
   } catch {
     // Not in a swamp repo or reports dir doesn't exist — not an error
@@ -645,6 +724,10 @@ export async function runCli(args: string[]): Promise<void> {
       return resolverPromise;
     };
 
+    // Shared catalog for lazy per-bundle loading across all registry types.
+    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
+    const catalog = new ExtensionCatalogStore(catalogDbPath);
+
     modelRegistry.setLoader(() =>
       loadUserModels(
         repoDir,
@@ -652,6 +735,7 @@ export async function runCli(args: string[]): Promise<void> {
         denoRuntime,
         sourceModelsDirs,
         lazyResolver,
+        catalog,
       )
     );
     vaultTypeRegistry.setLoader(() =>
@@ -661,6 +745,7 @@ export async function runCli(args: string[]): Promise<void> {
         denoRuntime,
         sourceVaultsDirs,
         lazyResolver,
+        catalog,
       )
     );
     driverTypeRegistry.setLoader(() =>
@@ -670,12 +755,19 @@ export async function runCli(args: string[]): Promise<void> {
         denoRuntime,
         sourceDriversDirs,
         lazyResolver,
+        catalog,
       )
     );
     // Bootstrap: datastore loader must NOT receive the resolver — it loads
     // datastore extensions that configure the resolver itself.
     datastoreTypeRegistry.setLoader(() =>
-      loadUserDatastores(repoDir, marker, denoRuntime, sourceDatastoresDirs)
+      loadUserDatastores(
+        repoDir,
+        marker,
+        denoRuntime,
+        sourceDatastoresDirs,
+        catalog,
+      )
     );
     reportRegistry.setLoader(() =>
       loadUserReports(
@@ -684,6 +776,7 @@ export async function runCli(args: string[]): Promise<void> {
         denoRuntime,
         sourceReportsDirs,
         lazyResolver,
+        catalog,
       )
     );
 
