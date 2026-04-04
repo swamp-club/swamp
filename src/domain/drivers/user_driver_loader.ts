@@ -24,6 +24,7 @@ import {
   bundleExtension,
   fixCjsEsmInterop,
   installZodGlobal,
+  isExpectedBundleFailure,
   rewriteZodImports,
   sanitizeDataUrlError,
   uint8ArrayToBase64,
@@ -274,14 +275,25 @@ export class UserDriverLoader {
             const msg = bundleError instanceof Error
               ? bundleError.message
               : String(bundleError);
-            logger
-              .debug`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
-            // Touch the cache mtime so subsequent loads see it as fresh,
-            // avoiding repeated failed rebundle attempts on every cold start.
-            try {
-              const now = new Date();
-              await Deno.utime(bundlePath, now, now);
-            } catch { /* ignore — worst case we retry next load */ }
+            const expected = isExpectedBundleFailure(
+              absolutePath,
+              this.repoDir ?? undefined,
+            );
+            if (expected) {
+              logger
+                .debug`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
+              // Touch the cache mtime so subsequent loads see it as fresh,
+              // avoiding repeated failed rebundle attempts on every cold
+              // start. Only for expected failures (pulled extensions without
+              // project config) where retrying would always fail.
+              try {
+                const now = new Date();
+                await Deno.utime(bundlePath, now, now);
+              } catch { /* ignore — worst case we retry next load */ }
+            } else {
+              logger
+                .warn`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
+            }
             return cached;
           } catch {
             // Cache file was removed between stat and read — treat as no cache.

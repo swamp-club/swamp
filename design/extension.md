@@ -515,9 +515,10 @@ the model registry is wired up initially.
 1. On first `ensureLoaded()` call, the model registry's loader runs
    `buildIndex()` which:
    - Checks the catalog's `populated` flag
-   - If populated: scans source directories, compares mtimes against catalog
-     entries, rebundles only changed files, then registers lazy entries for all
-     types from the catalog (no bundle imports)
+   - If populated: scans source directories, compares entry-point mtimes
+     against catalog entries and checks transitive dependency mtimes against
+     cached bundle files, rebundles only changed files, then registers lazy
+     entries for all types from the catalog (no bundle imports)
    - If not populated (first run or DB deleted): falls back to the existing
      full-import path, then populates the catalog from the loaded registry
 

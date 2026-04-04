@@ -19,7 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { stripAnsiCode } from "@std/fmt/colors";
-import { join } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import * as zodModule from "zod";
 
 const logger = getLogger(["swamp", "models", "bundle"]);
@@ -193,6 +193,52 @@ export function sourceHasBareSpecifiers(source: string): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Determines whether a bundle failure is "expected" — i.e. a pulled extension
+ * whose source contains bare specifiers but has no project config (deno.json /
+ * deno.jsonc) to resolve them. In this case the failure is a known limitation,
+ * not a user error, and the cached bundle should be used silently.
+ *
+ * Returns false (unexpected failure) when:
+ * - A deno.json is available (bundling should have succeeded)
+ * - The source has no bare specifiers (failure is not config-related)
+ *
+ * @param absolutePath - Absolute path to the source .ts file
+ * @param repoDir - Repository root, used as the upward-search boundary
+ */
+export function isExpectedBundleFailure(
+  absolutePath: string,
+  repoDir?: string,
+): boolean {
+  // Walk up from the source file looking for deno.json / deno.jsonc.
+  // If found, the project config should have resolved specifiers — failure
+  // is unexpected.
+  let dir = dirname(absolutePath);
+  const root = resolve("/");
+  while (dir !== root) {
+    if (repoDir && resolve(dir) === resolve(repoDir)) break;
+    for (const name of ["deno.json", "deno.jsonc"]) {
+      try {
+        Deno.statSync(join(dir, name));
+        return false; // Config found — failure is unexpected
+      } catch {
+        // Not found — keep walking
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  // No config found — check if source actually needs one.
+  try {
+    const source = Deno.readTextFileSync(absolutePath);
+    return sourceHasBareSpecifiers(source);
+  } catch {
+    return false; // Can't read source — treat as unexpected
+  }
 }
 
 /**

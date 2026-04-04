@@ -24,6 +24,7 @@ import {
   bundleExtension,
   fixCjsEsmInterop,
   installZodGlobal,
+  isExpectedBundleFailure,
   rewriteZodImports,
   sanitizeDataUrlError,
   sourceHasBareSpecifiers,
@@ -461,4 +462,53 @@ export type Status = "running" | "stopped";
     // Should return a minimal module instead of throwing
     assertEquals(js, "export {};\n");
   });
+});
+
+// --- isExpectedBundleFailure unit tests ---
+
+Deno.test("isExpectedBundleFailure: returns true for bare specifiers without deno.json", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_expected_test_" });
+  const extDir = repoDir + "/extensions/models/myext";
+  await Deno.mkdir(extDir, { recursive: true });
+  try {
+    const source = `import { z } from "zod";\nexport const x = z;`;
+    const filePath = extDir + "/model.ts";
+    await Deno.writeTextFile(filePath, source);
+    // No deno.json anywhere — bare specifier + no config = expected failure
+    assertEquals(isExpectedBundleFailure(filePath, repoDir), true);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+  }
+});
+
+Deno.test("isExpectedBundleFailure: returns false when deno.json exists", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_expected_test_" });
+  // Simulate realistic layout: source in a subdirectory, deno.json alongside it
+  const extDir = repoDir + "/extensions/models/myext";
+  await Deno.mkdir(extDir, { recursive: true });
+  try {
+    const source = `import { z } from "zod";\nexport const x = z;`;
+    const filePath = extDir + "/model.ts";
+    await Deno.writeTextFile(filePath, source);
+    await Deno.writeTextFile(extDir + "/deno.json", "{}");
+    // deno.json exists — failure is unexpected even with bare specifiers
+    assertEquals(isExpectedBundleFailure(filePath, repoDir), false);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+  }
+});
+
+Deno.test("isExpectedBundleFailure: returns false for npm-only imports without deno.json", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_expected_test_" });
+  const extDir = repoDir + "/extensions/models/myext";
+  await Deno.mkdir(extDir, { recursive: true });
+  try {
+    const source = `import { z } from "npm:zod@4";\nexport const x = z;`;
+    const filePath = extDir + "/model.ts";
+    await Deno.writeTextFile(filePath, source);
+    // No bare specifiers — failure is unexpected regardless of deno.json
+    assertEquals(isExpectedBundleFailure(filePath, repoDir), false);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+  }
 });

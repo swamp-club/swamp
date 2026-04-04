@@ -24,6 +24,7 @@ import {
   bundleExtension,
   fixCjsEsmInterop,
   installZodGlobal,
+  isExpectedBundleFailure,
   rewriteZodImports,
   sanitizeDataUrlError,
   uint8ArrayToBase64,
@@ -877,12 +878,49 @@ export class UserModelLoader {
           continue;
         }
 
-        // Check mtime
+        // Check entry point mtime
         try {
           const stat = await Deno.stat(absolutePath);
           const sourceMtime = stat.mtime?.toISOString() ?? "";
           if (sourceMtime !== catalogEntry.source_mtime) {
             stale.push({ absolutePath, relativePath, baseDir: dir });
+            continue;
+          }
+
+          // Entry point is fresh — check transitive dependencies against
+          // the cached bundle file's mtime. This catches edits to imported
+          // .ts files that don't touch the entry point.
+          const bundlePath = this.getBundlePath(relativePath, dir);
+          if (bundlePath) {
+            try {
+              const bundleStat = await Deno.stat(bundlePath);
+              if (bundleStat.mtime) {
+                const { resolvedFiles } = await resolveLocalImports(
+                  [absolutePath],
+                  dir,
+                );
+                const depStats = await Promise.all(
+                  resolvedFiles.map((f) => Deno.stat(f)),
+                );
+                const newestDepMtime = depStats.reduce<Date | null>(
+                  (max, s) => {
+                    if (!s.mtime) return max;
+                    if (!max) return s.mtime;
+                    return s.mtime > max ? s.mtime : max;
+                  },
+                  null,
+                );
+                if (
+                  newestDepMtime && newestDepMtime >= bundleStat.mtime
+                ) {
+                  stale.push({ absolutePath, relativePath, baseDir: dir });
+                }
+              }
+            } catch {
+              // Bundle file missing or dep stat failed — mark as stale
+              // to trigger a rebundle.
+              stale.push({ absolutePath, relativePath, baseDir: dir });
+            }
           }
         } catch {
           stale.push({ absolutePath, relativePath, baseDir: dir });
@@ -1110,14 +1148,27 @@ export class UserModelLoader {
             const msg = bundleError instanceof Error
               ? bundleError.message
               : String(bundleError);
-            logger
-              .debug`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
-            // Touch the cache mtime so subsequent loads see it as fresh,
-            // avoiding repeated failed rebundle attempts on every cold start.
-            try {
-              const now = new Date();
-              await Deno.utime(bundlePath, now, now);
-            } catch { /* ignore — worst case we retry next load */ }
+            const expected = isExpectedBundleFailure(
+              absolutePath,
+              this.repoDir,
+            );
+            if (expected) {
+              logger
+                .debug`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
+              // Touch the cache mtime so subsequent loads see it as fresh,
+              // avoiding repeated failed rebundle attempts on every cold
+              // start. Only for expected failures (pulled extensions without
+              // project config) where retrying would always fail.
+              try {
+                const now = new Date();
+                await Deno.utime(bundlePath, now, now);
+              } catch { /* ignore — worst case we retry next load */ }
+            } else {
+              logger
+                .warn`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
+              // Do NOT touch the cache mtime — the next run should retry
+              // bundling so the user sees the error again until fixed.
+            }
             return cached;
           } catch {
             // Cache file was removed between stat and read — treat as no cache.

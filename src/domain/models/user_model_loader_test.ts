@@ -17,11 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { dirname, join } from "@std/path";
 import { UserModelLoader } from "./user_model_loader.ts";
 import { modelRegistry } from "./model.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DataHandle, DataWriter, MethodContext } from "./model.ts";
 import type { ModelType } from "./model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -2372,4 +2377,164 @@ export function helper() { return "helper"; }
       }
     },
   );
+});
+
+Deno.test("UserModelLoader buildIndex detects transitive dependency changes", async () => {
+  const ts = Date.now();
+  const helperCode = `export const greeting = "hello";`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+import { greeting } from "./helper.ts";
+
+export const model = {
+  type: "@user/dep-stale-${ts}",
+  version: "2026.02.09.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [], greeting }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_stale_dep_repo_" });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_stale_dep_models_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    // Write initial files
+    await Deno.writeTextFile(join(modelsDir, "helper.ts"), helperCode);
+    await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
+
+    // First buildIndex — bootstraps the catalog from a full import
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader1.buildIndex(modelsDir, catalog1);
+    catalog1.close();
+
+    // Read the cached bundle content
+    const ns = bundleNamespace(modelsDir, repoDir);
+    const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
+    const cachedBundle1 = await Deno.readTextFile(bundlePath);
+
+    // Wait so mtime differs
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Modify only the dependency (not the entry point)
+    await Deno.writeTextFile(
+      join(modelsDir, "helper.ts"),
+      `export const greeting = "goodbye";`,
+    );
+
+    // Second buildIndex — catalog is populated, should detect dep change
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
+    const result = await loader2.buildIndex(modelsDir, catalog2);
+    catalog2.close();
+
+    // The bundle should have been regenerated with the new dependency content
+    const cachedBundle2 = await Deno.readTextFile(bundlePath);
+    assertNotEquals(
+      cachedBundle1,
+      cachedBundle2,
+      "Bundle should be regenerated when transitive dependency changes",
+    );
+    // model.ts should appear in the loaded list (it was rebundled)
+    assertEquals(result.loaded.length > 0, true);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
+Deno.test("UserModelLoader bundleWithCache preserves cached bundle on unexpected failure", async () => {
+  const ts = Date.now();
+  // Model that imports a nonexistent npm package — will fail to bundle.
+  // Uses npm: prefix (not a bare specifier) so isExpectedBundleFailure
+  // returns false — this is an "unexpected" failure path.
+  const brokenModelCode = `
+import { z } from "npm:zod@4";
+import { something } from "npm:nonexistent-package-xyz-swamp-test-${ts}@999";
+
+export const model = {
+  type: "@user/broken-${ts}",
+  version: "2026.02.09.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  // A valid model to produce the initial cached bundle
+  const validModelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@user/broken-${ts}",
+  version: "2026.02.09.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_mtime_test_repo_",
+  });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_mtime_test_models_",
+  });
+
+  try {
+    // Write valid model, load to produce cached bundle
+    await Deno.writeTextFile(join(modelsDir, "model.ts"), validModelCode);
+    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader1.loadModels(modelsDir);
+
+    const ns = bundleNamespace(modelsDir, repoDir);
+    const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
+    const cachedBundle1 = await Deno.readTextFile(bundlePath);
+
+    // Wait so mtime differs
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Replace with broken model (no bare specifiers, no deno.json →
+    // unexpected failure)
+    await Deno.writeTextFile(join(modelsDir, "model.ts"), brokenModelCode);
+
+    // Load again — should fall back to cached bundle.
+    // The broken code should NOT appear in the bundle.
+    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader2.loadModels(modelsDir);
+
+    const cachedBundle2 = await Deno.readTextFile(bundlePath);
+
+    // The bundle content should be preserved (old valid bundle, not broken)
+    assertEquals(
+      cachedBundle1,
+      cachedBundle2,
+      "Bundle content should be preserved on unexpected failure",
+    );
+    // Verify the bundle doesn't contain the broken import
+    assertEquals(
+      cachedBundle2.includes("nonexistent-package"),
+      false,
+      "Bundle should not contain broken import from failed rebundle",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
 });
