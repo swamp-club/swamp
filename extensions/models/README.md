@@ -108,7 +108,7 @@ If you want to drive the model directly without Claude:
 
 ```bash
 # Create an instance for issue #850
-swamp model create @si/issue-lifecycle issue-850 \
+swamp model create @swamp/issue-lifecycle issue-850 \
   --global-arg issueNumber=850 \
   --global-arg repo=owner/repo --json
 ```

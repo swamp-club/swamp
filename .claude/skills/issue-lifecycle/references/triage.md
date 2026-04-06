@@ -8,10 +8,16 @@ resuming an issue in the `triaging` phase.
 If it doesn't already exist:
 
 ```
-swamp model create @si/issue-lifecycle issue-<N> \
+swamp model create @swamp/issue-lifecycle issue-<N> \
   --global-arg issueNumber=<N> \
   --global-arg repo=<owner/repo> --json
 ```
+
+**Worktree note:** If you are in a Claude Code worktree (`.claude/worktrees/`),
+the worktree is not an initialized swamp repository. Add
+`--repo-dir <path-to-main-repo>` to all `swamp` commands, where the main repo
+is the parent of the `.claude/worktrees/` directory. All subsequent `swamp`
+commands in this skill also need `--repo-dir`.
 
 ## 2. Fetch the Issue Context
 
