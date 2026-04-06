@@ -58,6 +58,7 @@
     "scripts/",
     ".github/",
     ".agents/",
+    "agent-constraints/",
     "workflows/",
     ".vault-test-vault/",
     "resources/",
