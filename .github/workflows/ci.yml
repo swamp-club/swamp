@@ -167,7 +167,6 @@ jobs:
       - name: Run skill trigger evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          NODE_OPTIONS: "--experimental-require-module"
         run: deno run eval-skill-triggers
 
   claude-review:

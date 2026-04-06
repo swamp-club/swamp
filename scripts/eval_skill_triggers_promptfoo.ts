@@ -178,7 +178,11 @@ async function main(): Promise<void> {
     `Running skill trigger evals for ${model} (concurrency=${concurrency}, threshold=${passThreshold})…`,
   );
 
-  // Run promptfoo eval
+  // Run promptfoo eval.
+  // NODE_OPTIONS enables ESM require() support needed by promptfoo's
+  // transitive dependency @asamuzakjp/css-color (via jsdom) which uses
+  // top-level await in its ESM entry point.
+  const nodeOptions = Deno.env.get("NODE_OPTIONS") ?? "";
   const command = new Deno.Command("npx", {
     args: [
       "-y",
@@ -193,6 +197,14 @@ async function main(): Promise<void> {
     cwd: configDir,
     stdout: "inherit",
     stderr: "inherit",
+    env: {
+      ...Object.fromEntries(
+        Object.entries(Deno.env.toObject()),
+      ),
+      NODE_OPTIONS: nodeOptions.includes("--experimental-require-module")
+        ? nodeOptions
+        : `${nodeOptions} --experimental-require-module`.trim(),
+    },
   });
 
   const { code } = await command.output();
