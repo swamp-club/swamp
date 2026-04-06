@@ -24,6 +24,7 @@ import {
   bundleExtension,
   fixCjsEsmInterop,
   installZodGlobal,
+  isExpectedBundleFailure,
   rewriteZodImports,
   sanitizeDataUrlError,
   uint8ArrayToBase64,
@@ -703,21 +704,56 @@ export class UserReportLoader {
           }
         }
       } catch {
-        if (bundleExists) {
-          logger
-            .debug`Using cached report bundle for ${relativePath} (freshness check failed — missing dependency)`;
-          return await Deno.readTextFile(bundlePath);
-        }
+        // Freshness check failed (e.g. missing dependency file).
+        // Fall through to attempt a rebundle rather than using a
+        // potentially stale cache.
       }
 
-      // Bundle and write to cache
-      const js = await bundleExtension(absolutePath, denoPath);
-      const bundleBoundary = this.resolveBundlePath();
-      await assertSafePath(bundlePath, bundleBoundary);
-      await Deno.mkdir(dirname(bundlePath), { recursive: true });
-      await Deno.writeTextFile(bundlePath, js);
-      logger.debug`Wrote report bundle cache: ${bundlePath}`;
-      return js;
+      // Try to rebundle from source. If bundling fails (e.g. bare specifiers
+      // without a deno.json import map) and a cached bundle exists, fall back
+      // to the cache. The old bundle file is untouched on failure since
+      // bundleExtension returns the JS string in memory before we write.
+      try {
+        const js = await bundleExtension(absolutePath, denoPath);
+        const bundleBoundary = this.resolveBundlePath();
+        await assertSafePath(bundlePath, bundleBoundary);
+        await Deno.mkdir(dirname(bundlePath), { recursive: true });
+        await Deno.writeTextFile(bundlePath, js);
+        logger.debug`Wrote report bundle cache: ${bundlePath}`;
+        return js;
+      } catch (bundleError) {
+        if (bundleExists) {
+          try {
+            const cached = await Deno.readTextFile(bundlePath);
+            const msg = bundleError instanceof Error
+              ? bundleError.message
+              : String(bundleError);
+            const expected = isExpectedBundleFailure(
+              absolutePath,
+              this.repoDir ?? undefined,
+            );
+            if (expected) {
+              logger
+                .debug`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
+              // Touch the cache mtime so subsequent loads see it as fresh,
+              // avoiding repeated failed rebundle attempts on every cold
+              // start. Only for expected failures (pulled extensions without
+              // project config) where retrying would always fail.
+              try {
+                const now = new Date();
+                await Deno.utime(bundlePath, now, now);
+              } catch { /* ignore — worst case we retry next load */ }
+            } else {
+              logger
+                .warn`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
+            }
+            return cached;
+          } catch {
+            // Cache file was removed between stat and read — treat as no cache.
+          }
+        }
+        throw bundleError;
+      }
     }
 
     // No repo dir — just bundle without caching
@@ -794,6 +830,7 @@ export class UserReportLoader {
     for await (const entry of Deno.readDir(dir)) {
       const relativePath = prefix ? join(prefix, entry.name) : entry.name;
       if (entry.isDirectory) {
+        if (entry.name.startsWith("_")) continue;
         const nested = await this.discoverFiles(
           join(dir, entry.name),
           relativePath,
