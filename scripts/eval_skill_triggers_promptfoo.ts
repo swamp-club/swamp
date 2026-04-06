@@ -108,15 +108,26 @@ async function regenerateConfig(
     "promptfoo",
     "generate_config.ts",
   );
-  const configPath = join(
+  const promptfooConfigPath = join(
     projectRoot,
     "evals",
     "promptfoo",
     "promptfooconfig.yaml",
   );
 
+  // Explicitly point at the root deno.json so Deno doesn't auto-discover
+  // evals/promptfoo/package.json (which is not a workspace member).
+  const denoConfigPath = join(projectRoot, "deno.json");
   const command = new Deno.Command("deno", {
-    args: ["run", "--allow-read", generatorPath, "--model", model],
+    args: [
+      "run",
+      "--config",
+      denoConfigPath,
+      "--allow-read",
+      generatorPath,
+      "--model",
+      model,
+    ],
     cwd: projectRoot,
     stdout: "piped",
     stderr: "inherit",
@@ -128,7 +139,7 @@ async function regenerateConfig(
     Deno.exit(1);
   }
 
-  await Deno.writeFile(configPath, stdout);
+  await Deno.writeFile(promptfooConfigPath, stdout);
   console.log(`Regenerated promptfoo config for model: ${model}`);
 }
 
