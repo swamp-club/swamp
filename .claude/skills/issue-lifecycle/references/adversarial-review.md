@@ -5,28 +5,26 @@ Read this after generating or iterating on a plan. After **every** `plan` or
 
 ## Step 1: Challenge the Plan
 
-Re-read the plan, then critically evaluate it across these dimensions:
+Re-read the plan, then critically evaluate it.
 
-- **Architecture**: Does this follow DDD principles? Are domain boundaries
-  correct? Is this the right abstraction level? Are there better patterns?
+Read `agent-constraints/adversarial-dimensions.md` at the repo root for the
+review criteria specific to this repository. If it does not exist, evaluate
+across these default dimensions:
+
+- **Architecture**: Are domain boundaries correct? Is this the right abstraction
+  level? Are there better patterns?
 - **Scope**: Is this doing too much or too little? Does it match the issue? Is
   there scope creep? Are there unnecessary changes?
 - **Risk**: Are all failure modes identified? What about edge cases, race
   conditions, backwards compatibility? What could go wrong that isn't listed?
 - **Testing**: Is the testing strategy sufficient? Are edge cases covered? Are
-  there integration test gaps? Is there over-reliance on unit tests? Was the UAT
-  assessment thorough — are there end-to-end CLI or adversarial test gaps that
-  should be filed in `systeminit/swamp-uat`?
+  there integration test gaps?
 - **Complexity**: Is this over-engineered? Could it be simpler? Are there
   unnecessary abstractions or indirections?
 - **Correctness**: Will this actually solve the problem? Are there logical gaps?
   Does the approach match established patterns in the codebase?
-- **Documentation**: Does this change introduce or modify domain concepts, CLI
-  commands, extension patterns, or architectural decisions that should be
-  reflected in `design/*.md` or `.claude/skills/`? If a design doc describes
-  behavior this plan changes, the plan must include a step to update it. If a
-  skill references CLI commands or examples affected by this change, the plan
-  must include a step to update the skill. Flag any gaps as findings.
+- **Documentation**: Does this change affect project documentation? Flag any
+  gaps as findings.
 
 ## Step 2: Verify Against the Codebase
 
@@ -43,10 +41,8 @@ For each plan step, **read the actual code**:
   acquire locks), find how existing callers invoke that capability and verify
   the plan routes through the same shared code path. New entry points that
   reimplement existing logic are a high-severity finding.
-- Check if design docs in `design/` describe behavior being changed — flag stale
+- Check if project documentation describes behavior being changed — flag stale
   docs
-- Check if skills in `.claude/skills/` reference commands, flags, or examples
-  affected by the plan — flag stale skills
 
 ## Step 3: Record Findings
 
@@ -77,8 +73,9 @@ Each finding must have:
 
 - `id`: Sequential identifier (ADV-1, ADV-2, ...)
 - `severity`: critical, high, medium, or low
-- `category`: architecture, scope, risk, testing, complexity, correctness, or
-  documentation
+- `category`: Use categories from `agent-constraints/adversarial-dimensions.md`,
+  or the defaults above (architecture, scope, risk, testing, complexity,
+  correctness, documentation)
 - `description`: Clear explanation of the concern
 
 **Critical/high findings block approval.** Medium/low are shown as warnings.

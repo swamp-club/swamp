@@ -1,6 +1,6 @@
 # Issue Lifecycle Extension Model
 
-The `@si/issue-lifecycle` extension model moves GitHub issue triage and
+The `@swamp/issue-lifecycle` extension model moves GitHub issue triage and
 implementation planning out of GitHub Actions and into a local, interactive
 workflow. Every plan revision, feedback round, and CI result is stored as
 versioned, immutable data — the issue thread on GitHub becomes a live status
@@ -109,10 +109,6 @@ If you want to drive the model directly without Claude:
 ```bash
 # Create an instance for issue #850
 swamp model create @si/issue-lifecycle issue-850 \
-  --global-arg issueNumber=850 --json
-
-# Repo defaults to systeminit/swamp. Override for other repos:
-swamp model create @si/issue-lifecycle issue-850 \
   --global-arg issueNumber=850 \
   --global-arg repo=owner/repo --json
 ```
@@ -193,33 +189,37 @@ swamp model output search issue-850 --json
 
 ## Methods
 
-| Method      | Description                                | State Transition                 |
-| ----------- | ------------------------------------------ | -------------------------------- |
-| `start`     | Fetch issue from GitHub                    | * -> triaging                    |
-| `triage`    | Classify as bug/feature/unclear            | triaging -> classified           |
-| `plan`      | Generate implementation plan               | classified -> plan_generated     |
-| `review`    | Display current plan (read-only)           | no change                        |
-| `iterate`   | Revise plan with feedback                  | plan_generated -> plan_generated |
-| `approve`   | Lock the plan, post to GitHub, start work  | plan_generated -> approved       |
-| `implement` | Record PR number for CI tracking           | approved -> implementing         |
-| `ci_status` | Fetch CI check results and review comments | implementing -> ci_review        |
-| `fix`       | Direct specific fixes from review feedback | ci_review -> implementing        |
-| `complete`  | Mark lifecycle done                        | ci_review -> done                |
+| Method               | Description                                     | State Transition                 |
+| -------------------- | ----------------------------------------------- | -------------------------------- |
+| `start`              | Fetch issue from GitHub                         | \* -> triaging                   |
+| `triage`             | Classify as bug/feature/unclear                 | triaging -> classified           |
+| `plan`               | Generate implementation plan                    | classified -> plan_generated     |
+| `review`             | Display current plan (read-only)                | no change                        |
+| `iterate`            | Revise plan with feedback                       | plan_generated -> plan_generated |
+| `adversarial_review` | Record adversarial review findings for the plan | no change                        |
+| `resolve_findings`   | Mark adversarial findings as resolved           | no change                        |
+| `approve`            | Lock the plan, post to GitHub, start work       | plan_generated -> approved       |
+| `implement`          | Signal implementation started                   | approved -> implementing         |
+| `record_pr`          | Record PR number for CI tracking                | implementing -> implementing     |
+| `ci_status`          | Fetch CI check results and review comments      | implementing -> ci_review        |
+| `fix`                | Direct specific fixes from review feedback      | ci_review -> implementing        |
+| `complete`           | Mark lifecycle done                             | ci_review -> done                |
 
 ## Data stored
 
 All data is versioned and immutable. Each `iterate` creates a new plan version
 and a new feedback version. You can review any prior version.
 
-| Resource         | What it stores                                |
-| ---------------- | --------------------------------------------- |
-| `state`          | Current phase, repo, issue number, PR number  |
-| `context`        | Issue title, body, labels, comments           |
-| `classification` | Bug/feature/unclear + reasoning               |
-| `plan`           | Implementation plan (versioned per iteration) |
-| `feedback`       | Human feedback (versioned per round)          |
-| `ciResults`      | CI check runs + review comments               |
-| `fixDirective`   | Human-directed fix instructions               |
+| Resource            | What it stores                                |
+| ------------------- | --------------------------------------------- |
+| `state`             | Current phase, repo, issue number, PR number  |
+| `context`           | Issue title, body, labels, comments           |
+| `classification`    | Bug/feature/unclear + reasoning               |
+| `plan`              | Implementation plan (versioned per iteration) |
+| `feedback`          | Human feedback (versioned per round)          |
+| `adversarialReview` | Adversarial review findings for current plan  |
+| `ciResults`         | CI check runs + review comments               |
+| `fixDirective`      | Human-directed fix instructions               |
 
 ## Swamp Club Integration
 
@@ -266,6 +266,22 @@ export SWAMP_CLUB_URL=http://localhost:8000
 
 If no API key is set, the swamp-club integration is silently disabled — all
 GitHub comment posting and local data storage still works normally.
+
+## Repository Configuration
+
+The embedded skill reads repo-specific conventions from `agent-constraints/` at
+the repository root. These files customize how triage, planning, adversarial
+review, and implementation work in your repository:
+
+| File                            | What it controls                            |
+| ------------------------------- | ------------------------------------------- |
+| `adversarial-dimensions.md`     | Review criteria and dimensions              |
+| `planning-conventions.md`       | Analysis requirements, documentation checks |
+| `triage-conventions.md`         | Codebase exploration and bug reproduction   |
+| `implementation-conventions.md` | Build, verification, and PR conventions     |
+
+All files are optional. If they do not exist, the skill uses generic defaults.
+Create only the files you want to customize.
 
 ## Prerequisites
 

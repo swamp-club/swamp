@@ -21,7 +21,7 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 
 export const GlobalArgsSchema = z.object({
-  repo: z.string().default("systeminit/swamp").describe(
+  repo: z.string().describe(
     "GitHub repository in owner/repo format",
   ),
   issueNumber: z.number().describe("GitHub issue number"),
@@ -173,15 +173,9 @@ export const CiResultsSchema = z.object({
 export const AdversarialFindingSchema = z.object({
   id: z.string().describe("Unique finding identifier, e.g. ADV-1"),
   severity: z.enum(["critical", "high", "medium", "low"]),
-  category: z.enum([
-    "architecture",
-    "scope",
-    "risk",
-    "testing",
-    "complexity",
-    "correctness",
-    "documentation",
-  ]),
+  category: z.string().describe(
+    "Finding category (e.g. architecture, scope, risk, testing, complexity, correctness, documentation)",
+  ),
   description: z.string(),
   resolved: z.boolean().default(false),
   resolutionNote: z.string().optional(),

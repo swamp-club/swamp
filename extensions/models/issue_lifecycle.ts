@@ -110,8 +110,8 @@ async function readState(
 // ---------------------------------------------------------------------------
 
 export const model = {
-  type: "@si/issue-lifecycle",
-  version: "2026.03.26.1",
+  type: "@swamp/issue-lifecycle",
+  version: "2026.04.06.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -119,6 +119,12 @@ export const model = {
       toVersion: "2026.03.26.1",
       description:
         "Add adversarial review resource, methods, and approval gate — no globalArguments changes",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.04.06.1",
+      description:
+        "Remove default repo, relax adversarial category from enum to string for cross-repo reuse",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -892,13 +898,7 @@ export const model = {
           findings: {
             id: string;
             severity: "critical" | "high" | "medium" | "low";
-            category:
-              | "architecture"
-              | "scope"
-              | "risk"
-              | "testing"
-              | "complexity"
-              | "correctness";
+            category: string;
             description: string;
             resolved?: boolean;
             resolutionNote?: string;

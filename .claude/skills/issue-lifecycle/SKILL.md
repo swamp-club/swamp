@@ -1,7 +1,7 @@
 ---
 name: issue-lifecycle
 description: >
-  Drive the @si/issue-lifecycle model for interactive issue triage and
+  Drive the @swamp/issue-lifecycle model for interactive issue triage and
   plan iteration. Use when the user wants to triage a GitHub issue,
   generate an implementation plan, or iterate on a plan with feedback.
   Triggers on "triage issue", "triage #", "issue plan", "review plan",
@@ -12,13 +12,29 @@ description: >
 # Issue Lifecycle Skill
 
 Interactive triage and implementation planning for GitHub issues using the
-`@si/issue-lifecycle` extension model. This skill drives the model
+`@swamp/issue-lifecycle` extension model. This skill drives the model
 conversationally — the human steers, you execute.
 
 ## Core Principle
 
 **Never auto-approve.** Always stop and show the plan to the human. Always ask
 for feedback. Only call `approve` when the human explicitly says to proceed.
+
+## Repository Configuration
+
+This skill reads repo-specific conventions from `agent-constraints/` at the
+repository root. If these files exist, they customize how each phase works:
+
+- `agent-constraints/adversarial-dimensions.md` — review criteria and dimensions
+- `agent-constraints/planning-conventions.md` — analysis and documentation
+  requirements
+- `agent-constraints/triage-conventions.md` — codebase exploration and bug
+  reproduction
+- `agent-constraints/implementation-conventions.md` — build, verify, and PR
+  conventions
+
+If these files do not exist, the skill uses generic defaults documented in each
+reference file.
 
 ## Lifecycle Phases
 
@@ -43,9 +59,9 @@ assessing UAT coverage gaps, and presenting to the human.
 Read [references/adversarial-review.md](references/adversarial-review.md)
 **immediately after every `plan` or `iterate` call — no exceptions.** Planning
 and adversarial review are always paired: you never present a plan without
-running the review first. Covers: challenging the plan across 7 dimensions,
-verifying against the codebase, recording findings, presenting to the human, and
-the iteration loop until approval.
+running the review first. Covers: challenging the plan across repo-specific
+dimensions, verifying against the codebase, recording findings, presenting to
+the human, and the iteration loop until approval.
 
 ### Phase 4: Implementation & CI
 
@@ -88,9 +104,9 @@ there.
    You don't need to manually post comments.
 5. **Read the codebase thoroughly** before generating the plan. The plan should
    reference specific files, functions, and test paths.
-6. **Use DDD analysis.** Every plan should identify domain concepts, entities,
-   and services affected by the change.
+6. **Follow the planning conventions for this repository.** Read
+   `agent-constraints/planning-conventions.md` if it exists.
 7. **File unrelated issues immediately.** If you discover a bug, code smell, or
    problem during investigation that is NOT related to the current issue, file
-   it as a new GitHub issue in swamp using the `swamp-issue` skill. Do not try
-   to fix it in the current work span — keep the scope focused.
+   it as a new GitHub issue in the current repository. Do not try to fix it in
+   the current work span — keep the scope focused.
