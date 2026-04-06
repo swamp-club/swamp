@@ -2569,6 +2569,100 @@ Deno.test("UserModelLoader: accepts optional DatastorePathResolver", () => {
   assertNotEquals(loaderWithoutResolver, undefined);
 });
 
+Deno.test("buildIndex: invalidates catalog when source dirs change (#1107)", async () => {
+  const ts = Date.now();
+  const modelCodeA = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@user/source-a-${ts}",
+  version: "2026.04.05.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const modelCodeB = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@user/source-b-${ts}",
+  version: "2026.04.05.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_source_dirs_repo_",
+  });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_source_dirs_models_",
+  });
+  const sourceDirB = await Deno.makeTempDir({
+    prefix: "swamp_source_dirs_extra_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    // Write model A in the primary dir, model B in the extra source dir
+    await Deno.writeTextFile(join(modelsDir, "model_a.ts"), modelCodeA);
+    await Deno.writeTextFile(join(sourceDirB, "model_b.ts"), modelCodeB);
+
+    // First buildIndex — only primary dir, no additional sources
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader1.buildIndex(modelsDir, catalog1);
+    catalog1.close();
+
+    // Model A should be registered, model B should not
+    assertEquals(
+      modelRegistry.has(`@user/source-a-${ts}`),
+      true,
+      "model A should be registered after first buildIndex",
+    );
+    assertEquals(
+      modelRegistry.has(`@user/source-b-${ts}`),
+      false,
+      "model B should NOT be registered (not in any source dir yet)",
+    );
+
+    // Second buildIndex — now include the extra source dir
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
+    const result = await loader2.buildIndex(modelsDir, catalog2, {
+      additionalDirs: [sourceDirB],
+    });
+    catalog2.close();
+
+    // Model B should now be discovered and registered
+    assertEquals(
+      modelRegistry.has(`@user/source-b-${ts}`),
+      true,
+      "model B should be registered after source dir was added",
+    );
+    assertEquals(
+      result.failed.length,
+      0,
+      `expected no failures, got: ${JSON.stringify(result.failed)}`,
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+    await Deno.remove(sourceDirB, { recursive: true });
+  }
+});
+
 Deno.test("UserModelLoader buildIndex: catalog extracts type from export block, not from decoy properties", async () => {
   const ts = Date.now();
   // Model with a decoy `type: "decoy"` in a helper call BEFORE the

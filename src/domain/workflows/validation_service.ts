@@ -21,6 +21,7 @@ import type { Workflow } from "./workflow.ts";
 import { WorkflowSchema } from "./workflow.ts";
 import {
   CyclicDependencyError,
+  DuplicateNodeNameError,
   type GraphNode,
   TopologicalSortService,
 } from "./topological_sort_service.ts";
@@ -263,6 +264,12 @@ export class DefaultWorkflowValidationService
           error.message,
         );
       }
+      if (error instanceof DuplicateNodeNameError) {
+        return WorkflowValidationResult.fail(
+          "No cyclic job dependencies",
+          error.message,
+        );
+      }
       throw error;
     }
   }
@@ -294,7 +301,10 @@ export class DefaultWorkflowValidationService
           ),
         );
       } catch (error) {
-        if (error instanceof CyclicDependencyError) {
+        if (
+          error instanceof CyclicDependencyError ||
+          error instanceof DuplicateNodeNameError
+        ) {
           results.push(
             WorkflowValidationResult.fail(
               `No cyclic step dependencies in job '${job.name}'`,

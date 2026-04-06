@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   CyclicDependencyError,
+  DuplicateNodeNameError,
   type GraphNode,
   TopologicalSortService,
 } from "./topological_sort_service.ts";
@@ -231,6 +232,47 @@ Deno.test("CyclicDependencyError contains cycle path", () => {
     if (error instanceof CyclicDependencyError) {
       // Cycle should contain all three nodes
       assertEquals(error.cycle.length >= 3, true);
+    } else {
+      throw error;
+    }
+  }
+});
+
+Deno.test("sort: detects duplicate node names", () => {
+  const nodes: GraphNode[] = [
+    { name: "a", weight: 0, dependencies: [] },
+    { name: "a", weight: 0, dependencies: [] },
+  ];
+
+  try {
+    service.sort(nodes);
+    throw new Error("Expected DuplicateNodeNameError");
+  } catch (error) {
+    if (error instanceof DuplicateNodeNameError) {
+      assertEquals(error.duplicates, ["a"]);
+      assertEquals(error.message, "Duplicate node names: a");
+    } else {
+      throw error;
+    }
+  }
+});
+
+Deno.test("sort: lists all duplicate names sorted alphabetically", () => {
+  const nodes: GraphNode[] = [
+    { name: "charlie", weight: 0, dependencies: [] },
+    { name: "alpha", weight: 0, dependencies: [] },
+    { name: "charlie", weight: 0, dependencies: [] },
+    { name: "alpha", weight: 0, dependencies: [] },
+    { name: "bravo", weight: 0, dependencies: [] },
+  ];
+
+  try {
+    service.sort(nodes);
+    throw new Error("Expected DuplicateNodeNameError");
+  } catch (error) {
+    if (error instanceof DuplicateNodeNameError) {
+      assertEquals(error.duplicates, ["alpha", "charlie"]);
+      assertEquals(error.name, "DuplicateNodeNameError");
     } else {
       throw error;
     }
