@@ -121,7 +121,16 @@ export interface ExtractedReport {
   labels: string[];
 }
 
-/** Content metadata extracted from all models, workflows, vaults, drivers, datastores, and reports in an extension. */
+/** Metadata extracted from a skill directory. */
+export interface ExtractedSkill {
+  dirName: string;
+  name: string;
+  description: string;
+  hasScripts: boolean;
+  fileCount: number;
+}
+
+/** Content metadata extracted from all models, workflows, vaults, drivers, datastores, reports, and skills in an extension. */
 export interface ExtensionContentMetadata {
   models: ExtractedModel[];
   workflows: ExtractedWorkflow[];
@@ -129,4 +138,5 @@ export interface ExtensionContentMetadata {
   drivers: ExtractedDriver[];
   datastores: ExtractedDatastore[];
   reports: ExtractedReport[];
+  skills: ExtractedSkill[];
 }

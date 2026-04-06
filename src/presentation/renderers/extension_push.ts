@@ -137,6 +137,12 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         this.logger.info`  ${r.name}${scopeLabel} (${r.fileName})`;
       }
     }
+    if (data.skills.length > 0) {
+      this.logger.info`Skills (${data.skills.length}):`;
+      for (const s of data.skills) {
+        this.logger.info`  ${s.name} (${s.fileCount} files)`;
+      }
+    }
     if (data.additionalFiles.length > 0) {
       this.logger.info`Additional files (${data.additionalFiles.length}):`;
       for (const f of data.additionalFiles) {
@@ -229,6 +235,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         }
         if (e.data.reportCount > 0) {
           parts.push(`Reports: ${e.data.reportCount}`);
+        }
+        if (e.data.skillCount > 0) {
+          parts.push(`Skills: ${e.data.skillCount}`);
         }
         parts.push(`Bundles: ${e.data.bundleCount}`);
         this.logger.info`${parts.join(", ")}`;

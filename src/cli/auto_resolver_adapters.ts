@@ -99,6 +99,7 @@ export function createAutoResolveInstallerAdapter(
           driversDir,
           datastoresDir,
           reportsDir,
+          skillsDir: "",
           repoDir,
           force: true,
           alreadyPulled: new Set(),

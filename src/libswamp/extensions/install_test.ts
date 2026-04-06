@@ -147,6 +147,7 @@ Deno.test("extensionInstall: detects missing files and calls install", async () 
               ".swamp/pulled-extensions/datastores",
             ),
             reportsDir: join(tmpDir, ".swamp/pulled-extensions/reports"),
+            skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
             repoDir: tmpDir,
             force: true,
             alreadyPulled: new Set<string>(),

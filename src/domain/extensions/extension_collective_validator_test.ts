@@ -31,6 +31,7 @@ function makeMetadata(
     drivers: [],
     datastores: [],
     reports: [],
+    skills: [],
     ...overrides,
   };
 }

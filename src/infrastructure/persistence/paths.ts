@@ -93,6 +93,8 @@ export const SWAMP_SUBDIRS = {
   pulledDatastores: "pulled-extensions/datastores",
   /** Pulled extension source: reports */
   pulledReports: "pulled-extensions/reports",
+  /** Pulled extension source: skills */
+  pulledSkills: "pulled-extensions/skills",
 } as const;
 
 /**

@@ -32,6 +32,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { SKILL_DIRS } from "../../domain/repo/skill_dirs.ts";
 import {
   ConflictError,
   consumeStream,
@@ -97,6 +98,7 @@ export interface PullContext {
   driversDir: string;
   datastoresDir: string;
   reportsDir: string;
+  skillsDir: string;
   repoDir: string;
   force: boolean;
   outputMode: "log" | "json";
@@ -124,6 +126,7 @@ export async function pullExtension(
     driversDir: ctx.driversDir,
     datastoresDir: ctx.datastoresDir,
     reportsDir: ctx.reportsDir,
+    skillsDir: ctx.skillsDir,
     repoDir: ctx.repoDir,
     alreadyPulled: ctx.alreadyPulled,
     depth: ctx.depth,
@@ -212,6 +215,12 @@ export const extensionPullCommand = new Command()
     );
     const pulledReportsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
 
+    // 6b. Resolve skills destination (tool-aware)
+    const tool = marker?.tool ?? "claude";
+    const skillsDir = tool !== "none" && SKILL_DIRS[tool]
+      ? join(repoDir, SKILL_DIRS[tool]!)
+      : swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills);
+
     // 7. Create deps via factory and pull
     const serverUrl = resolveServerUrl();
     const deps = createExtensionPullDeps(
@@ -223,6 +232,7 @@ export const extensionPullCommand = new Command()
       pulledDriversDir,
       pulledDatastoresDir,
       pulledReportsDir,
+      skillsDir,
       repoDir,
     );
 
@@ -238,6 +248,7 @@ export const extensionPullCommand = new Command()
       driversDir: pulledDriversDir,
       datastoresDir: pulledDatastoresDir,
       reportsDir: pulledReportsDir,
+      skillsDir,
       repoDir,
       force: options.force ?? false,
       outputMode: ctx.outputMode,

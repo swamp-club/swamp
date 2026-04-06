@@ -137,6 +137,10 @@ async function maybeAutoUpdateSwampDatastore(
               resolvedRepoDir,
               SWAMP_SUBDIRS.pulledReports,
             ),
+            skillsDir: swampPath(
+              resolvedRepoDir,
+              SWAMP_SUBDIRS.pulledSkills,
+            ),
             repoDir: resolvedRepoDir,
             force: true,
             alreadyPulled: new Set(),

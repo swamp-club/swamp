@@ -73,6 +73,9 @@ export interface InstallResult {
   safetyWarnings: ExtensionSafetyWarning[];
   conflicts: string[];
   missingSourceFiles: string[];
+  hasSkills: boolean;
+  hasSkillScripts: boolean;
+  skillFiles: string[];
   dependencyResults: InstallResult[];
 }
 
@@ -93,6 +96,7 @@ export interface InstallContext {
   driversDir: string;
   datastoresDir: string;
   reportsDir: string;
+  skillsDir: string;
   repoDir: string;
   force: boolean;
   alreadyPulled: Set<string>;
@@ -136,6 +140,7 @@ export interface ExtensionPullDeps {
   driversDir: string;
   datastoresDir: string;
   reportsDir: string;
+  skillsDir: string;
   repoDir: string;
   alreadyPulled: Set<string>;
   depth: number;
@@ -919,6 +924,51 @@ export async function installExtension(
     );
     extractedFiles.push(...filesExtracted);
 
+    // Extract skills to tool-specific skill directory.
+    // Track only the skill directory root (not individual files) so that
+    // extension rm can delete the entire directory in one shot.
+    let hasSkills = false;
+    let hasSkillScripts = false;
+    const skillFiles: string[] = [];
+    const skillsSrc = join(extractDir, "skills");
+    try {
+      const skillEntries: Deno.DirEntry[] = [];
+      for await (const entry of Deno.readDir(skillsSrc)) {
+        skillEntries.push(entry);
+      }
+      if (skillEntries.length > 0) {
+        hasSkills = true;
+        const absoluteSkillsDir = resolve(repoDir, ctx.skillsDir);
+        await Deno.mkdir(absoluteSkillsDir, { recursive: true });
+        for (const entry of skillEntries) {
+          if (!entry.isDirectory) continue;
+          const srcSkillDir = join(skillsSrc, entry.name);
+          const destSkillDir = join(absoluteSkillsDir, entry.name);
+          await Deno.mkdir(destSkillDir, { recursive: true });
+          const extracted = await copyDir(srcSkillDir, destSkillDir, repoDir);
+          // Track the skill directory root, not individual files
+          const skillDirRelative = relative(repoDir, destSkillDir);
+          extractedFiles.push(skillDirRelative);
+          skillFiles.push(...extracted);
+
+          // Check for scripts/ directory
+          try {
+            const scriptsDir = join(srcSkillDir, "scripts");
+            const stat = await Deno.stat(scriptsDir);
+            if (stat.isDirectory) {
+              hasSkillScripts = true;
+            }
+          } catch {
+            // No scripts/ directory
+          }
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
     const missingSourceFiles = await validateSourceCompleteness(
       absoluteModelsDir,
       absoluteVaultsDir,
@@ -990,6 +1040,9 @@ export async function installExtension(
       safetyWarnings,
       conflicts,
       missingSourceFiles,
+      hasSkills,
+      hasSkillScripts,
+      skillFiles,
       dependencyResults,
     };
   } finally {
@@ -1025,6 +1078,7 @@ export async function* extensionPull(
         driversDir: deps.driversDir,
         datastoresDir: deps.datastoresDir,
         reportsDir: deps.reportsDir,
+        skillsDir: deps.skillsDir,
         repoDir: deps.repoDir,
         force: input.force,
         alreadyPulled: deps.alreadyPulled,
@@ -1050,6 +1104,7 @@ export function createExtensionPullDeps(
   driversDir: string,
   datastoresDir: string,
   reportsDir: string,
+  skillsDir: string,
   repoDir: string,
 ): ExtensionPullDeps {
   const client = new ExtensionApiClient(serverUrl);
@@ -1064,6 +1119,7 @@ export function createExtensionPullDeps(
     driversDir,
     datastoresDir,
     reportsDir,
+    skillsDir,
     repoDir,
     alreadyPulled: new Set(),
     depth: 0,
@@ -1081,6 +1137,7 @@ export function createInstallContext(
     driversDir: string;
     datastoresDir: string;
     reportsDir: string;
+    skillsDir: string;
     repoDir: string;
     force: boolean;
     logger?: Logger;
@@ -1099,6 +1156,7 @@ export function createInstallContext(
     driversDir: opts.driversDir,
     datastoresDir: opts.datastoresDir,
     reportsDir: opts.reportsDir,
+    skillsDir: opts.skillsDir,
     repoDir: opts.repoDir,
     force: opts.force,
     alreadyPulled: new Set(),

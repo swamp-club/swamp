@@ -140,7 +140,15 @@ export async function extractContentMetadata(
     }
   }
 
-  return { models, workflows, vaults, drivers, datastores, reports };
+  return {
+    models,
+    workflows,
+    vaults,
+    drivers,
+    datastores,
+    reports,
+    skills: [],
+  };
 }
 
 /**

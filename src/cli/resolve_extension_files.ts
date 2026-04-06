@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename, dirname, isAbsolute, resolve } from "@std/path";
+import { basename, dirname, isAbsolute, join, resolve } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
@@ -38,6 +38,7 @@ import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
+import { GLOBAL_SKILL_DIRS, SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
 
 export interface ResolveExtensionFilesContext {
   repoDir: string;
@@ -65,6 +66,8 @@ export interface ResolvedExtensionFiles {
   reportEntryPoints: string[];
   allReportFiles: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
+  skillDirs: Array<{ name: string; absolutePath: string }>;
+  allSkillFiles: string[];
   includeFilePaths: string[];
   additionalFilePaths: string[];
 }
@@ -101,6 +104,7 @@ export async function resolveExtensionFiles(
     ...manifest.drivers.map((p) => ({ field: "drivers", path: p })),
     ...manifest.datastores.map((p) => ({ field: "datastores", path: p })),
     ...manifest.reports.map((p) => ({ field: "reports", path: p })),
+    ...manifest.skills.map((p) => ({ field: "skills", path: p })),
     ...manifest.include.map((p) => ({ field: "include", path: p })),
     ...manifest.additionalFiles.map((p) => ({
       field: "additionalFiles",
@@ -330,7 +334,73 @@ export async function resolveExtensionFiles(
     allReportFiles.push(...reportImportResult.resolvedFiles);
   }
 
-  // 14. Validate include files (resolved relative to modelsDir)
+  // 14. Resolve skill directories from manifest
+  const skillDirs: Array<{ name: string; absolutePath: string }> = [];
+  const allSkillFiles: string[] = [];
+  if (manifest.skills.length > 0) {
+    const tool = marker?.tool ?? "claude";
+    const projectSkillDir = SKILL_DIRS[tool]
+      ? resolve(repoDir, SKILL_DIRS[tool]!)
+      : null;
+
+    const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+    const globalSkillDir = home && GLOBAL_SKILL_DIRS[tool]
+      ? join(home, GLOBAL_SKILL_DIRS[tool]!)
+      : null;
+
+    if (!projectSkillDir && !globalSkillDir) {
+      throw new UserError(
+        `Cannot package skills when tool is '${tool}'. Set a tool with: swamp repo upgrade -t claude`,
+      );
+    }
+
+    for (const skillName of manifest.skills) {
+      let skillPath: string | null = null;
+
+      // Try project-local first
+      if (projectSkillDir) {
+        const candidate = join(projectSkillDir, skillName);
+        try {
+          const stat = await Deno.stat(candidate);
+          if (stat.isDirectory) skillPath = candidate;
+        } catch { /* not found here */ }
+      }
+
+      // Fall back to global
+      if (!skillPath && globalSkillDir) {
+        const candidate = join(globalSkillDir, skillName);
+        try {
+          const stat = await Deno.stat(candidate);
+          if (stat.isDirectory) skillPath = candidate;
+        } catch { /* not found here either */ }
+      }
+
+      if (!skillPath) {
+        const locations = [projectSkillDir, globalSkillDir].filter(Boolean)
+          .join(" and ");
+        throw new UserError(
+          `Skill directory not found: ${skillName} (looked in ${locations})`,
+        );
+      }
+
+      skillDirs.push({ name: skillName, absolutePath: skillPath });
+
+      // Recursively collect all files
+      const collectSkillFiles = async (dir: string): Promise<void> => {
+        for await (const entry of Deno.readDir(dir)) {
+          const fullPath = join(dir, entry.name);
+          if (entry.isDirectory) {
+            await collectSkillFiles(fullPath);
+          } else if (entry.isFile) {
+            allSkillFiles.push(fullPath);
+          }
+        }
+      };
+      await collectSkillFiles(skillPath);
+    }
+  }
+
+  // 15. Validate include files (resolved relative to modelsDir)
   const includeFilePaths: string[] = [];
   for (const inc of manifest.include) {
     const incPath = resolve(modelsDir, inc);
@@ -377,6 +447,8 @@ export async function resolveExtensionFiles(
     reportEntryPoints,
     allReportFiles,
     workflowFiles,
+    skillDirs,
+    allSkillFiles,
     includeFilePaths,
     additionalFilePaths,
   };

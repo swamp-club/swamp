@@ -58,13 +58,7 @@ const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
  */
 export type GitignoreAction = "created" | "updated" | "unchanged" | "skipped";
 
-const SKILL_DIRS: Partial<Record<AiTool, string>> = {
-  claude: ".claude/skills",
-  cursor: ".cursor/skills",
-  opencode: ".agents/skills",
-  codex: ".agents/skills",
-  kiro: ".kiro/skills",
-};
+import { SKILL_DIRS } from "./skill_dirs.ts";
 
 const INSTRUCTIONS_FILES: Partial<Record<AiTool, string>> = {
   claude: "CLAUDE.md",

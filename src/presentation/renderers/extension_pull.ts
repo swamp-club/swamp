@@ -82,6 +82,24 @@ function renderInstallResultLog(result: InstallResult): void {
     logger.info`  ${f}`;
   }
 
+  if (result.hasSkills) {
+    const fileCount = String(result.skillFiles.length);
+    logger
+      .warn`This extension includes AI agent skills (${fileCount} files).`;
+    logger
+      .warn`Skills are loaded into your AI agent's context and may contain executable scripts.`;
+    logger.warn`Review ALL skill files before use:`;
+    for (const f of result.skillFiles) {
+      logger.warn`  ${f}`;
+    }
+    if (result.hasSkillScripts) {
+      logger
+        .warn`This extension includes EXECUTABLE SCRIPTS in skills.`;
+      logger
+        .warn`These scripts can be run by your AI agent. Review them carefully.`;
+    }
+  }
+
   for (const depResult of result.dependencyResults) {
     logger.info`Pulling dependency ${depResult.name}@${depResult.version}`;
     renderInstallResultLog(depResult);
@@ -131,6 +149,21 @@ function renderInstallResultJson(result: InstallResult): void {
         2,
       ),
     );
+  }
+
+  if (result.hasSkills) {
+    console.log(JSON.stringify(
+      {
+        skillWarning: {
+          message:
+            "Extension includes AI agent skills that will be loaded into agent context. Review for prompt injection.",
+          hasScripts: result.hasSkillScripts,
+          skillFiles: result.skillFiles,
+        },
+      },
+      null,
+      2,
+    ));
   }
 
   // Pull success

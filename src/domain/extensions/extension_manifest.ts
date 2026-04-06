@@ -61,6 +61,7 @@ const ExtensionManifestSchemaV1 = z.object({
   drivers: z.array(safePathString).optional(),
   datastores: z.array(safePathString).optional(),
   reports: z.array(safePathString).optional(),
+  skills: z.array(z.string().min(1)).optional(),
   include: z.array(safePathString).optional(),
   additionalFiles: z.array(safePathString).optional(),
   platforms: z.array(z.string().min(1)).optional(),
@@ -98,6 +99,7 @@ export interface ExtensionManifest {
   drivers: string[];
   datastores: string[];
   reports: string[];
+  skills: string[];
   include: string[];
   additionalFiles: string[];
   platforms: string[];
@@ -157,6 +159,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     drivers: result.data.drivers ?? [],
     datastores: result.data.datastores ?? [],
     reports: result.data.reports ?? [],
+    skills: result.data.skills ?? [],
     include: result.data.include ?? [],
     additionalFiles: result.data.additionalFiles ?? [],
     platforms: result.data.platforms ?? [],

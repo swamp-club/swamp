@@ -35,6 +35,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { validateExtensionSkills } from "../../domain/extensions/extension_skill_validator.ts";
 
 // ── Data types ────────────────────────────────────────────────────────
 
@@ -94,6 +95,7 @@ export interface ExtensionPushResolvedData {
   drivers: ResolvedDriverEntry[];
   datastores: ResolvedDatastoreEntry[];
   reports: ResolvedReportEntry[];
+  skills: Array<{ name: string; fileCount: number }>;
   additionalFiles: string[];
   platforms: string[];
   labels: string[];
@@ -113,6 +115,7 @@ export interface ExtensionPushSuccessData {
   driverCount: number;
   datastoreCount: number;
   reportCount: number;
+  skillCount: number;
 }
 
 /** Data for compilation error output. */
@@ -143,6 +146,8 @@ export interface ExtensionPushPrepareInput {
   allReportFiles: string[];
   reportEntryPoints: string[];
   workflowFiles: Array<{ sourcePath: string; archiveName: string }>;
+  skillDirs: Array<{ name: string; absolutePath: string }>;
+  allSkillFiles: string[];
   includeFilePaths: string[];
   additionalFilePaths: string[];
   dryRun: boolean;
@@ -171,6 +176,7 @@ export interface ExtensionPushCounts {
   drivers: number;
   datastores: number;
   reports: number;
+  skills: number;
 }
 
 // ── Push (execute) types ──────────────────────────────────────────────
@@ -487,6 +493,32 @@ export async function extensionPushPrepare(
     );
   }
 
+  // 6b. Validate skills and populate content metadata
+  if (input.skillDirs.length > 0) {
+    const skillResult = await validateExtensionSkills(input.skillDirs);
+    if (skillResult.errors.length > 0) {
+      throw validationFailed(
+        "Extension has skill validation errors:\n" +
+          skillResult.errors.map((e) => `  ${e.skill}: ${e.message}`).join(
+            "\n",
+          ),
+      );
+    }
+
+    // Populate skill metadata for registry
+    if (contentMetadata) {
+      contentMetadata.skills = input.skillDirs.map((s) => ({
+        dirName: s.name,
+        name: s.name,
+        description: "",
+        hasScripts: skillResult.hasScripts,
+        fileCount: skillResult.skillFiles.filter((f) =>
+          f.startsWith(s.absolutePath)
+        ).length,
+      }));
+    }
+  }
+
   // 7. Resolve deno binary
   const denoPath = await deps.ensureDenoPath();
 
@@ -627,6 +659,7 @@ export async function extensionPushPrepare(
       drivers: input.allDriverFiles.length,
       datastores: input.allDatastoreFiles.length,
       reports: input.allReportFiles.length,
+      skills: input.skillDirs.length,
     },
     isDryRun: input.dryRun,
   };
@@ -738,6 +771,7 @@ export async function* extensionPush(
           driverCount: input.counts.drivers,
           datastoreCount: input.counts.datastores,
           reportCount: input.counts.reports,
+          skillCount: input.counts.skills,
         },
       };
     })(),
@@ -851,6 +885,11 @@ function buildResolvedData(
     drivers: resolvedDrivers,
     datastores: resolvedDatastores,
     reports: resolvedReports,
+    skills: input.skillDirs.map((s) => ({
+      name: s.name,
+      fileCount:
+        input.allSkillFiles.filter((f) => f.startsWith(s.absolutePath)).length,
+    })),
     additionalFiles: input.additionalFilePaths.map((f) =>
       relative(input.repoDir, f)
     ),
@@ -915,6 +954,7 @@ async function createArchive(
       "datastore-bundles",
       "reports",
       "report-bundles",
+      "skills",
       "files",
     ];
     for (const dir of dirs) {
@@ -938,6 +978,9 @@ async function createArchive(
         drivers: input.manifest.drivers,
         datastores: input.manifest.datastores,
         reports: input.manifest.reports,
+        ...(input.manifest.skills.length > 0
+          ? { skills: input.manifest.skills }
+          : {}),
         ...(input.manifest.include.length > 0
           ? { include: input.manifest.include }
           : {}),
@@ -1043,6 +1086,25 @@ async function createArchive(
       const destPath = join(extDir, "report-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
+    }
+
+    // Copy skill directories
+    for (const { name, absolutePath } of input.skillDirs) {
+      const destDir = join(extDir, "skills", name);
+      await Deno.mkdir(destDir, { recursive: true });
+      const copySkillDir = async (src: string, dest: string): Promise<void> => {
+        for await (const entry of Deno.readDir(src)) {
+          const srcPath = join(src, entry.name);
+          const destPath = join(dest, entry.name);
+          if (entry.isDirectory) {
+            await Deno.mkdir(destPath, { recursive: true });
+            await copySkillDir(srcPath, destPath);
+          } else if (entry.isFile) {
+            await Deno.copyFile(srcPath, destPath);
+          }
+        }
+      };
+      await copySkillDir(absolutePath, destDir);
     }
 
     // Copy additional files
