@@ -73,6 +73,7 @@ export class VaultService {
         }
 
         // Auto-resolve missing vault types from trusted collectives
+        await vaultTypeRegistry.ensureTypeLoaded(vaultType);
         if (
           !vaultTypeRegistry.has(vaultType) && vaultType.startsWith("@")
         ) {

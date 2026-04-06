@@ -28,14 +28,17 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
  * Dependencies for the report describe operation.
  */
 export interface ReportDescribeDeps {
-  getReport: (name: string) => ReportDefinition | undefined;
+  getReport: (name: string) => Promise<ReportDefinition | undefined>;
 }
 
 /** Wires real infrastructure into ReportDescribeDeps. */
 export async function createReportDescribeDeps(): Promise<ReportDescribeDeps> {
   await reportRegistry.ensureLoaded();
   return {
-    getReport: (name) => reportRegistry.get(name),
+    getReport: async (name) => {
+      await reportRegistry.ensureTypeLoaded(name);
+      return reportRegistry.get(name);
+    },
   };
 }
 
@@ -53,7 +56,7 @@ export async function* reportDescribe(
     (async function* () {
       yield { kind: "resolving" };
 
-      const report = deps.getReport(reportName);
+      const report = await deps.getReport(reportName);
       if (!report) {
         yield { kind: "error", error: notFound("Report", reportName) };
         return;

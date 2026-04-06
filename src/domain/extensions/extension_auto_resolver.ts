@@ -378,6 +378,8 @@ export async function resolveVaultType(
   type: string,
   resolver: ExtensionAutoResolver | null,
 ): Promise<boolean> {
+  // Try lazy loading first — the type may be indexed but not imported yet
+  await vaultTypeRegistry.ensureTypeLoaded(type);
   if (vaultTypeRegistry.has(type)) return true;
   if (!resolver) return false;
   if (!type.startsWith("@")) return false;
@@ -395,6 +397,8 @@ export async function resolveDatastoreType(
   type: string,
   resolver: ExtensionAutoResolver | null,
 ): Promise<boolean> {
+  // Try lazy loading first — the type may be indexed but not imported yet
+  await datastoreTypeRegistry.ensureTypeLoaded(type);
   if (datastoreTypeRegistry.has(type)) return true;
   if (!resolver) return false;
   if (!type.startsWith("@")) return false;

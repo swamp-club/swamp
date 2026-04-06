@@ -643,6 +643,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
 
         // Look up a registered driver type
+        await driverTypeRegistry.ensureTypeLoaded(driverType);
         const driverInfo = driverTypeRegistry.get(driverType);
         if (!driverInfo) {
           throw new Error(

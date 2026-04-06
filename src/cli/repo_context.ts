@@ -105,6 +105,7 @@ async function resolveCustomProvider(
   config: CustomDatastoreConfig,
 ): Promise<DatastoreProvider> {
   await datastoreTypeRegistry.ensureLoaded();
+  await datastoreTypeRegistry.ensureTypeLoaded(config.type);
   const typeInfo = datastoreTypeRegistry.get(config.type);
   if (!typeInfo?.createProvider) {
     throw new UserError(

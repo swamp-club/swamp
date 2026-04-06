@@ -75,6 +75,7 @@ export async function createVaultCreateDeps(
   const repo = new YamlVaultConfigRepository(repoDir);
   return {
     resolveExtensionVaultType: async (type) => {
+      await vaultTypeRegistry.ensureTypeLoaded(type);
       if (!vaultTypeRegistry.has(type) && type.startsWith("@")) {
         await resolveVaultType(type, getAutoResolver());
       }

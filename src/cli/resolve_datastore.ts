@@ -212,6 +212,7 @@ export async function parseDatastoreEnvVar(
       await resolveDatastoreType(renamedTo, getAutoResolver());
       await maybeAutoUpdateSwampDatastore(renamedTo, repoDir ?? ".", null);
 
+      await datastoreTypeRegistry.ensureTypeLoaded(renamedTo);
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
       if (typeInfo?.createProvider) {
         const config: Record<string, unknown> = { bucket };
@@ -258,6 +259,7 @@ export async function parseDatastoreEnvVar(
   }
 
   // Custom datastore type: value is JSON config
+  await datastoreTypeRegistry.ensureTypeLoaded(type);
   const typeInfo = datastoreTypeRegistry.get(type);
   if (!typeInfo) {
     const available = datastoreTypeRegistry.getAll().map((t) => t.type).join(
@@ -362,6 +364,7 @@ export async function resolveDatastoreConfig(
         marker ?? null,
       );
 
+      await datastoreTypeRegistry.ensureTypeLoaded(renamedTo);
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
       if (typeInfo?.createProvider) {
         // Build config from the S3-specific YAML fields
@@ -432,6 +435,7 @@ export async function resolveDatastoreConfig(
     }
 
     // Custom datastore type from YAML config
+    await datastoreTypeRegistry.ensureTypeLoaded(dsType);
     const typeInfo = datastoreTypeRegistry.get(dsType);
     if (!typeInfo) {
       const available = datastoreTypeRegistry.getAll().map((t) => t.type).join(

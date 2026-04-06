@@ -68,6 +68,7 @@ export async function createDatastoreSyncDeps(
   const config = datastoreResolver.config();
 
   if (isCustomDatastoreConfig(config)) {
+    await datastoreTypeRegistry.ensureTypeLoaded(config.type);
     const typeInfo = datastoreTypeRegistry.get(config.type);
     if (!typeInfo?.createProvider) {
       return makeUnsupportedDeps(

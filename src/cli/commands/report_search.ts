@@ -69,7 +69,10 @@ async function buildSearchDeps(
       if (!wf) return null;
       return { id: wf.id, name: wf.name };
     },
-    getReport: (name) => reportRegistry.get(name),
+    getReport: async (name) => {
+      await reportRegistry.ensureTypeLoaded(name);
+      return reportRegistry.get(name);
+    },
   };
 }
 
