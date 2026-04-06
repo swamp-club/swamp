@@ -178,32 +178,46 @@ async function main(): Promise<void> {
     `Running skill trigger evals for ${model} (concurrency=${concurrency}, threshold=${passThreshold})…`,
   );
 
-  // Write a temporary package.json with overrides to pin
+  // Install promptfoo locally with an override to pin
   // @asamuzakjp/css-color to 5.1.4. Version 5.1.5+ uses top-level await
   // in its ESM entry, which Node cannot require() (ERR_REQUIRE_ASYNC_MODULE).
   // This is a transitive dep: promptfoo → jsdom → @asamuzakjp/css-color.
+  // We use `npm install` instead of `npx -y` so overrides take effect.
   const pkgJsonPath = join(configDir, "package.json");
   let hadPkgJson = false;
   try {
     await Deno.stat(pkgJsonPath);
     hadPkgJson = true;
   } catch {
-    // No existing package.json — we'll create one and clean it up
+    // No existing package.json
   }
   if (!hadPkgJson) {
     await Deno.writeTextFile(
       pkgJsonPath,
       JSON.stringify({
+        private: true,
+        dependencies: { promptfoo: "0.121.3" },
         overrides: { "@asamuzakjp/css-color": "5.1.4" },
       }),
     );
   }
 
-  // Run promptfoo eval
+  const install = new Deno.Command("npm", {
+    args: ["install", "--no-audit", "--no-fund"],
+    cwd: configDir,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const installResult = await install.output();
+  if (installResult.code !== 0) {
+    console.error("npm install failed with exit code", installResult.code);
+    Deno.exit(1);
+  }
+
+  // Run promptfoo eval via the locally installed copy
   const command = new Deno.Command("npx", {
     args: [
-      "-y",
-      "promptfoo@0.121.3",
+      "promptfoo",
       "eval",
       "-j",
       String(concurrency),
@@ -218,11 +232,19 @@ async function main(): Promise<void> {
 
   const { code } = await command.output();
 
-  // Clean up temporary package.json if we created it
+  // Clean up temporary npm artifacts if we created them
   if (!hadPkgJson) {
-    try {
-      await Deno.remove(pkgJsonPath);
-    } catch { /* best effort */ }
+    for (
+      const artifact of [
+        pkgJsonPath,
+        join(configDir, "package-lock.json"),
+        join(configDir, "node_modules"),
+      ]
+    ) {
+      try {
+        await Deno.remove(artifact, { recursive: true });
+      } catch { /* best effort */ }
+    }
   }
 
   // promptfoo exits with code 100 when any assertions fail, which is expected.
