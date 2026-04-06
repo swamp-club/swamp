@@ -49,6 +49,16 @@ export class CyclicDependencyError extends Error {
 }
 
 /**
+ * Error thrown when duplicate node names are found in the input.
+ */
+export class DuplicateNodeNameError extends Error {
+  constructor(readonly duplicates: string[]) {
+    super(`Duplicate node names: ${duplicates.join(", ")}`);
+    this.name = "DuplicateNodeNameError";
+  }
+}
+
+/**
  * Domain service for topological sorting with weighted tie-breaking.
  *
  * Uses Kahn's algorithm to produce a deterministic order:
@@ -69,6 +79,19 @@ export class TopologicalSortService {
    * @throws CyclicDependencyError if a cycle is detected
    */
   sort(nodes: GraphNode[]): TopologicalSortResult {
+    // Detect duplicate node names before processing
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    for (const node of nodes) {
+      if (seen.has(node.name)) {
+        duplicates.add(node.name);
+      }
+      seen.add(node.name);
+    }
+    if (duplicates.size > 0) {
+      throw new DuplicateNodeNameError([...duplicates].sort());
+    }
+
     // Build adjacency list and in-degree map
     const inDegree = new Map<string, number>();
     const dependents = new Map<string, string[]>();
