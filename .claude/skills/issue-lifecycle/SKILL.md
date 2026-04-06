@@ -25,6 +25,13 @@ for feedback. Only call `approve` when the human explicitly says to proceed.
 Each phase has detailed instructions in a reference file. Read only the
 reference you need for the current phase.
 
+### Phase 0: Environment Setup
+
+Read [references/environment.md](references/environment.md) **before starting
+any other phase.** Ensures swamp is initialized, the model type is available,
+and captures the repo root for scratch repo commands. Essential in worktrees
+where `swamp repo init` may not have been run.
+
 ### Phase 1: Triage (steps 1–5)
 
 Read [references/triage.md](references/triage.md) when starting a new triage or

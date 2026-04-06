@@ -72,8 +72,13 @@ b. **Create a scratch repo:**
 ```
 mkdir -p /tmp/swamp-repro-issue-<N>
 cd /tmp/swamp-repro-issue-<N>
-swamp repo init
+SWAMP_MODELS_DIR=$REPO_ROOT/extensions/models swamp repo init
 ```
+
+where `$REPO_ROOT` is the absolute path captured during Phase 0 environment
+setup. All subsequent `swamp` commands in the scratch repo must also include the
+`SWAMP_MODELS_DIR` prefix so dev extension models are available and their
+imports resolve correctly.
 
 c. **Build a minimal reproduction.** Based on the issue description and your
 codebase analysis, create the simplest set of models and/or workflows that
