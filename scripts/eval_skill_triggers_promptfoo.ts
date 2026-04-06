@@ -186,7 +186,7 @@ async function main(): Promise<void> {
   // native addons (like better-sqlite3) to compile for the current platform.
   console.log("Installing promptfoo dependencies…");
   const installCmd = new Deno.Command("npm", {
-    args: ["install"],
+    args: ["install", "--package-lock=false"],
     cwd: configDir,
     stdout: "inherit",
     stderr: "inherit",
