@@ -178,17 +178,21 @@ async function main(): Promise<void> {
     `Running skill trigger evals for ${model} (concurrency=${concurrency}, threshold=${passThreshold})…`,
   );
 
-  // Install promptfoo dependencies from lockfile
+  // Install promptfoo dependencies from lockfile. We use `npm install` rather
+  // than `npm ci` because the lockfile is generated on one platform (e.g. macOS)
+  // and CI runs on another (Linux). `npm ci` fails when platform-specific
+  // optional deps (like @img/sharp-linux-*) are missing from the lockfile.
+  // `npm install` still respects the lockfile for version resolution.
   console.log("Installing promptfoo dependencies…");
   const installCmd = new Deno.Command("npm", {
-    args: ["ci"],
+    args: ["install", "--ignore-scripts"],
     cwd: configDir,
     stdout: "inherit",
     stderr: "inherit",
   });
   const installResult = await installCmd.output();
   if (installResult.code !== 0) {
-    console.error("npm ci failed with exit code", installResult.code);
+    console.error("npm install failed with exit code", installResult.code);
     Deno.exit(1);
   }
 
