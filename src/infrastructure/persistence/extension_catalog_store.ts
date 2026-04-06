@@ -285,6 +285,30 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Returns the stored source directories fingerprint, or undefined if not set.
+   * Used to detect when extension sources have been added or removed,
+   * triggering a full rescan so new source models are discovered.
+   */
+  getSourceDirsFingerprint(): string | undefined {
+    const stmt = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = 'source_dirs_fingerprint'",
+    );
+    const row = stmt.get() as { value: string } | undefined;
+    return row?.value;
+  }
+
+  /**
+   * Stores a fingerprint of the current source directories. Set after a
+   * successful catalog population so subsequent runs can detect source changes.
+   */
+  setSourceDirsFingerprint(fingerprint: string): void {
+    const stmt = this.db.prepare(
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES ('source_dirs_fingerprint', ?)",
+    );
+    stmt.run(fingerprint);
+  }
+
+  /**
    * Closes the database connection.
    */
   close(): void {

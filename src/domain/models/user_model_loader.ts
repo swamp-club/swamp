@@ -69,6 +69,19 @@ const logger = getLogger(["swamp", "models", "loader"]);
 const BUNDLE_LAYOUT_VERSION = "namespaced-v1";
 
 /**
+ * Builds a stable fingerprint from the set of directories passed to buildIndex.
+ * When sources change (added/removed via `swamp extension source add/rm`),
+ * the fingerprint changes and triggers a catalog invalidation.
+ */
+function sourceDirsFingerprint(
+  modelsDir: string,
+  additionalDirs?: string[],
+): string {
+  const dirs = [modelsDir, ...(additionalDirs ?? [])];
+  return dirs.sort().join("\n");
+}
+
+/**
  * Plain object result returned by user methods before conversion.
  * User models must use context.writeResource() / context.createFileWriter() to produce data.
  */
@@ -511,6 +524,24 @@ export class UserModelLoader {
       catalog.invalidate("model");
     }
 
+    // Force a full rescan if the set of extension source directories has
+    // changed (e.g. user ran `swamp extension source add`). Without this,
+    // the catalog's "populated" flag causes buildIndex to skip the full
+    // import path, so models from newly added sources are never discovered
+    // (#1107).
+    const currentSourceFingerprint = sourceDirsFingerprint(
+      modelsDir,
+      options?.additionalDirs,
+    );
+    if (
+      catalog.isPopulated("model") &&
+      catalog.getSourceDirsFingerprint() !== currentSourceFingerprint
+    ) {
+      logger
+        .warn`Extension source dirs changed — invalidating catalog for full rescan`;
+      catalog.invalidate("model");
+    }
+
     // If catalog is already populated, register lazy entries from it
     // and do a lightweight mtime check for staleness.
     if (catalog.isPopulated("model")) {
@@ -564,6 +595,7 @@ export class UserModelLoader {
     catalog.markPopulated("model");
     catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
     catalog.setDatastoreBasePath(currentBasePath);
+    catalog.setSourceDirsFingerprint(currentSourceFingerprint);
 
     // Migrate old flat-layout bundle files into namespaced subdirectories.
     if (this.repoDir) {
