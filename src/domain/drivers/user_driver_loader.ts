@@ -40,25 +40,13 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
-import type {
-  ExtensionCatalogStore,
-  ExtensionTypeRow,
+import {
+  type ExtensionCatalogStore,
+  type ExtensionTypeRow,
+  sourceDirsFingerprint,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 const logger = getLogger(["swamp", "drivers", "loader"]);
-
-/**
- * Stable fingerprint of the set of directories a driver buildIndex scans.
- * When sources change (added/removed via `swamp extension source add/rm`),
- * the fingerprint changes and triggers a catalog invalidation.
- */
-function sourceDirsFingerprint(
-  driversDir: string,
-  additionalDirs?: string[],
-): string {
-  const dirs = [driversDir, ...(additionalDirs ?? [])];
-  return dirs.sort().join("\n");
-}
 
 /** Pattern for valid user driver type: @collective/name or collective/name */
 const USER_DRIVER_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
@@ -200,7 +188,7 @@ export class UserDriverLoader {
           denoPath,
           baseDir,
         );
-        const module = await this.importBundle(js, file);
+        const module = await this.importBundle(js, file, baseDir);
 
         if (!module.driver) {
           // Files without a driver export are silently skipped (utility files)
@@ -357,13 +345,16 @@ export class UserDriverLoader {
   private async importBundle(
     js: string,
     relativePath: string,
+    baseDir?: string,
   ): Promise<Record<string, unknown>> {
     const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
     if (this.repoDir) {
-      const bundlePath = this.resolveBundlePath(
-        relativePath.replace(/\.ts$/, ".js"),
-      );
+      const ns = baseDir ? bundleNamespace(baseDir, this.repoDir) : "";
+      const segments = ns
+        ? [ns, relativePath.replace(/\.ts$/, ".js")]
+        : [relativePath.replace(/\.ts$/, ".js")];
+      const bundlePath = this.resolveBundlePath(...segments);
 
       try {
         await Deno.stat(bundlePath);
@@ -770,7 +761,7 @@ export class UserDriverLoader {
       denoPath,
       baseDir,
     );
-    const module = await this.importBundle(js, relativePath);
+    const module = await this.importBundle(js, relativePath, baseDir);
 
     if (!module.driver) return;
 

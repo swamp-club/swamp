@@ -39,27 +39,15 @@ import {
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
-import type {
-  ExtensionCatalogStore,
-  ExtensionTypeRow,
+import {
+  type ExtensionCatalogStore,
+  type ExtensionTypeRow,
+  sourceDirsFingerprint,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 const logger = getLogger(["swamp", "datastores", "loader"]);
 
 /** Pattern for valid user datastore type: @collective/name or collective/name */
-/**
- * Stable fingerprint of the set of directories a datastore buildIndex scans.
- * When sources change (added/removed via `swamp extension source add/rm`),
- * the fingerprint changes and triggers a catalog invalidation.
- */
-function sourceDirsFingerprint(
-  datastoresDir: string,
-  additionalDirs?: string[],
-): string {
-  const dirs = [datastoresDir, ...(additionalDirs ?? [])];
-  return dirs.sort().join("\n");
-}
-
 const USER_DATASTORE_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
 /**
@@ -171,7 +159,7 @@ export class UserDatastoreLoader {
           denoPath,
           baseDir,
         );
-        const module = await this.importBundle(js, file);
+        const module = await this.importBundle(js, file, baseDir);
 
         if (!module.datastore) {
           // Files without a datastore export are silently skipped (utility files)
@@ -332,16 +320,26 @@ export class UserDatastoreLoader {
   private async importBundle(
     js: string,
     relativePath: string,
+    baseDir?: string,
   ): Promise<Record<string, unknown>> {
     const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
     if (this.repoDir) {
-      const bundlePath = join(
-        this.repoDir,
-        SWAMP_DATA_DIR,
-        SWAMP_SUBDIRS.datastoreBundles,
-        relativePath.replace(/\.ts$/, ".js"),
-      );
+      const ns = baseDir ? bundleNamespace(baseDir, this.repoDir) : "";
+      const bundlePath = ns
+        ? join(
+          this.repoDir,
+          SWAMP_DATA_DIR,
+          SWAMP_SUBDIRS.datastoreBundles,
+          ns,
+          relativePath.replace(/\.ts$/, ".js"),
+        )
+        : join(
+          this.repoDir,
+          SWAMP_DATA_DIR,
+          SWAMP_SUBDIRS.datastoreBundles,
+          relativePath.replace(/\.ts$/, ".js"),
+        );
 
       try {
         await Deno.stat(bundlePath);
@@ -757,7 +755,7 @@ export class UserDatastoreLoader {
       denoPath,
       baseDir,
     );
-    const module = await this.importBundle(js, relativePath);
+    const module = await this.importBundle(js, relativePath, baseDir);
 
     if (!module.datastore) return;
 

@@ -41,25 +41,13 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
-import type {
-  ExtensionCatalogStore,
-  ExtensionTypeRow,
+import {
+  type ExtensionCatalogStore,
+  type ExtensionTypeRow,
+  sourceDirsFingerprint,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 const logger = getLogger(["swamp", "reports", "loader"]);
-
-/**
- * Stable fingerprint of the set of directories a report buildIndex scans.
- * When sources change (added/removed via `swamp extension source add/rm`),
- * the fingerprint changes and triggers a catalog invalidation.
- */
-function sourceDirsFingerprint(
-  reportsDir: string,
-  additionalDirs?: string[],
-): string {
-  const dirs = [reportsDir, ...(additionalDirs ?? [])];
-  return dirs.sort().join("\n");
-}
 
 /** Pattern for valid user report name: @collective/name[/subname/...] or collective/name[/subname/...] */
 const USER_REPORT_NAME_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;

@@ -46,9 +46,10 @@ import {
   ResourceOutputSpecSchema,
   type VersionUpgrade,
 } from "./model.ts";
-import type {
-  ExtensionCatalogStore,
-  ExtensionTypeRow,
+import {
+  type ExtensionCatalogStore,
+  type ExtensionTypeRow,
+  sourceDirsFingerprint,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import {
@@ -67,19 +68,6 @@ const logger = getLogger(["swamp", "models", "loader"]);
  * rescan — migrating from flat to namespaced bundle paths.
  */
 const BUNDLE_LAYOUT_VERSION = "namespaced-v1";
-
-/**
- * Builds a stable fingerprint from the set of directories passed to buildIndex.
- * When sources change (added/removed via `swamp extension source add/rm`),
- * the fingerprint changes and triggers a catalog invalidation.
- */
-function sourceDirsFingerprint(
-  modelsDir: string,
-  additionalDirs?: string[],
-): string {
-  const dirs = [modelsDir, ...(additionalDirs ?? [])];
-  return dirs.sort().join("\n");
-}
 
 /**
  * Plain object result returned by user methods before conversion.

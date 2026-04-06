@@ -329,3 +329,16 @@ export class ExtensionCatalogStore {
     this.db.close();
   }
 }
+
+/**
+ * Stable fingerprint of a set of directories.
+ * Used by loaders to detect when extension source directories have been
+ * added or removed between runs, triggering a catalog invalidation.
+ */
+export function sourceDirsFingerprint(
+  primaryDir: string,
+  additionalDirs?: string[],
+): string {
+  const dirs = [primaryDir, ...(additionalDirs ?? [])];
+  return dirs.sort().join("\n");
+}
