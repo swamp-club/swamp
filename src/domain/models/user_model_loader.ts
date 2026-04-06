@@ -828,26 +828,20 @@ export class UserModelLoader {
 
         if (!modelMatch && !extensionMatch) continue;
 
-        // Best-effort regex to extract type name from source text.
-        // This may match inside comments or string literals, but it only
-        // runs during the first-run catalog bootstrap. Any mismatches are
-        // corrected on subsequent runs when the mtime scan detects the
-        // file as new (not in catalog) and does a proper bundle import.
-        //
-        // Classification: extension takes priority over model, matching
-        // the loader's own if/else if logic (line ~347). In practice
-        // these exports are mutually exclusive — a file exports one or
-        // the other, never both.
+        // Extract the type name from the export const model/extension
+        // object literal. The regex anchors on the export statement to
+        // avoid matching unrelated `type: "..."` properties elsewhere
+        // in the file (e.g., inside helper function calls or schemas).
         const typeMatch = source.match(
-          /type\s*:\s*["']([^"']+)["']/,
+          /export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
         );
         if (!typeMatch) continue;
 
         const typeNormalized = ModelType.create(typeMatch[1]).normalized;
 
-        // Extract version from source (best-effort regex)
+        // Extract version from the same export block (anchored like type)
         const versionMatch = source.match(
-          /version\s*:\s*["']([^"']+)["']/,
+          /export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?version\s*:\s*["']([^"']+)["']/,
         );
 
         catalog.upsert({

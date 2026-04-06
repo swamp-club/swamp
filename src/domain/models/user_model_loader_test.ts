@@ -2662,3 +2662,71 @@ export const model = {
     await Deno.remove(sourceDirB, { recursive: true });
   }
 });
+
+Deno.test("UserModelLoader buildIndex: catalog extracts type from export block, not from decoy properties", async () => {
+  const ts = Date.now();
+  // Model with a decoy `type: "decoy"` in a helper call BEFORE the
+  // actual `export const model = { type: "@test/real-..." }`.
+  // This mirrors issue_lifecycle.ts where `sc.ensureIssue({ type: "feature" })`
+  // appeared before the real model export.
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+function helper() {
+  return { type: "decoy-${ts}", version: "0.0.0" };
+}
+
+export const model = {
+  type: "@test/real-${ts}",
+  version: "2026.04.06.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_catalog_type_repo_",
+  });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_catalog_type_models_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.writeTextFile(join(modelsDir, "decoy_model.ts"), modelCode);
+
+    // First buildIndex bootstraps the catalog
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserModelLoader(testDenoRuntime, repoDir);
+    const result = await loader.buildIndex(modelsDir, catalog);
+
+    assertEquals(result.failed.length, 0);
+
+    // Verify the catalog stored the REAL type, not the decoy
+    const entry = catalog.findByType(`@test/real-${ts}`, "model");
+    assertNotEquals(
+      entry,
+      undefined,
+      "Catalog should contain @test/real-" + ts + ", not the decoy type",
+    );
+    assertEquals(entry!.version, "2026.04.06.1");
+
+    // Verify the decoy type is NOT in the catalog
+    const decoyEntry = catalog.findByType(`decoy-${ts}`, "model");
+    assertEquals(
+      decoyEntry,
+      undefined,
+      "Catalog should NOT contain the decoy type from the helper function",
+    );
+
+    catalog.close();
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
