@@ -1240,7 +1240,7 @@ export const model = {
                 ? `_Incorporated ${plan.feedbackIncorporated.length} round(s) of feedback._`
                 : "",
               "",
-              "_Approved via swamp @si/issue-lifecycle_",
+              "_Approved via swamp @swamp/issue-lifecycle_",
             ].join("\n"),
           );
         }
