@@ -4,5 +4,8 @@
   "private": true,
   "dependencies": {
     "promptfoo": "0.121.3"
+  },
+  "overrides": {
+    "@anthropic-ai/sdk": "^0.81.0"
   }
 }
