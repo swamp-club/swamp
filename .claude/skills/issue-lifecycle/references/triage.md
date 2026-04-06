@@ -15,8 +15,8 @@ swamp model create @swamp/issue-lifecycle issue-<N> \
 
 **Worktree note:** If you are in a Claude Code worktree (`.claude/worktrees/`),
 the worktree is not an initialized swamp repository. Add
-`--repo-dir <path-to-main-repo>` to all `swamp` commands, where the main repo
-is the parent of the `.claude/worktrees/` directory. All subsequent `swamp`
+`--repo-dir <path-to-main-repo>` to all `swamp` commands, where the main repo is
+the parent of the `.claude/worktrees/` directory. All subsequent `swamp`
 commands in this skill also need `--repo-dir`.
 
 ## 2. Fetch the Issue Context
