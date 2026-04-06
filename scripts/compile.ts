@@ -186,6 +186,8 @@ async function main() {
       "--exclude",
       "design",
       "--exclude",
+      "evals",
+      "--exclude",
       "integration",
       "--exclude",
       "scripts",
