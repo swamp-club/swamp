@@ -170,6 +170,8 @@ async function main() {
       "resources/deno",
       // Exclude development-only directories from the binary
       "--exclude",
+      "agent-constraints",
+      "--exclude",
       ".agents",
       "--exclude",
       ".claude/skills/ddd",
