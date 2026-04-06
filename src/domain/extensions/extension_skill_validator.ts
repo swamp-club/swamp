@@ -26,14 +26,21 @@ export interface SkillValidationIssue {
   message: string;
 }
 
+/** Per-skill validation info. */
+export interface ValidatedSkill {
+  name: string;
+  hasScripts: boolean;
+  fileCount: number;
+}
+
 /** Result of validating extension skill directories. */
 export interface SkillValidationResult {
   errors: SkillValidationIssue[];
   warnings: SkillValidationIssue[];
   /** All validated file paths (absolute). */
   skillFiles: string[];
-  /** Whether any skill contains a scripts/ directory. */
-  hasScripts: boolean;
+  /** Per-skill metadata. */
+  skills: ValidatedSkill[];
 }
 
 const MAX_INDIVIDUAL_FILE_SIZE = 500 * 1024; // 500KB
@@ -128,7 +135,7 @@ export async function validateExtensionSkills(
   const errors: SkillValidationIssue[] = [];
   const warnings: SkillValidationIssue[] = [];
   const allFiles: string[] = [];
-  let hasScripts = false;
+  const validatedSkills: ValidatedSkill[] = [];
   let totalSize = 0;
 
   for (const { name, absolutePath } of skillDirs) {
@@ -176,13 +183,16 @@ export async function validateExtensionSkills(
       }
     }
 
-    // Detect scripts/ directory
-    if (await dirExists(join(absolutePath, "scripts"))) {
-      hasScripts = true;
-    }
+    // Detect scripts/ directory (per-skill)
+    const skillHasScripts = await dirExists(join(absolutePath, "scripts"));
 
     // Collect and validate all files
     const files = await collectFiles(absolutePath);
+    validatedSkills.push({
+      name,
+      hasScripts: skillHasScripts,
+      fileCount: files.length,
+    });
     for (const file of files) {
       if (file.size > MAX_INDIVIDUAL_FILE_SIZE) {
         errors.push({
@@ -206,5 +216,5 @@ export async function validateExtensionSkills(
     });
   }
 
-  return { errors, warnings, skillFiles: allFiles, hasScripts };
+  return { errors, warnings, skillFiles: allFiles, skills: validatedSkills };
 }

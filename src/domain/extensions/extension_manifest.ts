@@ -61,7 +61,7 @@ const ExtensionManifestSchemaV1 = z.object({
   drivers: z.array(safePathString).optional(),
   datastores: z.array(safePathString).optional(),
   reports: z.array(safePathString).optional(),
-  skills: z.array(z.string().min(1)).optional(),
+  skills: z.array(safePathString).optional(),
   include: z.array(safePathString).optional(),
   additionalFiles: z.array(safePathString).optional(),
   platforms: z.array(z.string().min(1)).optional(),

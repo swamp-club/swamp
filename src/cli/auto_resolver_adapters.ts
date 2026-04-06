@@ -19,6 +19,10 @@
 
 import { getLogger } from "@logtape/logtape";
 import { isAbsolute, resolve } from "@std/path";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../infrastructure/persistence/paths.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import type {
   AutoResolveOutputPort,
@@ -99,7 +103,7 @@ export function createAutoResolveInstallerAdapter(
           driversDir,
           datastoresDir,
           reportsDir,
-          skillsDir: "",
+          skillsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills),
           repoDir,
           force: true,
           alreadyPulled: new Set(),

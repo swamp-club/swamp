@@ -334,7 +334,10 @@ export function createExtensionRmDeps(
   return {
     readUpstreamExtensions,
     findDependents,
-    removeFile: (path: string) => Deno.remove(path, { recursive: true }),
+    removeFile: async (path: string) => {
+      const stat = await Deno.stat(path);
+      await Deno.remove(path, { recursive: stat.isDirectory });
+    },
     readDirEntries: async (path: string) => {
       const entries: Deno.DirEntry[] = [];
       for await (const entry of Deno.readDir(path)) {

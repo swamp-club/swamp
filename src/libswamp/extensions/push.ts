@@ -507,15 +507,19 @@ export async function extensionPushPrepare(
 
     // Populate skill metadata for registry
     if (contentMetadata) {
-      contentMetadata.skills = input.skillDirs.map((s) => ({
-        dirName: s.name,
-        name: s.name,
-        description: "",
-        hasScripts: skillResult.hasScripts,
-        fileCount: skillResult.skillFiles.filter((f) =>
-          f.startsWith(s.absolutePath)
-        ).length,
-      }));
+      const skillsByName = new Map(
+        skillResult.skills.map((s) => [s.name, s]),
+      );
+      contentMetadata.skills = input.skillDirs.map((s) => {
+        const validated = skillsByName.get(s.name);
+        return {
+          dirName: s.name,
+          name: s.name,
+          description: "",
+          hasScripts: validated?.hasScripts ?? false,
+          fileCount: validated?.fileCount ?? 0,
+        };
+      });
     }
   }
 

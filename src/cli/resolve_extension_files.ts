@@ -38,7 +38,7 @@ import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
-import { GLOBAL_SKILL_DIRS, SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
+import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
 
 export interface ResolveExtensionFilesContext {
   repoDir: string;
@@ -340,12 +340,12 @@ export async function resolveExtensionFiles(
   if (manifest.skills.length > 0) {
     const tool = marker?.tool ?? "claude";
     const projectSkillDir = SKILL_DIRS[tool]
-      ? resolve(repoDir, SKILL_DIRS[tool]!)
+      ? resolve(repoDir, SKILL_DIRS[tool])
       : null;
 
     const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
-    const globalSkillDir = home && GLOBAL_SKILL_DIRS[tool]
-      ? join(home, GLOBAL_SKILL_DIRS[tool]!)
+    const globalSkillDir = home && SKILL_DIRS[tool]
+      ? join(home, SKILL_DIRS[tool])
       : null;
 
     if (!projectSkillDir && !globalSkillDir) {

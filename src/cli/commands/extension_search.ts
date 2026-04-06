@@ -47,7 +47,7 @@ import {
   requireCurrentExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
-import { SKILL_DIRS } from "../../domain/repo/skill_dirs.ts";
+import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
@@ -218,12 +218,7 @@ export const extensionSearchCommand = new Command()
         driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
         datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
         reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
-        skillsDir: (() => {
-          const tool = marker?.tool ?? "claude";
-          return tool !== "none" && SKILL_DIRS[tool]
-            ? join(repoDir, SKILL_DIRS[tool]!)
-            : swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills);
-        })(),
+        skillsDir: resolveSkillsDir(repoDir, marker?.tool ?? "claude"),
         repoDir,
         force: false,
         outputMode: ctx.outputMode,

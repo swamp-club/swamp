@@ -32,7 +32,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
-import { SKILL_DIRS } from "../../domain/repo/skill_dirs.ts";
+import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import {
   ConflictError,
   consumeStream,
@@ -217,9 +217,7 @@ export const extensionPullCommand = new Command()
 
     // 6b. Resolve skills destination (tool-aware)
     const tool = marker?.tool ?? "claude";
-    const skillsDir = tool !== "none" && SKILL_DIRS[tool]
-      ? join(repoDir, SKILL_DIRS[tool]!)
-      : swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills);
+    const skillsDir = resolveSkillsDir(repoDir, tool);
 
     // 7. Create deps via factory and pull
     const serverUrl = resolveServerUrl();

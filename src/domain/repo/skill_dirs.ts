@@ -17,8 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+
 /**
  * Maps AI tool names to their skill directory paths (relative to repo root).
+ * Used for both project-local and global (user-level) skill directories
+ * since the relative path within each tool's config dir is the same.
  */
 export const SKILL_DIRS: Record<string, string> = {
   claude: ".claude/skills",
@@ -29,13 +37,12 @@ export const SKILL_DIRS: Record<string, string> = {
 };
 
 /**
- * Maps AI tool names to the global (user-level) skill directory path segment.
- * Used as a fallback when resolving skills for push.
+ * Resolves the absolute skill directory for a repo, based on the active AI tool.
+ * Falls back to `.swamp/pulled-extensions/skills/` when tool is "none" or unknown.
  */
-export const GLOBAL_SKILL_DIRS: Record<string, string> = {
-  claude: ".claude/skills",
-  cursor: ".cursor/skills",
-  opencode: ".agents/skills",
-  codex: ".agents/skills",
-  kiro: ".kiro/skills",
-};
+export function resolveSkillsDir(repoDir: string, tool: string): string {
+  if (tool !== "none" && SKILL_DIRS[tool]) {
+    return join(repoDir, SKILL_DIRS[tool]);
+  }
+  return swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills);
+}
