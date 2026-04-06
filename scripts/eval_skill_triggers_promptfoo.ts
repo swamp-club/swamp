@@ -182,10 +182,11 @@ async function main(): Promise<void> {
   // than `npm ci` because the lockfile is generated on one platform (e.g. macOS)
   // and CI runs on another (Linux). `npm ci` fails when platform-specific
   // optional deps (like @img/sharp-linux-*) are missing from the lockfile.
-  // `npm install` still respects the lockfile for version resolution.
+  // `npm install` respects the lockfile for version resolution while allowing
+  // native addons (like better-sqlite3) to compile for the current platform.
   console.log("Installing promptfoo dependencies…");
   const installCmd = new Deno.Command("npm", {
-    args: ["install", "--ignore-scripts"],
+    args: ["install"],
     cwd: configDir,
     stdout: "inherit",
     stderr: "inherit",
