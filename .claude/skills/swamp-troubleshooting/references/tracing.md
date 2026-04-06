@@ -131,7 +131,7 @@ container environment variable. Extensions running in Docker that initialize
 their own OTel SDK can read this env var to connect their spans to the parent
 trace, creating a unified trace across process boundaries.
 
-## Design Reference
+## Reference
 
-See `design/tracing.md` for the full architecture, implementation files, and
-span attribute reference.
+See https://swamp.club/manual/reference/opentelemetry for the full span
+hierarchy, instrumentation points, and attribute reference.
