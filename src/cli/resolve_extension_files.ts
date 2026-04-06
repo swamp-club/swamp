@@ -350,7 +350,7 @@ export async function resolveExtensionFiles(
 
     if (!projectSkillDir && !globalSkillDir) {
       throw new UserError(
-        `Cannot package skills when tool is '${tool}'. Set a tool with: swamp repo upgrade -t claude`,
+        `Cannot package skills when tool is '${tool}'. Set a tool with: swamp repo upgrade --tool <claude|cursor|kiro|opencode|codex>`,
       );
     }
 
