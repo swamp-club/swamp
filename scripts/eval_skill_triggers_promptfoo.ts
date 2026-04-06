@@ -211,7 +211,12 @@ async function main(): Promise<void> {
   }
 
   const install = new Deno.Command("npm", {
-    args: ["install", "--no-audit", "--no-fund"],
+    args: [
+      "install",
+      "--no-audit",
+      "--no-fund",
+      "--install-strategy=shallow",
+    ],
     cwd: configDir,
     stdout: "inherit",
     stderr: "inherit",
