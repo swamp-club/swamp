@@ -178,11 +178,28 @@ async function main(): Promise<void> {
     `Running skill trigger evals for ${model} (concurrency=${concurrency}, threshold=${passThreshold})…`,
   );
 
-  // Run promptfoo eval.
-  // NODE_OPTIONS enables ESM require() support needed by promptfoo's
-  // transitive dependency @asamuzakjp/css-color (via jsdom) which uses
-  // top-level await in its ESM entry point.
-  const nodeOptions = Deno.env.get("NODE_OPTIONS") ?? "";
+  // Write a temporary package.json with overrides to pin
+  // @asamuzakjp/css-color to 5.1.4. Version 5.1.5+ uses top-level await
+  // in its ESM entry, which Node cannot require() (ERR_REQUIRE_ASYNC_MODULE).
+  // This is a transitive dep: promptfoo → jsdom → @asamuzakjp/css-color.
+  const pkgJsonPath = join(configDir, "package.json");
+  let hadPkgJson = false;
+  try {
+    await Deno.stat(pkgJsonPath);
+    hadPkgJson = true;
+  } catch {
+    // No existing package.json — we'll create one and clean it up
+  }
+  if (!hadPkgJson) {
+    await Deno.writeTextFile(
+      pkgJsonPath,
+      JSON.stringify({
+        overrides: { "@asamuzakjp/css-color": "5.1.4" },
+      }),
+    );
+  }
+
+  // Run promptfoo eval
   const command = new Deno.Command("npx", {
     args: [
       "-y",
@@ -197,17 +214,17 @@ async function main(): Promise<void> {
     cwd: configDir,
     stdout: "inherit",
     stderr: "inherit",
-    env: {
-      ...Object.fromEntries(
-        Object.entries(Deno.env.toObject()),
-      ),
-      NODE_OPTIONS: nodeOptions.includes("--experimental-require-module")
-        ? nodeOptions
-        : `${nodeOptions} --experimental-require-module`.trim(),
-    },
   });
 
   const { code } = await command.output();
+
+  // Clean up temporary package.json if we created it
+  if (!hadPkgJson) {
+    try {
+      await Deno.remove(pkgJsonPath);
+    } catch { /* best effort */ }
+  }
+
   // promptfoo exits with code 100 when any assertions fail, which is expected.
   // We handle pass/fail via our own threshold check below. Only treat other
   // non-zero codes as hard failures (e.g., missing API key, config errors).
