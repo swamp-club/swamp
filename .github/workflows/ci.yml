@@ -162,11 +162,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Run skill trigger evals
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NODE_OPTIONS: "--experimental-require-module"
         run: deno run eval-skill-triggers
 
   claude-review:
