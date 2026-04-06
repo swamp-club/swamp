@@ -43,6 +43,18 @@ interface DenoLock {
   npm?: Record<string, NpmEntry>;
 }
 
+interface NpmLockPackageEntry {
+  version?: string;
+  resolved?: string;
+  dependencies?: Record<string, string>;
+  link?: boolean;
+}
+
+interface NpmLockfile {
+  lockfileVersion: number;
+  packages: Record<string, NpmLockPackageEntry>;
+}
+
 interface OsvVulnerability {
   id: string;
   summary?: string;
@@ -276,6 +288,40 @@ async function writeGitHubSummary(
   await Deno.writeTextFile(summaryFile, lines.join("\n"));
 }
 
+/**
+ * Parse packages from an npm package-lock.json (lockfileVersion 3).
+ * Keys look like "node_modules/@foo/bar" with a version field.
+ * Direct dependencies are read from the root entry's dependencies.
+ */
+function parseNpmLockfile(
+  lockData: NpmLockfile,
+  label: string,
+): { packages: PackageInfo[]; directNames: Set<string> } {
+  const rootEntry = lockData.packages[""];
+  const directNames = new Set<string>(
+    Object.keys(rootEntry?.dependencies ?? {}),
+  );
+
+  const packages: PackageInfo[] = [];
+  for (const [key, entry] of Object.entries(lockData.packages)) {
+    if (key === "" || entry.link) continue;
+    if (!entry.version) continue;
+
+    // key is "node_modules/@scope/pkg" or "node_modules/pkg"
+    const name = key.replace(/^node_modules\//, "");
+    packages.push({
+      name,
+      version: entry.version,
+      isDirect: directNames.has(name),
+    });
+  }
+
+  console.log(
+    `Found ${packages.length} npm packages in ${label}`,
+  );
+  return { packages, directNames };
+}
+
 async function main(): Promise<void> {
   // Read deno.lock
   let lockContent: string;
@@ -289,8 +335,29 @@ async function main(): Promise<void> {
   const lockData = JSON.parse(lockContent) as DenoLock;
   const { packages, directNames } = parseNpmPackages(lockData);
 
+  // Also scan npm lockfiles (e.g. evals/promptfoo/package-lock.json)
+  const npmLockfiles = ["evals/promptfoo/package-lock.json"];
+  for (const lockPath of npmLockfiles) {
+    try {
+      const content = await Deno.readTextFile(lockPath);
+      const npmLock = JSON.parse(content) as NpmLockfile;
+      const parsed = parseNpmLockfile(npmLock, lockPath);
+      // Merge packages, deduplicating by name@version
+      const existing = new Set(packages.map((p) => `${p.name}@${p.version}`));
+      for (const pkg of parsed.packages) {
+        const key = `${pkg.name}@${pkg.version}`;
+        if (!existing.has(key)) {
+          packages.push(pkg);
+          existing.add(key);
+        }
+      }
+    } catch {
+      console.warn(`Warning: could not read ${lockPath}, skipping`);
+    }
+  }
+
   if (packages.length === 0) {
-    console.log("No npm packages found in deno.lock");
+    console.log("No npm packages found in lockfiles");
     Deno.exit(0);
   }
 
@@ -298,7 +365,8 @@ async function main(): Promise<void> {
     `Scanning ${packages.length} npm packages for vulnerabilities…`,
   );
 
-  // Build dependency graph for chain tracing
+  // Build dependency graph for chain tracing (deno.lock only — npm lockfile
+  // packages without chains are reported with just the package name)
   const npm = lockData.npm ?? {};
   const nameToKeys = buildNameToKeyMap(npm);
   const reverseDeps = buildReverseDeps(npm, nameToKeys);

@@ -60,6 +60,7 @@
     ".agents/",
     "workflows/",
     ".vault-test-vault/",
-    "resources/"
+    "resources/",
+    "evals/"
   ]
 }

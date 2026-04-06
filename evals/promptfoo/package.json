@@ -1,0 +1,8 @@
+{
+  "name": "swamp-evals-promptfoo",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "promptfoo": "0.121.3"
+  }
+}

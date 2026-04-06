@@ -178,11 +178,24 @@ async function main(): Promise<void> {
     `Running skill trigger evals for ${model} (concurrency=${concurrency}, threshold=${passThreshold})…`,
   );
 
+  // Install promptfoo dependencies from lockfile
+  console.log("Installing promptfoo dependencies…");
+  const installCmd = new Deno.Command("npm", {
+    args: ["ci"],
+    cwd: configDir,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const installResult = await installCmd.output();
+  if (installResult.code !== 0) {
+    console.error("npm ci failed with exit code", installResult.code);
+    Deno.exit(1);
+  }
+
   // Run promptfoo eval
   const command = new Deno.Command("npx", {
     args: [
-      "-y",
-      "promptfoo@0.121.3",
+      "promptfoo",
       "eval",
       "-j",
       String(concurrency),

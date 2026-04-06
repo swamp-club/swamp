@@ -107,10 +107,10 @@ jobs:
 
       - name: Check for outdated npm dependencies
         run: |
-          pinned=$(grep -o 'promptfoo@[0-9.]*' scripts/eval_skill_triggers_promptfoo.ts | head -1 | cut -d@ -f2)
+          pinned=$(jq -r '.dependencies.promptfoo' evals/promptfoo/package.json)
           latest=$(npm view promptfoo version 2>/dev/null)
           if [ "$pinned" != "$latest" ]; then
-            echo "::warning::promptfoo is outdated: pinned $pinned, latest $latest — update scripts/eval_skill_triggers_promptfoo.ts"
+            echo "::warning::promptfoo is outdated: pinned $pinned, latest $latest — update evals/promptfoo/package.json and run npm install to regenerate the lockfile"
           else
             echo "promptfoo $pinned is up to date"
           fi
