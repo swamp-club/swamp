@@ -162,7 +162,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          # Pinned to 20 LTS. Node 22+ rejects require() of ESM modules
+          # with top-level await (ERR_REQUIRE_ASYNC_MODULE), which breaks
+          # promptfoo's transitive dep @asamuzakjp/css-color via jsdom.
+          node-version: "20"
 
       - name: Run skill trigger evals
         env:
