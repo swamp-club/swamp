@@ -535,11 +535,7 @@ export class UserDriverLoader {
   ): void {
     if (!this.repoDir) return;
 
-    const bundleBaseDir = join(
-      this.repoDir,
-      SWAMP_DATA_DIR,
-      SWAMP_SUBDIRS.driverBundles,
-    );
+    const bundleBaseDir = this.resolveBundlePath();
 
     const dirs = [driversDir, ...(additionalDirs ?? [])];
     for (const dir of dirs) {
@@ -751,10 +747,7 @@ export class UserDriverLoader {
     baseDir: string,
   ): string {
     if (!this.repoDir) return "";
-    return join(
-      this.repoDir,
-      SWAMP_DATA_DIR,
-      SWAMP_SUBDIRS.driverBundles,
+    return this.resolveBundlePath(
       bundleNamespace(baseDir, this.repoDir),
       relativePath.replace(/\.ts$/, ".js"),
     );

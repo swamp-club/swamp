@@ -372,11 +372,7 @@ export class UserReportLoader {
   ): void {
     if (!this.repoDir) return;
 
-    const bundleBaseDir = join(
-      this.repoDir,
-      SWAMP_DATA_DIR,
-      SWAMP_SUBDIRS.reportBundles,
-    );
+    const bundleBaseDir = this.resolveBundlePath();
 
     const dirs = [reportsDir, ...(additionalDirs ?? [])];
     for (const dir of dirs) {
@@ -586,10 +582,7 @@ export class UserReportLoader {
     baseDir: string,
   ): string {
     if (!this.repoDir) return "";
-    return join(
-      this.repoDir,
-      SWAMP_DATA_DIR,
-      SWAMP_SUBDIRS.reportBundles,
+    return this.resolveBundlePath(
       bundleNamespace(baseDir, this.repoDir),
       relativePath.replace(/\.ts$/, ".js"),
     );
