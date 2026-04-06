@@ -194,11 +194,21 @@ async function main(): Promise<void> {
   if (!hadPkgJson) {
     await Deno.writeTextFile(
       pkgJsonPath,
-      JSON.stringify({
-        private: true,
-        dependencies: { promptfoo: "0.121.3" },
-        overrides: { "@asamuzakjp/css-color": "5.1.4" },
-      }),
+      JSON.stringify(
+        {
+          private: true,
+          dependencies: { promptfoo: "0.121.3" },
+          // Pin @asamuzakjp/css-color to avoid 5.1.5+ which uses
+          // top-level await, breaking Node's require() in jsdom.
+          overrides: {
+            "jsdom": {
+              "@asamuzakjp/css-color": "5.1.4",
+            },
+          },
+        },
+        null,
+        2,
+      ),
     );
   }
 
