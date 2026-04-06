@@ -244,6 +244,7 @@ export async function* datastoreSetupExtension(
       }
 
       // Look up the extension type in the registry
+      await datastoreTypeRegistry.ensureTypeLoaded(input.type);
       const typeInfo = datastoreTypeRegistry.get(input.type);
       if (!typeInfo?.createProvider) {
         yield {

@@ -68,7 +68,7 @@ export interface ReportSearchDeps {
   findWorkflowById: (
     id: string,
   ) => Promise<{ id: string; name: string } | null>;
-  getReport: (name: string) => ReportDefinition | undefined;
+  getReport: (name: string) => Promise<ReportDefinition | undefined>;
 }
 
 /** Wires real infrastructure into ReportSearchDeps. */
@@ -103,7 +103,10 @@ export async function createReportSearchDeps(
       if (!wf) return null;
       return { id: wf.id, name: wf.name };
     },
-    getReport: (name) => reportRegistry.get(name),
+    getReport: async (name) => {
+      await reportRegistry.ensureTypeLoaded(name);
+      return reportRegistry.get(name);
+    },
   };
 }
 
@@ -184,13 +187,17 @@ export async function* reportSearch(
 
       // Apply label filter — only include reports whose definition has all requested labels
       if (input.labels && input.labels.length > 0) {
-        candidates = candidates.filter((c) => {
+        const filtered: typeof candidates = [];
+        for (const c of candidates) {
           const reportName = c.data.tags.reportName;
-          if (!reportName) return false;
-          const def = deps.getReport(reportName);
-          if (!def || !def.labels) return false;
-          return input.labels!.every((l) => def.labels!.includes(l));
-        });
+          if (!reportName) continue;
+          const def = await deps.getReport(reportName);
+          if (!def || !def.labels) continue;
+          if (input.labels!.every((l) => def.labels!.includes(l))) {
+            filtered.push(c);
+          }
+        }
+        candidates = filtered;
       }
 
       // Apply text query filter

@@ -64,6 +64,7 @@ export async function createDatastoreStatusDeps(
     loadConfig: () => datastoreResolver.config(),
     verifyHealth: async (config: DatastoreConfig) => {
       if (isCustomDatastoreConfig(config)) {
+        await datastoreTypeRegistry.ensureTypeLoaded(config.type);
         const typeInfo = datastoreTypeRegistry.get(config.type);
         if (typeInfo?.createProvider) {
           const provider = typeInfo.createProvider(config.config);

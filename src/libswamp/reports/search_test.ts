@@ -57,7 +57,7 @@ function makeDeps(
     lookupDefinitionById: () => Promise.resolve(null),
     findWorkflowByName: () => Promise.resolve(null),
     findWorkflowById: () => Promise.resolve(null),
-    getReport: () => undefined,
+    getReport: () => Promise.resolve(undefined),
   };
 }
 

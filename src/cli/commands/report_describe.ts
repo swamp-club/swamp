@@ -44,7 +44,10 @@ export const reportDescribeCommand = new Command()
 
     await reportRegistry.ensureLoaded();
     const deps: ReportDescribeDeps = {
-      getReport: (name) => reportRegistry.get(name),
+      getReport: async (name) => {
+        await reportRegistry.ensureTypeLoaded(name);
+        return reportRegistry.get(name);
+      },
     };
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });

@@ -35,7 +35,7 @@ function makeDeps(
   reports: Record<string, ReportDefinition> = {},
 ): ReportDescribeDeps {
   return {
-    getReport: (name) => reports[name],
+    getReport: (name) => Promise.resolve(reports[name]),
   };
 }
 
