@@ -611,8 +611,7 @@ export class ModelResolver {
                 latestVersion,
               );
               if (versionData && versionData.tags[tagKey] === tagValue) {
-                const dedupeKey =
-                  `${modelType.normalized}:${modelId}:${data.name}`;
+                const dedupeKey = `${tagModelName}:${data.name}`;
                 if (seen.has(dedupeKey)) continue;
                 seen.add(dedupeKey);
                 const record = dataToRecord(
@@ -660,10 +659,8 @@ export class ModelResolver {
               if (runId && versionData.tags["workflowRunId"] !== runId) {
                 continue;
               }
-              const dedupeKey =
-                `${modelType.normalized}:${modelId}:${data.name}`;
-              if (seen.has(dedupeKey)) continue;
-              seen.add(dedupeKey);
+              if (seen.has(data.name)) continue;
+              seen.add(data.name);
               const record = dataToRecord(
                 versionData,
                 modelType,

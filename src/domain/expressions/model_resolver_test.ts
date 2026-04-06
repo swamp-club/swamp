@@ -353,6 +353,72 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
   });
 });
 
+Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data for same name", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const type = ModelType.create("test/model");
+
+    // Step 1: Create model and save data under its UUID
+    const originalModel = Definition.create({
+      name: "dup-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, originalModel);
+
+    const dataV1 = Data.create({
+      name: "tagged-item",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", env: "prod", modelName: "dup-model" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      originalModel.id,
+      dataV1,
+      new TextEncoder().encode(JSON.stringify({ v: 1 })),
+    );
+
+    // Step 2: Delete and recreate model with new UUID
+    await defRepo.delete(type, originalModel.id);
+    const recreatedModel = Definition.create({
+      name: "dup-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, recreatedModel);
+
+    // Step 3: Save data with same name under new UUID
+    const dataV2 = Data.create({
+      name: "tagged-item",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", env: "prod", modelName: "dup-model" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      recreatedModel.id,
+      dataV2,
+      new TextEncoder().encode(JSON.stringify({ v: 2 })),
+    );
+
+    // Step 4: Build context — both UUIDs have data for "tagged-item"
+    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.data);
+
+    // findByTag should return the record only once, not duplicated
+    const results = ctx.data.findByTag("env", "prod");
+    assertEquals(results.length, 1);
+    assertEquals(results[0].name, "tagged-item");
+  });
+});
+
 // ============================================================================
 // data.findBySpec() returns records matching specName tag
 // ============================================================================
@@ -409,6 +475,72 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
     assertEquals(results.length, 2);
     assertEquals(results.some((r) => r.name === "subnet-a"), true);
     assertEquals(results.some((r) => r.name === "subnet-b"), true);
+  });
+});
+
+Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data for same name", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const type = ModelType.create("test/model");
+
+    // Step 1: Create model and save data under its UUID
+    const originalModel = Definition.create({
+      name: "spec-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, originalModel);
+
+    const dataV1 = Data.create({
+      name: "subnet-a",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "subnet", modelName: "spec-model" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      originalModel.id,
+      dataV1,
+      new TextEncoder().encode(JSON.stringify({ cidr: "10.0.1.0/24" })),
+    );
+
+    // Step 2: Delete and recreate model with new UUID
+    await defRepo.delete(type, originalModel.id);
+    const recreatedModel = Definition.create({
+      name: "spec-model",
+      globalArguments: {},
+    });
+    await defRepo.save(type, recreatedModel);
+
+    // Step 3: Save data with same name under new UUID
+    const dataV2 = Data.create({
+      name: "subnet-a",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", specName: "subnet", modelName: "spec-model" },
+      ownerDefinition: owner,
+    });
+    await dataRepo.save(
+      type,
+      recreatedModel.id,
+      dataV2,
+      new TextEncoder().encode(JSON.stringify({ cidr: "10.0.1.0/24-v2" })),
+    );
+
+    // Step 4: Build context — both UUIDs have data for "subnet-a"
+    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const ctx = await resolver.buildContext();
+
+    assertExists(ctx.data);
+
+    // findBySpec should return the record only once, not duplicated
+    const results = ctx.data.findBySpec("spec-model", "subnet");
+    assertEquals(results.length, 1);
+    assertEquals(results[0].name, "subnet-a");
   });
 });
 
