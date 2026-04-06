@@ -47,6 +47,19 @@ import type {
 const logger = getLogger(["swamp", "datastores", "loader"]);
 
 /** Pattern for valid user datastore type: @collective/name or collective/name */
+/**
+ * Stable fingerprint of the set of directories a datastore buildIndex scans.
+ * When sources change (added/removed via `swamp extension source add/rm`),
+ * the fingerprint changes and triggers a catalog invalidation.
+ */
+function sourceDirsFingerprint(
+  datastoresDir: string,
+  additionalDirs?: string[],
+): string {
+  const dirs = [datastoresDir, ...(additionalDirs ?? [])];
+  return dirs.sort().join("\n");
+}
+
 const USER_DATASTORE_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
 /**
@@ -387,6 +400,25 @@ export class UserDatastoreLoader {
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
+    // Force a full rescan if the set of extension source directories has
+    // changed (e.g. user ran `swamp extension source add`). Without this,
+    // the catalog's "populated" flag causes buildIndex to skip the full
+    // import path, so datastores from newly added sources are never
+    // discovered (#1107).
+    const currentSourceFingerprint = sourceDirsFingerprint(
+      datastoresDir,
+      options?.additionalDirs,
+    );
+    if (
+      catalog.isPopulated("datastore") &&
+      catalog.getSourceDirsFingerprint("datastore") !==
+        currentSourceFingerprint
+    ) {
+      logger
+        .warn`Extension source dirs changed — invalidating datastore catalog for full rescan`;
+      catalog.invalidate("datastore");
+    }
+
     if (catalog.isPopulated("datastore")) {
       const staleFiles = await this.findStaleFiles(
         datastoresDir,
@@ -430,6 +462,7 @@ export class UserDatastoreLoader {
       options?.additionalDirs,
     );
     catalog.markPopulated("datastore");
+    catalog.setSourceDirsFingerprint(currentSourceFingerprint, "datastore");
 
     return fullResult;
   }
@@ -650,6 +683,43 @@ export class UserDatastoreLoader {
           const sourceMtime = stat.mtime?.toISOString() ?? "";
           if (sourceMtime !== catalogEntry.source_mtime) {
             stale.push({ absolutePath, relativePath, baseDir: dir });
+            continue;
+          }
+
+          // Entry point is fresh — check transitive dependencies against
+          // the cached bundle file's mtime. This catches edits to imported
+          // .ts files that don't touch the entry point (#1094).
+          const bundlePath = this.getDatastoreBundlePath(relativePath, dir);
+          if (bundlePath) {
+            try {
+              const bundleStat = await Deno.stat(bundlePath);
+              if (bundleStat.mtime) {
+                const { resolvedFiles } = await resolveLocalImports(
+                  [absolutePath],
+                  dir,
+                );
+                const depStats = await Promise.all(
+                  resolvedFiles.map((f) => Deno.stat(f)),
+                );
+                const newestDepMtime = depStats.reduce<Date | null>(
+                  (max, s) => {
+                    if (!s.mtime) return max;
+                    if (!max) return s.mtime;
+                    return s.mtime > max ? s.mtime : max;
+                  },
+                  null,
+                );
+                if (
+                  newestDepMtime && newestDepMtime >= bundleStat.mtime
+                ) {
+                  stale.push({ absolutePath, relativePath, baseDir: dir });
+                }
+              }
+            } catch {
+              // Bundle file missing or dep stat failed — mark as stale
+              // to trigger a rebundle.
+              stale.push({ absolutePath, relativePath, baseDir: dir });
+            }
           }
         } catch {
           stale.push({ absolutePath, relativePath, baseDir: dir });

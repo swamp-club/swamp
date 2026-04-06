@@ -287,25 +287,39 @@ export class ExtensionCatalogStore {
   /**
    * Returns the stored source directories fingerprint, or undefined if not set.
    * Used to detect when extension sources have been added or removed,
-   * triggering a full rescan so new source models are discovered.
+   * triggering a full rescan so new source entries are discovered.
+   *
+   * @param kind - Optional extension kind for per-kind fingerprints. When
+   *   omitted, reads the legacy global key (backward-compatible with model
+   *   loader calls that predate per-kind support).
    */
-  getSourceDirsFingerprint(): string | undefined {
+  getSourceDirsFingerprint(kind?: ExtensionKind): string | undefined {
+    const key = kind
+      ? `source_dirs_fingerprint:${kind}`
+      : "source_dirs_fingerprint";
     const stmt = this.db.prepare(
-      "SELECT value FROM bundle_meta WHERE key = 'source_dirs_fingerprint'",
+      "SELECT value FROM bundle_meta WHERE key = ?",
     );
-    const row = stmt.get() as { value: string } | undefined;
+    const row = stmt.get(key) as { value: string } | undefined;
     return row?.value;
   }
 
   /**
    * Stores a fingerprint of the current source directories. Set after a
    * successful catalog population so subsequent runs can detect source changes.
+   *
+   * @param fingerprint - The fingerprint string to store.
+   * @param kind - Optional extension kind for per-kind fingerprints. When
+   *   omitted, writes the legacy global key.
    */
-  setSourceDirsFingerprint(fingerprint: string): void {
+  setSourceDirsFingerprint(fingerprint: string, kind?: ExtensionKind): void {
+    const key = kind
+      ? `source_dirs_fingerprint:${kind}`
+      : "source_dirs_fingerprint";
     const stmt = this.db.prepare(
-      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES ('source_dirs_fingerprint', ?)",
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, ?)",
     );
-    stmt.run(fingerprint);
+    stmt.run(key, fingerprint);
   }
 
   /**

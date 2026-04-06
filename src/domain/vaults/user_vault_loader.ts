@@ -47,6 +47,19 @@ import type {
 
 const logger = getLogger(["swamp", "vaults", "loader"]);
 
+/**
+ * Stable fingerprint of the set of directories a vault buildIndex scans.
+ * When sources change (added/removed via `swamp extension source add/rm`),
+ * the fingerprint changes and triggers a catalog invalidation.
+ */
+function sourceDirsFingerprint(
+  vaultsDir: string,
+  additionalDirs?: string[],
+): string {
+  const dirs = [vaultsDir, ...(additionalDirs ?? [])];
+  return dirs.sort().join("\n");
+}
+
 /** Pattern for valid user vault type: @collective/name or collective/name */
 const USER_VAULT_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
@@ -410,6 +423,24 @@ export class UserVaultLoader {
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
+    // Force a full rescan if the set of extension source directories has
+    // changed (e.g. user ran `swamp extension source add`). Without this,
+    // the catalog's "populated" flag causes buildIndex to skip the full
+    // import path, so vaults from newly added sources are never discovered
+    // (#1107).
+    const currentSourceFingerprint = sourceDirsFingerprint(
+      vaultsDir,
+      options?.additionalDirs,
+    );
+    if (
+      catalog.isPopulated("vault") &&
+      catalog.getSourceDirsFingerprint("vault") !== currentSourceFingerprint
+    ) {
+      logger
+        .warn`Extension source dirs changed — invalidating vault catalog for full rescan`;
+      catalog.invalidate("vault");
+    }
+
     if (catalog.isPopulated("vault")) {
       const staleFiles = await this.findStaleFiles(
         vaultsDir,
@@ -453,6 +484,7 @@ export class UserVaultLoader {
       options?.additionalDirs,
     );
     catalog.markPopulated("vault");
+    catalog.setSourceDirsFingerprint(currentSourceFingerprint, "vault");
 
     return fullResult;
   }
@@ -669,6 +701,43 @@ export class UserVaultLoader {
           const sourceMtime = stat.mtime?.toISOString() ?? "";
           if (sourceMtime !== catalogEntry.source_mtime) {
             stale.push({ absolutePath, relativePath, baseDir: dir });
+            continue;
+          }
+
+          // Entry point is fresh — check transitive dependencies against
+          // the cached bundle file's mtime. This catches edits to imported
+          // .ts files that don't touch the entry point (#1094).
+          const bundlePath = this.getVaultBundlePath(relativePath, dir);
+          if (bundlePath) {
+            try {
+              const bundleStat = await Deno.stat(bundlePath);
+              if (bundleStat.mtime) {
+                const { resolvedFiles } = await resolveLocalImports(
+                  [absolutePath],
+                  dir,
+                );
+                const depStats = await Promise.all(
+                  resolvedFiles.map((f) => Deno.stat(f)),
+                );
+                const newestDepMtime = depStats.reduce<Date | null>(
+                  (max, s) => {
+                    if (!s.mtime) return max;
+                    if (!max) return s.mtime;
+                    return s.mtime > max ? s.mtime : max;
+                  },
+                  null,
+                );
+                if (
+                  newestDepMtime && newestDepMtime >= bundleStat.mtime
+                ) {
+                  stale.push({ absolutePath, relativePath, baseDir: dir });
+                }
+              }
+            } catch {
+              // Bundle file missing or dep stat failed — mark as stale
+              // to trigger a rebundle.
+              stale.push({ absolutePath, relativePath, baseDir: dir });
+            }
           }
         } catch {
           stale.push({ absolutePath, relativePath, baseDir: dir });

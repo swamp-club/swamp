@@ -47,6 +47,19 @@ import type {
 
 const logger = getLogger(["swamp", "reports", "loader"]);
 
+/**
+ * Stable fingerprint of the set of directories a report buildIndex scans.
+ * When sources change (added/removed via `swamp extension source add/rm`),
+ * the fingerprint changes and triggers a catalog invalidation.
+ */
+function sourceDirsFingerprint(
+  reportsDir: string,
+  additionalDirs?: string[],
+): string {
+  const dirs = [reportsDir, ...(additionalDirs ?? [])];
+  return dirs.sort().join("\n");
+}
+
 /** Pattern for valid user report name: @collective/name[/subname/...] or collective/name[/subname/...] */
 const USER_REPORT_NAME_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 
@@ -248,6 +261,24 @@ export class UserReportLoader {
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
+    // Force a full rescan if the set of extension source directories has
+    // changed (e.g. user ran `swamp extension source add`). Without this,
+    // the catalog's "populated" flag causes buildIndex to skip the full
+    // import path, so reports from newly added sources are never discovered
+    // (#1107).
+    const currentSourceFingerprint = sourceDirsFingerprint(
+      reportsDir,
+      options?.additionalDirs,
+    );
+    if (
+      catalog.isPopulated("report") &&
+      catalog.getSourceDirsFingerprint("report") !== currentSourceFingerprint
+    ) {
+      logger
+        .warn`Extension source dirs changed — invalidating report catalog for full rescan`;
+      catalog.invalidate("report");
+    }
+
     if (catalog.isPopulated("report")) {
       const staleFiles = await this.findStaleFiles(
         reportsDir,
@@ -291,6 +322,7 @@ export class UserReportLoader {
       options?.additionalDirs,
     );
     catalog.markPopulated("report");
+    catalog.setSourceDirsFingerprint(currentSourceFingerprint, "report");
 
     return fullResult;
   }
@@ -501,6 +533,43 @@ export class UserReportLoader {
           const sourceMtime = stat.mtime?.toISOString() ?? "";
           if (sourceMtime !== catalogEntry.source_mtime) {
             stale.push({ absolutePath, relativePath, baseDir: dir });
+            continue;
+          }
+
+          // Entry point is fresh — check transitive dependencies against
+          // the cached bundle file's mtime. This catches edits to imported
+          // .ts files that don't touch the entry point (#1094).
+          const bundlePath = this.getReportBundlePath(relativePath, dir);
+          if (bundlePath) {
+            try {
+              const bundleStat = await Deno.stat(bundlePath);
+              if (bundleStat.mtime) {
+                const { resolvedFiles } = await resolveLocalImports(
+                  [absolutePath],
+                  dir,
+                );
+                const depStats = await Promise.all(
+                  resolvedFiles.map((f) => Deno.stat(f)),
+                );
+                const newestDepMtime = depStats.reduce<Date | null>(
+                  (max, s) => {
+                    if (!s.mtime) return max;
+                    if (!max) return s.mtime;
+                    return s.mtime > max ? s.mtime : max;
+                  },
+                  null,
+                );
+                if (
+                  newestDepMtime && newestDepMtime >= bundleStat.mtime
+                ) {
+                  stale.push({ absolutePath, relativePath, baseDir: dir });
+                }
+              }
+            } catch {
+              // Bundle file missing or dep stat failed — mark as stale
+              // to trigger a rebundle.
+              stale.push({ absolutePath, relativePath, baseDir: dir });
+            }
           }
         } catch {
           stale.push({ absolutePath, relativePath, baseDir: dir });

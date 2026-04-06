@@ -47,6 +47,19 @@ import type {
 
 const logger = getLogger(["swamp", "drivers", "loader"]);
 
+/**
+ * Stable fingerprint of the set of directories a driver buildIndex scans.
+ * When sources change (added/removed via `swamp extension source add/rm`),
+ * the fingerprint changes and triggers a catalog invalidation.
+ */
+function sourceDirsFingerprint(
+  driversDir: string,
+  additionalDirs?: string[],
+): string {
+  const dirs = [driversDir, ...(additionalDirs ?? [])];
+  return dirs.sort().join("\n");
+}
+
 /** Pattern for valid user driver type: @collective/name or collective/name */
 const USER_DRIVER_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
@@ -409,6 +422,24 @@ export class UserDriverLoader {
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
+    // Force a full rescan if the set of extension source directories has
+    // changed (e.g. user ran `swamp extension source add`). Without this,
+    // the catalog's "populated" flag causes buildIndex to skip the full
+    // import path, so drivers from newly added sources are never discovered
+    // (#1107).
+    const currentSourceFingerprint = sourceDirsFingerprint(
+      driversDir,
+      options?.additionalDirs,
+    );
+    if (
+      catalog.isPopulated("driver") &&
+      catalog.getSourceDirsFingerprint("driver") !== currentSourceFingerprint
+    ) {
+      logger
+        .warn`Extension source dirs changed — invalidating driver catalog for full rescan`;
+      catalog.invalidate("driver");
+    }
+
     if (catalog.isPopulated("driver")) {
       const staleFiles = await this.findStaleFiles(
         driversDir,
@@ -452,6 +483,7 @@ export class UserDriverLoader {
       options?.additionalDirs,
     );
     catalog.markPopulated("driver");
+    catalog.setSourceDirsFingerprint(currentSourceFingerprint, "driver");
 
     return fullResult;
   }
@@ -664,6 +696,43 @@ export class UserDriverLoader {
           const sourceMtime = stat.mtime?.toISOString() ?? "";
           if (sourceMtime !== catalogEntry.source_mtime) {
             stale.push({ absolutePath, relativePath, baseDir: dir });
+            continue;
+          }
+
+          // Entry point is fresh — check transitive dependencies against
+          // the cached bundle file's mtime. This catches edits to imported
+          // .ts files that don't touch the entry point (#1094).
+          const bundlePath = this.getDriverBundlePath(relativePath, dir);
+          if (bundlePath) {
+            try {
+              const bundleStat = await Deno.stat(bundlePath);
+              if (bundleStat.mtime) {
+                const { resolvedFiles } = await resolveLocalImports(
+                  [absolutePath],
+                  dir,
+                );
+                const depStats = await Promise.all(
+                  resolvedFiles.map((f) => Deno.stat(f)),
+                );
+                const newestDepMtime = depStats.reduce<Date | null>(
+                  (max, s) => {
+                    if (!s.mtime) return max;
+                    if (!max) return s.mtime;
+                    return s.mtime > max ? s.mtime : max;
+                  },
+                  null,
+                );
+                if (
+                  newestDepMtime && newestDepMtime >= bundleStat.mtime
+                ) {
+                  stale.push({ absolutePath, relativePath, baseDir: dir });
+                }
+              }
+            } catch {
+              // Bundle file missing or dep stat failed — mark as stale
+              // to trigger a rebundle.
+              stale.push({ absolutePath, relativePath, baseDir: dir });
+            }
           }
         } catch {
           stale.push({ absolutePath, relativePath, baseDir: dir });
