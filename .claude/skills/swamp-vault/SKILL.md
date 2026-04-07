@@ -39,15 +39,21 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 
 ## Repository Structure
 
-Vaults use the dual-layer architecture:
-
-- **Data directory (`/.swamp/vault/`)** - Internal storage by vault type
-- **Logical views (`/vaults/`)** - Human-friendly symlinked directories
+Vault configurations are stored directly in the `vaults/` directory, organized
+by type:
 
 ```
-/vaults/{vault-name}/
-  vault.yaml → ../.swamp/vault/{type}/{id}.yaml
-  secrets/ → ../.swamp/secrets/{type}/{vault-name}/ (local_encryption only)
+vaults/
+  {vault-type}/
+    {vault-id}.yaml
+```
+
+Encrypted secrets (local_encryption vaults only) live in `.swamp/`:
+
+```
+.swamp/secrets/local_encryption/{vault-name}/
+  .key          # Encryption key (NEVER commit)
+  {secret-key}  # Encrypted secret data
 ```
 
 ## Vault Types

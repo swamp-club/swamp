@@ -2,11 +2,9 @@
 
 ## Overview
 
-Swamp uses a **dual-layer architecture**:
-
-1. **Data Layer** (`.swamp/`) — Internal storage organized by entity type
-2. **Logical Views** (`models/`, `workflows/`, `vaults/`) — Human-friendly
-   symlinked directories
+Swamp stores entities as flat files in top-level directories (`models/`,
+`workflows/`, `vaults/`), with internal data (artifacts, outputs, runs) in
+`.swamp/`.
 
 ## Complete Directory Layout
 
@@ -64,25 +62,16 @@ my-swamp-repo/
 │   └── telemetry/               # Local telemetry data
 │       └── events.jsonl
 │
-├── models/                      # Logical view: models by name
-│   └── {model-name}/
-│       ├── input.yaml → ../.swamp/definitions/{type}/{id}.yaml
-│       ├── resource.yaml → ../.swamp/data/{type}/{id}/{spec}/latest/raw
-│       ├── outputs/ → ../.swamp/outputs/{type}/{id}/
-│       └── files/ → ../.swamp/data/{type}/{id}/ (filtered)
+├── models/                      # Model definitions by type
+│   └── {normalized-type}/
+│       └── {model-id}.yaml
 │
-├── workflows/                   # Logical view: workflows by name
-│   └── {workflow-name}/
-│       ├── workflow.yaml → ../.swamp/workflows/{id}.yaml
-│       └── runs/
-│           ├── latest → {most-recent-run}/
-│           └── {timestamp}/
-│               └── run.yaml → ../.swamp/workflow-runs/{id}/{run-id}.yaml
+├── workflows/                   # Workflow definitions (flat files)
+│   └── workflow-{uuid}.yaml
 │
-├── vaults/                      # Logical view: vaults by name
-│   └── {vault-name}/
-│       ├── vault.yaml → ../.swamp/vault/{type}/{id}.yaml
-│       └── secrets/ → ../.swamp/secrets/{type}/{vault-name}/ (local only)
+├── vaults/                      # Vault configurations by type
+│   └── {vault-type}/
+│       └── {vault-id}.yaml
 │
 ├── extensions/                  # Custom user extensions
 │   ├── models/                  # TypeScript model definitions
@@ -227,32 +216,6 @@ jobs:
         duration: 2000
 ```
 
-## Logical View Symlinks
-
-### models/{name}/
-
-| Symlink         | Target                                             |
-| --------------- | -------------------------------------------------- |
-| `input.yaml`    | `.swamp/definitions/{type}/{id}.yaml`              |
-| `resource.yaml` | `.swamp/data/{type}/{id}/{spec}/latest/raw`        |
-| `outputs/`      | `.swamp/outputs/{type}/{id}/`                      |
-| `files/`        | `.swamp/data/{type}/{id}/` (filtered by type=file) |
-
-### workflows/{name}/
-
-| Symlink              | Target                                    |
-| -------------------- | ----------------------------------------- |
-| `workflow.yaml`      | `.swamp/workflows/{id}.yaml`              |
-| `runs/latest`        | `runs/{most-recent-timestamp}/`           |
-| `runs/{ts}/run.yaml` | `.swamp/workflow-runs/{id}/{run-id}.yaml` |
-
-### vaults/{name}/
-
-| Symlink      | Target                                             |
-| ------------ | -------------------------------------------------- |
-| `vault.yaml` | `.swamp/vault/{type}/{id}.yaml`                    |
-| `secrets/`   | `.swamp/secrets/{type}/{vault-name}/` (local only) |
-
 ## File Ownership and Permissions
 
 ### Files to Never Commit
@@ -275,19 +238,4 @@ Auto-generated on `swamp repo init`:
 .swamp/telemetry/
 .swamp/secrets/keyfile
 .claude/
-```
-
-## Rebuilding the Index
-
-When symlinks become stale or broken:
-
-```bash
-# Verify current state
-swamp repo index --verify --json
-
-# Remove broken symlinks
-swamp repo index --prune --json
-
-# Full rebuild
-swamp repo index --json
 ```

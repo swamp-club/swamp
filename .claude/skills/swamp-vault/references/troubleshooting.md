@@ -198,13 +198,3 @@ Vault names must:
 
 **Invalid names**: `MyVault`, `123-vault`, `vault_name`, `VAULT` **Valid
 names**: `dev-secrets`, `prod-vault`, `api-keys-v2`
-
-## Rebuilding Logical Views
-
-If vault symlinks are missing or broken:
-
-```bash
-swamp repo index --json
-```
-
-This rebuilds all logical views including `/vaults/{name}/` directories.

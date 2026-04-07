@@ -4,8 +4,6 @@
 
 - [Common Errors](#common-errors)
   - ["Not a swamp repository"](#not-a-swamp-repository)
-  - [Broken Symlinks](#broken-symlinks)
-  - [Index Out of Sync](#index-out-of-sync)
   - [Config File Issues](#config-file-issues)
   - [Skills Not Loading](#skills-not-loading)
 - [Recovery Procedures](#recovery-procedures)
@@ -41,62 +39,6 @@
    pwd
    ls -la .swamp/
    ```
-
-### Broken Symlinks
-
-**Symptom**: Commands fail with "file not found" or `ls` shows broken symlinks
-
-**Diagnose**:
-
-```bash
-# Check for broken symlinks
-swamp repo index --verify --json
-
-# Manual check
-find models/ -type l ! -exec test -e {} \; -print
-```
-
-**Solutions**:
-
-1. **Prune broken symlinks**:
-
-   ```bash
-   swamp repo index --prune --json
-   ```
-
-2. **Full rebuild**:
-
-   ```bash
-   swamp repo index --json
-   ```
-
-3. **Verify internal data still exists**:
-
-   ```bash
-   ls -la .swamp/definitions/
-   ls -la .swamp/data/
-   ```
-
-### Index Out of Sync
-
-**Symptom**: Search results don't match actual files, or recent changes aren't
-visible
-
-**Causes**:
-
-- Manual file edits without running `swamp repo index`
-- Interrupted operations
-- Git operations that modified `.swamp/` directly
-
-**Solution**:
-
-```bash
-# Rebuild the index
-swamp repo index --json
-```
-
-**Prevention**: After manual edits to `.swamp/` files, always run
-`swamp repo index`.
 
 ### Config File Issues
 
@@ -216,13 +158,7 @@ swamp model create <type> <name> --json
 
 Edit conflicting files in `.swamp/` to pick the correct version.
 
-**Step 2: Rebuild index**
-
-```bash
-swamp repo index --json
-```
-
-**Step 3: Validate all models**
+**Step 2: Validate all models**
 
 ```bash
 swamp model validate --json
@@ -262,9 +198,6 @@ swamp repo init --json
 
 # 4. Restore extensions
 cp -r extensions.backup/* extensions/
-
-# 5. Rebuild index
-swamp repo index --json
 ```
 
 **Note**: This loses all model data and workflow history. Only use as last

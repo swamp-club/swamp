@@ -45,21 +45,19 @@ run.
 
 ## Repository Structure
 
-Swamp uses a dual-layer architecture:
-
-- **Data directory (`/.swamp/`)** - Internal storage organized by entity type
-- **Logical views (`/workflows/`)** - Human-friendly symlinked directories
+Workflow files are stored directly in the `workflows/` directory:
 
 ```
-/workflows/{workflow-name}/
-  workflow.yaml → ../.swamp/workflows/{id}.yaml
-  runs/
-    latest → {most-recent-run}/
-    {timestamp}/
-      run.yaml → ../.swamp/workflow-runs/{id}/{run-id}.yaml
+workflows/
+  workflow-{uuid}.yaml
 ```
 
-Use `swamp repo index` to rebuild if symlinks become out of sync.
+Internal data (evaluated workflows, run records) lives in `.swamp/`:
+
+```
+.swamp/workflows-evaluated/{uuid}.yaml
+.swamp/workflow-runs/{workflow-id}/{run-id}.yaml
+```
 
 ## IMPORTANT: Always Get Schema First
 
@@ -187,8 +185,6 @@ then edit directly with the Edit tool, then validate with
 
 - Interactive: `swamp workflow edit my-workflow` (opens in system editor)
 - Stdin: `cat updated.yaml | swamp workflow edit my-workflow --json`
-
-Run `swamp repo index` if search results seem stale after editing.
 
 ## Delete a Workflow
 

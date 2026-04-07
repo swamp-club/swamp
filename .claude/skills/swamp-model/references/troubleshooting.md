@@ -332,8 +332,8 @@ swamp model output get <model-name> --json
 # 3. List model data
 swamp data list <model-name> --json
 
-# 4. Rebuild index if needed
-swamp repo index --json
+# 4. Check data directory directly
+ls -la .swamp/data/
 ```
 
 ### Cannot Find Previous Output

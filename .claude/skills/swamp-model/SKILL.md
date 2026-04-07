@@ -70,20 +70,23 @@ Correct flow: `swamp model create <type> <name> --json` → set global args with
 
 ## Repository Structure
 
-Swamp uses a dual-layer architecture:
-
-- **Data directory (`/.swamp/`)** - Internal storage organized by entity type
-- **Logical views (`/models/`)** - Human-friendly symlinked directories
+Model definitions are stored directly in the `models/` directory, organized by
+type:
 
 ```
-/models/{model-name}/
-  input.yaml → ../.swamp/definitions/{type}/{id}.yaml
-  resource.yaml → ../.swamp/data/{type}/{id}/{specName}/latest/raw  (type=resource)
-  outputs/ → ../.swamp/outputs/{type}/{id}/
-  files/ → ../.swamp/data/{type}/{id}/ (filtered by type=file)
+models/
+  {normalized-type}/
+    {model-id}.yaml
 ```
 
-Use `swamp repo index` to rebuild if symlinks become out of sync.
+Internal data (evaluated definitions, data artifacts, outputs) lives in
+`.swamp/`:
+
+```
+.swamp/definitions-evaluated/{normalized-type}/{model-id}.yaml
+.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/raw
+.swamp/outputs/{normalized-type}/{model-id}/{output-id}.yaml
+```
 
 ## Search for Model Types
 
@@ -269,8 +272,6 @@ edit directly with the Edit tool, then validate with
 
 - Interactive: `swamp model edit my-shell` (opens in system editor)
 - Stdin: `cat updated.yaml | swamp model edit my-shell --json`
-
-Run `swamp repo index` if search results seem stale after editing.
 
 ## Delete a Model
 
