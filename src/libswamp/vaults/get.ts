@@ -18,10 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import {
-  SWAMP_DATA_DIR,
-  SWAMP_SUBDIRS,
-} from "../../infrastructure/persistence/paths.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
@@ -68,8 +64,7 @@ export function createVaultGetDeps(repoDir: string): VaultGetDeps {
     findByName: (name) => repo.findByName(name),
     findById: (type, id) => repo.findById(type, id),
     findAll: () => repo.findAll(),
-    storagePath: (config) =>
-      `${SWAMP_DATA_DIR}/${SWAMP_SUBDIRS.vault}/${config.type}/${config.id}.yaml`,
+    storagePath: (config) => `vaults/${config.type}/${config.id}.yaml`,
   };
 }
 

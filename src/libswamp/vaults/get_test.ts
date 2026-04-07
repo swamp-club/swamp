@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createVaultGetDeps,
   type VaultConfigInfo,
   vaultGet,
   type VaultGetDeps,
@@ -121,4 +122,19 @@ Deno.test("vaultGet yields error with validation_failed when vault type does not
   const last = events[1] as Extract<VaultGetEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "validation_failed");
+});
+
+Deno.test("createVaultGetDeps: storagePath uses vaults/ not .swamp/vault/", () => {
+  const deps = createVaultGetDeps("/tmp/fake-repo");
+  const config: VaultConfigInfo = {
+    id: "abc-123",
+    name: "test-vault",
+    type: "local_encryption",
+    config: {},
+    createdAt: new Date(),
+  };
+  assertEquals(
+    deps.storagePath(config),
+    "vaults/local_encryption/abc-123.yaml",
+  );
 });
