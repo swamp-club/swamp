@@ -63,7 +63,7 @@ let _swampClub: SwampClubClient | null | undefined;
 
 /**
  * Get the swamp-club client and ensure the issue exists.
- * Each method run is a separate process, so the issueId cache is lost.
+ * Each method run is a separate process, so the lab issue number cache is lost.
  * This helper must be called before postLifecycleEntry/transitionStatus.
  */
 async function ensureSwampClub(
@@ -75,12 +75,12 @@ async function ensureSwampClub(
 ): Promise<SwampClubClient | null> {
   const sc = await getSwampClub(globalArgs, logger);
   if (!sc) return null;
-  const id = await sc.ensureIssue({
+  const labIssueNumber = await sc.ensureIssue({
     title: `Issue #${globalArgs.issueNumber}`,
     body: `GitHub issue #${globalArgs.issueNumber} in ${globalArgs.repo}`,
     type: "feature",
   });
-  if (!id) return null;
+  if (labIssueNumber === null) return null;
   return sc;
 }
 
