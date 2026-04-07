@@ -20,17 +20,11 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {
-  consumeStream,
-  createIssueCreateDeps,
-  createLibSwampContext,
-  issueCreate,
-} from "../../libswamp/mod.ts";
-import {
-  createIssueCreateRenderer,
   renderIssueCancelled,
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import { submitIssue } from "./issue_submit.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -121,6 +115,7 @@ export const issueBugCommand = new Command()
     "-r, --repo <repo:string>",
     "Target GitHub repository (e.g., systeminit/swamp-extensions)",
   )
+  .option("-e, --email", "Open email client with pre-filled bug report")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "bug"]);
     ctx.logger.debug`Submitting bug report`;
@@ -183,21 +178,16 @@ export const issueBugCommand = new Command()
       }
     }
 
-    ctx.logger.debug`Creating GitHub issue with title: ${title}`;
+    ctx.logger.debug`Submitting bug report with title: ${title}`;
 
-    const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const deps = createIssueCreateDeps();
-    const renderer = createIssueCreateRenderer(ctx.outputMode);
-    await consumeStream(
-      issueCreate(libCtx, deps, {
-        title,
-        body,
-        labels: ["bug", "needs-triage"],
-        type: "bug",
-        repo: options.repo,
-      }),
-      renderer.handlers(),
-    );
+    await submitIssue(ctx, {
+      type: "bug",
+      title,
+      body,
+      labels: ["bug", "needs-triage"],
+      repo: options.repo,
+      email: options.email,
+    });
 
     ctx.logger.debug("Bug report submitted successfully");
   });

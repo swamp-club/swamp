@@ -20,17 +20,11 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import {
-  consumeStream,
-  createIssueCreateDeps,
-  createLibSwampContext,
-  issueCreate,
-} from "../../libswamp/mod.ts";
-import {
-  createIssueCreateRenderer,
   renderIssueCancelled,
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
+import { submitIssue } from "./issue_submit.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -120,6 +114,7 @@ export const issueFeatureCommand = new Command()
     "-r, --repo <repo:string>",
     "Target GitHub repository (e.g., systeminit/swamp-extensions)",
   )
+  .option("-e, --email", "Open email client with pre-filled feature request")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "feature"]);
     ctx.logger.debug`Submitting feature request`;
@@ -182,21 +177,16 @@ export const issueFeatureCommand = new Command()
       }
     }
 
-    ctx.logger.debug`Creating GitHub issue with title: ${title}`;
+    ctx.logger.debug`Submitting feature request with title: ${title}`;
 
-    const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const deps = createIssueCreateDeps();
-    const renderer = createIssueCreateRenderer(ctx.outputMode);
-    await consumeStream(
-      issueCreate(libCtx, deps, {
-        title,
-        body,
-        labels: ["feature", "needs-triage"],
-        type: "feature",
-        repo: options.repo,
-      }),
-      renderer.handlers(),
-    );
+    await submitIssue(ctx, {
+      type: "feature",
+      title,
+      body,
+      labels: ["feature", "needs-triage"],
+      repo: options.repo,
+      email: options.email,
+    });
 
     ctx.logger.debug("Feature request submitted successfully");
   });

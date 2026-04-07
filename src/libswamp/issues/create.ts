@@ -40,6 +40,19 @@ export type IssueCreateData =
     title: string;
     body: string;
     labels: string[];
+  }
+  | {
+    method: "lab";
+    number: number;
+    type: "bug" | "feature";
+    title: string;
+    serverUrl: string;
+  }
+  | {
+    method: "email";
+    mailtoUrl: string;
+    type: "bug" | "feature";
+    title: string;
   };
 
 export type IssueCreateEvent =
@@ -66,6 +79,12 @@ export interface IssueCreateDeps {
     | { method: "created"; url: string; number: number }
     | { method: "url"; url: string; body: string; labels: string[] }
   >;
+  /** Submit to the Lab API. Undefined when user is not logged in. */
+  submitToLab?: (input: {
+    type: "bug" | "feature";
+    title: string;
+    body: string;
+  }) => Promise<{ number: number; serverUrl: string }>;
 }
 
 /** Wires real infrastructure into IssueCreateDeps. */
@@ -76,7 +95,7 @@ export function createIssueCreateDeps(): IssueCreateDeps {
   };
 }
 
-/** Creates a GitHub issue (bug or feature request). */
+/** Creates a bug or feature issue, preferring the Lab API when available. */
 export async function* issueCreate(
   ctx: LibSwampContext,
   deps: IssueCreateDeps,
@@ -88,6 +107,27 @@ export async function* issueCreate(
     (async function* () {
       ctx.logger.debug`Creating ${input.type} issue: ${input.title}`;
 
+      // Try Lab API first when available
+      if (deps.submitToLab) {
+        const labResult = await deps.submitToLab({
+          type: input.type,
+          title: input.title,
+          body: input.body,
+        });
+        yield {
+          kind: "completed",
+          data: {
+            method: "lab",
+            number: labResult.number,
+            type: input.type,
+            title: input.title,
+            serverUrl: labResult.serverUrl,
+          },
+        };
+        return;
+      }
+
+      // Fall back to GitHub
       const result = await deps.createIssue({
         title: input.title,
         body: input.body,

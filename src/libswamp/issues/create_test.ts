@@ -144,3 +144,77 @@ Deno.test("issueCreate: repo is undefined when not provided", async () => {
 
   assertEquals(capturedRepo, undefined);
 });
+
+Deno.test("issueCreate: prefers submitToLab when available", async () => {
+  let labCalled = false;
+  let githubCalled = false;
+  const deps = makeDeps({
+    createIssue: () => {
+      githubCalled = true;
+      return Promise.resolve({
+        method: "created" as const,
+        url: "https://github.com/systeminit/swamp/issues/1",
+        number: 1,
+      });
+    },
+    submitToLab: (input) => {
+      labCalled = true;
+      assertEquals(input.type, "bug");
+      assertEquals(input.title, "Lab bug");
+      return Promise.resolve({ number: 42, serverUrl: "https://swamp.club" });
+    },
+  });
+
+  const events = await collect<IssueCreateEvent>(
+    issueCreate(createLibSwampContext(), deps, {
+      title: "Lab bug",
+      body: "Details",
+      labels: ["bug"],
+      type: "bug",
+    }),
+  );
+
+  assertEquals(labCalled, true);
+  assertEquals(githubCalled, false);
+  assertEquals(events.length, 1);
+  const completed = events[0] as Extract<
+    IssueCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.method, "lab");
+  if (completed.data.method === "lab") {
+    assertEquals(completed.data.number, 42);
+    assertEquals(completed.data.serverUrl, "https://swamp.club");
+  }
+});
+
+Deno.test("issueCreate: falls back to GitHub when submitToLab is undefined", async () => {
+  let githubCalled = false;
+  const deps = makeDeps({
+    createIssue: () => {
+      githubCalled = true;
+      return Promise.resolve({
+        method: "created" as const,
+        url: "https://github.com/systeminit/swamp/issues/3",
+        number: 3,
+      });
+    },
+    // submitToLab intentionally omitted
+  });
+
+  const events = await collect<IssueCreateEvent>(
+    issueCreate(createLibSwampContext(), deps, {
+      title: "GitHub fallback",
+      body: "Details",
+      labels: ["feature"],
+      type: "feature",
+    }),
+  );
+
+  assertEquals(githubCalled, true);
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "completed");
+  const data = (events[0] as Extract<IssueCreateEvent, { kind: "completed" }>)
+    .data;
+  assertEquals(data.method, "created");
+});

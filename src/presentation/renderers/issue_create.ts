@@ -29,7 +29,20 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
     return {
       completed: (e) => {
         const data = e.data;
-        if (data.method === "created") {
+        if (data.method === "lab") {
+          logger.info(
+            "Submitted {type} report #{number}: {title}",
+            { type: data.type, number: data.number, title: data.title },
+          );
+          logger.info("View at: {url}", {
+            url: `${data.serverUrl}/lab/${data.number}`,
+          });
+        } else if (data.method === "email") {
+          logger.info(
+            "Opening email client to submit {type} report...",
+            { type: data.type },
+          );
+        } else if (data.method === "created") {
           logger.info(
             "Created {type} report #{number}: {title}",
             { type: data.type, number: data.number, title: data.title },

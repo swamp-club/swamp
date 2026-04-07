@@ -158,6 +158,34 @@ export class SwampClubClient {
     return await res.json();
   }
 
+  /**
+   * Submit a bug report or feature request to the Lab.
+   * Authenticates using the x-api-key header.
+   */
+  async submitIssue(
+    apiKey: string,
+    input: { type: "bug" | "feature"; title: string; body: string },
+  ): Promise<{ number: number; id: string }> {
+    const res = await this.fetch("/api/v1/lab/issues/submit", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify(input),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new UserError(
+        `Failed to submit issue (HTTP ${res.status}): ${body}`,
+      );
+    }
+
+    const data = await res.json();
+    return { number: data.issue.number, id: data.issue.id };
+  }
+
   private async fetch(
     path: string,
     init: RequestInit,
