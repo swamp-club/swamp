@@ -42,8 +42,10 @@ export class SwampClubClient {
   private issueNumber: number;
   private log: (msg: string, props: Record<string, unknown>) => void;
 
-  /** Cached swamp-club issue ID, resolved on first call. */
-  private issueId: string | null = null;
+  /** Cached swamp-club lab issue number (sequential, human-facing id),
+   * resolved on first call. Used as the path segment for all lab issue
+   * endpoints (`/api/v1/lab/issues/{number}`). */
+  private labIssueNumber: number | null = null;
 
   constructor(
     baseUrl: string,
@@ -64,16 +66,17 @@ export class SwampClubClient {
 
   /**
    * Ensure the issue exists in swamp-club by GitHub repo + issue number.
-   * Creates it if needed. Caches the issue ID for subsequent calls.
+   * Creates it if needed. Caches the lab issue number for subsequent calls.
    * Must be called with the issue data (title, body, type) the first time.
+   * Returns the swamp-club lab issue number, or null on failure.
    */
   async ensureIssue(params: {
     title: string;
     body: string;
     type?: string;
     githubAuthorLogin?: string;
-  }): Promise<string | null> {
-    if (this.issueId) return this.issueId;
+  }): Promise<number | null> {
+    if (this.labIssueNumber !== null) return this.labIssueNumber;
 
     try {
       const url = `${this.baseUrl}/api/v1/lab/issues/ensure`;
@@ -102,23 +105,26 @@ export class SwampClubClient {
         return null;
       }
       const data = await res.json() as {
-        issue: { id: string };
-        created: boolean;
+        issue?: { number?: unknown };
+        created?: boolean;
       };
-      const resolvedId = data.issue.id;
-      // Validate UUID format to prevent path traversal
+      const resolvedNumber = data?.issue?.number;
+      // Mirror swamp-club's parseLabIssueNumberParam validator (PR #369):
+      // require a safe positive integer. Number.isSafeInteger rejects
+      // NaN/Infinity, fractions, and anything beyond 2^53-1, so we never
+      // emit a path segment the server would 400 on.
       if (
-        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-          resolvedId,
-        )
+        typeof resolvedNumber !== "number" ||
+        !Number.isSafeInteger(resolvedNumber) ||
+        resolvedNumber <= 0
       ) {
-        this.log("swamp-club returned invalid issue ID: {id}", {
-          id: resolvedId,
+        this.log("swamp-club returned invalid lab issue number: {number}", {
+          number: resolvedNumber,
         });
         return null;
       }
-      this.issueId = resolvedId;
-      return this.issueId;
+      this.labIssueNumber = resolvedNumber;
+      return this.labIssueNumber;
     } catch (err) {
       this.log("swamp-club ensure issue error: {error}", {
         error: String(err),
@@ -127,11 +133,18 @@ export class SwampClubClient {
     }
   }
 
+  /** Build the public lab URL for the cached issue, or null if not yet ensured. */
+  labUrl(): string | null {
+    if (this.labIssueNumber === null) return null;
+    return `${this.baseUrl}/lab/${this.labIssueNumber}`;
+  }
+
   /** Post a structured lifecycle entry. Best-effort. Requires ensureIssue() first. */
   async postLifecycleEntry(params: LifecycleEntryParams): Promise<void> {
-    if (!this.issueId) return;
+    if (this.labIssueNumber === null) return;
     try {
-      const url = `${this.baseUrl}/api/v1/lab/issues/${this.issueId}/lifecycle`;
+      const url =
+        `${this.baseUrl}/api/v1/lab/issues/${this.labIssueNumber}/lifecycle`;
       const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -165,9 +178,9 @@ export class SwampClubClient {
 
   /** Transition the issue status. Best-effort. Requires ensureIssue() first. */
   async transitionStatus(status: string): Promise<void> {
-    if (!this.issueId) return;
+    if (this.labIssueNumber === null) return;
     try {
-      const url = `${this.baseUrl}/api/v1/lab/issues/${this.issueId}`;
+      const url = `${this.baseUrl}/api/v1/lab/issues/${this.labIssueNumber}`;
       const res = await fetch(url, {
         method: "PATCH",
         headers: {
@@ -230,7 +243,7 @@ async function loadAuthFile(): Promise<
 /**
  * Create a SwampClubClient if URL and API key are available.
  * Precedence: explicit global args > SWAMP_API_KEY env var > auth.json file.
- * The issue ID is resolved lazily — no swampClubIssueId arg needed.
+ * The lab issue number is resolved lazily — no extra arg needed.
  */
 export async function createSwampClubClient(
   globalArgs: {

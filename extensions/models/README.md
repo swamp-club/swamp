@@ -234,6 +234,10 @@ structured lifecycle entry to the swamp-club API. The issue is created in
 swamp-club on first contact via the `/ensure` endpoint, which matches by GitHub
 repo + issue number.
 
+Each lab issue is assigned a sequential, human-friendly number (`#1`, `#2`, ...)
+that is used in every lab URL — both the dashboard and the API. After the model
+has run against an issue you can find it at `https://swamp.club/lab/<number>`.
+
 Key status transitions in swamp-club:
 
 | Method     | swamp-club status |
