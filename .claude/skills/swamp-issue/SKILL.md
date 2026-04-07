@@ -6,9 +6,9 @@ description: Submit issues to the swamp Lab — file bug reports with reproducti
 # Swamp Issue Submission Skill
 
 Submit bug reports and feature requests through the swamp CLI. When logged in
-(`swamp auth login`), issues are submitted directly to the swamp.club Lab.
-When not logged in, the user is prompted to log in or send via email. The
-`--email` flag skips straight to a pre-filled email.
+(`swamp auth login`), issues are submitted directly to the swamp.club Lab. When
+not logged in, the user is prompted to log in or send via email. The `--email`
+flag skips straight to a pre-filled email.
 
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
 `swamp help issue` for the complete, up-to-date CLI schema.
@@ -50,7 +50,8 @@ swamp issue bug --email --title "Crash report" --body "Details..."
 }
 ```
 
-**Verify submission:** Check the returned URL at `https://swamp.club/lab/<number>`.
+**Verify submission:** Check the returned URL at
+`https://swamp.club/lab/<number>`.
 
 ## Workflow
 

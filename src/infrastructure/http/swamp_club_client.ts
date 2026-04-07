@@ -164,7 +164,11 @@ export class SwampClubClient {
    */
   async submitIssue(
     apiKey: string,
-    input: { type: "bug" | "feature" | "security"; title: string; body: string },
+    input: {
+      type: "bug" | "feature" | "security";
+      title: string;
+      body: string;
+    },
   ): Promise<{ number: number; id: string }> {
     const res = await this.fetch("/api/v1/lab/issues", {
       method: "POST",
