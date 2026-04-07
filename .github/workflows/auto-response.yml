@@ -94,7 +94,7 @@ jobs:
               repo: context.repo.repo,
               issue_number: issue.number,
               body:
-                `Thank you for opening an issue. This issue is now managed in the Claude lab.\n\n${labUrl}`,
+                `Thank you for opening an issue. This issue is now managed in Swamp Club lab.\n\n${labUrl}`,
             });
 
             // Close the GitHub issue.
