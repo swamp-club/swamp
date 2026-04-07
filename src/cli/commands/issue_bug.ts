@@ -24,7 +24,7 @@ import {
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import { submitIssue } from "./issue_submit.ts";
+import { resolveDestination, submitIssue } from "./issue_submit.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -116,43 +116,45 @@ export const issueBugCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["issue", "bug"]);
     ctx.logger.debug`Submitting bug report`;
 
+    // Resolve destination BEFORE collecting content so we don't waste the user's time
+    const destination = await resolveDestination(ctx, options.email);
+    if (destination.method === "abort") {
+      await submitIssue(ctx, destination, {
+        type: "bug",
+        title: "",
+        body: "",
+      });
+      return;
+    }
+
     const editorService = new EditorService();
 
     let title: string;
     let body: string;
 
     if (options.title && options.body) {
-      // Non-interactive mode: both title and body provided
       title = options.title;
       body = options.body;
     } else if (options.body && !options.title) {
       throw new UserError("--body requires --title to be specified");
     } else {
-      // Interactive mode: open editor
       if (ctx.outputMode === "json") {
         throw new UserError(
           "Interactive mode is not available with --json. Use --title and --body options.",
         );
       }
 
-      // Create temp file with template
       const tempFile = await Deno.makeTempFile({
         prefix: "swamp-bug-",
         suffix: ".md",
       });
 
       try {
-        // Write template to temp file
         await Deno.writeTextFile(tempFile, BUG_TEMPLATE);
-
-        // Open editor and wait for it to close
         ctx.logger.debug`Opening editor for bug report`;
         await editorService.openFile(tempFile, { wait: true });
 
-        // Read the edited content
         const content = await Deno.readTextFile(tempFile);
-
-        // Parse the content
         const parsed = parseBugContent(content);
         if (!parsed) {
           renderIssueCancelled(
@@ -165,7 +167,6 @@ export const issueBugCommand = new Command()
         title = parsed.title;
         body = parsed.body;
       } finally {
-        // Clean up temp file
         try {
           await Deno.remove(tempFile);
         } catch {
@@ -176,11 +177,10 @@ export const issueBugCommand = new Command()
 
     ctx.logger.debug`Submitting bug report with title: ${title}`;
 
-    await submitIssue(ctx, {
+    await submitIssue(ctx, destination, {
       type: "bug",
       title,
       body,
-      email: options.email,
     });
 
     ctx.logger.debug("Bug report submitted successfully");

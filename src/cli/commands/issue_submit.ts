@@ -20,10 +20,9 @@
 /**
  * Shared submission logic for `swamp issue bug` and `swamp issue feature`.
  *
- * Orchestrates the submission path:
- * 1. --email flag → open mailto: link
- * 2. Logged in → submit to Lab API
- * 3. Not logged in → prompt: log in or email
+ * Split into two phases so the auth check happens BEFORE the editor opens:
+ * 1. resolveDestination() — check auth, prompt if needed, return where to send
+ * 2. submitIssue() — send the issue to the resolved destination
  */
 
 import type { CommandContext } from "../context.ts";
@@ -40,14 +39,47 @@ import { AuthRepository } from "../../infrastructure/persistence/auth_repository
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
+import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 
 const SUPPORT_EMAIL = "support@systeminit.com";
+
+/** The resolved submission destination. */
+export type SubmitDestination =
+  | { method: "lab"; credentials: AuthCredentials }
+  | { method: "email" }
+  | { method: "abort" };
+
+/**
+ * Resolve where to send the issue BEFORE collecting content.
+ * Call this before opening the editor so the user isn't surprised.
+ */
+export async function resolveDestination(
+  ctx: CommandContext,
+  emailFlag?: boolean,
+): Promise<SubmitDestination> {
+  if (emailFlag) return { method: "email" };
+
+  const authRepo = new AuthRepository();
+  const credentials = await authRepo.load();
+  if (credentials) return { method: "lab", credentials };
+
+  // Not logged in — prompt (interactive only)
+  if (ctx.outputMode === "json") {
+    throw new UserError(
+      "Not logged in. Run `swamp auth login` first, or use --email.",
+    );
+  }
+
+  const choice = await promptLoginOrEmail();
+  if (choice === "login") return { method: "abort" };
+
+  return { method: "email" };
+}
 
 interface SubmitIssueInput {
   type: "bug" | "feature";
   title: string;
   body: string;
-  email?: boolean;
 }
 
 /** Build a mailto: URL with pre-filled subject and body. */
@@ -86,18 +118,25 @@ async function promptLoginOrEmail(): Promise<"login" | "email"> {
 }
 
 /**
- * Submit an issue through the appropriate channel.
- * Called by both issue_bug.ts and issue_feature.ts after title/body are collected.
+ * Submit an issue to the already-resolved destination.
+ * Called after title/body are collected.
  */
 export async function submitIssue(
   ctx: CommandContext,
+  destination: SubmitDestination,
   input: SubmitIssueInput,
 ): Promise<void> {
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const renderer = createIssueCreateRenderer(ctx.outputMode);
 
-  // --email flag: short-circuit to email
-  if (input.email) {
+  if (destination.method === "abort") {
+    const logger = createLibSwampContext({ logger: ctx.logger });
+    logger.logger
+      .info`Run "swamp auth login" first, then retry this command.`;
+    return;
+  }
+
+  if (destination.method === "email") {
     const mailtoUrl = buildMailtoUrl(input.type, input.title, input.body);
     await openBrowser(mailtoUrl);
     await consumeStream(
@@ -117,57 +156,23 @@ export async function submitIssue(
     return;
   }
 
-  // Check for auth credentials
-  const authRepo = new AuthRepository();
-  const credentials = await authRepo.load();
-
-  if (credentials) {
-    // Logged in → submit to Lab
-    const client = new SwampClubClient(credentials.serverUrl);
-    const deps: IssueCreateDeps = {
-      submitToLab: async (params) => {
-        const result = await client.submitIssue(credentials.apiKey, params);
-        return { number: result.number, serverUrl: credentials.serverUrl };
-      },
-    };
-
-    await consumeStream(
-      issueCreate(libCtx, deps, input),
-      renderer.handlers(),
-    );
-    return;
-  }
-
-  // Not logged in — prompt (interactive only)
-  if (ctx.outputMode === "json") {
-    throw new UserError(
-      "Not logged in. Run `swamp auth login` first, or use --email.",
-    );
-  }
-
-  const choice = await promptLoginOrEmail();
-
-  if (choice === "login") {
-    const logger = createLibSwampContext({ logger: ctx.logger });
-    logger.logger.info`Run "swamp auth login" first, then retry this command.`;
-    return;
-  }
-
-  // Email fallback
-  const mailtoUrl = buildMailtoUrl(input.type, input.title, input.body);
-  await openBrowser(mailtoUrl);
-  await consumeStream(
-    (async function* () {
-      yield {
-        kind: "completed" as const,
-        data: {
-          method: "email" as const,
-          mailtoUrl,
-          type: input.type,
-          title: input.title,
-        },
+  // Lab submission
+  const client = new SwampClubClient(destination.credentials.serverUrl);
+  const deps: IssueCreateDeps = {
+    submitToLab: async (params) => {
+      const result = await client.submitIssue(
+        destination.credentials.apiKey,
+        params,
+      );
+      return {
+        number: result.number,
+        serverUrl: destination.credentials.serverUrl,
       };
-    })(),
+    },
+  };
+
+  await consumeStream(
+    issueCreate(libCtx, deps, input),
     renderer.handlers(),
   );
 }
