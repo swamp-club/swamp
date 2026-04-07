@@ -111,10 +111,6 @@ export const issueBugCommand = new Command()
     "-b, --body <body:string>",
     "Bug description (requires --title, skips editor entirely)",
   )
-  .option(
-    "-r, --repo <repo:string>",
-    "Target GitHub repository (e.g., systeminit/swamp-extensions)",
-  )
   .option("-e, --email", "Open email client with pre-filled bug report")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "bug"]);
@@ -184,8 +180,6 @@ export const issueBugCommand = new Command()
       type: "bug",
       title,
       body,
-      labels: ["bug", "needs-triage"],
-      repo: options.repo,
       email: options.email,
     });
 

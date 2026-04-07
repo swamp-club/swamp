@@ -29,7 +29,6 @@
 import type { CommandContext } from "../context.ts";
 import {
   consumeStream,
-  createIssueCreateDeps,
   createLibSwampContext,
   issueCreate,
   type IssueCreateDeps,
@@ -40,6 +39,7 @@ import {
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
+import { UserError } from "../../domain/errors.ts";
 
 const SUPPORT_EMAIL = "support@systeminit.com";
 
@@ -47,8 +47,6 @@ interface SubmitIssueInput {
   type: "bug" | "feature";
   title: string;
   body: string;
-  labels: string[];
-  repo?: string;
   email?: boolean;
 }
 
@@ -127,7 +125,6 @@ export async function submitIssue(
     // Logged in → submit to Lab
     const client = new SwampClubClient(credentials.serverUrl);
     const deps: IssueCreateDeps = {
-      ...createIssueCreateDeps(),
       submitToLab: async (params) => {
         const result = await client.submitIssue(credentials.apiKey, params);
         return { number: result.number, serverUrl: credentials.serverUrl };
@@ -143,13 +140,9 @@ export async function submitIssue(
 
   // Not logged in — prompt (interactive only)
   if (ctx.outputMode === "json") {
-    // In JSON mode, fall back to GitHub (no interactive prompt)
-    const deps = createIssueCreateDeps();
-    await consumeStream(
-      issueCreate(libCtx, deps, input),
-      renderer.handlers(),
+    throw new UserError(
+      "Not logged in. Run `swamp auth login` first, or use --email.",
     );
-    return;
   }
 
   const choice = await promptLoginOrEmail();

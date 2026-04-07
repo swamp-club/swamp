@@ -28,24 +28,19 @@ import {
 
 function makeDeps(overrides: Partial<IssueCreateDeps> = {}): IssueCreateDeps {
   return {
-    createIssue: () =>
-      Promise.resolve({
-        method: "created" as const,
-        url: "https://github.com/systeminit/swamp/issues/1",
-        number: 1,
-      }),
+    submitToLab: () =>
+      Promise.resolve({ number: 1, serverUrl: "https://swamp.club" }),
     ...overrides,
   };
 }
 
-Deno.test("issueCreate: yields completed with created method", async () => {
+Deno.test("issueCreate: submits bug to Lab and yields completed", async () => {
   const deps = makeDeps();
 
   const events = await collect<IssueCreateEvent>(
     issueCreate(createLibSwampContext(), deps, {
-      title: "Test issue",
+      title: "Test bug",
       body: "Test body",
-      labels: ["bug"],
       type: "bug",
     }),
   );
@@ -56,126 +51,25 @@ Deno.test("issueCreate: yields completed with created method", async () => {
     { kind: "completed" }
   >;
   assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.method, "created");
-  assertEquals(completed.data.title, "Test issue");
+  assertEquals(completed.data.method, "lab");
+  assertEquals(completed.data.title, "Test bug");
   assertEquals(completed.data.type, "bug");
 });
 
-Deno.test("issueCreate: yields completed with url method", async () => {
+Deno.test("issueCreate: submits feature to Lab", async () => {
   const deps = makeDeps({
-    createIssue: () =>
-      Promise.resolve({
-        method: "url" as const,
-        url: "https://github.com/systeminit/swamp/issues/new?title=Test",
-        body: "Test body",
-        labels: ["feature"],
-      }),
+    submitToLab: () =>
+      Promise.resolve({ number: 7, serverUrl: "https://swamp.club" }),
   });
 
   const events = await collect<IssueCreateEvent>(
     issueCreate(createLibSwampContext(), deps, {
-      title: "Test feature",
-      body: "Test body",
-      labels: ["feature"],
+      title: "New feature",
+      body: "Details",
       type: "feature",
     }),
   );
 
-  assertEquals(events.length, 1);
-  const completed = events[0] as Extract<
-    IssueCreateEvent,
-    { kind: "completed" }
-  >;
-  assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.method, "url");
-  assertEquals(completed.data.title, "Test feature");
-  assertEquals(completed.data.type, "feature");
-});
-
-Deno.test("issueCreate: threads repo through to createIssue", async () => {
-  let capturedRepo: string | undefined;
-  const deps = makeDeps({
-    createIssue: (opts) => {
-      capturedRepo = opts.repo;
-      return Promise.resolve({
-        method: "created" as const,
-        url: "https://github.com/systeminit/swamp-extensions/issues/1",
-        number: 1,
-      });
-    },
-  });
-
-  const events = await collect<IssueCreateEvent>(
-    issueCreate(createLibSwampContext(), deps, {
-      title: "Extension bug",
-      body: "Test body",
-      labels: ["bug"],
-      type: "bug",
-      repo: "systeminit/swamp-extensions",
-    }),
-  );
-
-  assertEquals(capturedRepo, "systeminit/swamp-extensions");
-  assertEquals(events.length, 1);
-  assertEquals(events[0].kind, "completed");
-});
-
-Deno.test("issueCreate: repo is undefined when not provided", async () => {
-  let capturedRepo: string | undefined = "should-be-undefined";
-  const deps = makeDeps({
-    createIssue: (opts) => {
-      capturedRepo = opts.repo;
-      return Promise.resolve({
-        method: "created" as const,
-        url: "https://github.com/systeminit/swamp/issues/2",
-        number: 2,
-      });
-    },
-  });
-
-  await collect<IssueCreateEvent>(
-    issueCreate(createLibSwampContext(), deps, {
-      title: "Core bug",
-      body: "Test body",
-      labels: ["bug"],
-      type: "bug",
-    }),
-  );
-
-  assertEquals(capturedRepo, undefined);
-});
-
-Deno.test("issueCreate: prefers submitToLab when available", async () => {
-  let labCalled = false;
-  let githubCalled = false;
-  const deps = makeDeps({
-    createIssue: () => {
-      githubCalled = true;
-      return Promise.resolve({
-        method: "created" as const,
-        url: "https://github.com/systeminit/swamp/issues/1",
-        number: 1,
-      });
-    },
-    submitToLab: (input) => {
-      labCalled = true;
-      assertEquals(input.type, "bug");
-      assertEquals(input.title, "Lab bug");
-      return Promise.resolve({ number: 42, serverUrl: "https://swamp.club" });
-    },
-  });
-
-  const events = await collect<IssueCreateEvent>(
-    issueCreate(createLibSwampContext(), deps, {
-      title: "Lab bug",
-      body: "Details",
-      labels: ["bug"],
-      type: "bug",
-    }),
-  );
-
-  assertEquals(labCalled, true);
-  assertEquals(githubCalled, false);
   assertEquals(events.length, 1);
   const completed = events[0] as Extract<
     IssueCreateEvent,
@@ -183,38 +77,53 @@ Deno.test("issueCreate: prefers submitToLab when available", async () => {
   >;
   assertEquals(completed.data.method, "lab");
   if (completed.data.method === "lab") {
-    assertEquals(completed.data.number, 42);
-    assertEquals(completed.data.serverUrl, "https://swamp.club");
+    assertEquals(completed.data.number, 7);
+    assertEquals(completed.data.type, "feature");
   }
 });
 
-Deno.test("issueCreate: falls back to GitHub when submitToLab is undefined", async () => {
-  let githubCalled = false;
+Deno.test("issueCreate: passes title, body, and type to submitToLab", async () => {
+  let captured: { type: string; title: string; body: string } | undefined;
   const deps = makeDeps({
-    createIssue: () => {
-      githubCalled = true;
-      return Promise.resolve({
-        method: "created" as const,
-        url: "https://github.com/systeminit/swamp/issues/3",
-        number: 3,
-      });
+    submitToLab: (input) => {
+      captured = input;
+      return Promise.resolve({ number: 42, serverUrl: "https://swamp.club" });
     },
-    // submitToLab intentionally omitted
+  });
+
+  await collect<IssueCreateEvent>(
+    issueCreate(createLibSwampContext(), deps, {
+      title: "My title",
+      body: "My body",
+      type: "bug",
+    }),
+  );
+
+  assertEquals(captured?.type, "bug");
+  assertEquals(captured?.title, "My title");
+  assertEquals(captured?.body, "My body");
+});
+
+Deno.test("issueCreate: includes serverUrl in result", async () => {
+  const deps = makeDeps({
+    submitToLab: () =>
+      Promise.resolve({
+        number: 1,
+        serverUrl: "https://custom.server.com",
+      }),
   });
 
   const events = await collect<IssueCreateEvent>(
     issueCreate(createLibSwampContext(), deps, {
-      title: "GitHub fallback",
-      body: "Details",
-      labels: ["feature"],
-      type: "feature",
+      title: "Test",
+      body: "Body",
+      type: "bug",
     }),
   );
 
-  assertEquals(githubCalled, true);
-  assertEquals(events.length, 1);
-  assertEquals(events[0].kind, "completed");
   const data = (events[0] as Extract<IssueCreateEvent, { kind: "completed" }>)
     .data;
-  assertEquals(data.method, "created");
+  if (data.method === "lab") {
+    assertEquals(data.serverUrl, "https://custom.server.com");
+  }
 });

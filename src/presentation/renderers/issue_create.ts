@@ -37,27 +37,11 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
           logger.info("View at: {url}", {
             url: `${data.serverUrl}/lab/${data.number}`,
           });
-        } else if (data.method === "email") {
+        } else {
           logger.info(
             "Opening email client to submit {type} report...",
             { type: data.type },
           );
-        } else if (data.method === "created") {
-          logger.info(
-            "Created {type} report #{number}: {title}",
-            { type: data.type, number: data.number, title: data.title },
-          );
-          logger.info("View at: {url}", { url: data.url });
-        } else {
-          logger.info(
-            "GitHub CLI is not available. Open this URL to submit your {type} report:",
-            { type: data.type },
-          );
-          logger.info("{url}", { url: data.url });
-          logger.info("");
-          logger.info("Title: {title}", { title: data.title });
-          logger.info("");
-          logger.info("{body}", { body: data.body });
         }
       },
       error: (e) => {

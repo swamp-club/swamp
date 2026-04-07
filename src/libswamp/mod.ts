@@ -837,7 +837,6 @@ export {
 
 // Issue operations
 export {
-  createIssueCreateDeps,
   issueCreate,
   type IssueCreateData,
   type IssueCreateDeps,

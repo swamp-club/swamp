@@ -19,7 +19,6 @@ When not logged in, the user is prompted to log in or send via email. The
 2. **Not logged in** → prompts: log in now, or send via email
 3. **`--email` flag** → opens email client with pre-filled subject/body to
    `support@systeminit.com`
-4. **Fallback** (JSON mode, not logged in) → creates GitHub issue via `gh` CLI
 
 ## Commands
 
@@ -37,7 +36,6 @@ non-interactive mode with `--title` and `--body` flags.
 swamp issue bug --title "CLI crashes on empty input" --body "When running..." --json
 swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 swamp issue bug --email --title "Crash report" --body "Details..."
-swamp issue bug --repo systeminit/swamp-extensions --title "@swamp/aws-ec2: describe fails for stopped instances" --body "..." --json
 ```
 
 **Output shape** (Lab submission with `--json`):
@@ -54,44 +52,17 @@ swamp issue bug --repo systeminit/swamp-extensions --title "@swamp/aws-ec2: desc
 
 **Verify submission:** Check the returned URL at `https://swamp.club/lab/<number>`.
 
-## Extension Issue Routing
-
-When an issue relates to an official swamp extension (`@swamp/*` or `@si/*`
-collective), route it to the extensions repository using
-`--repo systeminit/swamp-extensions`. If the issue is about the swamp CLI,
-runtime, workflow engine, or core framework, omit `--repo` (defaults to
-`systeminit/swamp`).
-
-**Indicators that an issue is extension-related:**
-
-- The user mentions a specific extension by name (e.g., `@swamp/aws-ec2`)
-- The problem occurs during a model method that belongs to an extension
-- The feature request is about adding or improving an extension model capability
-- Error messages reference extension model code or types
-
-**Indicators that an issue is core swamp:**
-
-- CLI crash or incorrect output unrelated to a specific extension
-- Workflow engine, DAG execution, or scheduling issues
-- Vault, datastore, or driver framework bugs
-- General UX or configuration issues
-
-When in doubt, ask the user whether the problem is with swamp itself or with a
-specific extension.
-
 ## Workflow
 
 1. Gather details from the user (bug reproduction steps or feature context)
-2. **Determine target repository:** If the issue involves an official extension
-   (`@swamp/*` or `@si/*`), use `--repo systeminit/swamp-extensions`
-3. Verify syntax with `swamp help issue`
-4. Run the appropriate command (`swamp issue bug` or `swamp issue feature`)
-5. Verify with the returned URL or issue number
+2. Verify syntax with `swamp help issue`
+3. Run the appropriate command (`swamp issue bug` or `swamp issue feature`)
+4. Verify with the returned issue number or URL
 
 ## Requirements
 
-Requires `swamp auth login` for Lab submission (preferred). Falls back to `gh`
-CLI for GitHub submission when not logged in and in JSON mode.
+Requires `swamp auth login` for Lab submission. Use `--email` as alternative
+when not logged in.
 
 ## Formatting Issue Content
 
