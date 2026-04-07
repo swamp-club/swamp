@@ -37,6 +37,11 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
           logger.info("View at: {url}", {
             url: `${data.serverUrl}/lab/${data.number}`,
           });
+          if (data.type === "security") {
+            logger.info(
+              "This security report is visible only to you and the admin team at swamp.club.",
+            );
+          }
         } else {
           logger.info(
             "Opening email client to submit {type} report...",
@@ -77,7 +82,7 @@ export function createIssueCreateRenderer(
 
 /** Data structure for issue editor cancelled output. */
 export interface IssueCancelledData {
-  type: "bug" | "feature";
+  type: "bug" | "feature" | "security";
   reason: "empty" | "cancelled";
 }
 

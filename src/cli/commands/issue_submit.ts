@@ -77,14 +77,14 @@ export async function resolveDestination(
 }
 
 interface SubmitIssueInput {
-  type: "bug" | "feature";
+  type: "bug" | "feature" | "security";
   title: string;
   body: string;
 }
 
 /** Build a mailto: URL with pre-filled subject and body. */
 function buildMailtoUrl(
-  type: "bug" | "feature",
+  type: "bug" | "feature" | "security",
   title: string,
   body: string,
 ): string {

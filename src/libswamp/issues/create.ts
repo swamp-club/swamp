@@ -28,14 +28,14 @@ export type IssueCreateData =
   | {
     method: "lab";
     number: number;
-    type: "bug" | "feature";
+    type: "bug" | "feature" | "security";
     title: string;
     serverUrl: string;
   }
   | {
     method: "email";
     mailtoUrl: string;
-    type: "bug" | "feature";
+    type: "bug" | "feature" | "security";
     title: string;
   };
 
@@ -47,13 +47,13 @@ export type IssueCreateEvent =
 export interface IssueCreateInput {
   title: string;
   body: string;
-  type: "bug" | "feature";
+  type: "bug" | "feature" | "security";
 }
 
 /** Dependencies for the issue create operation. */
 export interface IssueCreateDeps {
   submitToLab: (input: {
-    type: "bug" | "feature";
+    type: "bug" | "feature" | "security";
     title: string;
     body: string;
   }) => Promise<{ number: number; serverUrl: string }>;
