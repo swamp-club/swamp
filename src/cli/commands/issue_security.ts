@@ -101,7 +101,9 @@ function parseSecurityContent(
 
 export const issueSecurityCommand = new Command()
   .name("security")
-  .description("Submit a security vulnerability report")
+  .description(
+    "Submit a security vulnerability report (visible only to you and admins)",
+  )
   .example("Submit a security report", "swamp issue security")
   .option(
     "-t, --title <title:string>",
