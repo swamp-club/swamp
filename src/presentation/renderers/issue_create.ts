@@ -47,6 +47,10 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
             "Opening email client to submit {type} report...",
             { type: data.type },
           );
+          logger.info(
+            "If your email client did not open, send manually to {email}",
+            { email: "support@systeminit.com" },
+          );
         }
       },
       error: (e) => {

@@ -76,10 +76,8 @@ Deno.test("issueCreate: submits feature to Lab", async () => {
     { kind: "completed" }
   >;
   assertEquals(completed.data.method, "lab");
-  if (completed.data.method === "lab") {
-    assertEquals(completed.data.number, 7);
-    assertEquals(completed.data.type, "feature");
-  }
+  assertEquals((completed.data as { number: number }).number, 7);
+  assertEquals(completed.data.type, "feature");
 });
 
 Deno.test("issueCreate: passes title, body, and type to submitToLab", async () => {

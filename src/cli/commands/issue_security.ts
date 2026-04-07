@@ -66,7 +66,7 @@ const SECURITY_TEMPLATE = `
  * Parses the security report content from the editor.
  * Returns null if the content is empty or unchanged from the template.
  */
-function parseSecurityContent(
+export function parseSecurityContent(
   content: string,
 ): { title: string; body: string } | null {
   const trimmedContent = content.trim();

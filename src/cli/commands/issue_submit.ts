@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Shared submission logic for `swamp issue bug` and `swamp issue feature`.
+ * Shared submission logic for `swamp issue bug`, `feature`, and `security`.
  *
  * Split into two phases so the auth check happens BEFORE the editor opens:
  * 1. resolveDestination() — check auth, prompt if needed, return where to send
@@ -76,21 +76,21 @@ export async function resolveDestination(
   return { method: "email" };
 }
 
-interface SubmitIssueInput {
+export interface SubmitIssueInput {
   type: "bug" | "feature" | "security";
   title: string;
   body: string;
 }
 
-/** Build a mailto: URL with pre-filled subject and body. */
-function buildMailtoUrl(
+/** Build a mailto: URL with pre-filled subject and body using RFC 6068 percent-encoding. */
+export function buildMailtoUrl(
   type: "bug" | "feature" | "security",
   title: string,
   body: string,
 ): string {
-  const subject = `[${type}] ${title}`;
-  const params = new URLSearchParams({ subject, body });
-  return `mailto:${SUPPORT_EMAIL}?${params.toString()}`;
+  const subject = encodeURIComponent(`[${type}] ${title}`);
+  const encodedBody = encodeURIComponent(body);
+  return `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${encodedBody}`;
 }
 
 /**
@@ -104,7 +104,7 @@ async function promptLoginOrEmail(): Promise<"login" | "email"> {
   await Deno.stdout.write(
     encoder.encode(
       "\nYou're not logged in to swamp.club.\n\n" +
-        "  1. Log in now (run `swamp auth login` first, then retry)\n" +
+        "  1. Log in first (then retry this command)\n" +
         "  2. Send via email\n\n" +
         "Choose [1/2]: ",
     ),
@@ -114,7 +114,10 @@ async function promptLoginOrEmail(): Promise<"login" | "email"> {
   const n = await Deno.stdin.read(buf);
   const answer = n ? decoder.decode(buf.subarray(0, n)).trim() : "";
 
-  return answer === "1" ? "login" : "email";
+  if (answer === "1" || answer === "l" || answer === "login") return "login";
+  if (answer === "2" || answer === "e" || answer === "email") return "email";
+  // Default to login (safer — doesn't send content externally)
+  return "login";
 }
 
 /**
@@ -130,13 +133,16 @@ export async function submitIssue(
   const renderer = createIssueCreateRenderer(ctx.outputMode);
 
   if (destination.method === "abort") {
-    const logger = createLibSwampContext({ logger: ctx.logger });
-    logger.logger
+    libCtx.logger
       .info`Run "swamp auth login" first, then retry this command.`;
     return;
   }
 
   if (destination.method === "email") {
+    if (input.type === "security") {
+      libCtx.logger
+        .info`Note: email submissions are not private. For confidential reporting, log in and use the Lab.`;
+    }
     const mailtoUrl = buildMailtoUrl(input.type, input.title, input.body);
     await openBrowser(mailtoUrl);
     await consumeStream(
