@@ -5,12 +5,12 @@ resuming an issue in the `triaging` phase.
 
 ## 1. Create the Model Instance
 
-If it doesn't already exist:
+The swamp-club issue must already exist — create it in the swamp-club UI first,
+then note its sequential number (e.g. `42`).
 
 ```
 swamp model create @swamp/issue-lifecycle issue-<N> \
-  --global-arg issueNumber=<N> \
-  --global-arg repo=<owner/repo> --json
+  --global-arg issueNumber=<N> --json
 ```
 
 **Worktree note:** If you are in a Claude Code worktree (`.claude/worktrees/`),
@@ -25,6 +25,11 @@ commands in this skill also need `--repo-dir`.
 swamp model method run issue-<N> start
 ```
 
+This fetches the issue from swamp-club via `GET /api/v1/lab/issues/<N>` and
+writes the title, body, type, status, and comments to the `context` resource. If
+the issue doesn't exist in swamp-club, `start` fails loudly — create the issue
+there first.
+
 ## 3. Read the Issue Context and Codebase
 
 Read the model output, then explore the codebase.
@@ -38,7 +43,7 @@ on affected files to see if they were recently changed.
 
 ```
 swamp model method run issue-<N> triage \
-  --input type=<bug|feature|regression|unclear> \
+  --input type=<bug|feature|security> \
   --input confidence=<high|medium|low> \
   --input reasoning="<your analysis>"
 ```
@@ -47,16 +52,28 @@ swamp model method run issue-<N> triage \
 
 - `bug` — something is broken or behaving incorrectly
 - `feature` — a request for new functionality or enhancement
-- `regression` — a bug where something **previously worked** but is now broken.
-  Look for signals like: "this used to work", "stopped working after", "worked
-  in version X", references to recent changes that broke existing behavior, or
-  git history showing the affected code was recently modified. Regressions get
-  both `bug` and `regression` labels.
-- `unclear` — not enough information to classify confidently
+- `security` — security vulnerability, hardening, or compliance work
+
+Add `--input isRegression=true` when the bug previously worked. Look for signals
+like: "this used to work", "stopped working after", "worked in version X",
+references to recent changes that broke existing behavior, or git history
+showing the affected code was recently modified. A regression is still
+classified as `type: bug` — `isRegression` is a detail on the classification
+record.
+
+**If you cannot classify confidently**, do NOT guess. Ask the human first, or
+call `triage` with `confidence=low` and `clarifyingQuestions` populated, then
+wait for the human's response before moving on.
+
+Running `triage` automatically:
+
+- Updates the swamp-club issue's `type` field via PATCH
+- Transitions the swamp-club status to `triaged`
+- Posts a `classified` lifecycle entry with the full classification payload
 
 ## 5. Reproduce the Bug
 
-**Bugs and regressions only — skip for features.**
+**Bugs and regressions only — skip for features and security issues.**
 
 Before planning a fix, reproduce the issue to confirm the failure mode.
 

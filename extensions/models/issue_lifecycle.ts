@@ -19,12 +19,11 @@ import {
   AdversarialFindingSchema,
   type AdversarialReviewData,
   AdversarialReviewSchema,
-  CiResultsSchema,
   ClassificationSchema,
   ContextSchema,
   FeedbackSchema,
-  FixDirectiveSchema,
   GlobalArgsSchema,
+  IssueType,
   type PlanData,
   PlanSchema,
   PlanStepSchema,
@@ -32,15 +31,11 @@ import {
   StateSchema,
   TRANSITIONS,
 } from "./_lib/schemas.ts";
-import { createTracker } from "./_lib/issue_tracker.ts";
 import { createSwampClubClient } from "./_lib/swamp_club.ts";
 import type { SwampClubClient } from "./_lib/swamp_club.ts";
 
-const tracker = createTracker();
-
-/** Extended global args type including optional swamp-club fields. */
+/** Global args type for the issue-lifecycle model. */
 type GlobalArgs = {
-  repo: string;
   issueNumber: number;
   swampClubUrl?: string;
   swampClubApiKey?: string;
@@ -60,29 +55,6 @@ async function getSwampClub(
   return _swampClub;
 }
 let _swampClub: SwampClubClient | null | undefined;
-
-/**
- * Get the swamp-club client and ensure the issue exists.
- * Each method run is a separate process, so the lab issue number cache is lost.
- * This helper must be called before postLifecycleEntry/transitionStatus.
- */
-async function ensureSwampClub(
-  globalArgs: GlobalArgs,
-  logger: {
-    info: (msg: string, props: Record<string, unknown>) => void;
-    warning: (msg: string, props: Record<string, unknown>) => void;
-  },
-): Promise<SwampClubClient | null> {
-  const sc = await getSwampClub(globalArgs, logger);
-  if (!sc) return null;
-  const labIssueNumber = await sc.ensureIssue({
-    title: `Issue #${globalArgs.issueNumber}`,
-    body: `GitHub issue #${globalArgs.issueNumber} in ${globalArgs.repo}`,
-    type: "feature",
-  });
-  if (labIssueNumber === null) return null;
-  return sc;
-}
 
 /** Read the current state from data repository (for checks). */
 async function readState(
@@ -111,7 +83,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.04.06.1",
+  version: "2026.04.08.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -127,6 +99,18 @@ export const model = {
         "Remove default repo, relax adversarial category from enum to string for cross-repo reuse",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
+    {
+      toVersion: "2026.04.08.1",
+      description:
+        "Drop GitHub integration — swamp-club is now the source of truth. " +
+        "Global args replaced (repo removed, issueNumber now refers to swamp-club lab issue). " +
+        "Removed ci_status, record_pr, fix methods and ciResults/fixDirective resources.",
+      upgradeAttributes: (old: Record<string, unknown>) => {
+        const next = { ...old };
+        delete next.repo;
+        return next;
+      },
+    },
   ],
 
   resources: {
@@ -137,7 +121,7 @@ export const model = {
       garbageCollection: 10,
     },
     "context": {
-      description: "Issue context fetched from GitHub",
+      description: "Issue context fetched from swamp-club",
       schema: ContextSchema,
       lifetime: "infinite" as const,
       garbageCollection: 5,
@@ -163,18 +147,6 @@ export const model = {
     "adversarialReview": {
       description: "Adversarial review findings for the current plan version",
       schema: AdversarialReviewSchema,
-      lifetime: "infinite" as const,
-      garbageCollection: 20,
-    },
-    "ciResults": {
-      description: "CI check results and review comments",
-      schema: CiResultsSchema,
-      lifetime: "infinite" as const,
-      garbageCollection: 10,
-    },
-    "fixDirective": {
-      description: "Human-directed fix instructions",
-      schema: FixDirectiveSchema,
       lifetime: "infinite" as const,
       garbageCollection: 20,
     },
@@ -364,22 +336,11 @@ export const model = {
         return { pass: true };
       },
     },
-
-    "tracker-available": {
-      description:
-        "Checks that the issue tracker backend is available and authenticated",
-      labels: ["live"],
-      execute: async () => {
-        const result = await tracker.checkAvailability();
-        if (result.available) return { pass: true };
-        return { pass: false, errors: [result.error] };
-      },
-    },
   },
 
   methods: {
     start: {
-      description: "Fetch issue context and begin lifecycle",
+      description: "Ensure the swamp-club issue exists and begin the lifecycle",
       arguments: z.object({}),
       execute: async (
         _args: Record<string, never>,
@@ -396,16 +357,31 @@ export const model = {
           ) => Promise<{ name: string }>;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
+        const { issueNumber } = context.globalArgs;
         const handles = [];
 
-        const issue = await tracker.fetchIssue(repo, issueNumber);
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        if (!sc) {
+          throw new Error(
+            "swamp-club is not reachable or credentials are missing. " +
+              "Set SWAMP_API_KEY or run `swamp auth login`.",
+          );
+        }
+
+        const issue = await sc.fetchIssue();
+        if (!issue) {
+          throw new Error(
+            `swamp-club issue #${issueNumber} was not found. ` +
+              `Create the issue in swamp-club first, then run 'start'.`,
+          );
+        }
 
         handles.push(
           await context.writeResource("context", "context-main", {
             title: issue.title,
             body: issue.body,
-            labels: issue.labels,
+            type: issue.type,
+            status: issue.status,
             comments: issue.comments,
             fetchedAt: new Date().toISOString(),
           }),
@@ -415,38 +391,26 @@ export const model = {
           await context.writeResource("state", "state-main", {
             phase: "triaging",
             issueNumber,
-            repo,
             updatedAt: new Date().toISOString(),
           }),
         );
 
-        context.logger.info("Fetched issue #{issueNumber}: {title}", {
-          issueNumber,
-          title: issue.title,
-        });
-
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          `\u{1F50D} **Triage started** \u2014 fetching issue context`,
-        );
-        const sc = await getSwampClub(context.globalArgs, context.logger);
-        if (sc) {
-          await sc.ensureIssue({
+        context.logger.info(
+          "Fetched swamp-club issue #{issueNumber}: {title}",
+          {
+            issueNumber,
             title: issue.title,
-            body: issue.body,
-            type: "feature",
-          });
-          await sc.postLifecycleEntry({
-            step: "triage_started",
-            targetStatus: "open",
-            summary: "Triage started",
-            emoji: "\u{1F50D}",
-            payload: { issueNumber, repo },
-            isVerbose: false,
-          });
-        }
-        await tracker.setPhaseLabel(repo, issueNumber, "triaging");
+          },
+        );
+
+        await sc.postLifecycleEntry({
+          step: "triage_started",
+          targetStatus: "open",
+          summary: "Triage started",
+          emoji: "\u{1F50D}",
+          payload: { issueNumber },
+          isVerbose: false,
+        });
 
         return { dataHandles: handles };
       },
@@ -455,16 +419,20 @@ export const model = {
     triage: {
       description: "Classify the issue based on context",
       arguments: z.object({
-        type: z.enum(["bug", "feature", "regression", "unclear"]),
+        type: IssueType,
         confidence: z.enum(["high", "medium", "low"]),
         reasoning: z.string(),
+        isRegression: z.boolean().optional().describe(
+          "True if this is a regression (something that previously worked). Implies type=bug.",
+        ),
         clarifyingQuestions: z.array(z.string()).optional(),
       }),
       execute: async (
         args: {
-          type: "bug" | "feature" | "regression" | "unclear";
+          type: "bug" | "feature" | "security";
           confidence: "high" | "medium" | "low";
           reasoning: string;
+          isRegression?: boolean;
           clarifyingQuestions?: string[];
         },
         context: {
@@ -480,7 +448,7 @@ export const model = {
           ) => Promise<{ name: string }>;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
+        const { issueNumber } = context.globalArgs;
         const handles = [];
 
         handles.push(
@@ -491,6 +459,7 @@ export const model = {
               type: args.type,
               confidence: args.confidence,
               reasoning: args.reasoning,
+              isRegression: args.isRegression,
               clarifyingQuestions: args.clarifyingQuestions,
               classifiedAt: new Date().toISOString(),
             },
@@ -501,78 +470,40 @@ export const model = {
           await context.writeResource("state", "state-main", {
             phase: "classified",
             issueNumber,
-            repo,
             updatedAt: new Date().toISOString(),
           }),
         );
 
+        const regressionLabel = args.isRegression ? " (regression)" : "";
         context.logger.info(
-          "Classified as {type} ({confidence}): {reasoning}",
+          "Classified as {type}{regression} ({confidence}): {reasoning}",
           {
             type: args.type,
+            regression: regressionLabel,
             confidence: args.confidence,
             reasoning: args.reasoning,
           },
         );
 
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          [
-            `\u{1F4CB} **Classified as ${args.type}** (${args.confidence})`,
-            "",
-            "<details>",
-            "<summary>Classification details</summary>",
-            "",
-            args.reasoning,
-            "</details>",
-          ].join("\n"),
-        );
-        const scClassify = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        if (scClassify) {
-          await scClassify.postLifecycleEntry({
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        if (sc) {
+          await sc.updateType(args.type);
+          await sc.postLifecycleEntry({
             step: "classified",
             targetStatus: "triaged",
-            summary: `Classified as ${args.type} (${args.confidence})`,
+            summary:
+              `Classified as ${args.type}${regressionLabel} (${args.confidence})`,
             emoji: "\u{1F4CB}",
             payload: {
               type: args.type,
               confidence: args.confidence,
               reasoning: args.reasoning,
+              isRegression: args.isRegression ?? false,
               clarifyingQuestions: args.clarifyingQuestions,
             },
             isVerbose: false,
           });
-          await scClassify.transitionStatus("triaged");
-        }
-        await tracker.setPhaseLabel(repo, issueNumber, "classified");
-
-        const typeLabels: Record<string, { add: string[]; remove: string[] }> =
-          {
-            bug: {
-              add: ["bug"],
-              remove: ["feature", "regression", "needs-triage"],
-            },
-            feature: {
-              add: ["feature"],
-              remove: ["bug", "regression", "needs-triage"],
-            },
-            regression: {
-              add: ["bug", "regression"],
-              remove: ["feature", "needs-triage"],
-            },
-            unclear: {
-              add: ["lifecycle/needs-info"],
-              remove: ["bug", "regression", "needs-triage"],
-            },
-          };
-        const labelOps = typeLabels[args.type];
-        if (labelOps) {
-          await tracker.removeLabels(repo, issueNumber, labelOps.remove);
-          await tracker.addLabels(repo, issueNumber, labelOps.add);
+          await sc.transitionStatus("triaged");
         }
 
         return { dataHandles: handles };
@@ -614,7 +545,7 @@ export const model = {
           ) => Promise<{ name: string }>;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
+        const { issueNumber } = context.globalArgs;
         const handles = [];
 
         handles.push(
@@ -634,7 +565,6 @@ export const model = {
           await context.writeResource("state", "state-main", {
             phase: "plan_generated",
             issueNumber,
-            repo,
             updatedAt: new Date().toISOString(),
           }),
         );
@@ -643,24 +573,8 @@ export const model = {
           summary: args.summary,
         });
 
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          [
-            `\u{1F4DD} **Implementation plan generated** (v1)`,
-            "",
-            "<details>",
-            "<summary>Plan summary</summary>",
-            "",
-            args.summary,
-            "</details>",
-          ].join("\n"),
-        );
-        const scPlan = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        await scPlan?.postLifecycleEntry({
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        await sc?.postLifecycleEntry({
           step: "plan_generated",
           targetStatus: "triaged",
           summary: `Implementation plan generated (v1) \u2014 ${args.summary}`,
@@ -675,7 +589,6 @@ export const model = {
           },
           isVerbose: true,
         });
-        await tracker.setPhaseLabel(repo, issueNumber, "plan_generated");
 
         return { dataHandles: handles };
       },
@@ -778,7 +691,7 @@ export const model = {
           modelId: string;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
+        const { issueNumber } = context.globalArgs;
         const handles = [];
 
         const currentPlan = await context.readResource!("plan-main") as
@@ -837,7 +750,6 @@ export const model = {
           await context.writeResource("state", "state-main", {
             phase: "plan_generated",
             issueNumber,
-            repo,
             updatedAt: new Date().toISOString(),
           }),
         );
@@ -847,24 +759,8 @@ export const model = {
           { version: newVersion, round: feedbackRound },
         );
 
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          [
-            `\u{1F504} **Plan revised** (v${newVersion}) \u2014 incorporated feedback round ${feedbackRound}`,
-            "",
-            "<details>",
-            "<summary>Updated plan summary</summary>",
-            "",
-            args.summary,
-            "</details>",
-          ].join("\n"),
-        );
-        const scIterate = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        await scIterate?.postLifecycleEntry({
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        await sc?.postLifecycleEntry({
           step: "plan_revised",
           targetStatus: "triaged",
           summary:
@@ -881,7 +777,6 @@ export const model = {
           },
           isVerbose: true,
         });
-        await tracker.setPhaseLabel(repo, issueNumber, "plan_generated");
 
         return { dataHandles: handles };
       },
@@ -921,7 +816,6 @@ export const model = {
           ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
         const handles = [];
 
         const plan = await context.readResource!("plan-main") as
@@ -957,44 +851,8 @@ export const model = {
           { planVersion, critical, high, medium, low },
         );
 
-        const findingsText = findings
-          .map((f) =>
-            `- **${f.id}** [${f.severity}/${f.category}]: ${f.description}`
-          )
-          .join("\n");
-
-        const blockers = critical + high;
-        const status = blockers > 0
-          ? `\u{1F6D1} **${blockers} blocking finding(s)** must be resolved before approval`
-          : "\u{2705} No blocking findings — ready for approval";
-
-        const severitySummary = [
-          critical > 0 ? `${critical} critical` : "",
-          high > 0 ? `${high} high` : "",
-          medium > 0 ? `${medium} medium` : "",
-          low > 0 ? `${low} low` : "",
-        ].filter(Boolean).join(", ");
-
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          [
-            `\u{1F50D} **Adversarial review** (plan v${planVersion})`,
-            "",
-            status,
-            "",
-            "<details>",
-            `<summary>Findings (${severitySummary})</summary>`,
-            "",
-            findingsText,
-            "</details>",
-          ].join("\n"),
-        );
-        const scReview = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        await scReview?.postLifecycleEntry({
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        await sc?.postLifecycleEntry({
           step: "adversarial_review",
           targetStatus: "triaged",
           summary:
@@ -1048,7 +906,6 @@ export const model = {
           ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
         const handles = [];
 
         const current = await context.readResource!(
@@ -1096,34 +953,8 @@ export const model = {
           { resolved, remaining },
         );
 
-        const resolvedText = args.resolutions
-          .map((r) => `- **${r.findingId}**: ${r.resolutionNote}`)
-          .join("\n");
-
-        const remainingStatus = remaining > 0
-          ? `\u{1F6D1} ${remaining} blocking finding(s) remain`
-          : "\u{2705} All blocking findings resolved — ready for approval";
-
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          [
-            `\u{2705} **Findings resolved** (${resolved})`,
-            "",
-            remainingStatus,
-            "",
-            "<details>",
-            "<summary>Resolution details</summary>",
-            "",
-            resolvedText,
-            "</details>",
-          ].join("\n"),
-        );
-        const scResolve = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        await scResolve?.postLifecycleEntry({
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        await sc?.postLifecycleEntry({
           step: "findings_resolved",
           targetStatus: "triaged",
           summary:
@@ -1142,7 +973,7 @@ export const model = {
     },
 
     approve: {
-      description: "Approve the current plan and post it to the issue",
+      description: "Approve the current plan",
       arguments: z.object({}),
       execute: async (
         _args: Record<string, never>,
@@ -1163,14 +994,13 @@ export const model = {
           ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
+        const { issueNumber } = context.globalArgs;
         const handles = [];
 
         handles.push(
           await context.writeResource("state", "state-main", {
             phase: "approved",
             issueNumber,
-            repo,
             updatedAt: new Date().toISOString(),
           }),
         );
@@ -1178,86 +1008,16 @@ export const model = {
         const plan = await context.readResource!("plan-main") as
           | PlanData
           | null;
-        if (plan) {
-          const steps = plan.steps
-            .map((s) =>
-              `${s.order}. ${s.description}${
-                s.risks ? ` _(risk: ${s.risks})_` : ""
-              }`
-            )
-            .join("\n");
-          const files = plan.steps
-            .flatMap((s) => s.files)
-            .filter((f, i, a) => a.indexOf(f) === i)
-            .map((f) => `- \`${f}\``)
-            .join("\n");
-          const challenges = plan.potentialChallenges.map((c) => `- ${c}`).join(
-            "\n",
-          );
-
-          const fileCount = plan.steps
-            .flatMap((s) => s.files)
-            .filter((f, i, a) => a.indexOf(f) === i)
-            .length;
-
-          await tracker.postComment(
-            repo,
-            issueNumber,
-            [
-              "<!-- IMPLEMENTATION-PLAN -->",
-              `## Approved Implementation Plan (v${plan.version})`,
-              "",
-              `**Summary:** ${plan.summary}`,
-              "",
-              "<details>",
-              "<summary>DDD Analysis</summary>",
-              "",
-              plan.dddAnalysis,
-              "</details>",
-              "",
-              "### Implementation Steps",
-              steps,
-              "",
-              "<details>",
-              `<summary>Files (${fileCount})</summary>`,
-              "",
-              files,
-              "</details>",
-              "",
-              "<details>",
-              "<summary>Testing Strategy</summary>",
-              "",
-              plan.testingStrategy,
-              "</details>",
-              "",
-              "<details>",
-              "<summary>Potential Challenges</summary>",
-              "",
-              challenges,
-              "</details>",
-              "",
-              plan.feedbackIncorporated.length > 0
-                ? `_Incorporated ${plan.feedbackIncorporated.length} round(s) of feedback._`
-                : "",
-              "",
-              "_Approved via swamp @swamp/issue-lifecycle_",
-            ].join("\n"),
-          );
-        }
 
         context.logger.info("Plan approved", {});
-        await tracker.setPhaseLabel(repo, issueNumber, "approved");
 
-        const scApprove = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        if (scApprove && plan) {
-          await scApprove.postLifecycleEntry({
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        if (sc && plan) {
+          await sc.postLifecycleEntry({
             step: "plan_approved",
             targetStatus: "in_progress",
             summary:
-              `Plan approved (v${plan.version}) — implementation starting`,
+              `Plan approved (v${plan.version}) \u2014 implementation starting`,
             emoji: "\u{2705}",
             payload: {
               version: plan.version,
@@ -1266,7 +1026,7 @@ export const model = {
             },
             isVerbose: true,
           });
-          await scApprove.transitionStatus("in_progress");
+          await sc.transitionStatus("in_progress");
         }
 
         return { dataHandles: handles };
@@ -1274,125 +1034,7 @@ export const model = {
     },
 
     implement: {
-      description: "Signal that implementation has started and track the PR",
-      arguments: z.object({
-        prNumber: z.number().optional().describe(
-          "PR number if already created",
-        ),
-      }),
-      execute: async (
-        args: { prNumber?: number },
-        context: {
-          globalArgs: GlobalArgs;
-          logger: {
-            info: (msg: string, props: Record<string, unknown>) => void;
-            warning: (msg: string, props: Record<string, unknown>) => void;
-          };
-          writeResource: (
-            specName: string,
-            instanceName: string,
-            data: Record<string, unknown>,
-          ) => Promise<{ name: string }>;
-        },
-      ) => {
-        const { repo, issueNumber } = context.globalArgs;
-
-        const stateHandle = await context.writeResource("state", "state-main", {
-          phase: "implementing",
-          issueNumber,
-          repo,
-          prNumber: args.prNumber,
-          updatedAt: new Date().toISOString(),
-        });
-
-        const prText = args.prNumber ? ` \u2014 PR #${args.prNumber}` : "";
-        context.logger.info("Implementation started{prText}", { prText });
-
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          `\u{1F680} **Implementation started**${prText}`,
-        );
-        const scImpl = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        if (scImpl) {
-          await scImpl.postLifecycleEntry({
-            step: "implementation_started",
-            targetStatus: "in_progress",
-            summary: `Implementation started${prText}`,
-            emoji: "\u{1F680}",
-            payload: {
-              prNumber: args.prNumber ?? null,
-            },
-            isVerbose: false,
-          });
-        }
-        await tracker.setPhaseLabel(repo, issueNumber, "implementing");
-
-        return { dataHandles: [stateHandle] };
-      },
-    },
-
-    record_pr: {
-      description: "Record the PR number after implementation has started",
-      arguments: z.object({
-        prNumber: z.number().describe("Pull request number"),
-      }),
-      execute: async (
-        args: { prNumber: number },
-        context: {
-          globalArgs: GlobalArgs;
-          logger: {
-            info: (msg: string, props: Record<string, unknown>) => void;
-            warning: (msg: string, props: Record<string, unknown>) => void;
-          };
-          writeResource: (
-            specName: string,
-            instanceName: string,
-            data: Record<string, unknown>,
-          ) => Promise<{ name: string }>;
-        },
-      ) => {
-        const { repo, issueNumber } = context.globalArgs;
-
-        const stateHandle = await context.writeResource("state", "state-main", {
-          phase: "implementing",
-          issueNumber,
-          repo,
-          prNumber: args.prNumber,
-          updatedAt: new Date().toISOString(),
-        });
-
-        context.logger.info("Recorded PR #{prNumber}", {
-          prNumber: args.prNumber,
-        });
-
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          `\u{1F517} **PR linked:** #${args.prNumber}`,
-        );
-
-        const sc = await ensureSwampClub(context.globalArgs, context.logger);
-        if (sc) {
-          await sc.postLifecycleEntry({
-            step: "pr_linked",
-            targetStatus: "in_progress",
-            summary: `PR #${args.prNumber} linked to implementation`,
-            emoji: "\u{1F517}",
-            payload: { prNumber: args.prNumber },
-            isVerbose: false,
-          });
-        }
-
-        return { dataHandles: [stateHandle] };
-      },
-    },
-
-    ci_status: {
-      description: "Fetch CI results and review comments for the PR",
+      description: "Signal that implementation has started",
       arguments: z.object({}),
       execute: async (
         _args: Record<string, never>,
@@ -1407,193 +1049,29 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
-          readResource: (
-            instanceName: string,
-            version?: number,
-          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
-        const handles = [];
+        const { issueNumber } = context.globalArgs;
 
-        const state = await context.readResource!("state-main") as
-          | StateData
-          | null;
-        if (!state?.prNumber) {
-          throw new Error(
-            "No PR number recorded. Run 'record_pr' with --input prNumber=<N> first.",
-          );
-        }
-        const prNumber = state.prNumber;
-
-        const checkRuns = await tracker.fetchPrChecks(repo, prNumber);
-        const reviews = await tracker.fetchPrReviews(repo, prNumber);
-
-        handles.push(
-          await context.writeResource("ciResults", "ciResults-main", {
-            prNumber,
-            checkRuns,
-            reviews,
-            fetchedAt: new Date().toISOString(),
-          }),
-        );
-
-        handles.push(
-          await context.writeResource("state", "state-main", {
-            phase: "ci_review",
-            issueNumber,
-            repo,
-            prNumber,
-            updatedAt: new Date().toISOString(),
-          }),
-        );
-
-        const passed = checkRuns.filter((c) => c.status === "passed").length;
-        const failed = checkRuns.filter((c) => c.status === "failed").length;
-        context.logger.info("CI results: {passed} passed, {failed} failed", {
-          passed,
-          failed,
-        });
-
-        await tracker.postComment(
-          repo,
+        const stateHandle = await context.writeResource("state", "state-main", {
+          phase: "implementing",
           issueNumber,
-          `\u{1F52C} **CI results**: ${passed} passed, ${failed} failed`,
-        );
-        const scCi = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        await scCi?.postLifecycleEntry({
-          step: "ci_results",
-          targetStatus: "in_progress",
-          summary: `CI results: ${passed} passed, ${failed} failed`,
-          emoji: "\u{1F52C}",
-          payload: {
-            passed,
-            failed,
-            checks: checkRuns,
-            reviews,
-          },
-          isVerbose: true,
-        });
-        await tracker.setPhaseLabel(repo, issueNumber, "ci_review");
-
-        return { dataHandles: handles };
-      },
-    },
-
-    fix: {
-      description: "Direct specific fixes based on CI/review feedback",
-      arguments: z.object({
-        directive: z.string().describe(
-          'What to fix, e.g. "fix the CRITICAL issues from adversarial review"',
-        ),
-        targetReview: z.string().optional().describe(
-          "Filter to a specific reviewer",
-        ),
-        targetSeverity: z.string().optional().describe(
-          "Filter to a specific severity level",
-        ),
-      }),
-      execute: async (
-        args: {
-          directive: string;
-          targetReview?: string;
-          targetSeverity?: string;
-        },
-        context: {
-          globalArgs: GlobalArgs;
-          logger: {
-            info: (msg: string, props: Record<string, unknown>) => void;
-            warning: (msg: string, props: Record<string, unknown>) => void;
-          };
-          writeResource: (
-            specName: string,
-            instanceName: string,
-            data: Record<string, unknown>,
-          ) => Promise<{ name: string }>;
-          readResource: (
-            instanceName: string,
-            version?: number,
-          ) => Promise<Record<string, unknown> | null>;
-          dataRepository: {
-            findAllForModel: (
-              type: string,
-              modelId: string,
-            ) => Promise<{ name: string; version: number }[]>;
-          };
-          modelType: string;
-          modelId: string;
-        },
-      ) => {
-        const { repo, issueNumber } = context.globalArgs;
-        const handles = [];
-
-        const state = await context.readResource!("state-main") as
-          | StateData
-          | null;
-
-        const allData = await context.dataRepository.findAllForModel(
-          context.modelType,
-          context.modelId,
-        );
-        const fixRound =
-          allData.filter((d) => d.name === "fixDirective-main").length + 1;
-        const ciEntries = allData.filter((d) => d.name === "ciResults-main");
-        const latestCiVersion = ciEntries.length > 0
-          ? Math.max(...ciEntries.map((e) => e.version))
-          : 0;
-
-        handles.push(
-          await context.writeResource("fixDirective", "fixDirective-main", {
-            round: fixRound,
-            directive: args.directive,
-            targetReview: args.targetReview,
-            targetSeverity: args.targetSeverity,
-            ciResultsVersion: latestCiVersion,
-            submittedAt: new Date().toISOString(),
-          }),
-        );
-
-        handles.push(
-          await context.writeResource("state", "state-main", {
-            phase: "implementing",
-            issueNumber,
-            repo,
-            prNumber: state?.prNumber,
-            updatedAt: new Date().toISOString(),
-          }),
-        );
-
-        context.logger.info("Fix directive recorded: {directive}", {
-          directive: args.directive,
+          updatedAt: new Date().toISOString(),
         });
 
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          `\u{1F527} **Fixing**: ${args.directive}`,
-        );
-        const scFix = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        await scFix?.postLifecycleEntry({
-          step: "fixing",
+        context.logger.info("Implementation started", {});
+
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        await sc?.postLifecycleEntry({
+          step: "implementation_started",
           targetStatus: "in_progress",
-          summary: `Fixing: ${args.directive}`,
-          emoji: "\u{1F527}",
-          payload: {
-            directive: args.directive,
-            targetReview: args.targetReview,
-            targetSeverity: args.targetSeverity,
-          },
+          summary: "Implementation started",
+          emoji: "\u{1F680}",
+          payload: {},
           isVerbose: false,
         });
-        await tracker.setPhaseLabel(repo, issueNumber, "implementing");
 
-        return { dataHandles: handles };
+        return { dataHandles: [stateHandle] };
       },
     },
 
@@ -1613,49 +1091,30 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
-          readResource: (
-            instanceName: string,
-            version?: number,
-          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
-        const { repo, issueNumber } = context.globalArgs;
-
-        const state = await context.readResource!("state-main") as
-          | StateData
-          | null;
+        const { issueNumber } = context.globalArgs;
 
         const stateHandle = await context.writeResource("state", "state-main", {
           phase: "done",
           issueNumber,
-          repo,
-          prNumber: state?.prNumber,
           updatedAt: new Date().toISOString(),
         });
 
         context.logger.info("Issue lifecycle complete", {});
 
-        await tracker.postComment(
-          repo,
-          issueNumber,
-          `\u{2705} **Complete** \u2014 all checks passed`,
-        );
-        const scDone = await ensureSwampClub(
-          context.globalArgs,
-          context.logger,
-        );
-        if (scDone) {
-          await scDone.postLifecycleEntry({
+        const sc = await getSwampClub(context.globalArgs, context.logger);
+        if (sc) {
+          await sc.postLifecycleEntry({
             step: "complete",
             targetStatus: "shipped",
-            summary: "Complete \u2014 all checks passed",
+            summary: "Complete",
             emoji: "\u{2705}",
-            payload: { summary: "all checks passed" },
+            payload: {},
             isVerbose: false,
           });
-          await scDone.transitionStatus("shipped");
+          await sc.transitionStatus("shipped");
         }
-        await tracker.setPhaseLabel(repo, issueNumber, "done");
 
         return { dataHandles: [stateHandle] };
       },

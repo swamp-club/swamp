@@ -2667,8 +2667,8 @@ Deno.test("UserModelLoader buildIndex: catalog extracts type from export block, 
   const ts = Date.now();
   // Model with a decoy `type: "decoy"` in a helper call BEFORE the
   // actual `export const model = { type: "@test/real-..." }`.
-  // This mirrors issue_lifecycle.ts where `sc.ensureIssue({ type: "feature" })`
-  // appeared before the real model export.
+  // Guards against naive type-extraction that picks the first `type:` literal
+  // instead of the one inside the real `export const model` object.
   const modelCode = `
 import { z } from "npm:zod@4";
 

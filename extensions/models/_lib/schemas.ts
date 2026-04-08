@@ -21,10 +21,9 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 
 export const GlobalArgsSchema = z.object({
-  repo: z.string().describe(
-    "GitHub repository in owner/repo format",
+  issueNumber: z.number().describe(
+    "Swamp Club lab issue number (the issue must already exist in swamp-club)",
   ),
-  issueNumber: z.number().describe("GitHub issue number"),
   swampClubUrl: z.string().optional().describe(
     "Swamp Club API base URL (defaults to https://swamp.club)",
   ),
@@ -44,7 +43,6 @@ export const Phase = z.enum([
   "plan_generated",
   "approved",
   "implementing",
-  "ci_review",
   "done",
 ]);
 
@@ -59,20 +57,24 @@ export const TRANSITIONS: Record<string, Phase[]> = {
     "plan_generated",
     "approved",
     "implementing",
-    "ci_review",
   ],
   triage: ["triaging"],
   plan: ["classified"],
   iterate: ["plan_generated"],
   approve: ["plan_generated"],
   implement: ["approved"],
-  record_pr: ["implementing"],
-  ci_status: ["implementing"],
   adversarial_review: ["plan_generated"],
   resolve_findings: ["plan_generated"],
-  fix: ["ci_review"],
-  complete: ["ci_review"],
+  complete: ["implementing"],
 };
+
+// ---------------------------------------------------------------------------
+// Issue Classification Types
+// ---------------------------------------------------------------------------
+
+/** Issue types supported by swamp-club. */
+export const IssueType = z.enum(["bug", "feature", "security"]);
+export type IssueType = z.infer<typeof IssueType>;
 
 // ---------------------------------------------------------------------------
 // Resource Schemas
@@ -81,8 +83,6 @@ export const TRANSITIONS: Record<string, Phase[]> = {
 export const StateSchema = z.object({
   phase: Phase,
   issueNumber: z.number(),
-  repo: z.string(),
-  prNumber: z.number().optional(),
   updatedAt: z.string(),
 });
 
@@ -91,7 +91,8 @@ export type StateData = z.infer<typeof StateSchema>;
 export const ContextSchema = z.object({
   title: z.string(),
   body: z.string(),
-  labels: z.array(z.string()),
+  type: IssueType,
+  status: z.string(),
   comments: z.array(
     z.object({
       author: z.string(),
@@ -103,9 +104,12 @@ export const ContextSchema = z.object({
 });
 
 export const ClassificationSchema = z.object({
-  type: z.enum(["bug", "feature", "regression", "unclear"]),
+  type: IssueType,
   confidence: z.enum(["high", "medium", "low"]),
   reasoning: z.string(),
+  isRegression: z.boolean().optional().describe(
+    "True if this is a regression (something that previously worked). Implies type=bug.",
+  ),
   clarifyingQuestions: z.array(z.string()).optional(),
   classifiedAt: z.string(),
 });
@@ -137,39 +141,6 @@ export const FeedbackSchema = z.object({
   submittedAt: z.string(),
 });
 
-export const CiResultsSchema = z.object({
-  prNumber: z.number(),
-  checkRuns: z.array(
-    z.object({
-      name: z.string(),
-      status: z.enum(["passed", "failed", "pending"]),
-    }),
-  ),
-  reviews: z.array(
-    z.object({
-      reviewer: z.string(),
-      state: z.enum([
-        "APPROVED",
-        "CHANGES_REQUESTED",
-        "COMMENTED",
-        "PENDING",
-      ]),
-      body: z.string(),
-      comments: z.array(
-        z.object({
-          path: z.string(),
-          line: z.number().optional(),
-          body: z.string(),
-          severity: z
-            .enum(["critical", "high", "medium", "low", "info"])
-            .optional(),
-        }),
-      ),
-    }),
-  ),
-  fetchedAt: z.string(),
-});
-
 export const AdversarialFindingSchema = z.object({
   id: z.string().describe("Unique finding identifier, e.g. ADV-1"),
   severity: z.enum(["critical", "high", "medium", "low"]),
@@ -190,12 +161,3 @@ export const AdversarialReviewSchema = z.object({
 });
 
 export type AdversarialReviewData = z.infer<typeof AdversarialReviewSchema>;
-
-export const FixDirectiveSchema = z.object({
-  round: z.number(),
-  directive: z.string(),
-  targetReview: z.string().optional(),
-  targetSeverity: z.string().optional(),
-  ciResultsVersion: z.number(),
-  submittedAt: z.string(),
-});

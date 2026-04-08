@@ -11,14 +11,12 @@
 // WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 // PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
 //
-// You should have received a copy of the GNU Affero General Public License along
-// with Swamp. If not, see <https://www.gnu.org/licenses/>.
-
 // ---------------------------------------------------------------------------
 // Swamp Club Lifecycle API Client
 // ---------------------------------------------------------------------------
 
 import { join } from "@std/path";
+import type { IssueType } from "./schemas.ts";
 
 export interface LifecycleEntryParams {
   step: string;
@@ -30,27 +28,28 @@ export interface LifecycleEntryParams {
   isVerbose?: boolean;
 }
 
+export interface FetchedIssue {
+  number: number;
+  type: IssueType;
+  status: string;
+  title: string;
+  body: string;
+  comments: { author: string; body: string; createdAt: string }[];
+}
+
 /**
- * HTTP client for posting structured lifecycle data to the swamp-club API.
- * Resolves the swamp-club issue ID lazily from the GitHub repo + issue number
- * using the /ensure endpoint. All operations are best-effort.
+ * HTTP client for the swamp-club lab issues API. Operates directly on a
+ * sequential lab issue number — the issue must already exist in swamp-club.
  */
 export class SwampClubClient {
   private baseUrl: string;
   readonly #apiKey: string;
-  private repo: string;
   private issueNumber: number;
   private log: (msg: string, props: Record<string, unknown>) => void;
-
-  /** Cached swamp-club lab issue number (sequential, human-facing id),
-   * resolved on first call. Used as the path segment for all lab issue
-   * endpoints (`/api/v1/lab/issues/{number}`). */
-  private labIssueNumber: number | null = null;
 
   constructor(
     baseUrl: string,
     apiKey: string,
-    repo: string,
     issueNumber: number,
     logger?: {
       info: (msg: string, props: Record<string, unknown>) => void;
@@ -59,92 +58,79 @@ export class SwampClubClient {
   ) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.#apiKey = apiKey;
-    this.repo = repo;
     this.issueNumber = issueNumber;
     this.log = logger?.warning.bind(logger) ?? (() => {});
   }
 
-  /**
-   * Ensure the issue exists in swamp-club by GitHub repo + issue number.
-   * Creates it if needed. Caches the lab issue number for subsequent calls.
-   * Must be called with the issue data (title, body, type) the first time.
-   * Returns the swamp-club lab issue number, or null on failure.
-   */
-  async ensureIssue(params: {
-    title: string;
-    body: string;
-    type?: string;
-    githubAuthorLogin?: string;
-  }): Promise<number | null> {
-    if (this.labIssueNumber !== null) return this.labIssueNumber;
+  /** Build the public lab URL for this issue. */
+  labUrl(): string {
+    return `${this.baseUrl}/lab/${this.issueNumber}`;
+  }
 
+  /**
+   * Fetch the issue from swamp-club. Returns null if the issue does not
+   * exist or the request fails.
+   */
+  async fetchIssue(): Promise<FetchedIssue | null> {
     try {
-      const url = `${this.baseUrl}/api/v1/lab/issues/ensure`;
+      const url = `${this.baseUrl}/api/v1/lab/issues/${this.issueNumber}`;
       const res = await fetch(url, {
-        method: "POST",
+        method: "GET",
         headers: {
-          "Content-Type": "application/json",
           "Authorization": `Bearer ${this.#apiKey}`,
         },
-        body: JSON.stringify({
-          githubRepoFullName: this.repo,
-          githubIssueNumber: this.issueNumber,
-          title: params.title,
-          body: params.body,
-          type: params.type ?? "feature",
-          githubAuthorLogin: params.githubAuthorLogin,
-        }),
         signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        this.log("swamp-club ensure issue failed: {status} {text}", {
+        this.log("swamp-club fetch issue failed: {status} {text}", {
           status: res.status,
           text,
         });
         return null;
       }
       const data = await res.json() as {
-        issue?: { number?: unknown };
-        created?: boolean;
+        issue?: {
+          number?: number;
+          type?: IssueType;
+          status?: string;
+          title?: string;
+          body?: string;
+          comments?: {
+            authorUsername?: string;
+            author?: string;
+            body?: string;
+            createdAt?: string;
+          }[];
+        };
       };
-      const resolvedNumber = data?.issue?.number;
-      // Mirror swamp-club's parseLabIssueNumberParam validator (PR #369):
-      // require a safe positive integer. Number.isSafeInteger rejects
-      // NaN/Infinity, fractions, and anything beyond 2^53-1, so we never
-      // emit a path segment the server would 400 on.
-      if (
-        typeof resolvedNumber !== "number" ||
-        !Number.isSafeInteger(resolvedNumber) ||
-        resolvedNumber <= 0
-      ) {
-        this.log("swamp-club returned invalid lab issue number: {number}", {
-          number: resolvedNumber,
-        });
-        return null;
-      }
-      this.labIssueNumber = resolvedNumber;
-      return this.labIssueNumber;
+      const issue = data?.issue;
+      if (!issue || typeof issue.number !== "number") return null;
+      return {
+        number: issue.number,
+        type: (issue.type ?? "feature") as IssueType,
+        status: issue.status ?? "open",
+        title: issue.title ?? "",
+        body: issue.body ?? "",
+        comments: (issue.comments ?? []).map((c) => ({
+          author: c.authorUsername ?? c.author ?? "unknown",
+          body: c.body ?? "",
+          createdAt: c.createdAt ?? "",
+        })),
+      };
     } catch (err) {
-      this.log("swamp-club ensure issue error: {error}", {
+      this.log("swamp-club fetch issue error: {error}", {
         error: String(err),
       });
       return null;
     }
   }
 
-  /** Build the public lab URL for the cached issue, or null if not yet ensured. */
-  labUrl(): string | null {
-    if (this.labIssueNumber === null) return null;
-    return `${this.baseUrl}/lab/${this.labIssueNumber}`;
-  }
-
-  /** Post a structured lifecycle entry. Best-effort. Requires ensureIssue() first. */
+  /** Post a structured lifecycle entry. Best-effort. */
   async postLifecycleEntry(params: LifecycleEntryParams): Promise<void> {
-    if (this.labIssueNumber === null) return;
     try {
       const url =
-        `${this.baseUrl}/api/v1/lab/issues/${this.labIssueNumber}/lifecycle`;
+        `${this.baseUrl}/api/v1/lab/issues/${this.issueNumber}/lifecycle`;
       const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -176,29 +162,40 @@ export class SwampClubClient {
     }
   }
 
-  /** Transition the issue status. Best-effort. Requires ensureIssue() first. */
+  /** Transition the issue status. Best-effort. */
   async transitionStatus(status: string): Promise<void> {
-    if (this.labIssueNumber === null) return;
+    await this.patchIssue({ status });
+  }
+
+  /** Update the issue type. Best-effort. */
+  async updateType(type: IssueType): Promise<void> {
+    await this.patchIssue({ type });
+  }
+
+  /** PATCH the issue with a partial set of fields. Best-effort. */
+  private async patchIssue(
+    patch: Record<string, unknown>,
+  ): Promise<void> {
     try {
-      const url = `${this.baseUrl}/api/v1/lab/issues/${this.labIssueNumber}`;
+      const url = `${this.baseUrl}/api/v1/lab/issues/${this.issueNumber}`;
       const res = await fetch(url, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${this.#apiKey}`,
         },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(patch),
         signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        this.log("swamp-club status transition failed: {status} {text}", {
+        this.log("swamp-club patch failed: {status} {text}", {
           status: res.status,
           text,
         });
       }
     } catch (err) {
-      this.log("swamp-club status transition error: {error}", {
+      this.log("swamp-club patch error: {error}", {
         error: String(err),
       });
     }
@@ -241,13 +238,11 @@ async function loadAuthFile(): Promise<
 }
 
 /**
- * Create a SwampClubClient if URL and API key are available.
+ * Create a SwampClubClient if a URL and API key are available.
  * Precedence: explicit global args > SWAMP_API_KEY env var > auth.json file.
- * The lab issue number is resolved lazily — no extra arg needed.
  */
 export async function createSwampClubClient(
   globalArgs: {
-    repo: string;
     issueNumber: number;
     swampClubUrl?: string;
     swampClubApiKey?: string;
@@ -257,11 +252,9 @@ export async function createSwampClubClient(
     warning: (msg: string, props: Record<string, unknown>) => void;
   },
 ): Promise<SwampClubClient | null> {
-  // 1. Explicit args or env var
   let url = globalArgs.swampClubUrl ?? Deno.env.get("SWAMP_CLUB_URL");
   let apiKey = globalArgs.swampClubApiKey ?? Deno.env.get("SWAMP_API_KEY");
 
-  // 2. Fall back to auth.json from `swamp auth login`
   if (!apiKey) {
     const fileCreds = await loadAuthFile();
     if (fileCreds) {
@@ -274,7 +267,7 @@ export async function createSwampClubClient(
 
   if (!apiKey) {
     logger?.warning(
-      "No swamp-club credentials found (set SWAMP_API_KEY or run `swamp auth login`) — lifecycle entries will be skipped",
+      "No swamp-club credentials found (set SWAMP_API_KEY or run `swamp auth login`)",
       {},
     );
     return null;
@@ -290,14 +283,14 @@ export async function createSwampClubClient(
     await res.body?.cancel();
     if (!res.ok) {
       logger?.warning(
-        "swamp-club at {url} returned HTTP {status} — lifecycle entries will be skipped",
+        "swamp-club at {url} returned HTTP {status}",
         { url, status: res.status },
       );
       return null;
     }
   } catch (err) {
     logger?.warning(
-      "swamp-club at {url} is not reachable ({error}) — lifecycle entries will be skipped",
+      "swamp-club at {url} is not reachable ({error})",
       { url, error: String(err) },
     );
     return null;
@@ -306,7 +299,6 @@ export async function createSwampClubClient(
   return new SwampClubClient(
     url,
     apiKey,
-    globalArgs.repo,
     globalArgs.issueNumber,
     logger,
   );
