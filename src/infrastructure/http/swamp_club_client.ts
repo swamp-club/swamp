@@ -160,7 +160,8 @@ export class SwampClubClient {
 
   /**
    * Submit a bug report or feature request to the Lab.
-   * Authenticates using the x-api-key header.
+   * Authenticates using the x-api-key header. Tags every submission with
+   * `source: "swamp"` so the Lab UI can attribute it to the CLI.
    */
   async submitIssue(
     apiKey: string,
@@ -176,7 +177,12 @@ export class SwampClubClient {
         "Content-Type": "application/json",
         "x-api-key": apiKey,
       },
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        source: "swamp",
+        type: input.type,
+        title: input.title,
+        body: input.body,
+      }),
     });
 
     if (!res.ok) {

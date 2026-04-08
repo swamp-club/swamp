@@ -21,7 +21,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const repo = `${context.repo.owner}/${context.repo.repo}`;
 
             const apiKey = process.env.SWAMP_CLUB_API_KEY;
             if (!apiKey) {
@@ -30,15 +29,19 @@ jobs:
             }
 
             // Build the lab issue body: original body + auto-move footer.
+            // The footer carries the link back to the GitHub issue since the
+            // public /issues endpoint doesn't store githubRepoFullName /
+            // githubIssueNumber on the lab issue itself.
             const originalBody = (issue.body ?? "").trim();
-            const footer = `Automoved by swampadmin from GitHub issue #${issue.number}`;
+            const footer = `Automoved by swampadmin from ${issue.html_url}`;
             const labBody = originalBody.length > 0
               ? `${originalBody}\n\n---\n${footer}`
               : footer;
 
-            // Create (or fetch) the issue in the swamp.club lab.
-            const ensureRes = await fetch(
-              "https://swamp.club/api/v1/lab/issues/ensure",
+            // Create the lab issue via the public submission endpoint. The
+            // `source: "swamp"` tag attributes it to this repo in the Lab UI.
+            const createRes = await fetch(
+              "https://swamp.club/api/v1/lab/issues",
               {
                 method: "POST",
                 headers: {
@@ -46,26 +49,24 @@ jobs:
                   "Authorization": `Bearer ${apiKey}`,
                 },
                 body: JSON.stringify({
-                  githubRepoFullName: repo,
-                  githubIssueNumber: issue.number,
+                  source: "swamp",
+                  type: "feature",
                   title: issue.title,
                   body: labBody,
-                  type: "feature",
-                  githubAuthorLogin: issue.user.login,
                 }),
                 signal: AbortSignal.timeout(15_000),
               },
             );
 
-            if (!ensureRes.ok) {
-              const text = await ensureRes.text().catch(() => "");
+            if (!createRes.ok) {
+              const text = await createRes.text().catch(() => "");
               core.setFailed(
-                `swamp.club ensure failed: ${ensureRes.status} ${text}`,
+                `swamp.club create failed: ${createRes.status} ${text}`,
               );
               return;
             }
 
-            const data = await ensureRes.json();
+            const data = await createRes.json();
             // Lab issues use a sequential numeric id (LabIssueData.number) as
             // the human-facing identifier — see swamp-club commit 9f12761c.
             // The lab UI route and all API paths use /lab/{number} after #369.
@@ -78,7 +79,7 @@ jobs:
               labIssueNumber <= 0
             ) {
               core.setFailed(
-                `swamp.club ensure returned no lab issue number: ${
+                `swamp.club create returned no lab issue number: ${
                   JSON.stringify(data)
                 }`,
               );

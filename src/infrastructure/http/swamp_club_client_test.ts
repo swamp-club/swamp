@@ -23,7 +23,7 @@ import { UserError } from "../../domain/errors.ts";
 
 /** Start a simple mock HTTP server that returns canned responses. */
 function startMockServer(
-  handler: (req: Request) => Response,
+  handler: (req: Request) => Response | Promise<Response>,
 ): { port: number; shutdown: () => Promise<void> } {
   const ac = new AbortController();
   const server = Deno.serve(
@@ -159,6 +159,57 @@ Deno.test("SwampClubClient - sends x-api-key header for whoami", async () => {
     const client = new SwampClubClient(`http://localhost:${mock.port}`);
     await client.whoami("my-api-key");
     assertEquals(capturedApiKey, "my-api-key");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - submitIssue posts source=swamp with input fields", async () => {
+  let capturedBody: Record<string, unknown> = {};
+  let capturedApiKey = "";
+  const mock = startMockServer(async (req) => {
+    capturedApiKey = req.headers.get("x-api-key") ?? "";
+    capturedBody = await req.json();
+    return Response.json(
+      { issue: { number: 42, id: "issue-id-1" } },
+      { status: 201 },
+    );
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.submitIssue("my-api-key", {
+      type: "bug",
+      title: "Crash on launch",
+      body: "Repro steps...",
+    });
+    assertEquals(result.number, 42);
+    assertEquals(result.id, "issue-id-1");
+    assertEquals(capturedApiKey, "my-api-key");
+    assertEquals(capturedBody.source, "swamp");
+    assertEquals(capturedBody.type, "bug");
+    assertEquals(capturedBody.title, "Crash on launch");
+    assertEquals(capturedBody.body, "Repro steps...");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - submitIssue throws UserError on failure", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("Bad request", { status: 400 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () =>
+        client.submitIssue("key", {
+          type: "feature",
+          title: "t",
+          body: "b",
+        }),
+      UserError,
+      "Failed to submit issue",
+    );
   } finally {
     await mock.shutdown();
   }
