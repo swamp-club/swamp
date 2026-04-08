@@ -60,6 +60,31 @@ function escapeCelString(s: string): string {
 }
 
 /**
+ * Deduplicates DataRecords that represent the same logical data item under
+ * different model UUIDs (orphan recovery after delete/recreate cycles).
+ *
+ * Two records are considered duplicates when they share the same non-empty
+ * modelName AND the same data name. When modelName is empty (tag not set),
+ * records are always kept — they originate from different models that happen
+ * to use the same data name.
+ *
+ * Among duplicates, the most recently created record is kept.
+ */
+function deduplicateByName(records: DataRecord[]): DataRecord[] {
+  const byKey = new Map<string, DataRecord>();
+  for (const record of records) {
+    const key = record.modelName
+      ? `${record.modelName}\0${record.name}`
+      : record.id; // unique per record when modelName is absent
+    const existing = byKey.get(key);
+    if (!existing || record.createdAt > existing.createdAt) {
+      byKey.set(key, record);
+    }
+  }
+  return [...byKey.values()];
+}
+
+/**
  * File metadata record for CEL expressions.
  * Eagerly loaded into the model context.
  */
@@ -209,8 +234,7 @@ export interface ExpressionContext {
   /** File namespace for lazy-loading file contents */
   file?: FileNamespace;
   /**
-   * Workflow run ID for scoping data queries.
-   * When set, `data.findBySpec()` only returns data tagged with this run ID.
+   * Workflow run ID, available as a CEL variable for query predicates.
    * Set by the workflow engine after creating the run.
    */
   workflowRunId?: string;
@@ -574,9 +598,10 @@ export class ModelResolver {
         if (!this.dataQueryService) return [];
         const escaped = escapeCelString;
         const predicate = `tags.${escaped(tagKey)} == "${escaped(tagValue)}"`;
-        return await this.dataQueryService.query(predicate, {
+        const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
         }) as DataRecord[];
+        return deduplicateByName(results);
       },
       findBySpec: async (
         specModelName: string,
@@ -587,9 +612,10 @@ export class ModelResolver {
         const predicate = `modelName == "${
           escaped(specModelName)
         }" && specName == "${escaped(specName)}"`;
-        return await this.dataQueryService.query(predicate, {
+        const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
         }) as DataRecord[];
+        return deduplicateByName(results);
       },
       query: async (
         predicate: string,

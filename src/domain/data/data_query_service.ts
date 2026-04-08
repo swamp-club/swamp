@@ -25,7 +25,6 @@ import type {
 } from "../../infrastructure/persistence/catalog_store.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { DataRecord } from "./data_record.ts";
-import { ModelType } from "../models/model_type.ts";
 import {
   type ASTNode,
   collectRootIdentifiers,
@@ -33,7 +32,7 @@ import {
   referencesContent,
   validateFieldReferences,
 } from "./query_predicate.ts";
-import { isTextContentType } from "./content_type.ts";
+import { fromRow } from "./data_record_mapper.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import { resolveVaultRefsInData } from "../models/data_writer.ts";
@@ -206,68 +205,7 @@ export class DataQueryService {
     loadAttributes: boolean,
     loadContent: boolean,
   ): DataRecord {
-    let attributes: Record<string, unknown> = {};
-    let textContent = "";
-
-    // Load raw bytes if either attributes or content needs them
-    const needsBytes = (loadAttributes &&
-      row.content_type === "application/json") ||
-      (loadContent && isTextContentType(row.content_type));
-
-    if (needsBytes) {
-      const rawBytes = this.dataRepo.getContentSync(
-        ModelType.create(row.type_normalized),
-        row.model_id,
-        row.data_name,
-      );
-      if (rawBytes) {
-        const decoded = new TextDecoder().decode(rawBytes);
-        if (loadContent && isTextContentType(row.content_type)) {
-          textContent = decoded;
-        }
-        if (
-          loadAttributes && row.content_type === "application/json"
-        ) {
-          try {
-            attributes = JSON.parse(decoded) as Record<string, unknown>;
-          } catch {
-            // Not valid JSON, use empty attributes
-          }
-        }
-      }
-    }
-
-    let tags: Record<string, string> = {};
-    try {
-      tags = JSON.parse(row.tags) as Record<string, string>;
-    } catch {
-      // Invalid tags JSON, use empty
-    }
-
-    return {
-      id: row.id,
-      name: row.data_name,
-      version: row.version,
-      createdAt: row.created_at,
-      attributes,
-      tags,
-      modelName: row.model_name,
-      modelType: row.type_normalized,
-      specName: row.spec_name,
-      dataType: row.data_type,
-      contentType: row.content_type,
-      lifetime: row.lifetime,
-      ownerType: row.owner_type,
-      streaming: row.streaming === 1,
-      size: row.size,
-      content: textContent,
-      ownerRef: row.owner_ref,
-      workflowRunId: row.workflow_run_id,
-      workflowName: row.workflow_name,
-      jobName: row.job_name,
-      stepName: row.step_name,
-      source: row.source,
-    };
+    return fromRow(row, this.dataRepo, loadAttributes, loadContent);
   }
 
   private async backfillAsync(): Promise<void> {

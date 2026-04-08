@@ -462,11 +462,11 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
 
     assertExists(ctx.data);
 
-    // Both old and new UUID entries exist in the catalog; deduplication is
-    // no longer performed at the query layer, so both rows are returned.
+    // Both old and new UUID entries exist in the catalog; deduplication
+    // keeps only the most recently created record for each data name.
     const results = await ctx.data.findByTag("env", "prod");
-    assertEquals(results.length, 2);
-    assertEquals(results.every((r) => r.name === "tagged-item"), true);
+    assertEquals(results.length, 1);
+    assertEquals(results[0].name, "tagged-item");
     catalog.close();
   });
 });
@@ -606,11 +606,11 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
 
     assertExists(ctx.data);
 
-    // Both old and new UUID entries exist in the catalog; deduplication is
-    // no longer performed at the query layer, so both rows are returned.
+    // Both old and new UUID entries exist in the catalog; deduplication
+    // keeps only the most recently created record for each data name.
     const results = await ctx.data.findBySpec("spec-model", "subnet");
-    assertEquals(results.length, 2);
-    assertEquals(results.every((r) => r.name === "subnet-a"), true);
+    assertEquals(results.length, 1);
+    assertEquals(results[0].name, "subnet-a");
     catalog.close();
   });
 });

@@ -89,19 +89,22 @@ async function resolveVaultRefs(
 }
 
 /**
- * Converts a CatalogRow to a DataRecord. This is the primary runtime path
- * since most data access functions delegate to DataQueryService.query().
+ * Converts a CatalogRow to a DataRecord synchronously. This is the primary
+ * runtime path since most data access functions delegate to
+ * DataQueryService.query().
  *
  * Content is loaded from disk only when needed (controlled by loadAttributes
  * and loadContent flags, driven by AST analysis of the query predicate).
+ *
+ * Vault resolution is NOT performed here — callers that need it (e.g.
+ * DataQueryService.query) handle it after the query loop.
  */
-export async function fromRow(
+export function fromRow(
   row: CatalogRow,
   dataRepo: UnifiedDataRepository,
   loadAttributes: boolean,
   loadContent: boolean,
-  options: DataRecordMapperOptions = {},
-): Promise<DataRecord> {
+): DataRecord {
   const needsBytes = (loadAttributes &&
     row.content_type === "application/json") ||
     (loadContent && isTextContentType(row.content_type));
@@ -121,8 +124,6 @@ export async function fromRow(
     loadAttributes,
     loadContent,
   );
-
-  await resolveVaultRefs(attributes, options);
 
   let tags: Record<string, string> = {};
   try {
