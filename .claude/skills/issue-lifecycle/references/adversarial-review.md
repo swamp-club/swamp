@@ -46,11 +46,13 @@ For each plan step, **read the actual code**:
 
 ## Step 3: Record Findings
 
-Write findings to a YAML file (e.g. `/tmp/findings.yaml`) as a YAML object with
-a `findings` key:
+Write findings to a YAML file as a YAML object with a `findings` key. **Use an
+issue-scoped filename** like `/tmp/findings-issue-<N>.yaml` — a generic
+`/tmp/findings.yaml` collides with stale content from previous lifecycle
+sessions and can leak unrelated findings into the current review.
 
 ```yaml
-# /tmp/findings.yaml
+# /tmp/findings-issue-<N>.yaml
 findings:
   - id: ADV-1
     severity: high
@@ -66,7 +68,7 @@ Then record them:
 
 ```
 swamp model method run issue-<N> adversarial_review \
-  --input-file /tmp/findings.yaml
+  --input-file /tmp/findings-issue-<N>.yaml
 ```
 
 Each finding must have:
@@ -104,8 +106,9 @@ If no blocking findings, say:
 When the human gives feedback OR adversarial findings need addressing:
 
 1. **Call iterate** with both the feedback text and your revised plan. Write the
-   revised `steps` and `potentialChallenges` to a YAML file (same format as the
-   `plan` step), then run:
+   revised `steps` and `potentialChallenges` to an issue-scoped YAML file (e.g.
+   `/tmp/plan-issue-<N>-v2.yaml` — the `-v2` suffix keeps each revision distinct
+   if you want to diff between iterations), then run:
 
    ```
    swamp model method run issue-<N> iterate \
@@ -113,13 +116,14 @@ When the human gives feedback OR adversarial findings need addressing:
      --input summary="..." \
      --input dddAnalysis="..." \
      --input testingStrategy="..." \
-     --input-file /tmp/plan.yaml
+     --input-file /tmp/plan-issue-<N>-v2.yaml
    ```
 
-2. **Resolve addressed findings**. Write resolutions to a YAML file:
+2. **Resolve addressed findings**. Write resolutions to an issue-scoped YAML
+   file:
 
    ```yaml
-   # /tmp/resolutions.yaml
+   # /tmp/resolutions-issue-<N>.yaml
    resolutions:
      - findingId: ADV-1
        resolutionNote: "Added domain boundary definition in step 2"
@@ -129,7 +133,7 @@ When the human gives feedback OR adversarial findings need addressing:
 
    ```
    swamp model method run issue-<N> resolve_findings \
-     --input-file /tmp/resolutions.yaml
+     --input-file /tmp/resolutions-issue-<N>.yaml
    ```
 
 3. **Re-run adversarial review** on the new plan version. The review must be

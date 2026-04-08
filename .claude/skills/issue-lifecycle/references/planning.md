@@ -5,13 +5,19 @@ ready to generate an implementation plan.
 
 ## 6. Generate an Implementation Plan
 
-Write a single YAML file (e.g. `/tmp/plan.yaml`) containing both `steps` and
-`potentialChallenges` as top-level keys. The CLI only supports one
-`--input-file` flag per invocation, and the file must be a YAML object (not a
-bare array).
+Write a single YAML file containing both `steps` and `potentialChallenges` as
+top-level keys. The CLI only supports one `--input-file` flag per invocation,
+and the file must be a YAML object (not a bare array).
+
+**Use an issue-scoped filename** like `/tmp/plan-issue-<N>.yaml` rather than a
+generic `/tmp/plan.yaml`. Generic filenames collide with stale content left
+behind by previous lifecycle sessions — the old content usually fails to `Read`
+for you to overwrite, and worse, content from an unrelated issue can silently
+leak into the current plan if you forget to check. Issue-scoped filenames make
+resuming sessions safe and auditable.
 
 ```yaml
-# /tmp/plan.yaml
+# /tmp/plan-issue-<N>.yaml
 steps:
   - order: 1
     description: "Add the new schema types"
@@ -36,7 +42,7 @@ swamp model method run issue-<N> plan \
   --input summary="..." \
   --input dddAnalysis="..." \
   --input testingStrategy="..." \
-  --input-file /tmp/plan.yaml
+  --input-file /tmp/plan-issue-<N>.yaml
 ```
 
 ## 7. Apply Repo-Specific Planning Conventions

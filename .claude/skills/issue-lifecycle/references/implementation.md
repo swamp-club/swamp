@@ -41,9 +41,33 @@ Use the repository's normal PR tooling. Read
 `agent-constraints/implementation-conventions.md` for repo-specific PR
 conventions.
 
-The issue-lifecycle model does not track PRs directly — your PR creation is
-outside the model's scope. The swamp-club issue status stays at `in_progress`
-until you call `complete`.
+## 4a. Link the PR
+
+After the PR is open, record its URL on the lifecycle so the swamp-club record
+points to where the fix lives:
+
+```
+swamp model method run issue-<N> link_pr --input url=<PR URL>
+```
+
+This writes a `pullRequest-main` resource, transitions the phase to `pr_open`,
+and posts a `pr_linked` lifecycle entry on the swamp-club issue. The swamp-club
+status stays at `in_progress` — there is no new status for `pr_open`; the PR
+link is additional evidence attached to the in-progress state.
+
+`link_pr` is **idempotent** — call it again with a new URL if:
+
+- CI fails and you force-push a different PR
+- The first PR is closed and a replacement is opened
+- You recorded the wrong URL the first time
+
+Each call overwrites `pullRequest-main` with the latest URL and refreshes
+`linkedAt`. A new `pr_linked` entry is posted on every call.
+
+Calling `link_pr` is **encouraged but not enforced** — `complete` still accepts
+`implementing` as a valid source phase for backwards compatibility with legacy
+records. Prefer the `implementing → link_pr → complete` flow for all new work so
+the lifecycle record carries the PR link.
 
 ## 5. Complete the Issue
 
