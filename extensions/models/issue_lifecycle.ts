@@ -32,7 +32,6 @@ import {
   TRANSITIONS,
 } from "./_lib/schemas.ts";
 import { createSwampClubClient } from "./_lib/swamp_club.ts";
-import type { SwampClubClient } from "./_lib/swamp_club.ts";
 
 /** Global args type for the issue-lifecycle model. */
 type GlobalArgs = {
@@ -40,21 +39,6 @@ type GlobalArgs = {
   swampClubUrl?: string;
   swampClubApiKey?: string;
 };
-
-/** Get or create the swamp-club client (lazily, from globalArgs). */
-async function getSwampClub(
-  globalArgs: GlobalArgs,
-  logger?: {
-    info: (msg: string, props: Record<string, unknown>) => void;
-    warning: (msg: string, props: Record<string, unknown>) => void;
-  },
-): Promise<SwampClubClient | null> {
-  if (_swampClub === undefined) {
-    _swampClub = await createSwampClubClient(globalArgs, logger);
-  }
-  return _swampClub;
-}
-let _swampClub: SwampClubClient | null | undefined;
 
 /** Read the current state from data repository (for checks). */
 async function readState(
@@ -360,7 +344,10 @@ export const model = {
         const { issueNumber } = context.globalArgs;
         const handles = [];
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         if (!sc) {
           throw new Error(
             "swamp-club is not reachable or credentials are missing. " +
@@ -485,7 +472,10 @@ export const model = {
           },
         );
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         if (sc) {
           await sc.updateType(args.type);
           await sc.postLifecycleEntry({
@@ -573,7 +563,10 @@ export const model = {
           summary: args.summary,
         });
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         await sc?.postLifecycleEntry({
           step: "plan_generated",
           targetStatus: "triaged",
@@ -759,7 +752,10 @@ export const model = {
           { version: newVersion, round: feedbackRound },
         );
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         await sc?.postLifecycleEntry({
           step: "plan_revised",
           targetStatus: "triaged",
@@ -851,7 +847,10 @@ export const model = {
           { planVersion, critical, high, medium, low },
         );
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         await sc?.postLifecycleEntry({
           step: "adversarial_review",
           targetStatus: "triaged",
@@ -953,7 +952,10 @@ export const model = {
           { resolved, remaining },
         );
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         await sc?.postLifecycleEntry({
           step: "findings_resolved",
           targetStatus: "triaged",
@@ -1011,7 +1013,10 @@ export const model = {
 
         context.logger.info("Plan approved", {});
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         if (sc && plan) {
           await sc.postLifecycleEntry({
             step: "plan_approved",
@@ -1061,7 +1066,10 @@ export const model = {
 
         context.logger.info("Implementation started", {});
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         await sc?.postLifecycleEntry({
           step: "implementation_started",
           targetStatus: "in_progress",
@@ -1103,7 +1111,10 @@ export const model = {
 
         context.logger.info("Issue lifecycle complete", {});
 
-        const sc = await getSwampClub(context.globalArgs, context.logger);
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
         if (sc) {
           await sc.postLifecycleEntry({
             step: "complete",
