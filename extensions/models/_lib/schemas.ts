@@ -43,6 +43,7 @@ export const Phase = z.enum([
   "plan_generated",
   "approved",
   "implementing",
+  "pr_open",
   "done",
 ]);
 
@@ -57,6 +58,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
     "plan_generated",
     "approved",
     "implementing",
+    "pr_open",
   ],
   triage: ["triaging"],
   plan: ["classified"],
@@ -65,7 +67,8 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   implement: ["approved"],
   adversarial_review: ["plan_generated"],
   resolve_findings: ["plan_generated"],
-  complete: ["implementing"],
+  link_pr: ["implementing", "pr_open"],
+  complete: ["implementing", "pr_open"],
 };
 
 // ---------------------------------------------------------------------------
@@ -161,3 +164,16 @@ export const AdversarialReviewSchema = z.object({
 });
 
 export type AdversarialReviewData = z.infer<typeof AdversarialReviewSchema>;
+
+export const PullRequestSchema = z.object({
+  url: z.string().min(1).describe(
+    "Canonical URL of the pull request. Opaque to the model — the agent " +
+      "supplies whatever URL their git host produced.",
+  ),
+  linkedAt: z.string().describe(
+    "ISO-8601 timestamp of when link_pr was called. Updated on every " +
+      "subsequent link_pr call so the record reflects the latest link.",
+  ),
+});
+
+export type PullRequestData = z.infer<typeof PullRequestSchema>;

@@ -27,6 +27,7 @@ import {
   type PlanData,
   PlanSchema,
   PlanStepSchema,
+  PullRequestSchema,
   type StateData,
   StateSchema,
   TRANSITIONS,
@@ -67,7 +68,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.04.08.1",
+  version: "2026.04.08.2",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -94,6 +95,15 @@ export const model = {
         delete next.repo;
         return next;
       },
+    },
+    {
+      toVersion: "2026.04.08.2",
+      description:
+        "Add pr_open phase, pullRequest resource, and link_pr method. " +
+        "Restores PR linkage dropped in 2026.04.08.1 without re-introducing git-host coupling — " +
+        "the model persists whatever PR URL the agent supplies. " +
+        "complete now accepts pr_open as a valid source phase alongside implementing.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
 
@@ -133,6 +143,15 @@ export const model = {
       schema: AdversarialReviewSchema,
       lifetime: "infinite" as const,
       garbageCollection: 20,
+    },
+    "pullRequest": {
+      description:
+        "Pull request linked to the implementation. Single instance, " +
+        "overwritten by subsequent link_pr calls so the record always " +
+        "reflects the latest link.",
+      schema: PullRequestSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 5,
     },
   },
 
@@ -1080,6 +1099,69 @@ export const model = {
         });
 
         return { dataHandles: [stateHandle] };
+      },
+    },
+
+    link_pr: {
+      description:
+        "Link a pull request to the implementation. Idempotent — calling " +
+        "again overwrites the recorded URL with the latest link. " +
+        "Transitions the phase to pr_open if currently implementing.",
+      arguments: z.object({
+        url: z.string().min(1).describe(
+          "Canonical pull request URL. Opaque to the model — pass whatever " +
+            "URL your git host produced.",
+        ),
+      }),
+      execute: async (
+        args: { url: string },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
+        const { issueNumber } = context.globalArgs;
+        const now = new Date().toISOString();
+
+        const prHandle = await context.writeResource(
+          "pullRequest",
+          "pullRequest-main",
+          {
+            url: args.url,
+            linkedAt: now,
+          },
+        );
+
+        const stateHandle = await context.writeResource("state", "state-main", {
+          phase: "pr_open",
+          issueNumber,
+          updatedAt: now,
+        });
+
+        context.logger.info("PR linked: {url}", { url: args.url });
+
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
+        await sc?.postLifecycleEntry({
+          step: "pr_linked",
+          targetStatus: "in_progress",
+          summary: `PR linked: ${args.url}`,
+          emoji: "\u{1F517}",
+          payload: { url: args.url },
+          isVerbose: false,
+        });
+
+        return { dataHandles: [prHandle, stateHandle] };
       },
     },
 
