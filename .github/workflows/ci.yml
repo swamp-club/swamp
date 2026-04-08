@@ -93,7 +93,7 @@ jobs:
           deno-version: v2.x
 
       - name: Scan for known vulnerabilities
-        run: deno run --allow-read --allow-net=api.osv.dev --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/audit_deps.ts
+        run: deno task audit
 
       - name: Check for outdated dependencies
         run: |
