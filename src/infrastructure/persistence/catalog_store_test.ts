@@ -378,6 +378,49 @@ Deno.test("CatalogStore: constructor retries under write lock contention", async
   );
 });
 
+Deno.test("CatalogStore: migrates v1 catalog DB to v2 without throwing", () => {
+  const dbPath = makeTempDbPath();
+
+  // Pre-create a v1 catalog DB: no provenance columns, schema_version=1
+  const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout=5000");
+  db.exec("PRAGMA journal_mode=WAL");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS catalog (
+      type_normalized TEXT NOT NULL,
+      model_id        TEXT NOT NULL,
+      data_name       TEXT NOT NULL,
+      id              TEXT NOT NULL,
+      version         INTEGER NOT NULL,
+      model_name      TEXT NOT NULL,
+      spec_name       TEXT NOT NULL DEFAULT '',
+      data_type       TEXT NOT NULL DEFAULT '',
+      content_type    TEXT NOT NULL DEFAULT '',
+      lifetime        TEXT NOT NULL DEFAULT '',
+      owner_type      TEXT NOT NULL DEFAULT '',
+      streaming       INTEGER NOT NULL DEFAULT 0,
+      size            INTEGER NOT NULL DEFAULT 0,
+      created_at      TEXT NOT NULL,
+      tags            TEXT NOT NULL DEFAULT '{}',
+      owner_ref       TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (type_normalized, model_id, data_name)
+    );
+    CREATE TABLE IF NOT EXISTS catalog_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '1');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+  `);
+  db.close();
+
+  // Opening with CatalogStore should migrate to v2 (not throw)
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 0); // migration drops and recreates the table
+  assertEquals(store.isPopulated(), false); // populated cleared for backfill
+  store.close();
+});
+
 Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);

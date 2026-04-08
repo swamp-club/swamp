@@ -76,8 +76,17 @@ export class CatalogStore {
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout=5000");
     this.db.exec("PRAGMA journal_mode=WAL");
-    this.createSchema();
+
+    // Ensure catalog_meta exists so migrateIfNeeded() can read schema_version.
+    // Must run before createSchema() because v2-only indexes fail on a v1 table.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS catalog_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
     this.migrateIfNeeded();
+    this.createSchema();
   }
 
   private createSchema(): void {
