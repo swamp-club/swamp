@@ -1207,8 +1207,7 @@ export class WorkflowExecutionService {
       };
       const run = WorkflowRun.create(workflow, mergedTags);
 
-      // Scope data.findBySpec() to this run so forEach expressions
-      // only see data produced during the current workflow run.
+      // Make the workflow run ID available as a CEL variable (workflowRunId).
       if (expressionContext) {
         expressionContext.workflowRunId = run.id;
       }

@@ -25,8 +25,7 @@ import type { SecretRedactor } from "../secrets/mod.ts";
 import type { Data } from "./data.ts";
 import type { DataRecord } from "./data_record.ts";
 import type { DataQueryService } from "./data_query_service.ts";
-import { resolveVaultRefsInData } from "../models/data_writer.ts";
-import { isTextContentType } from "./content_type.ts";
+import { fromData } from "./data_record_mapper.ts";
 
 /**
  * A data item with its origin model coordinates, used to track
@@ -265,60 +264,10 @@ export class DataAccessService {
     modelId: string,
     modelName?: string,
   ): Promise<DataRecord | null> {
-    let attributes: Record<string, unknown> = {};
-    let textContent = "";
-
-    if (isTextContentType(data.contentType)) {
-      const rawBytes = await this.dataRepo.getContent(
-        modelType,
-        modelId,
-        data.name,
-      );
-      if (rawBytes) {
-        const decoded = new TextDecoder().decode(rawBytes);
-        textContent = decoded;
-        if (data.contentType === "application/json") {
-          try {
-            attributes = JSON.parse(decoded) as Record<string, unknown>;
-          } catch {
-            // Not valid JSON, use empty attributes
-          }
-
-          // Resolve vault references if vault service is available
-          if (this.vaultService && Object.keys(attributes).length > 0) {
-            await resolveVaultRefsInData(
-              attributes,
-              this.vaultService,
-              this.redactor,
-            );
-          }
-        }
-      }
-    }
-
-    return {
-      id: data.id,
-      name: data.name,
-      version: data.version,
-      createdAt: data.createdAt.toISOString(),
-      attributes,
-      tags: { ...data.tags },
-      modelName: modelName ?? data.tags["modelName"] ?? "",
-      modelType: modelType.normalized,
-      specName: data.tags["specName"] ?? "",
-      dataType: data.tags["type"] ?? "",
-      contentType: data.contentType,
-      lifetime: data.lifetime,
-      ownerType: data.ownerDefinition.ownerType,
-      streaming: data.streaming,
-      size: data.size ?? 0,
-      content: textContent,
-      ownerRef: data.ownerDefinition.ownerRef,
-      workflowRunId: data.ownerDefinition.workflowRunId ?? "",
-      workflowName: data.ownerDefinition.workflowName ?? "",
-      jobName: data.ownerDefinition.jobName ?? "",
-      stepName: data.ownerDefinition.stepName ?? "",
-      source: data.ownerDefinition.source ?? "",
-    };
+    return await fromData(data, modelType, modelId, this.dataRepo, {
+      modelName,
+      vaultService: this.vaultService,
+      redactor: this.redactor,
+    });
   }
 }
